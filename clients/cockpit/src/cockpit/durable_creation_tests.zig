@@ -284,3 +284,20 @@ pub fn titleAnnouncement() !void {
     try testing.expect(changed);
     try testing.expect(engine.revision > revision);
 }
+
+pub fn emptyTitleReconnect() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const remote = engine.model.phux().?;
+    const ref = engine.model.focusedTerminalRef().?;
+    try feed(engine, "remote-title.bin");
+    try testing.expectEqualStrings("remote-title-review", remote.presentation(ref).?.title);
+    engine.recovery.disconnect(engine.model);
+    try remote.host.reconnect("title-reconnect");
+    try fixture.stageFixture(remote.bridge, "hello.bin");
+    _ = try remote.host.drainReadiness();
+    try remote.host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    try feed(engine, "attached.bin");
+    try testing.expectEqualStrings("", engine.model.remotePresentation(ref).?.title);
+}

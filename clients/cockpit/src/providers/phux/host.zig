@@ -914,7 +914,8 @@ pub const Host = struct {
         const payload = try effectSlice(effect.bytes);
         if (payload.len > max_title_bytes) return error.Protocol;
         const destination = if (host.attach_barrier_seen and terminal.published) &terminal.title else &terminal.pending_title;
-        if (std.mem.eql(u8, destination.items, payload)) return;
+        const title_known = destination == &terminal.title or terminal.pending_title_set;
+        if (title_known and std.mem.eql(u8, destination.items, payload)) return;
         try destination.ensureTotalCapacity(host.gpa, payload.len);
         destination.items.len = payload.len;
         @memcpy(destination.items, payload);

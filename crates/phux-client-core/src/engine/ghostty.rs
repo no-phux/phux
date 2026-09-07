@@ -200,7 +200,7 @@ impl GhosttyAdapter {
 #[derive(Debug)]
 pub struct GhosttyReplica {
     profile: BootstrapStreamProfile,
-    reported_title: String,
+    reported_title: Option<String>,
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
     state: ReplicaState,
     history_max_bytes: Option<usize>,
@@ -209,16 +209,19 @@ pub struct GhosttyReplica {
 }
 
 impl GhosttyReplica {
-    fn publish_title(&mut self, effects: &mut EngineEffectBuffer) -> Result<(), GhosttyEngineError> {
+    fn publish_title(
+        &mut self,
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<(), GhosttyEngineError> {
         let Some(terminal) = self.terminal() else {
             return Ok(());
         };
         let title = terminal.title()?;
-        if title == self.reported_title {
+        if Some(title) == self.reported_title.as_deref() {
             return Ok(());
         }
         let title = title.to_owned();
-        self.reported_title.clone_from(&title);
+        self.reported_title = Some(title.clone());
         effects.push(EngineEffect::Status(super::EngineStatus::Title(title)));
         Ok(())
     }
@@ -465,7 +468,7 @@ impl EngineAdapter for GhosttyAdapter {
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
-            reported_title: String::new(),
+            reported_title: None,
             profile,
             state,
             anchors: HashMap::new(),
@@ -1594,6 +1597,11 @@ mod tests {
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("publish synthesized terminal");
+        assert!(matches!(
+            effects.as_slice(),
+            [EngineEffect::Status(super::super::EngineStatus::Title(title))] if title.is_empty()
+        ));
+        effects.clear();
         adapter
             .apply_output(&mut replica, b"\x1b[5n", &mut effects)
             .expect("live DSR query");
