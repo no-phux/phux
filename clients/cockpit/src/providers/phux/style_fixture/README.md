@@ -30,13 +30,13 @@ invalid offsets, lengths, UTF-8 and arena budgets before replacing valid state.
 
 - `crates/phux-client-ffi/src/client.rs::push_flattened_cell` resolves palette
   entries to RGB but leaves inverse, faint and invisible as flags. The adapter
-  swaps inverse exactly once. Faint uses the local `Palette.resolveFg` half
-  blend and inverse precedence, using the per-cell background available in
-  the ABI. Invisible zeroes the glyph while retaining decorations.
-- The ABI has no palette-index or underline-color provenance. Bold is carried
-  as a weight flag; the adapter does not guess an ANSI bright color from RGB.
-  The ABI's resolved underline RGB is preserved even for SGR 59 (which the
-  FFI resolves to raw foreground).
+  swaps inverse exactly once. Its legacy v1 copy uses per-cell background
+  for faint; metadata-aware projection supplies the terminal default instead.
+  Invisible zeroes the glyph while retaining decorations.
+- The v1 grid alone has no palette-index or underline-color provenance.
+  Its legacy copy preserves the supplied RGB. The additive metadata companion
+  now supplies this provenance to the shipping `copyClient` path; see
+  [Remote grid metadata](../../../../docs/REMOTE_GRID_METADATA.md).
 - Native SDK `34cc9d5571599d5ea4feafc9260f36575e67e77b` defines
   `canvas.terminal_grid.TerminalUnderline`. Named C values map to its named
   styles; no numeric enum casts or new style constants are involved.
@@ -47,7 +47,10 @@ invalid offsets, lengths, UTF-8 and arena budgets before replacing valid state.
   Text and URI arenas each admit at most `max_grid_utf8_bytes` bytes. URI
   admission uses `PHUX_CLIENT_CELL_HYPERLINK`, independently of visible text.
 
-## Complexity evidence
+## Original style-fix complexity evidence
+
+This table records `27738342`; the metadata follow-up's measurements are in
+[Remote grid metadata](../../../../docs/REMOTE_GRID_METADATA.md#review-and-complexity).
 
 No project Zig CC tool/threshold is configured. Counts below use one plus
 `if`, loops, `catch`, boolean `and`/`or`, and non-default switch arms; comments
@@ -81,13 +84,13 @@ admission arithmetic, and found an additional dropped ABI cursor shape:
 `PHUX_CURSOR_BLOCK_HOLLOW`. The projection now maps it directly to the SDK's
 `.block_hollow`, covered by a separate C-record contract test.
 
-The remaining color-provenance/default-color and cursor metadata gaps require
-changes outside this projection lane and are tracked in Bead `phux-r3nj`.
+The color-provenance/default-color and cursor metadata gaps found in the
+original review are addressed by the additive metadata work in Bead `phux-r3nj`.
 In particular, equal RGB values cannot reveal whether SGR 58 was explicit, or
 which ANSI index produced a bold color. The fixture includes indexed-bold and
 inverse/default-underline cells to verify the values actually supplied by the
-ABI are preserved. The review's suggestion to validate cursor coordinates is
-also tracked there; cursor-coordinate admission was not changed by this fix.
+ABI are preserved. Metadata-aware admission now also validates visible cursor
+coordinates before copying.
 
 Recorded regressions live in `scripts/guards/remote-cell-styles.guard`,
 `remote-cell-hyperlinks.guard`, and `remote-cursor-hollow.guard`. Their breaks

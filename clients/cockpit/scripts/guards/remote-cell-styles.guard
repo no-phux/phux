@@ -7,13 +7,13 @@
 # the source flags exist, frees the client after copying, and inspects the
 # owned SDK cells. This is structural evidence, not host raster evidence.
 test: canonical C grid preserves remote styles in owned canvas cells
-red: 2026-09-07 at 9873c69
+red: 2026-09-07 at b5abf52
 build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/providers/phux/cell_projection.zig b/src/providers/phux/cell_projection.zig
 index 672ecf71..f8480dcf 100644
 --- a/src/providers/phux/cell_projection.zig
 +++ b/src/providers/phux/cell_projection.zig
-@@ -67,15 +67,7 @@ pub fn cell(raw: c.PhuxTerminalCell, cluster: []const u8) canvas.TerminalCell {
+@@ -78,15 +78,7 @@ pub fn project(raw: c.PhuxTerminalCell, cluster: []const u8, metadata: ?CellMetadata) canvas.TerminalCell {
          .fg = canvas.Color.rgb8(raw.foreground_r, raw.foreground_g, raw.foreground_b),
          .bg = canvas.Color.rgb8(raw.background_r, raw.background_g, raw.background_b),
          .wide = width(raw.wide),
@@ -27,5 +27,5 @@ index 672ecf71..f8480dcf 100644
 -        // explicit/default color provenance, so preserve its exact RGB.
 -        .underline_color = canvas.Color.rgb8(raw.underline_r, raw.underline_g, raw.underline_b),
      };
-     resolveColors(raw.flags, &result);
-     return result;
+     if (metadata) |source| {
+         result.fg = foreground(raw, source);

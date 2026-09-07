@@ -7,11 +7,11 @@ const c = @import("abi.zig").c;
 const presentation = @import("presentation.zig");
 const projection = @import("cell_projection.zig");
 
-fn feed(client: *c.PhuxClient, bytes: []const u8) !void {
+pub fn feed(client: *c.PhuxClient, bytes: []const u8) !void {
     try testing.expectEqual(c.PHUX_CLIENT_OK, c.phux_client_feed_frame(client, bytes.ptr, bytes.len));
 }
 
-fn fixtureClient() !*c.PhuxClient {
+pub fn fixtureClient() !*c.PhuxClient {
     var options = std.mem.zeroes(c.PhuxClientOptions);
     options.size = @sizeOf(c.PhuxClientOptions);
     options.version = c.PHUX_CLIENT_ABI_VERSION;
@@ -44,7 +44,7 @@ fn fixtureClient() !*c.PhuxClient {
     return client.?;
 }
 
-fn fixtureGrid(client: *c.PhuxClient) !c.PhuxTerminalGridView {
+pub fn fixtureGrid(client: *c.PhuxClient) !c.PhuxTerminalGridView {
     var id = std.mem.zeroes(c.PhuxTerminalId);
     id.kind = c.PHUX_TERMINAL_LOCAL;
     id.id = 7;

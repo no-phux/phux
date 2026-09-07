@@ -17,6 +17,8 @@ use phux_protocol::{
 // real libghostty cell occupancy rather than fabricated C records.
 const VT: &[u8] = concat!(
     "\x1b[2J\x1b[H",
+    "\x1b]10;#c0b0a0\x1b\\\x1b]11;#102840\x1b\\\x1b]12;#80a0c0\x1b\\",
+    "\x1b]4;1;#102030;9;#8090a0\x1b\\",
     "\x1b[38;2;180;120;60;48;2;20;40;80;58;2;60;90;150m",
     "\x1b[1;3;9;53;4:3mA\x1b[0m\r\n",
     "\x1b[4:0m0\x1b[4:1m1\x1b[4:2m2\x1b[4:3m3\x1b[4:4m4\x1b[4:5m5\x1b[0m\r\n",
@@ -26,6 +28,11 @@ const VT: &[u8] = concat!(
     "\x1b]8;;https://example.test/owned\x1b\\L\x1b]8;;\x1b\\",
     "\x1b[4;16H界",
     "\x1b[6;1H\x1b[0;1;31mB\x1b[0;7;4mU\x1b[0m",
+    "\x1b[1;38;2;16;32;48mE\x1b[0;1;91mR\x1b[0;1;38;5;200mC",
+    "\x1b[0;2;4mD\x1b[48;2;240;80;20mQ\x1b[0;1;31;7;4mX",
+    "\x1b[0;31;7;4;58;2;16;32;48mY\x1b[0m",
+    "\x1b[5;4H\x1b[44m\x1b[3X\x1b[0m\x1b[5;8H\x1b[48;2;20;60;100m\x1b[2X\x1b[0m",
+    "\x1b[3;7H\x1b[1 q",
 )
 .as_bytes();
 
@@ -107,6 +114,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output,
         "attach-ready",
         &FrameKind::AttachReady { attach_id: 1 },
+    )?;
+    update(&output, "tail", 1, b"\x1b[3;8H\x1b[2 q")?;
+    update(
+        &output,
+        "reset-colors",
+        2,
+        b"\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\\x1b]104\x1b\\",
+    )?;
+    update(&output, "reverse", 3, b"\x1b[?5h")
+}
+
+fn update(output: &Path, name: &str, seq: u64, bytes: &'static [u8]) -> Result<(), Box<dyn Error>> {
+    write(
+        output,
+        name,
+        &FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(7),
+            stream_id: StreamId::new(7).ok_or("invalid stream")?,
+            bootstrap_id: BootstrapId::new(1).ok_or("invalid bootstrap")?,
+            seq,
+            bytes: Bytes::from_static(bytes),
+        },
     )
 }
 

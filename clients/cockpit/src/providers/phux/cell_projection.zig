@@ -3,6 +3,13 @@
 const std = @import("std");
 const canvas = @import("native_sdk").canvas;
 const c = @import("abi.zig").c;
+const grid_metadata = @import("grid_metadata.zig");
+
+pub const CellMetadata = struct {
+    grid: *const c.PhuxTerminalGridMetadata,
+    cell: c.PhuxGridCellMetadata,
+    policy: grid_metadata.Policy,
+};
 
 pub const Span = struct {
     start: usize = 0,
@@ -60,6 +67,10 @@ fn admit(span: Span, arena: []const u8, used: *usize, budget: usize) !void {
 }
 
 pub fn cell(raw: c.PhuxTerminalCell, cluster: []const u8) canvas.TerminalCell {
+    return project(raw, cluster, null);
+}
+
+pub fn project(raw: c.PhuxTerminalCell, cluster: []const u8, metadata: ?CellMetadata) canvas.TerminalCell {
     const cp = codepoint(raw, cluster);
     var result: canvas.TerminalCell = .{
         .cp = cp,
@@ -77,11 +88,30 @@ pub fn cell(raw: c.PhuxTerminalCell, cluster: []const u8) canvas.TerminalCell {
         // explicit/default color provenance, so preserve its exact RGB.
         .underline_color = canvas.Color.rgb8(raw.underline_r, raw.underline_g, raw.underline_b),
     };
-    resolveColors(raw.flags, &result);
+    if (metadata) |source| {
+        result.fg = foreground(raw, source);
+        if (source.cell.background_color_is_default) result.bg = grid_metadata.background(source.grid, source.policy);
+        if (source.cell.underline_color_is_default) result.underline_color = null;
+    }
+    const default_background = if (metadata) |source| grid_metadata.background(source.grid, source.policy) else result.bg.?;
+    resolveColors(raw.flags, &result, default_background);
     return result;
 }
 
-fn resolveColors(flags: u32, result: *canvas.TerminalCell) void {
+fn foreground(raw: c.PhuxTerminalCell, metadata: CellMetadata) canvas.Color {
+    if (metadata.cell.foreground_kind == c.PHUX_GRID_COLOR_DEFAULT)
+        return grid_metadata.foreground(metadata.grid, metadata.policy);
+    const original = canvas.Color.rgb8(raw.foreground_r, raw.foreground_g, raw.foreground_b);
+    if (!metadata.policy.bold_as_bright or raw.flags & c.PHUX_CLIENT_CELL_BOLD == 0) return original;
+    if (metadata.cell.foreground_kind != c.PHUX_GRID_COLOR_PALETTE) return original;
+    const index = metadata.cell.foreground_palette_index;
+    // Local Palette.resolveFgRaw uses the ANSI-8 -> bright-8 mapping. The
+    // index and live palette come from libghostty, not RGB matching.
+    if (index >= 8) return original;
+    return grid_metadata.rgb(metadata.grid.palette[@as(usize, index) + 8]);
+}
+
+fn resolveColors(flags: u32, result: *canvas.TerminalCell, default_background: canvas.Color) void {
     // push_flattened_cell in phux-client-ffi does NOT apply inverse. The
     // SDK consumes final colors and has no inverse flag: swap exactly once.
     if (flags & c.PHUX_CLIENT_CELL_INVERSE != 0) {
@@ -91,13 +121,13 @@ fn resolveColors(flags: u32, result: *canvas.TerminalCell) void {
         return;
     }
     if (flags & c.PHUX_CLIENT_CELL_FAINT == 0) return;
-    // Match local Palette.resolveFg's half blend and inverse precedence.
-    // The ABI has only a resolved per-cell background, no terminal default.
-    const bg = result.bg.?;
+    // Match local Palette.resolveFg's half blend toward the terminal default,
+    // after bold-as-bright and with inverse taking precedence over faint.
+    const bg = default_background;
     result.fg = canvas.Color.rgba(
-        (result.fg.r + bg.r) / 2,
-        (result.fg.g + bg.g) / 2,
-        (result.fg.b + bg.b) / 2,
+        result.fg.r + (bg.r - result.fg.r) * 0.5,
+        result.fg.g + (bg.g - result.fg.g) * 0.5,
+        result.fg.b + (bg.b - result.fg.b) * 0.5,
         1,
     );
 }

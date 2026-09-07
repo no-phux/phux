@@ -1,0 +1,26 @@
+# GUARD remote-grid-metadata
+#
+# The 27738342 publication path copied only the v1 grid, which loses native
+# color provenance/defaults and cursor blink/wide metadata. This break routes
+# copyClient back to that existing legacy copy. The named test first checks
+# metadata from the real C client, then frees the engine and checks the owned
+# grid. Losing the companion metadata fails that assertion. This establishes
+# structural projection, not AppKit/CoreText fidelity.
+test: C grid metadata restores local color provenance and cursor semantics
+red: 2026-09-07 at b5abf52
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/presentation.zig b/src/providers/phux/presentation.zig
+index 174c148b..c6ba19f0 100644
+--- a/src/providers/phux/presentation.zig
++++ b/src/providers/phux/presentation.zig
+@@ -54,8 +54,8 @@ pub const CanvasStore = struct {
+     }
+ 
+     pub fn copyClient(store: *CanvasStore, gpa: std.mem.Allocator, client: *const c.PhuxClient, view: *const c.PhuxTerminalGridView) !void {
+-        const metadata = try grid_metadata.read(client, view);
+-        return store.copyWithMetadata(gpa, view, &metadata, .{});
++        _ = client;
++        return store.copyBorrowed(gpa, view);
+     }
+ 
+     pub fn copyWithMetadata(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: *const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {

@@ -6,6 +6,8 @@ const c = @import("abi.zig").c;
 
 const canvas = native_sdk.canvas;
 const projection = @import("cell_projection.zig");
+const grid_metadata = @import("grid_metadata.zig");
+const default_tokens: canvas.DesignTokens = .{};
 
 /// Admission is bounded independently from one frame's text budget. The
 /// painter degrades rows atomically while this store retains the complete valid
@@ -25,6 +27,10 @@ pub const CanvasStore = struct {
     cursor: ?canvas.TerminalCursor = null,
     scrollbar: canvas.TerminalScrollbar = .{},
     selection_active: bool = false,
+    background: canvas.Color = default_tokens.colors.background,
+    foreground: canvas.Color = default_tokens.colors.text,
+    cursor_color: canvas.Color = default_tokens.colors.accent,
+    selection_color: canvas.Color = default_tokens.colors.accent,
 
     pub fn deinit(store: *CanvasStore, gpa: std.mem.Allocator) void {
         store.cells.deinit(gpa);
@@ -44,7 +50,21 @@ pub const CanvasStore = struct {
     }
 
     pub fn copyBorrowed(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView) !void {
+        return store.copy(gpa, view, null, .{});
+    }
+
+    pub fn copyClient(store: *CanvasStore, gpa: std.mem.Allocator, client: *const c.PhuxClient, view: *const c.PhuxTerminalGridView) !void {
+        const metadata = try grid_metadata.read(client, view);
+        return store.copyWithMetadata(gpa, view, &metadata, .{});
+    }
+
+    pub fn copyWithMetadata(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: *const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {
+        return store.copy(gpa, view, metadata, policy);
+    }
+
+    fn copy(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: ?*const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {
         const source = try projection.validate(view, max_grid_utf8_bytes);
+        if (metadata) |meta| try grid_metadata.validate(view, meta);
         const rows: usize = view.rows;
         try store.reserve(gpa);
         try store.hyperlink_utf8.ensureTotalCapacity(gpa, source.hyperlink_bytes);
@@ -62,7 +82,12 @@ pub const CanvasStore = struct {
             const compact_start = store.utf8.items.len;
             store.utf8.appendSliceAssumeCapacity(source_cluster);
             const cluster = store.utf8.items[compact_start..][0..source_cluster.len];
-            cell.* = projection.cell(raw, cluster);
+            const cell_metadata: ?projection.CellMetadata = if (metadata) |meta| .{
+                .grid = meta,
+                .cell = meta.cells[index],
+                .policy = policy,
+            } else null;
+            cell.* = projection.project(raw, cluster, cell_metadata);
             const uri = projection.hyperlink(raw).slice(source.utf8);
             store.hyperlinks.items[index] = .{ .start = store.hyperlink_utf8.items.len, .len = uri.len };
             store.hyperlink_utf8.appendSliceAssumeCapacity(uri);
@@ -70,21 +95,29 @@ pub const CanvasStore = struct {
         }
         store.copyRows(source, view.cols);
 
-        store.cursor = if (view.cursor_visible) .{
-            .x = view.cursor_col,
-            .y = view.cursor_row,
-            .shape = switch (view.cursor_style) {
-                c.PHUX_CURSOR_BAR => .bar,
-                c.PHUX_CURSOR_UNDERLINE => .underline,
-                c.PHUX_CURSOR_BLOCK_HOLLOW => .block_hollow,
-                else => .block,
-            },
-        } else null;
+        store.copyAppearance(view, metadata, policy);
         store.scrollbar = .{
             .offset = saturatingU32(view.history_viewport_offset),
             .len = saturatingU32(view.history_visible_rows),
             .total = saturatingU32(view.history_total_rows),
         };
+    }
+
+    fn copyAppearance(store: *CanvasStore, view: *const c.PhuxTerminalGridView, metadata: ?*const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) void {
+        store.background = default_tokens.colors.background;
+        store.foreground = default_tokens.colors.text;
+        store.cursor_color = policy.cursor_fallback;
+        store.selection_color = policy.selection_color;
+        store.cursor = cursor(view);
+        const meta = metadata orelse return;
+        store.background = grid_metadata.background(meta, policy);
+        store.foreground = grid_metadata.foreground(meta, policy);
+        if (meta.has_cursor_color) store.cursor_color = grid_metadata.rgb(meta.cursor_color);
+        if (store.cursor) |*value| {
+            value.blinking = meta.cursor_blinking;
+            value.wide = meta.cursor_wide;
+            if (meta.cursor_at_wide_tail) value.x -= 1;
+        }
     }
 
     fn copyRows(store: *CanvasStore, source: projection.Source, cols: usize) void {
@@ -111,10 +144,10 @@ pub const CanvasStore = struct {
     pub fn grid(store: *const CanvasStore, running: bool) canvas.TerminalGrid {
         return .{
             .rows = store.rows.items,
-            .background = canvas.Color.rgb8(13, 17, 23),
-            .foreground = canvas.Color.rgb8(230, 237, 243),
-            .cursor_color = canvas.Color.rgb8(88, 166, 255),
-            .selection_color = canvas.Color.rgb8(56, 139, 253),
+            .background = store.background,
+            .foreground = store.foreground,
+            .cursor_color = store.cursor_color,
+            .selection_color = store.selection_color,
             .cursor = store.cursor,
             .running = running,
             .scrollbar = store.scrollbar,
@@ -124,12 +157,26 @@ pub const CanvasStore = struct {
     }
 };
 
+fn cursor(view: *const c.PhuxTerminalGridView) ?canvas.TerminalCursor {
+    return if (view.cursor_visible) .{
+        .x = view.cursor_col,
+        .y = view.cursor_row,
+        .shape = switch (view.cursor_style) {
+            c.PHUX_CURSOR_BAR => .bar,
+            c.PHUX_CURSOR_UNDERLINE => .underline,
+            c.PHUX_CURSOR_BLOCK_HOLLOW => .block_hollow,
+            else => .block,
+        },
+    } else null;
+}
+
 fn saturatingU32(value: u64) u32 {
     return @intCast(@min(value, @as(u64, std.math.maxInt(u32))));
 }
 
 test {
     _ = @import("presentation_tests.zig");
+    _ = @import("grid_metadata_tests.zig");
 }
 
 test "dense text is compacted from a hyperlink-heavy remote UTF-8 arena" {

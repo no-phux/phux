@@ -641,6 +641,41 @@ typedef struct PhuxTerminalGridView {
     PhuxDocumentAnchor top_anchor;
 } PhuxTerminalGridView;
 
+/* Additive metadata: the v1 PhuxTerminalGridView/PhuxTerminalCell layouts stay
+ * unchanged. Color provenance permits renderer policy (such as ANSI-8
+ * bold-as-bright) without guessing the palette index from resolved RGB. */
+typedef enum PhuxGridColorKind {
+    PHUX_GRID_COLOR_DEFAULT = 0,
+    PHUX_GRID_COLOR_PALETTE = 1,
+    PHUX_GRID_COLOR_RGB = 2
+} PhuxGridColorKind;
+
+typedef struct PhuxGridRgb {
+    uint8_t r, g, b;
+} PhuxGridRgb;
+
+typedef struct PhuxGridCellMetadata {
+    uint8_t foreground_kind;
+    uint8_t foreground_palette_index; /* meaningful only for PALETTE */
+    bool underline_color_is_default;
+    bool background_color_is_default;
+} PhuxGridCellMetadata;
+
+typedef struct PhuxTerminalGridMetadata {
+    size_t size; /* initialize to sizeof(PhuxTerminalGridMetadata) */
+    uint32_t version; /* initialize to PHUX_CLIENT_ABI_VERSION */
+    uint64_t stream_id, bootstrap_id, last_seq, document_revision;
+    uint16_t cols, rows;
+    PhuxGridRgb foreground, background, cursor_color;
+    bool has_foreground, has_background; /* false: configured renderer fallback */
+    bool reverse_colors; /* DECSCNM; effective colors above already swapped */
+    bool has_cursor_color;
+    bool cursor_blinking, cursor_wide, cursor_at_wide_tail;
+    PhuxGridRgb palette[256];
+    const PhuxGridCellMetadata *cells; /* row-major, same grid/cell count */
+    size_t cell_count;
+} PhuxTerminalGridMetadata;
+
 typedef struct PhuxKeyEvent {
     size_t size;
     uint32_t version;
@@ -727,6 +762,14 @@ size_t phux_client_effect_count(const PhuxClient *client);
 PhuxClientResult phux_client_effect_get(const PhuxClient *client, size_t index, PhuxClientEffect *out_effect);
 PhuxClientResult phux_client_effect_clear(PhuxClient *client);
 PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridView *out_view);
+
+/* Read-only companion to terminal_grid. Call immediately after that query,
+ * before ANY mutable client call; both borrows remain valid. Returns
+ * INVALID_STATE when there is no current grid. Initialize size/version first.
+ * Defaults/palette entries come from the same libghostty render pass. Missing
+ * default colors use the renderer's configured fallback (also swapped under
+ * reverse_colors); missing cursor color uses its configured cursor fallback. */
+PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
 /**
  * Reports whether the published Ghostty terminal has DEC mouse tracking mode
  * 9, 1000, 1002, or 1003 enabled. Returns PHUX_CLIENT_INVALID_STATE before

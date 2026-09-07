@@ -5,17 +5,17 @@
 # omission. The C-record test demands the SDK's real .block_hollow shape;
 # this guards structural projection, not an on-glass cursor comparison.
 test: remote cursor projection retains ABI-provided hollow shape
-red: 2026-09-07 at e2cd9c4
+red: 2026-09-07 at b5abf52
 build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/providers/phux/presentation.zig b/src/providers/phux/presentation.zig
 index b7152e0e..ade012e0 100644
 --- a/src/providers/phux/presentation.zig
 +++ b/src/providers/phux/presentation.zig
-@@ -76,7 +76,6 @@ pub const CanvasStore = struct {
-             .shape = switch (view.cursor_style) {
-                 c.PHUX_CURSOR_BAR => .bar,
-                 c.PHUX_CURSOR_UNDERLINE => .underline,
--                c.PHUX_CURSOR_BLOCK_HOLLOW => .block_hollow,
-                 else => .block,
-             },
-         } else null;
+@@ -164,7 +164,6 @@ fn cursor(view: *const c.PhuxTerminalGridView) ?canvas.TerminalCursor {
+         .shape = switch (view.cursor_style) {
+             c.PHUX_CURSOR_BAR => .bar,
+             c.PHUX_CURSOR_UNDERLINE => .underline,
+-            c.PHUX_CURSOR_BLOCK_HOLLOW => .block_hollow,
+             else => .block,
+         },
+     } else null;

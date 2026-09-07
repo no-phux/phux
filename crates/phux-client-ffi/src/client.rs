@@ -22,6 +22,7 @@ use phux_protocol::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::error::BridgeError;
+use crate::grid_metadata::{GridMetadataCache, PhuxGridCellMetadata, cell_metadata};
 use crate::types::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
     CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, OwnedEffect, PhuxBytes,
@@ -86,6 +87,7 @@ pub(crate) struct RenderCache {
     pub utf8: Vec<u8>,
     pub terminal_host: Vec<u8>,
     pub view: PhuxTerminalGridView,
+    pub metadata: GridMetadataCache,
 }
 
 impl RenderCache {
@@ -100,6 +102,7 @@ impl RenderCache {
             utf8: Vec::new(),
             terminal_host: Vec::new(),
             view: PhuxTerminalGridView::default(),
+            metadata: GridMetadataCache::default(),
         })
     }
 
@@ -108,6 +111,7 @@ impl RenderCache {
     fn populate_grid(
         &mut self,
         terminal: &libghostty_vt::Terminal<'static, 'static>,
+        inputs: &GridViewInputs,
     ) -> Result<(u16, u16, CursorView), BridgeError> {
         let snapshot = self.state.update(terminal).map_err(BridgeError::ghostty)?;
         let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
@@ -115,6 +119,7 @@ impl RenderCache {
         let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
         self.grid_cells.clear();
         self.utf8.clear();
+        self.metadata.cells.clear();
         self.grid_cells
             .reserve(usize::from(cols) * usize::from(rows));
         fill_grid_cells(
@@ -128,10 +133,26 @@ impl RenderCache {
             &mut GridSink {
                 cells: &mut self.grid_cells,
                 utf8: &mut self.utf8,
+                metadata: &mut self.metadata.cells,
             },
         )?;
         ensure_dense_viewport(self.grid_cells.len(), cols, rows)?;
-        Ok((cols, rows, read_cursor_view(&snapshot)?))
+        let cursor = read_cursor_view(&snapshot)?;
+        let identity = PhuxTerminalGridView {
+            stream_id: inputs.key.stream_id.get(),
+            bootstrap_id: inputs.key.bootstrap_id.get(),
+            last_seq: inputs.last_seq,
+            document_revision: inputs.document_revision,
+            cols,
+            rows,
+            cursor_col: cursor.col,
+            cursor_row: cursor.row,
+            cursor_visible: cursor.visible,
+            ..PhuxTerminalGridView::default()
+        };
+        self.metadata
+            .publish(&snapshot, terminal, &colors, &identity, &self.grid_cells)?;
+        Ok((cols, rows, cursor))
     }
 }
 
@@ -252,6 +273,9 @@ impl Client {
     }
 
     pub(crate) fn reset_borrows(&mut self) {
+        for cache in self.render.values_mut() {
+            cache.metadata.valid = false;
+        }
         self.selection_buf.clear();
         self.search_results.clear();
     }
@@ -778,7 +802,7 @@ impl Client {
         // SAFETY: terminal is owned by session; render cache is disjoint bridge state and no
         // session mutation occurs until this method returns.
         let terminal = unsafe { &*terminal };
-        let (cols, rows, cursor) = cache.populate_grid(terminal)?;
+        let (cols, rows, cursor) = cache.populate_grid(terminal, inputs)?;
         let scrollbar = terminal.scrollbar().map_err(BridgeError::ghostty)?;
         let history = history_counters(inputs.history.as_ref());
         cache.terminal_host.clear();
@@ -1055,6 +1079,7 @@ struct CellContext<'a> {
 struct GridSink<'a> {
     cells: &'a mut Vec<PhuxTerminalCell>,
     utf8: &'a mut Vec<u8>,
+    metadata: &'a mut Vec<PhuxGridCellMetadata>,
 }
 
 /// Reusable per-cell scratch so flattening allocates at most once per grapheme
@@ -1153,7 +1178,7 @@ fn push_flattened_cell(
     let bg = cell_background(raw, content_tag, style, colors)?;
     let underline_color = resolve_color(style.underline_color, fg, &colors.palette);
     let flags = cell_flags(style, cell, raw, has_hyperlink)?;
-    sink.cells.push(PhuxTerminalCell {
+    let cell_record = PhuxTerminalCell {
         utf8_offset: u32::try_from(start)
             .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?,
         utf8_len: u16::try_from(cell_utf8_len)
@@ -1175,7 +1200,9 @@ fn push_flattened_cell(
         background_b: bg.b,
         underline: style.underline as u8,
         reserved: 0,
-    });
+    };
+    sink.metadata.push(cell_metadata(style, content_tag));
+    sink.cells.push(cell_record);
     Ok(())
 }
 

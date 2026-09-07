@@ -899,7 +899,7 @@ pub const Host = struct {
             releaseTopAnchor(host.client, id, view.top_anchor);
             return error.InvalidIdentity;
         }
-        terminal.canvas.copyBorrowed(host.gpa, view) catch |err| {
+        terminal.canvas.copyClient(host.gpa, host.client, view) catch |err| {
             releaseTopAnchor(host.client, id, view.top_anchor);
             return err;
         };

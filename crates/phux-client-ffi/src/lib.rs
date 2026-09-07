@@ -7,6 +7,7 @@ compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 mod client;
 mod error;
+mod grid_metadata;
 mod operations;
 mod types;
 
@@ -29,6 +30,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
+pub use grid_metadata::*;
 pub use operations::*;
 pub use types::*;
 
