@@ -1702,6 +1702,7 @@ test "shipping durable split does not follow a different selected tab" {
     try cockpit.durable_tests.splitDestination();
 }
 
+// GUARD: ts-durable-window-epoch
 test "shipping durable completion cannot acquire a reopened window slot" {
     try cockpit.durable_tests.windowEpoch();
 }
