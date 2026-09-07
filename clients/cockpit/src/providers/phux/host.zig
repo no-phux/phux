@@ -921,6 +921,10 @@ pub const Host = struct {
     }
 
     fn stageOutgoing(host: *Host) !void {
+        // A worker may already have taken an earlier copy when a later one
+        // fails. Retiring this connection clears both queues and prevents any
+        // caller from replaying the retained FFI prefix after allocator recovery.
+        errdefer host.disconnect();
         if (host.bridge.incoming.takeDisconnect() != null) {
             host.disconnect();
             return error.Protocol;
@@ -1540,4 +1544,95 @@ test "terminal admission preflight includes pending spawns and validates before 
         count += 1;
     }
     try std.testing.expectEqual(max_terminals - 1, count);
+}
+
+const PartialStagingCaller = enum { key, paste, publication };
+
+fn invokePartialStagingCaller(host: *Host, owner_value: provider.ReplicaOwner, caller: PartialStagingCaller) !void {
+    switch (caller) {
+        .key => try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(c.PHUX_KEY_A), .text = "a" }),
+        .paste => try host.sendPaste(owner_value, "partial staging paste", true),
+        .publication => {
+            const id = try host.currentCId(owner_value);
+            try resultError(c.phux_client_send_focus(host.client, &id, false));
+            try host.capturePublishStage();
+        },
+    }
+}
+
+fn expectPartialStagingCannotReplay(caller: PartialStagingCaller) !void {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const owner_value = host.terminals.items[0].owner();
+    const epoch = host.connectionEpoch();
+
+    // Emulate the worker handing two creation requests to the socket. One
+    // reply is already in the C client; the other request has no known outcome.
+    const accepted_request = try host.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    const accepted_frame = bridge.outgoing.take().?;
+    bridge.outgoing.release(accepted_frame);
+    const reply = try test_support.readFixture("spawn-local.bin");
+    defer std.testing.allocator.free(reply);
+    try resultError(c.phux_client_feed_frame(host.client, reply.ptr, reply.len));
+    const pending_request = try host.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    const pending_frame = bridge.outgoing.take().?;
+    bridge.outgoing.release(pending_frame);
+
+    // Queue one real input frame before the caller queues the second. Reserve
+    // queue metadata so allocation 1 succeeds for the prefix payload and
+    // allocation 2 fails for the next payload, independent of array growth.
+    const id = try host.currentCId(owner_value);
+    try resultError(c.phux_client_send_focus(host.client, &id, true));
+    var prefix: c.PhuxBytes = undefined;
+    try resultError(c.phux_client_outgoing_get(host.client, 0, &prefix));
+    const prefix_len = prefix.len;
+    try bridge.outgoing.frames.ensureTotalCapacity(std.testing.allocator, transport.max_queued_frames);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    bridge.outgoing.gpa = failing.allocator();
+    defer bridge.outgoing.gpa = std.testing.allocator;
+    try std.testing.expectError(error.OutOfMemory, invokePartialStagingCaller(host, owner_value, caller));
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 1), failing.allocations);
+    try std.testing.expectEqual(prefix_len, failing.allocated_bytes);
+
+    // A worker can consume the staged prefix and the queue-overflow signal.
+    // Recovering the allocator must not allow that same prefix to be staged
+    // again from the C client. This retry reproduces the old replay path.
+    if (bridge.outgoing.take()) |frame| bridge.outgoing.release(frame);
+    _ = bridge.outgoing.takeDisconnect();
+    bridge.outgoing.gpa = std.testing.allocator;
+    host.stageOutgoing() catch {};
+    try std.testing.expect(!bridge.outgoing.hasPending());
+    try std.testing.expectEqual(@as(usize, 0), c.phux_client_outgoing_count(host.client));
+    try std.testing.expectError(error.InvalidState, host.stageOutgoing());
+    try std.testing.expectError(error.InvalidState, invokePartialStagingCaller(host, owner_value, caller));
+    try std.testing.expectEqual(State.detached, host.state());
+    try std.testing.expectEqual(provider.Phase.frozen, host.presentation(owner_value.terminal_ref).?.phase);
+
+    const accepted = host.takeOperationResult().?;
+    try std.testing.expectEqual(accepted_request, accepted.request_id);
+    try std.testing.expectEqual(epoch, accepted.connection_epoch);
+    try std.testing.expectEqual(operations.types.Status.success, accepted.status);
+    const unknown = host.takeOperationResult().?;
+    try std.testing.expectEqual(pending_request, unknown.request_id);
+    try std.testing.expectEqual(epoch, unknown.connection_epoch);
+    try std.testing.expectEqual(operations.types.Status.unknown_outcome, unknown.status);
+    try std.testing.expect(host.takeOperationResult() == null);
+    try std.testing.expectEqual(@as(usize, 0), c.phux_client_operation_count(host.client));
+}
+
+// GUARD: partial-outgoing-no-replay
+test "key partial outgoing staging cannot replay after allocator recovery" {
+    try expectPartialStagingCannotReplay(.key);
+}
+
+test "paste partial outgoing staging cannot replay after allocator recovery" {
+    try expectPartialStagingCannotReplay(.paste);
+}
+
+test "publication partial outgoing staging cannot replay after allocator recovery" {
+    try expectPartialStagingCannotReplay(.publication);
 }
