@@ -141,35 +141,38 @@ impl ColorQueryScanner {
         // [`osc133::Osc133Scanner::feed`]: in `Ground` the machine reacts to
         // exactly two bytes (`ESC` and 8-bit `OSC`), so a chunk of plain
         // output is a long run of no-ops that used to be stepped one match
-        // arm at a time. Resuming mid-OSC still walks every byte, because
-        // those bytes are the OSC payload.
-        let bytes = if matches!(self.state, ColorQueryState::Ground) {
-            let Some(start) = memchr::memchr2(b'\x1b', 0x9d, bytes) else {
-                return;
-            };
-            &bytes[start..]
-        } else {
-            bytes
-        };
-        for byte in bytes {
+        // arm at a time. The skip re-arms on every return to `Ground`
+        // (phux-l96p.13), so the plain run AFTER a sequence is skipped too.
+        // Resuming mid-OSC still walks every byte, because those bytes are
+        // the OSC payload.
+        let mut index = 0;
+        while index < bytes.len() {
+            if matches!(self.state, ColorQueryState::Ground) {
+                let Some(start) = memchr::memchr2(b'\x1b', 0x9d, &bytes[index..]) else {
+                    return;
+                };
+                index += start;
+            }
+            let byte = bytes[index];
+            index += 1;
             match self.state {
-                ColorQueryState::Ground => match *byte {
+                ColorQueryState::Ground => match byte {
                     b'\x1b' => self.state = ColorQueryState::Escape,
                     0x9d => self.start_osc(),
                     _ => {}
                 },
-                ColorQueryState::Escape => match *byte {
+                ColorQueryState::Escape => match byte {
                     b']' => self.start_osc(),
                     b'\x1b' => {}
                     _ => self.state = ColorQueryState::Ground,
                 },
-                ColorQueryState::Osc => match *byte {
+                ColorQueryState::Osc => match byte {
                     b'\x07' | 0x9c => self.finish_osc(&mut on_query),
                     b'\x1b' => self.state = ColorQueryState::OscEscape,
                     value => self.push_payload(value),
                 },
                 ColorQueryState::OscEscape => {
-                    if *byte == b'\\' {
+                    if byte == b'\\' {
                         self.finish_osc(&mut on_query);
                     } else {
                         // An ESC not followed by `\\` is part of an OSC we do
@@ -209,6 +212,45 @@ impl ColorQueryScanner {
         self.state = ColorQueryState::Ground;
         self.len = 0;
         self.valid = false;
+    }
+}
+
+#[cfg(test)]
+mod color_query_tests {
+    use super::ColorQueryScanner;
+
+    fn queries(chunks: &[&[u8]]) -> Vec<u8> {
+        let mut scanner = ColorQueryScanner::default();
+        let mut seen = Vec::new();
+        for chunk in chunks {
+            scanner.feed(chunk, |selector| seen.push(selector));
+        }
+        seen
+    }
+
+    #[test]
+    fn recognises_both_query_forms_and_split_chunks() {
+        assert_eq!(queries(&[b"\x1b]10;?\x07"]), vec![10]);
+        assert_eq!(queries(&[b"\x9d11;?\x9c"]), vec![11]);
+        assert_eq!(queries(&[b"\x1b]1", b"1;", b"?\x1b\\"]), vec![11]);
+        assert_eq!(
+            queries(&[b"\x1b]10;#ff0000\x07\x1b]12;?\x07"]),
+            Vec::<u8>::new()
+        );
+    }
+
+    /// The `Ground` skip re-arms after each sequence (phux-l96p.13): two
+    /// queries separated by long plain runs are both answered, with the runs
+    /// skipped rather than stepped.
+    #[test]
+    fn the_skip_rearms_after_each_return_to_ground() {
+        let mut chunk = vec![b'x'; 100_000];
+        chunk.extend_from_slice(b"\x1b]10;?\x07");
+        chunk.extend(std::iter::repeat_n(b'y', 100_000));
+        chunk.extend_from_slice(b"\x1b[0m");
+        chunk.extend(std::iter::repeat_n(b'z', 100_000));
+        chunk.extend_from_slice(b"\x1b]11;?\x1b\\");
+        assert_eq!(queries(&[&chunk]), vec![10, 11]);
     }
 }
 

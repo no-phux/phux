@@ -91,23 +91,29 @@ impl Osc133Scanner {
         // bytes. `memchr` is the SIMD form of the identical search; the state
         // machine below is entered unchanged from wherever it lands.
         //
-        // The skip applies from `Ground` only. A scan resumed mid-OSC still
-        // walks every byte, because those bytes are the OSC payload and a
-        // control-free chunk can be the middle of a mark.
-        if matches!(self.state, State::Ground) {
-            let Some(escape) = memchr::memchr(0x1b, chunk) else {
-                return marks;
-            };
-            self.feed_bytes(&chunk[escape..], &mut marks);
-            return marks;
-        }
+        // The skip applies from `Ground` only, and it re-arms every time the
+        // machine returns to `Ground` mid-chunk (phux-l96p.13): a chunk
+        // shaped `[100 KB plain][mark][100 KB plain]` skips both runs, not
+        // just the first. A scan resumed mid-OSC still walks every byte,
+        // because those bytes are the OSC payload and a control-free chunk
+        // can be the middle of a mark.
         self.feed_bytes(chunk, &mut marks);
         marks
     }
 
-    /// The state machine proper: one pass over `chunk` from the current state.
+    /// The state machine proper: one pass over `chunk` from the current
+    /// state, index-based so the `Ground` skip can jump ahead.
     fn feed_bytes(&mut self, chunk: &[u8], marks: &mut Vec<OscMark>) {
-        for &byte in chunk {
+        let mut index = 0;
+        while index < chunk.len() {
+            if matches!(self.state, State::Ground) {
+                let Some(escape) = memchr::memchr(0x1b, &chunk[index..]) else {
+                    return;
+                };
+                index += escape;
+            }
+            let byte = chunk[index];
+            index += 1;
             // A byte may need re-processing after an aborted OSC (the
             // aborting byte is itself the start of something new), hence
             // the small loop.
@@ -301,6 +307,33 @@ mod tests {
         let mut chunk = vec![b'x'; 100_000];
         chunk.extend_from_slice(b"\x1b]133;C\x07");
         assert_eq!(scan(&[&chunk]), vec![OscMark::CommandStart]);
+    }
+
+    /// The skip re-arms after every return to `Ground` (phux-l96p.13): a
+    /// chunk with two marks separated by a long plain run finds both, and
+    /// the run between them is skipped rather than stepped. The state after
+    /// the chunk is `Ground` again, so the next chunk skips too.
+    #[test]
+    fn the_skip_rearms_after_each_return_to_ground() {
+        let mut chunk = vec![b'x'; 100_000];
+        chunk.extend_from_slice(b"\x1b]133;C\x07");
+        chunk.extend(std::iter::repeat_n(b'y', 100_000));
+        chunk.extend_from_slice(b"\x1b]133;D;0\x07");
+        chunk.extend(std::iter::repeat_n(b'z', 100_000));
+        let mut scanner = Osc133Scanner::new();
+        assert_eq!(
+            scanner.feed(&chunk),
+            vec![
+                OscMark::CommandStart,
+                OscMark::CommandEnd { exit_code: Some(0) }
+            ]
+        );
+        assert_eq!(scanner.state, State::Ground);
+        // A CSI between plain runs (Escape -> Ground) re-arms it as well.
+        assert_eq!(
+            scan(&[b"aaaa\x1b[31mbbbb\x1b]133;C\x07cccc"]),
+            vec![OscMark::CommandStart]
+        );
     }
 
     /// A chunk with no `ESC` while in `Ground` yields nothing and leaves the
