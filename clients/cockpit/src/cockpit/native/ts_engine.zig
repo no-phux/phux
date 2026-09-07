@@ -21,6 +21,8 @@ const layout = @import("../layout.zig");
 const grid = @import("../../terminal/grid.zig");
 const vt = @import("ghostty-vt");
 const terminal_runtime = @import("../terminal_runtime.zig");
+const interaction = @import("../terminal_interaction.zig");
+const lifecycle = @import("../workspace_lifecycle.zig");
 const pointer_input = @import("../pointer_input.zig");
 const update_module = @import("../update.zig");
 const provider_contract = @import("provider_contract");
@@ -54,6 +56,9 @@ pub const NoShells = struct {
     }
     pub fn ptyResize(_: *const NoShells, _: u64, _: u16, _: u16) void {}
     pub fn ptyKill(_: *const NoShells, _: u64) void {}
+    pub fn cancel(_: *const NoShells, _: u64) void {}
+    pub fn closeWindow(_: *const NoShells, _: []const u8) void {}
+    pub fn quitApp(_: *const NoShells) void {}
     pub fn showNotification(_: *const NoShells, _: anytype) void {}
     pub fn writeClipboard(_: *const NoShells, _: anytype) void {}
     pub fn readClipboard(_: *const NoShells, _: anytype) void {}
@@ -61,11 +66,6 @@ pub const NoShells = struct {
     pub fn toggleFullscreenWindow(_: *const NoShells, _: []const u8) void {}
     pub fn minimizeWindow(_: *const NoShells, _: []const u8) void {}
 };
-
-/// Where a clipboard read is going once it lands, mirroring update.zig's
-/// `paste_target`: into the focused pane as a bracketed paste, or into the
-/// open search needle.
-const PasteTarget = enum { pane, search_needle };
 
 pub const PointerOutcome = enum { ignored, consumed, geometry_changed };
 
@@ -97,10 +97,6 @@ pub const Engine = struct {
     last_runs: ts_snapshot.WindowRuns = [_]ts_snapshot.TabRun{.{}} ** (1 + model_module.max_secondary_windows),
     /// The config file's state as of the last `probe_config` intent.
     config_probe: ts_snapshot.ConfigProbe = .{},
-    /// The pane a clipboard read was requested for, resolved when the result
-    /// lands; the model's own paste flags carry the rest.
-    paste_ref: ?TerminalRef = null,
-    paste_target: PasteTarget = .pane,
     /// Click coalescing for raw surface input, which carries no click count
     /// of its own: a down within the double-click window and radius of the
     /// last one counts up, the way the routed widget path counts for the
@@ -109,6 +105,7 @@ pub const Engine = struct {
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
     split_drag: ?SplitDrag = null,
+    remote_focus_owner: ?support.ReplicaOwner = null,
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -230,6 +227,7 @@ pub const Engine = struct {
     /// identities into Cockpit topology. The bool says the snapshot-visible
     /// model moved and therefore needs one ordered invalidation.
     pub fn onPhuxChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
+        defer self.syncRemoteFocus();
         if (event.key != support.phux_channel_key) return false;
         const model = self.model;
         const remote = model.phux() orelse return false;
@@ -386,6 +384,7 @@ pub const Engine = struct {
     /// a core that sent a stale intent must learn that it is stale. `fx`
     /// receives the pty consequences (a closed tab's shells are killed).
     pub fn applyIntent(self: *Engine, bytes: []const u8, fx: anytype) bool {
+        defer self.syncRemoteFocus();
         self.sequence +%= 1;
         const intent = protocol.decodeIntent(bytes) orelse return self.refuse();
         if (intent.expected_revision != self.revision) return self.refuse();
@@ -445,21 +444,9 @@ pub const Engine = struct {
         return true;
     }
 
-    /// The last tab is never closed here: in the shipping app that closes
-    /// the window, and window lifecycle is not this seam's to decide.
+    /// Closing the last leaf retires its window; remote execution stays live.
     fn closeTab(self: *Engine, index: u8, fx: anytype) bool {
-        const model = self.model;
-        const workspace = model.wsConst();
-        if (workspace.tab_count <= 1) return false;
-        const tree = workspace.treeConst(index) orelse return false;
-        var refs: [layout.max_panes]TerminalRef = undefined;
-        const count = tree.terminals(&refs);
-        model.dropTab(index);
-        for (refs[0..count]) |id| {
-            if (model.provider.terminal(id)) |pane| fx.ptyKill(pane.pty_key);
-            _ = model.provider.destroyTerminal(id);
-        }
-        return true;
+        return lifecycle.closeTab(self.model, fx, self.model.active_window, index);
     }
 
     /// The settings surface's Save: mirrors update.zig's .settings_commit,
@@ -530,26 +517,9 @@ pub const Engine = struct {
         return true;
     }
 
-    /// update.zig's closeWholeWindow for a secondary window: every tab's
-    /// shells are killed and its panes destroyed, then the slot retires. The
-    /// main window is not this seam's to close; that is the app's quit.
+    /// Local processes end; coordinator-owned terminals detach presentation.
     fn closeWindow(self: *Engine, index: u8, fx: anytype) bool {
-        const model = self.model;
-        if (index == 0 or !model.windowOpen(index)) return false;
-        while (model.wsAt(index)) |workspace| {
-            if (workspace.tab_count == 0) break;
-            const tree = workspace.treeConst(0) orelse break;
-            var refs: [layout.max_panes]TerminalRef = undefined;
-            const count = tree.terminals(&refs);
-            workspace.dropTab(0);
-            for (refs[0..count]) |id| {
-                if (model.provider.terminal(id)) |pane| fx.ptyKill(pane.pty_key);
-                _ = model.provider.destroyTerminal(id);
-            }
-        }
-        model.closeWindow(index);
-        if (model.active_window == index) model.active_window = 0;
-        return true;
+        return lifecycle.closeWindow(self.model, fx, index);
     }
 
     fn focusWindow(self: *Engine, index: u8) bool {
@@ -566,45 +536,59 @@ pub const Engine = struct {
     fn nativeCommand(self: *Engine, raw: u8, fx: anytype) bool {
         const command = protocol.decodeNativeCommand(raw) orelse return false;
         const model = self.model;
+        const changed = switch (command) {
+            .previous_tab, .next_tab, .move_tab_left, .move_tab_right => self.tabCommand(command),
+            .close_focused_pane => self.closeFocusedPane(fx),
+            .split_right => self.splitFocusedPane(.horizontal),
+            .split_down => self.splitFocusedPane(.vertical),
+            .previous_pane, .next_pane, .focus_left, .focus_right, .focus_up, .focus_down => self.paneFocusCommand(command),
+            .copy, .paste => self.clipboardCommand(command, fx),
+            .select_all, .clear, .find, .find_next, .find_previous => self.localPresentationCommand(command, fx),
+            .font_larger, .font_smaller, .font_reset, .fullscreen, .minimize => self.displayCommand(command, fx),
+        };
+        if (changed) pointer_input.endAllCaptures(model, fx);
+        return changed;
+    }
+
+    fn tabCommand(self: *Engine, command: protocol.NativeCommand) bool {
+        const model = self.model;
+        const workspace = model.ws();
         switch (command) {
             .previous_tab, .next_tab => {
-                const workspace = model.ws();
                 if (workspace.tab_count < 2) return false;
                 const delta: i32 = if (command == .next_tab) 1 else -1;
                 const count: i32 = @intCast(workspace.tab_count);
                 const selected: i32 = @intCast(workspace.selected_tab);
                 workspace.selected_tab = @intCast(@mod(selected + delta, count));
             },
-            .close_focused_pane => return self.closeFocusedPane(fx),
-            .split_right => return self.splitFocusedPane(.horizontal),
-            .split_down => return self.splitFocusedPane(.vertical),
-            .previous_pane, .next_pane => {
-                const tree = model.selectedTree() orelse return false;
-                const next = tree.cycleFocus(if (command == .next_pane) 1 else -1) orelse return false;
-                if (next == tree.focus) return false;
-                tree.focus = next;
-            },
             .move_tab_left, .move_tab_right => {
-                const workspace = model.wsConst();
                 const terminal = workspace.tabTerminal(workspace.selected_tab) orelse return false;
                 if (!model.moveTerminal(terminal, if (command == .move_tab_right) 1 else -1)) return false;
             },
+            else => unreachable,
+        }
+        return true;
+    }
+
+    fn clipboardCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
+        const model = self.model;
+        const ref = model.focusedTerminalRef() orelse return false;
+        switch (command) {
+            .copy => interaction.copy(model, fx, ref),
+            .paste => interaction.requestPaste(model, fx, ref),
+            else => unreachable,
+        }
+        return true;
+    }
+
+    fn localPresentationCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
+        const pane = self.focusedPane() orelse return false;
+        switch (command) {
             .select_all => {
-                const pane = self.focusedPane() orelse return false;
                 if (!pane.session.selectAllHistory()) return false;
                 pane.selecting = false;
             },
-            .copy => {
-                const pane = self.focusedPane() orelse return false;
-                if (!pane.selecting and !pane.session.selectionActive()) return false;
-                self.copySelection(fx, pane);
-            },
-            .paste => {
-                const pane = self.focusedPane() orelse return false;
-                self.requestPaste(fx, pane, .pane);
-            },
             .clear => {
-                const pane = self.focusedPane() orelse return false;
                 pane.selecting = false;
                 pane.session.clearSelection();
                 terminal_runtime.feedOutput(pane, fx, "\x1b[H\x1b[2J\x1b[3J");
@@ -613,7 +597,6 @@ pub const Engine = struct {
                 terminal_runtime.moveResponsesToOutbound(pane, fx);
             },
             .find => {
-                const pane = self.focusedPane() orelse return false;
                 if (pane.selecting) {
                     pane.selecting = false;
                     pane.session.clearSelection();
@@ -621,37 +604,56 @@ pub const Engine = struct {
                 pane.session.searchOpen();
             },
             .find_next, .find_previous => {
-                const pane = self.focusedPane() orelse return false;
                 _ = pane.session.searchStep(command == .find_next);
             },
+            else => unreachable,
+        }
+        return true;
+    }
+
+    fn displayCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
+        const model = self.model;
+        switch (command) {
             .font_larger => return model.stepFontSize(1),
             .font_smaller => return model.stepFontSize(-1),
             .font_reset => return model.resetFontSize(),
-            .focus_left, .focus_right, .focus_up, .focus_down => {
-                const tree = model.selectedTree() orelse return false;
-                const workspace = model.wsConst();
-                const chrome = projection.workspaceChromeIn(model, workspace, workspace.surface_size);
-                const direction: layout.Direction = switch (command) {
-                    .focus_left => .left,
-                    .focus_right => .right,
-                    .focus_up => .up,
-                    .focus_down => .down,
-                    else => unreachable,
-                };
-                const next = tree.focusDirection(
-                    chrome.content,
-                    projection.split_divider_width,
-                    projection.split_pane_min_width,
-                    projection.split_pane_min_height,
-                    direction,
-                ) orelse return false;
-                if (next == tree.focus) return false;
-                tree.focus = next;
-            },
             .fullscreen => fx.toggleFullscreenWindow(scene.windowLabelFor(model.active_window)),
             .minimize => fx.minimizeWindow(scene.windowLabelFor(model.active_window)),
+            else => unreachable,
         }
-        pointer_input.endAllCaptures(model, fx);
+        return true;
+    }
+
+    fn paneFocusCommand(self: *Engine, command: protocol.NativeCommand) bool {
+        const model = self.model;
+        const tree = model.selectedTree() orelse return false;
+        const next = switch (command) {
+            .previous_pane, .next_pane => tree.cycleFocus(if (command == .next_pane) 1 else -1),
+            .focus_left, .focus_right, .focus_up, .focus_down => {
+                return self.focusDirection(command);
+            },
+            else => unreachable,
+        } orelse return false;
+        if (next == tree.focus) return false;
+        tree.focus = next;
+        return true;
+    }
+
+    fn focusDirection(self: *Engine, command: protocol.NativeCommand) bool {
+        const model = self.model;
+        const tree = model.selectedTree() orelse return false;
+        const workspace = model.wsConst();
+        const chrome = projection.workspaceChromeIn(model, workspace, workspace.surface_size);
+        const direction: layout.Direction = switch (command) {
+            .focus_left => .left,
+            .focus_right => .right,
+            .focus_up => .up,
+            .focus_down => .down,
+            else => unreachable,
+        };
+        const next = tree.focusDirection(chrome.content, projection.split_divider_width, projection.split_pane_min_width, projection.split_pane_min_height, direction) orelse return false;
+        if (next == tree.focus) return false;
+        tree.focus = next;
         return true;
     }
 
@@ -682,21 +684,8 @@ pub const Engine = struct {
     }
 
     fn closeFocusedPane(self: *Engine, fx: anytype) bool {
-        const model = self.model;
-        const workspace = model.ws();
-        const tree = workspace.selectedTree() orelse return false;
-        const terminal = tree.focusedTerminal() orelse return false;
-        const pane = model.provider.terminal(terminal) orelse return false;
-        const pty_key = pane.pty_key;
-        const had_live_pty = pane.phase == .starting or pane.phase == .live;
-        _ = tree.closeTerminal(terminal) orelse return false;
-        _ = model.provider.destroyTerminal(terminal);
-        if (had_live_pty) fx.ptyKill(pty_key);
-        if (tree.isEmpty()) workspace.dropTab(workspace.selected_tab);
-        model.terminal_limit_refused = false;
-        workspace.tab_limit_refused = false;
-        pointer_input.endAllCaptures(model, fx);
-        return true;
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        return lifecycle.closePane(self.model, fx, ref, true);
     }
 
     /// The window index a canvas label names, by the shipping scene's own
@@ -798,6 +787,10 @@ pub const Engine = struct {
                 pane.exit_code = event.code;
                 pane.exit_signal = event.signal;
                 pane.exit_reason = event.reason;
+                if (pane.phase == .ended) {
+                    _ = lifecycle.closePane(self.model, fx, pane.id, false);
+                    return self.commitProviderChange(true);
+                }
             },
             // Write acknowledgements never reach a pty event constructor;
             // the shipping app marks the arm unreachable for the same reason.
@@ -812,36 +805,100 @@ pub const Engine = struct {
 
     // ------------------------------------------------------------- input
 
+    fn onRemoteKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
+        const state = self.model.remoteUi(ref) orelse return;
+        if (self.remoteShortcut(fx, ref, event)) return;
+        if (state.selecting) {
+            self.remoteSelectionKey(fx, ref, event);
+            return;
+        }
+        interaction.rememberKey(self.model, ref, event);
+        interaction.remoteKey(self.model, ref, event);
+    }
+
+    fn remoteShortcut(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
+        if (!event.modifiers.hasCommandModifier()) return false;
+        if (keyIs(event.key, "c")) {
+            interaction.copy(self.model, fx, ref);
+            return true;
+        }
+        if (keyIs(event.key, "v")) {
+            interaction.requestPaste(self.model, fx, ref);
+            return true;
+        }
+        if (event.modifiers.shift and keyIs(event.key, "space")) {
+            const state = self.model.remoteUi(ref) orelse return true;
+            if (state.selecting) update_module.remote_selection.clear(self.model, state) else update_module.remote_selection.begin(self.model, ref, state);
+            return true;
+        }
+        return self.remoteScrollKey(ref, event);
+    }
+
+    fn remoteScrollKey(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
+        const state = self.model.remoteUi(ref) orelse return false;
+        const remote = self.model.phux() orelse return false;
+        const presentation = self.model.remotePresentation(ref) orelse return false;
+        const scroll = scrollKey(event, presentation.rows) orelse return false;
+        remote.scrollViewport(state.owner, scroll) catch {};
+        return true;
+    }
+
+    fn scrollKey(event: canvas.WidgetKeyboardEvent, page_rows: u16) ?support.Scroll {
+        const direction: i64 = if (keyIs(event.key, "arrowup")) -1 else if (keyIs(event.key, "arrowdown")) 1 else 0;
+        if (direction != 0) {
+            const rows: i64 = if (event.modifiers.shift) page_rows else 1;
+            return .{ .kind = .delta, .value = direction * rows };
+        }
+        if (keyIs(event.key, "home")) return .{ .kind = .top };
+        if (keyIs(event.key, "end")) return .{ .kind = .bottom };
+        return null;
+    }
+
+    fn remoteSelectionKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
+        const state = self.model.remoteUi(ref) orelse return;
+        if (keyIs(event.key, "escape")) return update_module.remote_selection.clear(self.model, state);
+        if (keyIs(event.key, "enter")) return interaction.copy(self.model, fx, ref);
+        if (keyIs(event.key, "b")) {
+            state.rectangle = !state.rectangle;
+            update_module.remote_selection.apply(self.model, state);
+            return;
+        }
+        const movements = .{
+            .{ "arrowleft", -1, 0 }, .{ "arrowright", 1, 0 },
+            .{ "arrowup", 0, -1 },   .{ "arrowdown", 0, 1 },
+        };
+        inline for (movements) |move| {
+            if (keyIs(event.key, move[0])) return update_module.remote_selection.move(self.model, ref, state, move[1], move[2]);
+        }
+    }
+
     /// A key that no chrome widget claimed, the way update.zig's handleKey
     /// treats the terminal block: the search field first, then the app's own
     /// chords (find, select, copy, paste, select all), and everything else to
     /// the focused pane's emulator encoder, which alone knows the live modes
     /// the bytes depend on. Releases only ever reach the encoder.
     pub fn onKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
-        const pane = self.focusedPane() orelse return;
-        if (event.phase == .key_up) {
-            terminal_runtime.encodeKeyEvent(pane, fx, event, .release);
+        if (event.phase == .key_up) return interaction.releaseKey(self.model, fx, event);
+        const ref = self.model.focusedTerminalRef() orelse return;
+        if (support.providerKind(ref) == .phux) {
+            self.onRemoteKey(fx, ref, event);
             return;
         }
-        const mods = event.modifiers;
-        const primary = mods.hasCommandModifier();
+        const pane = self.focusedPane() orelse return;
         if (pane.session.search.open) {
             self.searchKey(fx, pane, event);
             return;
         }
-        if (primary and !mods.shift and !mods.alt and !mods.control and keyIs(event.key, "f")) {
-            if (pane.selecting) {
-                pane.selecting = false;
-                pane.session.clearSelection();
-            }
-            pane.session.searchOpen();
-            return;
-        }
-        if (primary and !mods.alt and !mods.control and keyIs(event.key, "g")) {
-            _ = pane.session.searchStep(!mods.shift);
-            return;
-        }
-        if (primary and mods.shift and keyIs(event.key, "space")) {
+        if (self.localShortcut(fx, pane, event)) return;
+        if (pane.selecting) return self.localSelectionKey(fx, pane, event);
+        interaction.rememberKey(self.model, ref, event);
+        terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
+    }
+
+    fn localShortcut(self: *Engine, fx: anytype, pane: *model_module.Pane, event: canvas.WidgetKeyboardEvent) bool {
+        const mods = event.modifiers;
+        if (!mods.hasCommandModifier()) return false;
+        if (mods.shift and keyIs(event.key, "space")) {
             if (pane.selecting) {
                 pane.selecting = false;
                 pane.session.clearSelection();
@@ -849,21 +906,40 @@ pub const Engine = struct {
                 pane.selecting = true;
                 pane.session.beginSelection(false);
             }
+            return true;
+        }
+        const command = terminalShortcut(event) orelse return false;
+        if (command == .copy and !pane.session.selectionActive()) return false;
+        _ = self.nativeCommand(@intFromEnum(command), fx);
+        return true;
+    }
+
+    fn terminalShortcut(event: canvas.WidgetKeyboardEvent) ?protocol.NativeCommand {
+        if (keyIs(event.key, "c")) return .copy;
+        if (keyIs(event.key, "v")) return .paste;
+        if (event.modifiers.alt or event.modifiers.control) return null;
+        if (keyIs(event.key, "g")) return if (event.modifiers.shift) .find_previous else .find_next;
+        if (event.modifiers.shift) return null;
+        if (keyIs(event.key, "f")) return .find;
+        if (keyIs(event.key, "a")) return .select_all;
+        return null;
+    }
+
+    fn localSelectionKey(self: *Engine, fx: anytype, pane: *model_module.Pane, event: canvas.WidgetKeyboardEvent) void {
+        if (keyIs(event.key, "escape")) {
+            pane.selecting = false;
+            pane.session.clearSelection();
             return;
         }
-        if (primary and keyIs(event.key, "c") and (pane.selecting or pane.session.selectionActive())) {
-            self.copySelection(fx, pane);
-            return;
+        if (keyIs(event.key, "enter")) return self.copySelection(fx, pane);
+        if (keyIs(event.key, "b")) return pane.session.toggleSelectionBlock();
+        const movements = .{
+            .{ "arrowleft", -1, 0 }, .{ "arrowright", 1, 0 },
+            .{ "arrowup", 0, -1 },   .{ "arrowdown", 0, 1 },
+        };
+        inline for (movements) |move| {
+            if (keyIs(event.key, move[0])) return pane.session.moveSelection(move[1], move[2], event.modifiers.shift);
         }
-        if (primary and keyIs(event.key, "v")) {
-            self.requestPaste(fx, pane, .pane);
-            return;
-        }
-        if (primary and !mods.shift and !mods.alt and !mods.control and keyIs(event.key, "a")) {
-            if (pane.session.selectAllHistory()) pane.selecting = false;
-            return;
-        }
-        terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
     }
 
     /// update.zig's handleSearchKey: the field owns Escape, Enter and
@@ -871,7 +947,7 @@ pub const Engine = struct {
     fn searchKey(self: *Engine, fx: anytype, pane: *model_module.Pane, event: canvas.WidgetKeyboardEvent) void {
         const primary = event.modifiers.hasCommandModifier();
         if (primary and keyIs(event.key, "v")) {
-            self.requestPaste(fx, pane, .search_needle);
+            self.requestPaste(fx, pane);
             return;
         }
         if (primary and keyIs(event.key, "c") and (pane.selecting or pane.session.selectionActive())) {
@@ -896,6 +972,9 @@ pub const Engine = struct {
     /// way update.zig's .text arm sends it (never over a keyboard selection,
     /// never into an ended shell, always after scrolling to the bottom).
     pub fn onText(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+        const ref = self.model.focusedTerminalRef() orelse return;
+        interaction.rememberKey(self.model, ref, event);
+        if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);
         const pane = self.focusedPane() orelse return;
         if (event.text.len == 0) return;
         if (pane.session.search.open) {
@@ -914,79 +993,25 @@ pub const Engine = struct {
     /// graph hands in supplies the result constructor; the answer lands in
     /// `onClipboardWritten`.
     fn copySelection(self: *Engine, fx: anytype, pane: *model_module.Pane) void {
-        const model = self.model;
-        if (model.copy_inflight) return;
-        pane.copy_failed = false;
-        const text = (pane.session.selectionText(pane.session.gpa) catch {
-            pane.copy_failed = true;
-            pane.copied_bytes = 0;
-            return;
-        }) orelse {
-            if (pane.session.selectionActive()) {
-                pane.copy_failed = true;
-                pane.copied_bytes = 0;
-            }
-            return;
-        };
-        defer pane.session.gpa.free(text);
-        pane.copied_bytes = text.len;
-        model.copy_inflight = true;
-        fx.writeClipboard(.{ .key = local.clipboard_key, .text = text });
+        interaction.copy(self.model, fx, pane.id);
     }
 
     /// The clipboard write's answer (update.zig's .clipboard arm): a
     /// successful copy keeps the range highlighted and ends keyboard
     /// selection; a failed one says so on the pane.
     pub fn onClipboardWritten(self: *Engine, ok: bool) void {
-        const model = self.model;
-        if (!model.copy_inflight) return;
-        model.copy_inflight = false;
-        const pane = self.focusedPane() orelse return;
-        if (ok) {
-            pane.selecting = false;
-        } else {
-            pane.copied_bytes = 0;
-            pane.copy_failed = true;
-        }
+        interaction.copied(self.model, ok);
     }
 
-    fn requestPaste(self: *Engine, fx: anytype, pane: *model_module.Pane, target: PasteTarget) void {
-        const model = self.model;
-        if (model.paste_inflight) return;
-        if (target == .pane and !pane.acceptsInput()) {
-            model.paste_failed = true;
-            return;
-        }
-        model.paste_inflight = true;
-        self.paste_ref = pane.id;
-        self.paste_target = target;
-        fx.readClipboard(.{ .key = local.paste_clipboard_key });
+    fn requestPaste(self: *Engine, fx: anytype, pane: *model_module.Pane) void {
+        interaction.requestPaste(self.model, fx, pane.id);
     }
 
     /// The clipboard read's answer (update.zig's .paste_clipboard arm): into
     /// the needle if that is where it was aimed, else a bracketed paste into
     /// the pane it was requested for, never a different one.
     pub fn onClipboardRead(self: *Engine, fx: anytype, ok: bool, text: []const u8) void {
-        const model = self.model;
-        if (!model.paste_inflight) return;
-        model.paste_inflight = false;
-        const ref = self.paste_ref orelse return;
-        self.paste_ref = null;
-        if (!ok) {
-            model.paste_failed = true;
-            return;
-        }
-        const pane = model.provider.terminal(ref) orelse return;
-        if (self.paste_target == .search_needle) {
-            model.paste_failed = !pane.session.searchPaste(text);
-            return;
-        }
-        if (!pane.acceptsInput()) {
-            model.paste_failed = true;
-            return;
-        }
-        model.paste_failed = false;
-        update_module.pasteClipboardText(model, pane, fx, text);
+        interaction.pasted(self.model, fx, ok, text);
     }
 
     // ---------------------------------------------------------- pointer
@@ -998,6 +1023,7 @@ pub const Engine = struct {
     /// Returns whether a terminal took it; chrome is never under a pane's
     /// frame, and the caller keeps overlays out.
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
+        defer self.syncRemoteFocus();
         const model = self.model;
         const phase: canvas.WidgetPointerPhase = switch (raw.kind) {
             .pointer_down => .down,
@@ -1190,7 +1216,21 @@ pub const Engine = struct {
         const model = self.model;
         if (model.focused == focused) return;
         model.focused = focused;
-        if (!focused) pointer_input.endAllCaptures(model, fx);
+        if (!focused) {
+            pointer_input.endAllCaptures(model, fx);
+            for (&model.held_terminal_keys) |*held| held.* = .{};
+        }
+        self.syncRemoteFocus();
+    }
+
+    fn syncRemoteFocus(self: *Engine) void {
+        const ref = update_module.remoteFocusTarget(self.model);
+        const next = if (ref) |value| self.model.terminalOwner(value) else null;
+        if (support.optOwnerEql(self.remote_focus_owner, next)) return;
+        const remote = self.model.phux() orelse return;
+        if (self.remote_focus_owner) |previous| remote.sendFocus(previous, false) catch {};
+        self.remote_focus_owner = next;
+        if (next) |owner| remote.sendFocus(owner, true) catch {};
     }
 
     /// update.zig's notifyBackgroundBell: the rising edge of a bell while
@@ -1226,13 +1266,7 @@ pub const Engine = struct {
         if (frame.scale_factor > 0) workspace.surface_scale_factor = frame.scale_factor;
         const proposals = projection.proposedViewportsIn(model, workspace, frame.size);
         for (proposals.slice()) |proposal| {
-            const pane = model.provider.terminal(proposal.terminal) orelse continue;
-            if (pane.cols == proposal.cols and pane.rows == proposal.rows) continue;
-            if (!pane.session.resize(proposal.cols, proposal.rows)) continue;
-            pane.cols = proposal.cols;
-            pane.rows = proposal.rows;
-            pane.session.refreshScreenText();
-            fx.ptyResize(pane.pty_key, proposal.cols, proposal.rows);
+            interaction.resize(model, fx, proposal.terminal, .{ .cols = proposal.cols, .rows = proposal.rows });
         }
     }
 

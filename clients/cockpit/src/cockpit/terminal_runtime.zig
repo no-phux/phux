@@ -331,6 +331,28 @@ const MappedKey = struct {
     unshifted: u21 = 0,
 };
 
+/// The same native key mapping for coordinator-backed terminals. Printable
+/// presses belong to committed text; forwarding both would type twice.
+pub fn providerKey(event: canvas.WidgetKeyboardEvent) ?@import("provider_contract").KeyInput {
+    const release = event.phase == .key_up;
+    const mapped = mapKey(event) orelse blk: {
+        if (!release) return null;
+        break :blk mapPrintable(event.key) orelse return null;
+    };
+    return .{
+        .action = if (release) .release else .press,
+        .physical = @enumFromInt(@intFromEnum(mapped.key)),
+        .text = if (release) "" else mapped.utf8,
+        .unshifted_codepoint = mapped.unshifted,
+        .modifiers = .{
+            .shift = event.modifiers.shift,
+            .control = event.modifiers.control,
+            .alt = event.modifiers.alt,
+            .super = event.modifiers.super and !event.modifiers.control,
+        },
+    };
+}
+
 /// Host key names -> emulator key codes, for keys that do not commit
 /// A plain printable's codepoint-keyed event, for RELEASE encoding
 /// only: its press travels the committed-text channel, but kitty event

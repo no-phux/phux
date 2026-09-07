@@ -69,6 +69,20 @@ const cockpit_shortcuts = scene.cockpit_shortcuts;
 const terminalTokens = projection.terminalTokens;
 const selectedTerminalCanClose = projection.selectedTerminalCanClose;
 
+/// Engine-owned selection primitives shared with the shipping native adapter.
+/// Chrome and effect dispatch stay in their respective coordinators.
+pub const remote_selection = struct {
+    pub const begin = beginRemoteSelection;
+    pub const clear = clearRemoteSelection;
+    pub const move = moveRemoteSelection;
+    pub const apply = applyRemoteSelection;
+};
+
+pub const key_owners = struct {
+    pub const remember = rememberHeldTerminalKey;
+    pub const take = takeHeldTerminalKeyOwner;
+};
+
 /// Spawn a pane and then hand its fresh emulator the user's terminal-level
 /// settings. `spawnPane` hard-resets the emulator, so this ORDER is the whole
 /// point: every path that starts a shell (boot, New, split, Restart) goes

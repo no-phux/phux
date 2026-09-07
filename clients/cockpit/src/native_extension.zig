@@ -51,6 +51,15 @@ const EngineFx = struct {
     pub fn ptyKill(self: EngineFx, key: u64) void {
         self.effects.ptyKill(key);
     }
+    pub fn cancel(self: EngineFx, key: u64) void {
+        self.effects.cancel(key);
+    }
+    pub fn closeWindow(self: EngineFx, label: []const u8) void {
+        self.effects.closeWindow(label);
+    }
+    pub fn quitApp(self: EngineFx) void {
+        self.effects.quitApp();
+    }
     pub fn showNotification(self: EngineFx, options: native_sdk.platform.NotificationOptions) void {
         self.effects.showNotification(options);
     }
@@ -740,6 +749,34 @@ const Rig = struct {
     harness: *native_sdk.TestHarness(),
     frame_index: u64 = 1,
 
+    fn attachFixture(self: *Rig) !cockpit.TerminalRef {
+        if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+        const engine = bridge.engine.?;
+        var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/unused-fixture.sock", .session = "fixture" });
+        const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+        cockpit.attachPhuxProvider(engine.model, remote);
+        try remote.host.start("shipping-fixture");
+        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("tests/fixtures/hello.bin")));
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        remote.bridge.outgoing.reset();
+        const attached = @embedFile("tests/fixtures/attached.bin");
+        var offset: usize = 0;
+        while (offset < attached.len) {
+            const size = 4 + std.mem.readInt(u32, attached[offset..][0..4], .big);
+            try std.testing.expect(remote.bridge.incoming.stage(attached[offset..][0..size]));
+            offset += size;
+        }
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expectEqual(.attached, remote.state());
+        try std.testing.expectEqual(@as(usize, 1), engine.model.remote_inventory_count);
+        const ref = engine.model.focusedTerminalRef().?;
+        try std.testing.expectEqual(.phux, ref.provider_id);
+        try std.testing.expectEqual(.live, remote.presentation(ref).?.phase);
+        remote.bridge.outgoing.reset();
+        _ = self;
+        return ref;
+    }
+
     fn start() !Rig {
         return startWithPhux(false);
     }
@@ -1075,6 +1112,124 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try std.testing.expect(!engine.model.state.pending);
 }
 
+test "shipping close detaches a Phux pane without destroying a local terminal" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const ref: cockpit.TerminalRef = .{
+        .provider_id = .phux,
+        .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") },
+    };
+    try std.testing.expect(engine.model.admitTab(ref));
+    try std.testing.expect(engine.model.selectTerminal(ref));
+    try rig.dispatch(core.commandMsg("terminal.close").?);
+    try std.testing.expect(engine.model.locateTerminal(ref) == null);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+    try std.testing.expectEqual(@as(usize, 1), engine.model.primary.tab_count);
+}
+
+test "shipping final pane close retires main while a secondary keeps running" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    engine.model.active_window = 0;
+    const intent = protocol.encodeIntent(.{
+        .kind = .native_command,
+        .expected_revision = engine.revision,
+        .argument = @intFromEnum(protocol.NativeCommand.close_focused_pane),
+        .window = 0,
+    });
+    try std.testing.expect(engine.applyIntent(&intent, &cockpit.NoShells{}));
+    try std.testing.expect(!engine.model.primary_open);
+    try std.testing.expect(engine.model.windowOpen(1));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+}
+
+test "shipping clipboard completion belongs to its requesting replica after focus moves" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const source_ref = engine.model.focusedTerminalRef().?;
+    const source = engine.model.provider.terminal(source_ref).?;
+    source.phase = .live;
+    source.session.feed("copy from source");
+    try std.testing.expect(source.session.selectAllHistory());
+    source.selecting = true;
+    const copy = protocol.encodeIntent(.{
+        .kind = .native_command,
+        .expected_revision = engine.revision,
+        .argument = @intFromEnum(protocol.NativeCommand.copy),
+    });
+    try std.testing.expect(engine.applyIntent(&copy, &cockpit.NoShells{}));
+    try std.testing.expect(engine.model.copy_inflight);
+    const create = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0 });
+    try std.testing.expect(engine.applyIntent(&create, &cockpit.NoShells{}));
+    const other = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    other.selecting = true;
+    engine.onClipboardWritten(true);
+    try std.testing.expect(!source.selecting);
+    try std.testing.expect(other.selecting);
+}
+
+// GUARD: ts-remote-input
+test "shipping Phux callbacks emit structured key text paste and focus frames" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    _ = onText(.{ .phase = .text_input, .text = "z", .key = "z" });
+    try expectOutgoingTag(remote, 0x10);
+    _ = onKey(.{ .phase = .key_down, .key = "enter" });
+    try expectOutgoingTag(remote, 0x10);
+    _ = onKey(.{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    try std.testing.expect(engine.model.paste_inflight);
+    try std.testing.expect(engine.model.paste_owner.terminal_ref.eql(ref));
+    engine.onClipboardRead(EngineFx{ .effects = &rig.app_state.effects }, true, "hello paste");
+    try expectOutgoingTag(remote, 0x11);
+    engine.setFocused(EngineFx{ .effects = &rig.app_state.effects }, false);
+    try expectOutgoingTag(remote, 0x14);
+    engine.setFocused(EngineFx{ .effects = &rig.app_state.effects }, true);
+    try expectOutgoingTag(remote, 0x14);
+}
+
+fn expectOutgoingTag(remote: anytype, tag: u8) !void {
+    const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedOutgoingFrame;
+    defer remote.bridge.outgoing.release(frame);
+    try std.testing.expect(frame.len > 4);
+    try std.testing.expectEqual(tag, frame[4]);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+test "shipping frame resizes a published Phux viewport once" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const before = remote.lastViewport(ref);
+    const frame: native_sdk.platform.GpuFrame = .{
+        .label = canvas_label,
+        .size = .{ .width = 900, .height = 500 },
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    };
+    _ = onFrame(&rig.app_state.model, frame);
+    const after = remote.lastViewport(ref) orelse return error.TestExpectedRemoteViewport;
+    if (before) |old| try std.testing.expect(!old.eql(after));
+    try expectOutgoingTag(remote, 0x23);
+    _ = onFrame(&rig.app_state.model, frame);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
 // GUARD: ts-native-divider-drag
 test "native divider drag updates engine geometry without crossing the TypeScript seam" {
     var rig = try Rig.start();
@@ -1203,6 +1358,9 @@ test "unclaimed keys and text reach the focused pane's outbound ring and never t
 // GUARD: ts-engine-shells
 test "every registered pane gets exactly one shell request and a closed tab kills its own" {
     const SpawnRecorder = struct {
+        pub fn cancel(_: *@This(), _: u64) void {}
+        pub fn closeWindow(_: *@This(), _: []const u8) void {}
+        pub fn quitApp(_: *@This()) void {}
         spawned: usize = 0,
         killed: usize = 0,
         last_killed: u64 = 0,
@@ -1480,6 +1638,11 @@ test "the settings surface shows the engine's theme catalog and saves through th
 /// An effects recorder for the native-behaviour guards: counts what the
 /// engine asked for and keeps the last clipboard text, no processes.
 const Recorder = struct {
+    pub fn toggleFullscreenWindow(_: *@This(), _: []const u8) void {}
+    pub fn minimizeWindow(_: *@This(), _: []const u8) void {}
+    pub fn cancel(_: *@This(), _: u64) void {}
+    pub fn closeWindow(_: *@This(), _: []const u8) void {}
+    pub fn quitApp(_: *@This()) void {}
     notifications: usize = 0,
     clipboard_writes: usize = 0,
     clipboard_reads: usize = 0,
@@ -1542,7 +1705,6 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     try std.testing.expectEqual(@as(usize, 0), quiet.notifications);
 }
 
-// GUARD: ts-engine-copy
 test "select all and cmd+C put the scrollback on the clipboard through the seam" {
     const engine = try engineWithText("hello world\r\n");
     defer engine.destroy();
@@ -1559,7 +1721,6 @@ test "select all and cmd+C put the scrollback on the clipboard through the seam"
     try std.testing.expect(!engine.model.copy_inflight);
 }
 
-// GUARD: ts-engine-search
 test "cmd+F opens the scrollback search, typing feeds the needle, Escape closes it" {
     const engine = try engineWithText("alpha\r\nbeta\r\n");
     defer engine.destroy();
