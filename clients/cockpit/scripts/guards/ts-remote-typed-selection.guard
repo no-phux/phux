@@ -3,7 +3,7 @@
 # Restore the old direct clear and require actual anchor handles to be gone.
 test: shipping remote typing releases anchors and retires held selection gestures
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
-red: 2026-09-07 at 0d8b183
+red: 2026-09-07 at 596a3e0
 diff --git a/src/cockpit/terminal_interaction.zig b/src/cockpit/terminal_interaction.zig
 --- a/src/cockpit/terminal_interaction.zig
 +++ b/src/cockpit/terminal_interaction.zig
