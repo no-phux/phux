@@ -654,6 +654,20 @@ pub const Host = struct {
         return .{ .opaque_id = anchor.opaque_id };
     }
 
+    /// Clear only this replica's client presentation, never its durable process.
+    pub fn clearPresentation(host: *Host, owner_value: provider.ReplicaOwner) !void {
+        const id = try host.currentCId(owner_value);
+        try resultError(c.phux_client_clear_presentation(host.client, &id, owner_value.generation.stream_id, owner_value.generation.bootstrap_id));
+        // The FFI already retired these anchors. Forget only this owner's
+        // cached result array instead of issuing stale releases/failure callbacks.
+        if (host.search_owner) |search_owner| if (search_owner.eql(owner_value)) {
+            host.search_results.items.len = 0;
+            host.search_owner = null;
+        };
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
+        try host.capturePublishStage();
+    }
+
     /// Reveal an engine-owned search position without sending terminal input.
     pub fn pinViewport(host: *Host, owner_value: provider.ReplicaOwner, anchor: Anchor) !void {
         const id = try host.currentCId(owner_value);

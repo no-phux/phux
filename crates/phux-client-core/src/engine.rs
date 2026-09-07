@@ -309,6 +309,15 @@ pub enum EngineProjectionOrigin {
     /// Project forward from a resolved tracked anchor.
     Anchor(DocumentAnchorId),
 }
+/// Optional client-only presentation mutation for adapters with a live engine.
+pub trait EnginePresentationAdapter: EngineAdapter {
+    /// Home the cursor and erase the active display and scrollback, preserving
+    /// terminal modes and decoder ownership. Invalidate document anchors and
+    /// selection. This operation must never produce execution input.
+    /// Errors must leave the live replica usable and its history unchanged.
+    fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error>;
+}
+
 /// Optional semantic document operations for adapters with an engine-owned grid.
 pub trait EngineDocumentAdapter: EngineAdapter {
     /// Cooperatively project imported history without resizing canonical PTY state.

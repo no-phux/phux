@@ -534,7 +534,8 @@ typedef enum PhuxClientHistoryLoadCode {
     PHUX_CLIENT_HISTORY_GAP = 3,
     PHUX_CLIENT_HISTORY_STALE = 4,
     PHUX_CLIENT_HISTORY_PRUNED = 5,
-    PHUX_CLIENT_HISTORY_TOMBSTONED = 6
+    PHUX_CLIENT_HISTORY_TOMBSTONED = 6,
+    PHUX_CLIENT_HISTORY_CLEARED = 7
 } PhuxClientHistoryLoadCode;
 
 typedef enum PhuxClientHistoryUnavailableCode {
@@ -721,7 +722,8 @@ typedef struct PhuxSearchResult {
  * input only for the call. Returned frame/effect/grid/search/selection buffers
  * are owned by the bridge and remain valid until the next mutable PhuxClient
  * call. Opaque document anchors remain valid until explicitly released or
- * their terminal generation is replaced. count/get/state/last_error and
+ * their terminal generation is replaced or its presentation is cleared.
+ * count/get/state/last_error and
  * terminal_mouse_tracking are read-only and do not invalidate borrowed
  * pointers; clear calls are mutable. Outbound caller-provided byte fields must
  * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
@@ -792,6 +794,11 @@ PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, 
 PhuxClientResult phux_client_scroll_viewport(PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t kind, int64_t value);
 PhuxClientResult phux_client_anchor_create(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentPoint point, PhuxDocumentAnchor *out_anchor);
 PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
+/** Client-only Clear: home the cursor, erase the active display and scrollback,
+ * clear selection/document anchors, and cancel older history for this replica.
+ * Preserves modes, dimensions, durable work and live sequence; sends no input.
+ * Rejects an absent/disconnected terminal or mismatched stream/bootstrap IDs. */
+PhuxClientResult phux_client_clear_presentation(PhuxClient *client, const PhuxTerminalId *terminal_id, uint64_t stream_id, uint64_t bootstrap_id);
 PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
 PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
@@ -833,7 +840,8 @@ PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTermin
 PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
 /**
  * Every returned anchor handle is transferred to the caller and remains valid
- * until explicitly released or its terminal generation is replaced. Before
+ * until explicitly released, its terminal generation is replaced, or its
+ * presentation is cleared. Before
  * the next mutable client call invalidates this borrowed array, callers must
  * either copy the handles for later individual release or call
  * phux_client_search_results_release to release the entire set atomically.

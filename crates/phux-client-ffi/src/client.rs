@@ -477,6 +477,26 @@ impl Client {
         Ok(())
     }
 
+    pub(crate) fn clear_presentation(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: u64,
+        bootstrap_id: u64,
+    ) -> Result<(), BridgeError> {
+        let key = self.terminal_key(terminal_id)?;
+        if key.stream_id.get() != stream_id || key.bootstrap_id.get() != bootstrap_id {
+            return Err(BridgeError::state(
+                "clear targets a stale terminal generation",
+            ));
+        }
+        self.session
+            .clear_presentation(terminal_id)
+            .map_err(|error| BridgeError::engine(error.to_string()))?;
+        self.invalidate_terminal_handles(terminal_id);
+        self.bump_document_revision(terminal_id)?;
+        Ok(())
+    }
+
     pub(crate) fn pin_viewport(
         &mut self,
         terminal_id: &TerminalId,
@@ -680,31 +700,14 @@ impl Client {
                 let mut out = OwnedEffect::simple(2, 6, key.terminal_id);
                 out.stream_id = key.stream_id.get();
                 out.bootstrap_id = key.bootstrap_id.get();
-                out.status_code = match status.state {
-                    HistoryLoadState::Idle => 0,
-                    HistoryLoadState::Loading => 1,
-                    HistoryLoadState::Complete => 2,
-                    HistoryLoadState::Gap => 3,
-                    HistoryLoadState::Stale => 4,
-                    HistoryLoadState::Pruned => 5,
-                    HistoryLoadState::Tombstoned => 6,
-                };
+                out.status_code = history_state_code(status.state);
                 self.owned_effects.push(out);
             }
             KernelStatus::HistoryUnavailable { key, reason } => {
                 let mut out = OwnedEffect::simple(2, 7, key.terminal_id);
                 out.stream_id = key.stream_id.get();
                 out.bootstrap_id = key.bootstrap_id.get();
-                out.status_code = match reason {
-                    phux_client_core::session::HistoryUnavailableReason::Stale => 0,
-                    phux_client_core::session::HistoryUnavailableReason::Pruned => 1,
-                    phux_client_core::session::HistoryUnavailableReason::Reset => 2,
-                    phux_client_core::session::HistoryUnavailableReason::Resize => 3,
-                    phux_client_core::session::HistoryUnavailableReason::Expired => 4,
-                    phux_client_core::session::HistoryUnavailableReason::Released => 5,
-                    phux_client_core::session::HistoryUnavailableReason::Limit => 6,
-                    phux_client_core::session::HistoryUnavailableReason::CodecFailure => 7,
-                };
+                out.status_code = history_unavailable_code(reason);
                 self.owned_effects.push(out);
             }
         }
@@ -1406,6 +1409,35 @@ fn view_terminal_id(terminal_id: &TerminalId, host_arena: &mut Vec<u8>) -> PhuxT
                 host: bytes_out(host_arena),
             }
         }
+    }
+}
+
+const fn history_state_code(state: HistoryLoadState) -> u32 {
+    match state {
+        HistoryLoadState::Idle => 0,
+        HistoryLoadState::Loading => 1,
+        HistoryLoadState::Complete => 2,
+        HistoryLoadState::Gap => 3,
+        HistoryLoadState::Stale => 4,
+        HistoryLoadState::Pruned => 5,
+        HistoryLoadState::Tombstoned => 6,
+        HistoryLoadState::Cleared => 7,
+    }
+}
+
+const fn history_unavailable_code(
+    reason: phux_client_core::session::HistoryUnavailableReason,
+) -> u32 {
+    use phux_client_core::session::HistoryUnavailableReason as Reason;
+    match reason {
+        Reason::Stale => 0,
+        Reason::Pruned => 1,
+        Reason::Reset => 2,
+        Reason::Resize => 3,
+        Reason::Expired => 4,
+        Reason::Released => 5,
+        Reason::Limit => 6,
+        Reason::CodecFailure => 7,
     }
 }
 

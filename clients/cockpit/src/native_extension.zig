@@ -2045,7 +2045,7 @@ test "remote presentation menu select all copies provider history without child 
     try std.testing.expect(engine.model.copy_owner.terminal_ref.eql(ref));
     engine.onClipboardWritten(true);
     try std.testing.expect(!engine.model.remoteUi(ref).?.selecting);
-    try std.testing.expect(!remotePresentationCommand(engine, .clear, &fx));
+    try std.testing.expect(remotePresentationCommand(engine, .clear, &fx));
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
@@ -2093,6 +2093,38 @@ test "remote presentation search owns shipping chord text navigation clipboard a
     try std.testing.expect(!state.search.open);
     try std.testing.expect(remote.host.search_owner == null);
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+// GUARD: ts-remote-presentation-clear
+test "remote presentation Clear blanks the current replica without execution input" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const before = engine.model.remotePresentation(ref).?;
+    const owner = before.owner;
+    try std.testing.expect(std.mem.indexOf(u8, before.grid.screen_text, "COCKPIT FIXTURE") != null);
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
+    engine.onText(&fx, .{ .phase = .text_input, .text = "COCKPIT" });
+    try std.testing.expectEqual(@as(usize, 1), engine.model.remoteUi(ref).?.search.count);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const sequence = engine.sequence;
+    try rig.dispatch(core.commandMsg("terminal.clear").?);
+    try rig.settle(@intCast(sequence + 1), "READY");
+    const after = engine.model.remotePresentation(ref).?;
+    try std.testing.expectEqualStrings("", std.mem.trim(u8, after.grid.screen_text, " \r\n"));
+    try std.testing.expect(after.owner.eql(owner));
+    try std.testing.expectEqual(.live, after.phase);
+    try std.testing.expect(!engine.model.remoteUi(ref).?.selecting);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.remoteUi(ref).?.search.count);
+    try std.testing.expect(remote.host.search_owner == null);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    remote.stop();
+    try std.testing.expect(!remotePresentationCommand(engine, .clear, &fx));
 }
 
 fn expectSearchPaint(engine: *cockpit.Engine, needle: []const u8, status: []const u8) !void {

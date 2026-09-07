@@ -9,8 +9,8 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Strea
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineJob, EngineProjectionOrigin, EngineSearchMatch, EngineSend,
-    EngineStatus,
+    EngineHistoryProjection, EngineJob, EnginePresentationAdapter, EngineProjectionOrigin,
+    EngineSearchMatch, EngineSend, EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
@@ -994,6 +994,28 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .as_mut()?
                 .engine,
         )
+    }
+
+    /// Clear only this client's presentation. The published generation, parser
+    /// and live sequence survive; in-flight older pages can no longer reappear.
+    pub fn clear_presentation(
+        &mut self,
+        terminal_id: &TerminalId,
+    ) -> Result<(), KernelError<E::Error>>
+    where
+        E: EnginePresentationAdapter,
+    {
+        self.ensure_open(terminal_id)?;
+        let replica = self
+            .terminals
+            .get_mut(terminal_id)
+            .and_then(|state| state.published.as_mut())
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        self.adapter
+            .clear_presentation(&mut replica.engine)
+            .map_err(KernelError::Engine)?;
+        replica.history.clear_presentation();
+        Ok(())
     }
 
     /// Borrow one published generation's progressive history cache.
@@ -2043,6 +2065,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.ensure_open(page.terminal_id)?;
         let replica =
             Self::published_replica(&mut self.terminals, page.terminal_id, page.generation)?;
+        if replica.history.is_locally_cleared() {
+            return Ok(());
+        }
         let cursor = HistoryCursor::new(page.cursor);
         let next_cursor = page.next_cursor.map(HistoryCursor::new);
         match replica.history.check_page(

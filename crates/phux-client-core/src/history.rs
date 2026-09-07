@@ -144,6 +144,8 @@ pub enum HistoryLoadState {
     Pruned,
     /// The generation was permanently retired.
     Tombstoned,
+    /// This client cleared its presentation; older pages must not return.
+    Cleared,
 }
 
 /// Frontend presentation state for progressive history.
@@ -730,6 +732,16 @@ impl HistoryCache {
     /// Mark the requested boundary pruned and deterministically drop all pages and pins.
     pub(crate) fn mark_pruned(&mut self) {
         self.invalidate(HistoryLoadState::Pruned);
+    }
+
+    /// Cancel progressive history after a client-only Clear, without retiring
+    /// the live generation or preventing it from accumulating new scrollback.
+    pub(crate) fn clear_presentation(&mut self) {
+        self.invalidate(HistoryLoadState::Cleared);
+    }
+
+    pub(crate) const fn is_locally_cleared(&self) -> bool {
+        matches!(self.state, HistoryLoadState::Cleared)
     }
 
     /// Permanently retire the generation and deterministically drop all pages and pins.

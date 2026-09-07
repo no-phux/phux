@@ -1887,6 +1887,28 @@ pub unsafe extern "C" fn phux_client_anchor_release(
     })
 }
 
+/// Clear this client's active display and scrollback.
+///
+/// Preserves the live terminal and protocol sequence. The expected generation must match exactly.
+/// All document anchors for the terminal are invalidated. No input is sent.
+///
+/// # Safety
+///
+/// `client` must be a live client on its owning thread with exclusive access.
+/// `terminal_id` and its non-empty host span must be readable for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_clear_presentation(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    stream_id: u64,
+    bootstrap_id: u64,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
+        client.clear_presentation(&terminal_id, stream_id, bootstrap_id)
+    })
+}
+
 /// Pins the history viewport to an engine-tracked anchor.
 ///
 /// # Safety
@@ -2097,6 +2119,8 @@ pub unsafe extern "C" fn phux_client_search_results_release(
 
 #[cfg(test)]
 mod tests {
+    mod clear_presentation;
+
     use super::*;
     use phux_protocol::caps::ServerCapabilities;
     use phux_protocol::wire::frame::DetachReason;

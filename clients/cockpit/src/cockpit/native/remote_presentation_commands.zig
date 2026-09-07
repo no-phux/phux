@@ -39,11 +39,26 @@ pub fn command(model: *Model, ref: contract.TerminalRef, value: Command) bool {
         .find => return open(model, ref, state),
         .select_all => return selectAll(model, ref, state),
         .find_next, .find_previous => return refresh(model, state, if (value == .find_next) .older else .newer),
-        // The provider has no client scrollback-clear operation. Refuse rather
-        // than paste escape text into the remote process or corrupt its replica.
-        .clear => return false,
+        .clear => return clear(model, state),
         else => return false,
     }
+}
+
+fn clear(model: *Model, state: *State) bool {
+    const remote = model.phux() orelse return false;
+    remote.clearPresentation(state.owner) catch return false;
+    state.selecting = false;
+    state.start_anchor = 0;
+    state.end_anchor = 0;
+    // Keep an open field and its needle, like local Clear, but retire every
+    // result and pending field paste that belonged to the erased document.
+    state.search.count = 0;
+    state.search.index = 0;
+    state.search.failed = false;
+    state.search.paste_pending = false;
+    state.search.restore_bottom = true;
+    state.search.restore_row = 0;
+    return true;
 }
 
 fn open(model: *Model, ref: contract.TerminalRef, state: *State) bool {

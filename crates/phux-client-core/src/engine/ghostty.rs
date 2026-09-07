@@ -28,8 +28,8 @@ use thiserror::Error;
 use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch,
-    EngineSend, HistoryApplyOutcome,
+    EngineHistoryProjection, EnginePresentationAdapter, EngineProjectionOrigin,
+    EngineProjectionRow, EngineSearchMatch, EngineSend, HistoryApplyOutcome,
 };
 use crate::history::DocumentAnchorId;
 
@@ -624,6 +624,23 @@ impl EngineAdapter for GhosttyAdapter {
         };
         drain_pty_responses(pty_responses, effects);
         effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(())
+    }
+}
+
+impl EnginePresentationAdapter for GhosttyAdapter {
+    fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error> {
+        replica
+            .terminal()
+            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?
+            .set_selection(None)?;
+        // Match Cockpit's local Clear: these are emulator OUTPUT operations,
+        // never a key/paste or a wire frame. Keep the existing parser, modes,
+        // native decoder ownership and live protocol sequence intact.
+        let mut local_effects = EngineEffectBuffer::new();
+        self.apply_output(replica, b"\x1b[H\x1b[2J\x1b[3J", &mut local_effects)?;
+        replica.scroll_viewport(ScrollViewport::Bottom)?;
+        self.clear_document_state(replica);
         Ok(())
     }
 }
