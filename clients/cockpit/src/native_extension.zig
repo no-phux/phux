@@ -1724,6 +1724,7 @@ test "select all and cmd+C put the scrollback on the clipboard through the seam"
     try std.testing.expect(!engine.model.copy_inflight);
 }
 
+// GUARD: ts-engine-search
 test "cmd+F opens the scrollback search, typing feeds the needle, Escape closes it" {
     const engine = try engineWithText("alpha\r\nbeta\r\n");
     defer engine.destroy();
