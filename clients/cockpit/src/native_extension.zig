@@ -1732,6 +1732,7 @@ test "shipping pending spawns reserve split capacity" {
     try cockpit.durable_tests.splitReservations();
 }
 
+// GUARD: ts-durable-window-refusal
 test "shipping refused creation retires its still-empty reserved window" {
     try cockpit.durable_tests.windowRefusal();
 }
