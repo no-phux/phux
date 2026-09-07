@@ -1296,6 +1296,7 @@ test "shipping search text cannot leak a key release after search closes" {
     try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
 }
 
+// GUARD: ts-shell-exit-focus
 test "shipping shell exit transfers focus to the revealed Phux terminal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
