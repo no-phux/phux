@@ -2422,6 +2422,7 @@ test "navigation reconnect waits for a live channel close and reopens an already
     try std.testing.expectEqual(.offline, cockpit.engine.navigation.connection(engine.model));
 }
 
+// GUARD: ts-navigation-refresh-highlight
 test "navigation retains keyboard highlight through a metadata snapshot refresh" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2437,6 +2438,14 @@ test "navigation retains keyboard highlight through a metadata snapshot refresh"
     try rig.dispatch(shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b]2;updated title\x07" }));
     try rig.settle(@intCast(before + 1), "READY");
     try rig.settleNavigation();
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteCursor);
+    try std.testing.expect(rig.app_state.model.paletteRows[1].highlighted);
+    try rig.dispatch(.{ .palette_move = 1 });
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.paletteCursor);
+    try rig.dispatch(.close_selected_tab);
+    try rig.settle(@intCast(before + 2), "READY");
+    try rig.settleNavigation();
+    try std.testing.expectEqual(@as(usize, 2), rig.app_state.model.paletteRows.len);
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteCursor);
     try std.testing.expect(rig.app_state.model.paletteRows[1].highlighted);
 }
