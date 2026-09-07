@@ -1306,6 +1306,7 @@ test "shipping Phux committed text consumes composition modifiers" {
     try expectOutgoingKey(bridge.engine.?.model.phux().?, 0, 0);
 }
 
+// GUARD: ts-control-f
 test "shipping Control F is terminal input rather than a fullscreen shortcut" {
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }) == null);
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
