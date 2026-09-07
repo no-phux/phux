@@ -2,7 +2,8 @@
 # App activation is not permission for wheel/drop input on macOS. Restore the
 # overbroad focus gate; an inactive window must stop accepting both operations.
 test: shipping background windows accept wheel scrolling and Finder drops
-red: 2026-09-07 at 5ea82c2
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+red: 2026-09-07 at 0d8b183
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig

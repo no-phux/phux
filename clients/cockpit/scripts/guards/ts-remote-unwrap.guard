@@ -2,8 +2,10 @@
 # The document formatter left soft-wrap newlines in clipboard text. Restore
 # that formatter option while exercising a real Ghostty-selected Unicode word.
 test: shipping remote copy unwraps provider selected Unicode words
-red: 2026-09-07 at 16701fc
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+red: 2026-09-07 at 88c0864
 root: repository
+rebuild: cargo build --locked --profile ffi-dev -p phux-client-ffi --target-dir target
 diff --git a/crates/phux-client-core/src/engine/ghostty.rs b/crates/phux-client-core/src/engine/ghostty.rs
 --- a/crates/phux-client-core/src/engine/ghostty.rs
 +++ b/crates/phux-client-core/src/engine/ghostty.rs

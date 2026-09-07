@@ -3,7 +3,7 @@
 # Scrolling the provider replica did not mark its native presentation dirty.
 # Removing that publication leaves the displayed row unchanged after a wheel.
 test: shipping remote wheel scrolls history and emits bounded mouse reports
-red: 2026-09-07 at 4b17d82
+red: 2026-09-07 at 0d8b183
 build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
 --- a/src/providers/phux/host.zig

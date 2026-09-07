@@ -126,6 +126,16 @@ build_args_of() {
     printf '%s' "${value:-test}"
 }
 
+# Rust fixes must reach the native archive before either side of a proof.
+# Commands are trusted repository metadata and run from the repository root.
+rebuild_guard() {
+    local command
+    command="$(sed -n 's/^rebuild: //p' "$1" | head -1)"
+    [[ -n "$command" ]] || return 0
+    printf 'rebuild: %s\n' "$command"
+    (cd "$REPO_ROOT" && bash -e -c "$command")
+}
+
 # The paths a guard's patch touches, so every restore is narrowed to them.
 # `git checkout -- .` is not an acceptable fallback: this working directory has
 # turned out to be shared, and a blanket revert discards a neighbour's work.
@@ -244,6 +254,7 @@ for name in "${names[@]}"; do
     printf '=== %s ===\n' "$name"
     printf 'guards: %s\n' "$test_name"
     build_args="$(build_args_of "$guard")"
+    rebuild_guard "$guard"
 
     # A guard in another graph needs that graph's own green baseline: the
     # default gate above never compiled its test, so it has proved nothing
@@ -270,11 +281,12 @@ for name in "${names[@]}"; do
 
     log="$LOG_DIR/$name.red.log"
     set +e
-    (cd "$ROOT" && zig build $build_args) > "$log" 2>&1
+    (rebuild_guard "$guard" && cd "$ROOT" && zig build $build_args) > "$log" 2>&1
     red_exit=$?
     set -e
 
     restore "$guard"
+    rebuild_guard "$guard"
 
     printf 'zig build %s exit=%d  (%s)\n' "$build_args" "$red_exit" "$log"
 

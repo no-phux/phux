@@ -2,7 +2,8 @@
 # Remote press used to ignore the native click count. Force every press back
 # to single-cell behavior; the shipping double-click must lose its word range.
 test: shipping remote word and line gestures retain Ghostty drag semantics
-red: 2026-09-07 at 16701fc
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+red: 2026-09-07 at 0d8b183
 diff --git a/src/cockpit/native/shipping_pointer.zig b/src/cockpit/native/shipping_pointer.zig
 --- a/src/cockpit/native/shipping_pointer.zig
 +++ b/src/cockpit/native/shipping_pointer.zig

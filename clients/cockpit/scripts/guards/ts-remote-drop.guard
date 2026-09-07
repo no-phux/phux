@@ -3,7 +3,7 @@
 # Finder drops previously required a local provider pane. Removing the remote
 # paste hook restores that rejection despite an attached, ready remote owner.
 test: shipping remote file drop quotes paths and refuses unavailable owners
-red: 2026-09-07 at 16701fc
+red: 2026-09-07 at 0d8b183
 build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 --- a/src/cockpit/native/ts_engine.zig

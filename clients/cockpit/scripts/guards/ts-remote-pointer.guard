@@ -3,7 +3,7 @@
 # Raw shipping pointer input previously fell into the local-provider lookup,
 # rejecting every remote pane. Removing the remote hook restores that path.
 test: shipping raw remote drag uses provider selection and fences a frozen capture
-red: 2026-09-07 at 16701fc
+red: 2026-09-07 at 0d8b183
 build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index bb209323..fbcbdd8d 100644
