@@ -449,6 +449,19 @@ pub(super) fn end_of_frame_cursor<W: Write>(
 /// base for an incremental repaint. For "focused pane got output"
 /// situations call [`paint_focused_pane`] + [`paint_bar_after_pane`]
 /// instead.
+///
+/// # One chunk per frame
+///
+/// The whole composite is buffered in a [`FrameBlock`] and reaches `out` as
+/// ONE write and ONE flush (phux-69pq.9). The component painters inside —
+/// pane renders, dividers, the sidebar strip, the bar — each flush on their
+/// own when run standalone, and against the off-loop
+/// [`super::stdout_writer::StdoutSink`] every flush is a separately queued
+/// chunk. Overflow drops chunks, so a frame spread over several of them could
+/// lose its `ED2` and the first panes while the bar and the `?2026l`
+/// terminator still landed: a torn frame the terminal presented as complete.
+/// Buffered, a frame is delivered whole or dropped whole, and the resync
+/// repaint that follows a drop is itself one chunk.
 #[allow(
     clippy::too_many_arguments,
     reason = "phux-4h5a adds the sidebar reservation + painter to the existing paint context; same arg-list refactor follow-up as handle_server_frame"
@@ -466,6 +479,64 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     session_name: &str,
     theme: &crate::render::theme::Theme,
 ) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_full_frame_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_pane,
+        viewport_dims,
+        status_bar.as_deref_mut(),
+        sidebar,
+        sidebar_painter,
+        session_name,
+        theme,
+    );
+    seal_frame(block, painted, composed, status_bar)
+}
+
+/// Ship a composited frame and reconcile the bar cache with what actually
+/// reached the sink: a frame whose composition or delivery failed reports
+/// `NotPublished` and invalidates the painter, so the bar re-emits next time
+/// rather than trusting a cache that describes bytes the terminal never got.
+fn seal_frame<W: Write>(
+    block: FrameBlock<'_, W>,
+    painted: StatusBarPaint,
+    composed: bool,
+    status_bar: Option<&mut StatusBarPainter>,
+) -> StatusBarPaint {
+    if composed && block.end().is_ok() {
+        return painted;
+    }
+    if !matches!(painted, StatusBarPaint::NotPublished)
+        && let Some(painter) = status_bar
+    {
+        painter.invalidate();
+    }
+    StatusBarPaint::NotPublished
+}
+
+/// [`paint_full_frame`]'s body, emitting into the frame block. Returns the
+/// bar outcome and whether the composition itself succeeded (the cursor tail
+/// landed); shipping is the caller's.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same paint context as paint_full_frame, which this is the body of"
+)]
+fn paint_full_frame_into<W: Write>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<TerminalId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_pane: Option<&TerminalId>,
+    viewport_dims: (u16, u16),
+    status_bar: Option<&mut StatusBarPainter>,
+    sidebar: Option<SidebarReservation>,
+    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
+    session_name: &str,
+    theme: &crate::render::theme::Theme,
+) -> (StatusBarPaint, bool) {
     // The full screen paint (ratatui chrome + per-pane libghostty render).
     // Its close-duration is the client-side render-lag signal the flywheel
     // reads; debug-level so it is free at the default filter, and kept here
@@ -484,9 +555,9 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         rail,
     } = content_layout(viewport_dims, bar, sidebar);
     let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
-    // Component painters flush independently. Keep their intermediate states
-    // hidden from the outer terminal while the destructive frame is rebuilt.
-    let sync = SyncOutput::begin(out).ok();
+    // The enclosing frame block already opened the synchronized-output
+    // transaction and swallows the component painters' flushes; nothing here
+    // reaches the terminal until the block ships.
     // ED2 (clear screen) + cursor home. Cheap and unambiguous.
     let _ = out.write_all(b"\x1b[2J\x1b[H");
     // Non-focused panes first; chrome (dividers + status bar) next; the
@@ -534,7 +605,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
     let status_bar_painted = paint_bar_after_pane(
-        status_bar.as_deref_mut(),
+        status_bar,
         out,
         viewport_dims,
         sidebar,
@@ -562,18 +633,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         .and_then(|fid| multi.rects.get(fid).copied())
         .map(|r| (r.x, r.y));
     let cursor_published = end_of_frame_cursor(out, final_cursor, fallback_origin).is_ok();
-    let sync_ended = sync.is_some_and(|sync| sync.end(out).is_ok());
-    let frame_flushed = out.flush().is_ok();
-    if cursor_published && sync_ended && frame_flushed {
-        status_bar_painted
-    } else {
-        if !matches!(status_bar_painted, StatusBarPaint::NotPublished)
-            && let Some(painter) = status_bar
-        {
-            painter.invalidate();
-        }
-        StatusBarPaint::NotPublished
-    }
+    (status_bar_painted, cursor_published)
 }
 
 /// Repaint ONLY the chrome — the sidebar strip and the status bar — in place.
@@ -611,6 +671,9 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
 /// config for someone who runs the sidebar instead of a bar). Delegating would
 /// strand the host cursor wherever the sidebar strip's last cell left it, on
 /// every agent-state transition, for a bar-less config.
+///
+/// Like [`paint_full_frame`], the whole chrome repaint is one frame block:
+/// one write, one flush, delivered whole or not at all (phux-69pq.9).
 #[allow(
     clippy::too_many_arguments,
     reason = "mirrors paint_full_frame's chrome context minus the pane map's mutability; same arg-list refactor follow-up"
@@ -627,6 +690,39 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     session_name: &str,
     theme: &crate::render::theme::Theme,
 ) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_chrome_in_place_into(
+        &mut block,
+        layout_state,
+        panes,
+        focused_pane,
+        viewport_dims,
+        status_bar.as_deref_mut(),
+        sidebar,
+        sidebar_painter,
+        session_name,
+        theme,
+    );
+    seal_frame(block, painted, composed, status_bar)
+}
+
+/// [`paint_chrome_in_place`]'s body, emitting into the frame block.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same chrome context as paint_chrome_in_place, which this is the body of"
+)]
+fn paint_chrome_in_place_into<W: Write>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &HashMap<TerminalId, PaneSlot>,
+    focused_pane: Option<&TerminalId>,
+    viewport_dims: (u16, u16),
+    status_bar: Option<&mut StatusBarPainter>,
+    sidebar: Option<SidebarReservation>,
+    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
+    session_name: &str,
+    theme: &crate::render::theme::Theme,
+) -> (StatusBarPaint, bool) {
     let _paint = tracing::debug_span!(
         "paint_chrome_in_place",
         cols = viewport_dims.0,
@@ -649,9 +745,8 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     let fallback = focused_pane
         .and_then(|fid| multi.rects.get(fid))
         .map(|r| (r.x, r.y));
-    // Sidebar/status painters flush independently. Publish their updates and
-    // final cursor restoration as one outer-terminal transaction.
-    let sync = SyncOutput::begin(out).ok();
+    // The enclosing frame block is the outer-terminal transaction; the
+    // sidebar/status painters' own flushes are swallowed by it.
     // phux-l96p.8: the pane grid's rules and TITLES are chrome, and a
     // pane title changing is exactly a `RepaintLevel::Chrome` event
     // (`handler`'s `chrome_dirty`). Repainting the grid here is what
@@ -672,38 +767,24 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
     // painter's cache decides. Skipped entirely when the config has no bar.
-    let status_bar_painted =
-        status_bar
-            .as_deref_mut()
-            .map_or(StatusBarPaint::NotPublished, |painter| {
-                paint_bar_row(
-                    painter,
-                    out,
-                    viewport_dims,
-                    sidebar,
-                    session_name,
-                    false,
-                    ComposePolicy::Always,
-                )
-            });
+    let status_bar_painted = status_bar.map_or(StatusBarPaint::NotPublished, |painter| {
+        paint_bar_row(
+            painter,
+            out,
+            viewport_dims,
+            sidebar,
+            session_name,
+            false,
+            ComposePolicy::Always,
+        )
+    });
     // The sole CUP + DECTCEM + flush authority for this paint, reached on EVERY
     // path — bar or no bar. The sidebar's own emit parks the host cursor at the
     // end of the last strip row, so an early return here leaves the user's
     // cursor sitting in the strip until the next pane render (never, for an
     // idle pane).
-    let cursor_flushed = end_of_frame_cursor(out, restore, fallback).is_ok();
-    let sync_ended = sync.is_some_and(|sync| sync.end(out).is_ok());
-    let frame_flushed = out.flush().is_ok();
-    if cursor_flushed && sync_ended && frame_flushed {
-        status_bar_painted
-    } else {
-        if !matches!(status_bar_painted, StatusBarPaint::NotPublished)
-            && let Some(painter) = status_bar
-        {
-            painter.invalidate();
-        }
-        StatusBarPaint::NotPublished
-    }
+    let cursor_placed = end_of_frame_cursor(out, restore, fallback).is_ok();
+    (status_bar_painted, cursor_placed)
 }
 
 /// phux-nz4.5: shared helper invoked after every pane render so the
@@ -1781,8 +1862,10 @@ mod tests {
         // The destructive clear and every component write are one outer
         // terminal transaction, so nested flushes cannot expose a blank or
         // partially rebuilt frame.
+        // The frame block opens the transaction (and hides the cursor) before
+        // the destructive clear, so the clear is never presented on its own.
         assert!(
-            s.starts_with("\x1b[?2026h\x1b[2J\x1b[H"),
+            s.starts_with("\x1b[?2026h\x1b[?25l\x1b[2J\x1b[H"),
             "frame must open a synchronized ED2 transaction; out = {s:?}"
         );
         assert!(
@@ -1803,6 +1886,9 @@ mod tests {
         );
     }
 
+    /// Fails the frame at its tail: the one write that carries the `?2026l`
+    /// terminator (the whole frame, now that a frame is one chunk), or the
+    /// one flush that follows it.
     struct TailFailSink {
         fail_sync_end: bool,
         fail_final_flush: bool,
@@ -1811,7 +1897,7 @@ mod tests {
 
     impl Write for TailFailSink {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if buf == SYNC_OUTPUT_END {
+            if buf.ends_with(SYNC_OUTPUT_END) {
                 self.sync_end_seen = true;
                 if self.fail_sync_end {
                     return Err(std::io::Error::other("sync end failed"));
@@ -1874,6 +1960,131 @@ mod tests {
         assert_eq!(
             paint_full_frame_with_tail_failure(false, true),
             StatusBarPaint::NotPublished
+        );
+    }
+
+    /// Counts the sink-visible writes and flushes: what the off-loop stdout
+    /// queue would see as chunks.
+    #[derive(Default)]
+    struct ChunkCountingSink {
+        writes: usize,
+        flushes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for ChunkCountingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    /// phux-69pq.9: a full frame is ONE write and ONE flush at the sink, so
+    /// the stdout queue holds it as one chunk that overflow delivers whole or
+    /// drops whole. Two panes, dividers, a bar and a sidebar all compose
+    /// through the block; none of their own flushes reaches the sink.
+    #[test]
+    fn paint_full_frame_reaches_the_sink_as_one_chunk() {
+        let left = TerminalId::local(1);
+        let right = TerminalId::local(2);
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(left.clone())),
+                right: Box::new(LayoutNode::Leaf(right.clone())),
+            }),
+            focus: Some(left.clone()),
+        };
+        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        panes.insert(left.clone(), PaneSlot::new().expect("left slot"));
+        panes.insert(right.clone(), PaneSlot::new().expect("right slot"));
+        let kernel = published_kernel(&[left.clone(), right], 80, 24, b"hello\r\n");
+        let mut painter = build_painter();
+        let mut sidebar_painter = crate::render::chrome::sidebar::SidebarPainter::new(
+            crate::render::theme::Theme::default(),
+        );
+        let mut out = ChunkCountingSink::default();
+
+        let outcome = paint_full_frame(
+            &mut out,
+            &layout,
+            &mut panes,
+            &kernel,
+            Some(&left),
+            (80, 24),
+            Some(&mut painter),
+            Some(SidebarReservation {
+                edge: SidebarEdge::Left,
+                width: 20,
+            }),
+            Some(&mut sidebar_painter),
+            "demo",
+            &crate::render::theme::Theme::default(),
+        );
+
+        assert_ne!(outcome, StatusBarPaint::NotPublished);
+        assert_eq!(out.writes, 1, "one queued chunk per frame");
+        assert_eq!(out.flushes, 1, "one writer wake per frame");
+        let s = String::from_utf8_lossy(&out.bytes);
+        assert!(
+            s.starts_with("\x1b[?2026h"),
+            "the chunk is the whole transaction"
+        );
+        assert!(
+            s.ends_with("\x1b[?2026l"),
+            "…terminator included; out = {s:?}"
+        );
+        assert_eq!(
+            s.matches("\x1b[?2026h").count(),
+            1,
+            "nested guards do not reopen"
+        );
+    }
+
+    /// The chrome-only repaint holds to the same contract (phux-69pq.9).
+    #[test]
+    fn paint_chrome_in_place_reaches_the_sink_as_one_chunk() {
+        let id = TerminalId::local(1);
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Leaf(id.clone())),
+            focus: Some(id.clone()),
+        };
+        let panes = HashMap::from([(id.clone(), PaneSlot::new().expect("pane"))]);
+        let mut painter = build_painter();
+        let mut sidebar_painter = crate::render::chrome::sidebar::SidebarPainter::new(
+            crate::render::theme::Theme::default(),
+        );
+        let mut out = ChunkCountingSink::default();
+
+        paint_chrome_in_place(
+            &mut out,
+            &layout,
+            &panes,
+            Some(&id),
+            (80, 24),
+            Some(&mut painter),
+            Some(SidebarReservation {
+                edge: SidebarEdge::Left,
+                width: 20,
+            }),
+            Some(&mut sidebar_painter),
+            "demo",
+            &crate::render::theme::Theme::default(),
+        );
+
+        assert_eq!(out.writes, 1, "one queued chunk per chrome repaint");
+        assert_eq!(out.flushes, 1);
+        let s = String::from_utf8_lossy(&out.bytes);
+        assert!(
+            s.starts_with("\x1b[?2026h") && s.ends_with("\x1b[?2026l"),
+            "out = {s:?}"
         );
     }
 
