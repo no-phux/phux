@@ -110,6 +110,38 @@ pub const Invalidation = struct {
 
 pub const intent_len: usize = 12;
 
+/// Additive commands are decoded before legacy window adoption. For catalog
+/// selection bytes 10..12 are one u16 index, NOT a window selector.
+pub const NavigationIntent = struct {
+    kind: enum { reconnect, select },
+    expected_revision: u64,
+    index: u16,
+};
+
+pub fn decodeNavigationIntent(bytes: []const u8) ?NavigationIntent {
+    if (bytes.len != intent_len or bytes[0] != version) return null;
+    const kind: @FieldType(NavigationIntent, "kind") = switch (bytes[1]) {
+        12 => .reconnect,
+        13 => .select,
+        else => return null,
+    };
+    return .{
+        .kind = kind,
+        .expected_revision = std.mem.readInt(u64, bytes[2..10], .little),
+        .index = std.mem.readInt(u16, bytes[10..12], .little),
+    };
+}
+
+test "navigation intents preserve a full catalog index independently of window adoption" {
+    const bytes = [_]u8{ 1, 13, 7, 0, 0, 0, 0, 0, 0, 0, 1, 2 };
+    const parsed = decodeNavigationIntent(&bytes).?;
+    try std.testing.expectEqual(.select, parsed.kind);
+    try std.testing.expectEqual(@as(u16, 513), parsed.index);
+    try std.testing.expectEqual(@as(u64, 7), parsed.expected_revision);
+    try std.testing.expect(decodeIntent(&bytes) == null);
+    try std.testing.expect(decodeNavigationIntent(bytes[0..11]) == null);
+}
+
 /// `window` addresses the window an intent means (0 is the main window);
 /// a tab intent from a secondary window's chrome names that window so it
 /// cannot land on whichever window happened to be active.

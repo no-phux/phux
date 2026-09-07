@@ -22,9 +22,12 @@
         <button size="sm" variant="ghost" icon="plus" label="New terminal" on-press="new_terminal" />
         <button size="sm" variant="ghost" icon="external-link" label="New window" on-press="new_window" />
         <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
+        <if test="{canReconnect}">
+          <button size="sm" variant="ghost" icon="refresh-cw" label="Reconnect to Phux" on-press="reconnect" />
+        </if>
       </row>
       <spacer grow="1" />
-      <status-bar>{status}</status-bar>
+      <status-bar>{connectionStatus}</status-bar>
     </column>
   </if>
   <else>
@@ -48,7 +51,10 @@
         </list>
         <button size="sm" variant="ghost" icon="search" on-press="palette_open">Commands</button>
         <button size="sm" variant="ghost" icon="settings" on-press="settings_open">Settings</button>
-        <status-bar>{status}</status-bar>
+        <if test="{canReconnect}">
+          <button size="sm" variant="ghost" on-press="reconnect">Reconnect to Phux</button>
+        </if>
+        <status-bar>{connectionStatus}</status-bar>
       </column>
       <spacer width="8" />
       <spacer grow="1" />
@@ -61,26 +67,34 @@
         <column gap="12">
           <row cross="center" gap="8">
             <icon name="search" width="16" height="16" />
-            <text grow="1">Switch terminal</text>
+            <text grow="1">Switch workspace</text>
             <button size="sm" variant="ghost" icon="x" label="Close switcher" on-press="palette_close" />
           </row>
           <input
             text="{paletteQuery}"
-            placeholder="Terminal number, title, or directory"
+            placeholder="Title, directory, provider, window, or session"
             autofocus="true"
             on-input="palette_edit"
             on-submit="palette_submit"
-            label="Find terminal"
+            label="Find terminal or session"
           />
-          <list gap="2" label="Terminals">
+          <list gap="0" label="Terminals and sessions">
             <for each="paletteRows" key="id" as="row">
               <list-item
+                height="32"
                 icon="terminal"
                 selected="{row.highlighted}"
                 on-press="palette_pick:{row.index}"
               >{row.label}</list-item>
             </for>
           </list>
+          <text foreground="text_muted">{paletteNotice}</text>
+          <row gap="8" cross="center">
+            <if test="{palettePrevious}"><button size="sm" variant="ghost" on-press="palette_previous">Previous</button></if>
+            <spacer grow="1" />
+            <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
+            <if test="{paletteNext}"><button size="sm" variant="ghost" on-press="palette_next">Next</button></if>
+          </row>
         </column>
       </panel>
     </row>
