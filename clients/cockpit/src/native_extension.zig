@@ -2267,6 +2267,7 @@ test "navigation bridge preserves independently pending catalog and snapshot com
     try std.testing.expect(!Bridge.hasPending(&service));
 }
 
+// GUARD: ts-snapshot-commit-fence
 test "navigation waits for snapshot commit before advancing positional fences" {
     var rig = try Rig.start();
     defer rig.stop();
