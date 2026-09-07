@@ -302,17 +302,31 @@ jobs:
         run: |
           set -euo pipefail
           npm install --global npm@11.5.1
-          local_shasum="$(sha1sum "$TARBALL" | cut -d' ' -f1)"
-          published_shasum="$(npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum 2>/dev/null || true)"
           # An npm version is immutable, so a re-run against an already-published
-          # version must not republish — it verifies the registry holds the same
-          # bytes and moves on, which keeps the whole lane replayable.
-          if [[ -n "$published_shasum" ]]; then
-            if [[ "$published_shasum" != "$local_shasum" ]]; then
-              echo "::error::${PACKAGE_NAME}@${VERSION} is already on npm with shasum ${published_shasum}, but this run packed ${local_shasum}. The registry version is immutable; cut a new version rather than trying to overwrite it."
+          # version must verify the registry holds the same bytes and move on —
+          # that is what keeps the whole lane replayable.
+          #
+          # The replay key is the tarball CONTENT, not its byte shasum. npm pack
+          # does not guarantee file ordering across builds: the same tree can
+          # tarball to different bytes with identical contents (observed
+          # 2026-09-07 — @phux/pi packed to 1acb1de5 locally vs 684bade9 on the
+          # registry, same files in a different order). A byte-shasum check
+          # would turn every legitimate replay into a republish attempt, and a
+          # republish of an immutable version fails as E404.
+          if npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum >/dev/null 2>&1; then
+            existing="$(mktemp -d)"
+            npm pack "${PACKAGE_NAME}@${VERSION}" --pack-destination "${existing}" --silent
+            published="$(find "${existing}" -maxdepth 1 -type f -name '*.tgz' | head -n1)"
+            test -n "${published}"
+            local_dir="${existing}/local"; published_dir="${existing}/published"
+            mkdir "${local_dir}" "${published_dir}"
+            tar -xzf "$TARBALL" -C "${local_dir}"
+            tar -xzf "${published}" -C "${published_dir}"
+            if ! diff -r "${local_dir}/package" "${published_dir}/package"; then
+              echo "::error::${PACKAGE_NAME}@${VERSION} is already on npm with DIFFERENT content. The registry version is immutable; cut a new version rather than trying to overwrite it."
               exit 1
             fi
-            echo "${PACKAGE_NAME}@${VERSION} already published with matching shasum; nothing to do."
+            echo "${PACKAGE_NAME}@${VERSION} already published with identical content; nothing to do."
           else
             npm publish --provenance --access public --no-audit "$TARBALL"
           fi
