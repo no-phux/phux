@@ -2598,34 +2598,79 @@ test "shipping remote close retires replica and navigation explicitly reattaches
 // GUARD: ts-detach-refused-close-progress
 test "shipping close window makes bounded progress when remote detach is locally refused" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    for ([_]bool{ false, true }) |disconnected| {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-refused-unused.sock" });
+    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+    engine.model.phux_provider = remote;
+    try @TypeOf(remote.*).test_support.attachHost(remote.host);
+    const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
+    try std.testing.expect(engine.model.admitTab(ref));
+    // Fill the bounded completion ledger, as an undrained UI consumer can.
+    for (1..17) |id| {
+        remote.host.operation_ledger.accepted(@intCast(id), remote.connectionEpoch(), .spawn, null);
+        try remote.host.operation_ledger.complete(.{ .request_id = @intCast(id), .connection_epoch = remote.connectionEpoch(), .kind = .spawn, .status = .refused });
+    }
+    var recorder: Recorder = .{};
+    // This assertion catches false progress before the old window loop can spin.
+    const close_tab = protocol.encodeIntent(.{ .kind = .close_tab, .expected_revision = engine.revision, .argument = 1 });
+    try std.testing.expect(!engine.applyIntent(&close_tab, &recorder));
+    const close_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
+    try std.testing.expect(engine.applyIntent(&close_window, &recorder));
+    try std.testing.expect(engine.model.windowOpen(0));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    try std.testing.expect(engine.model.locateTerminal(ref) != null);
+    try std.testing.expectEqual(@as(u32, 16), remote.host.operation_ledger.last_id);
+    const retry_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
+    try std.testing.expect(!engine.applyIntent(&retry_window, &recorder));
+}
+
+// GUARD: ts-offline-remote-close
+test "shipping offline remote close stays absent after reconnect without outbound work" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const ChannelFx = struct {
+        pub fn openChannel(_: *const @This(), _: anytype) native_sdk.ChannelHandle {
+            return .{};
+        }
+        pub fn closeChannel(_: *const @This(), _: u64) void {}
+    };
+    for ([_]protocol.IntentKind{ .native_command, .close_tab, .close_window }) |kind| {
         const engine = try Engine.create(std.testing.allocator, std.testing.io);
         defer engine.destroy();
-        var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-refused-unused.sock" });
+        var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/offline-detach-unused.sock" });
         const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+        const fixtures = @TypeOf(remote.*).test_support;
         engine.model.phux_provider = remote;
-        try @TypeOf(remote.*).test_support.attachHost(remote.host);
+        try fixtures.attachHost(remote.host);
+        engine.model.phux_admit_on_ready = false;
         const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
-        try std.testing.expect(engine.model.admitTab(ref));
-        if (disconnected) remote.host.disconnect() else {
-            // Fill the bounded completion ledger, as an undrained UI consumer can.
-            for (1..17) |id| {
-                remote.host.operation_ledger.accepted(@intCast(id), remote.connectionEpoch(), .spawn, null);
-                try remote.host.operation_ledger.complete(.{ .request_id = @intCast(id), .connection_epoch = remote.connectionEpoch(), .kind = .spawn, .status = .refused });
-            }
-        }
+        const workspace = engine.model.openWindow(1).?;
+        try std.testing.expect(workspace.admitTab(ref));
+        const before = engine.model.topologyFingerprint();
+        remote.host.disconnect();
         var recorder: Recorder = .{};
-        // This assertion catches false progress before the old window loop can spin.
-        const close_tab = protocol.encodeIntent(.{ .kind = .close_tab, .expected_revision = engine.revision, .argument = 1 });
-        try std.testing.expect(!engine.applyIntent(&close_tab, &recorder));
-        const close_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
-        try std.testing.expect(engine.applyIntent(&close_window, &recorder));
-        try std.testing.expect(engine.model.windowOpen(0));
-        try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
-        try std.testing.expect(engine.model.locateTerminal(ref) != null);
-        try std.testing.expectEqual(@as(u32, if (disconnected) 0 else 16), remote.host.operation_ledger.last_id);
-        const retry_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
-        try std.testing.expect(!engine.applyIntent(&retry_window, &recorder));
+        const close = protocol.encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .window = 1, .argument = if (kind == .native_command) @intFromEnum(protocol.NativeCommand.close_focused_pane) else 0 });
+        try std.testing.expect(engine.applyIntent(&close, &recorder));
+        try std.testing.expect(engine.model.locateTerminal(ref) == null);
+        try std.testing.expect(!engine.model.windowOpen(1));
+        try std.testing.expect(engine.model.topologyFingerprint() != before);
+        const saved = try engine.model.topologySnapshot();
+        try std.testing.expectEqual(@as(u8, 1), saved.window_count);
+        for (saved.tabs[0..saved.tab_count]) |tab| {
+            for (tab.nodes) |node| try std.testing.expect(node.remote_ref == null);
+        }
+        try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+        try std.testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
+        try std.testing.expect(remote.host.bridge.outgoing.take() == null);
+        try remote.host.reconnect("operations-test");
+        remote.attach_queued = false;
+        try fixtures.stageFixture(remote.host.bridge, "hello.bin");
+        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
+        try fixtures.stageFixture(remote.host.bridge, "attached.bin");
+        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
+        try std.testing.expect(remote.contains(ref));
+        try std.testing.expect(engine.model.locateTerminal(ref) == null);
+        try std.testing.expect(!engine.model.windowOpen(1));
     }
 }
 

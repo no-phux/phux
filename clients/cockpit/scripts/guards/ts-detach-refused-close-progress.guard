@@ -3,7 +3,7 @@
 # Restore false close-tab progress on a refused detach. The test checks that
 # refusal before entering close-window, where the former retry loop hung UI.
 test: shipping close window makes bounded progress when remote detach is locally refused
-red: 2026-09-07 at 1da710a
+red: 2026-09-07 at 3361eec
 build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/workspace_lifecycle.zig b/src/cockpit/workspace_lifecycle.zig
 index 26d0c308..9a19b501 100644

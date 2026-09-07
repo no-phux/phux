@@ -178,6 +178,9 @@ fn apply_input(
     event: &InputEvent,
 ) -> Result<(), BridgeError> {
     client.ensure_attached()?;
+    if client.operations.detaching(terminal_id) {
+        return Err(BridgeError::state("terminal detach is pending"));
+    }
     apply_kernel_input(
         client,
         KernelInput::Action(KernelAction::Input { terminal_id, event }),
@@ -1762,6 +1765,9 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
         }
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let _ = client.terminal_key(&terminal_id)?;
+        if client.operations.detaching(&terminal_id) {
+            return Err(BridgeError::state("terminal detach is pending"));
+        }
         client.queue_frame(&FrameKind::TerminalResize {
             terminal_id,
             cols,

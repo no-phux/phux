@@ -741,7 +741,12 @@ PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const Phu
  * success retires client replica/admission, including initial participation.
  * Refusal retains state; disconnect yields unknown outcome. Never replay
  * automatically. Detach remains available when dynamic admission capacity is full.
- * Shares the monotonically increasing request IDs and bounded result queue. */
+ * Shares the monotonically increasing request IDs and bounded result queue.
+ * While pending, input/resize are refused and automatic terminal sends are
+ * fenced behind withdrawal. At most one unsent history request and latest ACK
+ * are retained per detach, resumed only on refusal with a still-live exact
+ * generation/cursor. Success/closure/disconnect discard them; input is never
+ * retained or replayed. */
 PhuxClientResult phux_client_queue_detach_terminal(PhuxClient *client, const PhuxDetachTerminalOptions *options);
 size_t phux_client_operation_count(const PhuxClient *client);
 PhuxClientResult phux_client_operation_get(const PhuxClient *client, size_t index, PhuxOperationResult *out_result);

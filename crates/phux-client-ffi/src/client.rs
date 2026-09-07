@@ -568,7 +568,14 @@ impl Client {
         Ok(())
     }
 
-    fn process_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
+    pub(crate) fn process_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
+        if self.operations.fence_send(&send) {
+            return Ok(());
+        }
+        self.encode_kernel_send(send)
+    }
+
+    fn encode_kernel_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
         match send {
             KernelSend::Input { terminal_id, event } => {
                 let frame = match event {

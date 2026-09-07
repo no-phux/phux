@@ -17,6 +17,7 @@ use crate::{
     ABI_VERSION, PhuxBytes, PhuxClient, PhuxClientResult, PhuxTerminalId, bytes_out,
     terminal_id_out, with_client_mut, with_client_ref,
 };
+use phux_client_core::session::KernelSend;
 
 pub const MAX_OPERATIONS: usize = 128;
 pub const MAX_DYNAMIC_TERMINALS: usize = 256;
@@ -152,10 +153,19 @@ struct Completion {
 }
 
 #[derive(Default)]
+struct DeferredSends {
+    history: Option<KernelSend>,
+    ack: Option<KernelSend>,
+}
+
+#[derive(Default)]
 pub(crate) struct Operations {
     pending: HashMap<u32, Pending>,
     completed: Vec<Completion>,
     dynamic: HashSet<TerminalId>,
+    // At most one never-transmitted page request and latest cumulative ACK per
+    // pending detach, preserving cursor/flow control if withdrawal is refused.
+    deferred_sends: HashMap<TerminalId, DeferredSends>,
     last_request_id: u32,
 }
 
@@ -166,6 +176,35 @@ impl Operations {
 
     pub(crate) fn retire(&mut self, id: &TerminalId) {
         self.dynamic.remove(id);
+        self.deferred_sends.remove(id);
+    }
+
+    pub(crate) fn detaching(&self, id: &TerminalId) -> bool {
+        self.pending
+            .values()
+            .any(|pending| matches!(pending, Pending::Detach(target) if target == id))
+    }
+
+    pub(crate) fn fence_send(&mut self, send: &KernelSend) -> bool {
+        let id = match send {
+            KernelSend::Input { terminal_id, .. }
+            | KernelSend::PtyWrite { terminal_id, .. }
+            | KernelSend::FrameAck { terminal_id, .. } => terminal_id,
+            KernelSend::HistoryRequest { key, .. } => &key.terminal_id,
+        };
+        if !self.detaching(id) {
+            return false;
+        }
+        match send {
+            KernelSend::HistoryRequest { .. } => {
+                self.deferred_sends.entry(id.clone()).or_default().history = Some(send.clone());
+            }
+            KernelSend::FrameAck { .. } => {
+                self.deferred_sends.entry(id.clone()).or_default().ack = Some(send.clone());
+            }
+            _ => {}
+        }
+        true
     }
 
     fn subscription_pending(&self, id: &TerminalId) -> bool {
@@ -250,6 +289,7 @@ impl Operations {
             );
         }
         self.dynamic.clear();
+        self.deferred_sends.clear();
     }
 }
 
@@ -673,6 +713,13 @@ fn refuse_operation(
     code: u32,
     message: &str,
 ) -> Result<(), BridgeError> {
+    let deferred = match client.operations.pending(request_id)? {
+        Pending::Detach(id) => {
+            let id = id.clone();
+            client.operations.deferred_sends.remove(&id)
+        }
+        _ => None,
+    };
     if let Pending::Attach(id) = client.operations.pending(request_id)?.clone() {
         // A bootstrap may already have published before refusal. Revoke only this operation's admission.
         let published = client.session.published(&id).is_some();
@@ -688,12 +735,27 @@ fn refuse_operation(
     client
         .operations
         .complete(request_id, 2, None, domain, code, message);
+    resume_deferred(client, deferred)
+}
+
+fn resume_deferred(
+    client: &mut Client,
+    deferred: Option<DeferredSends>,
+) -> Result<(), BridgeError> {
+    if let Some(deferred) = deferred {
+        for send in deferred.ack.into_iter().chain(deferred.history) {
+            if deferred_send_is_current(client, &send) {
+                client.process_send(send)?;
+            }
+        }
+    }
     Ok(())
 }
 
 /// The explicit admission gate replaces permanent kernel death records for
 /// dynamic subscriptions. Initial ATTACH participants retain the kernel barrier.
 pub(crate) fn release_terminal(client: &mut Client, id: &TerminalId) -> Result<(), BridgeError> {
+    client.operations.deferred_sends.remove(id);
     if !client.operations.admitted(id) {
         return Ok(());
     }
@@ -704,6 +766,46 @@ pub(crate) fn release_terminal(client: &mut Client, id: &TerminalId) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn deferred_send_is_current(client: &Client, send: &KernelSend) -> bool {
+    match send {
+        KernelSend::HistoryRequest { key, cursor, .. } => {
+            history_request_is_current(client, key, cursor)
+        }
+        KernelSend::FrameAck {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        } => {
+            client.session.input_eligibility(terminal_id)
+                == (phux_client_core::session::InputEligibility::Eligible {
+                    stream_id: *stream_id,
+                    bootstrap_id: *bootstrap_id,
+                })
+        }
+        _ => false,
+    }
+}
+
+fn history_request_is_current(
+    client: &Client,
+    key: &phux_client_core::session::ReplicaKey,
+    cursor: &[u8],
+) -> bool {
+    if client.session.input_eligibility(&key.terminal_id)
+        != (phux_client_core::session::InputEligibility::Eligible {
+            stream_id: key.stream_id,
+            bootstrap_id: key.bootstrap_id,
+        })
+    {
+        return false;
+    }
+    let Some(replica) = client.session.published(&key.terminal_id) else {
+        return false;
+    };
+    replica.key() == key && replica.history().is_fetching(cursor)
 }
 
 /// Number of retained operation completions (pending operations are excluded).

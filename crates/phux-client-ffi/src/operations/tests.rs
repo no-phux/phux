@@ -8,6 +8,276 @@ use phux_protocol::{
 
 struct Harness(Box<PhuxClient>);
 
+fn history_send(id: TerminalId) -> phux_client_core::session::KernelSend {
+    phux_client_core::session::KernelSend::HistoryRequest {
+        key: phux_client_core::session::ReplicaKey {
+            terminal_id: id,
+            stream_id: StreamId::new(17).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+        },
+        cursor: vec![42; 32],
+        max_bytes: 1024,
+        max_rows: 64,
+    }
+}
+
+#[test]
+fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_request() {
+    let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    h.0.inner.outgoing.clear();
+    let raw = terminal_id_out(&id);
+    // SAFETY: harness owns the client, identity, and readable literal bytes.
+    unsafe {
+        assert_eq!(
+            phux_client_send_paste(h.ptr(), &raw const raw, b"stale".as_ptr(), 5, true),
+            PhuxClientResult::InvalidState
+        );
+        assert_eq!(
+            phux_client_terminal_resize(h.ptr(), &raw const raw, 100, 30),
+            PhuxClientResult::InvalidState
+        );
+    }
+    h.0.inner.process_send(history_send(id.clone())).unwrap();
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "pagination overtook DETACH_TERMINAL"
+    );
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "refused".into()
+            }
+        }),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        h.0.inner.outgoing.len(),
+        1,
+        "never-sent history request must resume after refusal"
+    );
+    assert!(h.0.inner.session.published(&id).is_some());
+    h.0.inner.outgoing.clear();
+    assert_eq!(h.detach(2, &id), PhuxClientResult::Ok);
+    h.0.inner.outgoing.clear();
+    h.0.inner.process_send(history_send(id)).unwrap();
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 2,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "successful detach must discard deferred reads"
+    );
+}
+
+#[test]
+fn detach_refusal_drops_a_history_request_invalidated_without_generation_change() {
+    let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    h.0.inner.outgoing.clear();
+    h.0.inner.process_send(history_send(id.clone())).unwrap();
+    assert_eq!(
+        h.feed(FrameKind::HistoryTombstone {
+            terminal_id: id,
+            stream_id: StreamId::new(17).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            cursor: bytes::Bytes::from_static(&[42; 32]),
+            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Stale
+        }),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "refused".into()
+            }
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.outgoing.is_empty());
+    assert!(h.0.inner.operations.deferred_sends.is_empty());
+}
+
+#[test]
+fn closed_initial_participant_drops_deferred_sends_before_detach_refusal() {
+    let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    h.0.inner.outgoing.clear();
+    h.0.inner.process_send(history_send(id.clone())).unwrap();
+    assert_eq!(
+        h.feed(FrameKind::TerminalClosed {
+            terminal_id: id.clone(),
+            exit_status: None
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.operations.deferred_sends.is_empty());
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "refused".into()
+            }
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.outgoing.is_empty());
+    assert!(h.0.inner.session.published(&id).is_none());
+    assert_eq!(h.result(0).status, 2);
+}
+
+#[test]
+fn detach_refusal_never_flushes_retired_generation_and_resumes_only_current_cursor() {
+    for replacement in 0..3 {
+        let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
+        let id = TerminalId::local(1);
+        assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+        h.0.inner.outgoing.clear();
+        h.0.inner.process_send(history_send(id.clone())).unwrap();
+        h.0.inner
+            .process_send(phux_client_core::session::KernelSend::FrameAck {
+                terminal_id: id.clone(),
+                stream_id: StreamId::new(17).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            h.feed(FrameKind::BootstrapTombstone {
+                terminal_id: id.clone(),
+                stream_id: StreamId::new(17).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                reason: phux_protocol::wire::frame::TombstoneReason::OutboundGap,
+                last_valid_seq: 0
+            }),
+            PhuxClientResult::Ok
+        );
+        if replacement != 0 {
+            let cursor = (replacement == 2).then(|| bytes::Bytes::from_static(&[43; 32]));
+            h.bootstrap_generation(id.clone(), cursor, 18);
+        }
+        if replacement == 2 {
+            for seq in 1..=3 {
+                h.0.inner
+                    .process_send(KernelSend::FrameAck {
+                        terminal_id: id.clone(),
+                        stream_id: StreamId::new(18).unwrap(),
+                        bootstrap_id: BootstrapId::new(1).unwrap(),
+                        seq,
+                    })
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            h.feed(FrameKind::CommandResult {
+                request_id: 1,
+                result: CommandResult::Error {
+                    code: ErrorCode::InvalidCommand,
+                    message: "refused".into()
+                }
+            }),
+            PhuxClientResult::Ok
+        );
+        assert!(h.0.inner.operations.deferred_sends.is_empty());
+        if replacement == 2 {
+            assert_eq!(h.0.inner.outgoing.len(), 2);
+            let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).unwrap();
+            assert!(
+                matches!(frame, FrameKind::FrameAck { stream_id, seq: 3, .. } if stream_id.get() == 18)
+            );
+            let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[1]).unwrap();
+            assert!(
+                matches!(frame, FrameKind::HistoryRequest { stream_id, cursor, .. } if stream_id.get() == 18 && cursor.as_ref() == [43; 32])
+            );
+        } else {
+            assert!(
+                h.0.inner.outgoing.is_empty(),
+                "retired frozen publication is not a valid send owner"
+            );
+        }
+    }
+}
+
+#[test]
+fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnect() {
+    for disconnect in [false, true] {
+        let mut h = Harness::attached();
+        let id = TerminalId::local(2);
+        assert_eq!(h.attach(1, &id), PhuxClientResult::Ok);
+        h.bootstrap_with_cursor(id.clone(), Some(bytes::Bytes::from_static(&[42; 32])));
+        assert_eq!(
+            h.feed(FrameKind::CommandResult {
+                request_id: 1,
+                result: CommandResult::Ok
+            }),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(h.detach(2, &id), PhuxClientResult::Ok);
+        h.0.inner.outgoing.clear();
+        h.0.inner.process_send(history_send(id.clone())).unwrap();
+        for seq in 1..=256 {
+            h.0.inner
+                .process_send(KernelSend::FrameAck {
+                    terminal_id: id.clone(),
+                    stream_id: StreamId::new(17).unwrap(),
+                    bootstrap_id: BootstrapId::new(1).unwrap(),
+                    seq,
+                })
+                .unwrap();
+        }
+        assert!(h.0.inner.outgoing.is_empty());
+        assert_eq!(h.0.inner.operations.deferred_sends.len(), 1);
+        assert!(matches!(
+            h.0.inner.operations.deferred_sends[&id].ack,
+            Some(KernelSend::FrameAck { seq: 256, .. })
+        ));
+        if disconnect {
+            // SAFETY: the harness exclusively owns the client.
+            assert_eq!(
+                unsafe { phux_client_disconnect(h.ptr()) },
+                PhuxClientResult::Ok
+            );
+            assert_eq!(h.result(1).status, 3);
+        } else {
+            assert_eq!(
+                h.feed(FrameKind::TerminalClosed {
+                    terminal_id: id.clone(),
+                    exit_status: None
+                }),
+                PhuxClientResult::Ok
+            );
+            assert!(h.0.inner.operations.deferred_sends.is_empty());
+            assert_eq!(
+                h.feed(FrameKind::CommandResult {
+                    request_id: 2,
+                    result: CommandResult::Error {
+                        code: ErrorCode::InvalidCommand,
+                        message: "closed".into()
+                    }
+                }),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(h.result(1).status, 2);
+            assert!(h.0.inner.session.published(&id).is_none());
+        }
+        assert!(h.0.inner.operations.deferred_sends.is_empty());
+        assert!(h.0.inner.outgoing.is_empty());
+    }
+}
+
 impl Harness {
     fn new() -> Self {
         let limits = crate::client::Limits {
@@ -61,6 +331,10 @@ impl Harness {
     }
 
     fn attached() -> Self {
+        Self::attached_with_cursor(None)
+    }
+
+    fn attached_with_cursor(cursor: Option<bytes::Bytes>) -> Self {
         let mut h = Self::new();
         h.negotiate();
         // Exercise the real attach barrier with one inventory terminal.
@@ -105,7 +379,7 @@ impl Harness {
             }),
             PhuxClientResult::Ok
         );
-        h.bootstrap(TerminalId::local(1));
+        h.bootstrap_with_cursor(TerminalId::local(1), cursor);
         assert_eq!(
             h.feed(FrameKind::AttachReady { attach_id: 1 }),
             PhuxClientResult::Ok
@@ -143,7 +417,20 @@ impl Harness {
     }
 
     fn bootstrap(&mut self, terminal_id: TerminalId) {
-        let stream_id = StreamId::new(17).expect("stream");
+        self.bootstrap_with_cursor(terminal_id, None);
+    }
+
+    fn bootstrap_with_cursor(&mut self, terminal_id: TerminalId, cursor: Option<bytes::Bytes>) {
+        self.bootstrap_generation(terminal_id, cursor, 17);
+    }
+
+    fn bootstrap_generation(
+        &mut self,
+        terminal_id: TerminalId,
+        cursor: Option<bytes::Bytes>,
+        stream: u64,
+    ) {
+        let stream_id = StreamId::new(stream).expect("stream");
         let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
         for frame in [
             FrameKind::BootstrapBegin {
@@ -166,7 +453,7 @@ impl Harness {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
-                history_cursor: None,
+                history_cursor: cursor,
             },
         ] {
             assert_eq!(self.feed(frame), PhuxClientResult::Ok);

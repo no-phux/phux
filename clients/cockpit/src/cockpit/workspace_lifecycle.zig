@@ -29,6 +29,7 @@ fn releaseRemote(model: *Model, ref: support.TerminalRef) bool {
     if (support.providerKind(ref) != .phux) return true;
     const remote = model.phux() orelse return true;
     if (!remote.contains(ref)) return true;
+    if (remote.state() != .attached) return true;
     _ = remote.requestDetach(ref) catch {
         model.terminal_limit_refused = true;
         return false;

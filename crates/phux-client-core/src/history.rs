@@ -331,6 +331,17 @@ impl HistoryCache {
         }
     }
 
+    /// Whether this exact transport cursor still owns the outstanding fetch.
+    /// Hosts use this to validate a temporarily deferred, never-sent request.
+    #[must_use]
+    pub fn is_fetching(&self, cursor: &[u8]) -> bool {
+        self.state == HistoryLoadState::Loading
+            && self
+                .next_cursor
+                .as_ref()
+                .is_some_and(|next| next.as_bytes() == cursor)
+    }
+
     /// Opaque page payload bytes retained under the configured byte budget.
     #[cfg(test)]
     pub(crate) const fn retained_payload_bytes_for_tests(&self) -> usize {
