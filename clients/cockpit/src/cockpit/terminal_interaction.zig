@@ -152,7 +152,9 @@ pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
         .action = .press,
         .physical = @enumFromInt(0),
         .text = event.text,
-        .modifiers = modifiers(event),
+        // The text is already committed by the host's layout/IME. Applying
+        // Option or Shift again would turn composed text into another chord.
+        .modifiers = .{},
     }) catch {};
 }
 
@@ -189,6 +191,16 @@ pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
 }
 
 pub fn rememberKey(model: *Model, ref: TerminalRef, event: Event) void {
+    if (!terminalAcceptsKeys(model, ref)) return;
     const owner = model.terminalOwner(ref) orelse return;
     update.key_owners.remember(model, owner, event.key);
+}
+
+fn terminalAcceptsKeys(model: *Model, ref: TerminalRef) bool {
+    if (model.provider.terminal(ref)) |pane| {
+        return pane.acceptsInput() and !pane.selecting and !pane.session.search.open;
+    }
+    const state = model.remoteUi(ref) orelse return false;
+    if (state.selecting) return false;
+    return model.ownerIsCurrent(state.owner);
 }

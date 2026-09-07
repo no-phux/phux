@@ -106,6 +106,7 @@ pub const Engine = struct {
     last_click_count: u8 = 0,
     split_drag: ?SplitDrag = null,
     remote_focus_owner: ?support.ReplicaOwner = null,
+    remote_natural_keys_held: u8 = 0,
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -713,6 +714,7 @@ pub const Engine = struct {
     /// core-only commands (the switcher) do not, so finish the adoption here
     /// exactly once after the inner app has run.
     pub fn commitWindowAdoption(self: *Engine, before_window: usize, before_sequence: u64) bool {
+        defer self.syncRemoteFocus();
         if (self.model.active_window == before_window or self.sequence != before_sequence) return false;
         self.sequence +%= 1;
         self.revision +%= 1;
@@ -759,29 +761,11 @@ pub const Engine = struct {
     /// snapshot (phase/title/cwd/attention); ordinary terminal output still
     /// wakes native painting without forcing a snapshot on every byte batch.
     pub fn onShellEvent(self: *Engine, fx: anytype, event: native_sdk.EffectPtyEvent) bool {
+        defer self.syncRemoteFocus();
         const pane = terminal_runtime.paneForKey(self.model, event.key) orelse return false;
         const chrome_before = self.paneChromeFingerprint(pane);
         switch (event.kind) {
-            .output => {
-                pane.phase = .live;
-                pane.output_batches += 1;
-                pane.output_bytes += event.bytes.len;
-                const protocol_before = pane.mouse_protocol_fingerprint;
-                // Read BEFORE the feed: the notification fires on the latch's
-                // rising edge, and after the feed a fresh bell and a standing
-                // one look the same.
-                const bell_before = pane.bellRung();
-                terminal_runtime.feedOutput(pane, fx, event.bytes);
-                pointer_input.syncMouseProtocol(pane);
-                if (protocol_before != 0 and protocol_before != pane.mouse_protocol_fingerprint) {
-                    pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
-                }
-                pane.session.refreshScreenText();
-                self.notifyBackgroundBell(fx, pane, bell_before);
-                if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
-                terminal_runtime.flushOutbound(pane, fx);
-                terminal_runtime.moveResponsesToOutbound(pane, fx);
-            },
+            .output => self.feedShellOutput(fx, pane, event.bytes),
             .exit => {
                 pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
                 pane.exit_code = event.code;
@@ -803,6 +787,25 @@ pub const Engine = struct {
         return true;
     }
 
+    fn feedShellOutput(self: *Engine, fx: anytype, pane: *model_module.Pane, bytes: []const u8) void {
+        pane.phase = .live;
+        pane.output_batches += 1;
+        pane.output_bytes += bytes.len;
+        const protocol_before = pane.mouse_protocol_fingerprint;
+        // Preserve the bell's rising edge before mutating the terminal.
+        const bell_before = pane.bellRung();
+        terminal_runtime.feedOutput(pane, fx, bytes);
+        pointer_input.syncMouseProtocol(pane);
+        if (protocol_before != 0 and protocol_before != pane.mouse_protocol_fingerprint) {
+            pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
+        }
+        pane.session.refreshScreenText();
+        self.notifyBackgroundBell(fx, pane, bell_before);
+        if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
+        terminal_runtime.flushOutbound(pane, fx);
+        terminal_runtime.moveResponsesToOutbound(pane, fx);
+    }
+
     // ------------------------------------------------------------- input
 
     fn onRemoteKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
@@ -812,12 +815,13 @@ pub const Engine = struct {
             self.remoteSelectionKey(fx, ref, event);
             return;
         }
+        if (self.remoteNaturalKey(ref, event)) return;
         interaction.rememberKey(self.model, ref, event);
         interaction.remoteKey(self.model, ref, event);
     }
 
     fn remoteShortcut(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
-        if (!event.modifiers.hasCommandModifier()) return false;
+        if (!event.modifiers.super or event.modifiers.control) return false;
         if (keyIs(event.key, "c")) {
             interaction.copy(self.model, fx, ref);
             return true;
@@ -832,6 +836,15 @@ pub const Engine = struct {
             return true;
         }
         return self.remoteScrollKey(ref, event);
+    }
+
+    fn remoteNaturalKey(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
+        const input = terminal_runtime.providerNaturalKey(event) orelse return false;
+        const remote = self.model.phux() orelse return false;
+        const owner = self.model.terminalOwner(ref) orelse return false;
+        self.remote_natural_keys_held |= terminal_runtime.macosNaturalTextKeyMask(event.key);
+        remote.sendKey(owner, &input) catch {};
+        return true;
     }
 
     fn remoteScrollKey(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
@@ -878,7 +891,8 @@ pub const Engine = struct {
     /// the focused pane's emulator encoder, which alone knows the live modes
     /// the bytes depend on. Releases only ever reach the encoder.
     pub fn onKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
-        if (event.phase == .key_up) return interaction.releaseKey(self.model, fx, event);
+        if (event.phase == .key_up) return self.releaseKey(fx, event);
+        self.remote_natural_keys_held &= ~terminal_runtime.macosNaturalTextKeyMask(event.key);
         const ref = self.model.focusedTerminalRef() orelse return;
         if (support.providerKind(ref) == .phux) {
             self.onRemoteKey(fx, ref, event);
@@ -895,9 +909,18 @@ pub const Engine = struct {
         terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
     }
 
+    fn releaseKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+        const mask = terminal_runtime.macosNaturalTextKeyMask(event.key);
+        if (self.remote_natural_keys_held & mask != 0) {
+            self.remote_natural_keys_held &= ~mask;
+            return;
+        }
+        interaction.releaseKey(self.model, fx, event);
+    }
+
     fn localShortcut(self: *Engine, fx: anytype, pane: *model_module.Pane, event: canvas.WidgetKeyboardEvent) bool {
         const mods = event.modifiers;
-        if (!mods.hasCommandModifier()) return false;
+        if (!mods.super or mods.control) return false;
         if (mods.shift and keyIs(event.key, "space")) {
             if (pane.selecting) {
                 pane.selecting = false;
@@ -1217,6 +1240,7 @@ pub const Engine = struct {
         if (model.focused == focused) return;
         model.focused = focused;
         if (!focused) {
+            self.remote_natural_keys_held = 0;
             pointer_input.endAllCaptures(model, fx);
             for (&model.held_terminal_keys) |*held| held.* = .{};
         }

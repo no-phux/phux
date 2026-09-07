@@ -1211,6 +1211,107 @@ fn expectOutgoingTag(remote: anytype, tag: u8) !void {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
+/// Decode the small KEY fixture's positional event inside its two TLV fields.
+/// Layout derives from wire/frame/kind.rs::encode_input_key and codec.rs::encode_key_event.
+fn expectOutgoingKey(remote: anytype, physical: u32, modifiers: u16) !void {
+    const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedOutgoingKey;
+    defer remote.bridge.outgoing.release(frame);
+    try std.testing.expect(frame.len >= 28);
+    try std.testing.expectEqual(@as(u8, 0x10), frame[4]);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 4, 5, 0, 0, 0, 0, 7, 2, 4 }, frame[5..15]);
+    try std.testing.expectEqual(frame.len - 16, frame[15]);
+    try std.testing.expectEqual(physical, std.mem.readInt(u32, frame[20..24], .big));
+    try std.testing.expectEqual(modifiers, std.mem.readInt(u16, frame[24..26], .big));
+}
+
+// GUARD: ts-remote-control
+test "shipping Phux control keys remain terminal input" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const remote = bridge.engine.?.model.phux().?;
+    _ = onKey(.{ .phase = .key_down, .key = "c", .modifiers = .{ .control = true, .super = true } });
+    try expectOutgoingKey(remote, 22, 2);
+    _ = onKey(.{ .phase = .key_down, .key = "v", .modifiers = .{ .control = true, .super = true } });
+    try expectOutgoingKey(remote, 41, 2);
+    try std.testing.expect(!bridge.engine.?.model.paste_inflight);
+}
+
+test "shipping Phux committed text consumes composition modifiers" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    _ = onText(.{ .phase = .text_input, .text = "ƒ", .key = "f", .modifiers = .{ .alt = true } });
+    try expectOutgoingKey(bridge.engine.?.model.phux().?, 0, 0);
+}
+
+test "shipping Phux macOS editing gestures target word and line bindings" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const remote = bridge.engine.?.model.phux().?;
+    const cases = .{
+        .{ "arrowleft", true, @as(u32, 21), @as(u16, 4) },
+        .{ "arrowright", true, @as(u32, 25), @as(u16, 4) },
+        .{ "arrowleft", false, @as(u32, 20), @as(u16, 2) },
+        .{ "arrowright", false, @as(u32, 24), @as(u16, 2) },
+        .{ "backspace", false, @as(u32, 40), @as(u16, 2) },
+    };
+    inline for (cases) |binding| {
+        _ = onKey(.{ .phase = .key_down, .key = binding[0], .modifiers = .{ .alt = binding[1], .super = !binding[1] } });
+        try expectOutgoingKey(remote, binding[2], binding[3]);
+        // The modifier may be released before the navigation key.
+        _ = onKey(.{ .phase = .key_up, .key = binding[0] });
+        try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    }
+    _ = onKey(.{ .phase = .key_down, .key = "arrowleft", .modifiers = .{ .alt = true } });
+    try expectOutgoingKey(remote, 21, 4);
+    // An ordinary repeat after Option-up supersedes the natural-key latch.
+    _ = onKey(.{ .phase = .key_down, .key = "arrowleft" });
+    try expectOutgoingKey(remote, 76, 0);
+    _ = onKey(.{ .phase = .key_up, .key = "arrowleft" });
+    try expectOutgoingKey(remote, 76, 0);
+}
+
+test "shipping search text cannot leak a key release after search closes" {
+    const engine = try engineWithText("\x1b[>3u");
+    defer engine.destroy();
+    var fx = Recorder{};
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.phase = .live;
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "f", .modifiers = .{ .super = true } });
+    try std.testing.expect(pane.session.search.open);
+    engine.onText(&fx, .{ .phase = .text_input, .key = "a", .text = "a" });
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "escape" });
+    try std.testing.expect(!pane.session.search.open);
+    engine.onKey(&fx, .{ .phase = .key_up, .key = "a" });
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+}
+
+test "shipping shell exit transfers focus to the revealed Phux terminal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const select = protocol.encodeIntent(.{ .kind = .select_tab, .expected_revision = engine.revision, .argument = 0 });
+    const fx = EngineFx{ .effects = &rig.app_state.effects };
+    try std.testing.expect(engine.applyIntent(&select, fx));
+    try expectOutgoingTag(remote, 0x14);
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    _ = engine.onShellEvent(fx, .{ .key = pane.pty_key, .kind = .exit, .code = 0 });
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
+    try expectOutgoingTag(remote, 0x14);
+}
+
 // GUARD: ts-remote-viewport
 test "shipping frame resizes a published Phux viewport once" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;

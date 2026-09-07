@@ -264,7 +264,7 @@ pub fn encodeKeyEvent(model: *Pane, fx: anytype, event: canvas.WidgetKeyboardEve
     enqueueTransient(model, fx, buffer[0..writer.end]);
 }
 
-fn macosNaturalTextKeyMask(key: []const u8) u8 {
+pub fn macosNaturalTextKeyMask(key: []const u8) u8 {
     if (comptime builtin.os.tag != .macos) return 0;
     if (keyIs(key, "arrowleft")) return 1 << 0;
     if (keyIs(key, "arrowright")) return 1 << 1;
@@ -330,6 +330,29 @@ const MappedKey = struct {
     utf8: []const u8 = "",
     unshifted: u21 = 0,
 };
+
+/// Apply the same native editing policy to a structured remote key. The
+/// coordinator retains control of its negotiated terminal-key encoding.
+pub fn providerNaturalKey(event: canvas.WidgetKeyboardEvent) ?@import("provider_contract").KeyInput {
+    const sequence = macosNaturalTextSequence(event) orelse return null;
+    const bindings = .{
+        .{ "\x1bb", vt.input.Key.key_b, "b", true },
+        .{ "\x1bf", vt.input.Key.key_f, "f", true },
+        .{ "\x01", vt.input.Key.key_a, "a", false },
+        .{ "\x05", vt.input.Key.key_e, "e", false },
+        .{ "\x15", vt.input.Key.key_u, "u", false },
+    };
+    inline for (bindings) |binding| {
+        if (std.mem.eql(u8, sequence, binding[0])) return .{
+            .action = .press,
+            .physical = @enumFromInt(@intFromEnum(binding[1])),
+            .text = binding[2],
+            .unshifted_codepoint = binding[2][0],
+            .modifiers = .{ .alt = binding[3], .control = !binding[3] },
+        };
+    }
+    return null;
+}
 
 /// The same native key mapping for coordinator-backed terminals. Printable
 /// presses belong to committed text; forwarding both would type twice.

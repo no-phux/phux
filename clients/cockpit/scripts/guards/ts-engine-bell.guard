@@ -11,11 +11,11 @@ index c5489f5..43a5a08 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
 @@ -257,7 +257,7 @@ pub const Engine = struct {
-                     pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
-                 }
-                 pane.session.refreshScreenText();
--                self.notifyBackgroundBell(fx, pane, bell_before);
-+                if (false) self.notifyBackgroundBell(fx, pane, bell_before);
-                 if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
-                 terminal_runtime.flushOutbound(pane, fx);
-                 terminal_runtime.moveResponsesToOutbound(pane, fx);
+             pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
+         }
+         pane.session.refreshScreenText();
+-        self.notifyBackgroundBell(fx, pane, bell_before);
++        if (false) self.notifyBackgroundBell(fx, pane, bell_before);
+         if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
+         terminal_runtime.flushOutbound(pane, fx);
+         terminal_runtime.moveResponsesToOutbound(pane, fx);
