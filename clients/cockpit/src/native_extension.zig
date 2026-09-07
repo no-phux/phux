@@ -2344,6 +2344,7 @@ test "navigation activates available remote identity and stable session id inclu
     try std.testing.expectEqual(@as(usize, 2), recorder.navigation_restarts);
 }
 
+// GUARD: ts-navigation-snapshot-budget
 test "navigation snapshots preserve full window inventory within the host payload limit" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
