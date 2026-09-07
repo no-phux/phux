@@ -132,10 +132,11 @@ path leaves a dependency's test-case directory relative, tripping its absolute
 path assertion. The JS loader uses Node's built-in TypeScript stripper to load
 the pinned SDK's deliberately published TypeScript sources.
 
-The focused gate is not integration acceptance. The parent engine/bridge must
-install the hooks above, adapt the existing synchronous-switcher tests and
-`ts-overlay-switcher` guard, and run the full Phux-inclusive suite and serial
-live-host acceptance. No screenshot here claims macOS rendering evidence.
+The focused gate is not integration acceptance. The shipping engine/bridge now
+implements the hooks above, and the full suite exercises asynchronous catalog
+completion, exact cross-window pane selection, remote/session activation, and
+independent snapshot/catalog completion slots. Serial live-host acceptance is
+separate. No screenshot here claims macOS rendering evidence.
 
 ## Regression evidence
 
@@ -146,10 +147,12 @@ maximum title and a verified 128-byte OSC-7 directory. Restoring the compact
 allowances passes. The adopted-window JS check was observed failing with
 `actual: 0, expected: 255` after restoring the former forced-main command.
 
-These direct red/green runs do not constitute a recorded `.guard`: the guard
-recorder requires a green full-suite baseline before its scoped graph. That
-baseline depends on the parent hooks and replacement of the old switcher guard.
-Record the new guard with `guard-red-run.sh` once integration has that baseline.
+The integration guards additionally cover the full-suite snapshot budget and
+the snapshot-commit fence. An invalidation enters internal `SYNCING` and retains
+the last accepted revision until snapshot commit. Advancing the revision early
+would pair old tab positions with new authority; leaving internal `READY` in
+place also let test/runtime consumers mistake an announcement for a committed
+snapshot. Navigation replies are withheld while that commit is pending.
 
 ## Complexity and review evidence
 
@@ -174,5 +177,5 @@ Review fixes include clearing rows on invalidation before a new snapshot,
 rejecting late replies by revision/query/page, rejecting short pages that hide
 inventory, withdrawing connectivity claims when the engine fails, maintaining
 backward keyboard order across pages, and preserving integer proofs required
-by the actual AOT compiler. The independent integrated review remains with the
-parent's engine/bridge acceptance.
+by the actual AOT compiler. Independent review and live acceptance remain
+separate from these deterministic test results.

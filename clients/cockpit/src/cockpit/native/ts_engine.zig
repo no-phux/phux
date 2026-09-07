@@ -34,6 +34,7 @@ const projection = @import("workspace_projection.zig");
 const terminal_painter = @import("terminal_painter.zig");
 const protocol = @import("ts_protocol.zig");
 const ts_snapshot = @import("ts_snapshot.zig");
+pub const navigation = @import("ts_navigation.zig");
 const theme_module = @import("../../config/theme.zig");
 const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
@@ -430,6 +431,7 @@ pub const Engine = struct {
     pub fn applyIntent(self: *Engine, bytes: []const u8, fx: anytype) bool {
         defer self.syncRemoteFocus();
         self.sequence +%= 1;
+        if (protocol.decodeNavigationIntent(bytes)) |intent| return self.applyNavigationIntent(intent, fx);
         const intent = protocol.decodeIntent(bytes) orelse return self.refuse();
         if (intent.expected_revision != self.revision) return self.refuse();
         // A tab intent means the window whose chrome sent it. Adopting it as
@@ -458,6 +460,104 @@ pub const Engine = struct {
         if (!changed) return self.refuse();
         self.intent_refused = false;
         self.revision +%= 1;
+        return true;
+    }
+
+    fn applyNavigationIntent(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
+        if (intent.expected_revision != self.revision) return self.refuse();
+        const changed = switch (intent.kind) {
+            .reconnect => self.reconnectNavigation(fx),
+            .select => self.selectNavigation(intent, fx),
+        };
+        if (!changed) return self.refuse();
+        self.intent_refused = false;
+        self.revision +%= 1;
+        return true;
+    }
+
+    pub fn navigationSnapshot(self: *const Engine, request: []const u8, out: []u8) navigation.Error![]const u8 {
+        return navigation.encode(self.model, self.revision, request, out);
+    }
+
+    fn selectNavigation(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
+        const destination = navigation.resolve(self.model, self.revision, intent.expected_revision, intent.index) orelse return false;
+        return switch (destination) {
+            .placed_terminal => |placed| self.selectPlacedNavigation(placed, fx),
+            .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
+            .session => |id| self.selectSessionNavigation(id, fx),
+        };
+    }
+
+    fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
+        const model = self.model;
+        if (!model.containsTerminal(placed.terminal_ref)) return false;
+        const current = model.locateTerminal(placed.terminal_ref) orelse return false;
+        if (current.window != placed.window) return false;
+        const workspace = model.wsAt(current.window) orelse return false;
+        if (!workspace.selectTerminal(placed.terminal_ref)) return false;
+        const previous = model.active_window;
+        model.active_window = current.window;
+        pointer_input.endHiddenCaptures(model, fx);
+        if (previous != current.window) self.showNavigationWindow(fx, current.window);
+        return true;
+    }
+
+    fn showNavigationWindow(_: *Engine, fx: anytype, window: usize) void {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "showWindow")) fx.showWindow(scene.windowLabelFor(window));
+    }
+
+    fn selectAvailableNavigation(self: *Engine, ref: TerminalRef, fx: anytype) bool {
+        const model = self.model;
+        if (support.providerKind(ref) != .phux or !model.containsTerminal(ref)) return false;
+        if (!model.admitTab(ref)) {
+            model.ws().tab_limit_refused = true;
+            return false;
+        }
+        if (!model.selectTerminal(ref)) return false;
+        pointer_input.endHiddenCaptures(model, fx);
+        return true;
+    }
+
+    fn selectSessionNavigation(self: *Engine, id: u32, fx: anytype) bool {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
+        const remote = self.model.phux() orelse return false;
+        const changed = remote.selectSession(id) catch return false;
+        if (!changed) return true;
+        self.model.phux_admit_on_ready = true;
+        return fx.restartPhux(self);
+    }
+
+    fn reconnectNavigation(self: *Engine, fx: anytype) bool {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
+        if (navigation.connection(self.model) != .offline) return false;
+        return fx.restartPhux(self);
+    }
+
+    fn navigationFxType(comptime T: type) type {
+        return switch (@typeInfo(T)) {
+            .pointer => |pointer| pointer.child,
+            else => T,
+        };
+    }
+
+    /// A live source must publish its close before its replacement opens. An
+    /// already-closed source has no future close event, so reopen it directly.
+    /// onPhuxChannel owns the existing reconnect-after-close continuation.
+    pub fn restartNavigationConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
+        const model = self.model;
+        const remote = model.phux() orelse return false;
+        remote.stop();
+        model.phux_connection_unavailable = false;
+        if (fx.phuxChannelLive()) {
+            model.phux_reconnect_after_close = true;
+            fx.closeChannel(support.phux_channel_key);
+        } else {
+            model.phux_reconnect_after_close = false;
+            self.openPhuxChannel(fx, on_event, remote.state() != .new);
+        }
         return true;
     }
 

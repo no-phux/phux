@@ -20,6 +20,7 @@ const empty_workspace: model_module.Workspace = .{};
 pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3 };
 
 pub fn connection(model: *const Model) Connection {
+    if (model.phux_reconnect_after_close) return .connecting;
     if (model.phux_connection_unavailable) return .offline;
     if (comptime !support.phux_enabled) return .local;
     const remote = model.phuxConst() orelse return .local;

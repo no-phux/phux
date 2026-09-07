@@ -19,7 +19,7 @@ function page(query = '', offset = 0, indices = [0, 1, 2, 3], total = 10, rev = 
   return new Uint8Array([...head, total % 256, Math.floor(total / 256), indices.length, ...rows]);
 }
 function open() {
-  return step({ ...initialModel()[0], engineRevision: revision }, { kind: 'palette_open' })[0];
+  return step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'palette_open' })[0];
 }
 function snapshotBytes(connection) {
   // Empty main, no themes/path/secondary; connection is independent of READY.

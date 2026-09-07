@@ -287,7 +287,7 @@ function validNavigationPick(model: Model, index: number): boolean {
 }
 
 function loadedNavigation(model: Model, body: Uint8Array): Model {
-  if (!model.paletteOpen) return model;
+  if (!model.paletteOpen || !model.engineConnected) return model;
   const page = navigationPage(body);
   if (page === null) return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
   if (!sameU64(page.revision, model.engineRevision)) return model;
@@ -913,7 +913,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const next = {
         ...model,
         engineSequence: event.sequence,
-        engineRevision: event.revision,
+        engineConnected: false,
+        status: asciiBytes("SYNCING"),
         paletteRows: NO_ROWS,
         paletteLoading: model.paletteOpen,
         palettePrevious: false,

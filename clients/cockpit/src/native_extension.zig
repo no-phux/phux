@@ -107,6 +107,16 @@ const EngineFx = struct {
     pub fn closeChannel(self: EngineFx, key: u64) void {
         self.effects.closeChannel(key);
     }
+    pub fn showWindow(self: EngineFx, label: []const u8) void {
+        self.effects.showWindow(label);
+    }
+    pub fn phuxChannelLive(self: EngineFx) bool {
+        const handle = self.effects.channelHandle(cockpit.phux_channel_key) orelse return false;
+        return handle.live();
+    }
+    pub fn restartPhux(self: EngineFx, engine: *Engine) bool {
+        return engine.restartNavigationConnection(self, phuxChannel);
+    }
 };
 
 fn engineFx() ?EngineFx {
@@ -138,6 +148,11 @@ const Bridge = struct {
     pending_ok: bool = false,
     pending_len: usize = 0,
     buffer: [cockpit.snapshot.max_bytes]u8 = undefined,
+    navigation_pending: bool = false,
+    navigation_key: u64 = 0,
+    navigation_ok: bool = false,
+    navigation_len: usize = 0,
+    navigation_buffer: [cockpit.engine.navigation.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -192,7 +207,11 @@ const Bridge = struct {
         }
     }
 
-    fn request(context: *anyopaque, name: []const u8, key: u64, _: []const u8) void {
+    fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
+        if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
+            const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return navigation_bridge.requestNavigation(key, payload);
+        }
         const self: *Bridge = @ptrCast(@alignCast(context));
         self.pending = true;
         self.pending_key = key;
@@ -215,6 +234,22 @@ const Bridge = struct {
         self.pending_len = bytes.len;
     }
 
+    fn requestNavigation(self: *Bridge, key: u64, payload: []const u8) void {
+        self.navigation_pending = true;
+        self.navigation_key = key;
+        self.navigation_ok = false;
+        const engine = self.engine orelse {
+            self.navigation_len = copyInto(&self.navigation_buffer, "engine unavailable");
+            return;
+        };
+        const bytes = engine.navigationSnapshot(payload, &self.navigation_buffer) catch |err| {
+            self.navigation_len = copyInto(&self.navigation_buffer, @errorName(err));
+            return;
+        };
+        self.navigation_ok = true;
+        self.navigation_len = bytes.len;
+    }
+
     fn copyInto(buffer: []u8, text: []const u8) usize {
         @memcpy(buffer[0..text.len], text);
         return text.len;
@@ -223,18 +258,25 @@ const Bridge = struct {
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *Bridge = @ptrCast(@alignCast(context));
         if (self.pending and self.pending_key == key) self.pending = false;
+        if (self.navigation_pending and self.navigation_key == key) self.navigation_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        if (!self.pending) return null;
+        if (!self.pending) return self.pollNavigation();
         self.pending = false;
         return .{ .key = self.pending_key, .ok = self.pending_ok, .bytes = self.buffer[0..self.pending_len] };
     }
 
+    fn pollNavigation(self: *Bridge) ?native_sdk.HostCallCompletion {
+        if (!self.navigation_pending) return null;
+        self.navigation_pending = false;
+        return .{ .key = self.navigation_key, .ok = self.navigation_ok, .bytes = self.navigation_buffer[0..self.navigation_len] };
+    }
+
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending;
+        return self.pending or self.navigation_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -880,6 +922,14 @@ const Rig = struct {
             std.debug.print("dispatch of {s} failed: {s}\n", .{ @tagName(msg), @errorName(err) });
             return err;
         };
+    }
+
+    fn settleNavigation(self: *Rig) !void {
+        for (0..8) |_| {
+            if (!self.app_state.model.paletteLoading) return;
+            try self.harness.runtime.dispatchPlatformEvent(self.decorated, .wake);
+        }
+        return error.TestNavigationDidNotComplete;
     }
 
     /// Present a frame at `size`; the engine re-derives the run and, when it
@@ -1793,8 +1843,10 @@ test "the switcher filters the engine's tabs by position or title and selects th
     const engine = bridge.engine.?;
 
     try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
     try std.testing.expectEqual(@as(usize, 3), rig.app_state.model.paletteRows.len);
     try rig.dispatch(.{ .palette_edit = .{ .insert_text = "3" } });
+    try rig.settleNavigation();
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.paletteRows.len);
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.paletteRows[0].index);
 
@@ -1825,10 +1877,11 @@ test "the switcher receives the focused split pane's cwd without polling termina
     });
     try rig.dispatch(wake);
     try rig.settle(2, "READY");
-    try std.testing.expectEqualStrings("/tmp/right-pane", rig.app_state.model.tabs[0].cwd);
+    try std.testing.expectEqualStrings("/tmp/…", rig.app_state.model.tabs[0].cwd);
 
     try rig.dispatch(.palette_open);
     try rig.dispatch(.{ .palette_edit = .{ .insert_text = "right-pane" } });
+    try rig.settleNavigation();
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.paletteRows.len);
 }
 
@@ -1861,11 +1914,20 @@ test "the settings surface shows the engine's theme catalog and saves through th
 /// An effects recorder for the native-behaviour guards: counts what the
 /// engine asked for and keeps the last clipboard text, no processes.
 const Recorder = struct {
+    pub fn restartPhux(self: *@This(), _: *Engine) bool {
+        self.navigation_restarts += 1;
+        return true;
+    }
+    pub fn showWindow(self: *@This(), label: []const u8) void {
+        self.navigation_shown = label;
+    }
     pub fn toggleFullscreenWindow(_: *@This(), _: []const u8) void {}
     pub fn minimizeWindow(_: *@This(), _: []const u8) void {}
     pub fn cancel(_: *@This(), _: u64) void {}
     pub fn closeWindow(_: *@This(), _: []const u8) void {}
     pub fn quitApp(_: *@This()) void {}
+    navigation_restarts: usize = 0,
+    navigation_shown: []const u8 = "",
     notifications: usize = 0,
     clipboard_writes: usize = 0,
     clipboard_reads: usize = 0,
@@ -2125,8 +2187,10 @@ test "a focused secondary snapshot keeps main and secondary projections distinct
     // engine and core agree that main is active before the platform command.
     try rig.dispatch(.new_window);
     try rig.settle(1, "READY");
-    try rig.dispatch(.new_terminal);
+    try rig.dispatch(.{ .select_tab = 0 });
     try rig.settle(2, "READY");
+    try rig.dispatch(.new_terminal);
+    try rig.settle(3, "READY");
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
     try std.testing.expectEqual(@as(i64, 0), rig.app_state.model.activeWindow);
 
@@ -2137,7 +2201,7 @@ test "a focused secondary snapshot keeps main and secondary projections distinct
         .name = "tabs.palette",
         .window_id = 42,
     } });
-    try rig.settle(3, "READY");
+    try rig.settle(4, "READY");
 
     try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.activeWindow);
@@ -2158,6 +2222,152 @@ test "a secondary-window switcher is scoped to the focused window" {
     try std.testing.expect(rig.app_state.model.paletteOpen);
     try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
     try std.testing.expect(rig.app_state.model.window1PaletteOpen);
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Find terminal"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Find terminal"));
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Find terminal or session"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Find terminal or session"));
+}
+
+fn navigationRequestBytes(revision: u64) [13]u8 {
+    var bytes = [_]u8{0} ** 13;
+    bytes[0] = 1;
+    bytes[1] = 3;
+    std.mem.writeInt(u64, bytes[2..10], revision, .little);
+    return bytes;
+}
+
+fn navigationIntentBytes(revision: u64, index: u16) [12]u8 {
+    var bytes = [_]u8{0} ** 12;
+    bytes[0] = 1;
+    bytes[1] = 13;
+    std.mem.writeInt(u64, bytes[2..10], revision, .little);
+    std.mem.writeInt(u16, bytes[10..12], index, .little);
+    return bytes;
+}
+
+test "navigation bridge preserves independently pending catalog and snapshot completions" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var service: Bridge = .{ .engine = engine };
+    const query = navigationRequestBytes(engine.revision);
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 22, &query);
+    Bridge.request(&service, protocol.snapshot_request, 11, "");
+    const snapshot_reply = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u64, 11), snapshot_reply.key);
+    try std.testing.expect(snapshot_reply.ok);
+    try std.testing.expectEqual(@as(u8, 2), snapshot_reply.bytes[1]);
+    try std.testing.expect(Bridge.hasPending(&service));
+    const catalog_reply = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u64, 22), catalog_reply.key);
+    try std.testing.expect(catalog_reply.ok);
+    try std.testing.expectEqual(@as(u8, 3), catalog_reply.bytes[1]);
+    try std.testing.expect(Bridge.poll(&service) == null);
+    Bridge.request(&service, protocol.snapshot_request, 33, "");
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 44, &query);
+    Bridge.cancel(&service, 44);
+    try std.testing.expectEqual(@as(u64, 33), Bridge.poll(&service).?.key);
+    try std.testing.expect(!Bridge.hasPending(&service));
+}
+
+test "navigation waits for snapshot commit before advancing positional fences" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const before = rig.app_state.model.engineRevision.lo;
+    const bytes = protocol.encodeInvalidation(1, @intCast(before + 1));
+    try rig.dispatch(.{ .engine_event = .{ .key = protocol.event_channel_key, .state = .data, .bytes = &bytes, .droppedPending = 0, .droppedTotal = 0 } });
+    try std.testing.expectEqual(before, rig.app_state.model.engineRevision.lo);
+    try std.testing.expect(!rig.app_state.model.engineConnected);
+    try std.testing.expectEqualStrings("SYNCING", rig.app_state.model.status);
+}
+
+test "navigation selects an exact split pane across windows through the shipping bridge" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const original = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    try std.testing.expect(!engine.model.focusedTerminalRef().?.eql(original));
+    try rig.dispatch(.new_window);
+    try rig.settle(2, "READY");
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try std.testing.expectEqual(@as(usize, 3), rig.app_state.model.paletteRows.len);
+    try rig.dispatch(.{ .palette_pick = 0 });
+    try rig.settle(3, "READY");
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    const stale = navigationIntentBytes(engine.revision - 1, 2);
+    try std.testing.expect(!engine.applyIntent(&stale, &cockpit.NoShells{}));
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
+}
+
+test "navigation activates available remote identity and stable session id including reconnect" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/navigation-unused.sock" });
+    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+    engine.model.phux_provider = remote;
+    try remote.host.terminals.append(std.testing.allocator, .{ .id = .{ .kind = 0, .id = 900 }, .published = true, .phase = .live });
+    const ref: @TypeOf(engine.model.remote_inventory[0]) = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 900 } } };
+    engine.model.remote_inventory[0] = ref;
+    engine.model.remote_inventory_count = 1;
+    try remote.host.sessions.append(std.testing.allocator, .{
+        .id = 41,
+        .name = try std.testing.allocator.dupe(u8, "work"),
+        .created_at_unix_secs = 0,
+        .window_count = 1,
+        .attached_client_count = 0,
+        .focused = false,
+    });
+    var recorder: Recorder = .{};
+    const available = navigationIntentBytes(engine.revision, 1);
+    try std.testing.expect(engine.applyIntent(&available, &recorder));
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+    const session = navigationIntentBytes(engine.revision, 2);
+    try std.testing.expect(engine.applyIntent(&session, &recorder));
+    try std.testing.expectEqual(@as(?u32, 41), remote.session_id);
+    // SelectedSessionId remains server-authoritative until reconnect publishes.
+    try std.testing.expect(remote.selectedSessionId() == null);
+    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
+    try std.testing.expect(engine.model.phux_admit_on_ready);
+    try std.testing.expect(!engine.applyIntent(&session, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
+    engine.model.phux_connection_unavailable = true;
+    var reconnect = navigationIntentBytes(engine.revision, 0);
+    reconnect[1] = 12;
+    try std.testing.expect(engine.applyIntent(&reconnect, &recorder));
+    try std.testing.expectEqual(@as(usize, 2), recorder.navigation_restarts);
+}
+
+test "navigation snapshots preserve full window inventory within the host payload limit" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    for (0..2) |window| {
+        if (window > 0) {
+            const open = protocol.encodeIntent(.{ .kind = .new_window, .expected_revision = engine.revision, .argument = 0 });
+            try std.testing.expect(engine.applyIntent(&open, &cockpit.NoShells{}));
+        }
+        for (1..16) |_| {
+            const create = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0, .window = @intCast(window) });
+            try std.testing.expect(engine.applyIntent(&create, &cockpit.NoShells{}));
+        }
+        for (0..16) |tab| {
+            const ref = engine.model.wsAtConst(window).?.tabTerminal(tab).?;
+            const pane = engine.model.provider.terminal(ref).?;
+            pane.session.feed("\x1b]2;" ++ "T" ** 128 ++ "\x07");
+            pane.session.feed("\x1b]7;file://host/" ++ "d" ** 127 ++ "\x1b\\");
+            try std.testing.expectEqual(@as(usize, 128), pane.pwd().len);
+        }
+    }
+    var buffer: [cockpit.snapshot.max_bytes]u8 = undefined;
+    const bytes = try engine.snapshot(&buffer);
+    try std.testing.expectEqual(@as(u8, 16), bytes[20]);
+    try std.testing.expect(bytes.len <= 4096);
+    const query = navigationRequestBytes(engine.revision);
+    const page = try engine.navigationSnapshot(&query, &buffer);
+    try std.testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, page[13..15], .little));
 }
