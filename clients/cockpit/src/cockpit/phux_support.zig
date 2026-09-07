@@ -30,7 +30,7 @@ const DisabledPhuxProvider = struct {
     pub const OperationResult = struct {
         request_id: u32,
         connection_epoch: u64,
-        kind: enum { spawn, attach },
+        kind: enum { spawn, attach, detach },
         status: enum { success, refused, unknown_outcome },
         terminal_ref: ?TerminalRef,
         error_domain: enum { none, spawn, protocol },
@@ -84,6 +84,12 @@ const DisabledPhuxProvider = struct {
     }
     pub fn requestAttach(_: *DisabledPhuxProvider, _: TerminalRef) error{Disabled}!u32 {
         return error.Disabled;
+    }
+    pub fn requestDetach(_: *DisabledPhuxProvider, _: TerminalRef) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn catalogRefs(_: *const DisabledPhuxProvider, _: []TerminalRef) usize {
+        return 0;
     }
     pub fn takeOperationResult(_: *DisabledPhuxProvider) ?@This().OperationResult {
         return null;

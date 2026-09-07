@@ -174,6 +174,14 @@ pub const PhuxProvider = struct {
     pub fn requestAttach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
         return self.host.requestAttach(terminal_ref);
     }
+
+    pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
+        return self.host.requestDetach(terminal_ref);
+    }
+
+    pub fn catalogRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
+        return self.host.catalogRefs(out);
+    }
     pub fn takeOperationResult(self: *PhuxProvider) ?host_mod.OperationResult {
         return self.host.takeOperationResult();
     }

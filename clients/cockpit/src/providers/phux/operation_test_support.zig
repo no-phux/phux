@@ -36,3 +36,11 @@ pub fn attachHost(host: anytype) !void {
     try std.testing.expect(delta.ready_published);
     host.bridge.outgoing.reset();
 }
+
+pub fn stageFrames(bridge: anytype, encoded: []const u8, offset: *usize, count: usize) !void {
+    for (0..count) |_| {
+        const len = 4 + std.mem.readInt(u32, encoded[offset.*..][0..4], .big);
+        try std.testing.expect(bridge.incoming.stage(encoded[offset.*..][0..len]));
+        offset.* += len;
+    }
+}

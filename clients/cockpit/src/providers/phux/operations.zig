@@ -37,6 +37,14 @@ pub fn Ledger(comptime capacity: usize) type {
             return count;
         }
 
+        pub fn detaching(self: *const Self, ref: provider.TerminalRef) bool {
+            for (self.entries[0..self.len]) |entry| {
+                if (entry.kind != .detach or entry.result != null) continue;
+                if (entry.terminal_ref) |target| if (target.eql(ref)) return true;
+            }
+            return false;
+        }
+
         pub fn complete(self: *Self, result: types.Result) !void {
             for (self.entries[0..self.len]) |*entry| {
                 if (entry.request_id != result.request_id or entry.epoch != result.connection_epoch) continue;

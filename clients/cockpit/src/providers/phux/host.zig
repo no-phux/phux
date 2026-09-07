@@ -16,6 +16,8 @@ pub const test_support = @import("operation_test_support.zig");
 
 pub const enabled = true;
 pub const max_terminals: usize = 16;
+// Matches Cockpit's bounded discovery inventory; contains no engine replicas.
+pub const max_catalog_terminals: usize = 64;
 pub const max_notices: usize = 64;
 pub const max_search_results: usize = 256;
 pub const max_sessions: usize = 256;
@@ -158,6 +160,8 @@ pub const Host = struct {
     attach_barrier_seen: bool = false,
     client_generation: u64 = 1,
     operation_ledger: operations.Ledger(max_terminals) = .{},
+    detached_catalog: [max_catalog_terminals]provider.TerminalRef = undefined,
+    detached_catalog_count: usize = 0,
     disconnected: bool = false,
 
     pub fn create(gpa: std.mem.Allocator, bridge: *transport.Bridge) !*Host {
@@ -218,7 +222,7 @@ pub const Host = struct {
     /// satellite routing is explicit and matches that owner's host.
     pub fn requestSpawn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport) !u32 {
         const request_id = try host.preflightOperation();
-        try host.reserveTerminalSlot();
+        try host.reserveTerminalSlot(null);
         const owner_id = try host.spawnOwner(owner_ref);
         const raw_owner = if (owner_id) |id| cId(id) else null;
         const satellite = if (owner_id) |id| id.host() else &.{};
@@ -246,7 +250,7 @@ pub const Host = struct {
         const raw = cId(&remote);
         _ = try remoteFromC(raw);
         if (remote.id == 0) return error.InvalidIdentity;
-        if (host.findTerminal(terminal_ref) == null) try host.reserveTerminalSlot();
+        if (host.findTerminal(terminal_ref) == null) try host.reserveTerminalSlot(terminal_ref);
         const options: c.PhuxAttachTerminalOptions = .{
             .size = @sizeOf(c.PhuxAttachTerminalOptions),
             .version = c.PHUX_CLIENT_ABI_VERSION,
@@ -268,10 +272,58 @@ pub const Host = struct {
         return host.operation_ledger.nextId();
     }
 
-    fn reserveTerminalSlot(host: *Host) !void {
+    pub fn requestDetach(host: *Host, terminal_ref: provider.TerminalRef) !u32 {
+        const request_id = try host.preflightOperation();
+        const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+        if (!terminal.published) return error.InvalidState;
+        if (!host.catalogContains(terminal_ref) and host.detached_catalog_count == max_catalog_terminals)
+            return error.TerminalCapacity;
+        const options: c.PhuxDetachTerminalOptions = .{
+            .size = @sizeOf(c.PhuxDetachTerminalOptions),
+            .version = c.PHUX_CLIENT_ABI_VERSION,
+            .request_id = request_id,
+            .terminal_id = cId(&terminal.id),
+        };
+        try resultError(c.phux_client_queue_detach_terminal(host.client, &options));
+        host.operation_ledger.accepted(request_id, host.client_generation, .detach, terminal_ref);
+        if (!host.catalogContains(terminal_ref)) {
+            host.detached_catalog[host.detached_catalog_count] = terminal_ref;
+            host.detached_catalog_count += 1;
+        }
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    fn catalogContains(host: *const Host, ref: provider.TerminalRef) bool {
+        for (host.detached_catalog[0..host.detached_catalog_count]) |entry| if (entry.eql(ref)) return true;
+        return false;
+    }
+
+    pub fn catalogRefs(host: *const Host, out: []provider.TerminalRef) usize {
+        var count = host.terminalRefs(out);
+        for (host.detached_catalog[0..host.detached_catalog_count]) |ref| {
+            if (host.contains(ref)) continue;
+            if (count == out.len) break;
+            out[count] = ref;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn reserveTerminalSlot(host: *Host, target: ?provider.TerminalRef) !void {
         if (host.terminals.items.len + host.operation_ledger.pendingSpawns() >= max_terminals)
             return error.TerminalCapacity;
+        try host.reserveCatalogIdentity(target);
         try host.terminals.ensureTotalCapacity(host.gpa, max_terminals);
+    }
+
+    fn reserveCatalogIdentity(host: *const Host, target: ?provider.TerminalRef) !void {
+        if (target) |ref| if (host.catalogContains(ref)) return;
+        var count = host.detached_catalog_count + host.operation_ledger.pendingSpawns();
+        for (host.terminals.items) |*terminal| {
+            if (!host.catalogContains(terminal.terminalRef())) count += 1;
+        }
+        if (count >= max_catalog_terminals) return error.TerminalCapacity;
     }
 
     fn admitOperationTerminal(host: *Host, remote: RemoteId) void {
@@ -282,6 +334,7 @@ pub const Host = struct {
 
     fn spawnOwner(host: *const Host, terminal_ref: ?provider.TerminalRef) !?*const RemoteId {
         const ref = terminal_ref orelse return null;
+        if (host.operation_ledger.detaching(ref)) return error.InvalidState;
         const terminal = host.findTerminalConst(ref) orelse return error.InvalidIdentity;
         if (!terminal.published or terminal.phase != .live) return error.InvalidState;
         return &terminal.id;
@@ -346,6 +399,7 @@ pub const Host = struct {
         host.client = replacement;
         host.client_generation = next_generation;
         host.operation_ledger.last_id = 0;
+        host.detached_catalog_count = 0;
         host.disconnected = false;
         host.attach_barrier_seen = false;
         for (host.terminals.items) |*terminal| {
@@ -418,6 +472,7 @@ pub const Host = struct {
     }
 
     pub fn ownerIsCurrent(host: *const Host, owner_value: provider.ReplicaOwner) bool {
+        if (host.operation_ledger.detaching(owner_value.terminal_ref)) return false;
         const terminal = host.findTerminalConst(owner_value.terminal_ref) orelse return false;
         return terminal.phase == .live and terminal.owner().eql(owner_value);
     }
@@ -690,6 +745,13 @@ pub const Host = struct {
 
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
         const terminal_ref = result.terminal_ref orelse return;
+        if (result.kind == .detach) {
+            if (result.status == .success) {
+                const terminal = host.findTerminal(terminal_ref) orelse return;
+                terminal.remove_at_barrier = true;
+            }
+            return;
+        }
         if (result.status == .success) {
             const remote = remoteFromRef(terminal_ref) orelse return error.InvalidIdentity;
             _ = try host.ensureTerminal(cId(&remote));
@@ -909,12 +971,14 @@ pub const Host = struct {
     }
 
     fn currentCId(host: *Host, owner_value: provider.ReplicaOwner) !c.PhuxTerminalId {
+        if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
         const terminal = host.findTerminal(owner_value.terminal_ref) orelse return error.InvalidState;
         if (terminal.phase != .live or !terminal.owner().eql(owner_value)) return error.InvalidState;
         return cId(&terminal.id);
     }
 
     fn currentCIdConst(host: *const Host, owner_value: provider.ReplicaOwner) !c.PhuxTerminalId {
+        if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
         const terminal = host.findTerminalConst(owner_value.terminal_ref) orelse return error.InvalidState;
         if (terminal.phase != .live or !terminal.owner().eql(owner_value)) return error.InvalidState;
         return cId(&terminal.id);
@@ -1357,6 +1421,39 @@ test "spawn result acceptance is separate from canonical READY publication" {
     try std.testing.expectEqual(@as(usize, 1), ready.added_count);
     try std.testing.expect(host.contains(result.terminal_ref.?));
     try std.testing.expect(std.mem.startsWith(u8, host.presentation(result.terminal_ref.?).?.grid.screen_text, "OPERATION READY"));
+}
+
+test "detach churn beyond replica capacity retains durable catalog without engine slots" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const initial = host.terminals.items.len;
+    const encoded = try test_support.readFixture("detach-churn.bin");
+    defer std.testing.allocator.free(encoded);
+    var offset: usize = 0;
+    for (0..20) |_| {
+        _ = try host.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+        try test_support.stageFrames(&bridge, encoded, &offset, 4);
+        _ = try host.drainReadiness();
+        const result = host.takeOperationResult().?;
+        const ref = result.terminal_ref.?;
+        const old = host.owner(ref).?;
+        try std.testing.expect(host.ownerIsCurrent(old));
+        _ = try host.requestDetach(ref);
+        try std.testing.expect(!host.ownerIsCurrent(old));
+        try std.testing.expectError(error.InvalidState, host.currentCId(old));
+        try test_support.stageFrames(&bridge, encoded, &offset, 1);
+        _ = try host.drainReadiness();
+        try std.testing.expectEqual(operations.types.Kind.detach, host.takeOperationResult().?.kind);
+        try std.testing.expectEqual(initial, host.terminals.items.len);
+        try std.testing.expect(!host.contains(ref));
+        bridge.outgoing.reset();
+    }
+    try std.testing.expectEqual(encoded.len, offset);
+    var refs: [max_catalog_terminals]provider.TerminalRef = undefined;
+    try std.testing.expectEqual(initial + 20, host.catalogRefs(&refs));
 }
 
 test "satellite spawn requires explicit attach and permits READY before command acknowledgment" {

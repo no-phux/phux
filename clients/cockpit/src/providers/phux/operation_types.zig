@@ -1,7 +1,7 @@
 //! Owned command outcomes. Acceptance is independent of terminal READY.
 const provider = @import("provider_contract");
 
-pub const Kind = enum(u32) { spawn = 1, attach = 2 };
+pub const Kind = enum(u32) { spawn = 1, attach = 2, detach = 3 };
 pub const Status = enum(u32) { success = 1, refused = 2, unknown_outcome = 3 };
 pub const ErrorDomain = enum(u32) { none = 0, spawn = 1, protocol = 2 };
 

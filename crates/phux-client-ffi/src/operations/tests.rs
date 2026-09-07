@@ -173,6 +173,20 @@ impl Harness {
         }
     }
 
+    fn detach(&mut self, request_id: u32, id: &TerminalId) -> PhuxClientResult {
+        // SAFETY: harness owns the client and borrowed options/host.
+        unsafe {
+            phux_client_queue_detach_terminal(
+                self.ptr(),
+                &PhuxDetachTerminalOptions {
+                    request_id,
+                    terminal_id: terminal_id_out(id),
+                    ..PhuxDetachTerminalOptions::default()
+                },
+            )
+        }
+    }
+
     fn result(&mut self, index: usize) -> PhuxOperationResult {
         let mut out = PhuxOperationResult::default();
         // SAFETY: output is writable and disjoint from the client.
@@ -182,6 +196,106 @@ impl Harness {
         );
         out
     }
+}
+
+#[test]
+fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reattach() {
+    let mut h = Harness::attached();
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    assert!(h.0.inner.session.published(&id).is_some());
+    assert_eq!(h.detach(2, &id), PhuxClientResult::InvalidState);
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.session.published(&id).is_none());
+    assert!(!h.0.inner.session.active_attach_contains(&id));
+    assert_eq!(h.result(0).kind, 3);
+    assert_eq!(h.attach(2, &id), PhuxClientResult::Ok);
+    h.bootstrap(id.clone());
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 2,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.session.published(&id).is_some());
+}
+
+#[test]
+fn detach_refusal_preserves_replica_and_disconnect_is_unknown_without_replay() {
+    let mut h = Harness::attached();
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    assert_eq!(
+        h.feed(FrameKind::Error {
+            request_id: Some(1),
+            code: ErrorCode::InvalidCommand,
+            message: "refused".into()
+        }),
+        PhuxClientResult::Ok
+    );
+    assert!(h.0.inner.session.published(&id).is_some());
+    assert_eq!(h.result(0).status, 2);
+    assert_eq!(h.detach(2, &id), PhuxClientResult::Ok);
+    // SAFETY: harness owns client.
+    assert_eq!(
+        unsafe { phux_client_disconnect(h.ptr()) },
+        PhuxClientResult::Ok
+    );
+    assert_eq!(h.result(1).status, 3);
+    assert!(h.0.inner.outgoing.is_empty());
+}
+
+#[test]
+fn detach_is_available_at_full_dynamic_admission_capacity() {
+    let mut h = Harness::attached();
+    for id in 2..=u32::try_from(MAX_DYNAMIC_TERMINALS + 1).unwrap() {
+        h.0.inner.operations.dynamic.insert(TerminalId::local(id));
+    }
+    assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);
+    assert_eq!(h.detach(1, &TerminalId::local(2)), PhuxClientResult::Ok);
+}
+
+#[test]
+fn detached_stream_is_unsolicited_and_wrong_reply_does_not_consume_detach() {
+    let mut h = Harness::attached();
+    let id = TerminalId::local(1);
+    assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
+    assert_eq!(
+        h.feed(FrameKind::TerminalSpawned {
+            request_id: 1,
+            result: SpawnResult::Ok(TerminalId::local(8))
+        }),
+        PhuxClientResult::ProtocolError
+    );
+    assert!(h.0.inner.session.published(&id).is_some());
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        h.feed(FrameKind::BootstrapBegin {
+            terminal_id: id.clone(),
+            stream_id: StreamId::new(18).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        }),
+        PhuxClientResult::ProtocolError
+    );
+    assert!(!h.0.inner.operations.admitted(&id));
+    assert_eq!(h.result(0).status, 1);
 }
 
 #[test]

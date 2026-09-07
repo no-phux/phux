@@ -916,6 +916,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.attach = None;
     }
 
+    /// Complete an acknowledged per-terminal detach after the session ATTACH
+    /// barrier. The caller must revoke dynamic admission and reject subsequent
+    /// unsolicited frames. This transition withdraws initial participation; it
+    /// never marks durable work closed and permits a later explicit reattach.
+    /// Returns false without mutation while the initial barrier is outstanding.
+    #[must_use]
+    pub fn detach_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+        if let Some(attach) = self.attach.as_mut() {
+            if !attach.released {
+                return false;
+            }
+            attach
+                .terminals
+                .retain(|entry| &entry.terminal_id != terminal_id);
+        }
+        self.release_terminal(terminal_id)
+    }
+
     /// Release all replica, retirement, and echo-probe state for a subscription.
     ///
     /// The caller MUST revoke its terminal admission before calling this method

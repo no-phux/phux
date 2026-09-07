@@ -402,9 +402,9 @@ typedef struct PhuxAttachOptions {
 #define PHUX_CLIENT_MAX_OPERATION_MESSAGE_BYTES 4096u
 
 /** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
- * Request IDs are nonzero and strictly increasing across spawn/attach-terminal
+ * Request IDs are nonzero and strictly increasing across spawn/attach/detach-terminal
  * calls for this client, including after results are cleared. Validation failure
- * does not consume an ID. Both operations require completed session ATTACH.
+ * does not consume an ID. All operations require completed session ATTACH.
  * Pending requests plus retained completions are bounded by MAX_OPERATIONS;
  * consume/clear completions to free capacity. Spawn is never retried internally.
  * New operations also require fewer than MAX_OPERATIONS queued outgoing frames;
@@ -443,9 +443,12 @@ typedef struct PhuxAttachTerminalOptions {
     PhuxTerminalId terminal_id;
 } PhuxAttachTerminalOptions;
 
+typedef PhuxAttachTerminalOptions PhuxDetachTerminalOptions;
+
 typedef enum PhuxOperationKind {
     PHUX_OPERATION_SPAWN = 1,
-    PHUX_OPERATION_ATTACH_TERMINAL = 2
+    PHUX_OPERATION_ATTACH_TERMINAL = 2,
+    PHUX_OPERATION_DETACH_TERMINAL = 3
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -464,7 +467,7 @@ typedef enum PhuxOperationErrorDomain {
  * not stream READY; use terminal_grid to observe a published replica. Spawn
  * errors use wire SpawnError tags (0 group missing, 1 spawn failed, 2 unsupported
  * satellite, 3 satellite unreachable). Protocol errors use ErrorCode wire values.
- * id == 0 means absent; attach results retain their requested ID even on failure.
+ * id == 0 means absent; attach/detach results retain their requested ID even on failure.
  * Host/message spans are borrowed until the next mutable client call. Messages
  * are truncated at a UTF-8 boundary to MAX_OPERATION_MESSAGE_BYTES.
  * UNKNOWN_OUTCOME means transport ended before a reply; reconcile against server
@@ -697,6 +700,14 @@ PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_na
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
 PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
 PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const PhuxAttachTerminalOptions *options);
+
+/* Withdraw a subscription, never kill durable work. Requires completed session
+ * ATTACH and an admitted terminal without a pending attach/detach. Correlated
+ * success retires client replica/admission, including initial participation.
+ * Refusal retains state; disconnect yields unknown outcome. Never replay
+ * automatically. Detach remains available when dynamic admission capacity is full.
+ * Shares the monotonically increasing request IDs and bounded result queue. */
+PhuxClientResult phux_client_queue_detach_terminal(PhuxClient *client, const PhuxDetachTerminalOptions *options);
 size_t phux_client_operation_count(const PhuxClient *client);
 PhuxClientResult phux_client_operation_get(const PhuxClient *client, size_t index, PhuxOperationResult *out_result);
 /** Clears completions only, preserving pending correlation and stream admission. */

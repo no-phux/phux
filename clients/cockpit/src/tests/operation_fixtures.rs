@@ -50,6 +50,57 @@ fn bootstrap(id: TerminalId) -> Vec<FrameKind> {
 fn main() -> Result<(), Box<dyn Error>> {
     let out = std::env::args().nth(1).expect("output directory");
     let dir = Path::new(&out);
+    write(
+        dir,
+        "detach-request.bin",
+        vec![FrameKind::Command {
+            request_id: 1,
+            command: Command::DetachTerminal {
+                terminal_id: TerminalId::local(7),
+            },
+        }],
+    )?;
+    write(
+        dir,
+        "detach-ok.bin",
+        vec![FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok,
+        }],
+    )?;
+    write(
+        dir,
+        "reattach-request.bin",
+        vec![FrameKind::Command {
+            request_id: 2,
+            command: Command::AttachTerminal {
+                terminal_id: TerminalId::local(7),
+            },
+        }],
+    )?;
+    write(
+        dir,
+        "reattach-ok.bin",
+        vec![FrameKind::CommandResult {
+            request_id: 2,
+            result: CommandResult::Ok,
+        }],
+    )?;
+    write(dir, "reattach-ready.bin", bootstrap(TerminalId::local(7)))?;
+    let mut churn = Vec::new();
+    for n in 0..20 {
+        let id = TerminalId::local(100 + n);
+        churn.push(FrameKind::TerminalSpawned {
+            request_id: 2 * n + 1,
+            result: SpawnResult::Ok(id.clone()),
+        });
+        churn.extend(bootstrap(id));
+        churn.push(FrameKind::CommandResult {
+            request_id: 2 * n + 2,
+            result: CommandResult::Ok,
+        });
+    }
+    write(dir, "detach-churn.bin", churn)?;
     let local = TerminalId::local(8);
     let satellite = TerminalId::satellite(SatelliteHost::new("build-host"), 9);
     write(

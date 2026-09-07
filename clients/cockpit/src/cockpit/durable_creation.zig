@@ -36,6 +36,14 @@ pub const Creation = struct {
         return error.OperationCapacity;
     }
 
+    pub fn hasPendingTerminal(self: *const Creation, ref: TerminalRef) bool {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.terminal) |terminal| if (terminal.eql(ref)) return true;
+        }
+        return false;
+    }
+
     pub fn request(self: *Creation, model: *Model, kind: Kind) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
@@ -60,6 +68,20 @@ pub const Creation = struct {
             if (sharesCapacity(entry, model.wsConst(), kind)) reserved += 1;
         }
         return reserved;
+    }
+
+    /// Explicit navigation reuses the creation destination/epoch transaction;
+    /// it never places a catalog-only identity before exact stream publication.
+    pub fn requestAttach(self: *Creation, model: *Model, ref: TerminalRef) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const remote = model.phux() orelse return error.NoProvider;
+        if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
+        const slot = try self.vacant();
+        var entry = try prepareDestination(model, .tab, self.reservedAtDestination(model, .tab));
+        entry.request = try remote.requestAttach(ref);
+        entry.epoch = remote.connectionEpoch();
+        entry.terminal = ref;
+        slot.* = entry;
     }
 
     pub fn pump(self: *Creation, model: *Model) bool {

@@ -335,6 +335,54 @@ fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
 }
 
 #[test]
+fn explicit_detach_cannot_bypass_initial_barrier_but_withdraws_released_participation() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 10,
+                terminals: std::slice::from_ref(&id),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(!kernel.detach_terminal(&id));
+    assert!(kernel.active_attach_contains(&id));
+    assert!(
+        kernel
+            .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
+            .is_err()
+    );
+    publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
+        .unwrap();
+    assert!(!kernel.release_terminal(&id));
+    effects.clear();
+    assert!(kernel.detach_terminal(&id));
+    assert!(!kernel.active_attach_contains(&id));
+    assert!(kernel.terminals.is_empty());
+    assert!(kernel.closed.is_empty());
+    for n in 2..=512 {
+        let next = terminal(n);
+        publish_direct(
+            &mut kernel,
+            &next,
+            stream(n.into()),
+            bootstrap(1),
+            0,
+            &mut effects,
+        );
+        assert!(kernel.detach_terminal(&next));
+        assert!(kernel.terminals.is_empty());
+        assert!(kernel.closed.is_empty());
+        effects.clear();
+    }
+}
+
+#[test]
 fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement() {
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let mut effects = EffectBuffer::new();

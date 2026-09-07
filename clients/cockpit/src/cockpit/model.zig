@@ -1334,7 +1334,7 @@ pub const Model = struct {
     pub fn reconcileRemoteTerminals(model: *Model) void {
         const remote = model.phuxConst() orelse return;
         var published: [max_remote_terminals]TerminalRef = undefined;
-        const published_count = remote.terminalRefs(&published);
+        const published_count = remote.catalogRefs(&published);
         reconcileRemoteRefs(
             &model.remote_inventory,
             &model.remote_inventory_count,

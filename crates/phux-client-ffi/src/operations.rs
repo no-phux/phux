@@ -78,6 +78,9 @@ impl Default for PhuxAttachTerminalOptions {
     }
 }
 
+/// Per-terminal subscription withdrawal, with the same sized identity record as attach.
+pub type PhuxDetachTerminalOptions = PhuxAttachTerminalOptions;
+
 /// One completion, distinct from stream READY. Borrowed spans live until the next mutation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +88,7 @@ pub struct PhuxOperationResult {
     pub size: usize,
     pub version: u32,
     pub request_id: u32,
-    /// 1 = spawn, 2 = attach terminal.
+    /// 1 = spawn, 2 = attach terminal, 3 = detach terminal.
     pub kind: u32,
     /// 1 = success, 2 = refused, 3 = disconnected with unknown outcome. Never retry spawn automatically.
     pub status: u32,
@@ -117,6 +120,7 @@ impl Default for PhuxOperationResult {
 enum Pending {
     Spawn { satellite: Option<SatelliteHost> },
     Attach(TerminalId),
+    Detach(TerminalId),
 }
 
 impl Pending {
@@ -124,13 +128,14 @@ impl Pending {
         match self {
             Self::Spawn { .. } => 1,
             Self::Attach(_) => 2,
+            Self::Detach(_) => 3,
         }
     }
 
     fn terminal(&self) -> Option<TerminalId> {
         match self {
             Self::Spawn { .. } => None,
-            Self::Attach(id) => Some(id.clone()),
+            Self::Attach(id) | Self::Detach(id) => Some(id.clone()),
         }
     }
 }
@@ -163,10 +168,10 @@ impl Operations {
         self.dynamic.remove(id);
     }
 
-    fn attaching(&self, id: &TerminalId) -> bool {
+    fn subscription_pending(&self, id: &TerminalId) -> bool {
         self.pending
             .values()
-            .any(|pending| matches!(pending, Pending::Attach(target) if target == id))
+            .any(|pending| matches!(pending, Pending::Attach(target) | Pending::Detach(target) if target == id))
     }
 
     fn check_capacity(&self, request_id: u32) -> Result<(), BridgeError> {
@@ -180,6 +185,10 @@ impl Operations {
                 "operation queue is full; consume and clear results",
             ));
         }
+        Ok(())
+    }
+
+    fn check_admission_capacity(&self) -> Result<(), BridgeError> {
         let reserved = self
             .pending
             .values()
@@ -388,6 +397,7 @@ pub unsafe extern "C" fn phux_client_queue_spawn(
         // SAFETY: forwards the options contract.
         let frame = unsafe { spawn_frame(options) }?;
         ensure_queue_capacity(client, options.request_id)?;
+        client.operations.check_admission_capacity()?;
         let FrameKind::SpawnTerminal { satellite, .. } = &frame else {
             unreachable!()
         };
@@ -433,12 +443,13 @@ fn queue_terminal_attach(
     id: TerminalId,
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
+    client.operations.check_admission_capacity()?;
     if client.session.active_attach_contains(&id) || client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is already admitted"));
     }
-    if client.operations.attaching(&id) {
+    if client.operations.subscription_pending(&id) {
         return Err(BridgeError::state(
-            "terminal already has a pending attach operation",
+            "terminal already has a pending subscription operation",
         ));
     }
     if client.session.input_eligibility(&id)
@@ -461,6 +472,57 @@ fn queue_terminal_attach(
     Ok(())
 }
 
+/// Queue per-terminal detach without stopping the remote process. Admission and
+/// replica state remain until correlated success; refusals preserve both.
+///
+/// # Safety
+/// Client is live and exclusively accessed. Options and terminal host are readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_detach_terminal(
+    client: *mut PhuxClient,
+    options: *const PhuxDetachTerminalOptions,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        client.ensure_attached()?;
+        // SAFETY: caller supplies readable options when non-null.
+        let options =
+            unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+        check_struct(
+            options.size,
+            mem::size_of::<PhuxDetachTerminalOptions>(),
+            options.version,
+        )?;
+        // SAFETY: options includes the readable ID and host span.
+        let id = unsafe { terminal_id_in(ptr::from_ref(&options.terminal_id)) }?;
+        valid_terminal(&id)?;
+        queue_terminal_detach(client, options.request_id, id)
+    })
+}
+
+fn queue_terminal_detach(
+    client: &mut Client,
+    request_id: u32,
+    id: TerminalId,
+) -> Result<(), BridgeError> {
+    ensure_queue_capacity(client, request_id)?;
+    if client.operations.subscription_pending(&id) {
+        return Err(BridgeError::state(
+            "terminal has a pending subscription operation",
+        ));
+    }
+    if !client.operations.admitted(&id) && !client.session.active_attach_contains(&id) {
+        return Err(BridgeError::state("terminal is not admitted"));
+    }
+    client.queue_frame(&FrameKind::Command {
+        request_id,
+        command: Command::DetachTerminal {
+            terminal_id: id.clone(),
+        },
+    })?;
+    client.operations.insert(request_id, Pending::Detach(id));
+    Ok(())
+}
+
 fn ensure_queue_capacity(client: &Client, request_id: u32) -> Result<(), BridgeError> {
     client.operations.check_capacity(request_id)?;
     if client.outgoing.len() >= MAX_OPERATIONS {
@@ -480,7 +542,7 @@ pub(crate) fn dispatch(
             complete_spawn(client, request_id, result)?;
         }
         FrameKind::CommandResult { request_id, result } => {
-            complete_attach(client, request_id, result)?;
+            complete_subscription(client, request_id, result)?;
         }
         FrameKind::Error {
             request_id: Some(request_id),
@@ -559,27 +621,48 @@ fn spawn_error(error: SpawnError) -> (u32, String) {
     }
 }
 
-fn complete_attach(
+fn complete_subscription(
     client: &mut Client,
     request_id: u32,
     result: CommandResult,
 ) -> Result<(), BridgeError> {
-    if !matches!(client.operations.pending(request_id)?, Pending::Attach(_)) {
+    if matches!(
+        client.operations.pending(request_id)?,
+        Pending::Spawn { .. }
+    ) {
         return Err(BridgeError::protocol(
-            "COMMAND_RESULT does not answer an attach terminal",
+            "COMMAND_RESULT does not answer a terminal subscription operation",
         ));
     }
     match result {
-        CommandResult::Ok => client.operations.complete(request_id, 1, None, 0, 0, ""),
+        CommandResult::Ok => {
+            if let Pending::Detach(id) = client.operations.pending(request_id)?.clone() {
+                complete_detach(client, &id)?;
+            }
+            client.operations.complete(request_id, 1, None, 0, 0, "");
+        }
         CommandResult::Error { code, message } => {
             refuse_operation(client, request_id, 2, u32::from(code.as_wire()), &message)?;
         }
         _ => {
             return Err(BridgeError::protocol(
-                "unexpected attach terminal result value",
+                "unexpected terminal subscription result value",
             ));
         }
     }
+    Ok(())
+}
+
+fn complete_detach(client: &mut Client, id: &TerminalId) -> Result<(), BridgeError> {
+    client.operations.retire(id);
+    if !client.session.detach_terminal(id) {
+        return Err(BridgeError::state("cannot detach before ATTACH barrier"));
+    }
+    crate::forget_terminal(client, id);
+    client
+        .owned_effects
+        .push(crate::OwnedEffect::simple(1, 3, id.clone()));
+    client.publish_effects();
     Ok(())
 }
 

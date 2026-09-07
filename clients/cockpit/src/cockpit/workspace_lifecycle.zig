@@ -13,6 +13,7 @@ pub fn closePane(model: *Model, fx: anytype, ref: support.TerminalRef, kill: boo
     const tree = &workspace.tabs[where.tab];
     pointer.endCapturesForTerminal(model, fx, ref);
     cancelClipboard(model, fx, ref);
+    if (!releaseRemote(model, ref)) return false;
     _ = tree.closeTerminal(ref) orelse return false;
     model.pruneAttachmentState();
     releaseLocal(model, fx, ref, kill);
@@ -20,6 +21,19 @@ pub fn closePane(model: *Model, fx: anytype, ref: support.TerminalRef, kill: boo
     workspace.tab_limit_refused = false;
     pointer.endHiddenCaptures(model, fx);
     if (workspace.tab_count == 0) retireWindow(model, fx, where.window);
+    return true;
+}
+
+fn releaseRemote(model: *Model, ref: support.TerminalRef) bool {
+    if (comptime !support.phux_enabled) return true;
+    if (support.providerKind(ref) != .phux) return true;
+    const remote = model.phux() orelse return true;
+    if (!remote.contains(ref)) return true;
+    _ = remote.requestDetach(ref) catch {
+        model.terminal_limit_refused = true;
+        return false;
+    };
+    model.terminal_limit_refused = false;
     return true;
 }
 
@@ -42,17 +56,24 @@ pub fn closeTab(model: *Model, fx: anytype, window: usize, index: usize) bool {
     const tree = workspace.treeConst(index) orelse return false;
     var refs: [layout.max_panes]support.TerminalRef = undefined;
     const count = tree.terminals(&refs);
-    for (refs[0..count]) |ref| _ = closePane(model, fx, ref, true);
-    return count != 0;
+    var changed = false;
+    for (refs[0..count]) |ref| changed = closePane(model, fx, ref, true) or changed;
+    return changed;
 }
 
 pub fn closeWindow(model: *Model, fx: anytype, index: usize) bool {
-    if (!model.windowOpen(index)) return false;
-    while (model.wsAt(index)) |workspace| {
-        if (workspace.tab_count == 0) break;
-        if (!closeTab(model, fx, index, 0)) break;
+    const workspace = model.wsAt(index) orelse return false;
+    var remaining = workspace.tab_count;
+    var changed = false;
+    // Each original tab is visited once. A locally refused detach retains its
+    // placement; it must never spin the owning thread waiting for readiness.
+    while (remaining != 0) {
+        remaining -= 1;
+        changed = closeTab(model, fx, index, remaining) or changed;
     }
-    if (model.windowOpen(index)) retireWindow(model, fx, index);
+    const current = model.wsAt(index) orelse return changed;
+    if (current.tab_count != 0) return changed;
+    retireWindow(model, fx, index);
     return true;
 }
 

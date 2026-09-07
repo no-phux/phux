@@ -509,7 +509,18 @@ pub const Engine = struct {
 
     fn selectAvailableNavigation(self: *Engine, ref: TerminalRef, fx: anytype) bool {
         const model = self.model;
-        if (support.providerKind(ref) != .phux or !model.containsTerminal(ref)) return false;
+        if (support.providerKind(ref) != .phux) return false;
+        if (self.creation.hasPendingTerminal(ref)) return false;
+        if (!model.containsTerminal(ref)) {
+            self.creation.requestAttach(model, ref) catch {
+                model.terminal_limit_refused = true;
+                return false;
+            };
+            return true;
+        }
+        const remote = model.phux() orelse return false;
+        const owner = remote.owner(ref) orelse return false;
+        if (!remote.ownerIsCurrent(owner)) return false;
         if (!model.admitTab(ref)) {
             model.ws().tab_limit_refused = true;
             return false;

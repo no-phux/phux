@@ -22,6 +22,8 @@ int main(void) {
     };
     assert(phux_client_queue_spawn(client, &spawn) == PHUX_CLIENT_INVALID_STATE);
     assert(phux_client_queue_attach_terminal(client, &attach) == PHUX_CLIENT_INVALID_STATE);
+    PhuxDetachTerminalOptions detach = attach;
+    assert(phux_client_queue_detach_terminal(client, &detach) == PHUX_CLIENT_INVALID_STATE);
     PhuxOperationResult result = {
         .size = sizeof(result), .version = PHUX_CLIENT_ABI_VERSION,
         .request_id = 99, .kind = PHUX_OPERATION_SPAWN,

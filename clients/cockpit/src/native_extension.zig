@@ -2394,6 +2394,104 @@ test "navigation snapshots preserve full window inventory within the host payloa
     try std.testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, page[13..15], .little));
 }
 
+// GUARD: ts-durable-terminal-detach
+test "shipping remote close retires replica and navigation explicitly reattaches catalog identity" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-unused.sock" });
+    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+    const fixtures = @TypeOf(remote.*).test_support;
+    engine.model.phux_provider = remote;
+    try fixtures.attachHost(remote.host);
+    engine.model.reconcileRemoteTerminals();
+    const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
+    try std.testing.expect(engine.model.admitTab(ref));
+    try std.testing.expect(engine.model.selectTerminal(ref));
+    const old_owner = remote.owner(ref).?;
+    const before = remote.host.terminals.items.len;
+    var recorder: Recorder = .{};
+    const close = protocol.encodeIntent(.{ .kind = .native_command, .expected_revision = engine.revision, .argument = @intFromEnum(protocol.NativeCommand.close_focused_pane) });
+    try std.testing.expect(engine.applyIntent(&close, &recorder));
+    try std.testing.expect(engine.model.locateTerminal(ref) == null);
+    try std.testing.expect(!remote.ownerIsCurrent(old_owner));
+    const early_select = navigationIntentBytes(engine.revision, 1);
+    try std.testing.expect(!engine.applyIntent(&early_select, &recorder));
+    try std.testing.expect(engine.model.locateTerminal(ref) == null);
+    try fixtures.expectOutgoing(remote.host.bridge, "detach-request.bin");
+    try fixtures.stageFixture(remote.host.bridge, "detach-ok.bin");
+    _ = try remote.drainReadiness();
+    try std.testing.expectEqual(before - 1, remote.host.terminals.items.len);
+    try std.testing.expect(!remote.contains(ref));
+    const detached = remote.takeOperationResult().?;
+    try std.testing.expectEqual(@as(u32, 3), @intFromEnum(detached.kind));
+    engine.model.reconcileRemoteTerminals();
+    var found = false;
+    for (engine.model.remoteTerminalRefs()) |entry| if (entry.eql(ref)) {
+        found = true;
+    };
+    try std.testing.expect(found);
+    // Drive shipping navigation through the revision-fenced catalog index.
+    var index: u16 = 0;
+    var entries: [8]cockpit.projection.PaletteEntry = undefined;
+    const count = cockpit.projection.paletteEntriesWindowIn(engine.model, engine.model.wsConst(), .{ .first = 0, .count = entries.len }, &entries);
+    for (entries[0..count]) |entry| {
+        if (entry == .available_terminal and entry.available_terminal.eql(ref)) break;
+        index += 1;
+    }
+    const select = navigationIntentBytes(engine.revision, index);
+    try std.testing.expect(engine.applyIntent(&select, &recorder));
+    try std.testing.expect(engine.model.locateTerminal(ref) == null);
+    try fixtures.expectOutgoing(remote.host.bridge, "reattach-request.bin");
+    // Bootstrap is permitted before COMMAND_RESULT. Repeated navigation must
+    // not bypass the outstanding exact-destination transaction's acceptance.
+    try fixtures.stageFixture(remote.host.bridge, "reattach-ready.bin");
+    _ = try remote.drainReadiness();
+    try std.testing.expect(!engine.creation.pump(engine.model));
+    const repeat_select = navigationIntentBytes(engine.revision, index);
+    try std.testing.expect(!engine.applyIntent(&repeat_select, &recorder));
+    try std.testing.expect(engine.model.locateTerminal(ref) == null);
+    try fixtures.stageFixture(remote.host.bridge, "reattach-ok.bin");
+    _ = try remote.drainReadiness();
+    try std.testing.expect(engine.creation.complete(engine.model, remote.takeOperationResult().?));
+    try std.testing.expect(engine.creation.pump(engine.model));
+    try std.testing.expect(engine.model.locateTerminal(ref) != null);
+}
+
+// GUARD: ts-detach-refused-close-progress
+test "shipping close window makes bounded progress when remote detach is locally refused" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    for ([_]bool{ false, true }) |disconnected| {
+        const engine = try Engine.create(std.testing.allocator, std.testing.io);
+        defer engine.destroy();
+        var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-refused-unused.sock" });
+        const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+        engine.model.phux_provider = remote;
+        try @TypeOf(remote.*).test_support.attachHost(remote.host);
+        const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
+        try std.testing.expect(engine.model.admitTab(ref));
+        if (disconnected) remote.host.disconnect() else {
+            // Fill the bounded completion ledger, as an undrained UI consumer can.
+            for (1..17) |id| {
+                remote.host.operation_ledger.accepted(@intCast(id), remote.connectionEpoch(), .spawn, null);
+                try remote.host.operation_ledger.complete(.{ .request_id = @intCast(id), .connection_epoch = remote.connectionEpoch(), .kind = .spawn, .status = .refused });
+            }
+        }
+        var recorder: Recorder = .{};
+        // This assertion catches false progress before the old window loop can spin.
+        const close_tab = protocol.encodeIntent(.{ .kind = .close_tab, .expected_revision = engine.revision, .argument = 1 });
+        try std.testing.expect(!engine.applyIntent(&close_tab, &recorder));
+        const close_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
+        try std.testing.expect(engine.applyIntent(&close_window, &recorder));
+        try std.testing.expect(engine.model.windowOpen(0));
+        try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+        try std.testing.expect(engine.model.locateTerminal(ref) != null);
+        try std.testing.expectEqual(@as(u32, if (disconnected) 0 else 16), remote.host.operation_ledger.last_id);
+        const retry_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
+        try std.testing.expect(!engine.applyIntent(&retry_window, &recorder));
+    }
+}
+
 const NavigationConnectionRecorder = struct {
     live: bool,
     closed: usize = 0,
