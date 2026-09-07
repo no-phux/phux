@@ -23,6 +23,8 @@ const vt = @import("ghostty-vt");
 const terminal_runtime = @import("../terminal_runtime.zig");
 const interaction = @import("../terminal_interaction.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
+const durable_creation = @import("../durable_creation.zig");
+const attachment_recovery = @import("../attachment_recovery.zig");
 const pointer_input = @import("../pointer_input.zig");
 const update_module = @import("../update.zig");
 const provider_contract = @import("provider_contract");
@@ -107,6 +109,9 @@ pub const Engine = struct {
     split_drag: ?SplitDrag = null,
     remote_focus_owner: ?support.ReplicaOwner = null,
     remote_natural_keys_held: u8 = 0,
+    input_suspended: bool = false,
+    creation: durable_creation.Creation = .{},
+    recovery: attachment_recovery.Recovery = .{},
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -152,7 +157,8 @@ pub const Engine = struct {
         return createFromInitialized(initialized);
     }
 
-    fn createFromInitialized(initialized_value: startup.InitializedModel) !*Engine {
+    /// Consume the fully resolved startup model and establish its final storage.
+    pub fn createFromInitialized(initialized_value: startup.InitializedModel) !*Engine {
         var initialized = initialized_value;
         errdefer model_module.deinitModel(&initialized.model);
         const model = try std.heap.page_allocator.create(Model);
@@ -160,6 +166,16 @@ pub const Engine = struct {
         model.* = initialized.model;
         if (initialized.provenance == .restored) {
             model_module.applyRestoredWorkingDirectories(model, &initialized.restored_snapshot);
+            if (model.saved_attachments.count != 0) model.phux_admit_on_ready = false;
+        }
+        const synthetic_seed = initialized.provenance != .restored or initialized.restored_snapshot.tab_count == 0;
+        if (synthetic_seed and model.phux() != null) {
+            // Fresh configured launches await coordinator-owned work. The
+            // unspawned local seed is only for the explicit ephemeral path.
+            if (model.focusedTerminalRef()) |ref| {
+                _ = model.provider.destroyTerminal(ref);
+                model.dropTab(0);
+            }
         }
         const engine = try std.heap.page_allocator.create(Engine);
         engine.* = .{ .model = model };
@@ -234,47 +250,70 @@ pub const Engine = struct {
         const remote = model.phux() orelse return false;
         var changed = false;
         switch (event.kind) {
-            .data => {
-                const delta = remote.drainReadiness() catch {
-                    changed = !model.phux_connection_unavailable;
-                    model.phux_connection_unavailable = true;
-                    remote.stop();
-                    fx.closeChannel(support.phux_channel_key);
-                    return self.commitProviderChange(changed);
-                };
-                if (delta.detached) {
-                    changed = !model.phux_connection_unavailable;
-                    model.phux_connection_unavailable = true;
-                    remote.stop();
-                    fx.closeChannel(support.phux_channel_key);
-                    return self.commitProviderChange(changed);
-                }
-                if (delta.ready_published) {
-                    changed = model.phux_connection_unavailable;
-                    model.phux_connection_unavailable = false;
-                }
-                const terminal_set_changed = delta.ready_published or delta.added_count != 0 or delta.removed_count != 0;
-                if (terminal_set_changed) {
-                    model.reconcileRemoteTerminals();
-                    changed = true;
-                }
-                if (delta.ready_published and model.phux_admit_on_ready) {
-                    model.phux_admit_on_ready = false;
-                    changed = model.admitAndSelectCurrentRemoteTerminal() or changed;
-                }
-            },
+            .data => changed = self.drainPhux(fx),
             .closed, .rejected => {
+                self.providerDisconnected();
+                changed = true;
                 remote.stop();
                 if (model.phux_reconnect_after_close) {
                     model.phux_reconnect_after_close = false;
                     self.openPhuxChannel(fx, on_event, remote.state() != .new);
                 } else {
-                    changed = !model.phux_connection_unavailable;
                     model.phux_connection_unavailable = true;
                 }
             },
         }
         return self.commitProviderChange(changed);
+    }
+
+    fn drainPhux(self: *Engine, fx: anytype) bool {
+        const remote = self.model.phux() orelse return false;
+        const delta = remote.drainReadiness() catch return self.failPhux(fx);
+        if (delta.detached) return self.failPhux(fx);
+        return self.applyReadiness(delta);
+    }
+
+    fn failPhux(self: *Engine, fx: anytype) bool {
+        self.providerDisconnected();
+        self.model.phux_connection_unavailable = true;
+        if (self.model.phux()) |remote| remote.stop();
+        fx.closeChannel(support.phux_channel_key);
+        return true;
+    }
+
+    fn applyReadiness(self: *Engine, delta: support.SyncDelta) bool {
+        const model = self.model;
+        var changed = self.pumpOperations();
+        if (delta.ready_published) {
+            changed = model.phux_connection_unavailable or changed;
+            model.phux_connection_unavailable = false;
+        }
+        if (delta.ready_published or delta.added_count != 0 or delta.removed_count != 0) {
+            model.reconcileRemoteTerminals();
+            changed = true;
+        }
+        if (delta.ready_published and model.phux_admit_on_ready) {
+            model.phux_admit_on_ready = false;
+            changed = model.admitAndSelectCurrentRemoteTerminal() or changed;
+        }
+        return changed;
+    }
+
+    fn pumpOperations(self: *Engine) bool {
+        const model = self.model;
+        const remote = model.phux() orelse return false;
+        var changed = false;
+        while (remote.takeOperationResult()) |result| {
+            if (!self.creation.complete(model, result)) self.recovery.complete(model, result);
+            changed = true;
+        }
+        changed = self.recovery.pump(model) or changed;
+        return self.creation.pump(model) or changed;
+    }
+
+    fn providerDisconnected(self: *Engine) void {
+        self.recovery.disconnect(self.model);
+        self.creation.disconnect(self.model);
     }
 
     pub fn onPointerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) void {
@@ -430,6 +469,8 @@ pub const Engine = struct {
     /// same model flags the shipping app uses.
     fn newTerminal(self: *Engine) bool {
         const model = self.model;
+        if (model.phux() != null) return self.createDurable(.tab);
+        if (!model.canAddPane()) return false;
         const pane = model.provider.createTerminal() catch {
             model.terminal_limit_refused = true;
             return false;
@@ -491,6 +532,8 @@ pub const Engine = struct {
     /// it, selected. Refusals put everything back and stay visible.
     fn newWindow(self: *Engine) bool {
         const model = self.model;
+        if (model.phux() != null) return self.createDurable(.window);
+        if (!model.canAddPane()) return false;
         const index = model.freeWindowIndex() orelse {
             model.window_limit_refused = true;
             return false;
@@ -660,6 +703,8 @@ pub const Engine = struct {
 
     fn splitFocusedPane(self: *Engine, orientation: layout.Orientation) bool {
         const model = self.model;
+        if (model.phux() != null) return self.createDurable(if (orientation == .horizontal) .split_right else .split_down);
+        if (!model.canAddPane()) return false;
         const tree = model.selectedTree() orelse return false;
         const target = tree.focus;
         if (target == layout.none or tree.node(target).kind != .leaf) return false;
@@ -668,14 +713,7 @@ pub const Engine = struct {
             model.terminal_limit_refused = true;
             return false;
         };
-        if (model.config.inherit_working_directory) {
-            if (origin) |source_ref| if (model.provider.terminalConst(source_ref)) |source| {
-                const cwd = source.pwd();
-                if (cwd.len > 0) if (model.provider.slotIndex(pane.id)) |slot| {
-                    pane.argv = local.paneArgvIn(cwd, &model.cwd_argv[slot]);
-                };
-            };
-        }
+        self.inheritWorkingDirectory(pane, origin);
         _ = tree.split(target, orientation, pane.id) catch {
             _ = model.provider.destroyTerminal(pane.id);
             return false;
@@ -684,9 +722,29 @@ pub const Engine = struct {
         return true;
     }
 
+    fn inheritWorkingDirectory(self: *Engine, pane: *model_module.Pane, origin: ?TerminalRef) void {
+        const model = self.model;
+        if (!model.config.inherit_working_directory) return;
+        const source_ref = origin orelse return;
+        const source = model.provider.terminalConst(source_ref) orelse return;
+        const cwd = source.pwd();
+        if (cwd.len == 0) return;
+        const slot = model.provider.slotIndex(pane.id) orelse return;
+        pane.argv = local.paneArgvIn(cwd, &model.cwd_argv[slot]);
+    }
+
     fn closeFocusedPane(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
         return lifecycle.closePane(self.model, fx, ref, true);
+    }
+
+    fn createDurable(self: *Engine, kind: durable_creation.Kind) bool {
+        self.creation.request(self.model, kind) catch {
+            self.model.terminal_limit_refused = true;
+            return false;
+        };
+        self.model.terminal_limit_refused = false;
+        return true;
     }
 
     /// The window index a canvas label names, by the shipping scene's own
@@ -891,6 +949,7 @@ pub const Engine = struct {
     /// the focused pane's emulator encoder, which alone knows the live modes
     /// the bytes depend on. Releases only ever reach the encoder.
     pub fn onKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+        if (!self.model.focused or self.input_suspended) return;
         if (event.phase == .key_up) return self.releaseKey(fx, event);
         self.remote_natural_keys_held &= ~terminal_runtime.macosNaturalTextKeyMask(event.key);
         const ref = self.model.focusedTerminalRef() orelse return;
@@ -995,6 +1054,7 @@ pub const Engine = struct {
     /// way update.zig's .text arm sends it (never over a keyboard selection,
     /// never into an ended shell, always after scrolling to the bottom).
     pub fn onText(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+        if (!self.model.focused or self.input_suspended) return;
         const ref = self.model.focusedTerminalRef() orelse return;
         interaction.rememberKey(self.model, ref, event);
         if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);
@@ -1248,13 +1308,24 @@ pub const Engine = struct {
     }
 
     fn syncRemoteFocus(self: *Engine) void {
-        const ref = update_module.remoteFocusTarget(self.model);
+        const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
         const next = if (ref) |value| self.model.terminalOwner(value) else null;
         if (support.optOwnerEql(self.remote_focus_owner, next)) return;
         const remote = self.model.phux() orelse return;
         if (self.remote_focus_owner) |previous| remote.sendFocus(previous, false) catch {};
         self.remote_focus_owner = next;
         if (next) |owner| remote.sendFocus(owner, true) catch {};
+    }
+
+    pub fn setInputSuspended(self: *Engine, fx: anytype, suspended: bool) void {
+        if (self.input_suspended == suspended) return;
+        self.input_suspended = suspended;
+        if (suspended) {
+            self.remote_natural_keys_held = 0;
+            for (&self.model.held_terminal_keys) |*held| held.* = .{};
+            pointer_input.endAllCaptures(self.model, fx);
+        }
+        self.syncRemoteFocus();
     }
 
     /// update.zig's notifyBackgroundBell: the rising edge of a bell while

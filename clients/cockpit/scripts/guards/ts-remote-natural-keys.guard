@@ -10,8 +10,8 @@ index 932aa54d..56e2ce9b 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
 @@ -892,7 +892,7 @@ pub const Engine = struct {
-     /// the bytes depend on. Releases only ever reach the encoder.
      pub fn onKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+         if (!self.model.focused or self.input_suspended) return;
          if (event.phase == .key_up) return self.releaseKey(fx, event);
 -        self.remote_natural_keys_held &= ~terminal_runtime.macosNaturalTextKeyMask(event.key);
 +        if (false) self.remote_natural_keys_held &= ~terminal_runtime.macosNaturalTextKeyMask(event.key);

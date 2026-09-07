@@ -46,6 +46,7 @@ const OwnedEndpoint = union(enum) {
 };
 
 pub const PhuxProvider = struct {
+    pub const test_support = host_mod.test_support;
     pub const SessionSummary = host_mod.SessionSummary;
     pub const OperationResult = host_mod.OperationResult;
     gpa: std.mem.Allocator,

@@ -342,7 +342,7 @@ fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 /// core messages as menus/real shortcuts so the driven and physical paths are
 /// indistinguishable after this boundary.
 fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
-    if (event.phase == .key_up or !event.modifiers.hasCommandModifier()) return null;
+    if (event.phase == .key_up or !event.modifiers.super) return null;
     const key = event.key;
     const shift = event.modifiers.shift;
     const control = event.modifiers.control;
@@ -490,9 +490,12 @@ fn windowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) Adap
 var overlay_open: bool = false;
 var palette_open: bool = false;
 
-fn onFrame(_: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.Msg {
+fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.Msg {
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
+    overlay_open = model.paletteOpen or model.settingsOpen;
+    palette_open = model.paletteOpen;
+    engine.setInputSuspended(fx, overlay_open);
     bridge.spawnShells(engine, fx);
     // Every window's frame pumps its own workspace; the label says which.
     engine.pumpViewports(fx, frame);
@@ -1250,6 +1253,29 @@ test "shipping Phux committed text consumes composition modifiers" {
     try expectOutgoingKey(bridge.engine.?.model.phux().?, 0, 0);
 }
 
+test "shipping Control F is terminal input rather than a fullscreen shortcut" {
+    try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }) == null);
+    try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
+}
+
+test "shipping overlay frame suspends remote focus and input until dismissal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const remote = bridge.engine.?.model.phux().?;
+    rig.app_state.model.paletteOpen = true;
+    const frame: native_sdk.platform.GpuFrame = .{ .label = canvas_label, .size = .{}, .scale_factor = 1, .frame_index = 1, .timestamp_ns = 1 };
+    _ = onFrame(&rig.app_state.model, frame);
+    try expectOutgoingTag(remote, 0x14);
+    bridge.engine.?.onText(engineFx().?, .{ .phase = .text_input, .key = "a", .text = "a" });
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    rig.app_state.model.paletteOpen = false;
+    _ = onFrame(&rig.app_state.model, frame);
+    try expectOutgoingTag(remote, 0x14);
+}
+
 // GUARD: ts-remote-natural-keys
 test "shipping Phux macOS editing gestures target word and line bindings" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
@@ -1608,6 +1634,47 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
         "\nMEASURED chrome_prefix_paint: grid=80x24 size=1100x640 scale=2 commands={d} paints={d} per_paint_us={d}\n",
         .{ first, iterations, total_ns / iterations / std.time.ns_per_us },
     );
+}
+
+// ------------------------------------------------------ parity harness
+test "shipping durable tab waits for exact publication and keeps its original window" {
+    try cockpit.durable_tests.tabPublication();
+}
+
+test "shipping durable split does not follow a different selected tab" {
+    try cockpit.durable_tests.splitDestination();
+}
+
+test "shipping durable completion cannot acquire a reopened window slot" {
+    try cockpit.durable_tests.windowEpoch();
+}
+
+test "shipping disconnected creation stays unknown and never retries as a local shell" {
+    try cockpit.durable_tests.unknownOutcome();
+}
+
+test "shipping attachment recovery resolves only the saved coordinator incarnation" {
+    try cockpit.durable_tests.incarnationRecovery();
+}
+
+test "shipping restored subscription waits for both exact bootstrap and command acceptance" {
+    try cockpit.durable_tests.restoredSubscription();
+}
+
+test "shipping pending spawns reserve destination tab capacity" {
+    try cockpit.durable_tests.destinationReservations();
+}
+
+test "shipping refused creation retires its still-empty reserved window" {
+    try cockpit.durable_tests.windowRefusal();
+}
+
+test "shipping empty persisted Phux workspace does not spawn a synthetic local shell" {
+    try cockpit.durable_tests.restoredEmptyWorkspace();
+}
+
+test "shipping failed reconnect publishes the retired pending window" {
+    try cockpit.durable_tests.reconnectClosePublishes();
 }
 
 // ------------------------------------------------------ parity harness

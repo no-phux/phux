@@ -823,6 +823,8 @@ pub const Model = struct {
     attachment_context: topology.attachments.Context = .{},
     saved_attachments: topology.attachments.Table = .{},
     pending_attachments: [topology.attachments.max_references]bool = @splat(false),
+    /// Async placements cannot acquire a later workspace that reuses a slot.
+    window_epochs: [max_windows]u64 = @splat(0),
 
     // -------------------------------------------------------- windows
 
@@ -956,6 +958,7 @@ pub const Model = struct {
     /// every close path drains them through the ordinary pane-close cascade
     /// first, so this only releases storage the model no longer names.
     pub fn closeWindow(model: *Model, index: usize) void {
+        if (index < max_windows) model.window_epochs[index] +%= 1;
         if (index == 0) {
             model.primary_open = false;
             model.primary = .{};

@@ -10,7 +10,7 @@ index f47d8461..1b4d3ef4 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
 @@ -974,7 +974,7 @@ pub const Engine = struct {
-     pub fn onText(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+         if (!self.model.focused or self.input_suspended) return;
          const ref = self.model.focusedTerminalRef() orelse return;
          interaction.rememberKey(self.model, ref, event);
 -        if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);

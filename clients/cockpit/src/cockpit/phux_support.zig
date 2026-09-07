@@ -97,7 +97,7 @@ const DisabledPhuxProvider = struct {
     pub fn endpointDescriptor(_: *const DisabledPhuxProvider) Endpoint {
         return .{ .unix = "" };
     }
-    pub fn drainReadiness(_: *DisabledPhuxProvider) error{Disabled}!SyncDelta {
+    pub fn drainReadiness(_: *DisabledPhuxProvider) error{Disabled}!@This().SyncDelta {
         return error.Disabled;
     }
     pub fn sessionCatalog(_: *const DisabledPhuxProvider) []const @This().SessionSummary {
@@ -163,6 +163,7 @@ else
     DisabledPhuxProvider;
 pub const SessionSummary = PhuxProvider.SessionSummary;
 pub const OperationResult = PhuxProvider.OperationResult;
+pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else DisabledPhuxProvider.SyncDelta;
 pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
 
 const DisabledPointerModule = struct {

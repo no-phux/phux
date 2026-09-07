@@ -130,6 +130,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
         }],
     )?;
+    write(
+        dir,
+        "attach-local-request.bin",
+        vec![FrameKind::Command {
+            request_id: 1,
+            command: Command::AttachTerminal {
+                terminal_id: local.clone(),
+            },
+        }],
+    )?;
+    write(
+        dir,
+        "restore-accepted.bin",
+        vec![FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok,
+        }],
+    )?;
     write(dir, "local-ready.bin", bootstrap(local))?;
     write(dir, "satellite-ready.bin", bootstrap(satellite))?;
     write(
