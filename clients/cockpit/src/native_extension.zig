@@ -1712,6 +1712,7 @@ test "shipping disconnected creation stays unknown and never retries as a local 
     try cockpit.durable_tests.unknownOutcome();
 }
 
+// GUARD: ts-recovery-incarnation
 test "shipping attachment recovery resolves only the saved coordinator incarnation" {
     try cockpit.durable_tests.incarnationRecovery();
 }
