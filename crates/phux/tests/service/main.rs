@@ -6,6 +6,7 @@
 )]
 
 mod kill_server_e2e;
+mod server_ensure;
 mod service_install_guard;
 mod service_login_shell_e2e;
 mod service_reconcile;

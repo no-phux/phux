@@ -26,6 +26,58 @@ const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// stuck holder cannot hang the terminal.
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Overall bound for the one-shot coordinator launcher, including synchronous
+/// probes, config reads, version reconciliation, and service handover.
+const ENSURE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Noninteractive counterpart of naked `phux`'s coordinator startup.
+pub(crate) fn run_ensure(socket: Option<PathBuf>) -> ExitCode {
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    if let Err(code) = super::ensure_socket_path_fits(&socket_path) {
+        return code;
+    }
+    match ensure_with_deadline(socket_path.clone()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("phux server --ensure: {}: {err}", socket_path.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Keep the existing synchronous startup semantics on a worker so even a
+/// blocked connect or supervisor cannot hold the one-shot CLI indefinitely.
+/// On timeout the executable returns failure and process exit ends the worker;
+/// an already-launched daemon retains its independent lifecycle.
+fn ensure_with_deadline(socket_path: PathBuf) -> std::io::Result<()> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("coordinator-ensure".to_owned())
+        .spawn(move || {
+            let result = ensure_accepting(&socket_path);
+            let _ = sender.send(result);
+        })?;
+    receiver.recv_timeout(ENSURE_TIMEOUT).map_err(|err| {
+        std::io::Error::other(format!(
+            "coordinator startup did not complete within {ENSURE_TIMEOUT:?}: {err}; see {}",
+            phux_server::telemetry::server_log_path().display()
+        ))
+    })?
+}
+
+fn ensure_accepting(socket_path: &Path) -> std::io::Result<()> {
+    ensure_server(
+        socket_path,
+        &super::attach::resolved_default_session_name(),
+        super::attach::configured_spawn_on_attach().as_deref(),
+        false,
+    )?;
+    // The shared probe deliberately calls permission errors "Live" to avoid
+    // unlinking another user's socket. That conservative classification is not
+    // sufficient evidence for this command's success contract.
+    std::os::unix::net::UnixStream::connect(socket_path).map(drop)
+}
+
 /// Compose the fatal message printed when the server refuses to start
 /// because the config file exists but failed to load: the config path,
 /// the real loader error, and the remedy (`phux config check`).

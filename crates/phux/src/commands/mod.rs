@@ -345,12 +345,27 @@ pub(crate) enum Command {
         rec: RecOpts,
     },
 
-    /// Run a phux server in the foreground.
+    /// Run a phux server, or ensure one is accepting without attaching.
     ///
     /// Binds a Unix domain socket, pre-seeds a session whose initial
     /// pane spawns the user's `$SHELL` inside a real PTY, and serves
     /// `ATTACH` requests until Ctrl-C.
     Server {
+        /// Ensure the selected local socket accepts, then exit without a TUI.
+        ///
+        /// Reuses a live coordinator or starts one with the same session-name
+        /// template and spawn-on-attach policy as naked `phux`. Uses `--socket`,
+        /// then `PHUX_SOCKET`, then the profile default (`PHUX_PROFILE`). Exits 0
+        /// only after a successful socket connection; startup or timeout
+        /// failures exit 1 with a diagnostic on stderr. Startup is bounded to
+        /// 10 seconds, including lock contention. Does not attach or create
+        /// another session on an existing server.
+        #[arg(long, conflicts_with_all = [
+            "session", "listen", "quic", "webtransport", "connect", "hub",
+            "exit_after_idle"
+        ])]
+        ensure: bool,
+
         /// Name of the pre-seeded session. Matches what
         /// `phux attach <name>` will request.
         #[arg(long, default_value = DEFAULT_SESSION_NAME)]
@@ -419,7 +434,7 @@ pub(crate) enum Command {
         /// binding. Set by the auto-spawn path so the server outlives
         /// the launching client's terminal; a foreground `phux server`
         /// run by hand leaves this off so Ctrl-C still works.
-        #[arg(long, hide = true)]
+        #[arg(long, hide = true, conflicts_with = "ensure")]
         daemonize: bool,
 
         /// Run this command (via `$SHELL -c`) as the pre-seeded session's
@@ -427,14 +442,14 @@ pub(crate) enum Command {
         /// auto-spawn path passes `defaults.spawn-on-attach` here;
         /// `phux new` deliberately does not, so an
         /// explicitly-created session still gets a shell.
-        #[arg(long, hide = true)]
+        #[arg(long, hide = true, conflicts_with = "ensure")]
         seed_command: Option<String>,
 
         /// Graceful-upgrade resume: read the handoff state blob
         /// from this inherited descriptor, adopt the inherited listener, and
         /// rebuild the live session tree instead of starting fresh. Set by
         /// the upgrade orchestrator's re-exec; never passed by hand.
-        #[arg(long, hide = true)]
+        #[arg(long, hide = true, conflicts_with = "ensure")]
         resume: Option<std::os::fd::RawFd>,
     },
 

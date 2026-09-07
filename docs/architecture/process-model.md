@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-01
+last-reviewed: 2026-09-06
 ---
 
 # Process model
@@ -57,6 +57,39 @@ subcommand dispatches. `phux server` runs the daemon in the foreground;
 `phux` (no args) becomes a client and lazily spawns a server if none is
 listening on the socket. The auto-spawn follows tmux's convention so a
 user never has to start a daemon by hand.
+
+## Noninteractive coordinator startup
+
+Native consumers such as Cockpit can invoke the same startup owner without
+entering the TUI:
+
+```sh
+phux --socket /absolute/path/to/phux.sock server --ensure
+```
+
+Pass the consumer's selected socket explicitly so a development binary's
+profile default cannot select a different coordinator. With `--socket` omitted,
+the normal `PHUX_SOCKET` override and profile-scoped default apply;
+`PHUX_PROFILE` selects the profile. Run this subprocess asynchronously in a GUI.
+
+The helper reuses `ensure_server`: live-server reuse and version reconciliation,
+spawn locking, stale-socket recovery, pending service adoption, and detached
+auto-spawn. A fresh daemon uses the same `defaults.session-name-template` and
+`defaults.spawn-on-attach` policy as naked `phux`, including its working-directory
+template expansion. `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` retains its existing
+opt-in meaning. An existing coordinator receives no new session or attachment.
+
+Exit `0` means a Unix socket connection succeeded after startup; it does not
+mean a protocol handshake, pane bootstrap, or seed command has completed.
+Stdout stays empty and diagnostics go to stderr. Startup/connection failures
+and the overall 10-second startup deadline exit `1`; invalid flag combinations
+exit `2`. The deadline includes lock contention and synchronous startup work.
+A daemon already launched before a timeout keeps its independent lifecycle.
+Foreground-only flags such as `--session`, `--hub`, and `--listen` conflict
+with `--ensure`, rather than being silently ignored. Full parser reference:
+[`phux server`](../reference/cli.md#phux-server).
+
+## Terminal actor timers
 
 Inside the server, a PTY-backed terminal actor now runs **two** independent
 timers on its `select!`: the state-sync tick that paces output emission to its

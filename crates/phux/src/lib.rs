@@ -849,7 +849,9 @@ fn dispatch(
             rec,
             socket,
         }),
+        Some(Command::Server { ensure: true, .. }) => commands::server::run_ensure(socket),
         Some(Command::Server {
+            ensure: false,
             session,
             listen,
             quic,
