@@ -3,7 +3,7 @@
 # Bypassing Model.remotePresentation reveals a provider grid before attachment
 # identity is accepted. The break restores that bypass in the extracted painter.
 test: pending attachment hides the published grid of a reused remote identity
-red: 2026-09-07 at aba5629
+red: 2026-09-07 at 1a61643
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/terminal_painter.zig b/src/cockpit/native/terminal_painter.zig
 index 7234e5c5..5d3c16db 100644
