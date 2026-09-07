@@ -1152,6 +1152,7 @@ test "shipping final pane close retires main while a secondary keeps running" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
+// GUARD: ts-clipboard-owner
 test "shipping clipboard completion belongs to its requesting replica after focus moves" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();

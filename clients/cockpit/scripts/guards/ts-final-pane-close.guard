@@ -1,0 +1,20 @@
+# GUARD ts-final-pane-close
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping final pane close retires main while a secondary keeps running
+red: 2026-09-07 at 2157e59
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/workspace_lifecycle.zig b/src/cockpit/workspace_lifecycle.zig
+index 85581115..00442de8 100644
+--- a/src/cockpit/workspace_lifecycle.zig
++++ b/src/cockpit/workspace_lifecycle.zig
+@@ -18,7 +18,7 @@ pub fn closePane(model: *Model, fx: anytype, ref: support.TerminalRef, kill: boo
+     if (tree.isEmpty()) workspace.dropTab(where.tab);
+     workspace.tab_limit_refused = false;
+     pointer.endHiddenCaptures(model, fx);
+-    if (workspace.tab_count == 0) retireWindow(model, fx, where.window);
++    if (false and workspace.tab_count == 0) retireWindow(model, fx, where.window);
+     return true;
+ }
+ 
