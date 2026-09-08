@@ -1035,15 +1035,32 @@ pub(super) struct SidebarReservation {
 /// panes, dividers, reflow, mouse hit-testing, the strip painter itself —
 /// receives the same answer and cannot disagree about which columns
 /// belong to whom.
-pub(super) fn sidebar_reservation(
+pub(super) const fn sidebar_reservation(
     outer_cols: u16,
     enabled: bool,
     width: u16,
     edge: SidebarEdge,
     min_pane_cols: u16,
 ) -> Option<SidebarReservation> {
-    (enabled && outer_cols >= width.saturating_add(min_pane_cols))
-        .then_some(SidebarReservation { edge, width })
+    // Automatic sizing follows the viewport, never changing titles or counts:
+    // background activity must not reflow the terminal under someone's hands.
+    let width = if width == 0 {
+        let preferred = outer_cols / 4;
+        if preferred < 28 {
+            28
+        } else if preferred > 40 {
+            40
+        } else {
+            preferred
+        }
+    } else {
+        width
+    };
+    if enabled && width <= outer_cols && outer_cols - width >= min_pane_cols {
+        Some(SidebarReservation { edge, width })
+    } else {
+        None
+    }
 }
 
 /// The residual content `Rect` panes tile into after the status bar and the
@@ -1382,6 +1399,39 @@ mod tests {
                 sidebar_reservation(cols, false, 20, SidebarEdge::Left, min_pane_cols),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn automatic_sidebar_grows_with_the_viewport_and_preserves_the_pane_floor() {
+        for edge in [SidebarEdge::Left, SidebarEdge::Right] {
+            for (cols, expected) in [
+                (67, None),
+                (68, Some(28)),
+                (80, Some(28)),
+                (120, Some(30)),
+                (144, Some(36)),
+                (160, Some(40)),
+                (240, Some(40)),
+            ] {
+                let res = sidebar_reservation(cols, true, 0, edge, 40);
+                assert_eq!(res.map(|r| r.width), expected, "cols={cols}");
+                if let Some(res) = res {
+                    let content = content_rect((cols, 24), Some(Position::Bottom), Some(res));
+                    let strip = sidebar_rect((cols, 24), res);
+                    assert!(content.w >= 40);
+                    assert_eq!(content.w + strip.w, cols);
+                    assert_eq!(
+                        bar_inset((cols, 24), Some(res)).span(cols),
+                        (content.x, content.w)
+                    );
+                }
+            }
+            assert_eq!(
+                sidebar_reservation(200, true, 22, edge, 40).map(|r| r.width),
+                Some(22)
+            );
+            assert!(sidebar_reservation(u16::MAX, true, u16::MAX, edge, 40).is_none());
         }
     }
 

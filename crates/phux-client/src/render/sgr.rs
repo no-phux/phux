@@ -12,23 +12,26 @@ use ratatui::style::{Color, Modifier};
 
 /// Emit the SGR for one ratatui cell.
 ///
-/// Skips emission entirely when the cell has no styling (default fg/bg,
-/// no modifier bits) AND the previous cell also had none, so a long run
-/// of unstyled text emits no SGR sequences at all. When *any* styling is
-/// present, emits a full reset + the cell's attributes so stale style
-/// from a previous cell can't leak. `prev_styled` is threaded by the
-/// caller across cells in a row.
+/// Emit only at style boundaries. Filled sidebar and modal rows are long
+/// runs of identical styles; resetting and resending truecolor for every
+/// cell costs far more bytes than the text itself. Callers start with `None`
+/// after a hard reset and reset again at the end of each independently
+/// positioned run. A transition to plain text still clears the old style.
 pub(super) fn emit_cell_sgr(
     out: &mut impl Write,
     cell: &ratatui::buffer::Cell,
-    prev_styled: &mut bool,
+    prev_styled: &mut Option<(Color, Color, Modifier)>,
 ) -> io::Result<()> {
+    let style = (cell.fg, cell.bg, cell.modifier);
+    if *prev_styled == Some(style) {
+        return Ok(());
+    }
     let styled = cell_is_styled(cell);
-    if !styled && !*prev_styled {
+    if !styled && prev_styled.is_none() {
         return Ok(());
     }
     out.write_all(b"\x1b[0m")?;
-    *prev_styled = styled;
+    *prev_styled = Some(style);
     if !styled {
         return Ok(());
     }
@@ -199,5 +202,35 @@ mod tests {
     fn reset_emits_nothing() {
         assert_eq!(sgr(Color::Reset, true), "");
         assert_eq!(sgr(Color::Reset, false), "");
+    }
+
+    #[test]
+    fn styled_runs_coalesce_and_a_plain_cell_resets_them() {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_style(
+            ratatui::style::Style::default()
+                .fg(Color::Rgb(190, 242, 100))
+                .bg(Color::Rgb(23, 27, 35))
+                .add_modifier(Modifier::BOLD),
+        );
+        let mut out = Vec::new();
+        let mut previous = None;
+        emit_cell_sgr(&mut out, &cell, &mut previous).expect("first style");
+        let initial = out.len();
+        for _ in 0..200 {
+            emit_cell_sgr(&mut out, &cell, &mut previous).expect("same style");
+        }
+        assert_eq!(
+            out.len(),
+            initial,
+            "a 200-cell run sends its colors only once"
+        );
+        cell.set_style(ratatui::style::Style::default().remove_modifier(Modifier::BOLD));
+        emit_cell_sgr(&mut out, &cell, &mut previous).expect("modifier transition");
+        assert!(out.len() > initial);
+        let before_plain = out.len();
+        emit_cell_sgr(&mut out, &ratatui::buffer::Cell::default(), &mut previous)
+            .expect("plain transition");
+        assert_eq!(&out[before_plain..], b"\x1b[0m");
     }
 }

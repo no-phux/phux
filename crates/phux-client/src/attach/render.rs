@@ -114,7 +114,7 @@ pub use crate::render::overlay::selection::SelectionRect;
 /// The fields are readable throughout `attach` — paint sites that also need
 /// the terminal itself (mirror dimensions, alt-screen mode) read `terminal`
 /// directly — and sealed outside it, so the only pairing a foreign crate can
-/// make is [`ReplicaWalk::for_test`]'s.
+/// make is the test-only `ReplicaWalk::for_test` constructor's.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplicaWalk<'a, 'alloc, 'cb> {
     pub(super) terminal: &'a GhosttyTerminal<'alloc, 'cb>,

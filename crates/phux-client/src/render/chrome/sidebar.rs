@@ -41,8 +41,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::agent_meta::AgentMetaState;
 use crate::layout::Rect;
 use crate::render::Theme;
-use crate::render::clip_text;
 use crate::render::overlay::HardcodedBinding;
+use crate::render::{clip_text, display_width};
 
 /// Label of the "create" affordance row (phux-fce4).
 ///
@@ -134,6 +134,10 @@ pub static HELP_BINDINGS: &[HardcodedBinding] = &[
 /// Below this every row goes to the section body — a 2–3 row strip
 /// showing only chrome and no windows would be useless.
 const MIN_FOOTER_HEIGHT: u16 = 4;
+
+/// Whole-cell spacing tokens, shared by every sidebar row (DESIGN.md).
+const GUTTER: u16 = 1;
+const ICON_COLUMNS: usize = 2;
 
 /// One agent-running pane, as the sidebar's `agents` section renders it
 /// (phux-foz.9).
@@ -459,7 +463,7 @@ fn push_needs_you_zone(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, body: 
     let overflow = usize::from(counts.needs_you > shown);
     // header + rows + overflow, held back from zone 2's floor.
     let want = 1 + shown + overflow;
-    let allowed = body.saturating_sub(HERE_FLOOR);
+    let allowed = body.saturating_sub(HERE_FLOOR + 1); // include the section gap
     let budget = want.min(allowed);
     // A header with no row under it is noise; skip the zone entirely.
     // At least one REAL row is guaranteed whenever the header renders —
@@ -595,18 +599,6 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     }
 }
 
-/// Everything one painted frame was composed from (phux-k0cw).
-///
-/// EVERY projection the strip paints must be in here. A zone left out does
-/// not merely paint stale — it freezes for the life of the session, because
-/// the cache reports a hit forever.
-type PaintCacheKey = (
-    Rect,
-    Vec<WindowInfo>,
-    Vec<AgentEntry>,
-    Vec<SessionRosterEntry>,
-);
-
 /// VT painter for the window sidebar.
 #[derive(Debug)]
 pub struct SidebarPainter {
@@ -614,13 +606,10 @@ pub struct SidebarPainter {
     needs_you: Vec<AgentEntry>,
     roster: Vec<SessionRosterEntry>,
     theme: Theme,
-    /// Cache: the `(rect, windows, needs_you, roster)` of the last paint. An
-    /// identical repaint is a zero-byte no-op.
-    ///
-    /// EVERY projection the strip paints must be in here. A zone left out of
-    /// the key does not merely paint stale — it freezes for the life of the
-    /// session, because the cache reports a hit forever.
-    last: Option<PaintCacheKey>,
+    /// Last successfully emitted cells. Keep only one projection copy and
+    /// compare rendered rows so hidden/truncated changes emit no bytes.
+    last: Option<(Rect, Buffer)>,
+    dirty: bool,
 }
 
 impl SidebarPainter {
@@ -633,6 +622,7 @@ impl SidebarPainter {
             roster: Vec::new(),
             theme,
             last: None,
+            dirty: true,
         }
     }
 
@@ -647,6 +637,7 @@ impl SidebarPainter {
             return false;
         }
         self.windows = windows;
+        self.dirty = true;
         true
     }
 
@@ -657,6 +648,7 @@ impl SidebarPainter {
             return false;
         }
         self.needs_you = needs_you;
+        self.dirty = true;
         true
     }
 
@@ -667,6 +659,7 @@ impl SidebarPainter {
             return false;
         }
         self.roster = roster;
+        self.dirty = true;
         true
     }
 
@@ -723,19 +716,18 @@ impl SidebarPainter {
         if rect.w == 0 || rect.h == 0 {
             return Ok(());
         }
-        if self.last.as_ref().is_some_and(|(r, w, n, s)| {
-            *r == rect && *w == self.windows && *n == self.needs_you && *s == self.roster
-        }) {
+        if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
         let buf = self.compose(rect);
-        emit(out, &buf, rect)?;
-        self.last = Some((
-            rect,
-            self.windows.clone(),
-            self.needs_you.clone(),
-            self.roster.clone(),
-        ));
+        let previous = self
+            .last
+            .as_ref()
+            .filter(|(r, _)| *r == rect)
+            .map(|(_, b)| b);
+        emit_changed(out, &buf, rect, previous)?;
+        self.last = Some((rect, buf));
+        self.dirty = false;
         Ok(())
     }
 
@@ -752,7 +744,9 @@ impl SidebarPainter {
     fn header_line(&self, label: &str, text_w: u16) -> Line<'static> {
         Line::from(Span::styled(
             truncate(label, usize::from(text_w)),
-            Style::default().fg(self.theme.sidebar_section),
+            Style::default()
+                .fg(self.theme.sidebar_section)
+                .add_modifier(Modifier::BOLD),
         ))
     }
 
@@ -787,12 +781,10 @@ impl SidebarPainter {
         let label = truncate(&w.name, label_w);
         let style = if w.active {
             Style::default()
-                .fg(self.theme.accent)
+                .fg(self.theme.selection_fg)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(self.theme.action)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(self.theme.text)
         };
         let mut spans = vec![
             Span::styled(format!("{dot} "), Style::default().fg(dot_color)),
@@ -820,9 +812,7 @@ impl SidebarPainter {
         let label = truncate(branch, usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
-            Style::default()
-                .fg(self.theme.dim)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(self.theme.dim),
         ))
     }
 
@@ -843,27 +833,36 @@ impl SidebarPainter {
         let badge = crate::render::chrome::agent_badge(&self.theme, e.state, e.attention, e.seen);
         let color = badge.color;
         let glyph = badge.glyph;
-        let avail = usize::from(text_w).saturating_sub(2); // glyph + space
+        let avail = usize::from(text_w).saturating_sub(ICON_COLUMNS);
         let state_text = format!("{} - {}", e.state.as_str(), e.name);
         // A cross-session row is labelled by its SESSION, not its window: the
         // queue's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
         let locator = e.session.as_ref().unwrap_or(&e.window_name);
+        // The destination earns at least half the row. Previously the agent
+        // description could reduce a long session name to five characters.
         let win_budget = avail
-            .saturating_sub(state_text.chars().count() + 1)
-            .max(avail.min(5));
-        let win_label = truncate(locator, win_budget.min(locator.chars().count()));
+            .saturating_sub(display_width(&state_text) + 1)
+            .max(avail / 2);
+        let win_label = truncate(locator, win_budget);
         let state_budget = avail
-            .saturating_sub(win_label.chars().count())
+            .saturating_sub(display_width(&win_label))
             .saturating_sub(1);
-        let state_label = truncate(&state_text, state_budget);
+        let state_label = truncate(
+            if display_width(&state_text) <= state_budget {
+                &state_text
+            } else {
+                &e.name
+            },
+            state_budget,
+        );
         let mut glyph_style = Style::default().fg(color);
         if badge.emphatic {
             glyph_style = glyph_style.add_modifier(Modifier::BOLD);
         }
         Line::from(vec![
             Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(win_label, Style::default().fg(self.theme.action)),
+            Span::styled(win_label, Style::default().fg(self.theme.text)),
             Span::styled(format!(" {state_label}"), Style::default().fg(color)),
         ])
     }
@@ -912,15 +911,15 @@ impl SidebarPainter {
         let name_budget = avail.saturating_sub(if counts.is_empty() {
             0
         } else {
-            counts.chars().count() + 1
+            display_width(&counts) + 1
         });
         let name = truncate(&s.name, name_budget);
         let pad = avail
-            .saturating_sub(name.chars().count())
-            .saturating_sub(counts.chars().count());
+            .saturating_sub(display_width(&name))
+            .saturating_sub(display_width(&counts));
         let mut spans = vec![
             Span::styled(format!("{dot} "), Style::default().fg(color)),
-            Span::styled(name, Style::default().fg(self.theme.action)),
+            Span::styled(name, Style::default().fg(self.theme.text)),
         ];
         if !counts.is_empty() {
             spans.push(Span::styled(
@@ -952,14 +951,13 @@ impl SidebarPainter {
     /// as deliberate, tappable chrome rather than an afterthought, while the
     /// word stays in the recessive `dim` tone.
     fn affordance_line(&self, label: &str, text_w: u16) -> Line<'static> {
-        let label = truncate(label, usize::from(text_w).saturating_sub(2));
+        let label = truncate(label, usize::from(text_w));
         let mut chars = label.chars();
         let glyph = chars.next().map(String::from).unwrap_or_default();
         let rest = chars.as_str().to_owned();
         Line::from(vec![
-            Span::styled("  ", Style::default().fg(self.theme.dim)),
-            Span::styled(glyph, Style::default().fg(self.theme.sidebar_section)),
-            Span::styled(rest, Style::default().fg(self.theme.dim)),
+            Span::styled(glyph, Style::default().fg(self.theme.chord)),
+            Span::styled(rest, Style::default().fg(self.theme.text)),
         ])
     }
 
@@ -968,8 +966,12 @@ impl SidebarPainter {
     fn compose(&self, rect: Rect) -> Buffer {
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
-        // Text occupies every column except the 1-cell right separator.
-        let text_w = rect.w.saturating_sub(1);
+        buf.set_style(
+            area,
+            Style::default().fg(self.theme.text).bg(self.theme.surface),
+        );
+        // One-cell gutters protect names from both the edge and separator.
+        let text_w = rect.w.saturating_sub(1 + GUTTER * 2);
         let counts = self.counts();
         let model = row_model(counts, rect.h);
         // What each zone had to drop, for its overflow row.
@@ -1016,7 +1018,17 @@ impl SidebarPainter {
                     SidebarRow::Menu => self.affordance_line(MENU_LABEL, text_w),
                 })
                 .collect();
-            Paragraph::new(lines).render(RataRect::new(0, 0, text_w, rect.h), &mut buf);
+            Paragraph::new(lines).render(RataRect::new(GUTTER, 0, text_w, rect.h), &mut buf);
+            for (y, row) in (0..rect.h).zip(&model) {
+                if let SidebarRow::WindowName(i) | SidebarRow::WindowBranch(i) = row
+                    && self.windows.get(*i).is_some_and(|w| w.active)
+                {
+                    buf.set_style(
+                        RataRect::new(0, y, rect.w.saturating_sub(1), 1),
+                        Style::default().bg(self.theme.selection_bg),
+                    );
+                }
+            }
         }
         // Vertical rule down the strip's last column.
         let sep_x = rect.w.saturating_sub(1);
@@ -1060,10 +1072,23 @@ fn truncate(s: &str, max: usize) -> String {
 /// the whole strip out of its reserved columns and over the panes
 /// beside it (ADR-0020). Skipping the spilled-into cells keeps the
 /// column budget and the cursor in agreement.
-fn emit<W: Write>(out: &mut W, buf: &Buffer, rect: Rect) -> io::Result<()> {
+///
+/// Repaint complete changed rows so shortening a label clears its old tail.
+/// Whole-row runs also preserve wide-glyph ownership across style changes.
+fn emit_changed<W: Write>(
+    out: &mut W,
+    buf: &Buffer,
+    rect: Rect,
+    previous: Option<&Buffer>,
+) -> io::Result<()> {
+    let mut changed = false;
     for row in 0..rect.h {
+        if previous.is_some_and(|old| (0..rect.w).all(|col| old[(col, row)] == buf[(col, row)])) {
+            continue;
+        }
+        changed = true;
         write!(out, "\x1b[{};{}H\x1b[0m", rect.y + row + 1, rect.x + 1)?;
-        let mut prev_styled = false;
+        let mut prev_styled = None;
         let mut col = 0;
         while col < rect.w {
             let cell = &buf[(col, row)];
@@ -1084,7 +1109,7 @@ fn emit<W: Write>(out: &mut W, buf: &Buffer, rect: Rect) -> io::Result<()> {
         }
         out.write_all(b"\x1b[0m")?;
     }
-    out.flush()
+    if changed { out.flush() } else { Ok(()) }
 }
 
 #[cfg(test)]
@@ -1474,13 +1499,92 @@ mod tests {
             !paint_to_string(&mut p, rect).is_empty(),
             "changed windows must re-emit"
         );
-        // phux-foz.9: an agent change alone invalidates it too.
+        // An invisible change must not repaint an identical short strip.
         paint_to_string(&mut p, rect);
         p.set_needs_you(vec![agent(0, "b", "claude", AgentMetaState::Idle)]);
         assert!(
-            !paint_to_string(&mut p, rect).is_empty(),
-            "changed agents must re-emit"
+            paint_to_string(&mut p, rect).is_empty(),
+            "hidden agents must not re-emit identical cells"
         );
+        assert!(!paint_to_string(&mut p, Rect { h: 12, ..rect }).is_empty());
+    }
+
+    #[test]
+    fn branch_update_emits_only_its_row_and_invalidation_restores_every_row() {
+        let mut p = SidebarPainter::new(Theme::default());
+        let rect = Rect {
+            x: 7,
+            y: 2,
+            w: 36,
+            h: 24,
+        };
+        p.set_windows(vec![win_branch("editor", true, "feature/long-branch")]);
+        let full = paint_to_string(&mut p, rect);
+        p.set_windows(vec![win_branch("editor", true, "main")]);
+        let changed = paint_to_string(&mut p, rect);
+        assert_eq!(
+            changed.matches('H').count(),
+            1,
+            "one CUP for the changed branch row"
+        );
+        assert!(changed.starts_with("\x1b[5;8H"));
+        assert!(changed.contains("main"));
+        assert!(!changed.contains("editor"));
+        assert!(
+            changed.len() * 8 < full.len(),
+            "one row costs much less than the whole strip"
+        );
+        p.invalidate();
+        assert_eq!(paint_to_string(&mut p, rect).matches('H').count(), 24);
+        assert!(paint_to_string(&mut p, rect).is_empty());
+        assert_eq!(
+            paint_to_string(&mut p, Rect { x: 8, ..rect })
+                .matches('H')
+                .count(),
+            24
+        );
+    }
+
+    #[test]
+    fn unicode_roster_counts_align_and_selection_owns_its_gutters() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_windows(vec![win_branch("编辑器", true, "cafe\u{301}")]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 36,
+            h: 12,
+        };
+        let b = p.compose_buffer(rect);
+        for y in [1, 2] {
+            assert_eq!(b[(0, y)].bg, p.theme.selection_bg);
+            assert_eq!(b[(34, y)].bg, p.theme.selection_bg);
+            assert_eq!(b[(35, y)].bg, p.theme.surface);
+        }
+        assert!(!b[(3, 2)].modifier.contains(Modifier::DIM));
+        for name in ["构建工具", "cafe\u{301}", "build"] {
+            let line = p.roster_line(&roster(name, 1, 2, 0), 30);
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(display_width(&text), 30);
+            assert!(text.ends_with("!1 *2"));
+        }
+    }
+
+    #[test]
+    fn compact_attention_rows_keep_same_session_agents_distinguishable() {
+        let p = SidebarPainter::new(Theme::default());
+        let text = |name| {
+            let mut e = agent(0, "work", name, AgentMetaState::Blocked);
+            e.session = Some("development".to_owned());
+            p.agent_line(&e, 25)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(text("claude").contains("claude"));
+        assert!(text("codex").contains("codex"));
+        assert_ne!(text("claude"), text("codex"));
     }
 
     /// phux-foz.1: a window whose pane asked for a human answer (ADR-0035)
@@ -1628,7 +1732,7 @@ mod tests {
         );
         let worker_row = row_text(&buf, rect, 2);
         assert!(
-            worker_row.contains("working - merge-queue-w5"),
+            worker_row.contains("scratch") && worker_row.contains("merge-queue-w5"),
             "second queue row: {worker_row:?}"
         );
         assert!(
@@ -2376,7 +2480,11 @@ mod tests {
                     assert_eq!(hit, Some(SidebarHit::Window(*i)));
                 }
                 SidebarRow::NeedsYou(j) => {
-                    assert!(row_text(&buf, rect, y16).contains(&agents[*j].name));
+                    assert!(
+                        [&agents[*j].window_name, &agents[*j].name]
+                            .iter()
+                            .all(|label| row_text(&buf, rect, y16).contains(label.as_str()))
+                    );
                     assert_eq!(hit, Some(SidebarHit::NeedsYou(*j)));
                 }
                 SidebarRow::RosterEntry(j) => {

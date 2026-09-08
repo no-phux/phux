@@ -64,8 +64,9 @@ const SECTIONS: &[Section] = &[
     Section {
         key: "sidebar",
         header: "[sidebar]",
-        summary: "The window sidebar: off by default; width in columns and \
-                  the edge it docks to when enabled.",
+        summary: "The window sidebar: enabled by default; width 0 adapts to \
+                  28–40 columns, positive widths stay fixed; position chooses \
+                  the docking edge.",
     },
     Section {
         key: "chrome",
@@ -460,7 +461,7 @@ mod tests {
             "| `defaults.history-bytes` | `2097152` |",
             "| `defaults.history-limit` | `50000` |",
             "| `keybindings.prefix` | `\"C-a\"` |",
-            "| `sidebar.width` | `28` |",
+            "| `sidebar.width` | `0` |",
             "| `status.position` | `\"bottom\"` |",
         ] {
             assert!(page.body.contains(row), "scalar table lost the row {row:?}");

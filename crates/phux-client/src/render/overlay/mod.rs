@@ -581,36 +581,14 @@ impl OverlayState {
 
 /// Emit a ratatui [`Buffer`] to `out` as VT cursor + SGR + glyph bytes.
 ///
-/// Walks row by row; emits CUP at column 0 of each row, then writes each
-/// cell's symbol with an SGR delta. This is a deliberately simple
-/// renderer (one CUP per row, full SGR re-emit per cell-with-style) —
-/// overlays repaint on input, not on every frame, so we trade per-cell
-/// efficiency for code that's obvious to audit. The chrome submodule
-/// (status bar + dividers) may grow a shared writer later; for now the
-/// overlay path stays self-contained.
+/// Full-screen and clipped overlays share the same width-aware row walk and
+/// style-run coalescing, so a wide label cannot push either path off its grid.
 fn emit_buffer(out: &mut impl Write, buf: &Buffer) -> io::Result<()> {
     let area = buf.area;
     // Hide cursor for the duration of the modal paint.
     out.write_all(b"\x1b[?25l")?;
     for row in 0..area.height {
-        // CUP to start of row (1-based).
-        write!(out, "\x1b[{};{}H", row + 1, 1)?;
-        // Reset SGR so the previous row's tail style can't leak.
-        out.write_all(b"\x1b[0m")?;
-        let mut prev_styled = false;
-        for col in 0..area.width {
-            let cell = &buf[(area.x + col, area.y + row)];
-            crate::render::sgr::emit_cell_sgr(out, cell, &mut prev_styled)?;
-            let sym = cell.symbol();
-            if sym.is_empty() {
-                out.write_all(b" ")?;
-            } else {
-                out.write_all(sym.as_bytes())?;
-            }
-        }
-        if prev_styled {
-            out.write_all(b"\x1b[0m")?;
-        }
+        emit_row_span(out, buf, area.y + row, area.x, area.right())?;
     }
     // Park the cursor at (1,1) — overlay-active state implies no pane
     // cursor visible. Stays hidden until the overlay dismisses and the
@@ -737,18 +715,24 @@ fn emit_row_span(
 ) -> io::Result<()> {
     write!(out, "\x1b[{};{}H", row + 1, start_col + 1)?;
     out.write_all(b"\x1b[0m")?;
-    let mut prev_styled = false;
-    for col in start_col..end_col {
+    let mut prev_styled = None;
+    let mut col = start_col;
+    while col < end_col {
         let cell = &buf[(col, row)];
         crate::render::sgr::emit_cell_sgr(out, cell, &mut prev_styled)?;
         let sym = cell.symbol();
-        if sym.is_empty() {
+        let width = u16::try_from(crate::render::display_width(sym))
+            .unwrap_or(1)
+            .max(1);
+        if sym.is_empty() || width > end_col - col {
             out.write_all(b" ")?;
+            col += 1;
         } else {
             out.write_all(sym.as_bytes())?;
+            col += width;
         }
     }
-    if prev_styled {
+    if prev_styled.is_some() {
         out.write_all(b"\x1b[0m")?;
     }
     Ok(())
@@ -1111,6 +1095,52 @@ mod tests {
             !txt.contains("\x1b[1;") && !txt.contains("\x1b[8;"),
             "no CUP may target a row outside the clip: {txt:?}"
         );
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn unicode_vt_paint_keeps_borders_on_grid_in_full_and_clipped_paths() {
+        use crate::attach::render::{ReplicaWalk, TerminalRenderer};
+        use libghostty_vt::{Terminal, TerminalOptions};
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 4));
+        buf.set_string(
+            3,
+            1,
+            "│构建工具 cafe\u{301}│",
+            ratatui::style::Style::default(),
+        );
+        for clipped in [false, true] {
+            let mut out = Vec::new();
+            if clipped {
+                emit_row_span(&mut out, &buf, 1, 3, 20).expect("clipped paint");
+            } else {
+                emit_buffer(&mut out, &buf).expect("full paint");
+            }
+            let mut terminal = Terminal::new(TerminalOptions {
+                cols: 24,
+                rows: 4,
+                max_scrollback: 0,
+            })
+            .expect("terminal");
+            terminal.vt_write(&out);
+            let mut renderer = TerminalRenderer::new().expect("renderer");
+            for (col, ch) in [
+                (3, '│'),
+                (4, '构'),
+                (6, '建'),
+                (8, '工'),
+                (10, '具'),
+                (17, '│'),
+            ] {
+                assert_eq!(
+                    renderer
+                        .read_grapheme_at(ReplicaWalk::for_test(&terminal), 1, col)
+                        .expect("cell"),
+                    Some(ch),
+                    "clipped={clipped}, col={col}"
+                );
+            }
+        }
     }
 
     #[test]

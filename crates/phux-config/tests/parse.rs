@@ -147,7 +147,7 @@ fn empty_input_is_full_defaults() {
         "the sidebar ships ON: it is the answer to 'which agent needs me?', \
          and an answer nobody finds is not an answer"
     );
-    assert_eq!(cfg.sidebar.width, 28, "default width fits a nested tree");
+    assert_eq!(cfg.sidebar.width, 0, "default width adapts to the viewport");
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
     assert_eq!(cfg.status.position, StatusPosition::Bottom);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);

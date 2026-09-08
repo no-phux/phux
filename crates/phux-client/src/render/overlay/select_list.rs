@@ -448,7 +448,7 @@ impl SelectList {
     }
 
     /// Build the body lines: a query line, a separator, then the *visible*
-    /// filtered rows (selected row reverse-video). A dimmed notice replaces
+    /// filtered rows (selected row highlighted). A dimmed notice replaces
     /// the rows when nothing matches.
     ///
     /// `window` is the slice of filtered indices that fits the viewport and
@@ -459,8 +459,16 @@ impl SelectList {
         // Query line: a `> ` prompt, the text, and a reverse-video caret.
         lines.push(Line::from(vec![
             Span::styled("> ".to_owned(), Style::default().fg(self.theme.accent)),
-            Span::styled(self.query.clone(), Style::default().fg(self.theme.text)),
-            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+            Span::styled(
+                self.visible_query(inner_width.saturating_sub(3)),
+                Style::default().fg(self.theme.text),
+            ),
+            Span::styled(
+                " ",
+                Style::default()
+                    .fg(self.theme.surface)
+                    .bg(self.theme.accent),
+            ),
         ]));
         lines.push(Line::from(""));
 
@@ -484,6 +492,21 @@ impl SelectList {
         lines
     }
 
+    /// Keep newly typed text and the caret visible without changing the query
+    /// used for matching. Strip controls before measuring terminal columns.
+    fn visible_query(&self, width: u16) -> String {
+        let query = clip_text(&self.query, usize::MAX);
+        let mut remaining = crate::render::display_width(&query);
+        for (i, ch) in query.char_indices() {
+            let cells = crate::render::cell_width(ch).unwrap_or(0);
+            if remaining <= usize::from(width) && cells > 0 {
+                return query[i..].to_owned();
+            }
+            remaining = remaining.saturating_sub(cells);
+        }
+        String::new()
+    }
+
     /// A dim, non-selectable section-header row, styled with the theme's
     /// `section_header` slot shared by grouped discovery surfaces.
     fn header_line(&self, item: &SelectItem) -> Line<'static> {
@@ -491,13 +514,13 @@ impl SelectList {
             item.label.clone(),
             Style::default()
                 .fg(self.theme.section_header)
-                .add_modifier(Modifier::DIM),
+                .add_modifier(Modifier::BOLD),
         ))
     }
 
     /// One list row: label on the left, optional dimmed secondary
     /// right-aligned within `inner_width`. The selected row is rendered
-    /// reverse-video across its visible width.
+    /// on the theme's selection surface across its visible width.
     ///
     /// The row is laid out to *exactly* `inner_width` cells. It used to
     /// be laid out to at least `label + 1 + secondary` and left "truncated
@@ -524,24 +547,28 @@ impl SelectList {
         // different facts and must never run together into one word.
         let secondary = clip_text(
             &secondary_full,
-            width.saturating_sub(label_full.chars().count() + GAP),
+            width.saturating_sub(crate::render::display_width(&label_full) + GAP),
         );
-        let sec_w = secondary.chars().count();
+        let sec_w = crate::render::display_width(&secondary);
         // The label then takes the rest, reserving the gap only if a
         // secondary actually survived.
         let label = clip_text(
             &label_full,
             width.saturating_sub(sec_w + if sec_w > 0 { GAP } else { 0 }),
         );
-        let padding = " ".repeat(width.saturating_sub(label.chars().count() + sec_w));
+        let padding =
+            " ".repeat(width.saturating_sub(crate::render::display_width(&label) + sec_w));
 
         if selected {
-            // Reverse-video the whole row so the selection reads clearly
-            // regardless of theme. Secondary stays in the same run.
+            // Own both colors: reversing a host's dark text on this dark
+            // modal can make the selected row unreadable on light terminals.
             let text = format!("{label}{padding}{secondary}");
             Line::from(Span::styled(
                 text,
-                Style::default().add_modifier(Modifier::REVERSED),
+                Style::default()
+                    .fg(self.theme.selection_fg)
+                    .bg(self.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD),
             ))
         } else {
             // phux-foz.7: an attention row's label paints in the theme's
@@ -1131,7 +1158,7 @@ mod tests {
         out
     }
 
-    /// The label of the row painted reverse-video — what the user sees as
+    /// The label of the row painted on the selection surface — what the user sees as
     /// selected. `None` when no row is highlighted anywhere on screen, which
     /// is exactly the bug: the cursor walked off the bottom of the box.
     fn painted_selection(sl: &SelectList, w: u16, h: u16) -> Option<String> {
@@ -1139,13 +1166,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         sl.render(area, &mut buf);
         for y in 0..area.height {
-            // The query line's caret is reverse-video too; a *row* is a run of
-            // reversed cells carrying a label, so require some non-space text.
+            // A selected row owns a full selection-colored run.
             let mut row = String::new();
             let mut reversed = false;
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.style().add_modifier.contains(Modifier::REVERSED) {
+                if cell.bg == sl.theme.selection_bg {
                     reversed = true;
                     row.push_str(cell.symbol());
                 }
@@ -1424,15 +1450,16 @@ mod tests {
         let hot = sl.item_line(&sl.items[1], false, 40);
         assert_eq!(hot.spans[0].style.fg, Some(theme.attention));
         assert!(hot.spans[0].style.add_modifier.contains(Modifier::BOLD));
-        // The selected row stays plain reverse-video regardless.
+        // Selection owns both colors regardless of the host terminal theme.
         let selected = sl.item_line(&sl.items[1], true, 40);
         assert!(
             selected.spans[0]
                 .style
                 .add_modifier
-                .contains(Modifier::REVERSED)
+                .contains(Modifier::BOLD)
         );
-        assert_eq!(selected.spans[0].style.fg, None);
+        assert_eq!(selected.spans[0].style.fg, Some(theme.selection_fg));
+        assert_eq!(selected.spans[0].style.bg, Some(theme.selection_bg));
     }
 
     /// phux-foz.7: pin the painted fleet-shaped layout (session header,
@@ -1538,21 +1565,48 @@ mod tests {
             action("x"),
         )
         .secondary("~/some/deeply/nested/working/directory  feature/branch");
-        let sl = SelectList::new("t", vec![long], &Theme::default());
+        let sl = SelectList::new(
+            "t",
+            vec![
+                long,
+                SelectItem::new("构建工具", action("x")).secondary("工作目录/main"),
+                SelectItem::new("cafe\u{301}", action("x"))
+                    .secondary("re\u{301}vision")
+                    .indented(),
+            ],
+            &Theme::default(),
+        );
 
         for width in 1u16..=80 {
-            let line = sl.item_line(&sl.items[0], false, width);
-            let painted: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>();
-            assert_eq!(
-                painted.chars().count(),
-                usize::from(width),
-                "row at interior width {width}: {painted:?}"
-            );
+            for item in &sl.items {
+                for selected in [false, true] {
+                    let line = sl.item_line(item, selected, width);
+                    let painted: String = line
+                        .spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>();
+                    assert_eq!(
+                        crate::render::display_width(&painted),
+                        usize::from(width),
+                        "row at interior width {width}: {painted:?}"
+                    );
+                }
+            }
         }
+    }
+
+    #[test]
+    fn long_query_keeps_its_tail_without_changing_the_filter() {
+        let mut sl = sample();
+        sl.query = "prefix-构建-cafe\u{301}".to_owned();
+        assert_eq!(sl.visible_query(5), "-cafe\u{301}");
+        assert_eq!(sl.visible_query(0), "");
+        assert_eq!(sl.visible_query(80), sl.query);
+        for width in 0..20 {
+            assert!(crate::render::display_width(&sl.visible_query(width)) <= usize::from(width));
+        }
+        assert_eq!(sl.query, "prefix-构建-cafe\u{301}");
     }
 
     /// Under pressure the secondary yields before the label does: the

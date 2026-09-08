@@ -530,8 +530,8 @@ pub enum StatusPosition {
 ///
 /// A vertical strip listing the session's windows as tabs, each labelled by
 /// its OSC title (falling back to the window name), the focused one
-/// highlighted. Off by default; when `enabled`, it reserves `width` columns
-/// on `position`, and the panes tile into the remaining area.
+/// highlighted. Enabled by default; it reserves a responsive strip on
+/// `position`, and the panes tile into the remaining area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SidebarCfg {
@@ -543,7 +543,9 @@ pub struct SidebarCfg {
     /// sessions the strip is just the window list it replaced.
     #[serde(default = "default_sidebar_enabled")]
     pub enabled: bool,
-    /// Width in columns when shown. Default `28`.
+    /// Width in columns when shown. Default `0` selects automatic sizing:
+    /// one quarter of the viewport, bounded to 28–40 columns. A positive
+    /// value fixes the width, preserving explicit user sizing.
     #[serde(default = "default_sidebar_width")]
     pub width: u16,
     /// Which edge the sidebar docks to. Default `left`.
@@ -565,12 +567,10 @@ const fn default_sidebar_enabled() -> bool {
     true
 }
 
-/// Wide enough for a nested tree: a status dot, a two-space indent, a
-/// session or window name, and a `!1 *2` histogram without the name
-/// truncating on the common case. 20 fitted a flat window list and no longer
-/// fits what the strip shows.
+/// Automatic sizing gives names room on wide terminals while leaving the
+/// classic 80-column layout compact. Positive values remain fixed widths.
 const fn default_sidebar_width() -> u16 {
-    28
+    0
 }
 
 /// Which edge the [`SidebarCfg`] docks to.
