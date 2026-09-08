@@ -531,9 +531,12 @@ fn compiledWindow(ui: *Adapter.Ui, model: *const core.Model, window_index: usize
     };
 }
 
+var terminal_space_measurements: usize = 0;
+
 /// Only compiled markup enters this pass, never terminalInteraction: measuring
 /// the slot therefore cannot feed terminal sizing back into chrome layout.
 fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) !native_sdk.geometry.RectF {
+    if (@import("builtin").is_test) terminal_space_measurements += 1;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var ui = Adapter.Ui.init(arena.allocator());
@@ -549,7 +552,21 @@ fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, 
 fn syncTerminalSpace(model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) void {
     const engine = bridge.engine orelse return;
     const workspace = engine.model.wsAt(window_index) orelse return;
-    workspace.shipping_terminal_space = measureTerminalSpace(std.heap.page_allocator, model, window_index, size, tokens) catch .init(0, 0, 0, 0);
+    workspace.shipping_terminal_space = measureTerminalSpace(std.heap.page_allocator, model, window_index, size, tokens) catch {
+        workspace.shipping_terminal_space = .init(0, 0, 0, 0);
+        workspace.shipping_terminal_size = .{};
+        return;
+    };
+    workspace.shipping_terminal_size = size;
+}
+
+/// composeView refreshes geometry whenever the committed chrome rebuilds.
+/// GPU-only frames need a new measurement only when their physical size moves.
+fn ensureTerminalSpace(model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) void {
+    const engine = bridge.engine orelse return;
+    const workspace = engine.model.wsAtConst(window_index) orelse return;
+    if (workspace.shipping_terminal_space != null and std.meta.eql(workspace.shipping_terminal_size, size)) return;
+    syncTerminalSpace(model, window_index, size, tokens);
 }
 
 fn mainView(ui: *Adapter.Ui, model: *const core.Model) Adapter.Ui.Node {
@@ -570,7 +587,7 @@ var palette_open: bool = false;
 
 fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.Msg {
     const engine = bridge.engine orelse return null;
-    if (Engine.windowIndexForCanvas(frame.label)) |index| syncTerminalSpace(model, index, frame.size, cockpit.projection.cockpitTokens(engine.model));
+    if (Engine.windowIndexForCanvas(frame.label)) |index| ensureTerminalSpace(model, index, frame.size, cockpit.projection.cockpitTokens(engine.model));
     const fx = engineFx() orelse return null;
     overlay_open = model.paletteOpen or model.settingsOpen;
     palette_open = model.paletteOpen;
@@ -2666,6 +2683,28 @@ test "shipping terminal rows fit between the compiled header and status" {
     const content = cockpit.projection.workspaceChrome(bridge.engine.?.model, .init(1100, 640)).content;
     try std.testing.expect(content.y >= header_bottom);
     try std.testing.expect(content.y + content.height <= status_top);
+}
+
+// GUARD: ts-shipping-geometry-cache
+test "shipping unchanged GPU frames reuse compiled terminal geometry" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var frame: native_sdk.platform.GpuFrame = .{ .label = cockpit.scene.canvasLabelFor(0), .window_id = 1, .size = .init(1100, 640), .scale_factor = 1, .frame_index = 2, .timestamp_ns = 2 };
+    _ = onFrame(&rig.app_state.model, frame);
+    const before = terminal_space_measurements;
+    for (0..8) |_| _ = onFrame(&rig.app_state.model, frame);
+    try std.testing.expectEqual(before, terminal_space_measurements);
+    frame.size.width += 100;
+    _ = onFrame(&rig.app_state.model, frame);
+    try std.testing.expectEqual(before + 1, terminal_space_measurements);
+    _ = onFrame(&rig.app_state.model, frame);
+    try std.testing.expectEqual(before + 1, terminal_space_measurements);
+    // A chrome rebuild remains authoritative even at the same surface size.
+    syncTerminalSpace(&rig.app_state.model, 0, frame.size, cockpit.projection.cockpitTokens(bridge.engine.?.model));
+    try std.testing.expectEqual(before + 2, terminal_space_measurements);
+    _ = onFrame(&rig.app_state.model, frame);
+    try std.testing.expectEqual(before + 2, terminal_space_measurements);
 }
 
 fn expectRectInside(inner: native_sdk.geometry.RectF, outer: native_sdk.geometry.RectF) !void {
