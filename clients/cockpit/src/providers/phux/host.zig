@@ -51,6 +51,10 @@ pub const Notice = struct {
     terminal_ref: provider.TerminalRef,
     generation: provider.Generation,
     bytes: []u8,
+
+    pub fn isBell(notice: Notice) bool {
+        return notice.kind == .status and notice.detail == c.PHUX_CLIENT_STATUS_BELL;
+    }
 };
 pub const SessionSummary = struct {
     id: u32,
@@ -101,6 +105,7 @@ const Terminal = struct {
     history_has_more: bool = false,
     history_pages_loaded: u64 = 0,
     history_unread_rows: u64 = 0,
+    bell_owner: ?provider.ReplicaOwner = null,
     viewport: ?provider.Viewport = null,
 
     fn deinit(terminal: *Terminal, gpa: std.mem.Allocator) void {
@@ -791,6 +796,31 @@ pub const Host = struct {
         return host.notices.orderedRemove(0);
     }
 
+    pub fn phase(host: *const Host, ref: provider.TerminalRef) ?provider.Phase {
+        const terminal = host.findTerminalConst(ref) orelse return null;
+        return terminal.phase;
+    }
+
+    pub fn bellRung(host: *const Host, ref: provider.TerminalRef) bool {
+        const terminal = host.findTerminalConst(ref) orelse return false;
+        const owner_value = terminal.bell_owner orelse return false;
+        return host.ownerIsCurrent(owner_value);
+    }
+
+    /// One attention edge per current replica until the terminal is attended.
+    pub fn ringBell(host: *Host, owner_value: provider.ReplicaOwner) bool {
+        if (!host.ownerIsCurrent(owner_value)) return false;
+        if (host.bellRung(owner_value.terminal_ref)) return false;
+        const terminal = host.findTerminal(owner_value.terminal_ref) orelse return false;
+        terminal.bell_owner = owner_value;
+        return true;
+    }
+
+    pub fn acknowledgeBell(host: *Host, ref: provider.TerminalRef) void {
+        const terminal = host.findTerminal(ref) orelse return;
+        terminal.bell_owner = null;
+    }
+
     pub fn releaseNotice(host: *Host, notice: Notice) void {
         host.gpa.free(notice.bytes);
     }
@@ -911,10 +941,20 @@ pub const Host = struct {
     fn captureStatus(host: *Host, effect: *const c.PhuxClientEffect) !void {
         switch (effect.detail) {
             c.PHUX_CLIENT_STATUS_TITLE => try host.captureTitle(effect),
-            c.PHUX_CLIENT_STATUS_RESYNC_REQUIRED => try host.markResync(effect.terminal_id),
-            c.PHUX_CLIENT_STATUS_DETACHED => host.markDetached(),
-            c.PHUX_CLIENT_STATUS_SERVER_ERROR => host.markServerFailure(),
+            c.PHUX_CLIENT_STATUS_RESYNC_REQUIRED => {
+                host.metadata_changed = true;
+                try host.markResync(effect.terminal_id);
+            },
+            c.PHUX_CLIENT_STATUS_DETACHED => {
+                host.metadata_changed = true;
+                host.markDetached();
+            },
+            c.PHUX_CLIENT_STATUS_SERVER_ERROR => {
+                host.metadata_changed = true;
+                host.markServerFailure();
+            },
             c.PHUX_CLIENT_STATUS_HISTORY, c.PHUX_CLIENT_STATUS_HISTORY_UNAVAILABLE => {
+                host.metadata_changed = true;
                 if (try host.findTerminalRaw(effect.terminal_id)) |terminal| terminal.dirty = true;
             },
             else => {},

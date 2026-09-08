@@ -4,6 +4,7 @@ const projection = @import("workspace_projection.zig");
 const protocol = @import("ts_protocol.zig");
 const navigation = @import("ts_navigation.zig");
 const theme_module = @import("../../config/theme.zig");
+const signals = @import("remote_signals.zig");
 
 const Model = model_module.Model;
 
@@ -40,7 +41,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -76,6 +77,9 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeTabs(model, workspace, out, written);
     written = try encodeSettings(model, probe, out, written);
     written = try encodeSecondaryWindows(model, runs, out, written);
+    if (written + model_module.max_windows > out.len) return error.BufferTooSmall;
+    for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
+    written += model_module.max_windows;
     return out[0..written];
 }
 

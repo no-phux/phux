@@ -1003,6 +1003,9 @@ fn distinctStringCount(values: []const []const u8) usize {
 
 pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     if (model.provider.terminalConst(id)) |pane| return paneNeedsAttention(model, pane);
+    if (comptime support.phux_enabled) {
+        if (model.phuxConst()) |remote| if (remote.bellRung(id)) return true;
+    }
     const presentation = model.remotePresentation(id) orelse return true;
     return presentation.phase == .failed or presentation.phase == .tombstoned;
 }

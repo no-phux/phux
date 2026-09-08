@@ -89,6 +89,10 @@ export interface Model {
   readonly paletteNotice: Uint8Array;
   readonly canReconnect: boolean;
   readonly connectionStatus: Uint8Array;
+  readonly window1Status: Uint8Array;
+  readonly window2Status: Uint8Array;
+  readonly window3Status: Uint8Array;
+  readonly window4Status: Uint8Array;
   readonly settingsOpen: boolean;
   readonly mainSettingsOpen: boolean;
   readonly themes: readonly ThemeRow[];
@@ -365,9 +369,30 @@ function connectionLabel(state: number): Uint8Array {
   return asciiBytes("Phux offline");
 }
 
+function terminalStateLabel(state: number): Uint8Array {
+  if (state === 1) return asciiBytes("Loading terminal");
+  if (state === 2) return asciiBytes("Recovering terminal: waiting for snapshot");
+  if (state === 3) return asciiBytes("Terminal frozen: waiting for recovery");
+  if (state === 4) return asciiBytes("Terminal unavailable");
+  if (state === 5) return asciiBytes("Terminal ended");
+  if (state === 6) return asciiBytes("Loading earlier history");
+  if (state === 7) return asciiBytes("Earlier history available");
+  return NO_BYTES;
+}
+
+function windowStatus(connection: number, terminal: number, refused: boolean): Uint8Array {
+  const global = refused ? joinBytes(connectionLabel(connection), asciiBytes(" / Action refused"), NO_BYTES) : connectionLabel(connection);
+  if (terminal === 0) return global;
+  return joinBytes(global, asciiBytes(" / "), terminalStateLabel(terminal));
+}
+
 function engineUnavailable(model: Model, status: Uint8Array): Model {
   return { ...model, engineConnected: false, status, canReconnect: false,
     connectionStatus: asciiBytes("Connection status unavailable"), paletteRows: NO_ROWS,
+    window1Status: asciiBytes("Connection status unavailable"),
+    window2Status: asciiBytes("Connection status unavailable"),
+    window3Status: asciiBytes("Connection status unavailable"),
+    window4Status: asciiBytes("Connection status unavailable"),
     paletteLoading: false, palettePrevious: false, paletteNext: false };
 }
 
@@ -657,6 +682,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteNotice: NO_BYTES,
       canReconnect: false,
       connectionStatus: asciiBytes("Starting Cockpit..."),
+      window1Status: asciiBytes("Starting Cockpit..."),
+      window2Status: asciiBytes("Starting Cockpit..."),
+      window3Status: asciiBytes("Starting Cockpit..."),
+      window4Status: asciiBytes("Starting Cockpit..."),
       settingsOpen: false,
       mainSettingsOpen: false,
       themes: NO_THEMES,
@@ -897,8 +926,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         engineSequence: projected.sequence,
         engineRevision: projected.revision,
         canReconnect: projected.connection === 3,
-        connectionStatus: refusedMask === 0 ? connectionLabel(projected.connection)
-          : joinBytes(connectionLabel(projected.connection), asciiBytes(" / Action refused"), NO_BYTES),
+        connectionStatus: windowStatus(projected.connection, projected.terminalStates[0], refusedMask !== 0),
+        window1Status: windowStatus(projected.connection, projected.terminalStates[1], refusedMask !== 0),
+        window2Status: windowStatus(projected.connection, projected.terminalStates[2], refusedMask !== 0),
+        window3Status: windowStatus(projected.connection, projected.terminalStates[3], refusedMask !== 0),
+        window4Status: windowStatus(projected.connection, projected.terminalStates[4], refusedMask !== 0),
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
       };
       const scoped = scopeOverlays(synced);

@@ -303,6 +303,22 @@ pub const PhuxProvider = struct {
     pub fn takeNotice(self: *PhuxProvider) ?Notice {
         return self.host.takeNotice();
     }
+
+    pub fn phase(self: *const PhuxProvider, ref: provider.TerminalRef) ?provider.Phase {
+        return self.host.phase(ref);
+    }
+
+    pub fn bellRung(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.bellRung(ref);
+    }
+
+    pub fn ringBell(self: *PhuxProvider, owner_value: provider.ReplicaOwner) bool {
+        return self.host.ringBell(owner_value);
+    }
+
+    pub fn acknowledgeBell(self: *PhuxProvider, ref: provider.TerminalRef) void {
+        self.host.acknowledgeBell(ref);
+    }
     pub fn releaseNotice(self: *PhuxProvider, notice: Notice) void {
         self.host.releaseNotice(notice);
     }

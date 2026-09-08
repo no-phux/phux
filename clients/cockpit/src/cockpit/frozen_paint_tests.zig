@@ -9,6 +9,7 @@ const fixture = if (support.phux_enabled) support.PhuxProvider.test_support else
 const ChannelFx = struct {
     pub fn openChannel(_: *const @This(), _: anytype) sdk.ChannelHandle { return .{}; }
     pub fn closeChannel(_: *const @This(), _: u64) void {}
+    pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
 
 fn disconnect(engine: *engine_module.Engine) void {

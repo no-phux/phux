@@ -51,6 +51,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out = std::env::args().nth(1).expect("output directory");
     let dir = Path::new(&out);
     write(dir, "search-resize.bin", search_resize())?;
+    for seq in 1..=4 {
+        write(dir, &format!("remote-bell-{seq}.bin"), vec![FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(7),
+            stream_id: StreamId::new(7).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+            bytes: Bytes::from_static(b"\x07"),
+        }])?;
+    }
     write(
         dir,
         "detach-request.bin",

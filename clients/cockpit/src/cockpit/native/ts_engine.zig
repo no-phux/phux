@@ -276,7 +276,32 @@ pub const Engine = struct {
         if (delta.detached) return self.failPhux(fx);
         const changed = self.applyReadiness(delta);
         remote_commands.resumeReady(self.model);
-        return delta.generation_changed or changed;
+        return self.drainRemoteNotices(fx) or delta.generation_changed or changed;
+    }
+
+    fn drainRemoteNotices(self: *Engine, fx: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        const remote = self.model.phux() orelse return false;
+        var changed = false;
+        // Host admission is bounded to max_notices; every owned payload is freed.
+        while (remote.takeNotice()) |notice| {
+            defer remote.releaseNotice(notice);
+            if (!notice.isBell()) continue;
+            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation };
+            if (!self.model.ownerIsCurrent(owner)) continue;
+            if (!remote.ringBell(owner)) continue;
+            changed = true;
+            self.notifyRemoteBell(fx, owner.terminal_ref);
+        }
+        return changed;
+    }
+
+    fn notifyRemoteBell(self: *Engine, fx: anytype, ref: TerminalRef) void {
+        if (self.model.focused) return;
+        var title_storage: [projection.max_terminal_title_bytes]u8 = undefined;
+        const title = projection.terminalTitleInto(self.model, ref, &title_storage);
+        if (!self.model.recordNotification(title)) return;
+        fx.showNotification(.{ .title = title, .subtitle = "Phux Cockpit", .body = "Terminal bell" });
     }
 
     fn failPhux(self: *Engine, fx: anytype) bool {
@@ -1438,6 +1463,9 @@ pub const Engine = struct {
 
     fn syncRemoteFocus(self: *Engine) void {
         const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
+        if (comptime support.phux_enabled) {
+            if (ref) |value| if (self.model.phux()) |remote| remote.acknowledgeBell(value);
+        }
         const next = if (ref) |value| self.model.terminalOwner(value) else null;
         if (support.optOwnerEql(self.remote_focus_owner, next)) return;
         const remote = self.model.phux() orelse return;

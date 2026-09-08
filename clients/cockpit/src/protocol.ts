@@ -42,6 +42,7 @@ export interface SecondaryWindow {
 
 export interface EngineSnapshot extends Invalidation {
   readonly connection: number;
+  readonly terminalStates: Uint8Array;
   readonly activeWindow: number;
   readonly tabPlacement: number;
   readonly selectedTab: number;
@@ -201,7 +202,12 @@ function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
   return { index, selectedTab: selected, runStart: first, runCount: shown, tabWidth: width, tabs: section.tabs };
 }
 
-function readSecondary(bytes: Uint8Array, start: number): readonly SecondaryWindow[] | null {
+interface SecondaryRecords {
+  readonly windows: readonly SecondaryWindow[];
+  readonly terminalStates: Uint8Array;
+}
+
+function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | null {
   let at = start;
   if (at + 1 > bytes.length) return null;
   const secondaryCount = bytes[at];
@@ -215,8 +221,12 @@ function readSecondary(bytes: Uint8Array, start: number): readonly SecondaryWind
     at += 7;
     for (const tab of section.tabs) at += 7 + tab.title.length + tab.cwd.length;
   }
-  if (at !== bytes.length) return null;
-  return secondary;
+  // Older snapshots carried no per-window terminal status trailer.
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5) };
+  if (at + 5 !== bytes.length) return null;
+  const terminalStates = bytes.subarray(at);
+  for (const state of terminalStates) if (state > 7) return null;
+  return { windows: secondary, terminalStates };
 }
 
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
@@ -238,7 +248,8 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (secondary === null) return null;
   return {
     connection: bytes[23],
-    secondary,
+    secondary: secondary.windows,
+    terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,
     configEnabled: (settings.configFlags & 1) !== 0,

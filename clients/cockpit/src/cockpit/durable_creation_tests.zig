@@ -17,6 +17,7 @@ const ChannelFx = struct {
         return .{};
     }
     pub fn closeChannel(_: *const @This(), _: u64) void {}
+    pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
 
 pub fn start() !*engine_module.Engine {

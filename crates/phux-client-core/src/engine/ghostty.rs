@@ -5,7 +5,7 @@
 //! delegated to libghostty's safe incremental wrapper.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     marker::PhantomData,
     rc::Rc,
@@ -199,6 +199,7 @@ impl GhosttyAdapter {
 /// ```
 #[derive(Debug)]
 pub struct GhosttyReplica {
+    bell_pending: Rc<Cell<bool>>,
     profile: BootstrapStreamProfile,
     reported_title: Option<String>,
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
@@ -340,6 +341,7 @@ enum ReplicaState {
 
 #[derive(Debug)]
 struct NativeReplica {
+    bell_pending: Rc<Cell<bool>>,
     decoder: NativeDecoderState,
     protocol_finished: bool,
     pty_responses: PtyResponses,
@@ -471,6 +473,7 @@ impl EngineAdapter for GhosttyAdapter {
         profile: BootstrapStreamProfile,
         geometry: CanonicalGeometry,
     ) -> Result<Self::Replica, Self::Error> {
+        let bell_pending = Rc::new(Cell::new(false));
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
@@ -484,6 +487,10 @@ impl EngineAdapter for GhosttyAdapter {
                     let pty_responses = Rc::clone(&pty_responses);
                     move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                 })?;
+                terminal.on_bell({
+                    let bell_pending = Rc::clone(&bell_pending);
+                    move |_terminal| bell_pending.set(true)
+                })?;
                 ReplicaState::Synthesized {
                     terminal,
                     protocol_finished: false,
@@ -496,6 +503,7 @@ impl EngineAdapter for GhosttyAdapter {
                 let decoder = Decoder::new(self.decoder_options)
                     .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
                 ReplicaState::Native(NativeReplica {
+                    bell_pending: Rc::clone(&bell_pending),
                     decoder: NativeDecoderState::BeforeReady(decoder),
                     protocol_finished: false,
                     pty_responses: Rc::new(RefCell::new(Vec::new())),
@@ -504,6 +512,7 @@ impl EngineAdapter for GhosttyAdapter {
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
+            bell_pending,
             reported_title: None,
             profile,
             state,
@@ -614,6 +623,8 @@ impl EngineAdapter for GhosttyAdapter {
         drain_pty_responses(pty_responses, effects);
         enforce_history_budget(replica)?;
         replica.publish_title(effects)?;
+        // Synthesized bootstrap bytes are history, not new attention events.
+        replica.bell_pending.set(false);
         Ok(progress)
     }
 
@@ -680,6 +691,9 @@ impl EngineAdapter for GhosttyAdapter {
         };
         drain_pty_responses(pty_responses, effects);
         replica.publish_title(effects)?;
+        if replica.bell_pending.replace(false) {
+            effects.push(EngineEffect::Status(super::EngineStatus::Bell));
+        }
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
     }
@@ -1271,6 +1285,10 @@ fn push_native(
                         let pty_responses = Rc::clone(&native.pty_responses);
                         move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                     })?;
+                    stream.on_bell({
+                        let bell_pending = Rc::clone(&native.bell_pending);
+                        move |_terminal| bell_pending.set(true)
+                    })?;
                     let trailing_result = remaining(input, progress);
                     native.decoder = NativeDecoderState::AfterReady(stream);
                     let trailing = trailing_result?.len();
@@ -1651,6 +1669,72 @@ mod tests {
                 EngineEffect::Damage(EngineDamage::Full),
             ] if bytes == b"\x1b[0n"
         ));
+    }
+
+    #[test]
+    fn live_bells_reach_effects_in_synthesized_and_native_replicas() {
+        let (bootstrap, history) = split_capture(&capture_records());
+        for profile in [BootstrapStreamProfile::SynthesizedVtRaw, native_profile()] {
+            let mut adapter = native_adapter();
+            let mut replica = adapter.start_replica(profile, geometry()).unwrap();
+            let mut effects = EngineEffectBuffer::new();
+            let bytes = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
+                b"historical bell\x07".as_slice()
+            } else {
+                &bootstrap
+            };
+            adapter
+                .apply_bootstrap_chunk(&mut replica, bytes, &mut effects)
+                .unwrap();
+            adapter
+                .finish_bootstrap(&mut replica, &mut effects)
+                .unwrap();
+            assert!(!effects.as_slice().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::Status(super::super::EngineStatus::Bell)
+            )));
+            assert_live_bell(&mut adapter, &mut replica, &mut effects);
+            if profile != BootstrapStreamProfile::SynthesizedVtRaw {
+                adapter
+                    .apply_history_page(&mut replica, &history, &mut effects)
+                    .unwrap();
+                assert_live_bell(&mut adapter, &mut replica, &mut effects);
+            }
+        }
+    }
+
+    fn assert_live_bell(
+        adapter: &mut GhosttyAdapter,
+        replica: &mut GhosttyReplica,
+        effects: &mut EngineEffectBuffer,
+    ) {
+        effects.clear();
+        adapter
+            .apply_output(replica, b"\x1b]2;title\x07", effects)
+            .unwrap();
+        assert!(!effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::Status(super::super::EngineStatus::Bell)
+        )));
+        effects.clear();
+        adapter.apply_output(replica, b"\x07", effects).unwrap();
+        assert_eq!(
+            effects
+                .as_slice()
+                .iter()
+                .filter(|effect| matches!(
+                    effect,
+                    EngineEffect::Status(super::super::EngineStatus::Bell)
+                ))
+                .count(),
+            1
+        );
+        effects.clear();
+        adapter.apply_output(replica, b"quiet", effects).unwrap();
+        assert!(!effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::Status(super::super::EngineStatus::Bell)
+        )));
     }
 
     #[test]

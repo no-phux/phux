@@ -1,0 +1,10 @@
+# GUARD ts-remote-status
+# Losing the focused-terminal trailer leaves connected windows silent about recovery/history.
+test: shipping snapshot exposes focused terminal history and fenced recovery
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_snapshot.zig b/src/cockpit/native/ts_snapshot.zig
+--- a/src/cockpit/native/ts_snapshot.zig
++++ b/src/cockpit/native/ts_snapshot.zig
+@@ -81 +81 @@
+-    for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
++    for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.State.quiet);

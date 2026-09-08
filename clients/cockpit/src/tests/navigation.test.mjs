@@ -39,6 +39,22 @@ test('engine readiness never implies a connected Phux provider', () => {
   }
 });
 
+test('per-window terminal status survives connected and offline snapshot projection', () => {
+  const body = new Uint8Array([...snapshotBytes(2), 6, 2, 3, 7, 0]);
+  const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  assert.equal(text(model.connectionStatus), 'Phux connected / Loading earlier history');
+  assert.equal(text(model.window1Status), 'Phux connected / Recovering terminal: waiting for snapshot');
+  assert.equal(text(model.window2Status), 'Phux connected / Terminal frozen: waiting for recovery');
+  assert.equal(text(model.window3Status), 'Phux connected / Earlier history available');
+  assert.equal(text(model.window4Status), 'Phux connected');
+  body[23] = 3;
+  assert.equal(text(step(initialModel()[0], { kind: 'snapshot_loaded', body })[0].window1Status),
+    'Phux offline / Recovering terminal: waiting for snapshot');
+  assert.equal(snapshot(body.subarray(0, body.length - 1)), null);
+  body[body.length - 1] = 8;
+  assert.equal(snapshot(body), null);
+});
+
 test('new terminal and reconnect use the native adopted window', () => {
   for (const [kind, tag] of [['new_terminal', 2], ['reconnect', 12]]) {
     const [, cmd] = step(initialModel()[0], { kind });

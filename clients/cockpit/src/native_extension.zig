@@ -2019,6 +2019,71 @@ fn engineWithText(text: []const u8) !*Engine {
     return engine;
 }
 
+// GUARD: ts-remote-bell
+test "shipping remote bell uses native notifications and owner fenced attention" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const fixtures = @TypeOf(remote.*).test_support;
+    const BellFx = struct {
+        notifications: usize = 0,
+        pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle { return .{}; }
+        pub fn closeChannel(_: *@This(), _: u64) void {}
+        pub fn showNotification(self: *@This(), _: anytype) void { self.notifications += 1; }
+    };
+    var bells = BellFx{};
+    var fx = Recorder{};
+    engine.setInputSuspended(&fx, false);
+    engine.setFocused(&fx, false);
+    try std.testing.expect(!remote.bellRung(ref));
+    for ([_][]const u8{ "remote-bell-1.bin", "remote-bell-2.bin" }) |name| {
+        try fixtures.stageFixture(remote.bridge, name);
+        _ = engine.onPhuxChannel(&bells, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
+        try std.testing.expectEqual(@as(usize, 1), bells.notifications);
+        try std.testing.expect(cockpit.projection.terminalNeedsAttention(engine.model, ref));
+    }
+    engine.setFocused(&fx, true);
+    try std.testing.expect(!remote.bellRung(ref));
+    engine.setFocused(&fx, false);
+    try fixtures.stageFixture(remote.bridge, "remote-bell-3.bin");
+    _ = engine.onPhuxChannel(&bells, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
+    try std.testing.expectEqual(@as(usize, 2), bells.notifications);
+    remote.acknowledgeBell(ref);
+    engine.model.rejectAttachmentContext();
+    try fixtures.stageFixture(remote.bridge, "remote-bell-4.bin");
+    _ = engine.onPhuxChannel(&bells, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
+    try std.testing.expectEqual(@as(usize, 2), bells.notifications);
+    try std.testing.expect(!remote.bellRung(ref));
+}
+
+// GUARD: ts-remote-status
+test "shipping snapshot exposes focused terminal history and fenced recovery" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var storage: [4096]u8 = undefined;
+    var snapshot = try engine.snapshot(&storage);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    remote.host.terminals.items[0].history_loading = true;
+    snapshot = try engine.snapshot(&storage);
+    try std.testing.expectEqualSlices(u8, &.{ 6, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    remote.host.freezePublished();
+    snapshot = try engine.snapshot(&storage);
+    try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    engine.model.rejectAttachmentContext();
+    remote.host.terminals.items[0].phase = .live;
+    snapshot = try engine.snapshot(&storage);
+    try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+}
+
 // GUARD: ts-engine-bell
 test "a bell while the app is deactivated notifies once, on its rising edge" {
     const engine = try engineWithText("prompt$ ");
@@ -3033,6 +3098,7 @@ test "shipping offline remote close stays absent after reconnect without outboun
             return .{};
         }
         pub fn closeChannel(_: *const @This(), _: u64) void {}
+        pub fn showNotification(_: *const @This(), _: anytype) void {}
     };
     for ([_]protocol.IntentKind{ .native_command, .close_tab, .close_window }) |kind| {
         const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -3079,6 +3145,7 @@ const NavigationConnectionRecorder = struct {
     closed: usize = 0,
     opened: usize = 0,
 
+    pub fn showNotification(_: *@This(), _: anytype) void {}
     pub fn phuxChannelLive(self: *@This()) bool {
         return self.live;
     }
