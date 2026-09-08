@@ -157,7 +157,109 @@ fn clear_refuses_stale_generations_and_disconnected_clients_without_mutation() {
     }
 }
 
-fn native_capture() -> (Vec<u8>, Vec<u8>, u32) {
+#[test]
+fn clear_preserves_partial_csi_and_its_rendition() {
+    let synthesized = client_with_searchable_scrollback();
+    output(synthesized, 1, b"\x1b[3");
+    // Native READY must preserve continuation captured on the source, too.
+    let (bootstrap, _, _) = native_capture(b"\x1b[3");
+    for (client, seq) in [(synthesized, 2), (native_client(&bootstrap), 1)] {
+        clear_then_resume(client, seq, b"1mX", "X");
+        // SAFETY: consume the cell style before freeing the fixture-owned client.
+        unsafe {
+            let engine = (*client)
+                .inner
+                .terminal(&phux_protocol::TerminalId::local(1))
+                .unwrap();
+            let cell = engine
+                .grid_ref(libghostty_vt::terminal::Point::Active(
+                    libghostty_vt::terminal::PointCoordinate { x: 0, y: 0 },
+                ))
+                .unwrap();
+            assert_eq!(
+                cell.style().unwrap().fg_color,
+                libghostty_vt::style::StyleColor::Palette(libghostty_vt::style::PaletteIndex(1))
+            );
+            phux_client_free(client);
+        }
+    }
+}
+
+fn clear_then_resume(client: *mut PhuxClient, seq: u64, suffix: &'static [u8], text: &str) {
+    let terminal = PhuxTerminalId {
+        id: 1,
+        ..PhuxTerminalId::default()
+    };
+    let (before, _) = grid(client);
+    // SAFETY: this fixture owns the client and uses its exact live generation.
+    unsafe {
+        assert_eq!(phux_client_outgoing_clear(client), PhuxClientResult::Ok);
+        assert_eq!(
+            phux_client_clear_presentation(client, &raw const terminal, 7, 1),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(phux_client_outgoing_count(client), 0);
+    }
+    let (cleared, blank) = grid(client);
+    assert!(
+        blank.trim().is_empty(),
+        "Clear did not blank presentation: {blank:?}"
+    );
+    assert_eq!(cleared.last_seq, before.last_seq);
+    assert_eq!(cleared.history_total_rows, u64::from(cleared.rows));
+    output(client, seq, suffix);
+    assert_eq!(grid(client).1.trim(), text);
+}
+
+#[test]
+fn clear_preserves_partial_osc_and_its_title() {
+    let prefix = b"\x1b]2;pending ";
+    let synthesized = client_with_searchable_scrollback();
+    output(synthesized, 1, prefix);
+    let (bootstrap, _, _) = native_capture(prefix);
+    for (client, seq) in [(synthesized, 2), (native_client(&bootstrap), 1)] {
+        clear_then_resume(client, seq, b"title\x07X", "X");
+        // SAFETY: read engine state while this test owns the live client.
+        unsafe {
+            assert_eq!(
+                (*client)
+                    .inner
+                    .terminal(&phux_protocol::TerminalId::local(1))
+                    .unwrap()
+                    .title()
+                    .unwrap(),
+                "pending title"
+            );
+            phux_client_free(client);
+        }
+    }
+}
+
+#[test]
+fn clear_preserves_partial_dcs_and_utf8() {
+    let cases: &[(&[u8], &[u8], &str)] = &[
+        (b"\x1bP1;2|pending", b"body\x1b\\X", "X"),
+        (b"\xe2", b"\x82\xac", "€"),
+        (b"\xe2\x82", b"\xac", "€"),
+        (b"\xf0", b"\x9f\x98\x80", "\u{1f600}"),
+        (b"\xf0\x9f", b"\x98\x80", "\u{1f600}"),
+        (b"\xf0\x9f\x98", b"\x80", "\u{1f600}"),
+    ];
+    for &(prefix, suffix, text) in cases {
+        let synthesized = client_with_searchable_scrollback();
+        output(synthesized, 1, prefix);
+        let (bootstrap, _, _) = native_capture(prefix);
+        for (client, seq) in [(synthesized, 2), (native_client(&bootstrap), 1)] {
+            clear_then_resume(client, seq, suffix, text);
+            // SAFETY: the borrowed grid was consumed before freeing this client.
+            unsafe {
+                phux_client_free(client);
+            }
+        }
+    }
+}
+
+fn native_capture(pending: &[u8]) -> (Vec<u8>, Vec<u8>, u32) {
     use libghostty_vt::snapshot::incremental::{CaptureEventKind, CaptureOptions, Error};
     let mut source = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
         cols: 40,
@@ -169,6 +271,7 @@ fn native_capture() -> (Vec<u8>, Vec<u8>, u32) {
         source.vt_write(format!("original row {row}\r\n").as_bytes());
     }
     let rows = u32::try_from(source.scrollback_rows().unwrap()).unwrap();
+    source.vt_write(pending);
     let mut capture = source.capture(CaptureOptions::default()).unwrap();
     let mut bootstrap = Vec::new();
     let mut history = Vec::new();
@@ -299,7 +402,7 @@ fn history_page(bootstrap_id: u64, bytes: &[u8], rows: u32) -> FrameKind {
 
 #[test]
 fn clear_cancels_native_history_without_retiring_live_or_replacement_generations() {
-    let (bootstrap, history, rows) = native_capture();
+    let (bootstrap, history, rows) = native_capture(b"");
     let client = native_client(&bootstrap);
     let terminal = PhuxTerminalId {
         id: 1,

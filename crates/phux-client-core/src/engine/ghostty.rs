@@ -300,6 +300,15 @@ impl GhosttyReplica {
         }
         Ok(())
     }
+
+    /// Mutate screen/history directly; the live parser may be mid-sequence.
+    fn clear_presentation(&mut self) -> Result<(), GhosttyEngineError> {
+        match &mut self.state {
+            ReplicaState::Synthesized { terminal, .. } => terminal.clear_presentation(),
+            ReplicaState::Native(native) => native.clear_presentation()?,
+        }
+        Ok(())
+    }
 }
 
 type PtyResponses = Rc<RefCell<Vec<Vec<u8>>>>;
@@ -328,6 +337,24 @@ struct NativeReplica {
 }
 
 impl NativeReplica {
+    fn clear_presentation(&mut self) -> Result<(), GhosttyEngineError> {
+        // Keep the publication fence previously supplied by apply_output.
+        if !self.protocol_finished {
+            return Err(GhosttyEngineError::LiveOutputBeforeReady);
+        }
+        match &mut self.decoder {
+            NativeDecoderState::AfterReady(stream) => stream.clear_presentation(),
+            NativeDecoderState::Finished(terminal) | NativeDecoderState::Failed(Some(terminal)) => {
+                terminal.clear_presentation();
+            }
+            NativeDecoderState::BeforeReady(_) => {
+                return Err(GhosttyEngineError::LiveOutputBeforeReady);
+            }
+            NativeDecoderState::Failed(None) => return Err(GhosttyEngineError::DecoderFailed),
+        }
+        Ok(())
+    }
+
     fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match &self.decoder {
             NativeDecoderState::BeforeReady(_) | NativeDecoderState::Failed(None) => None,
@@ -651,16 +678,7 @@ impl EngineAdapter for GhosttyAdapter {
 
 impl EnginePresentationAdapter for GhosttyAdapter {
     fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error> {
-        replica
-            .terminal()
-            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?
-            .set_selection(None)?;
-        // Match Cockpit's local Clear: these are emulator OUTPUT operations,
-        // never a key/paste or a wire frame. Keep the existing parser, modes,
-        // native decoder ownership and live protocol sequence intact.
-        let mut local_effects = EngineEffectBuffer::new();
-        self.apply_output(replica, b"\x1b[H\x1b[2J\x1b[3J", &mut local_effects)?;
-        replica.scroll_viewport(ScrollViewport::Bottom)?;
+        replica.clear_presentation()?;
         self.clear_document_state(replica);
         Ok(())
     }
@@ -1690,6 +1708,10 @@ mod tests {
         assert!(replica.terminal().is_some());
         assert!(matches!(
             adapter.apply_output(&mut replica, b"not published", &mut effects),
+            Err(GhosttyEngineError::LiveOutputBeforeReady)
+        ));
+        assert!(matches!(
+            adapter.clear_presentation(&mut replica),
             Err(GhosttyEngineError::LiveOutputBeforeReady)
         ));
         assert!(matches!(

@@ -102,6 +102,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     }
     write(dir, "detach-churn.bin", churn)?;
+    for (name, seq, bytes) in [
+        ("clear-parser-prefix.bin", 1, b"\x1b[3".as_slice()),
+        ("clear-parser-suffix.bin", 2, b"1mX".as_slice()),
+    ] {
+        write(dir, name, vec![FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(7),
+            stream_id: StreamId::new(7).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+            bytes: Bytes::copy_from_slice(bytes),
+        }])?;
+    }
     let local = TerminalId::local(8);
     write(
         dir,

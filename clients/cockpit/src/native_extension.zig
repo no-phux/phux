@@ -2136,6 +2136,28 @@ test "remote presentation search owns shipping chord text navigation clipboard a
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
+// GUARD: ts-remote-clear-parser
+test "shipping remote Clear preserves an incomplete VT sequence" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const fixtures = @TypeOf(remote.*).test_support;
+    try fixtures.stageFixture(remote.bridge, "clear-parser-prefix.bin");
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data });
+    var fx = Recorder{};
+    remote.bridge.outgoing.reset();
+    try std.testing.expect(remotePresentationCommand(engine, .clear, &fx));
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    try fixtures.stageFixture(remote.bridge, "clear-parser-suffix.bin");
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data });
+    const text = engine.model.remotePresentation(ref).?.grid.screen_text;
+    try std.testing.expectEqualStrings("X", std.mem.trim(u8, text, " \r\n"));
+}
+
 // GUARD: ts-remote-presentation-clear
 test "remote presentation Clear blanks the current replica without execution input" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
