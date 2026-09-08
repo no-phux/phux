@@ -1758,6 +1758,7 @@ test "shipping restored subscription waits for both exact bootstrap and command 
     try cockpit.durable_tests.restoredSubscription();
 }
 
+// GUARD: ts-remote-frozen-display
 test "shipping proven display survives disconnect without admitting a reused incarnation" {
     try cockpit.durable_tests.frozenPaintRecovery();
 }
