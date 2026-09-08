@@ -39,7 +39,7 @@ grid through libghostty's render iterators.
 the "drop snapshot + re-update" pattern this harness uses. `Screen`
 deliberately ignores `dirty()` and walks the grid every call; the
 production client's renderer applies the same workaround
-(`crates/phux-client/src/attach/render.rs`).
+(`crates/phux-tui/src/attach/render.rs`).
 
 `Snapshot::cursor_viewport()` rides on the same FFI surface — `Screen`
 degrades it to `(0, 0)` on error rather than panicking inside an

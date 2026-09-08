@@ -110,7 +110,7 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`ADR/`](./ADR/) — decisions, with rationale and tradeoffs.
 
-Crates: seventeen, all under `crates/*`, all workspace members. The ones
+Crates: eighteen, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
 `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
 replicas, and ratatui chrome), `phux-client` (the headless client library
@@ -118,8 +118,8 @@ behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
 (pane-interior substrate and session kernel; no `ratatui` and no `tokio`,
 so both boundaries are compiler-enforced, ADR-0020 and ADR-0100),
 `phux-client-ffi` (stable native C ABI over that kernel, for non-Rust
-embedders), `phux-config` (TOML + widgets), `phux` (binary). The other
-eight are narrow single-purpose surfaces. Every crate has a section in
+embedders), `phux-config` (TOML + widgets + the settings catalogue), `phux` (binary).
+The other nine are narrow single-purpose surfaces. Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
 — read it before assuming a capability is missing.
 `phux-protocol` is publishable; the rest are `publish = false`.

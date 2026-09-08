@@ -222,12 +222,37 @@ fn table_for_set<'d>(
     key: &str,
     document_was_empty: bool,
 ) -> Result<&'d mut dyn TableLike, ConfigError> {
+    // A document with no items but with text -- a `phux config init`
+    // scaffold is exactly that: every line a comment -- keeps that text as
+    // the root's trailing decor, which the encoder emits AFTER any table
+    // appended to the root. Carry it onto the new table's prefix instead, so
+    // the commented scaffold stays above the first real assignment rather
+    // than sliding beneath it.
+    let mut carried_prefix = if document_was_empty {
+        let trailing = doc.trailing().as_str().unwrap_or("").to_owned();
+        if trailing.trim().is_empty() {
+            None
+        } else {
+            doc.set_trailing("");
+            Some(if trailing.ends_with('\n') {
+                trailing
+            } else {
+                format!("{trailing}\n")
+            })
+        }
+    } else {
+        None
+    };
     let mut current: &'d mut dyn TableLike = doc.as_table_mut();
     for (depth, segment) in table_path.split('.').enumerate() {
         let item = current.entry(segment).or_insert_with(|| {
             let mut table = Table::new();
-            if depth == 0 && !document_was_empty {
-                table.decor_mut().set_prefix("\n");
+            if depth == 0 {
+                if let Some(prefix) = carried_prefix.take() {
+                    table.decor_mut().set_prefix(prefix);
+                } else if !document_was_empty {
+                    table.decor_mut().set_prefix("\n");
+                }
             }
             Item::Table(table)
         });
@@ -735,6 +760,24 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn a_comment_only_scaffold_keeps_its_comments_above_the_first_table() {
+        // `phux config init` writes a file where every line is a comment;
+        // the first edit must not push that whole scaffold beneath itself.
+        let scaffold = "# phux config\n# [sidebar]\n# width = 28\n";
+        let out = apply_edit(
+            scaffold,
+            "sidebar.width",
+            Edit::Set(toml::Value::Integer(32)),
+            Path::new("config.toml"),
+        )
+        .expect("edit applies");
+        assert_eq!(
+            out.text,
+            "# phux config\n# [sidebar]\n# width = 28\n[sidebar]\nwidth = 32\n"
         );
     }
 }

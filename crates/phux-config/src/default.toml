@@ -237,6 +237,7 @@ which-key-delay-ms = 400
 #       other sessions hop there via `switch-session` (their panes list
 #       once attached). The rows refresh live as agent events arrive.
 "A" = "agent-fleet"
+"S" = "settings"
 
 # Attention navigation (phux-oih5.16, ADR-0049). q jumps to the next pane
 # with a pending AgentEvent::Asked, cycling by window order then DFS leaf
@@ -400,7 +401,7 @@ which-key-delay-ms = 400
 # `sidebar_section` theme slots use for recessive chrome. Both chips
 # clear 4.5:1 against their own background (the active chip 6.8:1, the
 # inactive 5.6:1), which is the palette-wide contrast floor documented in
-# crates/phux-client/src/render/theme.rs. They are spelled out rather
+# crates/phux-tui/src/render/theme.rs. They are spelled out rather
 # than named because widget styles are plain data — see `[theme]` in
 # docs/consumers/tui.md section 4.4 for the slot list.
 left = [
@@ -426,7 +427,7 @@ right = [
 # position = "bottom"
 
 # Chrome + overlay palette. Every slot below is set to its shipped value
-# in code (crates/phux-client/src/render/theme.rs); the block is commented
+# in code (crates/phux-tui/src/render/theme.rs); the block is commented
 # here so you can see the whole system at once and override one slot
 # without hunting for the name. Values accept named colors ("cyan"), hex
 # ("#7aa2f7") and ANSI indices ("12"). See docs/consumers/tui.md section

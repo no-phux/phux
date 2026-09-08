@@ -187,12 +187,17 @@ impl TuiSettings {
     /// capture on, and the parse error on the bar row.
     fn without_config(err: &ConfigError) -> Self {
         tracing::warn!(error = %err, "phux-config load failed; surfacing on status bar");
+        let theme = Theme::default();
+        let mut status_bar = StatusBarPainter::error_line(config_error_line(err));
+        // phux-foz.1: the attention chip rides the theme even on the error
+        // line, as the attach-time seed always did.
+        status_bar.set_attention_color(theme.attention);
         Self {
             keybindings: None,
             resolver: None,
-            theme: Theme::default(),
+            theme,
             chrome: ChromeBreakpoints::default(),
-            status_bar: Some(StatusBarPainter::error_line(config_error_line(err))),
+            status_bar: Some(status_bar),
             plugin_actions: Vec::new(),
             plugin_panes: Vec::new(),
             which_key: WhichKey {

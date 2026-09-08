@@ -122,6 +122,9 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             // phux-huhi: the new `[chrome]` thresholds reach the overlay
             // stack immediately, including any modal already open.
             overlays.set_breakpoints(settings.chrome);
+            // ADR-0101: an open settings page that just edited a theme slot
+            // shows the new palette rather than the one it was born with.
+            overlays.set_theme(&settings.theme);
             // A fresh sidebar painter carries the new theme and starts
             // cache-cold so the repaint below recolors the whole chrome
             // (the status bar's attention chip already rides the theme,

@@ -57,7 +57,7 @@ are hand-curated from each ADR's body.
 | [0020](./0020-layered-render.md) | Layered render: ratatui chrome over libghostty pane interiors | Accepted |
 | [0021](./0021-control-plane-commands.md) | Control-plane commands and client-side selector resolution | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md)) |
 | [0022](./0022-tool-for-agents.md) | phux as a tool for agents | Accepted |
-| [0023](./0023-config-ux-philosophy.md) | Config UX: pure-config, defaults as a live base layer | Accepted (TUI-local, builds on [0017](./0017-tui-not-protocol-privileged.md)) |
+| [0023](./0023-config-ux-philosophy.md) | Config UX: pure-config, defaults as a live base layer | Accepted (TUI-local, builds on [0017](./0017-tui-not-protocol-privileged.md)); the in-app settings surface it left open is [0101](./0101-the-settings-page-edits-the-file.md) |
 | [0024](./0024-wire-owns-input-atoms.md) | The wire protocol owns its input atoms | Accepted (amends [0006](./0006-input-mirrors-libghostty.md), [0008](./0008-use-libghostty-types-directly.md)) |
 | [0025](./0025-browser-web-client.md) | Browser web client over a WebSocket transport | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md), [0024](./0024-wire-owns-input-atoms.md)) |
 | [0026](./0026-overlays-theme-stack-single-dispatch.md) | Overlays: one theme, a real stack, and a single dispatch path | Accepted (builds on [0020](./0020-layered-render.md)) |
@@ -134,6 +134,7 @@ are hand-curated from each ADR's body.
 | [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; mutual Ed25519 proof over a persistent authority fingerprint, fresh server incarnation, and channel binding; canonical endpoint-owned scopes are intersected with the live registry and enforced before dispatch; explicitly amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted (the `ci` aggregate context is the sole merge contract with an explicit skip policy; `pull_request: closed` cancels the PR's runs by head SHA; every action reference is SHA-pinned, checked by a gate, and Dependabot-bumped; Rust-lane setup is one composite action; cockpit and release lanes cache the FFI/Zig layers; toolchain versions derive from `rust-toolchain.toml` only) |
 | [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (`phux-tui` holds the attach driver, libghostty replicas, ratatui chrome, dispatcher, and overlays; `phux-client` is the headless library behind the agent verbs and MCP; the dependency is one-way and the `tui` cargo feature is gone; extends [0020](./0020-layered-render.md)) |
+| [0101](./0101-the-settings-page-edits-the-file.md) | The settings page edits the file | Accepted (the TUI settings page is a file editor with a schema: one key set or removed per edit in the user's own `config.toml`, comments preserved, validated by `phux config check` before the atomic write, applied through the existing reload; running state never writes back; the catalogue is schema-pinned and theme slots come from the renderer; takes up the door [0023](./0023-config-ux-philosophy.md) left open) |
 
 ## When to write an ADR
 

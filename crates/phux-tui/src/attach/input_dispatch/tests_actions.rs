@@ -1313,6 +1313,24 @@ fn help_and_command_palette_are_action_finder_aliases() {
 }
 
 #[test]
+fn settings_action_pushes_the_settings_page() {
+    let mut workspace = Workspace::single(tid(1));
+    let (effects, overlays) = run_capturing(&bare_action("settings"), &mut workspace);
+    assert!(
+        overlays.is_active(),
+        "settings should push the settings page"
+    );
+    assert_eq!(overlays.depth(), 1);
+    assert!(
+        !overlays.top_is_passthrough(),
+        "the settings page captures input"
+    );
+    assert!(!effects.layout_mutated);
+    assert!(!effects.bell);
+    assert!(!effects.reload_config, "opening the page reloads nothing");
+}
+
+#[test]
 fn getting_started_action_reopens_passthrough_guidance() {
     let mut workspace = Workspace::single(tid(1));
     let (effects, overlays) = run_capturing(&bare_action("getting-started"), &mut workspace);

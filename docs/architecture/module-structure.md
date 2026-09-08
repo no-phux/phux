@@ -16,7 +16,7 @@ dependency edges are documented in [`crate-graph.md`](./crate-graph.md).
 ---
 
 What is in tree today. New modules land in the shape that fits the crate;
-do not retrofit older layouts onto new work. Seventeen crates make up the
+do not retrofit older layouts onto new work. Eighteen crates make up the
 workspace; the sections below cover them roughly in dependency order
 (wire, domain, daemon, clients, config, binary, then the smaller
 special-purpose crates).
@@ -195,8 +195,11 @@ paths.
 
 ```
 src/
-  lib.rs              — attach + render, re-exports of the client-core
-                        substrate
+  lib.rs              — attach + render + settings, re-exports of the
+                        client-core substrate
+  settings.rs         — TuiSettings: every value derived from the config,
+                        built once per attach (tolerant) and swapped whole
+                        on reload (strict); see docs/consumers/tui.md 4.3
   attach/             — the attach loop: driver, rendering, input dispatch,
                         fleet/multi-pane orchestration
     mod.rs            — re-exports (phux_client::attach::*, driver entry
@@ -219,13 +222,14 @@ src/
                       — the configurable keybinding-to-action pipeline
     fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking
     context_menu.rs, onboarding.rs, plugin_actions.rs, plugin_panes.rs,
-    record.rs, terminal_probe.rs, tty_input.rs, copy.rs, reload.rs,
+    record.rs, terminal_probe.rs, tty_input.rs, copy.rs,
     sidebar_zones.rs, stdout_writer.rs, render_prof.rs
   render/             — the ratatui chrome layer (status bar, dividers,
                         sidebar, overlays); see render-layering.md
     chrome/           — status_bar.rs, sidebar.rs, dividers.rs
     overlay/          — copy_mode.rs, menu.rs, prompt.rs, select_list.rs,
-                        selection.rs, toast.rs, which_key.rs, widgets.rs
+                        selection.rs, settings.rs (the settings page,
+                        ADR-0101), toast.rs, which_key.rs, widgets.rs
     theme.rs, breakpoints.rs, sgr.rs
 ```
 
@@ -290,6 +294,10 @@ src/
   scaffold.rs         — default config file generation
   vocab.rs, error.rs, socket.rs — shared enums, ConfigError with line:col
                         spans, socket-path resolution
+  settings/           — the scalar-settings catalogue pinned to the schema,
+                        the provenance snapshot, and the comment-preserving
+                        writer behind the TUI settings page (ADR-0101)
+    mod.rs, write.rs
   widget/             — StatusWidget trait + registry
     mod.rs, status_bar.rs
     widgets/          — cwd.rs, exec.rs, exit_status.rs, help_hints.rs,
