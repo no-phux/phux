@@ -39,6 +39,9 @@
 
 pub mod attach;
 pub mod render;
+// phux-u1tq.2: the config-derived TUI state, built once per attach and
+// swapped whole on reload.
+pub mod settings;
 
 /// The shared benchmark corpora (`benchmarks/support.rs`), compiled into the
 /// test build so a gate can assert against the same grids the benches

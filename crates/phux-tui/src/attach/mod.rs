@@ -59,7 +59,6 @@ mod sidebar_zones;
 // the bytes the human's glass received.
 pub mod record;
 pub mod reflow;
-mod reload;
 pub mod render;
 // `PHUX_RENDER_PROF=1`: per-second paint/flush/compose counters, so a change
 // to the paint scheduler is arguable from numbers rather than a screen

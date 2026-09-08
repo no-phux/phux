@@ -17,24 +17,22 @@ use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope};
 use crate::attach::actions::{PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
-use crate::attach::paint::{SidebarEdge, SidebarReservation, sidebar_reservation};
+use crate::attach::paint::{SidebarReservation, sidebar_reservation};
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
 use crate::attach::server_frame::{AgentMetaIndex, FrameOutcome, handle_server_frame};
 use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
-use crate::render::ChromeBreakpoints;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::TERMINAL_AGENT_KEY;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
-use phux_config::SidebarPosition;
 
 use super::chrome::{agent_entries, window_infos};
-use super::config_ui::build_status_bar_painter;
 use super::session_io::{
     attach_client_caps, attach_client_name, send_attach, send_terminal_replies,
     take_terminal_replies, wait_for_attached,
 };
+use crate::settings::TuiSettings;
 
 type HeadlessHistoryGeneration = (
     TerminalId,
@@ -132,44 +130,31 @@ struct HeadlessChrome {
     sidebar: Option<SidebarReservation>,
     /// The theme the sidebar strip paints with.
     sidebar_theme: crate::render::Theme,
+    /// The status-bar painter, absent when the config disables it.
+    status_bar: Option<StatusBarPainter>,
 }
 
-/// Fold `[sidebar]`, `[chrome]`, and `[theme]` in exactly as a live attach
-/// does.
+/// Fold `[sidebar]`, `[chrome]`, `[theme]`, and `[status]` in exactly as a
+/// live attach does: the same tolerant [`TuiSettings`] load.
 ///
 /// phux-4h5a: read `[sidebar]` so `phux snapshot --rendered` shows the
 /// strip exactly as a live attach would. Disabled (the default) folds to
 /// `None`, keeping the rendered frame byte-identical to the pre-sidebar one.
+/// phux-huhi: the same `[chrome]` thresholds a live attach folds in, so a
+/// rendered snapshot yields the sidebar at the width the user configured.
 fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
-    let headless_cfg = phux_config::loader::load().ok();
-    let sidebar_cfg = headless_cfg.as_ref().map(|c| c.sidebar.clone());
-    // phux-huhi: the same `[chrome]` thresholds a live attach folds in, so a
-    // rendered snapshot yields the sidebar at the width the user configured.
-    let breakpoints = headless_cfg
-        .as_ref()
-        .map_or_else(ChromeBreakpoints::default, |c| {
-            ChromeBreakpoints::from_cfg(&c.chrome)
-        });
-    let sidebar = sidebar_cfg.as_ref().and_then(|c| {
-        sidebar_reservation(
-            viewport_dims.0,
-            c.enabled,
-            c.width,
-            match c.position {
-                SidebarPosition::Right => SidebarEdge::Right,
-                SidebarPosition::Left => SidebarEdge::Left,
-            },
-            breakpoints.min_pane_cols,
-        )
-    });
-    let sidebar_theme = headless_cfg
-        .as_ref()
-        .map_or_else(crate::render::Theme::default, |c| {
-            crate::render::Theme::from_cfg(&c.theme)
-        });
+    let settings = TuiSettings::load_tolerant();
+    let sidebar = sidebar_reservation(
+        viewport_dims.0,
+        settings.sidebar.enabled,
+        settings.sidebar.width,
+        settings.sidebar.edge,
+        settings.chrome.min_pane_cols,
+    );
     HeadlessChrome {
         sidebar,
-        sidebar_theme,
+        sidebar_theme: settings.theme,
+        status_bar: settings.status_bar,
     }
 }
 
@@ -227,7 +212,7 @@ impl HeadlessSession {
     /// Seed the composite's state around an already-negotiated kernel.
     fn new(
         engine_kernel: SessionKernel<GhosttyAdapter>,
-        chrome: &HeadlessChrome,
+        chrome: HeadlessChrome,
         viewport_dims: (u16, u16),
     ) -> Self {
         Self {
@@ -239,7 +224,7 @@ impl HeadlessSession {
             focused_pane: None,
             zoomed: None,
             session_name: String::new(),
-            status_bar: build_status_bar_painter(),
+            status_bar: chrome.status_bar,
             sidebar: chrome.sidebar,
             sidebar_theme: chrome.sidebar_theme,
             viewport_dims,
@@ -536,11 +521,8 @@ pub async fn run_headless_rendered(
     let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));
-    let mut session = HeadlessSession::new(
-        engine_kernel,
-        &headless_chrome(viewport_dims),
-        viewport_dims,
-    );
+    let mut session =
+        HeadlessSession::new(engine_kernel, headless_chrome(viewport_dims), viewport_dims);
 
     // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
     // phux-k0cw: no session is known yet (ATTACHED is what reports it), and
