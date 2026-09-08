@@ -19,7 +19,7 @@ const ChannelFx = struct {
     pub fn closeChannel(_: *const @This(), _: u64) void {}
 };
 
-fn start() !*engine_module.Engine {
+pub fn start() !*engine_module.Engine {
     const engine = try engine_module.Engine.create(testing.allocator, testing.io);
     errdefer engine.destroy();
     const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture.sock" }, null, "test");
@@ -32,6 +32,10 @@ fn start() !*engine_module.Engine {
     try testing.expect(engine.model.admitAndSelectCurrentRemoteTerminal());
     remote.bridge.outgoing.reset();
     return engine;
+}
+
+pub fn frozenPaintRecovery() !void {
+    try @import("frozen_paint_tests.zig").recovery();
 }
 
 fn command(engine: *engine_module.Engine, kind: protocol.IntentKind, argument: u8) bool {

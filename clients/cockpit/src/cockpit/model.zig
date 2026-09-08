@@ -707,6 +707,9 @@ pub const Model = struct {
     /// alone.
     phux_admit_on_ready: bool = true,
     remote_ui: [max_remote_terminals]RemoteUiState = [_]RemoteUiState{.{}} ** max_remote_terminals,
+    /// Display evidence belongs to the placement, not the current connection.
+    frozen_paint: [topology.max_terminals]?FrozenPaint = @splat(null),
+
     /// The provider's complete bounded terminal publication, independent of
     /// which terminals currently have Cockpit topology leaves.
     remote_inventory: [max_remote_terminals]TerminalRef = undefined,
@@ -1058,6 +1061,78 @@ pub const Model = struct {
         return remote.presentation(terminal_ref);
     }
 
+    /// Paint alone may read the previously proven display while a replacement
+    /// is pending. Never consult the provider's new publication in this branch.
+    pub fn remotePaintPresentation(model: *const Model, ref: TerminalRef) ?Presentation {
+        if (model.locateTerminal(ref) == null) return null;
+        if (!model.attachmentPending(ref)) return model.remotePresentation(ref);
+        if (comptime !support.phux_enabled) return null;
+        for (model.frozen_paint) |entry| {
+            const frozen = entry orelse continue;
+            if (frozen.reference.terminal_ref.eql(ref)) return frozen.snapshot.value;
+        }
+        return null;
+    }
+
+    pub const FrozenPaint = struct {
+        reference: topology.attachments.Reference,
+        owner: ReplicaOwner,
+        snapshot: *const if (support.phux_enabled) PhuxProvider.FrozenPresentation else void,
+    };
+
+    /// Called by the shipping disconnect path BEFORE rejecting context. Pending
+    /// or unplaced identities can never overwrite the previous accepted image.
+    pub fn captureRemotePaint(model: *Model) void {
+        if (comptime !support.phux_enabled) return;
+        const remote = model.phuxConst() orelse return;
+        model.captureAttachmentContexts() catch return;
+        for (model.saved_attachments.entries[0..model.saved_attachments.count]) |entry| {
+            const reference = entry orelse continue;
+            model.captureRemotePaintReference(remote, reference);
+        }
+    }
+
+    fn captureRemotePaintReference(model: *Model, remote: *const PhuxProvider, reference: topology.attachments.Reference) void {
+        if (comptime !support.phux_enabled) return;
+        const ref = reference.terminal_ref;
+        if (!reference.matches(&model.attachment_context)) return;
+        const value = model.remotePresentation(ref) orelse return;
+        // A transport failure may already have frozen the provider, but the
+        // model's accepted context and exact owner still prove that image.
+        model.releaseRemotePaint(ref);
+        for (&model.frozen_paint) |*slot| {
+            if (slot.* != null) continue;
+            const snapshot = remote.capturePresentation(value.owner) catch return;
+            slot.* = .{ .reference = reference, .owner = value.owner, .snapshot = snapshot };
+            return;
+        }
+    }
+
+    fn releaseRemotePaint(model: *Model, ref: TerminalRef) void {
+        if (comptime !support.phux_enabled) return;
+        for (&model.frozen_paint) |*slot| {
+            const frozen = slot.* orelse continue;
+            if (!frozen.reference.terminal_ref.eql(ref)) continue;
+            @constCast(frozen.snapshot).destroy();
+            slot.* = null;
+        }
+    }
+
+    fn pruneRemotePaint(model: *Model) void {
+        for (model.frozen_paint) |entry| {
+            const frozen = entry orelse continue;
+            if (model.locateTerminal(frozen.reference.terminal_ref) != null) continue;
+            model.releaseRemotePaint(frozen.reference.terminal_ref);
+        }
+    }
+
+    fn clearRemotePaint(model: *Model) void {
+        for (model.frozen_paint) |entry| {
+            const frozen = entry orelse continue;
+            model.releaseRemotePaint(frozen.reference.terminal_ref);
+        }
+    }
+
     pub fn remoteUi(model: *Model, terminal_ref: TerminalRef) ?*RemoteUiState {
         const current_owner = model.terminalOwner(terminal_ref) orelse return null;
         var vacant: ?*RemoteUiState = null;
@@ -1146,6 +1221,7 @@ pub const Model = struct {
         if (presentation.phase != .live) return false;
         const index = model.saved_attachments.find(ref).?;
         model.pending_attachments[index] = false;
+        model.releaseRemotePaint(ref);
         return true;
     }
 
@@ -1176,6 +1252,7 @@ pub const Model = struct {
     /// Call after direct pane-tree removals, before admitting new identities.
     /// Moves retain their evidence because their destination still holds the ref.
     pub fn pruneAttachmentState(model: *Model) void {
+        model.pruneRemotePaint();
         var retained: topology.attachments.Table = .{};
         var pending: [topology.attachments.max_references]bool = @splat(false);
         for (model.saved_attachments.entries[0..model.saved_attachments.count], 0..) |entry, index| {
@@ -1916,6 +1993,7 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalTerminalId) !void {
 }
 
 pub fn deinitModel(model: *Model) void {
+    model.clearRemotePaint();
     if (comptime support.phux_enabled) {
         if (model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();

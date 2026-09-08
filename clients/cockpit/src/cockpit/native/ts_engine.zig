@@ -318,6 +318,7 @@ pub const Engine = struct {
     }
 
     fn providerDisconnected(self: *Engine) void {
+        self.model.captureRemotePaint();
         self.recovery.disconnect(self.model);
         self.creation.disconnect(self.model);
     }

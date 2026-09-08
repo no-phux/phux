@@ -225,6 +225,12 @@ pub const PhuxProvider = struct {
         return self.host.presentation(terminal_ref);
     }
 
+    pub const FrozenPresentation = host_mod.FrozenPresentation;
+
+    pub fn capturePresentation(self: *const PhuxProvider, expected: provider.ReplicaOwner) !*FrozenPresentation {
+        return self.host.capturePresentation(expected);
+    }
+
     pub fn terminalKnown(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
         return self.host.terminalKnown(ref);
     }

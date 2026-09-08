@@ -44,6 +44,43 @@ pub const CanvasStore = struct {
         store.source_colors.deinit(gpa);
     }
 
+    /// Deep-own a last-good projection once at disconnect, never per paint.
+    /// Only occupied bytes are copied; the live store's admission reserves are
+    /// deliberately not duplicated. Row/cell slices are rebased before return.
+    pub fn clone(store: *const CanvasStore, gpa: std.mem.Allocator) !CanvasStore {
+        var result: CanvasStore = .{
+            .cursor = store.cursor,
+            .scrollbar = store.scrollbar,
+            .selection_active = store.selection_active,
+            .background = store.background,
+            .foreground = store.foreground,
+            .cursor_color = store.cursor_color,
+            .selection_color = store.selection_color,
+            .policy = store.policy,
+        };
+        errdefer result.deinit(gpa);
+        try result.utf8.appendSlice(gpa, store.utf8.items);
+        try result.cells.appendSlice(gpa, store.cells.items);
+        try result.rows.appendSlice(gpa, store.rows.items);
+        try result.screen_text.appendSlice(gpa, store.screen_text.items);
+        try result.hyperlinks.appendSlice(gpa, store.hyperlinks.items);
+        try result.hyperlink_utf8.appendSlice(gpa, store.hyperlink_utf8.items);
+        try result.source_colors.cells.appendSlice(gpa, store.source_colors.cells.items);
+        result.source_colors.globals = store.source_colors.globals;
+        for (result.cells.items) |*cell| {
+            if (cell.cluster.len == 0) continue;
+            const start = @intFromPtr(cell.cluster.ptr) - @intFromPtr(store.utf8.items.ptr);
+            cell.cluster = result.utf8.items[start..][0..cell.cluster.len];
+        }
+        var first: usize = 0;
+        for (result.rows.items) |*row| {
+            const count = row.cells.len;
+            row.cells = result.cells.items[first..][0..count];
+            first += count;
+        }
+        return result;
+    }
+
     fn reserve(store: *CanvasStore, gpa: std.mem.Allocator) !void {
         try store.utf8.ensureTotalCapacity(gpa, max_grid_utf8_bytes);
         try store.cells.ensureTotalCapacity(gpa, canvas.max_terminal_cells);

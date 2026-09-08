@@ -138,6 +138,39 @@ fn expectColorAndOccupancy(store: *const presentation.CanvasStore) !void {
     try testing.expectEqual(canvas.TerminalWide.wide, store.rows.items[4].cells[0].wide);
 }
 
+test "frozen canvas deep owns styles clusters hyperlinks and source color provenance" {
+    const client = try fixtureClient();
+    defer c.phux_client_free(client);
+    const view = try fixtureGrid(client);
+    var source: presentation.CanvasStore = .{};
+    try source.copyClient(testing.allocator, client, &view);
+    var owned = source.clone(testing.allocator) catch |err| {
+        source.deinit(testing.allocator);
+        return err;
+    };
+    const policy = @import("grid_metadata.zig").Policy{ .foreground = canvas.Color.rgb8(123, 45, 67), .bold_as_bright = true };
+    source.setColorPolicy(policy);
+    const expected_foreground = source.foreground;
+    const expected_bright = source.rows.items[5].cells[0].fg;
+    source.deinit(testing.allocator);
+    defer owned.deinit(testing.allocator);
+    const styled = owned.grid(false).rows[0].cells[0];
+    try testing.expectEqualStrings("A", styled.cluster);
+    try testing.expect(styled.bold and styled.italic and styled.overline and styled.strikethrough);
+    try testing.expectEqual(canvas.terminal_grid.TerminalUnderline.curly, styled.underline_style);
+    try testing.expectEqual(canvas.Color.rgb8(60, 90, 150), styled.underline_color.?);
+    try testing.expectEqualStrings("https://example.test/owned", owned.hyperlinkAt(2, 8).?);
+    try testing.expectEqual(owned.cells.items.ptr, owned.rows.items[0].cells.ptr);
+    try testing.expectEqual(owned.cells.items.len, owned.source_colors.cells.items.len);
+    try testing.expect(owned.source_colors.globals.?.cells == null);
+    try testing.expectEqualStrings("e\u{301}", owned.rows.items[2].cells[5].cluster);
+    try testing.expectEqualStrings("界", owned.rows.items[2].cells[6].cluster);
+    owned.setColorPolicy(policy);
+    try testing.expectEqual(expected_foreground, owned.foreground);
+    try testing.expectEqual(expected_bright, owned.rows.items[5].cells[0].fg);
+    try testing.expectEqualStrings("A", owned.rows.items[0].cells[0].cluster);
+}
+
 // GUARD: remote-cell-hyperlinks
 test "remote URI and cluster admission is bounded before replacing owned state" {
     var raw = [_]c.PhuxTerminalCell{std.mem.zeroes(c.PhuxTerminalCell)};

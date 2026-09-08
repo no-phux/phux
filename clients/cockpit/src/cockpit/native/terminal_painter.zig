@@ -288,7 +288,7 @@ fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, i
     } else {
         const remote = model.phuxConst() orelse return false;
         @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.cursor_color);
-        const presentation = model.remotePresentation(pane.terminal) orelse return false;
+        const presentation = model.remotePaintPresentation(pane.terminal) orelse return false;
         options.running = presentation.phase == .live;
         options.selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false;
         try grid.paintTerminalGrid(presentation.grid, builder, options);

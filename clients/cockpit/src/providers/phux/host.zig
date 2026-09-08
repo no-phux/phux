@@ -77,6 +77,7 @@ pub const Error = error{
 const RemoteId = provider.RemoteTerminalId;
 const CanvasStore = presentation_module.CanvasStore;
 pub const ColorPolicy = @import("grid_metadata.zig").Policy;
+pub const FrozenPresentation = @import("frozen_presentation.zig").FrozenPresentation;
 
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
@@ -502,6 +503,13 @@ pub const Host = struct {
     pub fn presentation(host: *const Host, terminal_ref: provider.TerminalRef) ?provider.Presentation {
         const terminal = host.findTerminalConst(terminal_ref) orelse return null;
         return terminal.presentation();
+    }
+
+    pub fn capturePresentation(host: *const Host, expected: provider.ReplicaOwner) !*FrozenPresentation {
+        const terminal = host.findTerminalConst(expected.terminal_ref) orelse return error.InvalidState;
+        if (!terminal.owner().eql(expected)) return error.InvalidState;
+        const value = terminal.presentation() orelse return error.InvalidState;
+        return FrozenPresentation.create(host.gpa, &terminal.canvas, value);
     }
 
     pub fn lastViewport(host: *const Host, terminal_ref: provider.TerminalRef) ?provider.Viewport {

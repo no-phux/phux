@@ -1758,6 +1758,10 @@ test "shipping restored subscription waits for both exact bootstrap and command 
     try cockpit.durable_tests.restoredSubscription();
 }
 
+test "shipping proven display survives disconnect without admitting a reused incarnation" {
+    try cockpit.durable_tests.frozenPaintRecovery();
+}
+
 // GUARD: ts-durable-tab-capacity
 test "shipping pending spawns reserve destination tab capacity" {
     try cockpit.durable_tests.destinationReservations();
