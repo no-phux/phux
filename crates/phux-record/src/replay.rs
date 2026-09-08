@@ -21,7 +21,7 @@
 //!
 //! [`Replayer::sample`] projects libghostty cells into
 //! [`phux_core::screen::RenderedCell`]s. That projection already exists twice:
-//! `crates/phux-client/src/attach/render.rs` (`render_at_cells` plus its
+//! `crates/phux-tui/src/attach/render.rs` (`render_at_cells` plus its
 //! `to_cell_style` / `cell_color` helpers) walks it client-side to answer
 //! `phux snapshot --rendered`, and `crates/phux-server/src/grid/synthesizer.rs`
 //! walks it server-side for `--cells`. The three must agree cell-for-cell: a
@@ -437,7 +437,7 @@ fn read_cursor(
 
 /// Project one libghostty cell into its `(grapheme, style)` pair.
 ///
-/// Mirrors `render_at_cells` in `crates/phux-client/src/attach/render.rs`
+/// Mirrors `render_at_cells` in `crates/phux-tui/src/attach/render.rs`
 /// exactly — see the module docs on why this is deliberately the third copy.
 fn project_cell(cell: &CellIteration<'_, '_>) -> Result<(String, CellStyle), RecordError> {
     let wide = cell
@@ -471,7 +471,7 @@ fn project_cell(cell: &CellIteration<'_, '_>) -> Result<(String, CellStyle), Rec
 /// Project a libghostty cell's `(Style, resolved fg, resolved bg)` into a
 /// plain-data [`CellStyle`].
 ///
-/// Copied from `to_cell_style` in `crates/phux-client/src/attach/render.rs`,
+/// Copied from `to_cell_style` in `crates/phux-tui/src/attach/render.rs`,
 /// which is itself a mirror of the server synthesizer's `collect_cell`.
 fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> CellStyle {
     CellStyle {

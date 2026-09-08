@@ -57,6 +57,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `plugin-action` | — | `plugin`, `action` | Run an enabled plugin's manifest action |
 | `plugin-pane` | — | `plugin`, `pane` | Open an enabled plugin's manifest pane |
 | `reload-config` | View |  | Reload the config file (keybindings, theme, status bar) |
+| `settings` | View |  | Settings: browse, search, and edit every option in place |
 
 Why the dash rows have no palette entry:
 

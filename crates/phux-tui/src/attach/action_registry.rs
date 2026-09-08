@@ -305,6 +305,13 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "settings",
+        category: Category::View,
+        description: "Settings: browse, search, and edit every option in place",
+        params: "",
+        args: &[],
+    },
+    ActionSpec {
         name: "getting-started",
         category: Category::View,
         description: "Getting started: detach, return, and command discovery",

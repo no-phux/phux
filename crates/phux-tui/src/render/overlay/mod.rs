@@ -28,13 +28,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use crate::render::ChromeBreakpoints;
+use crate::render::{ChromeBreakpoints, Theme};
 
 pub mod copy_mode;
 pub mod menu;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
+// phux-u1tq.4: the settings page (ADR-0101).
+pub mod settings;
 pub mod toast;
 pub mod which_key;
 pub mod widgets;
@@ -43,6 +45,7 @@ pub use copy_mode::CopyModeOverlay;
 pub use menu::{ContextMenu, MenuRow};
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
+pub use settings::SettingsOverlay;
 // The shared copy-mode selection contract (ADR-0045). This module is the single
 // owner; both the selection UX (`copy_mode`) and the renderer (`attach::render`)
 // import these types from here, so the highlight geometry and the copy path
@@ -174,6 +177,17 @@ pub trait RenderOverlay {
     /// [`centered_panel`]: widgets::centered_panel
     fn set_breakpoints(&mut self, _bp: ChromeBreakpoints) {}
 
+    /// Adopt a freshly reloaded [`Theme`].
+    ///
+    /// Every overlay copies its colors at construction so it stays
+    /// `'static`; a config reload while one is open would otherwise leave
+    /// it painted in the previous palette. [`OverlayState::set_theme`]
+    /// calls this on the whole stack after a successful reload. The default
+    /// is a no-op: a modal that closes on the next keystroke need not care,
+    /// while the settings page -- which may have just edited a theme slot
+    /// and stays open to show it -- stores the value.
+    fn set_theme(&mut self, _theme: &Theme) {}
+
     /// phux-wrnm: `true` for an overlay that hover-tracks the pointer with
     /// no button held (the context menu). The driver upgrades the outer
     /// terminal's mouse reporting from button-event (`?1002h`) to
@@ -251,6 +265,12 @@ pub enum OverlayCommand {
     /// Keep the overlay active and scroll the focused pane's client-local
     /// viewport by `delta` rows (negative means up into scrollback).
     ScrollViewport(isize),
+    /// Keep the overlay active and ask the driver to re-read the config
+    /// file and swap the reloadable settings in place (ADR-0101: the
+    /// settings page just wrote the file). The same atomic reload the
+    /// `reload-config` action performs; the driver repaints, then
+    /// re-stamps the stack's theme through [`OverlayState::set_theme`].
+    ReloadConfig,
 }
 
 /// What [`OverlayState::handle_key`] hands back to the dispatcher.
@@ -266,6 +286,9 @@ pub enum OverlayOutcome {
     /// Scroll the focused pane's local terminal viewport while the overlay
     /// remains active.
     ScrollViewport(isize),
+    /// The overlay wrote the config file; run the in-place reload while the
+    /// overlay remains active.
+    ReloadConfig,
 }
 
 /// Stacked overlay state.
@@ -314,6 +337,14 @@ impl OverlayState {
         self.breakpoints = bp;
         for overlay in &mut self.stack {
             overlay.set_breakpoints(bp);
+        }
+    }
+
+    /// Re-stamp every stacked overlay with a reloaded [`Theme`]; see
+    /// [`RenderOverlay::set_theme`].
+    pub fn set_theme(&mut self, theme: &Theme) {
+        for overlay in &mut self.stack {
+            overlay.set_theme(theme);
         }
     }
 
@@ -445,6 +476,7 @@ impl OverlayState {
                 OverlayOutcome::Copy(req)
             }
             OverlayCommand::ScrollViewport(delta) => OverlayOutcome::ScrollViewport(delta),
+            OverlayCommand::ReloadConfig => OverlayOutcome::ReloadConfig,
         }
     }
 
@@ -492,6 +524,7 @@ impl OverlayState {
                 self.dismiss();
                 OverlayOutcome::Copy(req)
             }
+            OverlayCommand::ReloadConfig => OverlayOutcome::ReloadConfig,
             OverlayCommand::Stay => OverlayOutcome::None,
         }
     }

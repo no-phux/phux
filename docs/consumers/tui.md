@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-02
+last-reviewed: 2026-09-08
 ---
 
 # The phux reference TUI
@@ -542,6 +542,13 @@ phux config reload          # validate, then apply the config to running
 phux plugin list --json     # inspect the plugin registry
 phux plugin validate        # validate every configured plugin manifest
 ```
+
+Inside an attach, the **settings page** (`settings`, `C-a S`, section 5.9)
+is the same file seen from the other side: every scalar key with its
+effective value, the layer that set it, and what it does, editable in place.
+It writes your `config.toml` one key at a time, comments intact, and never
+writes anything you did not change on the page
+([ADR-0101](../../ADR/0101-the-settings-page-edits-the-file.md)).
 
 `phux config init` writes the shipped defaults *with every line commented
 out*: the file documents every option next to its real default value, yet
@@ -1224,6 +1231,9 @@ surfaces trigger the same in-place reload of a running client:
 - **The `reload-config` action** — a command-palette row ("Reload the
   config file"), also bindable to any chord: `R = "reload-config"` in
   `[keybindings.prefix-table]`. It ships unbound by default.
+- **An edit on the settings page** (section 5.9). Every committed edit
+  writes the file and then requests this same reload, so the page's
+  "applies now" rows land without a second step.
 - **`phux config reload`** from any shell. The CLI validates the config
   locally first — a broken file fails right there with the parse error
   and signals nothing — then rings a reload doorbell on the server (the
@@ -1519,6 +1529,7 @@ line of config. The shipped prefix-table bindings:
 | `C-a w`     | `window-picker` (grouped: sessions, windows nested)      |
 | `C-a s`     | `session-picker` (`C-a a` is a kept alias)               |
 | `C-a A`     | `agent-fleet` (fleet dashboard — §5.6)                   |
+| `C-a S`     | `settings` (the settings page — §5.9)                    |
 | `C-a q`     | `next-attention` (cycle asking panes, window + DFS order) |
 | `C-a Q`     | `return-from-attention` (consume the saved local origin)  |
 | `C-a C`     | `new-session`                                            |
@@ -1759,6 +1770,71 @@ back inside the pane, a grow makes the newly revealed rows and columns
 reachable, and a Line-mode selection re-spans to the new width (phux-d26y).
 
 ---
+
+### 5.9 Settings page
+
+`settings` (`C-a S`, also a palette row) opens the config as a page instead
+of a file: one modal with the eight `config.toml` sections down the left,
+the selected section's keys on the right, and a detail panel underneath.
+Each row shows the key, its **effective** value, and where that value came
+from: `default` (the shipped base layer), `you` (your `config.toml`), or
+the name of the `extends` layer that set it. Overridden keys carry a dot
+and read bold, and each section in the column counts its overrides, so
+"what have I changed" is answerable at a glance. The detail panel names the
+key and its domain (`left | right`, `integer 0..65535`, `color`), explains
+it in a sentence or three, shows the shipped default beside the origin, and
+says when a change lands: **now** for anything a reload covers, **next
+attach** for `[sidebar]`, `defaults.mouse`, and `experimental.*`, and
+**next server start** for `[defaults]` and `[voice]`, which the server
+reads once when it starts.
+
+Theme slots (section 4.4) are rows too, under **Theme**, each with a swatch
+of its current color and a live preview while you type a new one.
+
+Navigation is the palette's: type to filter across every section (the
+column then shows match counts and the rows show full dotted keys); a
+letter is always filter text, so no keystroke of a query can change a
+value. `j`/`k` move while the query is empty, `PageUp`/`PageDown`, `Home`/`End`, the
+mouse wheel, a click on a section or a row. `Tab` and `Shift-Tab` step
+through sections; Esc clears the query first and closes the page second.
+
+Editing is one key at a time and always visible in the file afterwards:
+
+| Key                        | On the selected row                                    |
+|----------------------------|--------------------------------------------------------|
+| Enter or Space             | toggle a bool; cycle a choice or tri-state; otherwise open the inline editor |
+| Left / Right               | previous / next choice, or step an integer by one      |
+| Del or `C-r`               | reset: remove your override so the shipped default shows through |
+| `C-z`                      | undo the last edit made on this page (restores the value; a comment that sat on the removed line does not come back) |
+| Enter (editor)             | validate and save; Esc cancels, `C-u` clears the field |
+
+Every save is one `write_edit`: the key is set or removed in **your**
+`config.toml` through a formatting-preserving TOML edit (your comments,
+order, and spacing survive), the result is checked with the same
+`phux config check` the CLI runs plus a full parse, and only then is the
+file replaced atomically. A refused edit -- a chord that does not parse, a
+`history-bytes` over its cap, a color the renderer cannot read -- shows its
+reason in the detail panel and leaves both the file and the editor as they
+were. A saved edit then requests the same in-place reload `reload-config`
+performs (section 4.3), and the row updates from what is now on disk. The
+page never writes running state: `C-a b` toggling the sidebar does not
+touch the file; editing `sidebar.enabled` here does.
+
+A symlinked `config.toml` is followed: the edit lands in the file the link
+points at (a dotfiles checkout, typically), the link stays a link, and the
+target keeps its permissions.
+
+Two limits are deliberate. A key set by an `extends` layer can be
+overridden from the page but not reset from it -- removing it from your
+file could not change what the layer says, so the page names the layer's
+file instead. And composite settings (widget lists, binding tables, hooks,
+the plugin and remote registries) are composition rather than knobs; they
+stay in the file, and the page tells you where it is.
+
+The catalogue the page renders is pinned to the schema by a test in
+`phux-config`, so a new scalar key cannot ship without a row here, and the
+theme rows are pinned to the `Theme` struct the renderer owns
+([ADR-0101](../../ADR/0101-the-settings-page-edits-the-file.md)).
 
 ## 6. Layout
 

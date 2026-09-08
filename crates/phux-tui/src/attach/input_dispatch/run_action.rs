@@ -105,6 +105,7 @@ pub(super) fn run_action(
         "reload-config" => reload_config(e),
         "show-help" | "command-palette" => push_action_finder(ctx),
         "getting-started" => push_getting_started(ctx),
+        "settings" => push_settings(ctx),
         "copy-mode" => push_copy_mode(ctx, focused),
         "context-menu" => push_context_menu(ctx, focused),
         "window-picker" => push_window_picker(ctx, e),
@@ -516,6 +517,18 @@ fn resize_pane(
 /// exactly the state the reload replaces.
 const fn reload_config(effects: &mut ActionEffects) {
     effects.reload_config = true;
+}
+
+/// ADR-0101: open the settings page over the canonical config file. The
+/// page reads the file itself and writes it one key at a time; a saved
+/// edit comes back as `OverlayOutcome::ReloadConfig`, which the dispatcher
+/// hands up as a `reload-config`.
+fn push_settings(ctx: &mut DispatchCtx<'_>) {
+    ctx.overlays
+        .push(Box::new(crate::render::overlay::SettingsOverlay::open(
+            phux_config::loader::config_path(),
+            ctx.theme,
+        )));
 }
 
 /// Push the first-run onboarding hint card.

@@ -1,0 +1,31 @@
+---
+source: crates/phux-tui/src/render/overlay/settings.rs
+expression: "render_text(&page, 100, 30)"
+---
+
+
+
+          ┌────────────────────────────────── settings ──────────────────────────────────┐
+          │> filter…                                           ~/.config/phux/config.toml│
+          │                                                                              │
+          │ Defaults         │   enabled                                    true  default│
+          │ Keybindings      │ • width                                        40      you│
+          │ Status bar       │   position                                   left  default│
+          │▸Sidebar        1 │                                                           │
+          │ Chrome           │                                                           │
+          │ Theme            │                                                           │
+          │ Experimental     │                                                           │
+          │ Voice            │                                                           │
+          │                  │                                                           │
+          │                  │                                                           │
+          │                  │                                                           │
+          │──────────────────────────────────────────────────────────────────────────────│
+          │sidebar.width  integer 0..65535                                               │
+          │Sidebar width in columns; 0 sizes it automatically                            │
+          │0, the default, sizes the strip to one quarter of the viewport bounded to     │
+          │28..40 columns, so names get room on a wide terminal while the classic        │
+          │default 0  ·  set in your config  ·  applies next attach                      │
+          │                                                                              │
+          │                                                                              │
+          │Enter edit  ·  ←/→ step  ·  Del reset  ·  C-z undo  ·  Tab section            │
+          └──────────────────────────────────────────────────────────────────────────────┘

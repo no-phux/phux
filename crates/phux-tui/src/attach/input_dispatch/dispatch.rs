@@ -468,6 +468,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 self.focused_pane.as_ref(),
                 delta,
             )),
+            // ADR-0101: the settings page wrote the file. The driver owns
+            // the settings this batch is still borrowing, so hand the
+            // reload up exactly as the `reload-config` action does.
+            OverlayOutcome::ReloadConfig => {
+                *self.ctx.reload_request = true;
+                Ok(false)
+            }
             // Overlay consumed the event but nothing else to do.
             OverlayOutcome::None => Ok(false),
         }

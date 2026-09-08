@@ -92,6 +92,7 @@
 
 use std::str::FromStr;
 
+use phux_config::settings::{Applies, SettingKind, SettingSection, SettingSpec};
 use ratatui::style::Color;
 
 /// Named color slots for chrome + overlay painting.
@@ -244,6 +245,14 @@ impl Theme {
         theme
     }
 
+    /// The color in the slot named `key`, or `None` if `key` is not a
+    /// recognized slot. Slot names match the field names.
+    #[must_use]
+    pub fn slot(&self, key: &str) -> Option<Color> {
+        let mut copy = *self;
+        copy.slot_mut(key).map(|slot| *slot)
+    }
+
     /// Mutable handle to the slot named `key`, or `None` if `key` is not
     /// a recognized slot. Slot names match the field names.
     fn slot_mut(&mut self, key: &str) -> Option<&mut Color> {
@@ -282,11 +291,283 @@ fn parse_color(spec: &str) -> Option<Color> {
     Color::from_str(spec).ok()
 }
 
+/// The theme slots as settings-page rows (ADR-0101).
+///
+/// `[theme]` is a free-form map in the config schema, so the schema's
+/// catalogue carries no theme rows; the vocabulary lives here, beside the
+/// struct that owns it. `slot_specs_name_every_slot` pins this list to
+/// `Theme::slot_mut`, so a slot cannot be added without a row and a row
+/// cannot name a slot the renderer does not read. Every slot reloads live.
+pub const SLOT_SPECS: &[SettingSpec] = &[
+    SettingSpec {
+        key: "theme.accent",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Modal titles, query caret, active tab fill",
+        detail: "The one hue that says this is phux talking: modal titles, the palette's query caret, the active window tab's fill, and the focused pane's frame.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.chord",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Keybinding chords in help and which-key",
+        detail: "The green of the keys you press. Distinct enough from accent to scan a help table by column; agent_working tracks it.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.action",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Action labels on the host background",
+        detail: "Labels drawn on the terminal's own background (sidebar, status row). Defaults to reset so the readable body text is never phux's decision.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.dim",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Footer hints, sub-lines, inactive tabs",
+        detail: "The recessive text register: footer hints, branch sub-lines, affordances, empty-state placeholders, inactive window tabs. Recessive still clears 4.5:1 against surface.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.border",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Modal borders and the sidebar rule",
+        detail: "Rules and modal borders read as structure, never content. A step below dim; divider tracks it so every rule in the chrome is one material.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.title",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Titles that diverge from accent",
+        detail: "Alias slot for window and section titles when a theme wants them to differ from accent. Tracks accent by default.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.section_header",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Section headings inside help and pickers",
+        detail: "The dim category headers of grouped discovery surfaces, legible as headings without competing with accent.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.error",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Error and alarm text",
+        detail: "An explicit red rather than ANSI Red, which maps to wildly different hues across terminal palettes.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.text",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Body copy on a filled surface panel",
+        detail: "Modal body text. A panel supplies its own background (surface), so its copy must supply its own foreground or it inverts on a light terminal.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.surface",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Modal interior background",
+        detail: "The panel fill that makes an overlay read as a surface floating over the panes. Set reset for a transparent modal.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.shadow",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Modal drop shadow",
+        detail: "The one-cell band below and right of a floating modal that separates it from the panes behind it.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.selection_fg",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Selected row foreground",
+        detail: "Foreground of a selected list row and the copy-mode strip. Tracks text: a selected row is the same text on a different bed.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.selection_bg",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Selected row background",
+        detail: "Background of a selected list row and the copy-mode strip.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.attention",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Agent-attention chrome",
+        detail: "The asked marker and hint on the status bar and the hot rows of the fleet dashboard; agent_blocked tracks it.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.sidebar_section",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Sidebar zone headers and affordance glyphs",
+        detail: "The needs-you, here, and spaces zone headers of the sidebar plus its affordance glyphs. Tracks dim.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.agent_idle",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Sidebar agent row while idle",
+        detail: "An agent that is waiting for nothing and doing nothing. Tracks dim.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.agent_working",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Sidebar agent row while working",
+        detail: "An agent mid-task. Tracks chord: the green of live progress.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.agent_blocked",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Sidebar agent row while blocked",
+        detail: "An agent waiting on you. Tracks attention: a blocked agent and an attention marker are one fact seen from two places.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.agent_done",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Sidebar agent row when done",
+        detail: "An agent that finished its task.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.divider",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "Pane rules off the focused frame",
+        detail: "The recessive structural tone of the pane grid. Tracks border.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.divider_focus",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "The focused pane's own rules",
+        detail: "The focused pane's frame, also bold. Tracks accent.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.pane_title",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "An unfocused pane's rail label",
+        detail: "The label inset into an unfocused pane's top rule. Tracks dim.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "theme.pane_title_focus",
+        section: SettingSection::Theme,
+        kind: SettingKind::Color,
+        summary: "The focused pane's rail label",
+        detail: "The focused pane's label, also bold. Tracks accent.",
+        applies: Applies::LiveReload,
+    },
+];
+
+/// Render a [`Color`] the way `[theme]` accepts it back: `#rrggbb` for
+/// RGB, the index for an indexed color, the lowercase name otherwise
+/// (`reset` for the terminal default).
+#[must_use]
+pub fn color_to_string(color: Color) -> String {
+    match color {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        Color::Indexed(index) => index.to_string(),
+        other => other.to_string().to_lowercase(),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// ADR-0101: the settings page's theme rows are exactly the slots the
+    /// renderer reads, no more and no fewer.
+    #[test]
+    fn slot_specs_name_every_slot() {
+        let mut theme = Theme::default();
+        let mut seen = std::collections::BTreeSet::new();
+        for spec in SLOT_SPECS {
+            assert_eq!(spec.table(), "theme", "{}", spec.key);
+            assert!(
+                theme.slot_mut(spec.leaf()).is_some(),
+                "SLOT_SPECS names `{}`, which Theme does not read",
+                spec.key
+            );
+            assert!(seen.insert(spec.leaf()), "duplicate row {}", spec.key);
+            assert!(
+                !spec.summary.ends_with('.'),
+                "{}: summary ends with a period",
+                spec.key
+            );
+        }
+        // Every slot is a row: probe the field count through Debug, which
+        // lists one `name: Color` pair per field.
+        let debug = format!("{:?}", Theme::default());
+        let field_count = debug.matches(": ").count();
+        assert_eq!(
+            field_count,
+            SLOT_SPECS.len(),
+            "Theme has {field_count} fields but SLOT_SPECS has {} rows",
+            SLOT_SPECS.len()
+        );
+    }
+
+    #[test]
+    fn color_to_string_round_trips_through_the_parser() {
+        for color in [
+            Color::Rgb(0x7a, 0xa2, 0xf7),
+            Color::Indexed(12),
+            Color::Reset,
+            Color::Cyan,
+            Color::LightRed,
+        ] {
+            let text = color_to_string(color);
+            assert_eq!(
+                Color::from_str(&text).expect("renders a parseable color"),
+                color,
+                "{text}"
+            );
+        }
+        // The default palette renders as the hex the docs table lists.
+        let Color::Rgb(r, g, b) = Theme::default().accent else {
+            panic!("the shipped accent is an RGB color");
+        };
+        assert_eq!(
+            Theme::default().slot("accent").map(color_to_string),
+            Some(format!("#{r:02x}{g:02x}{b:02x}"))
+        );
+    }
+
+    #[test]
+    fn slot_reads_what_slot_mut_writes() {
+        let mut theme = Theme::default();
+        *theme.slot_mut("error").expect("slot") = Color::Indexed(9);
+        assert_eq!(theme.slot("error"), Some(Color::Indexed(9)));
+        assert_eq!(theme.slot("nonesuch"), None);
+    }
 
     fn cfg(pairs: &[(&str, &str)]) -> phux_config::ThemeCfg {
         let mut slots = BTreeMap::new();

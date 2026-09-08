@@ -3219,7 +3219,7 @@ mod tests {
     }
 
     /// Build one of the shared benchmark corpora, mirroring
-    /// `phux-client/benches/render_frame.rs::build_terminal` so the gate and
+    /// `phux-tui/benches/render_frame.rs::build_terminal` so the gate and
     /// the bench walk the same cells.
     fn corpus_terminal(corpus: support::Corpus) -> GhosttyTerminal<'static, 'static> {
         let (cols, rows) = corpus.geometry();

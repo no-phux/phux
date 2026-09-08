@@ -215,8 +215,8 @@ pub enum Applies {
     /// knobs), the theme, the status-bar composition (widgets, plugin
     /// `[[widgets]]` contributions, and `[status] position`)". The chrome
     /// breakpoints are not named there but are rebuilt on the same path
-    /// (`crates/phux-client/src/attach/reload.rs` folds `cfg.chrome` into
-    /// the reloaded state), so `[chrome]` rides along.
+    /// (`crates/phux-tui/src/settings.rs` folds `cfg.chrome` into the
+    /// reloaded `TuiSettings`), so `[chrome]` rides along.
     LiveReload,
     /// Read once when a client attaches; restart the client, or detach and
     /// re-attach, to pick it up.
@@ -247,7 +247,7 @@ impl Applies {
         match self {
             Self::LiveReload => "on reload",
             Self::NextAttach => "next attach",
-            Self::NextSpawn => "next spawn",
+            Self::NextSpawn => "next server start",
         }
     }
 }
@@ -495,10 +495,11 @@ pub const CATALOG: &[SettingSpec] = &[
             min: 0,
             max: U16_MAX,
         },
-        summary: "Sidebar width in columns when shown",
-        detail: "28 fits a nested tree: a status dot, a two-space indent, a session or \
-                 window name, and a !1 *2 histogram without truncating the common case. The \
-                 panes tile into the remaining columns.",
+        summary: "Sidebar width in columns; 0 sizes it automatically",
+        detail: "0, the default, sizes the strip to one quarter of the viewport bounded to \
+                 28..40 columns, so names get room on a wide terminal while the classic \
+                 80-column layout stays compact. A positive value fixes the width. The panes \
+                 tile into the remaining columns.",
         applies: Applies::NextAttach,
     },
     SettingSpec {
@@ -1044,11 +1045,15 @@ mod tests {
         let spec = find("sidebar.width").unwrap();
         let entry = snapshot.entry(spec);
         assert_eq!(entry.value, Some(toml::Value::Integer(32)));
-        assert_eq!(entry.default, Some(toml::Value::Integer(28)));
+        assert_eq!(
+            entry.default,
+            Some(toml::Value::Integer(0)),
+            "the shipped default: 0 selects automatic sizing"
+        );
         assert_eq!(entry.origin, Some(LayerSource::User(path)));
         assert!(entry.is_overridden());
         assert_eq!(entry.render_value(), "32");
-        assert_eq!(entry.render_default(), "28");
+        assert_eq!(entry.render_default(), "0");
         // Untouched siblings stay attributed to the defaults.
         assert!(snapshot.origin_at("sidebar.enabled").is_none());
     }
