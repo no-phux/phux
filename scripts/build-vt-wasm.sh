@@ -7,7 +7,10 @@
 # Rust adapter supplies secure browser entropy and probes codec identity,
 # version, features, and limits before advertising NativeState.
 #
-# Requires the release-pinned Zig and Node (native or Nix). By default fetches
+# Requires the release-pinned Zig and Node. Byte-for-byte reproduction assumes
+# the official Zig release binary (scripts/install-zig.sh): nixpkgs' zig_0_16 on
+# x86_64 Linux links a different LLVM build and compiles one function
+# differently, so the Nix shell's Zig fails --check there. By default fetches
 # verified immutable source; GHOSTTY_SRC is an explicit local development override.
 # --check rebuilds and compares without changing the committed artifact.
 set -euo pipefail
@@ -24,16 +27,14 @@ for tool in zig node tar; do
   command -v "$tool" >/dev/null || { echo "$tool missing; see docs/SETUP.md#browser-client" >&2; exit 1; }
 done
 [[ "$(zig version)" = "$ZIG_VERSION" ]] || { echo "requires Zig $ZIG_VERSION" >&2; exit 1; }
+digest() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-vt-wasm.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 if [[ -z "${GHOSTTY_SRC:-}" ]]; then
   curl -fL --retry 3 "https://codeload.github.com/phall1/ghostty/tar.gz/$revision" -o "$scratch/source.tar.gz"
-  if command -v sha256sum >/dev/null; then
-    actual="$(sha256sum "$scratch/source.tar.gz")"
-  else
-    actual="$(shasum -a 256 "$scratch/source.tar.gz")"
-  fi
-  [[ "${actual%% *}" = "$archive_sha256" ]] || { echo 'engine source checksum mismatch' >&2; exit 1; }
+  [[ "$(digest "$scratch/source.tar.gz")" = "$archive_sha256" ]] || { echo 'engine source checksum mismatch' >&2; exit 1; }
   tar -xf "$scratch/source.tar.gz" -C "$scratch"
   GHOSTTY_SRC="$scratch/ghostty-$revision"
 fi
@@ -53,7 +54,10 @@ node "$repo/scripts/prepare-vt-wasm.mjs" "$artifact"
 
 dest="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
 if [[ "$mode" = --check ]]; then
-  cmp "$artifact" "$dest" || { echo 'engine differs; regenerate with bash scripts/build-vt-wasm.sh' >&2; exit 1; }
+  cmp "$artifact" "$dest" || {
+    echo "rebuilt sha256 $(digest "$artifact"); committed sha256 $(digest "$dest"); zig $(command -v zig)" >&2
+    echo 'engine differs; regenerate with bash scripts/build-vt-wasm.sh' >&2; exit 1;
+  }
   echo 'committed engine matches the verified source rebuild'
   exit 0
 fi

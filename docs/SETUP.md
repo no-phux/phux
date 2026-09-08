@@ -175,6 +175,11 @@ brew install binaryen
 `wasm-bindgen-cli` must match the exact `wasm-bindgen` version in the client
 manifests; `doctor web` checks this. Browser-rendering tests additionally need
 Chrome and a compatible chromedriver. Node-only tests do not need a browser.
+Regenerating or `--check`ing the engine (`bash scripts/build-vt-wasm.sh`) needs
+the official Zig release binary from `bash scripts/install-zig.sh` ahead of any
+other Zig on PATH: nixpkgs' `zig_0_16` on x86_64 Linux links a different LLVM
+and compiles one function differently, so the Nix shell's Zig does not
+reproduce the committed engine there.
 
 ```sh
 bash scripts/doctor.sh web
