@@ -1,0 +1,50 @@
+name: site-native-monitor
+
+# Six-hour production backstop for the live demo wire; workflow_dispatch
+# remains available for on-demand probes and explicit fallback exercises.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      exercise_fallback:
+        description: Hold one native shell and verify same-IP edge fallback
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # A routine probe may replace an older routine probe, but must never cancel
+  # an operator's explicit two-session fallback exercise.
+  group: site-native-monitor-${{ github.event_name == 'workflow_dispatch' && inputs.exercise_fallback && 'fallback' || 'probe' }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        working-directory: docs/site
+        run: bun install --frozen-lockfile
+      - name: Verify production phux wire
+        working-directory: docs/site
+        env:
+          PHUX_NATIVE_WS: wss://shell.phux.sh/session?mode=native
+          PHUX_ALLOWED_ORIGIN: https://phux.sh
+          PHUX_SYNTHETIC_TOKEN: ${{ secrets.PHUX_SYNTHETIC_TOKEN }}
+        run: |
+          if [[ "${{ inputs.exercise_fallback || false }}" == "true" ]]; then
+            bun run scripts/smoke-native.ts --exercise-fallback
+          else
+            bun run scripts/smoke-native.ts
+          fi

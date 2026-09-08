@@ -1,0 +1,5 @@
+#!/bin/bash
+if [[ ${1-} == "-c" ]]; then
+  exec /bin/bash --noprofile --norc "$@"
+fi
+exec /bin/bash --noprofile --rcfile /etc/phux/bashrc -i

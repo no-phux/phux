@@ -1,0 +1,39 @@
+---
+import "../../styles/global.css";
+import Head from "../Head.astro";
+import { ClientRouter } from "astro:transitions";
+import { SITE } from "../../lib/site";
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en" class="dark" data-design={SITE.designMode}>
+  <head>
+    <Head title={title} description={description} type="article" />
+    <ClientRouter />
+  </head>
+  <body
+    class="flex min-h-screen flex-col"
+    transition:persist
+    transition:animate="none"
+    transition:name="docs-layout"
+  >
+    <a class="skip" href="#nd-page">Skip to documentation</a>
+    <slot />
+
+    <footer class="wrap">
+      <div class="foot">
+        <span class="dim">phux · pre-alpha · MIT/Apache-2.0</span>
+        <a href={SITE.github} target="_blank" rel="noopener">source</a>
+        <a href="/wire">the wire</a>
+        <span class="sp dim">© 2026 Phil Hall</span>
+      </div>
+    </footer>
+  </body>
+</html>

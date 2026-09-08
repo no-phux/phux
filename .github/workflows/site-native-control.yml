@@ -1,0 +1,55 @@
+name: site-native-control
+
+# Operator kill switch for native shells on the live demo (docs/site/worker).
+# The edge fallback stays live either way; this only gates native containers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      enabled:
+        description: Native admission state (edge fallback remains live)
+        required: true
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        working-directory: docs/site
+        run: bun install --frozen-lockfile
+      - name: Deploy native kill-switch setting
+        working-directory: docs/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler deploy --cwd worker --var NATIVE_ENABLED:${{ inputs.enabled }}
+      - name: Verify edge remains healthy
+        working-directory: docs/site
+        env:
+          PHUX_NATIVE_WS: wss://shell.phux.sh/session?mode=native
+          PHUX_ALLOWED_ORIGIN: https://phux.sh
+          PHUX_SYNTHETIC_TOKEN: ${{ secrets.PHUX_SYNTHETIC_TOKEN }}
+        run: |
+          health="$(curl --fail --silent --show-error https://shell.phux.sh/healthz)"
+          jq -e --argjson enabled "${{ inputs.enabled }}" '.nativeEnabled == $enabled' <<<"$health"
+          if [[ "${{ inputs.enabled }}" == "true" ]]; then
+            bun run scripts/smoke-native.ts
+          else
+            bun run scripts/smoke-native.ts --expect-edge
+          fi

@@ -1,0 +1,95 @@
+---
+import "../styles/global.css";
+import PhuxTerminal from "../components/PhuxTerminal";
+import { SITE } from "../lib/site";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#08080b" />
+    <title>phall.io real phux shell</title>
+    <script is:inline>
+      const result = new URLSearchParams(window.location.search).get("auth");
+      if (result === "success" || result === "error") {
+        document.documentElement.dataset.authReturn = result;
+        if (window.opener) {
+          window.opener.postMessage(
+            { source: "phux-auth", type: "complete", result },
+            window.location.origin,
+          );
+        }
+        window.close();
+      }
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>phall.io real phux shell</h1>
+      <PhuxTerminal
+        client:load
+        wsUrl={SITE.demoWsUrl}
+        mode="native"
+        cols={110}
+        rows={32}
+        autoStart
+        statusParentOrigin="https://phall.io"
+      />
+    </main>
+  </body>
+</html>
+
+<style>
+  html,
+  body {
+    min-height: 100%;
+    margin: 0;
+    background: #08080b;
+  }
+  body {
+    padding: 0;
+  }
+  html[data-auth-return] body::before {
+    content: "Sign-in complete. This window can be closed.";
+    min-height: 100dvh;
+    display: grid;
+    place-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    color: #b9ff65;
+    font: 12px/1.6 ui-monospace, monospace;
+    text-align: center;
+  }
+  html[data-auth-return] main {
+    display: none;
+  }
+  main {
+    min-height: 100dvh;
+    display: grid;
+    place-content: center;
+    overflow: hidden;
+    padding: clamp(8px, 2vw, 24px);
+    box-sizing: border-box;
+  }
+  h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  :global(.pterm) {
+    border: 0;
+    border-radius: 0;
+    max-width: 100vw;
+    max-height: 100dvh;
+    box-shadow: none;
+  }
+  :global(.pterm-canvas:focus-visible) {
+    outline: 1px solid #66666f;
+    outline-offset: -1px;
+  }
+</style>

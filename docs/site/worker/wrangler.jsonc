@@ -1,0 +1,98 @@
+{
+  // phux live-demo Worker — the SOLE public door to the demo.
+  //
+  //   Browser WS ──► this Worker ──► SessionDO (demo/portfolio, edge WASM)
+  //                              └─► PhuxSessionContainer (native mode)
+  //
+  // The Worker enforces per-IP rate limits and concurrency caps before either
+  // backend starts. SessionDO remains the free OS-less fallback; native mode runs
+  // one credential-free, no-egress container per visitor.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "phux-demo",
+  "main": "src/index.ts",
+
+  // Stable first-party endpoint for auth callbacks, health, and terminal WSS.
+  // Keep the generated workers.dev hostname as an operational fallback only.
+  "routes": [{ "pattern": "shell.phux.sh", "custom_domain": true }],
+
+  // The modern DO + WebSocket surface require a recent compat date.
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true
+  },
+
+  // The SessionDO imports the phux-edge WASM module (edge/pkg/*_bg.wasm).
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+
+  // ── Durable Objects ─────────────────────────────────────────────────────────
+  // SessionDO: one per live session; runs the phux-edge WASM server.
+  // GlobalCapDO: atomic global/native/account admission.
+  // RateLimitDO: one secret-keyed object per IP sliding window.
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION", "class_name": "SessionDO" },
+      { "name": "GLOBAL_CAP", "class_name": "GlobalCapDO" },
+      { "name": "RATE_LIMIT", "class_name": "RateLimitDO" },
+      { "name": "PHUX_SESSION", "class_name": "PhuxSessionContainer" }
+    ]
+  },
+
+  "containers": [
+    {
+      "class_name": "PhuxSessionContainer",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 30
+    }
+  ],
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionDO", "GlobalCapDO"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PhuxSessionContainer"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["RateLimitDO"]
+    }
+  ],
+
+  // ── Vars / secrets ──────────────────────────────────────────────────────────
+  // SESSION_TOKEN_SECRET is the HMAC key for the short-lived session token the
+  // Worker mints and the SessionDO verifies. Set it as a SECRET:
+  //   bunx wrangler secret put SESSION_TOKEN_SECRET
+  // OAuth also requires AUTH_COOKIE_SECRET and each provider's client ID and
+  // secret. Exact names and rotation procedure live in ../DEPLOY.md.
+  // Portfolio discovery optionally uses a read-only GitHub App. Configure
+  // GITHUB_APP_ID and secret GITHUB_APP_PRIVATE_KEY together with Wrangler's
+  // atomic `secret bulk` flow in ../DEPLOY.md. Leave both absent for public API
+  // discovery; setting only one fails closed.
+  // The values below are non-secret tuning knobs. They're generous because a
+  // session costs ~nothing now (no container) — just a DO holding a WebSocket.
+  "vars": {
+    "IDLE_KILL_MS": "120000",        // 2 min of no input → close
+    "HARD_MAX_MS": "600000",         // 10 min wall-clock cap → close
+    "NATIVE_HARD_MAX_MS": "300000",  // native shell wall-clock cap: 5 min
+    "NATIVE_ENABLED": "true",        // deploy-time kill switch; false routes native requests to edge
+    "NATIVE_CONCURRENCY_CAP": "25",  // soft cap; platform hard max remains 30
+    "NATIVE_PER_IP_CAP": "1",        // active native shell per source IP
+    "NATIVE_RATE_LIMIT_PER_MIN": "2",// native launches per IP per minute
+    "NATIVE_PER_ACCOUNT_CAP": "1",   // active native shell per provider identity
+    "NATIVE_LAUNCHES_PER_HOUR": "6", // rolling native launches per identity
+    "NATIVE_DAILY_MS": "1800000",    // 30 native minutes per identity per UTC day
+    "NATIVE_STARTUP_TIMEOUT_MS": "8000",
+    "NATIVE_CIRCUIT_FAILURE_THRESHOLD": "3",
+    "NATIVE_CIRCUIT_WINDOW_MS": "60000",
+    "NATIVE_CIRCUIT_OPEN_MS": "60000",
+    "GLOBAL_CONCURRENCY_CAP": "100", // live sessions allowed at once, globally
+    "RATE_LIMIT_PER_MIN": "10",      // new sessions per IP per 60s window
+    "SESSION_TTL_MS": "30000",       // session-token validity after minting
+    "ALLOWED_ORIGINS": "https://phux.sh"
+  }
+}

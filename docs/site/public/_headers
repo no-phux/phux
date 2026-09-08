@@ -1,0 +1,9 @@
+/embed
+  Content-Security-Policy: frame-ancestors https://phall.io
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff
+
+/embed.html
+  Content-Security-Policy: frame-ancestors https://phall.io
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff

@@ -1,0 +1,73 @@
+---
+import "../styles/global.css";
+import Head from "../components/Head.astro";
+import { SITE, NAV } from "../lib/site";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = `${SITE.name} — ${SITE.tagline}`,
+  description = SITE.description,
+} = Astro.props;
+
+const path = Astro.url.pathname;
+---
+
+<!doctype html>
+<html lang="en" data-design={SITE.designMode}>
+  <head>
+    <Head title={title} description={description} type="website" />
+  </head>
+  <body>
+    <a class="skip" href="#main">skip to content</a>
+    <header class="wrap">
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="brand" href="/"><b aria-hidden="true">◆</b> phux</a>
+        <span class="nav-state"><i></i> control plane / online</span>
+        <div class="links">
+          {
+            NAV.map((item) => (
+              <a
+                href={item.href}
+                aria-current={
+                  !("external" in item && item.external) && path.startsWith(item.href)
+                    ? "page"
+                    : undefined
+                }
+                {...("external" in item && item.external
+                  ? { target: "_blank", rel: "noopener" }
+                  : {})}
+              >
+                {item.label}
+              </a>
+            ))
+          }
+        </div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="wrap">
+      <div class="foot">
+        <span class="dim">phux · pre-alpha · MIT/Apache-2.0</span>
+        <a href={SITE.github} target="_blank" rel="noopener">source</a>
+        <a href="/wire">the wire</a>
+        <span class="sp dim">© 2026 Phil Hall</span>
+      </div>
+    </footer>
+
+    <script>
+      console.log(
+        "%c phux %c / terminal control plane",
+        "color:#07080b;background:#7aa2f7;font-weight:700;padding:2px 6px",
+        "color:#565f89",
+      );
+    </script>
+  </body>
+</html>

@@ -1,0 +1,100 @@
+name: site-deploy-worker
+
+# Deploy the live-demo Worker (docs/site/worker): edge fallback DO + native
+# container image. The built phux-edge WASM is committed, so no Rust toolchain
+# is needed in CI.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/site/worker/**"
+      - "docs/site/edge/**"
+      - "docs/site/package.json"
+      - "docs/site/bun.lock"
+      - "docs/site/scripts/phux-wire.ts"
+      - "docs/site/scripts/smoke-native.ts"
+      - ".github/workflows/site-deploy-worker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: site-deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: docs/site
+        run: bun install --frozen-lockfile
+
+      - name: Validate Worker
+        working-directory: docs/site
+        run: |
+          bun run test
+          bun run worker:check
+          bun run worker:dry-run
+
+      - name: Capture current Worker version
+        id: previous
+        working-directory: docs/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          previous="$(bunx wrangler versions list --cwd worker --json | jq -r '.[0].id // empty')"
+          echo "version=$previous" >> "$GITHUB_OUTPUT"
+          echo "Previous Worker version: \`$previous\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy Worker + Durable Objects
+        working-directory: docs/site
+        run: bun run worker:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Wait for container rollout
+        working-directory: docs/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          for _ in {1..30}; do
+            info="$(bunx wrangler containers info a032bc35-604a-4f1e-93a6-aad2aed206cf)"
+            if ! jq -e 'has("active_rollout_id")' <<<"$info" >/dev/null; then
+              echo "container_rollout ready=true"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "container_rollout timeout=true" >&2
+          exit 1
+
+      - name: Smoke native and graceful fallback
+        working-directory: docs/site
+        run: |
+          # A newly attached custom domain can lag the Worker deployment in
+          # public DNS. Do not mistake that propagation window for a runtime
+          # or WebSocket failure.
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error https://shell.phux.sh/healthz >/dev/null; then
+              bun run worker:smoke-fallback
+              exit 0
+            fi
+            echo "Waiting for custom-domain DNS (${attempt}/30)"
+            sleep 10
+          done
+          echo "shell.phux.sh did not become healthy after five minutes" >&2
+          exit 1
+        env:
+          PHUX_SYNTHETIC_TOKEN: ${{ secrets.PHUX_SYNTHETIC_TOKEN }}
