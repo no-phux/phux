@@ -326,9 +326,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "[USER@]HOST[:PORT]", conflicts_with_all = ["quic", "ws"])]
         remote: Option<String>,
 
-        /// Pair `--remote` from a `phux://connect?...` link instead of over
-        /// ssh — the same link `phux pair` prints and `phux pair --qr`
-        /// renders. Quote it: it contains `&`.
+        /// Pair `--remote` from a `https://phux.phall.io/connect?...` link
+        /// (or its `phux://connect?...` spelling) instead of over ssh — the
+        /// same link `phux pair` prints and `phux pair --qr` renders. Quote
+        /// it: it contains `&`.
         #[arg(long, value_name = "LINK", requires = "remote")]
         code: Option<String>,
 
@@ -1493,8 +1494,8 @@ pub(crate) enum Command {
         cert: Option<std::path::PathBuf>,
 
         /// Also render the pairing payload as a scannable QR code. The QR
-        /// encodes the same `phux://connect` one-tap link printed as text,
-        /// so a phone can pair by scanning instead of typing. Needs a server
+        /// encodes the same `https://phux.phall.io/connect` one-tap link
+        /// printed as text, so a phone can pair by scanning instead of typing. Needs a server
         /// address: pass `--host`, or let it fall back to a detected overlay
         /// address plus the `PHUX_WS_ADDR` port.
         #[arg(long)]

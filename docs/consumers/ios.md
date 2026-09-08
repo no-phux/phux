@@ -53,11 +53,24 @@ link's shape** ([ADR-0031]); consumers accept it. `build_connect_link` in
 `crates/phux/src/commands/pair.rs` emits:
 
 ```
-phux://connect?url=<ws(s)-url>[&name=<pct-encoded>][&fp=<sha256>]&token=<hex>
+https://phux.phall.io/connect?url=<ws(s)-url>[&name=<pct-encoded>][&fp=<sha256>]&token=<hex>
 ```
 
 with these properties a consumer may rely on:
 
+- The link is an https Universal Link, not a custom scheme, because it
+  carries a bearer token. A custom scheme is not exclusive on iOS — any
+  installed app may register it, and which one receives the open is
+  undefined — so it would hand the token to whichever app wins. A Universal
+  Link opens only in the app that proves ownership of `phux.phall.io`
+  (`applinks:phux.phall.io` in the associated-domains entitlement).
+- The same link is also printed in its custom-scheme spelling,
+  `phux://connect?<identical query>`, on a second line beneath the https
+  form, for app builds without the entitlement (which cannot claim the https
+  link and would open it in a browser). A consumer must accept **both**
+  prefixes and treat them identically; the query grammar below is shared.
+  The QR encodes the https form only. This second line goes away once the
+  App Store build carrying the entitlement is the floor.
 - `url` is mandatory and always first. Without it no link is printed at all.
 - `token` is **always present and always last**. It is appended
   unconditionally — there is no token-free variant of this link, and
@@ -82,9 +95,10 @@ against that exposure and loses pairing entirely.
 
 The correct posture, and the one phux-mobile implements, is to accept the
 token and require explicit user confirmation before it enters the device's
-saved-host list. Any app can open a `phux://` URL, so the confirmation is what
-distinguishes "I am pairing this device" from "a web page sent me a host to
-trust". Refusing the credential never addressed that second case at all — an
+saved-host list. Any web page can send the app a Universal Link, and any app
+can open the `phux://` spelling, so the confirmation is what distinguishes
+"I am pairing this device" from "a web page sent me a host to trust".
+Refusing the credential never addressed that second case at all — an
 attacker's own server does not need a token to accept a client.
 
 ### Failure modes worth handling

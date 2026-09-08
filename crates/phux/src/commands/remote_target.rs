@@ -14,8 +14,8 @@
 //! 1. **A registered host.** The steady state, and the whole point: a
 //!    `[[remote]]` entry supplies the endpoint, the pin, and the token, so
 //!    the dial is a direct QUIC connection with no ssh anywhere in it.
-//! 2. **A pasted connect code.** `--code 'phux://connect?...'` — the same
-//!    artifact `phux pair --qr` renders for a phone. Registers the host from
+//! 2. **A pasted connect code.** `--code 'https://phux.phall.io/connect?...'`
+//!    — the same artifact `phux pair --qr` renders for a phone. Registers the host from
 //!    the link and dials. No ssh, no shell on the far end.
 //! 3. **A one-time ssh bootstrap.** No entry and no code: run `phux pair`
 //!    on the far end over the operator's existing ssh trust, register what
@@ -269,7 +269,8 @@ pub(crate) struct RemoteAttach<'a> {
     pub(crate) target: RemoteTarget,
     /// A session name to request on arrival, overriding the entry's own.
     pub(crate) session: Option<String>,
-    /// A pasted `phux://connect?...` code, for the ssh-free cold path.
+    /// A pasted `https://phux.phall.io/connect?...` code (or its
+    /// `phux://connect?...` spelling), for the ssh-free cold path.
     pub(crate) code: Option<&'a str>,
     /// Whether a cold target may bootstrap over ssh.
     pub(crate) bootstrap: Bootstrap,
@@ -316,8 +317,8 @@ fn resolve(args: &RemoteAttach<'_>) -> Result<RemoteEntry, String> {
     register_over_ssh(target)
 }
 
-/// Register a host from a pasted `phux://connect?...` link and return the
-/// entry to dial.
+/// Register a host from a pasted connect link and return the entry to
+/// dial.
 fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, String> {
     let link = pair::parse_connect_link(code).map_err(|err| format!("phux: --code: {err}"))?;
 
@@ -451,7 +452,7 @@ fn unregistered_message(target: &RemoteTarget, ssh_error: Option<&str>) -> Strin
     let _ = write!(
         message,
         "\nphux: to pair without ssh, run `phux pair` on {} and paste the link:\
-         \nphux:   phux --remote {name} --code '<phux://connect?...>'\
+         \nphux:   phux --remote {name} --code '<https://phux.phall.io/connect?...>'\
          \nphux: or, with ssh access, `phux host enroll {name}` (also installs a service there)",
         target.host
     );

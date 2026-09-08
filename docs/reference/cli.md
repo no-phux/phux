@@ -703,7 +703,7 @@ Options:
           PORT defaults to 8788, the port a server auto-binds on its overlay address. The `user@` half names the ssh destination used to pair; it is not sent on the wire.
 
       --code <LINK>
-          Pair `--remote` from a `phux://connect?...` link instead of over ssh — the same link `phux pair` prints and `phux pair --qr` renders. Quote it: it contains `&`
+          Pair `--remote` from a `https://phux.phall.io/connect?...` link (or its `phux://connect?...` spelling) instead of over ssh — the same link `phux pair` prints and `phux pair --qr` renders. Quote it: it contains `&`
 
       --no-enroll
           Never shell out to ssh for `--remote`. An unregistered host is refused with its remedies named instead of paired
@@ -1510,7 +1510,7 @@ Options:
           Server certificate PEM, used to print the pairing fingerprint. Defaults to `PHUX_WS_TLS_CERT`
 
       --qr
-          Also render the pairing payload as a scannable QR code. The QR encodes the same `phux://connect` one-tap link printed as text, so a phone can pair by scanning instead of typing. Needs a server address: pass `--host`, or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR` port
+          Also render the pairing payload as a scannable QR code. The QR encodes the same `https://phux.phall.io/connect` one-tap link printed as text, so a phone can pair by scanning instead of typing. Needs a server address: pass `--host`, or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR` port
 
       --host <HOST:PORT>
           Server address (`host:port`, or a full `ws://`/`wss://` URL) to embed in the connect link so it is fully self-contained. Omitted: derived from the detected overlay address and the `PHUX_WS_ADDR` port when possible; otherwise no link is printed (the device enters the address itself)

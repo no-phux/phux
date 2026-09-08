@@ -123,7 +123,11 @@ fn socket_and_remote_cannot_combine_in_either_position() {
 /// `--code` and `--no-enroll` modify `--remote` and mean nothing without it.
 #[test]
 fn code_and_no_enroll_require_remote() {
-    let (code, stderr) = run(&["attach", "--code", "phux://connect?url=wss://x&token=t"]);
+    let (code, stderr) = run(&[
+        "attach",
+        "--code",
+        "https://phux.phall.io/connect?url=wss://x&token=t",
+    ]);
     assert_eq!(code, 2, "stderr={stderr}");
     assert!(stderr.contains("--remote"), "got: {stderr}");
 
