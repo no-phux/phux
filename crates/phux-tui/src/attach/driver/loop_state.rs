@@ -38,31 +38,28 @@ use crate::attach::input_dispatch::{
 use crate::attach::onboarding::{AttachClaim, AttachMoment};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::paint::{
-    SidebarEdge, SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place,
-    paint_full_frame, sidebar_reservation,
+    SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place, paint_full_frame,
+    sidebar_reservation,
 };
 use crate::attach::pane_state::{
     AttentionNavigation, PaneSlot, VcsIndex, reanchor_predict_to_pane,
 };
-use crate::attach::plugin_actions::{self, PluginActionEntry, PluginRunResult};
-use crate::attach::plugin_panes::{self, PluginPaneEntry};
+use crate::attach::plugin_actions::{self, PluginRunResult};
 use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
 use crate::attach::server_frame::{AgentMetaIndex, FrameOutcome, handle_server_frame};
 use crate::attach::tty_input::TtyInput;
 use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
-use crate::render::ChromeBreakpoints;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::{OverlayState, ToastOverlay};
+use crate::settings::TuiSettings;
 use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
-use phux_config::SidebarPosition;
 
 use super::chrome::{mark_focused_seen, peer_inputs, refresh_window_chrome};
 use super::config_ui::{
-    apply_initial_notice, build_resolver_from, build_status_bar_painter, handle_config_reload,
-    keybind_error_line, push_which_key_overlay, update_which_key_deadline,
+    apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
     LoopExit, detached_loop_exit, finish_onboarding_claim, finish_return_onboarding_after_paint,
@@ -201,150 +198,6 @@ impl PeerCaches {
             &self.foreign_attention,
         )
     }
-}
-
-/// Everything the driver derives from the on-disk config at attach time.
-///
-/// Loaded once, before any user input can reach the loop: opening a
-/// discovery surface must never perform config I/O under the user's
-/// fingers. The in-place reload (phux-foz.5) swaps the same pieces.
-struct ConfigSeed {
-    /// phux-nz4.5: status-bar painter, or `None` when the config named no bar.
-    status_bar: Option<StatusBarPainter>,
-    /// phux-r82.5: palette rows + manifest `keys` merged into the prefix table.
-    plugin_actions: Vec<PluginActionEntry>,
-    /// phux-r82.7: the hostable pane entries committing `plugin-pane`.
-    plugin_panes: Vec<PluginPaneEntry>,
-    /// The plugin-merged keybindings snapshot.
-    keybindings: Option<phux_config::KeybindingsCfg>,
-    /// phux-4li.5: the keybind resolver built from that snapshot.
-    resolver: Option<phux_config::keybind::Resolver>,
-    /// phux-ahv.4: single source of truth for chrome + overlay colors.
-    theme: crate::render::Theme,
-    /// `[sidebar] enabled` — the FIRST attach's seed for the runtime toggle.
-    sidebar_enabled: bool,
-    /// `[sidebar] width`, in columns.
-    sidebar_width: u16,
-    /// `[sidebar] position`, folded to the reservation's edge.
-    sidebar_edge: SidebarEdge,
-    /// phux-huhi: the responsive-chrome thresholds.
-    chrome_breakpoints: ChromeBreakpoints,
-    /// The global `mouse` gate the `RawModeGuard` install used.
-    mouse_capture_cfg: bool,
-    /// phux-foz.2: whether the which-key popup is armed at all.
-    which_key_enabled: bool,
-    /// How long the resolver may sit at a prefix before the popup shows.
-    which_key_delay: Duration,
-}
-
-impl ConfigSeed {
-    /// Load the layered config and derive every driver-visible piece of it.
-    ///
-    /// Load failures fall back to defaults so a malformed config never blocks
-    /// attach — the user still gets a working pane mirror.
-    fn load() -> Self {
-        let loaded_cfg = phux_config::loader::load().ok();
-        let cfg = loaded_cfg.as_ref();
-        let (plugin_actions, plugin_panes) = load_plugin_entries(cfg);
-        let keybindings = cfg.map(|c| merged_keybindings(c, &plugin_actions));
-        let mut status_bar = build_status_bar_painter();
-        let resolver = build_lenient_resolver(keybindings.as_ref(), &mut status_bar);
-        let theme = cfg.map_or_else(crate::render::Theme::default, |c| {
-            crate::render::Theme::from_cfg(&c.theme)
-        });
-        // phux-foz.1: the attention hint's chip color comes from the theme's
-        // `attention` slot rather than a hardcoded SGR in the painter.
-        if let Some(sb) = status_bar.as_mut() {
-            sb.set_attention_color(theme.attention);
-        }
-        let sidebar_cfg = cfg.map(|c| c.sidebar.clone());
-        Self {
-            status_bar,
-            plugin_actions,
-            plugin_panes,
-            which_key_enabled: keybindings.as_ref().is_some_and(|kb| kb.which_key),
-            which_key_delay: Duration::from_millis(
-                keybindings.as_ref().map_or(600, |kb| kb.which_key_delay_ms),
-            ),
-            keybindings,
-            resolver,
-            theme,
-            sidebar_enabled: sidebar_cfg.as_ref().is_some_and(|c| c.enabled),
-            sidebar_width: sidebar_cfg.as_ref().map_or(0, |c| c.width),
-            sidebar_edge: match sidebar_cfg.as_ref().map(|c| c.position) {
-                Some(SidebarPosition::Right) => SidebarEdge::Right,
-                _ => SidebarEdge::Left,
-            },
-            chrome_breakpoints: cfg.map_or_else(ChromeBreakpoints::default, |c| {
-                ChromeBreakpoints::from_cfg(&c.chrome)
-            }),
-            mouse_capture_cfg: cfg.is_none_or(|c| c.defaults.mouse),
-        }
-    }
-}
-
-/// phux-r82.5 / phux-r82.7: snapshot the enabled plugins' manifests once at
-/// driver start (same policy as the keybindings snapshot — no config I/O
-/// under user fingers), then derive both the action entries (palette rows +
-/// manifest `keys` merged into the prefix table, user config winning every
-/// conflict) and the hostable pane entries (palette rows committing
-/// `plugin-pane`; placement `split`/`tab`/`zoomed` — overlay is deferred and
-/// dropped with a warning). A broken manifest is skipped with a warning;
-/// manifests resolve relative to the canonical config path, the same
-/// resolution `phux config run` uses.
-fn load_plugin_entries(
-    cfg: Option<&phux_config::Config>,
-) -> (Vec<PluginActionEntry>, Vec<PluginPaneEntry>) {
-    let manifests: Vec<phux_config::plugin::PluginManifest> = cfg
-        .map(|cfg| {
-            phux_config::plugin::load_enabled_manifests(
-                &phux_config::loader::config_path(),
-                &cfg.plugins,
-            )
-        })
-        .unwrap_or_default();
-    (
-        plugin_actions::entries_from_manifests(&manifests),
-        plugin_panes::entries_from_manifests(&manifests),
-    )
-}
-
-/// Cache the keybindings so opening discovery surfaces never performs config
-/// I/O under user fingers, with the plugin manifests' `keys` merged in.
-fn merged_keybindings(
-    cfg: &phux_config::Config,
-    plugin_actions: &[PluginActionEntry],
-) -> phux_config::KeybindingsCfg {
-    let mut kb = cfg.keybindings.clone();
-    plugin_actions::merge_plugin_bindings(&mut kb, plugin_actions);
-    kb
-}
-
-/// phux-4li.5: build the keybind resolver from the plugin-merged snapshot so
-/// a manifest `keys` chord resolves exactly like a user binding. The resolver
-/// consumes `InputEvent::Key` events *before* they would be forwarded to the
-/// focused pane; a chord that resolves to an action mutates the active window
-/// in the driver and never reaches the server's input pipe.
-///
-/// phux-i0e8.3.4: the build is lenient — whenever a snapshot exists a
-/// resolver exists, and each diagnostic disables exactly one binding.
-/// Diagnostics surface as a status-bar error line naming the chord (unless
-/// the bar is already showing a config error, which subsumes any keybinding
-/// problem).
-fn build_lenient_resolver(
-    keybindings: Option<&phux_config::KeybindingsCfg>,
-    status_bar: &mut Option<StatusBarPainter>,
-) -> Option<phux_config::keybind::Resolver> {
-    let kb = keybindings?;
-    let (built, diags) = build_resolver_from(kb);
-    if !diags.is_empty()
-        && !status_bar
-            .as_ref()
-            .is_some_and(StatusBarPainter::is_error_line)
-    {
-        *status_bar = Some(StatusBarPainter::error_line(keybind_error_line(&diags)));
-    }
-    Some(built)
 }
 
 /// A `sleep_until` future for an armed deadline, or a never-resolving future
@@ -542,26 +395,18 @@ pub(super) struct SessionLoop {
     /// phux-p4vp: pane cwd + branch memo behind the sidebar's branch line.
     /// Seeded from every ATTACHED snapshot; read at chrome-refresh time.
     vcs: VcsIndex,
-    /// phux-nz4.5: status-bar painter, built from the on-disk config.
-    status_bar: Option<StatusBarPainter>,
-    /// phux-r82.5: plugin palette rows, swapped by an in-place config reload.
-    plugin_actions: Vec<PluginActionEntry>,
-    /// phux-r82.7: hostable plugin panes, swapped alongside the actions.
-    plugin_panes: Vec<PluginPaneEntry>,
+    /// phux-u1tq.2: everything derived from the on-disk config -- the
+    /// keybindings snapshot and resolver, theme, chrome breakpoints, status
+    /// bar, plugin rows, which-key knobs, sidebar geometry, mouse gate.
+    /// Built once by `TuiSettings::load_tolerant` before any input can reach
+    /// the loop; the reloadable subset is swapped whole by `reload_config`.
+    settings: TuiSettings,
     /// The plugin-events channel's sender: spawned plugin-action tasks report
     /// completion here. Lent to `DispatchCtx` each batch.
     plugin_tx: tokio::sync::mpsc::UnboundedSender<PluginRunResult>,
     /// The receiving half of the same channel; the `plugin_rx` select arm
     /// toasts failures.
     plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
-    /// The plugin-merged keybindings snapshot the action finder reads.
-    keybindings_snapshot: Option<phux_config::KeybindingsCfg>,
-    /// phux-4li.5: the keybind resolver built from that snapshot.
-    resolver: Option<phux_config::keybind::Resolver>,
-    /// phux-ahv.4: single source of truth for chrome + overlay colors,
-    /// owned alongside the keybindings snapshot and threaded into the
-    /// overlay render path via `DispatchCtx`.
-    theme: crate::render::Theme,
     /// The window-strip painter, themed like the status bar. Fed
     /// `window_infos` from the same snapshot that drives the tab strip;
     /// caches so an unchanged repaint emits nothing.
@@ -589,23 +434,10 @@ pub(super) struct SessionLoop {
     /// handling (native selection etc.) returns for that pane alone while
     /// sibling panes keep drag-to-resize. Client-local; nothing on the wire.
     mouse_optout: HashSet<TerminalId>,
-    /// Mirrors the global `mouse` gate the `RawModeGuard` install used: with
-    /// `mouse = false` capture stays off unconditionally.
-    mouse_capture_cfg: bool,
     /// phux-4h5a: the window sidebar's runtime on/off state, flipped by
     /// `toggle-sidebar`. Only the toggle is carried across a session switch:
     /// the strip's width and edge stay pure config, re-derived per entry.
     sidebar_enabled: bool,
-    /// The configured strip width, in columns.
-    sidebar_width: u16,
-    /// The edge the strip docks to.
-    sidebar_edge: SidebarEdge,
-    /// phux-huhi: the responsive-chrome thresholds, snapshotted from
-    /// `[chrome]` beside the theme and the sidebar geometry. One value for the
-    /// whole attach: the sidebar-yield fold, the `toggle-sidebar` refusal in
-    /// `input_dispatch`, and every overlay's `centered_panel` read this, so
-    /// "compact" cannot mean two things on the same frame.
-    chrome_breakpoints: ChromeBreakpoints,
     /// Track the current outer-terminal viewport so the painter knows
     /// which row is "bottom". Initialized to a sensible default and
     /// updated by SIGWINCH; the server doesn't drive client-side
@@ -676,10 +508,6 @@ pub(super) struct SessionLoop {
     /// frame when the window expires. See [`PaintPacer`] for why the coalescing
     /// drain alone was not enough.
     pacer: PaintPacer,
-    /// phux-foz.2: whether the which-key popup is armed at all.
-    which_key_enabled: bool,
-    /// How long the resolver may sit at a prefix before the popup shows.
-    which_key_delay: Duration,
     /// phux-foz.2: which-key popup arming. When the resolver sits at the
     /// pending-prefix state (`<prefix>` pressed, continuation awaited) for
     /// `which_key_delay` without a follow-up chord, the loop pushes a
@@ -728,13 +556,13 @@ impl SessionLoop {
             request_max_bytes: negotiated.limits.max_history_page_bytes(),
             ..HistoryCacheConfig::default()
         };
-        let cfg = ConfigSeed::load();
+        let settings = TuiSettings::load_tolerant();
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
         // phux-huhi: stamp the configured breakpoints once, before anything
         // can be pushed. `OverlayState::push` hands them to each overlay from
         // here, so no overlay construction site names a threshold.
         let mut overlays = OverlayState::new();
-        overlays.set_breakpoints(cfg.chrome_breakpoints);
+        overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
         Ok(Self {
@@ -768,24 +596,17 @@ impl SessionLoop {
             expected_closes: HashSet::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
-            sidebar_painter: SidebarPainter::new(cfg.theme),
-            status_bar: cfg.status_bar,
-            plugin_actions: cfg.plugin_actions,
-            plugin_panes: cfg.plugin_panes,
+            sidebar_painter: SidebarPainter::new(settings.theme),
             plugin_tx,
             plugin_rx,
-            keybindings_snapshot: cfg.keybindings,
-            resolver: cfg.resolver,
-            theme: cfg.theme,
             overlays,
             attention_navigation: AttentionNavigation::default(),
             drag: None,
             mouse_optout: HashSet::new(),
-            mouse_capture_cfg: cfg.mouse_capture_cfg,
-            sidebar_enabled: seed_sidebar_enabled(carried_sidebar_enabled, cfg.sidebar_enabled),
-            sidebar_width: cfg.sidebar_width,
-            sidebar_edge: cfg.sidebar_edge,
-            chrome_breakpoints: cfg.chrome_breakpoints,
+            sidebar_enabled: seed_sidebar_enabled(
+                carried_sidebar_enabled,
+                settings.sidebar.enabled,
+            ),
             viewport_dims,
             cell_px_dims,
             session_name: String::new(),
@@ -808,18 +629,18 @@ impl SessionLoop {
             detach_pending: false,
             esc_deadline: None,
             pacer: PaintPacer::default(),
-            which_key_enabled: cfg.which_key_enabled,
-            which_key_delay: cfg.which_key_delay,
             which_key_deadline: None,
             switch_request: None,
             reload_request: false,
             onboarding_claim,
+            settings,
         })
     }
 
     /// The `exec` widget feeds the driver spawns bounded interval runners for.
     pub(super) fn exec_feeds(&self) -> Vec<phux_config::widget::ExecFeed> {
-        self.status_bar
+        self.settings
+            .status_bar
             .as_ref()
             .map(StatusBarPainter::exec_feeds)
             .unwrap_or_default()
@@ -836,9 +657,9 @@ impl SessionLoop {
         sidebar_reservation(
             self.viewport_dims.0,
             self.sidebar_enabled,
-            self.sidebar_width,
-            self.sidebar_edge,
-            self.chrome_breakpoints.min_pane_cols,
+            self.settings.sidebar.width,
+            self.settings.sidebar.edge,
+            self.settings.chrome.min_pane_cols,
         )
     }
 
@@ -846,7 +667,10 @@ impl SessionLoop {
     fn content(&self, sidebar: Option<SidebarReservation>) -> crate::layout::Rect {
         content_rect(
             self.viewport_dims,
-            self.status_bar.as_ref().map(StatusBarPainter::position),
+            self.settings
+                .status_bar
+                .as_ref()
+                .map(StatusBarPainter::position),
             sidebar,
         )
     }
@@ -854,7 +678,7 @@ impl SessionLoop {
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
     fn refresh_chrome(&mut self) -> bool {
         refresh_window_chrome(
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             &mut self.sidebar_painter,
             &self.workspace,
             &self.panes,
@@ -871,7 +695,7 @@ impl SessionLoop {
     fn finish_paint(&mut self, painted: StatusBarPaint) {
         finish_return_onboarding_after_paint(
             &mut self.onboarding_claim,
-            self.status_bar.as_ref(),
+            self.settings.status_bar.as_ref(),
             painted,
         );
     }
@@ -912,11 +736,11 @@ impl SessionLoop {
                 &self.panes,
                 self.focused_pane.as_ref(),
                 self.viewport_dims,
-                self.status_bar.as_mut(),
+                self.settings.status_bar.as_mut(),
                 sidebar,
                 Some(&mut self.sidebar_painter),
                 &self.session_name,
-                &self.theme,
+                &self.settings.theme,
             ),
             RepaintLevel::Full => paint_full_frame(
                 out,
@@ -925,11 +749,11 @@ impl SessionLoop {
                 &self.engine_kernel,
                 self.focused_pane.as_ref(),
                 self.viewport_dims,
-                self.status_bar.as_mut(),
+                self.settings.status_bar.as_mut(),
                 sidebar,
                 Some(&mut self.sidebar_painter),
                 &self.session_name,
-                &self.theme,
+                &self.settings.theme,
             ),
         })
     }
@@ -949,11 +773,11 @@ impl SessionLoop {
             self.focused_pane.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             sidebar,
             Some(&mut self.sidebar_painter),
             &self.session_name,
-            &self.theme,
+            &self.settings.theme,
         );
         self.finish_paint(painted);
     }
@@ -967,16 +791,8 @@ impl SessionLoop {
     ) {
         let painted = handle_config_reload(
             out,
-            &mut self.keybindings_snapshot,
-            &mut self.resolver,
-            &mut self.theme,
-            &mut self.chrome_breakpoints,
-            &mut self.status_bar,
+            &mut self.settings,
             &mut self.sidebar_painter,
-            &mut self.plugin_actions,
-            &mut self.plugin_panes,
-            &mut self.which_key_enabled,
-            &mut self.which_key_delay,
             &mut self.overlays,
             &self.workspace,
             &mut self.panes,
@@ -1043,7 +859,7 @@ impl SessionLoop {
             &mut self.zoomed,
             &mut self.session_name,
             self.peers.focused_session,
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             sidebar,
             self.viewport_dims,
             &mut self.predict,
@@ -1248,7 +1064,7 @@ impl SessionLoop {
                 continue;
             }
             let line = report.notice_line();
-            if let Some(sb) = self.status_bar.as_mut() {
+            if let Some(sb) = self.settings.status_bar.as_mut() {
                 let _ = sb.set_notice(crate::render::chrome::status_bar::Notice::warn(line), now);
             } else {
                 tracing::warn!(line = %line, "acknowledged paste stranded");
@@ -1289,7 +1105,7 @@ impl SessionLoop {
                 continue;
             }
             let line = report.notice_line();
-            let shown = self.status_bar.as_mut().is_some_and(|sb| {
+            let shown = self.settings.status_bar.as_mut().is_some_and(|sb| {
                 sb.set_notice(
                     crate::render::chrome::status_bar::Notice::warn(line.clone()),
                     now,
@@ -1318,7 +1134,8 @@ impl SessionLoop {
         let initial_notice = initial_notice.or_else(|| {
             return_notice_available.then(|| Notice::info(crate::attach::onboarding::RETURN_NOTICE))
         });
-        let notice_accepted = apply_initial_notice(self.status_bar.as_mut(), initial_notice);
+        let notice_accepted =
+            apply_initial_notice(self.settings.status_bar.as_mut(), initial_notice);
         if moment == AttachMoment::Return && (!return_notice_available || !notice_accepted) {
             self.onboarding_claim.take();
         }
@@ -1338,8 +1155,8 @@ impl SessionLoop {
         }
         self.overlays.push(Box::new(ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(self.keybindings_snapshot.as_ref()),
-            &self.theme,
+            crate::attach::onboarding::hint_lines(self.settings.keybindings.as_ref()),
+            &self.settings.theme,
         )));
         paint_active_overlay(
             out,
@@ -1350,11 +1167,11 @@ impl SessionLoop {
             self.focused_pane.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             sidebar,
             Some(&mut self.sidebar_painter),
             &self.session_name,
-            &self.theme,
+            &self.settings.theme,
         );
         let paint_accepted = out.flush().is_ok();
         finish_onboarding_claim(self.onboarding_claim.take(), paint_accepted);
@@ -1395,7 +1212,7 @@ impl SessionLoop {
         // navigation, spawn/close reflows). `sync_mouse_capture` is a no-op
         // when nothing changed, so the steady-state cost is one bool compare.
         let want_capture = desired_mouse_capture(
-            self.mouse_capture_cfg,
+            self.settings.mouse_capture,
             self.focused_pane.as_ref(),
             &self.mouse_optout,
         );
@@ -1501,13 +1318,14 @@ impl SessionLoop {
         // popup is suppressed without any explicit cancellation call.
         update_which_key_deadline(
             &mut self.which_key_deadline,
-            self.resolver
+            self.settings
+                .resolver
                 .as_ref()
                 .is_some_and(phux_config::keybind::Resolver::pending_at_prefix),
-            self.which_key_enabled,
+            self.settings.which_key.enabled,
             self.overlays.is_active(),
             tokio::time::Instant::now(),
-            self.which_key_delay,
+            self.settings.which_key.delay,
         );
         let which_key_sleep = sleep_until_or_pending(self.which_key_deadline);
         // phux-nz4.5: per-bar repaint cadence. Driven by the slowest
@@ -1515,7 +1333,8 @@ impl SessionLoop {
         // `time` widget). Empty bar ⇒ `Pending` forever so this select!
         // arm never fires.
         let status_tick = sleep_for_or_pending(
-            self.status_bar
+            self.settings
+                .status_bar
                 .as_ref()
                 .and_then(StatusBarPainter::min_poll_interval),
         );
@@ -1816,7 +1635,7 @@ impl SessionLoop {
         };
         let mut ctx = DispatchCtx {
             engine_kernel: &mut self.engine_kernel,
-            resolver: self.resolver.as_mut(),
+            resolver: self.settings.resolver.as_mut(),
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,
             viewport: self.viewport_dims,
@@ -1827,8 +1646,8 @@ impl SessionLoop {
             pending_windows: &mut self.pending_windows,
             expected_closes: &mut self.expected_closes,
             overlays: &mut self.overlays,
-            keybindings: self.keybindings_snapshot.as_ref(),
-            theme: &self.theme,
+            keybindings: self.settings.keybindings.as_ref(),
+            theme: &self.settings.theme,
             sessions: &self.peers.sessions,
             foreign_layouts: &self.peers.foreign_layouts,
             foreign_agents: &self.peers.foreign_agents,
@@ -1838,16 +1657,20 @@ impl SessionLoop {
             zoomed: &mut self.zoomed,
             sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
-            sidebar_width: self.sidebar_width,
-            chrome: self.chrome_breakpoints,
+            sidebar_width: self.settings.sidebar.width,
+            chrome: self.settings.chrome,
             sidebar_targets: &sidebar_targets,
-            bar: self.status_bar.as_ref().map(StatusBarPainter::position),
-            status_bar: self.status_bar.as_ref(),
+            bar: self
+                .settings
+                .status_bar
+                .as_ref()
+                .map(StatusBarPainter::position),
+            status_bar: self.settings.status_bar.as_ref(),
             drag: &mut self.drag,
             mouse_optout: &mut self.mouse_optout,
             attention_navigation: &mut self.attention_navigation,
-            plugin_actions: &self.plugin_actions,
-            plugin_panes: &self.plugin_panes,
+            plugin_actions: &self.settings.plugin_actions,
+            plugin_panes: &self.settings.plugin_panes,
             plugin_tx: Some(&self.plugin_tx),
             reload_request: &mut self.reload_request,
             agent_meta: &self.agent_meta.records,
@@ -2371,7 +2194,7 @@ impl SessionLoop {
         let now = std::time::Instant::now();
         let mut notice_shown = false;
         for notice in notices {
-            if let Some(sb) = self.status_bar.as_mut() {
+            if let Some(sb) = self.settings.status_bar.as_mut() {
                 notice_shown |= sb.set_notice(notice, now);
             } else {
                 tracing::info!(
@@ -2742,7 +2565,7 @@ impl SessionLoop {
                 workspace: &self.workspace,
                 zoomed: self.zoomed.as_ref(),
                 focused_pane: self.focused_pane.as_ref(),
-                status_bar: self.status_bar.as_mut(),
+                status_bar: self.settings.status_bar.as_mut(),
                 sidebar,
                 viewport_dims: self.viewport_dims,
                 session_name: &self.session_name,
@@ -2769,11 +2592,11 @@ impl SessionLoop {
             self.focused_pane.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             sidebar,
             &mut self.sidebar_painter,
             &self.session_name,
-            &self.theme,
+            &self.settings.theme,
             &self.peers.sessions,
             self.peers.focused_session,
             &self.agent_meta.records,
@@ -2821,9 +2644,9 @@ impl SessionLoop {
         self.which_key_deadline = None;
         if push_which_key_overlay(
             &mut self.overlays,
-            self.resolver.as_ref(),
-            self.keybindings_snapshot.as_ref(),
-            &self.theme,
+            self.settings.resolver.as_ref(),
+            self.settings.keybindings.as_ref(),
+            &self.settings.theme,
         ) {
             self.paint_overlay(out, sidebar);
         }
@@ -2911,7 +2734,11 @@ impl SessionLoop {
         if ls.tree.is_none() {
             return Ok(());
         }
-        let bar = self.status_bar.as_ref().map(StatusBarPainter::position);
+        let bar = self
+            .settings
+            .status_bar
+            .as_ref()
+            .map(StatusBarPainter::position);
         // phux-4h5a: size each PTY to the inset content rect (the
         // pane area after the status bar + sidebar reservation),
         // not the full viewport — otherwise an enabled sidebar
@@ -2948,7 +2775,10 @@ impl SessionLoop {
             self.zoomed.as_ref(),
             self.focused_pane.as_ref(),
             self.viewport_dims,
-            self.status_bar.as_ref().map(StatusBarPainter::position),
+            self.settings
+                .status_bar
+                .as_ref()
+                .map(StatusBarPainter::position),
             sidebar,
         );
     }
@@ -2964,7 +2794,7 @@ impl SessionLoop {
         // painter's cache, so the paint below restores the widget row.
         // Runs even while an overlay is up (the bar repaints on
         // overlay dismiss, and a stale notice must not resurface).
-        if let Some(sb) = self.status_bar.as_mut() {
+        if let Some(sb) = self.settings.status_bar.as_mut() {
             let _ = sb.clear_expired_notice(std::time::Instant::now());
         }
         // phux-5ke.4: an overlay above the bar would get
@@ -2995,7 +2825,7 @@ impl SessionLoop {
         // cursor tail, no epilogue, and no flush.
         let painted = crate::attach::paint::close_frame_with_chrome(
             crate::attach::paint::FrameBlock::begin(out),
-            self.status_bar.as_mut(),
+            self.settings.status_bar.as_mut(),
             self.viewport_dims,
             sidebar,
             &self.session_name,
@@ -3050,8 +2880,11 @@ impl SessionLoop {
             "plugin action finished",
         );
         if let Some((title, lines)) = plugin_actions::failure_toast(result) {
-            self.overlays
-                .push(Box::new(ToastOverlay::new(title, lines, &self.theme)));
+            self.overlays.push(Box::new(ToastOverlay::new(
+                title,
+                lines,
+                &self.settings.theme,
+            )));
             self.paint_overlay(out, sidebar);
         }
     }

@@ -993,12 +993,13 @@ pub(super) const fn pane_viewport(outer: (u16, u16), has_status_bar: bool) -> (u
     }
 }
 
-/// Which edge a reserved sidebar strip docks to. Mirrors
-/// [`phux_config::SidebarPosition`]; kept local so `paint`'s geometry doesn't
-/// depend on the config crate's enum directly (the driver maps one to the
-/// other).
+/// Which edge a reserved sidebar strip docks to.
+///
+/// Mirrors [`phux_config::SidebarPosition`]; kept local so `paint`'s geometry
+/// doesn't depend on the config crate's enum directly (`crate::settings`
+/// maps one to the other).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SidebarEdge {
+pub enum SidebarEdge {
     /// Dock on the left; panes tile to its right.
     Left,
     /// Dock on the right; panes tile to its left.

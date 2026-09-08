@@ -46,6 +46,7 @@ use super::session_io::*;
 use super::subscriptions::*;
 use super::viewport::*;
 use crate::attach::pane_state::published_test_state;
+use crate::settings::{build_resolver_from, config_error_line, keybind_error_line};
 use phux_client::layout_ops::LAYOUT_KEY;
 
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
@@ -1304,7 +1305,7 @@ fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
 
     let cfg = phux_config::parse_with_defaults("", std::path::Path::new("/nonexistent/c.toml"))
         .expect("shipped defaults parse");
-    let mut status_bar = crate::attach::reload::compose_status_bar(&cfg, &[])
+    let mut status_bar = crate::settings::compose_status_bar(&cfg, &[])
         .expect("the shipped status lineup must build")
         .expect("the shipped lineup is non-empty");
     status_bar.set_windows(windows.to_vec());

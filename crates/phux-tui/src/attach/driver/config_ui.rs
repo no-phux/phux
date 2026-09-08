@@ -1,6 +1,6 @@
-//! Config-derived driver state: the lenient keybind resolver, the
-//! which-key popup, the status-bar painter build, and the in-place
-//! config reload.
+//! The driver's config-facing seams: the which-key popup, the attach-time
+//! notice, and the in-place config reload. The config-derived state itself
+//! is `crate::settings::TuiSettings` (phux-u1tq.2).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -11,66 +11,15 @@ use phux_protocol::ids::{ClientId, TerminalId};
 
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, paint_full_frame};
 use crate::attach::pane_state::{AttachKernel, PaneSlot, VcsIndex};
-use crate::attach::plugin_actions::PluginActionEntry;
-use crate::attach::plugin_panes;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
-use crate::render::ChromeBreakpoints;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::OverlayState;
+use crate::settings::TuiSettings;
 
 use super::chrome::refresh_window_chrome;
 use super::overlay_paint::paint_active_overlay;
-
-/// phux-4li.5: build a [`phux_config::keybind::Resolver`] from a
-/// keybindings snapshot (post phux-r82.5: the plugin-merged one, so
-/// manifest `keys` chords resolve like user bindings — the merge already
-/// validated each contributed chord, so a plugin can't poison this
-/// build).
-///
-/// phux-i0e8.3.4: the build is **lenient per binding** — a resolver
-/// always comes back, and each diagnostic disables exactly the binding
-/// it names. Before this, one malformed chord failed the whole build and
-/// silently disabled EVERY binding, including `detach`. Diagnostics are
-/// logged here; the caller surfaces them as a visible status-bar error
-/// line ([`keybind_error_line`]). Config reload deliberately stays
-/// all-or-nothing instead (`crate::attach::reload`, docs/consumers/tui.md §4.3).
-pub(super) fn build_resolver_from(
-    kb: &phux_config::KeybindingsCfg,
-) -> (
-    phux_config::keybind::Resolver,
-    Vec<phux_config::keybind::BindingDiagnostic>,
-) {
-    let (resolver, diagnostics) = phux_config::keybind::Resolver::new_lenient(kb);
-    for diag in &diagnostics {
-        tracing::warn!(binding = %diag.binding, error = %diag.error, "keybinding disabled");
-    }
-    (resolver, diagnostics)
-}
-
-/// phux-i0e8.3.4: format the lenient resolver's diagnostics as the
-/// one-line status-bar error strip. Names the first offending chord, the
-/// reason, how many more bindings (if any) were also disabled, and the
-/// actionable next step (`phux config check`). Empty input formats to an
-/// empty string (callers gate on non-empty diagnostics).
-pub(super) fn keybind_error_line(diags: &[phux_config::keybind::BindingDiagnostic]) -> String {
-    let Some(first) = diags.first() else {
-        return String::new();
-    };
-    let more = diags.len() - 1;
-    if more == 0 {
-        format!(
-            "keybinding \"{}\" disabled: {} (run: phux config check)",
-            first.binding, first.error
-        )
-    } else {
-        format!(
-            "keybinding \"{}\" disabled: {} (+{more} more; run: phux config check)",
-            first.binding, first.error
-        )
-    }
-}
 
 /// phux-foz.2: (dis)arm the which-key popup deadline for one loop pass.
 ///
@@ -127,23 +76,11 @@ pub(super) fn push_which_key_overlay(
     true
 }
 
-/// phux-nz4.5 / phux-9vf: load the on-disk config and build a
-/// [`StatusBarPainter`] from `[status]`.
-///
-/// A malformed config never blocks attach — but it no longer vanishes
-/// silently either. On a load or build failure we surface a visible
-/// error line (`StatusBarPainter::error_line`) on the bar row pointing
-/// the user at `phux config check` for the full diagnostic, instead of
-/// dropping to an empty bar with only a `tracing::warn` nobody sees
-/// (keybindings degrade separately, per binding — see
-/// [`build_resolver_from`]). Returns `None`
-/// only when the config is valid and the bar would be empty (no widgets
-/// configured) — callers short-circuit on that.
 /// phux-foz.5: perform one explicit live config reload and repaint.
 ///
-/// Re-runs the layered config loader ([`crate::attach::reload::reload_in_place`])
-/// and, on success, swaps the driver's config-derived state — keybindings
-/// snapshot, resolver, theme, status bar, plugin-action rows, which-key
+/// Re-runs the layered config loader ([`TuiSettings::reload_in_place`])
+/// and, on success, swaps the reloadable settings — keybindings snapshot,
+/// resolver, theme, chrome breakpoints, status bar, plugin rows, which-key
 /// knobs — in place, rebuilds the sidebar painter under the new theme
 /// (cache-cold, so the repaint recolors everything), refreshes the window
 /// chrome, and repaints. On ANY parse/validation failure the previous
@@ -155,20 +92,12 @@ pub(super) fn push_which_key_overlay(
 /// doorbell (`FrameOutcome::config_reload`).
 #[allow(
     clippy::too_many_arguments,
-    reason = "the config-derived slots and the repaint context are driver-loop locals threaded by reference, same shape as the paint helpers"
+    reason = "the settings and the repaint context are driver-loop locals threaded by reference, same shape as the paint helpers"
 )]
 pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     out: &mut W,
-    keybindings_snapshot: &mut Option<phux_config::KeybindingsCfg>,
-    resolver: &mut Option<phux_config::keybind::Resolver>,
-    theme: &mut crate::render::Theme,
-    chrome: &mut ChromeBreakpoints,
-    status_bar: &mut Option<StatusBarPainter>,
+    settings: &mut TuiSettings,
     sidebar_painter: &mut SidebarPainter,
-    plugin_actions: &mut Vec<PluginActionEntry>,
-    plugin_panes: &mut Vec<plugin_panes::PluginPaneEntry>,
-    which_key_enabled: &mut bool,
-    which_key_delay: &mut Duration,
     overlays: &mut OverlayState,
     workspace: &Workspace,
     panes: &mut HashMap<TerminalId, PaneSlot>,
@@ -187,32 +116,19 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     session_name: &str,
 ) -> StatusBarPaint {
     let mut painted = StatusBarPaint::NotPublished;
-    match crate::attach::reload::reload_in_place(
-        &phux_config::loader::config_path(),
-        keybindings_snapshot,
-        resolver,
-        theme,
-        chrome,
-        status_bar,
-        plugin_actions,
-        plugin_panes,
-        which_key_enabled,
-        which_key_delay,
-    ) {
+    match settings.reload_in_place(&phux_config::loader::config_path()) {
         Ok(()) => {
             tracing::info!("config reloaded in place");
             // phux-huhi: the new `[chrome]` thresholds reach the overlay
             // stack immediately, including any modal already open.
-            overlays.set_breakpoints(*chrome);
-            // Fresh painters carry the new theme and start cache-cold so
-            // the repaint below recolors the whole chrome. The attention
-            // chip color rides the theme (phux-foz.1).
-            *sidebar_painter = SidebarPainter::new(*theme);
-            if let Some(sb) = status_bar.as_mut() {
-                sb.set_attention_color(theme.attention);
-            }
+            overlays.set_breakpoints(settings.chrome);
+            // A fresh sidebar painter carries the new theme and starts
+            // cache-cold so the repaint below recolors the whole chrome
+            // (the status bar's attention chip already rides the theme,
+            // phux-foz.1, set when the settings were built).
+            *sidebar_painter = SidebarPainter::new(settings.theme);
             refresh_window_chrome(
-                status_bar.as_mut(),
+                settings.status_bar.as_mut(),
                 sidebar_painter,
                 workspace,
                 panes,
@@ -233,11 +149,11 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                     engine_kernel,
                     focused_pane,
                     viewport_dims,
-                    status_bar.as_mut(),
+                    settings.status_bar.as_mut(),
                     sidebar,
                     Some(sidebar_painter),
                     session_name,
-                    theme,
+                    &settings.theme,
                 );
             }
         }
@@ -254,7 +170,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                     String::new(),
                     "Fix the file and reload again (run: phux config check)".to_owned(),
                 ],
-                theme,
+                &settings.theme,
             )));
         }
     }
@@ -268,11 +184,11 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             focused_pane,
             zoomed,
             viewport_dims,
-            status_bar.as_mut(),
+            settings.status_bar.as_mut(),
             sidebar,
             Some(&mut *sidebar_painter),
             session_name,
-            theme,
+            &settings.theme,
         );
     }
     painted
@@ -304,43 +220,4 @@ pub(super) fn apply_initial_notice(
         );
         false
     }
-}
-
-pub(super) fn build_status_bar_painter() -> Option<StatusBarPainter> {
-    let cfg = match phux_config::loader::load() {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::warn!(error = %err, "phux-config load failed; surfacing on status bar");
-            return Some(StatusBarPainter::error_line(config_error_line(&err)));
-        }
-    };
-    let manifests = if cfg.plugins.is_empty() {
-        Vec::new()
-    } else {
-        let config_path = phux_config::loader::config_path();
-        phux_config::plugin::load_enabled_manifests(&config_path, &cfg.plugins)
-    };
-    // phux-i0e8.6.1: the composition itself (plugin `[[widgets]]` merge,
-    // bar build, `[status] position`, prefix) is shared with the reload
-    // path via `reload::compose_status_bar` so the two cannot drift.
-    // Only the error POLICY differs, and it stays here: startup degrades
-    // a build failure to the error-line painter so a broken config never
-    // blocks attach; a reload instead fails atomically and keeps the
-    // previous config.
-    match crate::attach::reload::compose_status_bar(&cfg, &manifests) {
-        Ok(painter) => painter,
-        Err(err) => {
-            tracing::warn!(error = %err, "status-bar build failed; surfacing on status bar");
-            Some(StatusBarPainter::error_line(config_error_line(&err)))
-        }
-    }
-}
-
-/// phux-9vf: format a one-line, on-screen config error for the status
-/// bar: the `Display` of the error plus the actionable next step.
-/// The remedy is `phux config check` — the verb that diagnoses, with
-/// key paths and layer attribution — not `config show`, which only
-/// renders the effective config (phux-i0e8.3.5).
-pub(super) fn config_error_line(err: &impl std::fmt::Display) -> String {
-    format!("config error: {err} (run: phux config check)")
 }
