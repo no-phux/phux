@@ -2,6 +2,7 @@
 # Injecting Clear bytes consumes an incomplete live CSI as parser input.
 # A UI-only Clear must mutate the presentation without consuming VT input.
 test: shipping remote Clear preserves an incomplete VT sequence
+red: 2026-09-08 at a9ca500
 root: repository
 rebuild: cargo build --locked --profile ffi-dev -p phux-client-ffi --target-dir target
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
