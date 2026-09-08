@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-05-28
+last-reviewed: 2026-09-08
 ---
 
 # phux Project Instructions for Agents
@@ -14,6 +14,13 @@ code or docs.
 See [`AGENTS.md`](./AGENTS.md) for universal agent instructions
 (shell hygiene, session completion protocol). This file adds
 phux-project-specific guidance: build, test, architecture, and conventions.
+
+**Commit verified task changes before handoff** unless the user explicitly
+requests otherwise. Follow [AGENTS.md's completion policy](./AGENTS.md#finish-the-work):
+local commits are authorized by default, an explicit request to land work is
+carried through integration, and routine commit/push/merge/cleanup steps do not
+get separate Beads tasks. That repository policy overrides the conservative
+commit defaults in the managed Beads block and `bd prime`.
 
 ---
 
