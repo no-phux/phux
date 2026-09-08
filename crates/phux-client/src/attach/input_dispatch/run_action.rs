@@ -963,8 +963,16 @@ fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// needs room, and a user shrinking their terminal must be
 /// able to reclaim the columns.
 const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
-    let width = ctx.sidebar_width;
-    if !*ctx.sidebar_enabled && ctx.viewport.0 < width.saturating_add(ctx.chrome.min_pane_cols) {
+    if !*ctx.sidebar_enabled
+        && crate::attach::paint::sidebar_reservation(
+            ctx.viewport.0,
+            true,
+            ctx.sidebar_width,
+            crate::attach::paint::SidebarEdge::Left,
+            ctx.chrome.min_pane_cols,
+        )
+        .is_none()
+    {
         effects.bell = true;
         return;
     }

@@ -56,7 +56,7 @@
 //! ## Contrast
 //!
 //! Every slot that paints TEXT OR A RULE must clear **4.5:1** against
-//! [`Theme::surface`] (#1a1b26, the shipped panel fill and a fair stand-in for
+//! [`Theme::surface`] (#171b23, the shipped panel fill and a fair stand-in for
 //! a dark terminal background). That is the WCAG 2.1 AA floor for normal
 //! text, and it is the floor here too, because a chrome rule you cannot
 //! see is not subtle — it is missing.
@@ -67,9 +67,9 @@
 //!
 //! | Rung                                 | Slot                  | Ratio |
 //! |--------------------------------------|-----------------------|-------|
-//! | structure (rules, modal borders)     | `border` / `divider`  | 4.7:1 |
-//! | recessive text (hints, sub-lines)    | `dim` and its trackers| 5.6:1 |
-//! | what you are looking at              | `accent` (plus BOLD)  | 6.8:1 |
+//! | structure (rules, modal borders)     | `border` / `divider`  | >=4.5:1 |
+//! | recessive text (hints, sub-lines)    | `dim` and its trackers| >rules |
+//! | what you are looking at              | `accent` (plus BOLD)  | >text |
 //!
 //! Focus is separated from the rest by three things at once — a brighter
 //! tone, a SATURATED hue against desaturated blue-greys, and `BOLD` — so
@@ -122,9 +122,8 @@ pub struct Theme {
     pub section_header: Color,
     /// Error / alarm text.
     pub error: Color,
-    /// Modal interior background — the "panel" fill behind a floating
-    /// modal's body. Defaults to `Reset` (inherit the terminal background)
-    /// so the box reads as transparent unless a theme opts into a tint.
+    /// Panel fill shared by floating overlays and the sidebar. Override with
+    /// `Reset` to inherit the terminal background.
     pub surface: Color,
     /// Drop-shadow color painted one cell below + right of a floating
     /// modal, giving it depth over the live panes. A subtle dark by
@@ -184,81 +183,31 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            // #7aa2f7 — a cool blue. Chrome that names things (modal
-            // titles, the query caret, the active window tab's fill)
-            // rides this one hue so "this is phux talking" is a single
-            // recognizable color rather than a per-overlay decision.
-            accent: Color::Rgb(0x7a, 0xa2, 0xf7),
-            // #9ece6a — green for the keys you press. Distinct enough
-            // from `accent` to scan a help table by column.
-            chord: Color::Rgb(0x9e, 0xce, 0x6a),
-            // `Reset` = terminal default foreground. Action labels
-            // deliberately inherit the user's own foreground so the
-            // readable body text of a modal is never our decision.
+            // DESIGN.md: one lime focus signal, mint key chords, and neutral
+            // slate structure. Panels always supply both foreground and fill.
+            accent: Color::Rgb(0xbe, 0xf2, 0x64),
+            chord: Color::Rgb(0x86, 0xef, 0xac),
             action: Color::Reset,
-            // #8a93ab — the recessive TEXT register. Branch sub-lines,
-            // footer hints, affordances, empty-state placeholders,
-            // inactive window tabs and idle agents all share it, so "not
-            // what you are looking at" is one tone across the whole
-            // chrome. Recessive is a relationship, not an excuse to be
-            // unreadable: this clears the 4.5:1 floor documented above
-            // (5.6:1), where the shipped #565f89 managed 2.8:1.
-            dim: Color::Rgb(0x8a, 0x93, 0xab),
-            // #7c86a6 — a step below `dim`: rules and modal borders read
-            // as structure, never as content. Still above the 4.5:1
-            // floor (4.7:1); the shipped #3b4261 was 1.7:1, which is a
-            // rule many people simply cannot see.
-            border: Color::Rgb(0x7c, 0x86, 0xa6),
-            title: Color::Rgb(0x7a, 0xa2, 0xf7),
-            // #e0af68 — warm sand for section headings, so a heading is
-            // legible as a heading without competing with `accent`.
-            section_header: Color::Rgb(0xe0, 0xaf, 0x68),
-            // #f7768e — an explicit red rather than ANSI `Red`, which
-            // maps to wildly different hues across terminal palettes.
-            error: Color::Rgb(0xf7, 0x76, 0x8e),
-            // #1a1b26 — the tokyonight base. An overlay is a panel
-            // FLOATING over live panes, and a panel that inherits the
-            // terminal background has no edge except its border: the
-            // eye reads it as text that appeared in the grid rather
-            // than as a surface on top of it. Set `surface = "reset"`
-            // to go back to a transparent modal.
-            surface: Color::Rgb(0x1a, 0x1b, 0x26),
-            // #16161e — one shade under the tokyonight base, so the
-            // drop-shadow reads as depth on a dark terminal and as a
-            // thin dark edge on a light one.
-            shadow: Color::Rgb(0x16, 0x16, 0x1e),
-            // #c0caf5 on #33467c — the selection register, shared by the
-            // copy-mode strip and selected list rows.
-            selection_fg: Color::Rgb(0xc0, 0xca, 0xf5),
-            selection_bg: Color::Rgb(0x33, 0x46, 0x7c),
-            // #ff9e64 — warm orange, the single "needs you" tone. Shared
-            // with `agent_blocked` on purpose: a blocked agent and an
-            // attention marker are the same fact seen from two places.
-            attention: Color::Rgb(0xff, 0x9e, 0x64),
-            // Sidebar section headers sit in the same recessive register
-            // as `dim`: a quiet lowercase label that gives structure
-            // without claiming attention.
-            sidebar_section: Color::Rgb(0x8a, 0x93, 0xab),
-            // Agent lifecycle colors, deliberately on-palette. Idle
-            // recedes into the `dim` tone ("nothing needs you"), working
-            // rides the `chord` green of live progress, blocked shares
-            // the `attention` orange, done settles into a calm cyan.
-            agent_idle: Color::Rgb(0x8a, 0x93, 0xab),
-            agent_working: Color::Rgb(0x9e, 0xce, 0x6a),
-            agent_blocked: Color::Rgb(0xff, 0x9e, 0x64),
-            agent_done: Color::Rgb(0x7d, 0xcf, 0xff),
-            // Rules share `border`'s tone: one material for all
-            // structure. Focus tints that same grid with `accent`.
-            divider: Color::Rgb(0x7c, 0x86, 0xa6),
-            divider_focus: Color::Rgb(0x7a, 0xa2, 0xf7),
-            // A pane label is an affordance, not content: dim when the
-            // pane is elsewhere, accent when it is under your hands.
-            pane_title: Color::Rgb(0x8a, 0x93, 0xab),
-            pane_title_focus: Color::Rgb(0x7a, 0xa2, 0xf7),
-            // #c0caf5 — the tokyonight foreground, shared with
-            // `selection_fg` so a selected row is the same text on a
-            // different bed rather than a different text.
-            text: Color::Rgb(0xc0, 0xca, 0xf5),
+            dim: Color::Rgb(0x9a, 0xa4, 0xb2),
+            border: Color::Rgb(0x7c, 0x86, 0x96),
+            title: Color::Rgb(0xbe, 0xf2, 0x64),
+            section_header: Color::Rgb(0x9a, 0xa4, 0xb2),
+            error: Color::Rgb(0xf8, 0x71, 0x71),
+            surface: Color::Rgb(0x17, 0x1b, 0x23),
+            shadow: Color::Rgb(0x09, 0x0b, 0x0f),
+            selection_fg: Color::Rgb(0xf4, 0xf7, 0xfb),
+            selection_bg: Color::Rgb(0x29, 0x36, 0x28),
+            attention: Color::Rgb(0xfd, 0xe0, 0x47),
+            sidebar_section: Color::Rgb(0x9a, 0xa4, 0xb2),
+            agent_idle: Color::Rgb(0x9a, 0xa4, 0xb2),
+            agent_working: Color::Rgb(0x86, 0xef, 0xac),
+            agent_blocked: Color::Rgb(0xfd, 0xe0, 0x47),
+            agent_done: Color::Rgb(0xbe, 0xf2, 0x64),
+            divider: Color::Rgb(0x7c, 0x86, 0x96),
+            divider_focus: Color::Rgb(0xbe, 0xf2, 0x64),
+            pane_title: Color::Rgb(0x9a, 0xa4, 0xb2),
+            pane_title_focus: Color::Rgb(0xbe, 0xf2, 0x64),
+            text: Color::Rgb(0xf4, 0xf7, 0xfb),
         }
     }
 }
@@ -350,37 +299,37 @@ mod tests {
     #[test]
     fn default_slots_match_shipped_colors() {
         let t = Theme::default();
-        assert_eq!(t.accent, Color::Rgb(0x7a, 0xa2, 0xf7));
-        assert_eq!(t.chord, Color::Rgb(0x9e, 0xce, 0x6a));
+        assert_eq!(t.accent, Color::Rgb(0xbe, 0xf2, 0x64));
+        assert_eq!(t.chord, Color::Rgb(0x86, 0xef, 0xac));
         assert_eq!(t.action, Color::Reset);
-        assert_eq!(t.dim, Color::Rgb(0x8a, 0x93, 0xab));
-        assert_eq!(t.border, Color::Rgb(0x7c, 0x86, 0xa6));
-        assert_eq!(t.title, Color::Rgb(0x7a, 0xa2, 0xf7));
-        assert_eq!(t.section_header, Color::Rgb(0xe0, 0xaf, 0x68));
-        assert_eq!(t.error, Color::Rgb(0xf7, 0x76, 0x8e));
+        assert_eq!(t.dim, Color::Rgb(0x9a, 0xa4, 0xb2));
+        assert_eq!(t.border, Color::Rgb(0x7c, 0x86, 0x96));
+        assert_eq!(t.title, Color::Rgb(0xbe, 0xf2, 0x64));
+        assert_eq!(t.section_header, Color::Rgb(0x9a, 0xa4, 0xb2));
+        assert_eq!(t.error, Color::Rgb(0xf8, 0x71, 0x71));
         // Design tokens for floating-modal depth + selection chrome.
-        assert_eq!(t.surface, Color::Rgb(0x1a, 0x1b, 0x26));
-        assert_eq!(t.shadow, Color::Rgb(0x16, 0x16, 0x1e));
-        assert_eq!(t.selection_fg, Color::Rgb(0xc0, 0xca, 0xf5));
-        assert_eq!(t.selection_bg, Color::Rgb(0x33, 0x46, 0x7c));
-        assert_eq!(t.attention, Color::Rgb(0xff, 0x9e, 0x64));
-        assert_eq!(t.sidebar_section, Color::Rgb(0x8a, 0x93, 0xab));
-        assert_eq!(t.agent_idle, Color::Rgb(0x8a, 0x93, 0xab));
-        assert_eq!(t.agent_working, Color::Rgb(0x9e, 0xce, 0x6a));
-        assert_eq!(t.agent_blocked, Color::Rgb(0xff, 0x9e, 0x64));
-        assert_eq!(t.agent_done, Color::Rgb(0x7d, 0xcf, 0xff));
+        assert_eq!(t.surface, Color::Rgb(0x17, 0x1b, 0x23));
+        assert_eq!(t.shadow, Color::Rgb(0x09, 0x0b, 0x0f));
+        assert_eq!(t.selection_fg, Color::Rgb(0xf4, 0xf7, 0xfb));
+        assert_eq!(t.selection_bg, Color::Rgb(0x29, 0x36, 0x28));
+        assert_eq!(t.attention, Color::Rgb(0xfd, 0xe0, 0x47));
+        assert_eq!(t.sidebar_section, Color::Rgb(0x9a, 0xa4, 0xb2));
+        assert_eq!(t.agent_idle, Color::Rgb(0x9a, 0xa4, 0xb2));
+        assert_eq!(t.agent_working, Color::Rgb(0x86, 0xef, 0xac));
+        assert_eq!(t.agent_blocked, Color::Rgb(0xfd, 0xe0, 0x47));
+        assert_eq!(t.agent_done, Color::Rgb(0xbe, 0xf2, 0x64));
     }
 
-    /// The structural chrome roles (phux-l96p.8) ride the same tokyonight
+    /// The structural chrome roles (phux-l96p.8) ride the same lime/slate
     /// palette; split from the test above only to keep each one readable.
     #[test]
     fn structural_slots_match_shipped_colors() {
         let t = Theme::default();
-        assert_eq!(t.divider, Color::Rgb(0x7c, 0x86, 0xa6));
-        assert_eq!(t.divider_focus, Color::Rgb(0x7a, 0xa2, 0xf7));
-        assert_eq!(t.pane_title, Color::Rgb(0x8a, 0x93, 0xab));
-        assert_eq!(t.pane_title_focus, Color::Rgb(0x7a, 0xa2, 0xf7));
-        assert_eq!(t.text, Color::Rgb(0xc0, 0xca, 0xf5));
+        assert_eq!(t.divider, Color::Rgb(0x7c, 0x86, 0x96));
+        assert_eq!(t.divider_focus, Color::Rgb(0xbe, 0xf2, 0x64));
+        assert_eq!(t.pane_title, Color::Rgb(0x9a, 0xa4, 0xb2));
+        assert_eq!(t.pane_title_focus, Color::Rgb(0xbe, 0xf2, 0x64));
+        assert_eq!(t.text, Color::Rgb(0xf4, 0xf7, 0xfb));
     }
 
     /// The shipped palette is a system, not a bag of colors: the slots
@@ -554,6 +503,17 @@ mod tests {
             assert!(
                 ratio >= 4.5,
                 "{name} is {ratio:.2}:1 against surface; the floor is 4.5:1"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_text_and_sidebar_context_clear_contrast_floor() {
+        let t = Theme::default();
+        for fg in [t.selection_fg, t.dim, t.accent, t.attention] {
+            assert!(
+                contrast(fg, t.selection_bg) >= 4.5,
+                "selection contrast: {fg:?}"
             );
         }
     }

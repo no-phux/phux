@@ -257,6 +257,30 @@ All spacing derives from a base of 4px.
 - Terminal surfaces use stable cell grids; avoid layouts that resize around
   dynamic command text.
 
+### TUI Cell Tokens
+
+The native TUI uses whole terminal cells rather than pixel spacing. Its
+implementation tokens live in `render/theme.rs` and the sidebar composer.
+
+| Token | Value | Purpose |
+|---|---|---|
+| Sidebar automatic width | 25% of viewport, clamped to 28–40 columns | Give names more room on wide screens without making terminal content chase live labels. Explicit positive widths stay fixed. |
+| Sidebar gutter | 1 column on either side of the content | Separate labels from the outer edge and divider. |
+| Icon column | 1 glyph + 1 space | Align window, agent, roster, and action labels. Use portable text glyphs, no font-specific icons. |
+| Window block | 2 rows | Primary label and aligned branch context; a branchless row supplies breathing room. |
+| Section gap | 1 row when affordable | Separate attention, local work, and other sessions without stealing the last local window. |
+| Selected surface | `#293628` | A quiet full-row selection bed; lime marker and bold label carry focus even without color. |
+| TUI structural ink | `#7c8696` | Terminal-cell rules need stronger contrast than pixel borders; all text and rules clear 4.5:1 on the elevated surface. |
+
+The TUI uses the dark palette above: lime focus, mint key chords, slate
+secondary text, off-white panel text, yellow attention, and red errors.
+Section labels stay neutral; ordinary ongoing work does not animate. The
+sidebar and overlays own their foreground and background together so they
+remain legible over either a light or dark host terminal. Selected rows use
+the selection foreground; branch context never adds terminal `DIM` on top of
+an already-muted color. Unchanged sidebar frames emit no bytes; a changed
+frame repaints only changed rows, including clearing shortened labels.
+
 ### Rules
 
 - Use full-width bands or single composed surfaces for launch visuals.

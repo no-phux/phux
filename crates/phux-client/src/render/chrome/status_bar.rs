@@ -345,7 +345,7 @@ fn write_buffer<W: Write>(
     // output). Caller still positions the cursor at the focused pane
     // after this returns.
     write!(out, "\x1b[{one_based_row};{one_based_col}H\x1b[0m")?;
-    let mut prev_styled = false;
+    let mut prev_styled = None;
     let mut x = 0;
     while x < cols {
         let cell = &buffer[(x, 0)];
@@ -382,6 +382,14 @@ fn write_buffer<W: Write>(
 ///
 /// `x` is the bar's origin column; the chip right-aligns to the bar's own right
 /// edge (`x + cols`), which a sidebar inset may pull in from the viewport's.
+fn badge_span(badge: &str, cols: u16, right_offset: u16) -> std::ops::Range<u16> {
+    let end = cols.saturating_sub(right_offset);
+    let width = u16::try_from(badge.chars().count())
+        .unwrap_or(u16::MAX)
+        .min(end);
+    end - width..end
+}
+
 fn paint_supervisory_overlay<W: Write>(
     out: &mut W,
     badge: &str,
@@ -393,8 +401,7 @@ fn paint_supervisory_overlay<W: Write>(
         return Ok(());
     }
     let visible: String = badge.chars().take(cols as usize).collect();
-    let width = u16::try_from(visible.chars().count()).unwrap_or(cols);
-    let start_col = x.saturating_add(cols.saturating_sub(width));
+    let start_col = x.saturating_add(badge_span(badge, cols, 0).start);
     let one_based_row = row_index.saturating_add(1);
     let one_based_col = start_col.saturating_add(1);
     // CUP to the chip's left edge, reverse+bold, text, hard reset.
@@ -424,8 +431,7 @@ fn paint_attention_overlay<W: Write>(
         return Ok(());
     }
     let visible: String = hint.chars().take(avail as usize).collect();
-    let width = u16::try_from(visible.chars().count()).unwrap_or(avail);
-    let start_col = x.saturating_add(avail.saturating_sub(width));
+    let start_col = x.saturating_add(badge_span(hint, cols, right_offset).start);
     let one_based_row = row_index.saturating_add(1);
     let one_based_col = start_col.saturating_add(1);
     write!(out, "\x1b[{one_based_row};{one_based_col}H\x1b[7;1m")?;
@@ -449,8 +455,7 @@ fn overlay_badge_into_buffer(
         return;
     }
     let visible: Vec<char> = badge.chars().take(avail as usize).collect();
-    let width = u16::try_from(visible.len()).unwrap_or(avail);
-    let start = avail.saturating_sub(width);
+    let start = badge_span(badge, cols, right_offset).start;
     let mut tmp = [0u8; 4];
     for (i, ch) in visible.iter().enumerate() {
         let x = start.saturating_add(u16::try_from(i).unwrap_or(0));
@@ -896,6 +901,15 @@ impl StatusBarPainter {
         })
     }
 
+    /// The separator is painted, not merely skipped over: widget text must
+    /// not leak between two status chips. Same geometry for VT and snapshots.
+    fn badge_gap(&self, cols: u16) -> Option<u16> {
+        let badge = self.supervisory.as_deref().filter(|s| !s.is_empty())?;
+        let hint = self.attention.as_deref().filter(|s| !s.is_empty())?;
+        let attention = badge_span(hint, cols, self.attention_offset());
+        (!attention.is_empty()).then(|| badge_span(badge, cols, 0).start.saturating_sub(1))
+    }
+
     /// True if the underlying bar has no widgets configured.
     ///
     /// phux-9vf: an error-line painter is never empty — the fixed
@@ -1112,6 +1126,9 @@ impl StatusBarPainter {
         x: u16,
         cols: u16,
     ) -> io::Result<()> {
+        if let Some(gap) = self.badge_gap(cols) {
+            write!(out, "\x1b[{};{}H\x1b[0m ", row_index + 1, x + gap + 1)?;
+        }
         if let Some(badge) = &self.supervisory {
             paint_supervisory_overlay(out, badge, row_index, x, cols)?;
         }
@@ -1184,6 +1201,9 @@ impl StatusBarPainter {
         let row = self.bar.render(&ctx.as_widget(), cols);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
         fill_buffer(&mut buffer, &row, cols);
+        if let Some(gap) = self.badge_gap(cols) {
+            buffer[(gap, 0)].reset();
+        }
         // ADR-0033: overlay the supervisory badge into the snapshot buffer so
         // `phux snapshot --rendered` shows the same chip the live paint draws.
         if let Some(badge) = &self.supervisory {
@@ -1317,8 +1337,20 @@ impl StatusBarPainter {
     /// all included. There is no second layout to keep in step.
     #[must_use]
     pub fn hit_at(&self, x: u16) -> Option<phux_config::widget::CellHit> {
-        let (origin, _, row) = self.last_row.as_ref()?;
+        let (origin, cols, row) = self.last_row.as_ref()?;
         let col = x.checked_sub(*origin)?;
+        if self
+            .supervisory
+            .as_deref()
+            .is_some_and(|s| badge_span(s, *cols, 0).contains(&col))
+            || self
+                .attention
+                .as_deref()
+                .is_some_and(|s| badge_span(s, *cols, self.attention_offset()).contains(&col))
+            || self.badge_gap(*cols) == Some(col)
+        {
+            return None;
+        }
         row.get(usize::from(col))?.hit
     }
 }
@@ -1801,6 +1833,31 @@ mod tests {
             ..StatusCfg::default()
         };
         build_bar(&cfg)
+    }
+
+    #[test]
+    fn badges_mask_underlying_click_targets_in_an_inset_bar() {
+        use phux_config::widget::CellHit;
+        for hit in [CellHit::Switch, CellHit::Window(2)] {
+            let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
+            p.supervisory = Some("[ FROZEN ]".to_owned());
+            p.attention = Some("[ ASK ]".to_owned());
+            let row = vec![
+                WidgetCell {
+                    hit: Some(hit),
+                    ..WidgetCell::default()
+                };
+                24
+            ];
+            p.last_row = Some((36, 24, row));
+            for col in 0..24 {
+                // 7 attention cells, a blank separator, 10 badge cells.
+                assert_eq!(p.hit_at(36 + col), if col < 6 { Some(hit) } else { None });
+            }
+            assert_eq!(p.badge_gap(24), Some(13));
+            assert_eq!(p.hit_at(35), None);
+            assert_eq!(p.hit_at(60), None);
+        }
     }
 
     /// Strip CSI escape sequences so a text assertion isn't defeated by

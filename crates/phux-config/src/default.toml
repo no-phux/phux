@@ -404,7 +404,7 @@ which-key-delay-ms = 400
 # than named because widget styles are plain data — see `[theme]` in
 # docs/consumers/tui.md section 4.4 for the slot list.
 left = [
-  { kind = "windows", format = " {index}:{name} ", separator = "", active = { fg = "#1a1b26", bg = "#7aa2f7", bold = true }, inactive = { fg = "#8a93ab", bg = "#1a1b26" } },
+  { kind = "windows", format = " {index}:{name} ", separator = " ", active = { fg = "#bef264", bg = "#293628", bold = true }, inactive = { fg = "#9aa4b2", bg = "#171b23" } },
 ]
 center = [{ kind = "help-hints" }]
 # The right slot changes shape with the terminal, via the universal
@@ -433,33 +433,33 @@ right = [
 # 4.4 for what each slot paints.
 #
 # [theme]
-# accent          = "#7aa2f7"  # modal titles, query caret, active tab fill
-# title           = "#7aa2f7"  # section/window titles (tracks accent)
-# chord           = "#9ece6a"  # keybinding chords in help + which-key
+# accent          = "#bef264"  # modal titles, query caret, active focus
+# title           = "#bef264"  # section/window titles (tracks accent)
+# chord           = "#86efac"  # keybinding chords in help + which-key
 # action          = "reset"    # action labels — inherit your terminal fg
-# dim             = "#8a93ab"  # the recessive register: hints, sub-lines
-# border          = "#7c86a6"  # rules and modal borders
-# section_header  = "#e0af68"  # headings inside help / pickers
-# error           = "#f7768e"  # error and alarm text
-# text            = "#c0caf5"  # body copy ON a filled panel (see surface)
-# surface         = "#1a1b26"  # modal interior fill; "reset" = transparent
-# shadow          = "#16161e"  # floating-modal drop shadow
-# selection_fg    = "#c0caf5"  # selected list row / copy-mode strip fg
-# selection_bg    = "#33467c"  # selected list row / copy-mode strip bg
-# attention       = "#ff9e64"  # "needs you": asked-marker, blocked agents
-# sidebar_section = "#8a93ab"  # the sidebar's `spaces` / `agents` headers
-# agent_idle      = "#8a93ab"  # agent lifecycle: nothing needs you
-# agent_working   = "#9ece6a"  # agent lifecycle: live progress
-# agent_blocked   = "#ff9e64"  # agent lifecycle: waiting on a human
-# agent_done      = "#7dcfff"  # agent lifecycle: finished
-# divider         = "#7c86a6"  # pane rules off the focused frame
-# divider_focus   = "#7aa2f7"  # the focused pane's own rules (also bold)
-# pane_title      = "#8a93ab"  # an unfocused pane's label on its top rule
-# pane_title_focus = "#7aa2f7" # the focused pane's label (also bold)
+# dim             = "#9aa4b2"  # the recessive register: hints, sub-lines
+# border          = "#7c8696"  # rules and modal borders
+# section_header  = "#9aa4b2"  # headings inside help / pickers
+# error           = "#f87171"  # error and alarm text
+# text            = "#f4f7fb"  # body copy ON a filled panel (see surface)
+# surface         = "#171b23"  # sidebar + modal fill; "reset" = transparent
+# shadow          = "#090b0f"  # floating-modal drop shadow
+# selection_fg    = "#f4f7fb"  # selected list row / copy-mode strip fg
+# selection_bg    = "#293628"  # selected list row / copy-mode strip bg
+# attention       = "#fde047"  # "needs you": asked-marker, blocked agents
+# sidebar_section = "#9aa4b2"  # the sidebar's section headers
+# agent_idle      = "#9aa4b2"  # agent lifecycle: nothing needs you
+# agent_working   = "#86efac"  # agent lifecycle: live progress
+# agent_blocked   = "#fde047"  # agent lifecycle: waiting on a human
+# agent_done      = "#bef264"  # agent lifecycle: finished
+# divider         = "#7c8696"  # pane rules off the focused frame
+# divider_focus   = "#bef264"  # the focused pane's own rules (also bold)
+# pane_title      = "#9aa4b2"  # an unfocused pane's label on its top rule
+# pane_title_focus = "#bef264" # the focused pane's label (also bold)
 #
 # Every slot above that paints text or a rule clears 4.5:1 (WCAG AA)
-# against `surface`, in three ordered rungs: rules 4.7:1, recessive text
-# 5.6:1, focus 6.8:1 plus BOLD. Retinting one slot is fine; dropping a
+# against `surface`, in three ordered rungs: rules, recessive text,
+# then lime focus plus BOLD. Retinting one slot is fine; dropping a
 # rung below the floor makes chrome that some people cannot see at all.
 
 # The window sidebar (prefix-b toggles it): a vertical strip in three
@@ -477,13 +477,15 @@ right = [
 # lives in another one; a `spaces` row switches to that session; the `+N
 # more` row opens the full fleet dashboard (prefix A).
 #
-# It reserves `width` columns on the `position` edge ("left" or "right")
+# Width 0 (the default) adapts to one quarter of the viewport, bounded to
+# 28–40 columns. A positive width reserves exactly that many columns.
+# It docks on the `position` edge ("left" or "right")
 # and the panes tile into the remaining area. `prefix-b` turns it off, and
 # that choice now sticks across session switches for the life of the
 # attach.
 #
 # The strip yields on a terminal too narrow to afford it: below
-# `width` + 40 columns it is not reserved at all and the panes get the
+# resolved width + 40 columns it is not reserved at all and the panes get the
 # whole viewport back, because a strip that leaves 30 columns of actual
 # work is costing you the very panes it exists to help you move between.
 # At those widths `prefix-b` rings the bell instead of toggling nothing,
@@ -492,7 +494,7 @@ right = [
 #
 # [sidebar]
 # enabled = true
-# width = 28
+# width = 0
 # position = "left"
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals

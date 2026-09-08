@@ -96,7 +96,7 @@ impl<'a> Modal<'a> {
     fn footer_line(&self, width: usize) -> Option<String> {
         for take in (1..=self.footer.len()).rev() {
             let line = self.footer[..take].join(FOOTER_SEP);
-            if line.chars().count() <= width {
+            if crate::render::display_width(&line) <= width {
                 return Some(line);
             }
         }
@@ -183,7 +183,7 @@ impl<'a> Modal<'a> {
             // (ADR-0020) — so the panel's own contrast plus the drop
             // shadow are what separate it from what is behind it. Set
             // `[theme] surface = "reset"` for a transparent modal.
-            .style(Style::default().bg(self.theme.surface))
+            .style(Style::default().fg(self.theme.text).bg(self.theme.surface))
             .border_style(Style::default().fg(self.theme.border))
             .title(Span::styled(
                 format!(" {} ", self.title),
@@ -427,7 +427,7 @@ impl KeyChordTable {
             .sections
             .iter()
             .flat_map(|s| s.rows.iter())
-            .map(|r| r.chord.len())
+            .map(|r| crate::render::display_width(&r.chord))
             .max()
             .unwrap_or(8);
 
@@ -464,7 +464,7 @@ impl KeyChordTable {
     /// One table row: bold chord padded to `width`, two-space gutter, then
     /// the description.
     fn row_line(&self, row: &ChordRow, width: usize) -> Line<'static> {
-        let pad = width.saturating_sub(row.chord.len());
+        let pad = width.saturating_sub(crate::render::display_width(&row.chord));
         let padding = " ".repeat(pad);
         Line::from(vec![
             Span::styled(

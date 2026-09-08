@@ -270,7 +270,7 @@ impl ConfigSeed {
             resolver,
             theme,
             sidebar_enabled: sidebar_cfg.as_ref().is_some_and(|c| c.enabled),
-            sidebar_width: sidebar_cfg.as_ref().map_or(20, |c| c.width),
+            sidebar_width: sidebar_cfg.as_ref().map_or(0, |c| c.width),
             sidebar_edge: match sidebar_cfg.as_ref().map(|c| c.position) {
                 Some(SidebarPosition::Right) => SidebarEdge::Right,
                 _ => SidebarEdge::Left,
@@ -832,7 +832,7 @@ impl SessionLoop {
     /// flips `sidebar_enabled`; the change takes effect on the next
     /// iteration. `None` (the default) keeps `content_rect` the full pane
     /// viewport, so the whole path is byte-identical when the sidebar is off.
-    fn sidebar(&self) -> Option<SidebarReservation> {
+    const fn sidebar(&self) -> Option<SidebarReservation> {
         sidebar_reservation(
             self.viewport_dims.0,
             self.sidebar_enabled,

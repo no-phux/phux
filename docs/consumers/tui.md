@@ -1267,35 +1267,36 @@ Recognized slots:
 
 | Slot             | Default     | Used for                                  |
 |------------------|-------------|-------------------------------------------|
-| `accent`         | `#7aa2f7`   | Modal titles, query caret, active tab fill |
-| `chord`          | `#9ece6a`   | Keybinding chords in the help table       |
+| `accent`         | `#bef264`   | Modal titles, query caret, active focus   |
+| `chord`          | `#86efac`   | Keybinding chords in the help table       |
 | `action`         | terminal fg | Action labels                             |
-| `dim`            | `#8a93ab`   | Footer hints, "no bindings" notice, inactive window tabs, sidebar branch/affordance/empty-state text |
-| `border`         | `#7c86a6`   | Modal borders + the sidebar separator rule |
-| `title`          | `#7aa2f7`   | Titles that diverge from `accent`         |
-| `section_header` | `#e0af68`   | Section headings inside help and pickers  |
-| `error`          | `#f7768e`   | Error / alarm text                        |
-| `text`           | `#c0caf5`   | Body copy on a filled `surface` panel     |
-| `surface`        | `#1a1b26`   | Modal interior background (`"reset"` = transparent) |
-| `shadow`         | `#16161e`   | Modal drop shadow                         |
-| `selection_fg`   | `#c0caf5`   | Selected list row / copy-mode strip foreground |
-| `selection_bg`   | `#33467c`   | Selected list row / copy-mode strip background |
-| `attention`      | `#ff9e64`   | Agent-attention chrome (asked marker/hint, fleet-dashboard hot rows) |
-| `sidebar_section`| `#8a93ab`   | Sidebar `needs you` / `here` / `spaces` zone headers + affordance action glyphs |
-| `agent_idle`     | `#8a93ab`   | Sidebar agent row in the `idle` state      |
-| `agent_working`  | `#9ece6a`   | Sidebar agent row in the `working` state   |
-| `agent_blocked`  | `#ff9e64`   | Sidebar agent row in the `blocked` state   |
-| `agent_done`     | `#7dcfff`   | Sidebar agent row in the `done` state      |
-| `divider`        | `#7c86a6`   | Pane rules off the focused pane's frame    |
-| `divider_focus`  | `#7aa2f7`   | The focused pane's own rules (also bold)   |
-| `pane_title`     | `#8a93ab`   | An unfocused pane's label on its top rule  |
-| `pane_title_focus`| `#7aa2f7`  | The focused pane's label (also bold)       |
+| `dim`            | `#9aa4b2`   | Footer hints, inactive tabs, branch context, empty states |
+| `border`         | `#7c8696`   | Modal borders + the sidebar separator rule |
+| `title`          | `#bef264`   | Titles that diverge from `accent`         |
+| `section_header` | `#9aa4b2`   | Section headings inside help and pickers  |
+| `error`          | `#f87171`   | Error / alarm text                        |
+| `text`           | `#f4f7fb`   | Body copy on a filled `surface` panel     |
+| `surface`        | `#171b23`   | Sidebar and modal background (`"reset"` = transparent) |
+| `shadow`         | `#090b0f`   | Modal drop shadow                         |
+| `selection_fg`   | `#f4f7fb`   | Selected sidebar/list row and copy-mode foreground |
+| `selection_bg`   | `#293628`   | Selected sidebar/list row and copy-mode background |
+| `attention`      | `#fde047`   | Agent-attention chrome (asked marker/hint, fleet-dashboard hot rows) |
+| `sidebar_section`| `#9aa4b2`   | Sidebar `needs you` / `here` / `spaces` zone headers |
+| `agent_idle`     | `#9aa4b2`   | Sidebar agent row in the `idle` state      |
+| `agent_working`  | `#86efac`   | Sidebar agent row in the `working` state   |
+| `agent_blocked`  | `#fde047`   | Sidebar agent row in the `blocked` state   |
+| `agent_done`     | `#bef264`   | Sidebar agent row in the `done` state      |
+| `divider`        | `#7c8696`   | Pane rules off the focused pane's frame    |
+| `divider_focus`  | `#bef264`   | The focused pane's own rules (also bold)   |
+| `pane_title`     | `#9aa4b2`   | An unfocused pane's label on its top rule  |
+| `pane_title_focus`| `#bef264`  | The focused pane's label (also bold)       |
 
 The shipped palette is deliberately **muted-chrome / bright-content**: the
 always-on chrome (sidebar headers, branch sub-lines, affordances, the
 separator rule, inactive tabs, empty-state placeholders) sits in one
-cohesive recessive register (`#7c86a6` → `#8a93ab`), so pane content and
-the blue `accent` carry the eye.
+cohesive slate register (`#7c8696` → `#9aa4b2`), so pane content and
+the lime `accent` carry the eye. Selection is a quiet filled row with a
+bold label, rather than host-dependent reverse video.
 
 Recessive is a *relationship*, not a licence to be invisible. Every slot
 that paints text or a rule clears **4.5:1** (WCAG AA) against `surface`,
@@ -1303,17 +1304,18 @@ in three ordered rungs:
 
 | Rung                              | Slot                     | Ratio |
 |-----------------------------------|--------------------------|-------|
-| structure (rules, modal borders)  | `border` / `divider`     | 4.7:1 |
-| recessive text (hints, sub-lines) | `dim` and its trackers   | 5.6:1 |
-| what you are looking at           | `accent` (plus **bold**) | 6.8:1 |
+| structure (rules, modal borders)  | `border` / `divider`     | at least 4.5:1 |
+| recessive text (hints, sub-lines) | `dim` and its trackers   | brighter than rules |
+| what you are looking at           | `accent` (plus **bold**) | brighter than secondary text |
 
 Focus is separated from the rest by three things at once — a brighter
-tone, a saturated hue against desaturated blue-greys, and bold — so the
+tone, a saturated hue against desaturated slate, and bold — so the
 hierarchy survives a terminal that flattens any one of them. The floor is
 asserted by a test (`contrast_floor_is_met`), so a retune cannot quietly
-drop below it. It is measured against a dark background because the
-shipped palette is a dark one throughout; on a light terminal the
-recessive rungs land near 3.5:1, and `[theme]` is the escape hatch.
+drop below it. The sidebar and overlays own their background and foreground
+together, including selected rows, so their contrast does not depend on the
+host terminal palette. Pane rules still sit on the host background;
+`[theme]` provides overrides for light-terminal rules.
 
 It is also a *system*, not a bag of colors — several slots share a tone on
 purpose, and a retint should keep them in step:
@@ -1334,9 +1336,8 @@ purpose, and a retint should keep them in step:
   different bed, not a different text.
 
 `action` and `text` are deliberately *not* the same slot. `action` is
-`reset` because it labels things drawn on the HOST background — the
-sidebar, the status row — which is the background you chose. A modal
-panel supplies its own background (`surface`), so its body copy has to
+`reset` for actions drawn on the HOST background. Sidebar and modal
+panels supply their own background (`surface`), so their body copy has to
 supply its own foreground or it inverts into unreadability on a light
 terminal.
 
@@ -1392,7 +1393,7 @@ What changes:
   secondary column (a branch, a cwd, a bound chord) yields before its
   label does, and text that does not fit is cut with a trailing `…`
   rather than left to run through the modal border.
-- **The sidebar yields.** Below `[sidebar] width` + 40 columns the strip
+- **The sidebar yields.** Below the resolved sidebar width + 40 columns the strip
   is not reserved at all: it costs its width off every pane permanently,
   and a strip that leaves 30 columns of actual work is costing you the
   panes it exists to help you move between. `prefix-b` rings the bell at
@@ -1412,7 +1413,7 @@ compact-cols  = 64   # at or below this width, overlays go full-bleed
 compact-rows  = 18   # at or below this height, overlays go full-bleed
 min-pane-cols = 40   # narrowest pane area worth tiling into; the
                      # sidebar is not reserved below
-                     # `[sidebar] width` + this
+                     # resolved sidebar width + this
 ```
 
 Raise `compact-cols` if you want full-bleed pickers on a terminal phux
@@ -1899,6 +1900,18 @@ That runtime choice is client-local chrome: it persists across
 seeds it at attach only. Panes tile into the remaining content rect, so
 the strip never overlaps content.
 
+The default `width = 0` enables automatic sizing: a quarter of the viewport,
+bounded to **28–40 columns**. That gives an 80-column terminal a 28-column
+strip, a 144-column terminal 36 columns, and a 160-column terminal 40 columns.
+A positive `[sidebar] width` keeps that exact width. Automatic width depends
+only on viewport size, so changing titles and agent states never reflow work.
+At the default pane floor the strip yields below 68 columns (§4.5).
+
+One-cell gutters separate text from the edge and divider. Icons, labels,
+branch context, and footer actions share the same column grid. The active
+window's two-row block gets a quiet selection fill; only its name is bold.
+Unchanged frames emit no bytes, and changed frames repaint only changed rows.
+
 The strip runs the **full height** of the terminal, and the status bar
 yields its columns rather than spanning underneath it (`phux-qtw8`): with
 the sidebar open, the bar — window tabs included — starts beside the
@@ -1911,7 +1924,9 @@ a human, not by where the row lives:
 
 **`needs you`** — the **cross-session attention queue**: every agent
 wanting a human, on this server, worst first. Rows carry the same glyph
-and state word as the `agents` section they replace, but a row from
+and state word as the `agents` section they replace. When a row is too
+narrow for both state and agent name, the glyph carries state and the name
+stays visible so two agents in one session remain distinguishable. A row from
 another session is labelled by its **session** rather than its window (a
 window name out of its session's context locates nothing). Committing a
 row runs `select-window` for a local agent and
@@ -1933,8 +1948,8 @@ so equal-rank peers hold the session graph's order.
 per window, top to bottom in `select-window` index order:
 
 - **Name row.** A status dot (filled + `accent` for the active window,
-  hollow + `dim` otherwise, `attention` amber when a pane in the window
-  is waiting on a human) followed by the window's bold display label
+   hollow + `dim` otherwise, `attention` yellow when a pane in the window
+   is waiting on a human) followed by the window's display label (bold only when active)
   (agent record, OSC title, or stored name — same resolution as the
   status-bar tab strip), plus the §8.6 attention `!`.
 - **Branch row.** The VCS branch of the window's focused pane, dim and
