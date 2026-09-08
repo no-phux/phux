@@ -17,7 +17,8 @@ fn disconnect(engine: *engine_module.Engine) void {
 
 /// Paint the shipping display list and reconstruct the visible terminal text
 /// from the row cell grids (the terminal paints a packed cell_grid per row,
-/// never draw_text runs). This is the actual glass a user sees.
+/// never draw_text runs). This proves submitted cell content; host raster
+/// fidelity is a separate check.
 fn expectPaint(engine: *engine_module.Engine, present: []const u8, absent: []const u8) !void {
     const commands = try testing.allocator.alloc(sdk.canvas.CanvasCommand, projection.chrome_command_envelope);
     defer testing.allocator.free(commands);

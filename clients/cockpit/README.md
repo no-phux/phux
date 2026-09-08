@@ -111,9 +111,9 @@ only by a solid-versus-hollow cursor. The accent edge is what survives the case
 the scrim still cannot serve: a terminal configured black, or put there by an
 application's OSC 11, has no luminance left to take away.
 
-Byte counts, I/O-loss badges and lifecycle strings are not product chrome — they
-live in each surface's accessibility label, so a screen reader keeps every
-detail the eye is spared.
+The status bar combines connection state with the focused terminal's recovery
+or history-loading state. Each window reports its own focused terminal. Detailed
+byte counts and I/O-loss information remain in surface accessibility labels.
 
 **An ephemeral local shell that ends closes its pane, at any exit status**,
 and its sibling reclaims the rect. Exit code is the child's answer about the last command it
@@ -297,6 +297,20 @@ attribute and reports that fact in its caveat.
 | `cmd+R` | Restart the focused terminal after its process exits |
 | `cmd+M` | Minimize the focused window |
 | Pinch | Size the terminal type, the way `cmd+=` and `cmd+-` do |
+
+**Remote Find survives viewport rebootstrap.** The open field and query belong
+to the terminal; selection anchors and search results belong to the current
+replica and are refreshed after its replacement is ready.
+
+**Remote Clear is client-local.** It clears Cockpit's screen and scrollback
+without sending terminal input or altering Phux's execution. It preserves an
+incomplete VT sequence, so Clear between output fragments cannot corrupt the
+next character, title, or rendition.
+
+**Disconnect retains the last proven terminal display.** Input remains fenced
+until the saved coordinator/session/terminal identity is accepted again. A
+different coordinator incarnation cannot replace that frozen display merely
+by publishing the same numeric terminal ID.
 
 Clicking a tab switches surfaces without stopping hidden execution. Clicking a
 split pane moves input ownership to it. The divider supports pointer dragging,
