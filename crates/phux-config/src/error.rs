@@ -62,6 +62,28 @@ pub enum ConfigError {
         /// Human-readable description of the violation.
         message: String,
     },
+
+    /// A settings edit was refused before anything was written
+    /// (phux-u1tq.3): the key is not a `table.leaf` path, the path runs
+    /// through a non-table, the leaf holds a table, or `phux config check`
+    /// reports a finding at the edited key. `key` is the dotted key.
+    #[error("{key}: {message}")]
+    Edit {
+        /// The dotted key the edit targeted.
+        key: String,
+        /// Why the edit was refused.
+        message: String,
+    },
+
+    /// The edited config could not be written to disk (phux-u1tq.3): the
+    /// temp file beside it, or the rename over it, failed. Names the file.
+    #[error("{}: could not write: {source}", path.display())]
+    Write {
+        /// The config file that was being replaced.
+        path: PathBuf,
+        /// The underlying write or rename failure.
+        source: std::io::Error,
+    },
 }
 
 /// Render the [`ConfigError::Parse`] display line: `path: line:col:

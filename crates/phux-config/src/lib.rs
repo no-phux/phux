@@ -27,6 +27,7 @@ pub mod plugin;
 pub mod remote;
 pub mod satellite;
 mod schema;
+pub mod settings; // phux-u1tq.3 (scalar settings catalogue, provenance snapshot, comment-preserving writer)
 pub mod socket; // phux-93b (shared default socket path: daemon + thin clients)
 pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
@@ -48,6 +49,10 @@ pub use schema::{
     Action, ChromeCfg, Config, CwdInheritance, DEFAULT_HISTORY_BYTES, DefaultsCfg, ExperimentalCfg,
     HookEntry, KeybindingsCfg, MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg,
     SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+};
+pub use settings::{
+    Applies, CATALOG, Edit, EditOutcome, SettingEntry, SettingKind, SettingSection, SettingSpec,
+    SettingsSnapshot,
 };
 pub use widget::{
     Cell, CellStyle, SessionNameWidget, SpacerWidget, StatusBar, StatusWidget, TextWidget,
@@ -132,6 +137,19 @@ pub fn parse_str(input: &str, path: &Path) -> Result<Config, ConfigError> {
 /// the offending file.
 pub fn parse_with_defaults(user_input: &str, path: &Path) -> Result<Config, ConfigError> {
     let merged = merged_config_table(user_input, path)?;
+    deserialize_merged(merged, user_input, path)
+}
+
+/// Deserialize an already-merged layer table into the typed [`Config`].
+///
+/// Shared by [`parse_with_defaults`] and the settings snapshot
+/// (`settings::SettingsSnapshot::load`), which already holds the merged
+/// table from [`merged_config_with_provenance`] and must not merge twice.
+pub(crate) fn deserialize_merged(
+    merged: toml::Table,
+    user_input: &str,
+    path: &Path,
+) -> Result<Config, ConfigError> {
     toml::Value::Table(merged).try_into().map_err(|e| {
         // Deserializing the merged table carries no span into the
         // user's text; a spanless error renders with no position
