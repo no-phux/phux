@@ -1,6 +1,7 @@
 # GUARD ts-remote-bell
 # Remote Ghostty bells must reach the native notification effect.
 test: shipping remote bell uses native notifications and owner fenced attention
+red: 2026-09-08 at 33b1455
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 --- a/src/cockpit/native/ts_engine.zig
