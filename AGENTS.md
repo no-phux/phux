@@ -1,14 +1,15 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-09-05
+last-reviewed: 2026-09-08
 ---
 # Agent Instructions
 
 **TL;DR.** Select setup and validation by the area you change. Work in an
 isolated branch/worktree, use non-interactive shell commands, track agent work
-with Beads, and report actual validation. Project architecture and coding
-conventions live in CLAUDE.md; contributor setup has one canonical guide.
+with Beads, commit verified changes before handoff, and report actual validation.
+Project architecture and coding conventions live in CLAUDE.md; contributor setup
+has one canonical guide.
 <!-- bd-doctor-divergence: ok -->
 
 ## Setup and validation scope
@@ -37,6 +38,27 @@ conventions live in CLAUDE.md; contributor setup has one canonical guide.
 - If the primary worktree is dirty or another agent is using it, do not stash,
   reset, clean, or overwrite those changes. Leave them untouched and isolate
   your work in a new worktree.
+
+## Finish the work
+
+- **Commit verified task changes before the final handoff.** This is standing
+  repository authorization for local commits on the isolated feature branch.
+  Do not stop at "changes are uncommitted" or ask whether to commit. An explicit
+  user instruction such as "do not commit" or "leave this as a draft" wins.
+- Review the diff, stage only task-owned changes, and make scoped conventional
+  commits. Preserve unrelated changes and report the commit IDs and checks run.
+- When the user asks to push, merge, or land work on `main`, carry that through
+  the repository's integration and validation path without asking again for the
+  same authorization. Keep local `main` synchronized after landing. Repository
+  ownership boundaries, branch protections, and explicit no-push instructions
+  still apply; local commit authorization does not authorize remote operations.
+- **Routine commits, pushes, merges, and cleanup are steps of the existing
+  task, not new Beads tasks.** Track substantive implementation and follow-up
+  work; do not create administrative tickets just to finish shipping it.
+- If a step is genuinely blocked, report what failed and the exact remedy.
+
+This policy overrides the conservative/minimal commit defaults in the managed
+Beads guidance below and in `bd prime`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
