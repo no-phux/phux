@@ -15,6 +15,8 @@ last-reviewed: 2026-09-03
 part of [no-phux](https://github.com/orgs/no-phux/repositories) --
 cockpit, mobile, and the rest of the phux ecosystem
 
+[Discord link](https://discord.gg/dUv5rzdHp)
+
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
