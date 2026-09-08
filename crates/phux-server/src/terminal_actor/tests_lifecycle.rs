@@ -858,6 +858,15 @@ fn kill_detached_holder(holder_pid_file: &std::path::Path) {
     let _ = kill(pid, Signal::SIGKILL);
 }
 
+/// Tear down the deliberately escaped fixture even if an assertion unwinds.
+struct DetachedHolderCleanup(std::path::PathBuf);
+
+impl Drop for DetachedHolderCleanup {
+    fn drop(&mut self) {
+        kill_detached_holder(&self.0);
+    }
+}
+
 /// A process that escaped the snapshotted groups and still holds the slave
 /// open must not be able to hang the server (wave-two review, item 1).
 ///
@@ -904,6 +913,7 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
             let dir = tempfile::tempdir().expect("tempdir");
             let holder = dir.path().join("holder");
 
+            let holder_cleanup = DetachedHolderCleanup(holder.clone());
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
             // `exec cat` so the pane's own child is an ordinary foreground
@@ -950,7 +960,7 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
                 .expect("actor task failed");
             let shutdown_took = killed_at.elapsed();
 
-            kill_detached_holder(&holder);
+            drop(holder_cleanup);
 
             assert!(
                 shutdown_took < ceiling,
@@ -990,6 +1000,7 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             let armed = dir.path().join("armed");
             let holder = dir.path().join("holder");
             let payload = dir.path().join("payload");
+            let holder_cleanup = DetachedHolderCleanup(holder.clone());
             std::fs::write(&payload, vec![b'.'; 256 * 1024]).expect("write payload");
 
             // `trap '' HUP` sets SIG_IGN, inherited across `exec`; `set -m`
@@ -1014,6 +1025,7 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             cmd.arg(format!("set -m; trap '' HUP; /bin/sh {}", script.display()));
             cmd.env("PHUX_TEST_ARMED", &armed);
             cmd.env("PHUX_TEST_PAYLOAD", &payload);
+            cmd.env("PHUX_TEST_HOLDER", &holder);
 
             let token = CancellationToken::new();
             let bundle = TerminalActor::build_with_token(
@@ -1050,12 +1062,16 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
                 .expect("actor task failed");
             let shutdown_took = killed_at.elapsed();
 
-            kill_detached_holder(&holder);
+            drop(holder_cleanup);
 
             assert!(
                 shutdown_took < ceiling,
                 "teardown must be bounded by the grace, reap and join budgets, not by the \
                      child's willingness to exit; took {shutdown_took:?}",
+            );
+            assert!(
+                holder.exists(),
+                "escaped fixture must record its PID for cleanup"
             );
         })
         .await;
