@@ -50,8 +50,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      # The engine's byte-for-byte contract is pinned to the official Zig
+      # release binary that release.yml and native-setup.yml install. nixpkgs'
+      # zig_0_16 on x86_64 Linux links a different LLVM build and compiles one
+      # function differently from the same source, so the Nix shell supplies
+      # Node here while Zig comes from scripts/install-zig.sh.
       - name: Reproduce committed engine and verify checkpoint ABI
-        run: nix develop -c bash scripts/build-vt-wasm.sh --check
+        run: |
+          PHUX_ZIG_DIR="$(bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains")"
+          export PHUX_ZIG_DIR
+          # Single quotes are deliberate: PATH must expand inside the Nix
+          # shell so the release Zig precedes the shell's own zig_0_16.
+          # shellcheck disable=SC2016
+          nix develop -c bash -c 'PATH="$PHUX_ZIG_DIR:$PATH" exec bash scripts/build-vt-wasm.sh --check'
       - name: Metadata normalization regression
         run: nix develop -c node --test scripts/test-vt-wasm.mjs
       - name: Engine adapter tests
