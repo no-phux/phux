@@ -29,6 +29,14 @@ smallvec.workspace = true
 # adds a consumer rather than new third-party code.
 unicode-width = { workspace = true }
 toml.workspace = true
+# Comment-preserving edits to the user's config.toml for the settings
+# catalogue's writer (`settings::write_edit`, phux-u1tq.3). A settings page
+# must round-trip through the file (ADR-0023), and re-serializing the typed
+# `Config` would flatten a hand-commented file into a generated one; the
+# mutable document keeps every untouched byte. Already a workspace
+# dependency (the phux binary's plugin / satellite / remote registries edit
+# the same file the same way), so this adds a consumer, not a new crate.
+toml_edit.workspace = true
 # Full dotted paths on schema errors, for `phux config check` and for the
 # loader's own message.
 serde_path_to_error.workspace = true
