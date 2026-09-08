@@ -304,7 +304,16 @@ impl GhosttyReplica {
     /// Mutate screen/history directly; the live parser may be mid-sequence.
     fn clear_presentation(&mut self) -> Result<(), GhosttyEngineError> {
         match &mut self.state {
-            ReplicaState::Synthesized { terminal, .. } => terminal.clear_presentation(),
+            ReplicaState::Synthesized {
+                terminal,
+                protocol_finished,
+                ..
+            } => {
+                if !*protocol_finished {
+                    return Err(GhosttyEngineError::LiveOutputBeforeReady);
+                }
+                terminal.clear_presentation();
+            }
             ReplicaState::Native(native) => native.clear_presentation()?,
         }
         Ok(())
@@ -1557,6 +1566,18 @@ mod tests {
             .flat_map(|(_, bytes)| bytes.iter().copied())
             .collect();
         (bootstrap, history)
+    }
+
+    #[test]
+    fn unpublished_synthesized_clear_is_rejected() {
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .unwrap();
+        assert!(matches!(
+            adapter.clear_presentation(&mut replica),
+            Err(GhosttyEngineError::LiveOutputBeforeReady)
+        ));
     }
 
     #[test]
