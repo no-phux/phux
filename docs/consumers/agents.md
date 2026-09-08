@@ -1643,7 +1643,7 @@ reports it alongside everything a device needs to dial this host:
   "overlay_addresses": ["100.64.0.2"],
   "ws_addr": "0.0.0.0:8787",
   "quic_addr": null,
-  "connect_link": "phux://connect?url=wss://100.64.0.2:8787&token=deadbeef...",
+  "connect_link": "https://phux.phall.io/connect?url=wss://100.64.0.2:8787&token=deadbeef...",
   "tokens_path": "/home/me/.local/state/phux/remote-tokens"
 }
 ```

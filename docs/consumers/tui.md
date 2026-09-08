@@ -116,7 +116,7 @@ phux --remote [USER@]HOST[:PORT]
                               # sent on the wire
 phux attach [SESSION] --remote HOST [--code LINK] [--no-enroll]
                               # the verb-scoped form: name a session, pair
-                              # from a `phux://connect` link instead of over
+                              # from a pasted connect link instead of over
                               # ssh (--code, quote it), or refuse to shell out
                               # to ssh at all (--no-enroll)
 phux attach --quic HOST:PORT [--cert-fingerprint FP] [--token HEX]

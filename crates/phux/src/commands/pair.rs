@@ -40,32 +40,48 @@ pub(crate) enum PairAction {
     },
 }
 
-/// Scheme + host for the one-tap connect deep-link (and the QR that encodes
-/// it). A device that opens or scans it gets the server URL, the cert
-/// fingerprint (MITM defense), and the token (credential) in one shot —
+/// Scheme, host, and path for the one-tap connect link (and the QR that
+/// encodes it). A device that opens or scans it gets the server URL, the
+/// cert fingerprint (MITM defense), and the token (credential) in one shot —
 /// no typing a 32-byte hex token by hand:
-/// `phux://connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
+/// `https://phux.phall.io/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
 /// where `url` is mandatory — without it the device has nothing to dial and
 /// rejects the link — so a link is only emitted when an address is known.
 ///
+/// The link is an https Universal Link rather than a custom URL scheme
+/// because it carries a bearer token. Custom schemes are not exclusive on
+/// iOS: any installed app may register one, and which app receives a given
+/// open is undefined, so a custom-scheme link hands the token to whichever
+/// app wins. A Universal Link opens only in the app that proves ownership of
+/// the domain, which closes that interception window. The token is exposed
+/// to the terminal, the QR image, and whatever carries the link regardless;
+/// the exclusivity guarantee covers only the final hop into the app.
+///
 /// THIS SHAPE IS OWNED HERE, not by any consumer. [ADR-0031] is the decision
 /// record: "A remote consumer parsing the link must accept this exact shape."
-/// An earlier version of this comment said the opposite — that the shape
-/// belonged to phux-mobile's parser — and the resulting circular ownership
-/// cost a real outage: phux-mobile rejected every token-bearing link (which is
-/// every link this function emits, since `&token=` is unconditional), so
-/// one-tap pairing and QR pairing were both dead while each repo's own tests
-/// stayed green. Changing the shape is a change to ADR-0031 and a coordinated
-/// consumer update, never a silent edit here.
+/// Ownership sits on the emitting side so that the two repos cannot each
+/// defer to the other and drift apart while both test suites stay green
+/// (docs/consumers/ios.md records the outage that made this explicit).
+/// Changing the shape is a change to ADR-0031 and a coordinated consumer
+/// update, never a silent edit here.
 ///
 /// [ADR-0031]: ../../../../ADR/0031-remote-consumer-auth-and-encryption.md
-const CONNECT_URI_PREFIX: &str = "phux://connect";
+const CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 
-/// Build the `phux://connect?...` one-tap link. `url` is a ws(s):// URL,
-/// `token` lowercase hex, and `fingerprint` colon-separated hex — all
-/// query-safe as-is (RFC 3986 `pchar` allows `:` and `/` in query strings,
-/// and the mobile parser reads them unencoded). `name` is free-form operator
-/// input, so it alone is percent-encoded.
+/// The custom-scheme spelling of the same link. The query is identical;
+/// only the prefix differs. [`parse_connect_link`] accepts it so that a
+/// link minted by any phux release pairs a laptop via `--code`, and
+/// [`print_connect_link`] prints it beneath the https form for app builds
+/// that predate the Universal Link entitlement, which cannot claim the
+/// https link and would otherwise open it in a browser. The QR encodes the
+/// https form only.
+const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
+
+/// Build the `https://phux.phall.io/connect?...` one-tap link. `url` is a
+/// ws(s):// URL, `token` lowercase hex, and `fingerprint` colon-separated
+/// hex — all query-safe as-is (RFC 3986 `pchar` allows `:` and `/` in query
+/// strings, and the mobile parser reads them unencoded). `name` is free-form
+/// operator input, so it alone is percent-encoded.
 fn build_connect_link(
     url: &str,
     name: Option<&str>,
@@ -84,6 +100,15 @@ fn build_connect_link(
     link.push_str("&token=");
     link.push_str(token);
     link
+}
+
+/// Respell a link from [`build_connect_link`] with the
+/// [`LEGACY_CONNECT_URI_PREFIX`]. The query is carried over byte-for-byte,
+/// so the two spellings can never disagree about the credentials they hold.
+/// `None` for a string that is not an https connect link.
+fn legacy_connect_link(link: &str) -> Option<String> {
+    link.strip_prefix(CONNECT_URI_PREFIX)
+        .map(|query| format!("{LEGACY_CONNECT_URI_PREFIX}{query}"))
 }
 
 /// Percent-encode everything outside RFC 3986 `unreserved` — conservative on
@@ -106,7 +131,7 @@ fn percent_encode(value: &str) -> String {
     out
 }
 
-/// The credentials a `phux://connect?...` link carries.
+/// The credentials a connect link carries.
 ///
 /// The link is the same artifact `phux pair` prints and `phux pair --qr`
 /// renders: a phone scans it, and a laptop pastes it into `phux attach
@@ -124,12 +149,15 @@ pub(crate) struct ConnectLink {
     pub(crate) token: String,
 }
 
-/// Parse a `phux://connect?...` link back into its parts.
+/// Parse a connect link back into its parts.
 ///
 /// The exact inverse of [`build_connect_link`], and pinned to it by
 /// `connect_link_round_trips`: the link shape is a cross-repo contract
-/// (see [`CONNECT_URI_PREFIX`]'s note on the phux-mobile outage), so the
-/// parser must never drift from the builder that feeds the QR.
+/// (see [`CONNECT_URI_PREFIX`]'s note on ownership), so the parser must
+/// never drift from the builder that feeds the QR. Both prefixes are
+/// accepted — the https form the builder emits and the
+/// [`LEGACY_CONNECT_URI_PREFIX`] form — so a `--code` pasted from any phux
+/// release parses; the query grammar is one and the same.
 ///
 /// Strict about the two fields a dial cannot proceed without — a `url` and a
 /// `token` — and tolerant of unknown query keys, so a newer minting phux can
@@ -138,9 +166,13 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
     let trimmed = link.trim().trim_matches(|c| c == '\'' || c == '"');
     let query = trimmed
         .strip_prefix(CONNECT_URI_PREFIX)
+        .or_else(|| trimmed.strip_prefix(LEGACY_CONNECT_URI_PREFIX))
         .and_then(|rest| rest.strip_prefix('?'))
         .ok_or_else(|| {
-            format!("a connect code must start with `{CONNECT_URI_PREFIX}?` (paste the whole link `phux pair` printed)")
+            format!(
+                "a connect code must start with `{CONNECT_URI_PREFIX}?` \
+                 (or `{LEGACY_CONNECT_URI_PREFIX}?`; paste the whole link `phux pair` printed)"
+            )
         })?;
 
     let (mut url, mut name, mut fingerprint, mut token) = (None, None, None, None);
@@ -315,9 +347,10 @@ fn render_qr(payload: &str) -> Result<String, String> {
 /// the first server start.
 ///
 /// When the server address is known (`--host`, or a detected overlay address
-/// plus the `PHUX_WS_ADDR` port), the credentials are also printed as a
-/// `phux://connect` one-tap link, and `--qr` renders that same link as a
-/// scannable terminal QR (ADR-0031's "shown as a QR" pairing idiom).
+/// plus the `PHUX_WS_ADDR` port), the credentials are also printed as an
+/// `https://phux.phall.io/connect` one-tap link, and `--qr` renders that
+/// same link as a scannable terminal QR (ADR-0031's "shown as a QR" pairing
+/// idiom).
 #[allow(
     clippy::needless_pass_by_value,
     reason = "CLI entry point owns the args clap dispatch hands it; taking them by value keeps the call site clean"
@@ -566,6 +599,14 @@ fn print_connect_link(link: Option<&str>, qr: bool) {
     outln!("One-tap connect link (open on the device — carries the token):");
     outln!("  {link}");
     outln!();
+    // App builds without the Universal Link entitlement cannot claim the
+    // https form and would open it in a browser; the custom-scheme spelling
+    // of the same credentials reaches them. Same secret, same query.
+    if let Some(legacy) = legacy_connect_link(link) {
+        outln!("Same link for app builds that predate Universal Link support:");
+        outln!("  {legacy}");
+        outln!();
+    }
     if !qr {
         return;
     }
@@ -773,8 +814,8 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_names, build_connect_link, pair_document, parse_connect_link, percent_encode,
-        render_qr, resolve_server_url,
+        advertised_names, build_connect_link, legacy_connect_link, pair_document,
+        parse_connect_link, percent_encode, render_qr, resolve_server_url,
     };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::path::Path;
@@ -791,7 +832,7 @@ mod tests {
             &overlay,
             Some("0.0.0.0:8787"),
             Some("0.0.0.0:8788"),
-            Some("phux://connect?url=wss://100.64.0.2:8787&token=deadbeef"),
+            Some("https://phux.phall.io/connect?url=wss://100.64.0.2:8787&token=deadbeef"),
             Path::new("/state/remote-tokens"),
             "credential-a",
             1,
@@ -804,7 +845,7 @@ mod tests {
         assert_eq!(doc["quic_addr"], "0.0.0.0:8788");
         assert_eq!(
             doc["connect_link"],
-            "phux://connect?url=wss://100.64.0.2:8787&token=deadbeef"
+            "https://phux.phall.io/connect?url=wss://100.64.0.2:8787&token=deadbeef"
         );
         assert_eq!(doc["tokens_path"], "/state/remote-tokens");
         assert_eq!(doc["credential_id"], "credential-a");
@@ -835,7 +876,7 @@ mod tests {
         // url + token are the floor.
         assert_eq!(
             build_connect_link("wss://h:1", None, None, "deadbeef"),
-            "phux://connect?url=wss://h:1&token=deadbeef"
+            "https://phux.phall.io/connect?url=wss://h:1&token=deadbeef"
         );
         // Full house, in the order the mobile parser documents.
         assert_eq!(
@@ -845,12 +886,12 @@ mod tests {
                 Some("AB:CD"),
                 "deadbeef"
             ),
-            "phux://connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
+            "https://phux.phall.io/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
         );
         // No fingerprint — the fp param is absent, not empty.
         assert_eq!(
             build_connect_link("wss://h:1", Some("mini"), None, "deadbeef"),
-            "phux://connect?url=wss://h:1&name=mini&token=deadbeef"
+            "https://phux.phall.io/connect?url=wss://h:1&name=mini&token=deadbeef"
         );
     }
 
@@ -861,7 +902,7 @@ mod tests {
         assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(
             build_connect_link("wss://h:1", Some("studio mini"), None, "aa"),
-            "phux://connect?url=wss://h:1&name=studio%20mini&token=aa"
+            "https://phux.phall.io/connect?url=wss://h:1&name=studio%20mini&token=aa"
         );
     }
 
@@ -1016,25 +1057,62 @@ mod tests {
     /// an older `--code`.
     #[test]
     fn connect_link_tolerates_unknown_query_keys() {
-        let parsed =
-            parse_connect_link("phux://connect?url=wss://mini:8787&brand_new=42&token=tok")
-                .expect("parse");
+        let parsed = parse_connect_link(
+            "https://phux.phall.io/connect?url=wss://mini:8787&brand_new=42&token=tok",
+        )
+        .expect("parse");
         assert_eq!(parsed.token, "tok");
+    }
+
+    /// The custom-scheme spelling is the same link under another prefix: a
+    /// `--code` pasted from a phux that emits `phux://connect` parses to the
+    /// identical credentials, and the printed fallback line is derived from
+    /// the https form byte-for-byte rather than built a second time.
+    #[test]
+    fn legacy_scheme_is_the_same_link_under_another_prefix() {
+        let link = build_connect_link("wss://mini:8787", Some("studio mini"), Some("AB:CD"), "tok");
+        let legacy = legacy_connect_link(&link).expect("built links always respell");
+        assert_eq!(
+            legacy,
+            "phux://connect?url=wss://mini:8787&name=studio%20mini&fp=AB:CD&token=tok"
+        );
+        assert_eq!(
+            parse_connect_link(&legacy).expect("legacy parse"),
+            parse_connect_link(&link).expect("https parse"),
+        );
+        // Only an https connect link has a legacy spelling.
+        assert_eq!(
+            legacy_connect_link("phux://connect?url=wss://x&token=t"),
+            None
+        );
+        assert_eq!(legacy_connect_link("https://example.com/connect?x=1"), None);
     }
 
     /// The two fields a dial cannot proceed without are rejected loudly,
     /// and a non-ws scheme is refused rather than dialed.
     #[test]
     fn connect_link_refuses_links_that_cannot_dial() {
-        // Not a connect link at all.
+        // Not a connect link at all: a different host, or a different path
+        // under the right host.
         assert!(parse_connect_link("https://example.com").is_err());
+        assert!(parse_connect_link("https://example.com/connect?url=wss://m:1&token=t").is_err());
+        assert!(parse_connect_link("https://phux.phall.io/other?url=wss://m:1&token=t").is_err());
+        assert!(
+            parse_connect_link("https://phux.phall.io/connected?url=wss://m:1&token=t").is_err()
+        );
         // No token: grants no access.
-        assert!(parse_connect_link("phux://connect?url=wss://mini:8787").is_err());
+        assert!(parse_connect_link("https://phux.phall.io/connect?url=wss://mini:8787").is_err());
         // No url: names no server.
-        assert!(parse_connect_link("phux://connect?token=tok").is_err());
+        assert!(parse_connect_link("https://phux.phall.io/connect?token=tok").is_err());
         // A scheme the WebSocket dialer cannot use.
-        assert!(parse_connect_link("phux://connect?url=quic://mini:8788&token=tok").is_err());
-        // Empty values are the same as absent.
+        assert!(
+            parse_connect_link("https://phux.phall.io/connect?url=quic://mini:8788&token=tok")
+                .is_err()
+        );
+        // Empty values are the same as absent, under either prefix.
+        assert!(
+            parse_connect_link("https://phux.phall.io/connect?url=wss://mini:8787&token=").is_err()
+        );
         assert!(parse_connect_link("phux://connect?url=wss://mini:8787&token=").is_err());
     }
 }

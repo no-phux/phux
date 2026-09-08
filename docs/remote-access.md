@@ -7,7 +7,7 @@ last-reviewed: 2026-08-22
 # Remote access over an overlay network
 
 **TL;DR.** Run `phux --remote user@host` and you are done: it resolves an
-already-registered host, or pairs one first (from a `phux://connect` code, or
+already-registered host, or pairs one first (from a pasted connect code, or
 over your existing ssh trust) and remembers it, so every later attach is a
 direct QUIC dial with no ssh in the path. `phux host enroll HOST` is the
 same setup plus a service unit on the far end. The manual path — put both ends on a WireGuard-class overlay,
@@ -77,11 +77,13 @@ If the host has no ssh you can use — or you would rather not shell into it —
 run `phux pair` there, copy the one-tap link it prints, and hand it over:
 
 ```sh
-phux --remote mini --code 'phux://connect?url=wss://100.64.0.2:8787&fp=...&token=...'
+phux --remote mini --code 'https://phux.phall.io/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
 ```
 
 That is the same link `phux pair --qr` renders for a phone, so a laptop and a
-phone pair through one artifact. The link is registered under the target's
+phone pair through one artifact. `--code` also accepts the link's
+`phux://connect?...` spelling, which `phux pair` prints on a second line for
+older app builds. The link is registered under the target's
 name, and later attaches need no code.
 
 `--no-enroll` refuses the ssh rung outright: an unregistered host is reported
@@ -180,10 +182,15 @@ For a phone or tablet, skip the transcription entirely: when the server
 address is known — pass `--host HOST:PORT` (or a full `ws://`/`wss://` URL),
 or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR`
 port — `phux pair` also prints a one-tap
-`phux://connect?url=…&fp=…&token=…` deep-link carrying the URL, fingerprint,
-and token together, and `phux pair --qr` renders that same link as a
-scannable terminal QR. Treat the link and QR like the token itself: they
-carry the credential. `--name` labels the server in the device's list.
+`https://phux.phall.io/connect?url=…&fp=…&token=…` link carrying the URL,
+fingerprint, and token together, and `phux pair --qr` renders that same link
+as a scannable terminal QR. It is an https Universal Link rather than a
+custom `phux://` scheme so that only the app which owns the domain can
+receive it — a custom scheme is not exclusive on iOS, and the link carries a
+bearer token. The same link is printed a second time as `phux://connect?…`
+for app builds that predate Universal Link support. Treat the link, the QR,
+and the second spelling like the token itself: they carry the credential.
+`--name` labels the server in the device's list.
 
 ```sh
 # Credentials + a scannable one-tap QR for the device:

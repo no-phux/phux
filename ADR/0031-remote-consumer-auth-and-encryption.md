@@ -129,6 +129,20 @@ mint terminal authority and their former survive-until-drop rule is superseded.
 The public-key registry is live truth: revocation, expiry, or a scope-ceiling
 reduction terminates affected connections immediately.
 
+## Amendment — 2026-09-08: the connect link is an https Universal Link
+
+The one-tap link `phux pair` prints and `--qr` encodes is
+`https://phux.phall.io/connect?<query>`, with the query exactly as above.
+The link carries the bearer token, and a custom URL scheme is not exclusive
+on iOS: any installed app may register `phux`, and which app receives an
+open is undefined, so `phux://` could hand the token to a hostile or
+careless app at the moment of the tap. A Universal Link opens only in the app
+that proves ownership of the domain (`applinks:phux.phall.io`), which closes
+that window for links emitted in this form. The `phux://connect?<query>`
+spelling stays valid: `--code` parses both, and `phux pair` prints it on a
+second line for app builds that predate the entitlement, until the App Store
+build carrying it is the floor. Consumers must accept both prefixes.
+
 ## Why
 
 - **Smallest trust-boundary move that is actually safe.** TLS 1.3 gives

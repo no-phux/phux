@@ -286,15 +286,17 @@ fn ssh_rung_degrades_to_an_ssh_entry_and_names_the_upgrade() {
     );
 }
 
-/// `--code` pairs from the same `phux://connect` link `phux pair --qr`
-/// renders — contacting nothing. The fake ssh here is a path that does not
+/// `--code` pairs from the same `https://phux.phall.io/connect` link
+/// `phux pair --qr` renders — contacting nothing. The fake ssh here is a path that does not
 /// exist, so any ssh attempt fails the run.
 #[test]
 #[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
 fn code_rung_registers_from_a_connect_link_without_ssh() {
     let home = RemoteHome::new();
     let no_ssh = home.dir.path().join("no-such-ssh");
-    let link = format!("phux://connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}");
+    let link = format!(
+        "https://phux.phall.io/connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}"
+    );
 
     let seen = home.run_until(
         &["attach", "--remote", "mini", "--code", &link],
@@ -329,7 +331,7 @@ fn a_bad_code_registers_nothing() {
             "--remote",
             "mini",
             "--code",
-            "phux://connect?url=wss://x",
+            "https://phux.phall.io/connect?url=wss://x",
         ],
         &no_ssh,
         "--code",
