@@ -6,16 +6,15 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::attach::record::SessionRecorder;
-use phux_client::attach::status_bar::Notice;
 use phux_client::attach::{
-    self, AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial,
+    AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial,
 };
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
 use phux_record::cast::CastVersion;
 use phux_server::runtime::default_socket_path;
+use phux_tui::attach::{self, record::SessionRecorder, status_bar::Notice};
 
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};

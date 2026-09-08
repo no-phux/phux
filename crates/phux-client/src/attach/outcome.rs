@@ -121,23 +121,6 @@ impl From<phux_dial::DialError> for AttachError {
     }
 }
 
-#[cfg(feature = "tui")]
-impl From<super::render::RenderError> for AttachError {
-    fn from(value: super::render::RenderError) -> Self {
-        match value {
-            super::render::RenderError::Io(e) => Self::Io(e),
-            super::render::RenderError::Ghostty(e) => Self::Ghostty(e),
-            super::render::RenderError::KittyReplay(e) => Self::Protocol(e.to_string()),
-            // A row the batched read could not decode is a mirror-integrity
-            // failure, not an I/O or emulator fault; it reaches the user as a
-            // protocol-level complaint rather than a silently short row.
-            other @ super::render::RenderError::UnreadableCell { .. } => {
-                Self::Protocol(other.to_string())
-            }
-        }
-    }
-}
-
 /// phux-i0e8.2.2: how a successful attach loop ended.
 ///
 /// Threaded out of every `run_*` entry point so the CLI can tell "you
@@ -205,7 +188,8 @@ impl AttachEnd {
 /// signal kills / unknown causes (frame.rs `TerminalClosed`). One
 /// spelling shared by the survivor notice and the last-pane exit
 /// explanation, so both surfaces read as one vocabulary.
-pub(super) fn describe_exit(exit_status: Option<i32>) -> String {
+#[must_use]
+pub fn describe_exit(exit_status: Option<i32>) -> String {
     exit_status.map_or_else(
         || "killed (signal or unknown)".to_owned(),
         |code| format!("exited {code}"),

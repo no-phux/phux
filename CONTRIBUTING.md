@@ -64,8 +64,9 @@ checks; the root target does not build those clients.
 
 The default executable still supports browser WebTransport. Lean builds opt out
 via `phux --no-default-features` at Cargo build time; workspace tests deliberately
-enable the complete server transport surface. `phux-client` keeps its TUI in the
-default feature set; headless consumers disable defaults. `just build-features-check`
+enable the complete server transport surface. The TUI is its own crate
+(`phux-tui`, ADR-0100), so a headless consumer such as `phux-mcp` links
+`phux-client` and cannot reach the chrome. `just build-features-check`
 checks these resolved dependency boundaries without compiling.
 `just build-features-compile` separately type-checks the lean executable and
 headless client/MCP targets so workspace feature unification cannot hide errors.

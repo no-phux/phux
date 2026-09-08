@@ -1,37 +1,27 @@
-//! phux TUI client.
+//! phux headless client library.
 //!
-//! Receives `TERMINAL_OUTPUT` byte frames from a phux server (see
-//! `phux-protocol`), feeds them into a local `libghostty_vt::Terminal`
-//! per attached pane, and renders dirty rows back out to the outer
-//! terminal via `RenderState`. Knows nothing about PTYs.
+//! The control-plane half of a phux client: connect to a server over UDS,
+//! QUIC, or WebSocket, negotiate HELLO, and drive the wire verbs an agent or
+//! a CLI needs -- structured state reads, side-effect-free screen snapshots,
+//! keystroke routing, waits, event watches, layout edits, recording. Every
+//! `phux` agent verb and the `phux-mcp` adapter are thin projections over
+//! the free functions in this crate (`docs/consumers/sdk.md`).
 //!
-//! See ADR-0013 for the bytes-on-wire decision and
-//! `research/2026-05-25-libghostty-renderstate.md` for the renderer-side
-//! contract this crate implements.
-//!
-//! # Render layering (epic phux-5ke, ADR-0020)
-//!
-//! Pane interiors are painted by libghostty (VT bytes → `Terminal` →
-//! stdout). Chrome — status bar, pane dividers, borders, overlays — is
-//! painted by `ratatui` from the `render` module (feature `tui`). The two layers
-//! composite over disjoint screen regions, never interleaved. `ratatui`
-//! lives only in this crate; the pane-interior substrate (layout math,
-//! multi-pane composition, predictive echo) lives in the `phux-client-core`
-//! crate, which carries no `ratatui` dependency. The boundary is therefore
-//! enforced by the compiler — a stray `use ratatui` in the substrate fails
-//! to build — rather than by the retired `check-ratatui-boundary.sh` grep.
-//! See ADR-0020.
-//!
-//! The substrate modules are re-exported here ([`layout`], [`multi_pane`],
-//! [`predict`]) so consumers keep their `phux_client::{layout, predict, …}`
-//! paths.
+//! This crate knows nothing about PTYs and owns no screen: it links no
+//! `ratatui` and never touches the controlling terminal. The interactive
+//! attach -- raw mode, the libghostty replicas, the chrome, the keybinding
+//! dispatcher -- is the `phux-tui` crate, which depends on this one and
+//! never the reverse (ADR-0100). The pane-interior substrate both share
+//! (layout math, multi-pane composition, predictive echo, the session
+//! kernel) is `phux-client-core`, re-exported here as [`layout`],
+//! [`multi_pane`], and [`predict`] so consumers keep their
+//! `phux_client::{layout, predict, ...}` paths.
 //!
 //! # Features
 //!
-//! The default `tui` feature enables the interactive attach driver and chrome.
-//! Disable default features for headless control, snapshots, waits, recording,
-//! and connection APIs. `testkit` is independent of `tui`; `native-engine`
-//! enables the client-core replica host and is not required for headless control.
+//! `testkit` exposes [`testkit`], the one scripted server every client-side
+//! unit test in the workspace speaks to. There is no `tui` feature any more:
+//! the TUI is a crate.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -56,8 +46,6 @@ pub mod explain;
 pub mod layout_ops;
 pub mod perf;
 pub mod record;
-#[cfg(feature = "tui")]
-pub mod render;
 pub mod resize;
 pub mod run;
 pub mod selector;
@@ -74,20 +62,6 @@ pub mod testkit;
 pub mod vcs;
 pub mod wait;
 pub mod watch;
-
-/// The shared benchmark corpora (`benchmarks/support.rs`), compiled into the
-/// test build so a gate can assert against the same grids the benches
-/// measure instead of a private copy that drifts.
-///
-/// Declared HERE rather than beside its only consumer
-/// (`attach::render::tests`) because `#[path]` on a module nested inside
-/// inline modules resolves against a directory that does not exist on disk
-/// (`src/attach/render/tests/`), and a relative path cannot traverse `..`
-/// through a directory that is not there. `src/` is real, so the path
-/// resolves.
-#[cfg(all(test, feature = "tui"))]
-#[path = "../../../benchmarks/support.rs"]
-pub(crate) mod bench_support;
 
 // Pane-interior substrate, re-exported from `phux-client-core` so the
 // `ratatui`-free boundary is compiler-enforced (ADR-0020) while consumers

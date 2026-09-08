@@ -1,0 +1,144 @@
+[package]
+name = "phux-tui"
+description = "phux reference TUI: the attach driver, ratatui chrome, and overlays over the headless phux-client library."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["native-engine"]
+# Safe native libghostty replica/capability host. Synthesis profiles remain
+# available as negotiated fallback; wasm consumers depend on client-core
+# directly and never build this crate.
+native-engine = ["phux-client-core/native-engine"]
+# Exposes the driver's test-only seams (`ReplicaWalk::for_test`) and turns on
+# `phux_client::testkit`, the scripted server the driver's unit tests speak
+# to. Off by default because it is test scaffolding, not product surface;
+# this crate's own `#[cfg(test)]` build gets it without the feature, and the
+# `render_frame` bench opts in.
+testkit = ["phux-client/testkit"]
+
+[dependencies]
+# The headless client library this crate is the interactive front end of:
+# connection + transports, the stdin parser, the replay journal, the attach
+# exit vocabulary, and the agent-verb helpers the chrome reads (agent
+# metadata, layout keys, perf counters, VCS index). This crate depends on
+# it; never the reverse (ADR-0100).
+phux-client.workspace = true
+# ADR-0020 / phux-0fv: the ratatui-free pane-interior substrate — layout
+# math, multi-pane composition, predictive echo, the session kernel. The
+# split makes the `ratatui` confinement compiler-enforced: `phux-client-core`
+# has no `ratatui` dependency, so a stray `use ratatui` there fails to build.
+phux-client-core.workspace = true
+phux-protocol = { workspace = true, features = ["server"] }
+phux-core.workspace = true
+# phux-nz4.5: status-bar composer (`StatusBar`) + widget contract live in
+# phux-config; this crate owns rendering the composed bar to VT.
+phux-config.workspace = true
+# phux-r82.5: the TUI executes plugin manifest actions through the same
+# child-process runtime `phux config run` uses -- workspace-internal crate,
+# no new external surface. The attach driver spawns the run off the input
+# loop and toasts captured failure output.
+phux-plugin.workspace = true
+# Fatal-signal terminal restore. `RawModeGuard::drop` and the panic hook cover
+# every teardown that unwinds; a SIGSEGV/SIGBUS/SIGABRT does not unwind, so
+# neither runs and the user is left in raw mode inside the alt screen. This
+# crate registers an async-signal-safe handler that writes the DECSET resets
+# with a raw `write(2)` and restores termios before re-raising. It is the only
+# Apache-2.0-ONLY dependency in the workspace (vendored -- see its NOTICE); the
+# `unsafe` it needs lives behind that crate boundary so this crate keeps
+# `#![forbid(unsafe_code)]`.
+phux-crash.workspace = true
+# ADR-0060: the asciicast event/codec vocabulary the `--rec` tee speaks.
+# `default-features = false` drops phux-record's `render` feature, so the TUI
+# build never compiles `gif`, `png`, or a second libghostty handle -- the
+# recorder needs only the codec. Declared by path rather than
+# `workspace = true` because cargo refuses to let a member turn off a
+# workspace dependency's default features unless the `[workspace.dependencies]`
+# entry already has them off -- and the `phux` binary wants `render` on.
+phux-record = { path = "../phux-record", default-features = false }
+# In-process performance telemetry (echo RTT, paint timings, `phux perf`).
+phux-perf.workspace = true
+# Under ADR-0013 the client runs its own libghostty Terminal per attached
+# pane and drives a RenderState to paint dirty rows.
+libghostty-vt.workspace = true
+# Chrome-layer TUI toolkit (status bar, dividers, overlays). Lives only in
+# this crate; the pane-interior substrate is in `phux-client-core`, which
+# has no `ratatui` dependency, so the boundary (ADR-0020) is enforced by the
+# compiler rather than the retired grep guard. See epic phux-5ke.
+ratatui.workspace = true
+# TUI action arguments and prompt values use TOML; status-bar tests construct
+# `WidgetSpec::opts` with the same vocabulary.
+toml.workspace = true
+# Raw-mode + alt-screen toggling on the outer terminal needs safe `termios(3)`
+# access. `rustix` is a pure-Rust wrapper that keeps this crate's
+# `#![forbid(unsafe_code)]` intact -- preferred over a direct `libc` dep
+# (which would require relaxing the unsafe lint) and over `crossterm` (which
+# pulls its own event loop we don't use). `fs` supplies the profile-scoped
+# onboarding `flock`; rustix's default crate-feature set is opt-in beyond that.
+# `event` adds only `poll(2)` (no new crate): the OSC 10/11 palette probe waits
+# on its own deadline instead of the terminal's 100 ms `VTIME` timer, which sat
+# on the attach critical path.
+# `alloc` + `procfs` are what gate `termios::ttyname` (rustix files it under
+# procfs because that is how it answers the question on Linux; on other targets
+# it is `ttyname_r(3)`). The attach loop needs the outer terminal's device path
+# so it can open its OWN non-blocking handle to it and read on reactor
+# readiness rather than on a blocking-pool thread (phux-l96p.4) -- it must not
+# set `O_NONBLOCK` on fd 0, whose open file description belongs to the parent
+# shell.
+rustix = { version = "0.38", default-features = false, features = ["std", "termios", "fs", "event", "alloc", "procfs"] }
+# phux-l96p.8: pane titles are arbitrary OSC-2 strings, so the chrome clips
+# them to a CELL budget rather than a char count -- a CJK or emoji title
+# measured by `chars().count()` overruns its budget and overwrites the rule
+# that was supposed to close it.
+unicode-width.workspace = true
+# Async I/O for the attach loop (phux-9gw.3). The workspace tokio dep enables
+# `net`, `io-util`, `signal`, `macros`, `rt`; the loop also needs `io-std`
+# for `tokio::io::stdout()` -- enabled here so headless consumers of
+# phux-client don't pay for the extra `BlockingStdin` helper thread.
+tokio = { workspace = true, features = ["io-std"] }
+# Frame encode/decode produces and consumes `BytesMut`; the driver owns these
+# buffers across its read and write halves.
+bytes.workspace = true
+# The onboarding state file (`onboarding.json`) and the `--rec` recorder's
+# header are serde documents.
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# phux-h5hj.3: the one scripted server every client-side unit test speaks
+# to, so a fake cannot lie about the server's frame order.
+phux-client = { workspace = true, features = ["testkit"] }
+# `tests/sidebar_branch_e2e.rs` stands up a real `ServerRuntime` and waits for
+# its UDS, which is exactly what the server's own integration scaffolding
+# already does. Sharing it deletes a hand-copied server fixture, connect-poll,
+# and `LocalSet` bootstrap that had drifted out of sync with the originals.
+phux-server-testkit.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+insta.workspace = true
+# Test-only: capture the apply-vs-paint child spans `handle_server_frame`
+# emits into an in-memory buffer to prove the split is observable (the
+# flywheel's apply-ms vs paint-ms signal). A scoped `set_default`
+# subscriber, never the production `telemetry::init`.
+tracing-subscriber = { workspace = true }
+tracing-core = { workspace = true }
+
+# Cell-emission gate for `attach::render` (phux-l96p.2). `harness = false`:
+# a plain `main` that prints ns/frame, bytes/frame, allocs/frame and
+# flushes/frame -- no criterion, no new dependency row. It builds a
+# `ReplicaWalk` through `ReplicaWalk::for_test`, which the `testkit` build of
+# this crate exposes.
+[[bench]]
+name = "render_frame"
+harness = false
+required-features = ["testkit"]

@@ -1493,7 +1493,7 @@ shell strings. Every action in §5.4 routes through one `run_action`
 dispatch path — the command palette and the pickers commit the *same*
 `ResolvedAction` a keybinding produces, so there is a single source of
 truth for what each name does (see
-[`action_registry.rs`](../../crates/phux-client/src/attach/action_registry.rs)).
+[`action_registry.rs`](../../crates/phux-tui/src/attach/action_registry.rs)).
 
 ### 5.3 Defaults
 

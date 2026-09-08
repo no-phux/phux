@@ -124,7 +124,7 @@ pub(super) fn walk_layout(
 ///
 /// This is what the ratios *ask for*, before §6.2 freezing redistributes
 /// space. The ADR-0019 decision 5 resize gate
-/// (`phux_client::attach::actions`) checks candidate ratios against this
+/// (`phux_tui::attach::actions`) checks candidate ratios against this
 /// view — gating on the frozen rects would never trip on the frozen axis
 /// (the floor holds the rect at minimum while the ratio drifts
 /// unboundedly past it), so a `resize-pane` could silently bank

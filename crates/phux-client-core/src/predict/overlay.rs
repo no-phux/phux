@@ -1,6 +1,6 @@
 //! Render the prediction overlay to the outer terminal.
 //!
-//! The overlay is painted *after* `phux_client::attach::render::TerminalRenderer::render`
+//! The overlay is painted *after* `phux_tui::attach::render::TerminalRenderer::render`
 //! has finished so the predictions sit visually on top of the authoritative
 //! frame. Each prediction becomes one positioned write:
 //!

@@ -650,7 +650,8 @@ fn c0_or_ascii_to_key(b: u8) -> Option<KeyEvent> {
 }
 
 /// Build a key event for a "named" key (no text payload).
-pub(super) const fn make_named_key(key: PhysicalKey, mods: ModSet) -> KeyEvent {
+#[must_use]
+pub const fn make_named_key(key: PhysicalKey, mods: ModSet) -> KeyEvent {
     KeyEvent {
         action: KeyAction::Press,
         key,

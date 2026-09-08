@@ -20,7 +20,7 @@
 //! The output is a [`PaneLayout`] carrying both the per-pane [`Rect`](crate::layout::Rect)s
 //! (which `attach::driver` hands to each `TerminalRenderer`) and the
 //! list of [`DividerCell`]s (which the chrome layer at
-//! `phux_client::render::chrome::dividers` composites onto stdout via
+//! `phux_tui::render::chrome::dividers` composites onto stdout via
 //! ratatui, with pane interiors marked `Cell::skip` so libghostty's
 //! direct VT output is not stomped — see ADR-0020).
 //!

@@ -186,7 +186,7 @@ Linux x86_64, and Linux arm64.
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
 
 Every other crate (`phux`, `phux-core`, `phux-server`, `phux-client`,
-`phux-config`, `phux-mcp`) is `publish = false`: binary or internal-only.
+`phux-tui`, `phux-config`, `phux-mcp`) is `publish = false`: binary or internal-only.
 The installable CLI ships through release artifacts and Homebrew instead of
 `cargo install phux`.
 

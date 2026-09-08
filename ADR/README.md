@@ -133,6 +133,7 @@ are hand-curated from each ADR's body.
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
 | [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; mutual Ed25519 proof over a persistent authority fingerprint, fresh server incarnation, and channel binding; canonical endpoint-owned scopes are intersected with the live registry and enforced before dispatch; explicitly amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted (the `ci` aggregate context is the sole merge contract with an explicit skip policy; `pull_request: closed` cancels the PR's runs by head SHA; every action reference is SHA-pinned, checked by a gate, and Dependabot-bumped; Rust-lane setup is one composite action; cockpit and release lanes cache the FFI/Zig layers; toolchain versions derive from `rust-toolchain.toml` only) |
+| [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (`phux-tui` holds the attach driver, libghostty replicas, ratatui chrome, dispatcher, and overlays; `phux-client` is the headless library behind the agent verbs and MCP; the dependency is one-way and the `tui` cargo feature is gone; extends [0020](./0020-layered-render.md)) |
 
 ## When to write an ADR
 

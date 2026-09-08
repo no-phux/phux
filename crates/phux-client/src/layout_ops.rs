@@ -47,8 +47,7 @@ pub fn layout_key(session: SessionId) -> String {
 
 /// Whose layout a [`LAYOUT_KEY`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(any(test, feature = "tui"))]
-pub(crate) enum LayoutKeyOwner {
+pub enum LayoutKeyOwner {
     /// The bare legacy key, written before per-session keying existed. It
     /// names no session, so it can only be the reader's own.
     Legacy,
@@ -63,8 +62,8 @@ pub(crate) enum LayoutKeyOwner {
 /// subscribed to exactly one layout key. Once it watches peers too
 /// (phux-k0cw), adopting a peer's topology as your own would silently replace
 /// your pane tree, so the question becomes "whose layout is this?".
-#[cfg(any(test, feature = "tui"))]
-pub(crate) fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
+#[must_use]
+pub fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     if key == LAYOUT_KEY {
         return Some(LayoutKeyOwner::Legacy);
     }

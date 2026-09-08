@@ -117,7 +117,6 @@ pub struct Connection {
     /// changed incarnation means the server's dedupe cache is gone, so an
     /// unresolved operation must be reported unknown rather than replayed.
     server_id: Option<Vec<u8>>,
-    #[cfg(feature = "tui")]
     next_attach_id: u32,
 }
 
@@ -307,7 +306,6 @@ impl Connection {
             peer_pid,
             negotiated_bootstrap: None,
             server_id: None,
-            #[cfg(feature = "tui")]
             next_attach_id: 1,
         })
     }
@@ -359,7 +357,6 @@ impl Connection {
             peer_pid: None,
             negotiated_bootstrap: None,
             server_id: None,
-            #[cfg(feature = "tui")]
             next_attach_id: 1,
         })
     }
@@ -403,7 +400,6 @@ impl Connection {
             peer_pid: None,
             negotiated_bootstrap: None,
             server_id: None,
-            #[cfg(feature = "tui")]
             next_attach_id: 1,
         })
     }
@@ -468,8 +464,8 @@ impl Connection {
     /// transport over an in-process `UnixStream::pair` without a server
     /// socket on disk. Mirrors the wiring [`Self::connect`] does after the
     /// connect resolves.
-    #[cfg(test)]
-    pub(crate) fn from_stream(stream: UnixStream) -> Self {
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn from_stream(stream: UnixStream) -> Self {
         let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
         let (read, write) = stream.into_split();
         Self {
@@ -486,16 +482,20 @@ impl Connection {
             peer_pid,
             negotiated_bootstrap: None,
             server_id: None,
-            #[cfg(feature = "tui")]
             next_attach_id: 1,
         }
     }
 
     /// Negotiate the current protocol once on an already-connected transport.
     ///
-    /// Production constructors call this before returning. It is crate-visible
-    /// so scripted tests can exercise the same handshake over `from_stream`.
-    pub(crate) async fn negotiate(
+    /// Production constructors call this before returning. It is public so the
+    /// TUI crate's scripted tests can exercise the same handshake over
+    /// [`Self::from_stream`].
+    ///
+    /// # Errors
+    ///
+    /// Any handshake failure, as [`AttachError`].
+    pub async fn negotiate(
         &mut self,
         client_name: String,
         client_caps: ClientCapabilities,
@@ -569,8 +569,7 @@ impl Connection {
     ///
     /// IDs are connection-local. Wrapping skips zero so every emitted request
     /// remains wire-valid.
-    #[cfg(feature = "tui")]
-    pub(crate) const fn next_attach_id(&mut self) -> u32 {
+    pub const fn next_attach_id(&mut self) -> u32 {
         let id = self.next_attach_id;
         self.next_attach_id = self.next_attach_id.wrapping_add(1);
         if self.next_attach_id == 0 {

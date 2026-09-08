@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-08
 ---
 
 # Module structure
@@ -9,14 +9,14 @@ last-reviewed: 2026-08-07
 **TL;DR.** Per-crate module trees as they exist in tree today, kept as a
 navigational map rather than an exhaustive listing. New modules should land
 in the shape that fits the crate; do not retrofit older layouts onto new
-work. The render-layering split inside `phux-client` is documented
-separately in [`render-layering.md`](./render-layering.md); crate
+work. The render-layering split between `phux-tui` and `phux-client-core`
+is documented separately in [`render-layering.md`](./render-layering.md); crate
 dependency edges are documented in [`crate-graph.md`](./crate-graph.md).
 
 ---
 
 What is in tree today. New modules land in the shape that fits the crate;
-do not retrofit older layouts onto new work. Sixteen crates make up the
+do not retrofit older layouts onto new work. Seventeen crates make up the
 workspace; the sections below cover them roughly in dependency order
 (wire, domain, daemon, clients, config, binary, then the smaller
 special-purpose crates).
@@ -146,49 +146,87 @@ module.
 
 ## `phux-client`
 
-The ratatui TUI client. Under ADR-0013 it owns a `libghostty_vt::Terminal`
-per attached pane and uses `RenderState` to drive redraw; under
-[ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md) it can instead
-bootstrap from an exact native checkpoint. `ratatui` is fenced to this
-crate; pane-interior substrate lives in `phux-client-core` (see below).
+The headless client library (ADR-0100): everything a consumer needs to
+reach a phux server and speak the wire, and nothing that needs a screen.
+Every `phux` agent verb and the `phux-mcp` adapter are thin projections
+over the free functions here (`docs/consumers/sdk.md`). No `ratatui`, no
+`rustix`, no controlling terminal; the crate never enables tokio's
+`io-std`.
 
 ```
 src/
-  lib.rs              — re-exports of attach::run and the CLI-facing verbs
-  attach/             — the attach loop: connection, driver, rendering,
-                        input dispatch, fleet/multi-pane orchestration
-    mod.rs            — public run(socket, target); ties everything together
-    connection.rs     — UDS transport, length-prefixed frame I/O
-    quic.rs, ws.rs     — remote transports over phux-dial
-    driver.rs         — tokio::select! lifecycle, RawModeGuard RAII. A
+  lib.rs              — module list + re-exports of the client-core substrate
+  attach/             — the headless half of attaching
+    mod.rs            — re-exports: Dial vocabulary, InputReplayJournal,
+                        AttachError / AttachEnd
+    connection.rs     — UDS transport, HELLO negotiation, length-prefixed
+                        frame I/O; test seams (`from_stream`, `negotiate`)
+                        under the `testkit` feature
+    quic.rs, ws.rs    — remote transports over phux-dial
+    input.rs          — StdinParser: bytes -> libghostty input atoms
+                        (shared by the TUI and the keystroke verbs)
+    input_replay.rs   — the ADR-0053 acknowledged-input replay journal
+    outcome.rs        — AttachError / AttachEnd, the exit vocabulary every
+                        verb reports through
+  selector.rs         — client-side TARGET selector resolution (ADR-0021)
+  snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
+  layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,
+  vcs.rs, explain.rs, perf.rs, record.rs
+                      — one module per agent-CLI verb's library half
+                        (docs/consumers/agents.md); layout_ops, agent_meta,
+                        vcs, and perf are also read by the TUI chrome
+  state.rs            — GET_STATE / GET_PERF reads and the degradation notices
+  testkit.rs          — the one scripted server every client-side test
+                        speaks to (feature `testkit`; phux-tui, phux-mcp,
+                        and the binary opt in from dev-dependencies)
+```
+
+## `phux-tui`
+
+The reference TUI (ADR-0100): the interactive front end over `phux-client`.
+Under ADR-0013 it owns a `libghostty_vt::Terminal` per attached pane and
+uses `RenderState` to drive redraw; under
+[ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md) it can instead
+bootstrap from an exact native checkpoint. `ratatui` is fenced to this
+crate; pane-interior substrate lives in `phux-client-core` (below) and the
+headless control plane in `phux-client` (above). `phux_tui::attach`
+re-exports the headless attach vocabulary so the driver keeps one set of
+paths.
+
+```
+src/
+  lib.rs              — attach + render, re-exports of the client-core
+                        substrate
+  attach/             — the attach loop: driver, rendering, input dispatch,
+                        fleet/multi-pane orchestration
+    mod.rs            — re-exports (phux_client::attach::*, driver entry
+                        points, RenderSink, status_bar); the
+                        RenderError -> AttachError conversion
+    driver/           — tokio::select! lifecycle, RawModeGuard RAII. A
                         one-way orchestrator: it owns no shared vocabulary,
                         so no sibling imports from it (phux-4fbs.4, guarded
                         by tests/attach_layering.rs)
-    outcome.rs        — AttachError / AttachEnd, the attach exit vocabulary
+      entry.rs, main_loop.rs, loop_state.rs, chrome.rs, config_ui.rs,
+      headless.rs, overlay_paint.rs, session_io.rs, subscriptions.rs,
+      terminal.rs, viewport.rs
     pane_state.rs     — PaneSlot, the session-kernel alias, and the
                         client-local VCS / attention indices over them
-    server_frame.rs   — decodes server frames into client-side effects
+    server_frame/     — decodes server frames into client-side effects
     render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
-                        — PaneRenderer: feeds TERMINAL_OUTPUT bytes into the
-                        local Terminal and paints dirty rows + chrome
-    input.rs, input_dispatch.rs, action_registry.rs, actions.rs
-                        — StdinParser (keyboard/UTF-8/escape sequences) and
-                        the configurable keybinding-to-action pipeline
+                      — TerminalRenderer: feeds TERMINAL_OUTPUT bytes into
+                        the local Terminal and paints dirty rows + chrome
+    input_dispatch/, action_registry.rs, actions.rs
+                      — the configurable keybinding-to-action pipeline
     fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking
     context_menu.rs, onboarding.rs, plugin_actions.rs, plugin_panes.rs,
-    record.rs, terminal_probe.rs, copy.rs, reload.rs, stdout_writer.rs
+    record.rs, terminal_probe.rs, tty_input.rs, copy.rs, reload.rs,
+    sidebar_zones.rs, stdout_writer.rs, render_prof.rs
   render/             — the ratatui chrome layer (status bar, dividers,
                         sidebar, overlays); see render-layering.md
     chrome/           — status_bar.rs, sidebar.rs, dividers.rs
-    overlay/          — copy_mode.rs, help.rs, menu.rs, prompt.rs,
-                        select_list.rs, selection.rs, toast.rs, which_key.rs
-  selector.rs         — client-side TARGET selector resolution (ADR-0021)
-  snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
-  layout_ops.rs, ask.rs, agent_meta.rs, vcs.rs, explain.rs
-                        — one module per agent-CLI verb's `phux-client`
-                        half (docs/consumers/agents.md)
-  state.rs            — client-local session/pane state mirror
-  testkit.rs          — shared test harness for this crate's own tests
+    overlay/          — copy_mode.rs, menu.rs, prompt.rs, select_list.rs,
+                        selection.rs, toast.rs, which_key.rs, widgets.rs
+    theme.rs, breakpoints.rs, sgr.rs
 ```
 
 What this crate deliberately does not yet do: full client-side coverage of
@@ -225,8 +263,9 @@ src/
     mod.rs, overlay.rs, reconcile.rs, state.rs
 ```
 
-`phux-client` depends on this crate and re-exports its modules so consumers
-keep stable `phux_client::{layout, multi_pane, predict}` paths. Why the
+`phux-client` and `phux-tui` both depend on this crate and re-export its
+modules so consumers keep stable `phux_client::{layout, multi_pane, predict}`
+paths. Why the
 split exists and how the boundary is enforced is owned by
 [`render-layering.md`](./render-layering.md); crate edges are in
 [`crate-graph.md`](./crate-graph.md).

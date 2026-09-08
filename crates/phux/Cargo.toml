@@ -33,6 +33,9 @@ phux-core.workspace = true
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
 phux-client.workspace = true
+# The reference TUI (`phux attach`, `phux snapshot --render`): the attach
+# driver, ratatui chrome, and overlays over the headless client (ADR-0100).
+phux-tui.workspace = true
 # In-process performance telemetry: `phux perf` renders a `PerfReport`.
 phux-perf.workspace = true
 phux-config.workspace = true
@@ -106,6 +109,10 @@ rustix = { version = "0.38", default-features = false, features = ["std", "proce
 # `[dev-dependencies]` keeps it out of the shipped binary; it is a workspace
 # crate behind a feature flag, so no third-party row enters the lockfile.
 phux-client = { workspace = true, features = ["testkit"] }
+# The cell-projection conformance test drives the TUI's `ReplicaWalk` through
+# its `for_test` seam, which the `testkit` build of phux-tui exposes (the
+# feature also turns on phux-client's scripted server above).
+phux-tui = { workspace = true, features = ["testkit"] }
 # Command-level wire mocks encode framed replies with the protocol's native
 # BytesMut API; bytes is already a workspace/runtime dependency.
 bytes.workspace = true

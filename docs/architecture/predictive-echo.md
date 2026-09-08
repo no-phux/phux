@@ -107,4 +107,4 @@ unconfirmed overlay on either screen.
 - `crates/phux-client-core/src/predict/state.rs` owns prediction policy and state.
 - `crates/phux-client-core/src/predict/overlay.rs` paints the underlined layer.
 - `crates/phux-client-core/src/predict/reconcile.rs` classifies authoritative output.
-- `crates/phux-client/src/attach/` connects prediction to input, rendering, and server frames.
+- `crates/phux-tui/src/attach/` connects prediction to input, rendering, and server frames.

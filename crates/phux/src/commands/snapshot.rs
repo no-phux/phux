@@ -2,12 +2,13 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::attach::{AttachError, run_headless_rendered};
+use phux_client::attach::AttachError;
 use phux_client::snapshot::{
     ROW_WINDOW_ALL, RenderedFrame, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW, row_window,
 };
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
+use phux_tui::attach::run_headless_rendered;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 

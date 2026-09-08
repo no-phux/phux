@@ -21,10 +21,12 @@ path = "src/main.rs"
 # wire types directly — MCP is a thin adapter, not a separate core
 # (ADR-0022 §5). No MCP framework dep: the JSON-RPC is hand-rolled over
 # serde_json so the surface stays reimplementable in any language.
-# A direct path allows disabling defaults while the workspace entry retains
-# the CLI's default TUI. MCP only uses control/transport APIs, not the native
-# replica engine or chrome. Protocol server conversions still use libghostty.
-phux-client = { path = "../phux-client", default-features = false }
+# MCP only uses control/transport APIs. Since ADR-0100 the TUI is its own
+# crate (`phux-tui`), so depending on `phux-client` cannot pull in the chrome
+# or the native replica engine; `scripts/check-build-features.py` still pins
+# that no `ratatui` reaches this graph. Protocol server conversions still use
+# libghostty.
+phux-client.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 phux-protocol = { workspace = true, features = ["server"] }
@@ -40,5 +42,5 @@ tokio = { workspace = true, features = ["io-std"] }
 # harness out of the shipped adapter while the test build still gets it — and
 # replaces this crate's hand-rolled frame reader, which encoded whatever its
 # author believed the server does.
-phux-client = { path = "../phux-client", default-features = false, features = ["testkit"] }
+phux-client = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
