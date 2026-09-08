@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-05-28
+last-reviewed: 2026-09-08
 ---
 
 # Doc conventions
@@ -340,6 +340,11 @@ scope.
   `docs/spec/`. Outside the spec, prefer plain prose.
 - **Cross-reference by relative path**, not by URL. The dead-link gate
   checks relative paths; URLs are not verified and silently rot.
+- **`docs/site/` is outside this contract.** The Astro site imported from
+  `phall1/phux-site` keeps its own conventions (`docs/site/FUMADOCS.md`,
+  `docs/site/AGENTS.md`); `check-docs.sh` excludes the subtree. Do not
+  add site files to the doc-system gates and do not apply phux
+  frontmatter to site content.
 - **Don't restate the type system.** Module and item docs explain
   *intent* (why this exists, what the constraint is, who calls it).
   The type signature already explains *what*.

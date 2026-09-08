@@ -1,0 +1,43 @@
+---
+// Shared <head> contents — BaseLayout and DocsLayout both render this so
+// canonical/OG/Twitter behavior can't drift between the landing and the docs.
+import { SITE } from "../lib/site";
+
+interface Props {
+  title: string;
+  description: string;
+  /** og:type — "website" for the landing, "article" for docs pages. */
+  type?: "website" | "article";
+}
+
+const { title, description, type = "website" } = Astro.props;
+
+// build.format "file" leaves ".html" on build-time pathnames; the served
+// routes are extensionless (trailingSlash "never"), so canonicals must be too.
+const path =
+  Astro.url.pathname.replace(/\/index\.html$/, "/").replace(/\.html$/, "").replace(/\/+$/, "") ||
+  "/";
+const canonical = new URL(path, SITE.url).href;
+const ogImage = new URL("/og.png", SITE.url).href;
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>{title}</title>
+<meta name="description" content={description} />
+<link rel="canonical" href={canonical} />
+<meta property="og:site_name" content={SITE.name} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:type" content={type} />
+<meta property="og:url" content={canonical} />
+<meta property="og:image" content={ogImage} />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={ogImage} />
+<meta name="theme-color" content="#07080b" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="sitemap" href="/sitemap-index.xml" />

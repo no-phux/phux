@@ -1,0 +1,61 @@
+name: site-deploy
+
+# Push to main touching docs/ or ADR/ → build the Astro site (docs/site) and
+# deploy it as a Workers static-assets worker (phux-site) on phux.sh. Site and
+# docs share this repository, so doc edits rebuild the site directly — no
+# cross-repo dispatch, no drift polling.
+# The live demo reads PUBLIC_PHUX_DEMO_WS (a repo *variable*); it points at the
+# Worker's wss URL (see site-deploy-worker.yml + docs/site/DEPLOY.md).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "ADR/**"
+      - ".github/workflows/site-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: true
+
+jobs:
+  pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: docs/site
+        run: bun install --frozen-lockfile
+
+      # sync-docs reads ../../docs (the enclosing repo's docs tree) and stamps
+      # source links with this checkout's HEAD revision.
+      - name: Sync docs into the site
+        working-directory: docs/site
+        run: bun run sync-docs
+
+      - name: Build
+        working-directory: docs/site
+        run: bun run build
+        env:
+          PUBLIC_PHUX_DEMO_WS: ${{ vars.PUBLIC_PHUX_DEMO_WS }}
+
+      - name: Check built links
+        working-directory: docs/site
+        run: bun run check:links
+
+      - name: Deploy site worker (static assets)
+        working-directory: docs/site
+        run: bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

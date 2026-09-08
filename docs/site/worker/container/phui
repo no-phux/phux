@@ -1,0 +1,18 @@
+#!/bin/bash
+# The demo command is `phui`, but the binary it runs is built from PHUI_REVISION
+# in worker/Dockerfile, which is pinned to a commit from before the ghui -> phui
+# rename. That build still reads GHUI_* environment variables, so these keep
+# their old names deliberately. Rename them in the same change that bumps
+# PHUI_REVISION past the rename commit, not before.
+exec /usr/bin/env -i \
+  HOME="${HOME:-/tmp}" \
+  PATH=/usr/bin:/bin \
+  TERM="${TERM:-xterm-256color}" \
+  GHUI_CACHE_PATH=off \
+  GHUI_FORCE_FULL_REPAINT_ON_START=1 \
+  GHUI_MOCK_PR_COUNT=24 \
+  GHUI_MOCK_REPO_COUNT=4 \
+  GHUI_MOCK_REPOSITORY=phall1/phux \
+  GHUI_MOCK_USERNAME=guest \
+  GHUI_MOCK_WORKSPACE_PREFERENCES_PATH=off \
+  /usr/local/libexec/phui.real "$@"

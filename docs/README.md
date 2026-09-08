@@ -80,6 +80,17 @@ headless commands, and MCP adapter are real. Interfaces may still move, and
 some of the longer-range protocol design is intentionally documented before
 it ships. [`CONCEPTS.md`](./CONCEPTS.md) owns the exact maturity boundary.
 
+## The site
+
+The marketing + docs site lives at [`site/`](./site/) — the Astro app imported
+from `phall1/phux-site`. Its docs pages are generated from this very tree at
+build time by `site/scripts/sync-docs.ts` (glob-driven; a new spec page,
+consumer doc, or ADR flows through with zero script edits). Deploy pipeline:
+`.github/workflows/site-deploy.yml` builds and publishes on every push that
+touches `docs/**` or `ADR/**`, serving `https://phux.sh`. Site-specific
+conventions live in [`site/FUMADOCS.md`](./site/FUMADOCS.md); the doc-system
+contract above deliberately does not apply to site content.
+
 ## Working on the project
 
 Contributors should read [`../CONTRIBUTING.md`](../CONTRIBUTING.md). Documentation

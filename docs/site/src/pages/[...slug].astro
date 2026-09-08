@@ -1,0 +1,59 @@
+---
+// /[...slug] — every docs page, routed by the Fumadocs page tree. The old
+// per-section routers (docs/index, quickstart/[...slug], wire/[...slug], …)
+// are replaced by this one catch-all; static pages (/, /embed) take
+// precedence, and slugs outside the tree 404.
+import { render, type CollectionEntry } from "astro:content";
+import defaultMdxComponents from "fumadocs-ui/mdx";
+import type { TOCItemType } from "fumadocs-core/toc";
+import { Docs } from "../components/docs/Docs";
+import Layout from "../components/docs/layout.astro";
+import { source } from "../lib/source";
+import { SITE } from "../lib/site";
+
+interface Props {
+  page: CollectionEntry<"docs">;
+}
+
+export async function getStaticPaths() {
+  return source.getPages().map((page) => ({
+    params: { slug: page.slugs.length > 0 ? page.slugs.join("/") : undefined },
+    props: { page: (page.data as { _raw: CollectionEntry<"docs"> })._raw },
+  }));
+}
+
+const { page } = Astro.props;
+const { Content, headings } = await render(page);
+
+const toc: TOCItemType[] = headings.filter((heading) => heading.depth >= 2 && heading.depth <= 4).map((heading) => ({
+  depth: heading.depth,
+  title: heading.text,
+  url: `#${heading.slug}`,
+}));
+
+const sourceUrl = `https://github.com/phall1/phux/blob/${page.data.sourceRevision}/${page.data.sourcePath}`;
+const title = `phux — ${page.data.title}`;
+const description = page.data.description || SITE.description;
+// Static `format: file` builds render this route as `/wire.html`; the public
+// route and Fumadocs page tree use extensionless canonical paths.
+const pathname = Astro.url.pathname.replace(/\.html$/, "");
+---
+
+<Layout title={title} description={description}>
+  <Docs
+    tree={source.getPageTree()}
+    pathname={pathname}
+    params={Astro.params}
+    page={{ toc }}
+    sourceUrl={sourceUrl}
+    title={page.data.title}
+    summary={page.data.summary}
+    description={page.data.description}
+    codeLanguages={page.data.codeLanguages}
+    stability={page.data.stability}
+    protocolVersion={page.data.protocolVersion}
+    client:load
+  >
+    <Content components={{ ...defaultMdxComponents }} />
+  </Docs>
+</Layout>

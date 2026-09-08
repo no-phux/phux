@@ -136,6 +136,10 @@ should_run() {
 #   - LICENSE* (not markdown anyway, but defensive)
 #   - .beads/, .direnv/, .git/, target/, research/archive/
 #   - crates/*/tests/*/README.md (test fixtures, not part of the doc system)
+#   - docs/site/ (the imported Astro site app — it carries its own doc
+#     conventions, see docs/site/FUMADOCS.md and docs/site/AGENTS.md; the
+#     doc-system contract below governs the hand-maintained docs tree, not
+#     site content or site infra notes)
 # Inclusions:
 #   - everything under docs/ and ADR/
 #   - top-level .md (README, AGENTS, CLAUDE, CONTRIBUTING, ARCHITECTURE,
@@ -159,7 +163,9 @@ collect_files() {
         -print
     # docs/ tree.
     if [[ -d "$ROOT/docs" ]]; then
-        find "$ROOT/docs" -type f -name '*.md' -print
+        find "$ROOT/docs" -type f -name '*.md' \
+            -not -path "$ROOT/docs/site/*" \
+            -print
     fi
     # ADR/ tree.
     if [[ -d "$ROOT/ADR" ]]; then

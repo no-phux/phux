@@ -1,0 +1,64 @@
+name: site-rollback-worker
+
+# Roll the live-demo Worker (docs/site/worker) back to a previous version.
+# Refuses to roll back across the authenticated-native baseline; use
+# site-native-control for emergency containment instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Previously deployed Cloudflare Worker version ID
+        required: true
+        type: string
+      reason:
+        description: Rollback reason
+        required: true
+        type: string
+      authenticated_baseline:
+        description: Confirm the target version requires auth before native allocation
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        working-directory: docs/site
+        run: bun install --frozen-lockfile
+      - name: Refuse pre-auth rollback
+        if: ${{ inputs.authenticated_baseline != true }}
+        run: |
+          echo "Refusing rollback without confirmation that the target preserves the native auth boundary." >&2
+          echo "Use the native-control kill switch for emergency containment." >&2
+          exit 1
+      - name: Roll back Worker version
+        working-directory: docs/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          bunx wrangler rollback "${{ inputs.version }}" --cwd worker --name phux-demo
+          --message "${{ inputs.reason }}" --yes
+      - name: Verify authentication boundary
+        run: |
+          response="$(curl --fail --silent --show-error \
+            --header 'Origin: https://phux.sh' \
+            https://shell.phux.sh/auth/session)"
+          jq -e '.authenticated == false and (keys | sort == ["authenticated"])' <<<"$response"

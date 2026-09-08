@@ -1,0 +1,26 @@
+{
+  // Worker-only TypeScript config (track D). Kept separate from the Astro/bun
+  // root tsconfig so the Worker compiles against the Workers runtime libs, not
+  // the browser/bun ones.
+  //
+  // NOTE FOR INTEGRATOR: the root tsconfig.json includes "**/*", which would
+  // otherwise pull these files into the Astro `astro check` pass with the wrong
+  // libs. Add "worker" to the root tsconfig `exclude` array. Track D does not
+  // own the root tsconfig, so that one-line change is left to whoever reconciles.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types/2023-07-01"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "src/**/*.test.ts"]
+}

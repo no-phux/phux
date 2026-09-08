@@ -142,8 +142,8 @@ PHUX_WS_ADDR=127.0.0.1:47654 cargo run -p phux-server --example ws_demo_server
 ```
 
 Then serve the `pkg/` output and call `start("ws://127.0.0.1:47654/", canvasId,
-cols, rows)`. The phux-site repo wires this into a `<PhuxTerminal>` island; see
-its `scripts/build-client.sh` for the copy-the-artifact step.
+cols, rows)`. The site at `docs/site/` wires this into a `<PhuxTerminal>`
+island; see `docs/site/scripts/build-client.sh` for the copy-the-artifact step.
 
 For the WebTransport path, run a real server with a WebTransport listener and
 hand the client both URLs (it tries WebTransport, then falls back):
