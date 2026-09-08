@@ -6,20 +6,20 @@
 //!
 //! - `phux_config::vocab::ACTION_NAMES` is the canonical name list (and
 //!   this page's row order);
-//! - `phux_client::attach::action_registry::REGISTRY` supplies the
+//! - `phux_tui::attach::action_registry::REGISTRY` supplies the
 //!   description, parameter surface, and palette category for every
 //!   palette-offered action;
-//! - `phux_client::attach::action_registry::NON_PALETTE_ACTIONS` supplies
+//! - `phux_tui::attach::action_registry::NON_PALETTE_ACTIONS` supplies
 //!   the same for the deliberate palette omissions, plus the reason each
 //!   has no palette row.
 //!
-//! The `every_action_has_exactly_one_doc_home` test in phux-client pins
+//! The `every_action_has_exactly_one_doc_home` test in phux-tui pins
 //! the union of the last two to the first, so a new `run_action` arm
 //! cannot ship without a doc blurb — and the freshness test in
 //! `super::tests` then forces this page's regeneration.
 
-use phux_client::attach::action_registry::{NON_PALETTE_ACTIONS, REGISTRY};
 use phux_config::vocab::ACTION_NAMES;
+use phux_tui::attach::action_registry::{NON_PALETTE_ACTIONS, REGISTRY};
 
 use super::Page;
 

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-09
+last-reviewed: 2026-09-08
 ---
 
 # Crate dependency graph
@@ -9,30 +9,32 @@ last-reviewed: 2026-07-09
 **TL;DR.** The crate edges that hold phux together and the boundaries
 they enforce: `phux-core` and `phux-protocol` never depend on each other,
 `phux-protocol` re-exports libghostty atoms directly, and the ratatui
-chrome is fenced into `phux-client`. Plus how each crate participates in
+chrome is fenced into `phux-tui` above a headless `phux-client`. Plus how
+each crate participates in
 the L1/L2/L3 wire layering from ADR-0015.
 
 ---
 
 ```
-                ┌──────────────────────────────────┐
-                │              phux                │  binary; subcommands
-                └─┬──────────┬───────────┬─────────┘
-                  │          │           │
-            ┌─────▼───┐  ┌───▼────┐  ┌───▼────┐
-            │ server  │  │ client │  │ config │   client = chrome (ratatui)
-            └──┬────┬─┘  └─┬──┬──┬─┘  └────────┘         + attach loop
-               │    │      │  │  └────────┐
-               │    │      │  │      ┌────▼───────┐  pane-interior substrate:
-               │    │      │  │      │ client-core│  layout, multi-pane,
-               │    │      │  │      └────┬───────┘  predict — NO ratatui
-               │    │      │  └───────────┤          dep (ADR-0020, phux-0fv)
-       ┌───────▼─┐  │   ┌──▼──────────────▼─┐    │
-       │  core   │  └──►│     protocol      │──► libghostty-vt ◄┘
-       └─────────┘      │ (codec, input     │     (client also links;
-                        │  events, wire     │      runs a local Terminal
-                        │  envelopes)       │      per attached pane —
-                        └───────────────────┘      ADR-0013)
+                ┌────────────────────────────────────────────┐
+                │                   phux                     │  binary; subcommands
+                └─┬──────────┬──────────────┬───────────┬────┘
+                  │          │              │           │
+            ┌─────▼───┐  ┌───▼────┐   ┌─────▼────┐  ┌───▼────┐
+            │ server  │  │  tui   │──►│  client  │  │ config │
+            └──┬────┬─┘  └─┬──┬───┘   └─┬──┬─────┘  └────────┘
+               │    │      │  │         │  │    tui    = attach driver +
+               │    │      │  └────┐    │  │           ratatui chrome (ADR-0100)
+               │    │      │       │    │  │    client = headless library:
+               │    │      │  ┌────▼────▼──▼─┐         connection, transports,
+               │    │      │  │  client-core │         agent verbs; NO ratatui
+               │    │      │  └──────┬───────┘  client-core = pane-interior
+       ┌───────▼─┐  │   ┌──▼─────────▼──────┐   substrate: layout, multi-pane,
+       │  core   │  └──►│     protocol      │──► libghostty-vt   predict, session
+       └─────────┘      │ (codec, input     │   ◄─ tui links it  kernel; NO
+                        │  events, wire     │      too: a local  ratatui, NO tokio
+                        │  envelopes)       │      Terminal per  (ADR-0020)
+                        └───────────────────┘      pane (ADR-0013)
 ```
 
 Four crate boundaries carry weight:
@@ -49,16 +51,20 @@ Four crate boundaries carry weight:
    libghostty's input and style atoms instead of mirroring them. The
    default-features-off shell exists so `crates.io`/`docs.rs` see a
    small surface without the full terminal-emulator dependency graph.
-3. **`phux-client` is split from `phux-client-core` so the ratatui
-   boundary is compiler-enforced** (ADR-0020, phux-0fv). The split and
-   the two-renderer rationale are owned by
-   [`render-layering.md`](./render-layering.md); for crate purposes,
-   `ratatui` lives only in `phux-client`, `phux-client-core` declares no
-   `ratatui` dependency, and `phux-client` re-exports
-   `phux_client_core::{layout, multi_pane, predict}` so consumers keep
-   stable `phux_client::…` paths.
+3. **The TUI is two crate edges away from the headless library and the
+   substrate, and both edges are one-way** (ADR-0020, ADR-0100). `phux-tui`
+   depends on `phux-client` (connection, transports, the stdin parser, the
+   exit vocabulary, the agent-verb helpers its chrome reads) and on
+   `phux-client-core` (layout, multi-pane, predict, the session kernel).
+   `ratatui` lives only in `phux-tui`; neither dependency declares it, so a
+   stray `use ratatui` in either fails to build, and `phux-mcp` cannot link
+   the chrome because no edge leads there. The two-renderer rationale is
+   owned by [`render-layering.md`](./render-layering.md). Both `phux-client`
+   and `phux-tui` re-export `phux_client_core::{layout, multi_pane,
+   predict}` so consumers keep stable paths.
 4. **`phux-dial` is the shared outbound-transport establishment layer**
-   (phux-v45.3). Remote *consumers* (the `phux-client` attach loop) and
+   (phux-v45.3). Remote *consumers* (`phux-client`'s connection, which the
+   `phux-tui` attach loop drives) and
    the federation *hub* (`phux-server --hub`, which dials its satellites
    as an ordinary remote consumer per ADR-0038) establish QUIC/WebSocket
    connections identically: TLS 1.3 with a fingerprint-pinned (or
@@ -70,17 +76,19 @@ Four crate boundaries carry weight:
    the dial types under the established `phux_client::attach::{quic,ws}`
    paths.
 
-`server` and `client` both depend on `protocol`. Both also depend on
-`libghostty-vt` directly: the server's `Terminal` is the canonical
-state for each pane and drives the structured-input encoders
-(ADR-0006, ADR-0008); the client's `Terminal` is a local replica fed
-by `PANE_OUTPUT` bytes for the panes that client has attached, with
-`RenderState` providing per-row dirty tracking for efficient redraw.
+`server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
+also depend on `libghostty-vt` directly: the server's `Terminal` is the
+canonical state for each pane and drives the structured-input encoders
+(ADR-0006, ADR-0008); the TUI's `Terminal` is a local replica fed by
+`PANE_OUTPUT` bytes for the panes that client has attached, with
+`RenderState` providing per-row dirty tracking for efficient redraw
+(`client` names only libghostty's error type, for the shared exit
+vocabulary).
 See ADR-0013 and `../../research/2026-05-25-libghostty-renderstate.md`
 for the renderer-side contract on both ends.
 
-`phux-config` is a sibling of `core` and is consumed by the binary and
-the client.
+`phux-config` is a sibling of `core` and is consumed by the binary, the
+client, and the TUI.
 
 `phux-client-ffi` sits above `phux-client-core` and below nothing in this
 workspace: it is a stable C ABI over the synchronous session kernel, for
@@ -141,9 +149,9 @@ Cross-cuts:
 - **Federation** ([ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md)) — hub-and-spoke Terminal routing. Normal servers construct `LOCAL` ids; a hub retags aggregate inventory, spawn replies, and relayed frames as `SATELLITE { host, id }`. Satellite session/window models are not merged, and routes do not chain.
 - **Automation** — server-side rules subscribing to L1 events. Not yet implemented; an optional service when it lands.
 
-A consumer's tier set is declared at HELLO time. Today's `phux-client`
-is an L1+L3-equivalent TUI consumer. Its workspace-internal headless
-free functions use L1; a future native GUI consumer will be L1+L3 with
+A consumer's tier set is declared at HELLO time. Today's `phux-tui`
+is an L1+L3-equivalent TUI consumer. `phux-client`'s headless free
+functions use L1; a future native GUI consumer will be L1+L3 with
 its own metadata schema. The reference TUI is **not** protocol-privileged
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)) — the wire
 carries nothing that exists for it alone.

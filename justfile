@@ -218,7 +218,7 @@ test:
 # ~87s per CI run. Under the v2/v3 feature resolver a package's dev-dependency
 # features only join the unified feature set for packages whose test targets
 # are being built, so `-p phux` drops phux-server's dev-deps (tokio/test-util,
-# wtransport/dangerous-configuration) and `-p phux-server` drops phux-client's
+# wtransport/dangerous-configuration) and `-p phux-server` drops phux-tui's
 # tokio/io-std. Each selection therefore re-keys `tokio` into a DIFFERENT unit,
 # and every crate downstream of tokio (phux-core, phux-server, phux-client,
 # phux, quinn, tokio-util, tokio-rustls, ...) recompiles from scratch.

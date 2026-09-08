@@ -13,7 +13,7 @@
 //! The canonical tiling walk is client-side, in `phux-client-core`'s
 //! `multi_pane` module (`pane_rects` / `walk_layout`): it reserves one
 //! divider cell per interior split, and it pairs with the client's
-//! min-cell gate (`phux_client::attach::actions`). An earlier server-side
+//! min-cell gate (`phux_tui::attach::actions`). An earlier server-side
 //! `fill_rects` here was divider-unaware and had drifted from that walk
 //! with no runtime callers; it was removed rather than unified because
 //! the two crates operate on different `LayoutNode` types and sharing the

@@ -131,8 +131,8 @@ pub fn compute_layout_in(
 ///
 /// This is the exact same local-divider walk [`compute_layout`] paints
 /// with, minus the divider rasterization. Reflow-emit
-/// (`phux_client::attach::reflow`) and the min-cell gate
-/// (`phux_client::attach::actions`) both call it so the size a pane's
+/// (`phux_tui::attach::reflow`) and the min-cell gate
+/// (`phux_tui::attach::actions`) both call it so the size a pane's
 /// PTY is told to be (via `TERMINAL_RESIZE`) equals the rect it is
 /// painted into, by construction — closing the gap/overlap class of bug
 /// that arose when reflow and paint used divergent algorithms.

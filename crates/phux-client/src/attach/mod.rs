@@ -1,166 +1,39 @@
-//! Attach loop — the runtime that makes `phux attach <session>` work.
+//! The headless half of attaching -- everything a client needs to reach a
+//! phux server and speak the wire, and nothing that needs a screen.
 //!
-//! Wires together four collaborators per the phux-9gw.3 design:
+//! * [`connection`] -- UDS transport plus length-prefixed frame I/O, the
+//!   HELLO negotiation, and the remote dial vocabulary ([`Dial`],
+//!   [`QuicDial`], [`WsDial`], [`CertTrust`]).
+//! * [`quic`], [`ws`] -- the remote transports over `phux-dial`.
+//! * [`input`] -- stdin bytes -> structured input events. The parser is
+//!   terminal-free (it consumes bytes and yields libghostty atoms), so the
+//!   agent verbs that synthesize keystrokes share it with the TUI.
+//! * [`input_replay`] -- the ADR-0053 acknowledged-input replay journal the
+//!   remote reconnect lanes carry across attaches.
+//! * [`outcome`] -- the attach exit vocabulary ([`AttachError`],
+//!   [`AttachEnd`]) every verb reports through.
 //!
-//! * [`connection`] — UDS transport plus length-prefixed frame I/O.
-//! * `driver` (feature `tui`) — the `tokio::select!` lifecycle, the file that owns the
-//!   process's stdout, stdin, and SIGWINCH handles for the duration of the
-//!   attach.
-//! * `render` (feature `tui`) — VT emission from a local `libghostty_vt::Terminal` /
-//!   `RenderState` pair per ADR-0013.
-//! * [`input`] — stdin bytes → structured input events for the keybinding
-//!   resolver and pane input forwarding.
-//!
-//! The TUI entry point is `driver::run_with_predict_dial`. It expects to be called from a tokio
-//! current-thread runtime (matching ADR-0003); embedders are responsible for
-//! the runtime lifecycle. The function takes over the controlling terminal
-//! (raw mode + alt screen) and restores it on every exit path including
-//! panic — see `driver::RawModeGuard`.
-//!
-//! # Scope
-//!
-//! This module deliberately does **not** implement:
-//!
-//! * Predictive local echo — that's phux-9gw.1 layered on top.
-//! * `VIEWPORT_RESIZE` — the wire frame doesn't exist yet; tracked under
-//!   phux-4hp.
-//! * Mouse / bracketed-paste parsing — keyboard input (ASCII, UTF-8,
-//!   CSI / SS3 sequences, modifier-bearing chords, Alt-chords) is
-//!   handled by [`input::StdinParser`]; mouse reports and bracketed
-//!   paste are deferred follow-ups (see the input module docs).
-//!
-//! With `tui` disabled, this module retains the shared connection, transport,
-//! input parser, replay journal, and error vocabulary used by headless clients.
-//! Rendered headless captures (`run_headless_rendered`) still require `tui`:
-//! they compose the same chrome as an interactive attach.
+//! The interactive attach loop -- raw mode, the `tokio::select!` driver, the
+//! libghostty replicas, the ratatui chrome, the keybinding dispatcher -- is
+//! the `phux-tui` crate, which depends on this module and re-exports it
+//! under `phux_tui::attach` (ADR-0100). Nothing here may depend on that
+//! crate: the split exists so `phux-mcp` and the agent verbs link a client
+//! without linking a terminal.
 
-#[cfg(feature = "tui")]
-pub mod action_registry;
-#[cfg(feature = "tui")]
-pub mod actions;
 pub mod connection;
-// phux-wrnm: what is on each right-click menu (ADR-0058). The overlay that
-// renders one lives in `render::overlay::menu`.
-#[cfg(feature = "tui")]
-mod context_menu;
-#[cfg(feature = "tui")]
-pub mod copy;
-#[cfg(feature = "tui")]
-pub mod driver;
-#[cfg(feature = "tui")]
-mod exec_widgets;
-#[cfg(feature = "tui")]
-mod fleet;
-#[cfg(feature = "tui")]
-mod focus;
-// phux-foz.11: glass-diff regression + stress tests for the compose
-// invariant (no doubled text under rapid window switching / control spam).
-#[cfg(all(test, feature = "tui"))]
-#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
-mod ghost_stress_tests;
 pub mod input;
-#[cfg(feature = "tui")]
-pub mod input_dispatch;
 // ADR-0053: the acknowledged-input replay journal for the remote reconnect
-// lanes — the CLI analogue of phux-mobile's PendingInput queue. Created per
+// lanes -- the CLI analogue of phux-mobile's PendingInput queue. Created per
 // attach invocation by the CLI's reconnect loop (remote dials only) and
-// threaded through the driver like the `--rec` recorder.
+// threaded through the TUI driver like the `--rec` recorder.
 pub mod input_replay;
-#[cfg(feature = "tui")]
-mod onboarding;
 // phux-4fbs.4: the attach exit vocabulary (`AttachError` / `AttachEnd`).
-// Declared beside the driver rather than inside it so the eleven siblings that
-// need only the error type do not form a back-edge into the lifecycle file.
-mod outcome;
-#[cfg(feature = "tui")]
-pub mod paint;
-// phux-4fbs.4: `PaneSlot` and the client-local indices built over it. Shared
-// vocabulary the driver and its siblings both read; see the module doc.
-#[cfg(feature = "tui")]
-mod pane_state;
-#[cfg(feature = "tui")]
-pub mod plugin_actions;
-#[cfg(feature = "tui")]
-pub mod plugin_panes;
+// A leaf module so the many callers that need only the error type never
+// form a back-edge into anything heavier.
+pub mod outcome;
 pub mod quic;
-#[cfg(feature = "tui")]
-mod sidebar_zones;
-// ADR-0060: the `phux --rec` tee. A `Write` wrapper on the one RenderSink the
-// driver already threads through the render path, so a recording is exactly
-// the bytes the human's glass received.
-#[cfg(feature = "tui")]
-pub mod record;
-#[cfg(feature = "tui")]
-pub mod reflow;
-#[cfg(feature = "tui")]
-mod reload;
-// `PHUX_RENDER_PROF=1`: per-second paint/flush/compose counters, so a change
-// to the paint scheduler is arguable from numbers rather than a screen
-// recording. Free (one predicted branch per call site) when unset.
-#[cfg(feature = "tui")]
-pub mod render;
-#[cfg(feature = "tui")]
-pub(crate) mod render_prof;
-#[cfg(feature = "tui")]
-pub mod rendered;
-// ADR-0029 §2: the monotone repaint accumulator. Loop-level triggers raise a
-// level; the driver drains it once per iteration, so a burst of chrome
-// triggers collapses into a single in-place chrome paint instead of N
-// full-screen clears.
-#[cfg(feature = "tui")]
-mod repaint;
-#[cfg(feature = "tui")]
-pub mod server_frame;
-#[cfg(feature = "tui")]
-mod stdout_writer;
-#[cfg(feature = "tui")]
-mod terminal_probe;
-// phux-l96p.4: the outer terminal's input handle. Split out of the driver
-// because "how stdin is read" is a transport concern with its own fallback
-// ladder, not part of the loop's state machine.
-#[cfg(feature = "tui")]
-mod tty_input;
 pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
-#[cfg(feature = "tui")]
-pub use driver::{
-    run_headless_rendered, run_recorded_dial, run_with_predict_dial, run_with_stdout,
-    write_terminal_reset,
-};
 pub use input_replay::InputReplayJournal;
 pub use outcome::{AttachEnd, AttachError};
-
-// Multi-pane composition moved to `phux-client-core` with phux-0fv
-// (ADR-0020): the pure layout-tree → pane-rects + divider-cells compute is
-// ratatui-free pane-interior code. Re-exported here so the established
-// `crate::attach::multi_pane` / `phux_client::attach::multi_pane` paths
-// keep resolving for the driver, paint, and server-frame handler.
-pub use crate::multi_pane;
-
-/// The output sink the attach driver composites into.
-///
-/// The driver threads one `&mut` of this through the whole render path
-/// (panes, status bar, dividers, overlays, cursor restore). It is a pure
-/// byte sink — a blanket impl covers real stdout (the production tty
-/// path), a `Vec<u8>` capture (tests today, and a future headless agent
-/// surface), or any other `Write`. The chrome toolkit's structured types
-/// are rasterized to VT bytes before reaching this boundary, so the sink
-/// never carries a grid buffer across module lines.
-///
-/// The composition entry points (`run_with_stdout`, the driver
-/// `main_loop`, `handle_server_frame`, `paint_full_frame`,
-/// `dispatch_input_events`) are bound on this trait so the seam is named
-/// at the boundary; the lower-level byte renderer and chrome painters
-/// stay on plain `Write`, since `RenderSink: Write` lets the sink flow
-/// down to them unchanged.
-pub trait RenderSink: std::io::Write {}
-impl<T: std::io::Write + ?Sized> RenderSink for T {}
-// Status bar lives under `crate::render::chrome::status_bar` post
-// phux-5ke.2 (ADR-0020). Re-exported here so external callers (the
-// `phux-client::attach::status_bar::*` integration test path included)
-// keep working without changing their imports.
-#[cfg(feature = "tui")]
-pub use crate::render::chrome::status_bar;
-#[cfg(feature = "tui")]
-pub use crate::render::chrome::status_bar::{Position, StatusBarPainter, make_context};

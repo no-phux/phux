@@ -45,6 +45,7 @@ phux-record = { path = "crates/phux-record" }
 phux-core = { path = "crates/phux-core" }
 phux-server = { path = "crates/phux-server" }
 phux-client = { path = "crates/phux-client" }
+phux-tui = { path = "crates/phux-tui" }
 phux-client-core = { path = "crates/phux-client-core" }
 phux-client-ffi = { path = "crates/phux-client-ffi" }
 phux-config = { path = "crates/phux-config" }
@@ -136,11 +137,12 @@ portable-pty = "0.9"
 # features (the `image` / `svg` renderers) are disabled — we only use the
 # text renderer — so it compiles no image stack.
 qrcode = { version = "0.14", default-features = false }
-# Chrome-layer TUI toolkit for phux-client (status bar, dividers, overlays).
-# The boundary (ADR-0020) is now compiler-enforced by the crate split: only
-# `phux-client` declares `ratatui`; the pane-interior substrate lives in
-# `phux-client-core`, which has no `ratatui` dependency, so a stray
-# `use ratatui` there fails to compile. See epic phux-5ke. Phux emits VT
+# Chrome-layer TUI toolkit for phux-tui (status bar, dividers, overlays).
+# The boundary (ADR-0020, ADR-0100) is compiler-enforced by the crate split:
+# only `phux-tui` declares `ratatui`; the headless client (`phux-client`) and
+# the pane-interior substrate (`phux-client-core`) have no `ratatui`
+# dependency, so a stray `use ratatui` there fails to compile. See epic
+# phux-5ke. Phux emits VT
 # itself, so no crossterm backend, convenience macros or layout cache is needed.
 # `unstable-rendered-line-info` gates `Paragraph::line_count` —
 # the wrapped-display-row count the help overlay's scroll window needs

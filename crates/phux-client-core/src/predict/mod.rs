@@ -35,7 +35,7 @@
 //! survives a decade of field use. We follow suit for two reasons specific
 //! to phux:
 //!
-//! 1. The renderer in `phux_client::attach::render` already emits
+//! 1. The renderer in `phux_tui::attach::render` already emits
 //!    `Style::faint` (SGR 2) for any program that asks for dim text —
 //!    using dim for predictions would collide with `man`, `less`, vim
 //!    "concealed" regions, and any TUI that paints a dimmed status line.
@@ -145,7 +145,7 @@
 //! # Off by default
 //!
 //! Predictive echo is gated behind [`PredictiveConfig::enabled`], wired
-//! through `phux_client::attach::run_with_predict_dial`. The default is `false`
+//! through `phux_tui::attach::run_with_predict_dial`. The default is `false`
 //! until the feature has miles on it. The TOML `[experimental]
 //! predictive-echo = true` knob is parsed by `phux-config` and converted
 //! into `PredictiveConfig { enabled: true, .. }` by the attach command.

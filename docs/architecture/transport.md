@@ -99,7 +99,8 @@ stream is a peer regardless of which stream it uses.
 The client-side establishment of the two TLS remote transports — TLS 1.3
 with a fingerprint-pinned (or loopback skip-verify) certificate verifier,
 plus the ADR-0031 bearer token — lives in the `phux-dial` crate, consumed
-by both the `phux-client` attach loop and the federation hub's outbound
+by both the client-side connection (`phux-client`, driven by the `phux-tui`
+attach loop) and the federation hub's outbound
 link supervisors (`phux server --hub` dials each enabled satellite as an
 ordinary remote consumer per ADR-0038, with reconnect and capped
 exponential backoff; see `phux-server::hub::link`). `phux-dial` stops at

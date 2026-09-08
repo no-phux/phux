@@ -81,12 +81,12 @@
 #![allow(clippy::panic, reason = "tests")]
 
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
-use phux_client::attach::render::{ReplicaWalk, TerminalRenderer};
 use phux_core::screen::{
     CellColor, CellInfo, CellStyle, RenderedFrame, SCHEMA_VERSION, ScreenState, SemanticContent,
 };
 use phux_record::Replayer;
 use phux_server::grid::SnapshotSynthesizer;
+use phux_tui::attach::render::{ReplicaWalk, TerminalRenderer};
 
 /// One corpus entry: a grid size plus the VT byte sequence to feed it.
 ///

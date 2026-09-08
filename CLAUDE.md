@@ -110,11 +110,13 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`ADR/`](./ADR/) — decisions, with rationale and tradeoffs.
 
-Crates: sixteen, all under `crates/*`, all workspace members. The ones
+Crates: seventeen, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
-`phux-server` (daemon), `phux-client` (renderer + ratatui chrome),
-`phux-client-core` (pane-interior substrate and session kernel; no
-`ratatui` dependency, so the boundary is compiler-enforced),
+`phux-server` (daemon), `phux-tui` (the attach driver, libghostty
+replicas, and ratatui chrome), `phux-client` (the headless client library
+behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
+(pane-interior substrate and session kernel; no `ratatui` and no `tokio`,
+so both boundaries are compiler-enforced, ADR-0020 and ADR-0100),
 `phux-client-ffi` (stable native C ABI over that kernel, for non-Rust
 embedders), `phux-config` (TOML + widgets), `phux` (binary). The other
 eight are narrow single-purpose surfaces. Every crate has a section in
@@ -134,7 +136,7 @@ eight are narrow single-purpose surfaces. Every crate has a section in
 - **`docs/spec/` is normative.** Wire changes update the relevant
   `docs/spec/*.md` + add an entry to `docs/spec/CHANGELOG.md` + bump
   version (see CONTRIBUTING.md). Wire bytes are owned by
-  `phux-protocol`; `phux-server` and `phux-client` consume them.
+  `phux-protocol`; `phux-server`, `phux-client`, and `phux-tui` consume them.
 - **ADR for any decision that closes off a design space.** Strict
   template per `docs/CONVENTIONS.md` — controlled `Status:` vocabulary,
   ~150-line cap. Bug fixes don't need an ADR; "should this be in `core`
