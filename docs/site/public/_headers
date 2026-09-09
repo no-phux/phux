@@ -1,3 +1,12 @@
+# The curl installer. Five minutes of edge cache keeps an installer fix from
+# sitting behind a long TTL while a stranger is running the broken one, and is
+# still long enough that the asset is not fetched fresh on every install.
+/install
+  Cache-Control: public, max-age=300
+
+/install.sh
+  Cache-Control: public, max-age=300
+
 /embed
   Content-Security-Policy: frame-ancestors https://phall.io
   Referrer-Policy: strict-origin-when-cross-origin

@@ -393,8 +393,18 @@ unversioned command is user-facing because every current GitHub release is
 portable:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
+curl -fsSL https://phux.sh/install | sh
 ```
+
+`phux.sh/install` and `phux.sh/install.sh` are `scripts/install.sh` served
+verbatim. `docs/site/scripts/sync-docs.ts` copies the script into the site's
+`public/` at build time and both destinations are gitignored, so the published
+installer cannot drift from the one in this repository. Two consequences worth
+remembering when you touch either side: `site-deploy.yml` lists
+`scripts/install.sh` in its path filter, and the script must stay POSIX `sh`
+because that URL is piped to `sh`. Its `#!/bin/sh` shebang is what makes
+`just shellcheck` lint it as such, and `sync-docs.ts` refuses to publish a
+script that does not carry it.
 
 Keep it aligned with the release layout above. It should download the target
 tarball and `.sha256` sidecar from the selected release, verify the checksum

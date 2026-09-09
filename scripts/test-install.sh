@@ -5,6 +5,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# The installer is served at https://phux.sh/install and users pipe it to `sh`,
+# so every case below drives it through a real POSIX shell rather than bash.
+# Prefer dash where the host has it: macOS `/bin/sh` is bash in POSIX mode and
+# forgives most bashisms, while Debian and Ubuntu — including the CI runners —
+# resolve `/bin/sh` to dash, which does not.
+INSTALLER_SH="$(command -v dash || echo /bin/sh)"
+echo "installer shell: $INSTALLER_SH"
+
 VERSION=v9.8.7
 TARGET=x86_64-unknown-linux-gnu
 STAGE="phux-${VERSION}-${TARGET}"
@@ -40,7 +48,7 @@ run_install() {
   local install_dir=$1
   local path=$2
   PATH="$FAKE_BIN:$path" INSTALL_FIXTURE="$FIXTURE" \
-    bash "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
       --install-dir "$install_dir"
 }
 
@@ -97,7 +105,7 @@ printf 'old phux\n' > "$ROLLBACK/phux"
 printf 'old phux-mcp\n' > "$ROLLBACK/phux-mcp"
 if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
   FAIL_INSTALL_DIR="$ROLLBACK" FAIL_MARKER="$TMP/failed-once" \
-  bash "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
     --install-dir "$ROLLBACK" >"$TMP/rollback.out" 2>"$TMP/rollback.err"; then
   echo "installer unexpectedly succeeded after forced second publish failure" >&2
   exit 1
@@ -117,7 +125,7 @@ if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
   SIGNAL_AFTER_FIRST_PUBLISH=1 SIGNAL_INSTALL_DIR="$INTERRUPTED" \
   SIGNAL_MARKER="$TMP/signaled-once" FAIL_INSTALL_DIR=/nonexistent \
   FAIL_MARKER="$TMP/not-failed" \
-  bash "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
     --install-dir "$INTERRUPTED" >"$TMP/interrupted.out" 2>"$TMP/interrupted.err"; then
   echo "installer unexpectedly succeeded after a publish interruption" >&2
   exit 1

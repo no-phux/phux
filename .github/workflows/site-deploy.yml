@@ -1,9 +1,10 @@
 name: site-deploy
 
-# Push to main touching docs/ or ADR/ → build the Astro site (docs/site) and
-# deploy it as a Workers static-assets worker (phux-site) on phux.sh. Site and
-# docs share this repository, so doc edits rebuild the site directly — no
-# cross-repo dispatch, no drift polling.
+# Push to main touching docs/, ADR/, or the curl installer → build the Astro
+# site (docs/site) and deploy it as a Workers static-assets worker (phux-site)
+# on phux.sh. Site, docs, and installer share this repository, so an edit to
+# any of them rebuilds the site directly — no cross-repo dispatch, no drift
+# polling.
 # The live demo reads PUBLIC_PHUX_DEMO_WS (a repo *variable*); it points at the
 # Worker's wss URL (see site-deploy-worker.yml + docs/site/DEPLOY.md).
 
@@ -13,6 +14,10 @@ on:
     paths:
       - "docs/**"
       - "ADR/**"
+      # The site serves scripts/install.sh verbatim at /install, so an installer
+      # change has to redeploy the site or phux.sh keeps handing out the old
+      # script. sync-docs.ts copies it in; this is what triggers that copy.
+      - "scripts/install.sh"
       - ".github/workflows/site-deploy.yml"
   # A new phux release stamps the site's version badge (scripts/fetch-release.ts).
   release:
@@ -72,3 +77,33 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The curl installer is the one asset whose ROUTE cannot be proven before
+      # a deploy: `wrangler.jsonc` sets html_handling, and an extensionless
+      # asset is an unusual shape for it to resolve. Everything else about the
+      # script is gated in `just ci` (scripts/check-install-surface.sh), so this
+      # step only answers "does the URL people are told to pipe to sh actually
+      # return the script". Failing here is loud and costs nobody an install;
+      # finding out from a stranger's broken terminal is the alternative.
+      # The commit SHA busts any edge cache left over from the previous deploy.
+      - name: Verify the installer is served
+        run: |
+          set -euo pipefail
+          for path in install install.sh; do
+            url="https://phux.sh/${path}?deployed=${GITHUB_SHA}"
+            served="$(curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors "$url")"
+            # Take the shebang by parameter expansion, not `| head -n 1`: under
+            # `pipefail` a closing reader turns into a SIGPIPE failure and the
+            # step flakes on a deploy that was perfectly fine.
+            shebang="${served%%$'\n'*}"
+            if [ "$shebang" != '#!/bin/sh' ]; then
+              echo "https://phux.sh/${path} did not return a POSIX sh script" >&2
+              echo "first line was: ${shebang}" >&2
+              exit 1
+            fi
+            if ! grep -Fq 'no-phux/phux/releases/download' <<<"$served"; then
+              echo "https://phux.sh/${path} is missing its release download URL" >&2
+              exit 1
+            fi
+          done
+          echo "installer verified at /install and /install.sh"

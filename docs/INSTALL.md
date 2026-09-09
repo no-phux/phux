@@ -53,8 +53,21 @@ installing an arm64 binary that cannot run; build from source there.
 The installer is a convenience wrapper over the same GitHub release assets:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
+curl -fsSL https://phux.sh/install | sh
 ```
+
+That URL serves `scripts/install.sh` from this repository byte for byte; the
+site build copies it in rather than keeping a second copy, so there is nothing
+to drift. `https://phux.sh/install.sh` is the same script under a name your
+editor will syntax-highlight, and the raw GitHub URL still works if you would
+rather fetch from the repository directly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/no-phux/phux/main/scripts/install.sh | sh
+```
+
+The script is POSIX `sh`, so `sh`, `bash`, `dash`, and `ash` all run it. Read
+it before you pipe it anywhere, the way you should with any installer.
 
 It verifies the release `.sha256` sidecar before unpacking and transactionally
 installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
@@ -67,21 +80,21 @@ Every portable tarball and installer path includes `phux-mcp`; there is no
 separate MCP package to install.
 
 To pin a specific release, pass any tag from the
-[releases page](https://github.com/phall1/phux/releases):
+[releases page](https://github.com/no-phux/phux/releases):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash -s -- --version vX.Y.Z
+curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
 ## Release tarball
 
 Release tags include target-specific tarballs and checksum sidecars. Pick a
-tag from the [releases page](https://github.com/phall1/phux/releases):
+tag from the [releases page](https://github.com/no-phux/phux/releases):
 
 ```sh
-tag=vX.Y.Z    # a tag from https://github.com/phall1/phux/releases
+tag=vX.Y.Z    # a tag from https://github.com/no-phux/phux/releases
 target=aarch64-apple-darwin
-base="https://github.com/phall1/phux/releases/download/${tag}"
+base="https://github.com/no-phux/phux/releases/download/${tag}"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz.sha256"
 shasum -a 256 -c "phux-${tag}-${target}.tar.gz.sha256"
@@ -100,7 +113,7 @@ Nix dev shell to provision it. Both install binaries into Cargo's bin directory.
 With native prerequisites installed:
 
 ```sh
-git clone https://github.com/phall1/phux
+git clone https://github.com/no-phux/phux
 cd phux
 bash scripts/doctor.sh native
 cargo install --locked --path crates/phux
@@ -224,7 +237,7 @@ with the checksum verified for you. Re-running the curl installer also works
 and is equivalent:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
+curl -fsSL https://phux.sh/install | sh
 ```
 
 ### NixOS and Nix profiles

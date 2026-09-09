@@ -1,5 +1,13 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+#
+# POSIX sh on purpose. This script is served verbatim at https://phux.sh/install
+# and has to survive being piped to `sh`, which is dash on Debian and Ubuntu.
+# Two bashisms in particular are fatal there and must not come back:
+# `set -o pipefail` (rejected by dash before 0.5.12) and `printf %q` (an
+# invalid directive in every dash). `just shellcheck` lints this file as sh
+# because of the shebang above, so a new bashism fails the gate rather than a
+# stranger's install.
+set -eu
 
 usage() {
   cat <<'EOF'
@@ -19,6 +27,21 @@ EOF
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+# POSIX stand-in for bash's `printf %q`, which dash rejects outright. A word
+# built only from characters no shell treats specially prints bare; anything
+# else is single-quoted, with an embedded single quote rewritten as the usual
+# '\'' dance. Either way the result pastes straight back into a POSIX shell.
+shell_quote() {
+  case "$1" in
+    '' | *[!A-Za-z0-9_./:@%+=-]*)
+      printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
 }
 
 version=""
@@ -67,11 +90,11 @@ resolve_latest_version() {
   latest=""
   if command -v curl >/dev/null 2>&1; then
     latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-      https://github.com/phall1/phux/releases/latest)" \
+      https://github.com/no-phux/phux/releases/latest)" \
       || die "could not resolve latest GitHub release"
     latest="${latest_url##*/}"
   elif command -v wget >/dev/null 2>&1; then
-    latest_json="$(wget -qO- https://api.github.com/repos/phall1/phux/releases/latest)" \
+    latest_json="$(wget -qO- https://api.github.com/repos/no-phux/phux/releases/latest)" \
       || die "could not resolve latest GitHub release"
     latest="$(printf '%s\n' "$latest_json" \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
@@ -143,7 +166,7 @@ if [ "$version" = "v0.0.1" ]; then
   die "v0.0.1 has no ${target} tarball; use a newer release or build from source"
 fi
 
-base_url="https://github.com/phall1/phux/releases/download/${version}"
+base_url="https://github.com/no-phux/phux/releases/download/${version}"
 artifact="phux-${version}-${target}.tar.gz"
 archive_url="${base_url}/${artifact}"
 sha_url="${archive_url}.sha256"
@@ -359,8 +382,8 @@ fi
 if [ "$found_canonical" = "$installed_command" ]; then
   echo "next: phux"
 else
-  printf 'next: %q\n' "$installed_command"
+  printf 'next: %s\n' "$(shell_quote "$installed_command")"
   # The printed remedy must defer expansion until the user runs it.
   # shellcheck disable=SC2016
-  printf 'PATH remedy: export PATH=%q:"$PATH"\n' "$installed_dir"
+  printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$installed_dir")"
 fi

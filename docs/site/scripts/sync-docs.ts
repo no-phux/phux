@@ -61,6 +61,13 @@ const PHUX_ROOT = resolve(DOCS_DIR, "..");
 const OUT_DIR = join(ROOT, "src/content/docs/_synced");
 const MANIFEST_PATH = join(ROOT, "public/docs-manifest.json");
 
+// The curl installer is published from this same repo, the same way the docs
+// are: `scripts/install.sh` is the only copy, and the site serves its bytes
+// verbatim. Both filenames get the identical script rather than one redirecting
+// to the other, so `curl https://phux.sh/install` needs no -L to follow.
+const INSTALLER_SRC = join(PHUX_ROOT, "scripts/install.sh");
+const INSTALLER_DESTS = ["public/install", "public/install.sh"] as const;
+
 function sourceRevision(): string {
   const revision =
     process.env.PHUX_SOURCE_REVISION ??
@@ -70,8 +77,32 @@ function sourceRevision(): string {
 }
 
 const SOURCE_REVISION = sourceRevision();
-const GH_BLOB = `https://github.com/phall1/phux/blob/${SOURCE_REVISION}`;
-const GH_TREE = `https://github.com/phall1/phux/tree/${SOURCE_REVISION}`;
+const GH_BLOB = `https://github.com/no-phux/phux/blob/${SOURCE_REVISION}`;
+const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
+
+/**
+ * Publish `scripts/install.sh` at /install and /install.sh.
+ *
+ * Nothing here is committed — both destinations are gitignored and rewritten on
+ * every build — so the bytes a stranger pipes to `sh` cannot drift from the
+ * script `scripts/test-install.sh` exercises. The shebang assertion is the
+ * cheap half of that contract: the served script is consumed by `sh`, and a
+ * bash shebang means somebody reintroduced bashisms that dash will reject on a
+ * user's machine rather than in CI.
+ */
+async function syncInstaller(): Promise<void> {
+  const script = await readFile(INSTALLER_SRC, "utf8");
+  if (!script.startsWith("#!/bin/sh\n")) {
+    throw new Error(
+      "scripts/install.sh must start with #!/bin/sh: it is served at " +
+        "https://phux.sh/install and piped straight to sh",
+    );
+  }
+  for (const dest of INSTALLER_DESTS) {
+    await writeFile(join(ROOT, dest), script, { mode: 0o755 });
+  }
+  console.log("sync-docs: published the installer at /install and /install.sh");
+}
 
 /** Nav groups, in sidebar render order. */
 const GROUPS = {
@@ -787,11 +818,13 @@ async function run() {
     join(OUT_DIR, "meta.json"),
     `${JSON.stringify({ pages: ROOT_PAGES }, null, 2)}\n`,
   );
+  await syncInstaller();
+
   await writeFile(
     MANIFEST_PATH,
     `${JSON.stringify(
       {
-        repository: "phall1/phux",
+        repository: "no-phux/phux",
         revision: SOURCE_REVISION,
         protocolVersion: versions.protocolVersion,
         projectVersion: versions.projectVersion,

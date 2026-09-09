@@ -59,6 +59,13 @@ shows every key. Prebuilt binaries cover macOS arm64, Linux x86_64, and Linux ar
 Windows is not supported. Other channels and source builds:
 [INSTALL](./docs/INSTALL.md).
 
+Without Homebrew, the curl installer takes the same binaries from the same
+release and verifies the checksum before unpacking:
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
 Another machine works the same way, as long as it is reachable:
 
 ```sh
