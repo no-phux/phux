@@ -4273,15 +4273,8 @@ fn a_layout_naming_an_agent_session_is_refused() {
         &mut workspace,
         &mut focused,
     )
-    .expect("broadcast");
-    assert!(
-        !outcome.layout_replaced,
-        "the envelope is refused, not adopted"
-    );
-    assert!(
-        outcome.attach_panes.is_empty(),
-        "nothing tries to attach the stream as a pane"
-    );
+    .expect_err("non-terminal layout must be explicitly refused");
+    assert!(outcome.to_string().contains("is not a terminal resource"));
     assert_eq!(
         crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
         vec![pane],

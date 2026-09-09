@@ -457,6 +457,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
             BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
                 .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
         let caps = phux_protocol::ClientCapabilities::new()
+            .with_layers(phux_protocol::LayerSet::with(&[phux_protocol::Layer::L3]))
             .with_bootstrap(native_bootstrap_capabilities(limits));
         client.queue_frame(&FrameKind::Hello {
             client_name: name.to_owned(),
@@ -1009,7 +1010,7 @@ fn apply_attached(
         )?;
         client
             .agent_streams
-              .insert(pane.id.clone(), client::AgentStream::default());
+            .insert(pane.id.clone(), client::AgentStream::default());
     }
     workspace::attached(client, snapshot);
     Ok(())
@@ -3256,6 +3257,24 @@ mod tests {
             matches!(decoded, FrameKind::Hello { client_name, .. } if client_name.len() == boundary.len())
         );
         unsafe { phux_client_free(accepted) };
+    }
+
+    #[test]
+    fn native_workspace_negotiates_metadata_before_issuing_layout_reads() {
+        let client = boxed_client();
+        assert_eq!(
+            unsafe { phux_client_queue_hello(client, bytes_out(b"workspace")) },
+            PhuxClientResult::Ok
+        );
+        let state = unsafe { &*client };
+        let (frame, remaining) =
+            FrameKind::decode(&state.inner.outgoing[0]).expect("outbound HELLO");
+        assert!(remaining.is_empty());
+        unsafe { phux_client_free(client) };
+        let FrameKind::Hello { client_caps, .. } = frame else {
+            panic!("expected HELLO");
+        };
+        assert!(client_caps.layers.contains(phux_protocol::Layer::L3));
     }
 
     #[test]

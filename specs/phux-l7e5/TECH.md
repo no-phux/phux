@@ -35,6 +35,11 @@ Rust 1.98.1 and Native's Cockpit v0.10.1 lineage.
 
 ## Proposed changes
 
+Final integration also includes main `e871e0d0` and its additive resource-kind
+model. The terminal workspace catalog selects Terminal resources explicitly;
+AgentSession records remain on their own resource API and never consume terminal
+replica slots or become split leaves.
+
 ### Rust workspace authority
 
 Require stable window identity in the current shared layout schema and retain

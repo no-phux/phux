@@ -34,6 +34,28 @@ fn registry(selected: u32, extra: bool) -> SessionSnapshot {
     .with_panes(panes)
 }
 
+#[test]
+fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resources() {
+    let mut snapshot = registry(1, false);
+    for id in 100..400 {
+        snapshot.panes.push(
+            TerminalInfo::new(TerminalId::local(id), WindowId::new(0), 0, 0)
+                .with_kind(phux_protocol::ResourceKind::AgentSession),
+        );
+    }
+    let mut client = harness();
+    refresh(&mut client, 1, snapshot, None);
+    assert_eq!(client.inner.workspace.status, 2);
+    assert_eq!(client.inner.workspace.catalog.terminals.len(), 3);
+    assert!(
+        !client
+            .inner
+            .workspace
+            .catalog
+            .allows(&TerminalId::local(100), 1)
+    );
+}
+
 fn harness() -> Box<PhuxClient> {
     let mut client = attached_harness();
     initial_read(&mut client.inner);

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState, Workspace};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo};
-use phux_protocol::{SessionId, TerminalId, WindowId};
+use phux_protocol::{ResourceKind, SessionId, TerminalId, WindowId};
 
 use crate::client::SessionSummary;
 use crate::error::BridgeError;
@@ -41,7 +41,12 @@ impl Catalog {
         selected: u32,
     ) -> Result<Self, BridgeError> {
         if snapshot.sessions.len() > 256
-            || snapshot.panes.len() > 256
+            || snapshot
+                .panes
+                .iter()
+                .filter(|p| p.kind == ResourceKind::Terminal)
+                .count()
+                > 256
             || snapshot.windows.len() > 256
         {
             return Err(BridgeError::state("catalog capacity exceeded"));
@@ -63,6 +68,7 @@ impl Catalog {
         let mut terminals = snapshot
             .panes
             .into_iter()
+            .filter(|p| p.kind == ResourceKind::Terminal)
             .map(|p| catalog_terminal(p, &owners))
             .collect::<Result<Vec<_>, BridgeError>>()?;
         sessions.sort_by_key(|s| s.session_id);
