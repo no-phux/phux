@@ -21,6 +21,7 @@ REASONS = {
     "done": "Terminal intervention completed",
 }
 ATTENTION = "\u25cf"
+PARENT_ATTENTION = "Needs attention: "
 
 
 def rendered_id(resource):
@@ -84,6 +85,7 @@ class AgentAcceptance:
         self.receipt_path = probe.launcher.work / "agent-receipt.jsonl"
         self.observed = []
         self.resource = None
+        self.side = False
         self.baseline = self.catalog()
         self.expected = dict(self.baseline)
         self.terminals = probe.inventory()
@@ -138,9 +140,9 @@ class AgentAcceptance:
         require(self.probe.owner(self.sibling, self.view)["focused"] == "true", "sibling must be focused initially")
         require(self.probe.owner(self.parent, self.view)["focused"] == "false", "parent unexpectedly focused initially")
         require(not self.receipt_path.exists(), "agent receipt path already exists")
-        # Matrix starts with top tabs. Use the real command to expose the rail's
-        # exact-parent row and attention marker, then restore top after retirement.
-        self.probe.automate("native-command", "tabs.toggle-placement", self.view)
+        # Stay in the matrix's default top placement through the first ask and
+        # inspection. An agent-row dot in the side rail cannot prove top chrome.
+        wait_for(lambda: self.tab_attention(self.sibling, False), "parent tab attention absent before agent birth")
         self.focus(self.parent)
         fixture = ROOT / "scripts/agent-attention-proof.py"
         require(fixture.is_file(), "integrated agent producer fixture is missing")
@@ -172,6 +174,28 @@ class AgentAcceptance:
         label = f"{PROVIDER} / {rendered_id(self.resource)} under {rendered_id(self.parent)}"
         return find_widget(widgets, "button", label, self.view)
 
+    def tab_attention(self, focused, attention):
+        widgets = self.widgets()
+        # The tab label follows its focused split, while attention aggregates
+        # all its leaves. No other controlled tab/window should claim this ask.
+        markers = [w for w in widgets if w["role"] == "text" and w["name"].startswith(PARENT_ATTENTION)]
+        if not attention:
+            return not markers
+        require(len(markers) <= 1, "unrelated controlled tab claimed agent attention")
+        label = PARENT_ATTENTION + self.probe.titles[focused]
+        return find_widget(markers, "text", label, self.view) is not None
+
+    def await_attention(self, focused, state):
+        attention = state == "blocked"
+        wait_for(lambda: self.tab_attention(focused, attention), "parent tab attention: " + state)
+        if self.side:
+            wait_for(lambda: self.rail(state, attention), "exact-parent agent rail state and attention: " + state)
+
+    def show_rail(self):
+        self.probe.automate("native-command", "tabs.toggle-placement", self.view)
+        self.side = True
+        self.await_attention(self.parent, "blocked")
+
     def inspect(self, record):
         self.probe.click(self.probe.widget("button", "Agents 1", self.view))
         wait_for(lambda: inspection_matches(self.widgets(), self.view, self.resource,
@@ -189,14 +213,16 @@ class AgentAcceptance:
         require(record["ts_ms"] > self.probe.launcher.app["started_unix"] * 1000,
                 "agent evidence predates Cockpit attach")
         self.held_at(phase)
-        wait_for(lambda: self.rail("blocked", True), "blocked exact-parent rail row")
+        focused = self.sibling if previous is None else self.parent
+        self.await_attention(focused, "blocked")
         if previous is None:
             require(self.probe.owner(self.sibling, self.view)["focused"] == "true", "ask did not arrive with sibling focused")
         self.inspect(record)
         self.held_at(phase)
+        self.await_attention(focused, "blocked")
         self.jump()
         self.held_at(phase)
-        wait_for(lambda: self.rail("blocked", True), "Jump preserved blocked attention")
+        self.await_attention(self.parent, "blocked")
         self.record_result("agent-" + phase, record)
         return record
 
@@ -207,12 +233,13 @@ class AgentAcceptance:
         self.inspect(record)
         self.probe.click(self.probe.widget("button", "Close agent inspector", self.view))
         self.held_at(record["phase"])
-        wait_for(lambda: self.rail("blocked", True), "read-only inspection preserved attention")
+        self.await_attention(self.parent, "blocked")
         self.focus(self.sibling)
         self.inspect(record)
+        self.await_attention(self.sibling, "blocked")
         self.jump()
         self.held_at(record["phase"])
-        wait_for(lambda: self.rail("blocked", True), "repeated Jump preserved attention")
+        self.await_attention(self.parent, "blocked")
         self.record_result("agent-readonly-jump", record)
 
     def intervention(self, previous):
@@ -227,10 +254,11 @@ class AgentAcceptance:
         wait_for(lambda: self.probe.present(self.parent, result), "agent computed result in exact parent PTY")
         self.probe.absent(self.terminals - {self.parent}, result)
         self.held_at("done")
-        wait_for(lambda: self.rail("done", False), "producer reconciled state and attention")
+        self.await_attention(self.parent, "done")
         self.inspect(done)
         self.jump()
         self.held_at("done")
+        self.await_attention(self.parent, "done")
         self.record_result("agent-intervention", done)
 
     def retired(self):
@@ -257,7 +285,9 @@ class AgentAcceptance:
                 "retired agent inspection row survived")
         self.probe.click(self.probe.widget("button", "Close agent inspector", self.view))
         self.probe.automate("native-command", "tabs.toggle-placement", self.view)
+        self.side = False
         self.held_at("closed")
+        self.await_attention(self.parent, "done")
         self.record_result("agent-retirement")
 
     def record_result(self, phase, record=None):
@@ -265,6 +295,7 @@ class AgentAcceptance:
         self.probe.evidence["results"].append({
             "phase": phase, "status": "PASS", "resource": self.resource, "parent": self.parent,
             "native_id": self.native_id, "provider": PROVIDER, "view": self.view,
+            "tab_placement": "side" if self.side else "top",
             "publisher_pid": self.probe.launcher.app["pid"], "record": metadata,
             "inventory_count": len(self.expected), "other_ptys_checked": len(self.terminals) - 1,
         })
@@ -273,6 +304,7 @@ class AgentAcceptance:
         self.launch()
         first = self.blocked("blocked-initial")
         self.readonly_roundtrip(first)
+        self.show_rail()
         self.submit("inspect")
         second = self.blocked("blocked", first)
         self.intervention(second)

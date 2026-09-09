@@ -383,6 +383,9 @@ class AgentFixture:
     def __init__(self, work, fault=None):
         self.work, self.fault = work, fault
         self.focused, self.side, self.inspector = "@2", False, False
+        self.selected_terminal = "@2"
+        self.parent_attention = False
+        self.placement_changes = []
         self.live, self.retained_row = False, False
         self.state, self.attention, self.stage = "unknown", False, "shell"
         self.typed, self.buffer, self.records = [], "", []
@@ -421,7 +424,8 @@ class AgentFixture:
 
     def snapshot(self):
         self.widgets = []
-        self.add_widget("tab", self.probe.titles["@2"])
+        self.add_widget("tab", self.probe.titles[self.selected_terminal])
+        self.parent_attention_widget()
         for target in ("@1", "@2"):
             self.add_widget("textbox", self.probe.titles[target], target)
         self.add_widget("button", "Agents " + str(int(self.live)))
@@ -429,6 +433,12 @@ class AgentFixture:
         if self.inspector:
             self.inspection_widgets()
         return self.serialized_widgets()
+
+    def parent_attention_widget(self):
+        if self.fault == "missing-parent-top" and not self.side:
+            return
+        if self.parent_attention:
+            self.add_widget("text", "Needs attention: " + self.probe.titles[self.selected_terminal])
 
     def rail_widgets(self):
         if self.side and (self.live or self.retained_row):
@@ -476,11 +486,13 @@ class AgentFixture:
     def toggle_placement(self, command, view):
         assert (command, view) == ("tabs.toggle-placement", self.view)
         self.side = not self.side
+        self.placement_changes.append((self.side, self.stage, len(self.typed)))
 
     def click(self, widget):
         name = widget["name"]
         if widget["role"] in ("tab", "textbox"):
             self.focused = next(t for t, title in self.probe.titles.items() if title == name)
+            self.selected_terminal = self.focused
             return
         self.click_inspector(name)
 
@@ -493,6 +505,7 @@ class AgentFixture:
         elif name == "Jump to parent":
             self.inspector = False
             self.focused = "@2" if self.fault == "jump-wrong-split" else "@1"
+            self.selected_terminal = self.focused
 
     def preserve_attention(self):
         if self.fault == "inspection-clears-attention":
@@ -522,6 +535,7 @@ class AgentFixture:
     def stamp(self, phase, seq, kind, reason, state):
         self.seq, self.ts, self.kind, self.reason, self.state = seq, 2000 + seq, kind, reason, state
         self.attention = state == "blocked"
+        self.parent_attention = self.attention or self.fault == "retained-parent-attention"
         return {"phase": phase, "resource": self.resource, "seq": seq, "ts_ms": self.ts, "type": kind}
 
     def open(self, command):
@@ -554,6 +568,7 @@ class AgentFixture:
     def close(self, command):
         assert command == "close"
         self.live = False
+        self.parent_attention = False
         self.retained_row = self.fault == "retained-row"
         self.receipt({"phase": "closed", "resource": self.resource, "parent": self.parent})
 
@@ -596,6 +611,8 @@ class AgentAcceptanceTests(unittest.TestCase):
             self.assertEqual(fixture.typed[3], "close")
             self.assertFalse(fixture.live)
             self.assertFalse(fixture.side, "driver must restore top tabs before restart")
+            self.assertEqual(fixture.placement_changes, [(True, "inspect", 1), (False, "close", 4)],
+                             "first ask must be observed in default top tabs before switching to the rail")
             report = json.dumps(fixture.probe.evidence)
             for private in (fixture.typed[0], fixture.typed[2], fixture.screens["@1"][0], d,
                             "Preparing terminal intervention proof", "Enter a decimal proof value"):
@@ -603,6 +620,8 @@ class AgentAcceptanceTests(unittest.TestCase):
             self.assertEqual([r["phase"] for r in fixture.probe.evidence["results"]], [
                 "agent-birth", "agent-blocked-initial", "agent-readonly-jump", "agent-blocked",
                 "agent-intervention", "agent-retirement"])
+            self.assertEqual([r["tab_placement"] for r in fixture.probe.evidence["results"]],
+                             ["top", "top", "top", "side", "side", "top"])
 
     def test_agent_behavioral_faults_cannot_pass_acceptance(self):
         faults = ("wrong-parent", "wrong-native-id", "stale-ui-sequence", "stale-second-reason",
@@ -614,6 +633,18 @@ class AgentAcceptanceTests(unittest.TestCase):
                 with self.assertRaises(helpers.Failure):
                     self.run_fixture(fixture)
                 self.assertNotIn("agent-retirement", [r["phase"] for r in fixture.probe.evidence["results"]])
+
+    def test_top_parent_attention_required_even_when_agent_rail_dot_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            fixture = AgentFixture(Path(d), "missing-parent-top")
+            with self.assertRaisesRegex(helpers.Failure, "parent tab attention"):
+                self.run_fixture(fixture)
+
+    def test_done_must_clear_parent_attention_even_when_agent_dot_clears(self):
+        with tempfile.TemporaryDirectory() as d:
+            fixture = AgentFixture(Path(d), "retained-parent-attention")
+            with self.assertRaisesRegex(helpers.Failure, "parent tab attention"):
+                self.run_fixture(fixture)
 
     def test_receipt_partial_write_order_and_budget(self):
         with tempfile.TemporaryDirectory() as d:
