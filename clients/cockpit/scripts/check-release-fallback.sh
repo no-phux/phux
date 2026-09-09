@@ -62,7 +62,7 @@ compare_guard="$(line_of 'if [[ "${uploaded_this_run}" == "true" ]]; then' "${WO
 compare="$(line_of 'cmp "clients/cockpit/zig-out/release/${archive}" "${existing}/${archive}"' "${WORKFLOW}")" || compare=''
 restore="$(line_of 'cp "${existing}/${archive}" "${existing}/${image}" "${existing}/SHA256SUMS" clients/cockpit/zig-out/release/' "${WORKFLOW}")" || restore=''
 gate="$(line_of '- name: Require Homebrew tap deploy key before publication' "${WORKFLOW}")" || gate=''
-tap_checkout="$(line_of 'repository: phall1/homebrew-tap' "${WORKFLOW}")" || tap_checkout=''
+tap_checkout="$(line_of 'repository: no-phux/homebrew-tap' "${WORKFLOW}")" || tap_checkout=''
 tap_generation="$(line_of 'bash .github/scripts/gen-phux-cockpit-cask.sh' "${WORKFLOW}")" || tap_generation=''
 tap_mutation="$(line_of 'bash .github/scripts/commit-update.sh Casks/phux-cockpit.rb' "${WORKFLOW}")" || tap_mutation=''
 tap_intended="$(line_of 'intended_cask_blob="$(git hash-object Casks/phux-cockpit.rb)"' "${WORKFLOW}")" || tap_intended=''
@@ -112,7 +112,7 @@ contains_once 'documentation names the keyless stop' 'fail with `KEYLESS_RELEASE
 contains_once 'documentation names the credentialed rerun command' \
     '--repo no-phux/phux' "${DOC}"
 contains_once 'documentation delegates stale-tap recovery to the real external workflow' \
-    '--repo phall1/homebrew-tap' "${DOC}"
+    '--repo no-phux/homebrew-tap' "${DOC}"
 
 nonexistent_command="$(grep -Fc -- 'bash scripts/gen-formula.sh' "${DOC}" || true)"
 if [[ "${nonexistent_command}" == 0 ]]; then

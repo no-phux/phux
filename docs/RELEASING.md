@@ -102,7 +102,7 @@ Required secrets:
 
 | Secret | Used by | Required for | Set? |
 |---|---|---|---|
-| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml`, `cockpit-release.yml` | Automatic push to `phall1/homebrew-tap`. Root Phux may publish without it; Cockpit fails before asset publication because its cask update is part of the release contract. | yes |
+| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml`, `cockpit-release.yml` | Automatic push to `no-phux/homebrew-tap`. Root Phux may publish without it; Cockpit fails before asset publication because its cask update is part of the release contract. | yes |
 | `CARGO_REGISTRY_TOKEN` | `publish-crate.yml` | Publishing `phux-protocol` to crates.io. Not needed for binary/Homebrew-only releases. | yes |
 | `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY` | `cockpit-release.yml` | Optional all-or-nothing Developer ID signing. With none, Cockpit is explicitly ad-hoc signed. | no |
 | `APPLE_NOTARY_KEY`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | `cockpit-release.yml` | Optional all-or-nothing notarization; required whenever Developer ID signing is configured. | no |
@@ -163,7 +163,7 @@ Post-release verification:
 
 ```sh
 scripts/install.sh --dry-run --version vX.Y.Z
-brew fetch --formula phall1/tap/phux
+brew fetch --formula no-phux/tap/phux
 cargo search phux-protocol --limit 1
 npm view @phux/opencode version
 npm view @phux/pi version
@@ -339,7 +339,7 @@ do not link to Nix-store libraries.
 ### Required secret
 
 `HOMEBREW_TAP_DEPLOY_KEY` — the **private** half of an SSH key whose
-public half is a write-enabled deploy key on `phall1/homebrew-tap`.
+public half is a write-enabled deploy key on `no-phux/homebrew-tap`.
 Without it the release still publishes; only the automatic formula bump
 is skipped (a warning annotation is emitted). The formula itself is
 produced by [`scripts/gen-formula.sh`](../scripts/gen-formula.sh), which
@@ -498,7 +498,7 @@ publishable.
 ## Installing from the tap
 
 ```sh
-brew install phall1/tap/phux
+brew install no-phux/tap/phux
 ```
 
 The tap does not add Windows support; Windows is not supported here. A Windows

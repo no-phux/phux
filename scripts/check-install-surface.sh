@@ -36,8 +36,9 @@ require_regex() {
 # truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
 # and cargo-install caveats are gated on docs/INSTALL.md below.
 require_fixed README.md "Quick start"
-require_fixed README.md "brew install phall1/tap/phux"
+require_fixed README.md "brew install no-phux/tap/phux"
 forbid_fixed README.md "brew install phall1/phux/phux"
+forbid_fixed README.md "brew install phall1/tap/phux"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
 require_fixed README.md "Windows is not supported"
 require_fixed README.md "docs/INSTALL.md"
@@ -296,7 +297,8 @@ require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn verify_arc
 require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn unpack_verified'
 # Installs phux does not own are never mutated.
 require_fixed docs/INSTALL.md '## Updating'
-require_fixed docs/INSTALL.md 'brew upgrade phall1/tap/phux'
+require_fixed docs/INSTALL.md 'brew upgrade no-phux/tap/phux'
+forbid_fixed docs/INSTALL.md 'brew upgrade phall1/tap/phux'
 require_fixed docs/INSTALL.md 'nix profile upgrade phux'
 require_fixed docs/INSTALL.md 'nixos-rebuild switch'
 require_fixed docs/INSTALL.md 'Verifies the checksum before unpacking anything'

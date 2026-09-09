@@ -35,7 +35,7 @@ crates.io package is `phux-protocol`, not the CLI.
 Install from the published tap:
 
 ```sh
-brew install phall1/tap/phux
+brew install no-phux/tap/phux
 ```
 
 This installs both `phux` and `phux-mcp`. Use a source build if the Formula has
@@ -186,7 +186,7 @@ of the running binary, and only ever writes to installs it maintains.
 | Source | Recognized by | What `phux update` does |
 |---|---|---|
 | Direct release | The binary sits in `$PHUX_INSTALL_DIR`, `~/.local/bin`, `~/bin`, `/usr/local/bin`, or `/opt/phux/bin` | Downloads, verifies, replaces atomically |
-| Homebrew | The resolved path is inside a `Cellar` (`/opt/homebrew`, `/usr/local`, Linuxbrew, or a relocated `HOMEBREW_PREFIX`) | Refuses; prints `brew upgrade phall1/tap/phux` |
+| Homebrew | The resolved path is inside a `Cellar` (`/opt/homebrew`, `/usr/local`, Linuxbrew, or a relocated `HOMEBREW_PREFIX`) | Refuses; prints `brew upgrade no-phux/tap/phux` |
 | Cargo | The binary is in `$CARGO_HOME/bin` (default `~/.cargo/bin`) | Refuses; prints the source-install commands |
 | Nix / NixOS | The path is under the Nix store (`/nix/store`, or `$NIX_STORE`) | Refuses; prints `nix profile upgrade phux`, or a flake update plus `nixos-rebuild switch` on NixOS |
 | Unknown | Anything else | Refuses, names the path, and lists the locations it does maintain |
@@ -205,7 +205,7 @@ arm64.
 ### Homebrew
 
 ```sh
-brew upgrade phall1/tap/phux
+brew upgrade no-phux/tap/phux
 phux upgrade                    # hand the running server off to the new binary
 ```
 

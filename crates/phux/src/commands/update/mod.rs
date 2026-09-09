@@ -1166,13 +1166,13 @@ mod tests {
         assert_eq!(doc["install"]["mutable"], false);
         assert_eq!(
             doc["install"]["native_command"],
-            "brew upgrade phall1/tap/phux"
+            "brew upgrade no-phux/tap/phux"
         );
         assert!(
             outcome
                 .lines()
                 .iter()
-                .any(|line| line.contains("brew upgrade phall1/tap/phux")),
+                .any(|line| line.contains("brew upgrade no-phux/tap/phux")),
             "the prose view must print the command too: {:?}",
             outcome.lines()
         );

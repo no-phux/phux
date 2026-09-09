@@ -260,7 +260,7 @@ saying so.
 Install with Homebrew:
 
 ```sh
-brew install --cask phall1/tap/phux-cockpit
+brew install --cask no-phux/tap/phux-cockpit
 ```
 
 The cask places **Phux Cockpit** in Applications. Releases without configured
@@ -641,7 +641,7 @@ inside the shared draft version PR. Merging that PR creates a
 `cockpit-vX.Y.Z` tag and draft GitHub release; the **Release Cockpit** workflow
 builds, verifies, and attaches the macOS artifacts before publishing the release and
 regenerating `Casks/phux-cockpit.rb` in
-[`phall1/homebrew-tap`](https://github.com/phall1/homebrew-tap). The tap's
+[`no-phux/homebrew-tap`](https://github.com/no-phux/homebrew-tap). The tap's
 scheduled updater independently repairs a missed release update.
 A failed artifact pass can be resumed by manually dispatching the **Release
 Cockpit** workflow against the existing draft tag.

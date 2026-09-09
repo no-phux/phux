@@ -97,7 +97,7 @@ The order is deliberate:
    when this run uploaded them, then intrinsically verify the remote checksums,
    signature mode, archive, and disk image;
 4. fail with `KEYLESS_RELEASE_STOP` when the tap deploy key is absent;
-5. when the key is present, check out `phall1/homebrew-tap`, generate and
+5. when the key is present, check out `no-phux/homebrew-tap`, generate and
    validate the cask, hash that generated working-tree file, push the real tap
    update, fetch `origin/main`, and prove its cask blob equals the pre-push hash;
 6. only after that remote equality proof, annotate and publish the draft.
@@ -132,7 +132,7 @@ stale, delegate cask recovery to the tap's real `Update packages` workflow:
 
 ```sh
 gh workflow run update-packages.yml \
-  --repo phall1/homebrew-tap \
+  --repo no-phux/homebrew-tap \
   --field tool=phux-cockpit
 ```
 

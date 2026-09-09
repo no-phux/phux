@@ -120,7 +120,7 @@ impl Install {
     pub(crate) fn native_command(&self) -> Option<String> {
         match self.source {
             InstallSource::DirectRelease | InstallSource::Unknown => None,
-            InstallSource::Homebrew => Some("brew upgrade phall1/tap/phux".to_owned()),
+            InstallSource::Homebrew => Some("brew upgrade no-phux/tap/phux".to_owned()),
             InstallSource::Cargo => Some(
                 "from a phux checkout:\n  \
                  nix develop -c cargo install --locked --path crates/phux\n  \
@@ -363,7 +363,7 @@ mod tests {
             assert!(!install.source.is_mutable());
             assert_eq!(
                 install.native_command().as_deref(),
-                Some("brew upgrade phall1/tap/phux")
+                Some("brew upgrade no-phux/tap/phux")
             );
         }
     }

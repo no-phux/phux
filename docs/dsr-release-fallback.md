@@ -44,7 +44,7 @@ either of the two things release.yml itself does *not* own:
   human-gated `publish-crate.yml` dispatch. dsr has no path to it.
 - **Publication and the Homebrew tap.** `release.yml`'s `publish` job flips
   the completed draft public, and its final `homebrew` job then regenerates and
-  pushes `Formula/phux.rb` to `phall1/homebrew-tap`. dsr does neither. If a
+pushes `Formula/phux.rb` to `no-phux/homebrew-tap`. dsr does neither. If a
   release is finished entirely through dsr, publish the draft first with
   `gh release edit vX.Y.Z --draft=false`, then update the tap — never the other
   way round, since the tap validates a pushed formula against the public
