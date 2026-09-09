@@ -16,7 +16,6 @@ const Pending = struct {
     window_epoch: u64,
     kind: Kind,
     origin: ?TerminalRef,
-    tab_id: ?u32,
     terminal: ?TerminalRef = null,
     accepted: bool = false,
     session: u32 = 0,
@@ -56,6 +55,7 @@ pub const Creation = struct {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
+        try requireWorkspace(model);
         if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
         const slot = try self.vacant();
         const owner = try spawnOwner(model, model.focusedTerminalRef());
@@ -84,6 +84,7 @@ pub const Creation = struct {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
+        try requireWorkspace(model);
         if (self.hasPendingTerminal(ref)) return;
         if (remote.presentation(ref)) |view| {
             if (view.phase == .live) return self.requestAdmit(model, ref);
@@ -100,6 +101,7 @@ pub const Creation = struct {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
+        try requireWorkspace(model);
         if (self.hasPendingTerminal(ref)) return;
         const view = remote.presentation(ref) orelse return error.NotReady;
         if (view.phase != .live) return error.NotReady;
@@ -132,6 +134,14 @@ pub const Creation = struct {
             changed = true;
         }
         return changed;
+    }
+
+    /// A newer explicit selection supersedes delayed focus even when the
+    /// current pane has not moved. Internal admission continuations do not.
+    pub fn supersedeFocus(self: *Creation) void {
+        for (&self.pending) |*slot| {
+            if (slot.*) |*entry| entry.may_focus = false;
+        }
     }
 
     /// Called by the engine's focus synchronization, including local gestures.
@@ -189,7 +199,6 @@ fn prepareDestination(model: *Model, kind: Kind, reserved: usize, requires_capac
         .window_epoch = model.window_epochs[window],
         .kind = kind,
         .origin = model.focusedTerminalRef(),
-        .tab_id = workspace.tabId(workspace.selected_tab),
         .session = model.shared_workspace.session,
         .shared_window = workspace.shared_ids[workspace.selected_tab],
         .focus = if (kind == .window) null else model.focusedTerminalRef(),
@@ -208,6 +217,16 @@ fn validateDestinationCapacity(workspace: *const model_module.Workspace, kind: K
 fn spawnViewport(remote: anytype, owner: ?TerminalRef) contract.Viewport {
     if (owner) |ref| return remote.lastViewport(ref) orelse remote.attach_viewport;
     return remote.attach_viewport;
+}
+
+fn requireWorkspace(model: *Model) !void {
+    const remote = model.phux().?;
+    const snapshot = remote.workspaceSnapshot();
+    if (model.shared_workspace.session == 0) return error.WorkspaceUnavailable;
+    if (snapshot.session_id != model.shared_workspace.session) return error.StaleContext;
+    if (model.shared_workspace.epoch != remote.connectionEpoch()) return error.StaleContext;
+    if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return error.WorkspaceUnavailable;
+    if (snapshot.revision != model.shared_workspace.revision) return error.StaleDestination;
 }
 
 fn acceptResult(model: *Model, entry: *Pending, result: support.OperationResult) !void {
@@ -243,22 +262,15 @@ fn finishPublication(model: *Model, entry: *Pending) bool {
     }
     const view = remote.presentation(ref) orelse return false;
     if (view.phase != .live) return false;
-    return placeLive(model, entry, ref);
-}
-
-fn placeLive(model: *Model, entry: *Pending, ref: TerminalRef) bool {
-    if (entry.session != 0) {
-        return submitShared(model, entry, ref) catch {
-            refusePlacement(model, entry.*);
-            return true;
-        };
-    }
-    place(model, entry.*, ref) catch refusePlacement(model, entry.*);
-    return true;
+    return submitShared(model, entry, ref) catch {
+        refusePlacement(model, entry.*);
+        return true;
+    };
 }
 
 fn contextCurrent(model: anytype, entry: Pending, epoch: u64) bool {
     if (entry.epoch != epoch) return false;
+    if (entry.session == 0) return false;
     return entry.session == model.shared_workspace.session;
 }
 
@@ -310,7 +322,6 @@ fn creationMutation(entry: Pending, ref: TerminalRef, revision: u64) !contract.w
 }
 
 fn sharedMember(model: *Model, ref: TerminalRef) bool {
-    if (model.shared_workspace.session == 0) return false;
     return shared_mutations.terminalWindow(model.phux().?.workspaceSnapshot(), ref) != null;
 }
 
@@ -356,7 +367,7 @@ fn publishSelection(model: anytype, entry: Pending, ref: TerminalRef, id: [16]u8
 fn refusePlacement(model: anytype, entry: Pending) void {
     retireEmptyDestination(model, entry);
     model.terminal_limit_refused = true;
-    if (entry.session != 0) model.shared_workspace.refused = true;
+    model.shared_workspace.refused = true;
 }
 
 fn isSplit(kind: Kind) bool {
@@ -366,7 +377,9 @@ fn isSplit(kind: Kind) bool {
 fn sharesCapacity(entry: Pending, workspace: *const model_module.Workspace, kind: Kind) bool {
     if (!isSplit(kind)) return !isSplit(entry.kind);
     if (!isSplit(entry.kind)) return false;
-    return entry.tab_id == workspace.tabId(workspace.selected_tab);
+    const target = entry.shared_window orelse return false;
+    const selected = workspace.shared_ids[workspace.selected_tab] orelse return false;
+    return @import("std").mem.eql(u8, &target, &selected);
 }
 
 fn hasCapacity(model: *const Model, reserved: usize) bool {
@@ -381,7 +394,7 @@ fn hasCapacity(model: *const Model, reserved: usize) bool {
 
 fn spawnOwner(model: *const Model, origin: ?TerminalRef) !?TerminalRef {
     const ref = origin orelse return null;
-    if (support.providerKind(ref) != .phux) return null;
+    if (support.providerKind(ref) != .phux) return error.InvalidDestination;
     _ = model.terminalOwner(ref) orelse return error.NotReady;
     return ref;
 }
@@ -390,32 +403,6 @@ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !voi
     const tree = workspace.selectedTreeConst() orelse return error.InvalidDestination;
     if (tree.focusedTerminal() == null) return error.InvalidDestination;
     if (tree.paneCount() + reserved >= layout.max_panes) return error.PaneCapacity;
-}
-
-fn place(model: *Model, entry: Pending, ref: TerminalRef) !void {
-    if (!model.windowOpen(entry.window)) return error.StaleDestination;
-    if (model.window_epochs[entry.window] != entry.window_epoch) return error.StaleDestination;
-    if (!model.canAddPane()) return error.TerminalCapacity;
-    if (model.locateTerminal(ref) != null) return error.AlreadyPlaced;
-    const workspace = model.wsAt(entry.window) orelse return error.StaleDestination;
-    if (isSplit(entry.kind)) {
-        try placeSplit(workspace, entry, ref);
-    } else {
-        if (!workspace.admitTab(ref)) return error.TabCapacity;
-        _ = workspace.selectTerminal(ref);
-    }
-    model.terminal_limit_refused = false;
-}
-
-fn placeSplit(workspace: *model_module.Workspace, entry: Pending, ref: TerminalRef) !void {
-    const origin = entry.origin orelse return error.StaleDestination;
-    for (workspace.tabs[0..workspace.tab_count], 0..) |*tree, index| {
-        if (workspace.tabId(index) != entry.tab_id) continue;
-        const node = tree.find(origin) orelse return error.StaleDestination;
-        _ = try tree.split(node, if (entry.kind == .split_right) .horizontal else .vertical, ref);
-        return;
-    }
-    return error.StaleDestination;
 }
 
 const ConfirmationFixture = struct {
@@ -447,7 +434,7 @@ const ConfirmationFixture = struct {
     workspace: struct { tab_count: usize = 0 } = .{},
 
     fn entry() Pending {
-        return .{ .epoch = 3, .session = 7, .window = 1, .window_epoch = 5, .kind = .window, .origin = null, .tab_id = null, .terminal = ref, .accepted = true };
+        return .{ .epoch = 3, .session = 7, .window = 1, .window_epoch = 5, .kind = .window, .origin = null, .terminal = ref, .accepted = true };
     }
     pub fn phux(self: *@This()) ?*@This() {
         return self;
@@ -517,6 +504,46 @@ test "creation focus suppression survives returning to the original focus" {
     model.shared_mutations.outcome = .confirmed;
     try testing.expect(focusUnchanged(&model, entry));
     try testing.expect(finishMutation(&model, entry, 1));
+    try testing.expect(model.shared_workspace.desired_terminal == null);
+    try testing.expect(model.shared_workspace.placement_hint != null);
+}
+
+test "superseding selection preserves newest creation while both capture the same focus" {
+    const testing = @import("std").testing;
+    var model: ConfirmationFixture = .{};
+    var creation: Creation = .{};
+    model.focus = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 7 } } };
+    creation.pending[0] = ConfirmationFixture.entry();
+    creation.pending[0].?.focus = model.focus;
+    const newer: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 10 } } };
+    // Selecting another catalog entry does not move focus until confirmation.
+    // An observer of focus alone therefore cannot supersede the older intent.
+    creation.supersedeFocus();
+    creation.pending[1] = ConfirmationFixture.entry();
+    creation.pending[1].?.focus = model.focus;
+    creation.pending[1].?.terminal = newer;
+    model.shared_workspace.desired_terminal = newer;
+    model.shared_mutations.outcome = .confirmed;
+    try testing.expect(finishMutation(&model, creation.pending[0].?, 1));
+    try testing.expect(model.shared_workspace.desired_terminal.?.eql(newer));
+    try testing.expect(model.shared_workspace.placement_hint != null);
+    const nodes = [_]contract.workspace.Node{.{ .kind = .leaf, .terminal_ref = newer }};
+    model.snapshot.nodes = &nodes;
+    model.shared_mutations.outcome = .confirmed;
+    try testing.expect(finishMutation(&model, creation.pending[1].?, 2));
+    try testing.expect(model.shared_workspace.desired_terminal.?.eql(newer));
+}
+
+test "superseding selection of current focus cannot resurrect a delayed creation" {
+    const testing = @import("std").testing;
+    var model: ConfirmationFixture = .{};
+    var creation: Creation = .{};
+    model.focus = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 7 } } };
+    creation.pending[0] = ConfirmationFixture.entry();
+    creation.pending[0].?.focus = model.focus;
+    creation.supersedeFocus();
+    model.shared_mutations.outcome = .confirmed;
+    try testing.expect(finishMutation(&model, creation.pending[0].?, 1));
     try testing.expect(model.shared_workspace.desired_terminal == null);
     try testing.expect(model.shared_workspace.placement_hint != null);
 }

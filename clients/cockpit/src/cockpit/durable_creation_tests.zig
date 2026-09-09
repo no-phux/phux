@@ -28,9 +28,10 @@ pub fn start() !*engine_module.Engine {
     try fixture.attachHost(remote.host);
     remote.attach_queued = true;
     _ = engine.recovery.pump(engine.model);
-    engine.model.phux_admit_on_ready = false;
     engine.model.reconcileRemoteTerminals();
-    try testing.expect(engine.model.admitAndSelectCurrentRemoteTerminal());
+    _ = try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    _ = engine.recovery.pump(engine.model);
+    try drain(engine);
     remote.bridge.outgoing.reset();
     return engine;
 }
@@ -47,8 +48,47 @@ fn command(engine: *engine_module.Engine, kind: protocol.IntentKind, argument: u
 fn feed(engine: *engine_module.Engine, name: []const u8) !void {
     const remote = engine.model.phux().?;
     try fixture.stageFixture(remote.bridge, name);
+    try drain(engine);
+}
+
+fn drain(engine: *engine_module.Engine) !void {
     _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
     try testing.expect(!engine.model.phux_connection_unavailable);
+}
+
+/// Canonical Rust bodies with only the scenario's request correlation changed.
+/// Field 1 is the request ID: the fixture's TLV descriptor must still match.
+fn stageReply(engine: *engine_module.Engine, directory: []const u8, name: []const u8, expected: u32, request: u32) !void {
+    const path = try std.fmt.allocPrint(testing.allocator, "src/{s}/fixtures/{s}", .{ directory, name });
+    defer testing.allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
+    try testing.expectEqual(expected, std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], request, .big);
+    try testing.expect(engine.model.phux().?.bridge.incoming.stage(bytes));
+}
+
+fn workspaceReply(engine: *engine_module.Engine, name: []const u8, expected: u32, request: u32) !void {
+    try stageReply(engine, "providers/phux", name, 0x8000_0000 + expected, 0x8000_0000 + request);
+}
+
+fn confirmCreation(engine: *engine_module.Engine, kind: enum { add, split }) !void {
+    const metadata = if (kind == .split) "workspace_rename_metadata.bin" else "workspace_refresh_metadata.bin";
+    try workspaceReply(engine, metadata, if (kind == .split) 5 else 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try testing.expectEqual(.pending, engine.model.phux().?.workspaceSnapshot().status);
+    if (kind == .split) {
+        try workspaceReply(engine, "workspace_split_metadata.bin", 8, 5);
+        try workspaceReply(engine, "workspace_split_state.bin", 7, 4);
+    } else {
+        try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+        try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+    }
+    try drain(engine);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
 }
 
 pub fn tabPublication() !void {
@@ -68,6 +108,8 @@ pub fn tabPublication() !void {
     _ = model.openWindow(1).?;
     model.active_window = 1;
     try feed(engine, "local-ready.bin");
+    try testing.expectEqual(tab_count, model.primary.tab_count);
+    try confirmCreation(engine, .add);
     try testing.expectEqual(tab_count + 1, model.primary.tab_count);
     try testing.expectEqual(@as(usize, 0), model.ws().tab_count);
     try testing.expectEqual(@as(usize, 1), model.active_window);
@@ -82,10 +124,14 @@ pub fn splitDestination() !void {
     try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
     try testing.expectEqual(@as(usize, 1), engine.creation.count());
     try feed(engine, "spawn-local.bin");
-    try testing.expect(engine.model.selectTab(0));
+    _ = engine.model.openWindow(1).?;
+    engine.model.active_window = 1;
     try feed(engine, "local-ready.bin");
+    try testing.expectEqual(@as(usize, 1), engine.model.primary.tabs[original].paneCount());
+    try confirmCreation(engine, .split);
     try testing.expectEqual(@as(usize, 2), engine.model.primary.tabs[original].paneCount());
-    try testing.expectEqual(@as(usize, 1), engine.model.primary.tabs[0].paneCount());
+    try testing.expectEqual(@as(usize, 0), engine.model.ws().tab_count);
+    try testing.expectEqual(@as(usize, 1), engine.model.active_window);
 }
 
 pub fn windowEpoch() !void {
@@ -101,6 +147,25 @@ pub fn windowEpoch() !void {
     try feed(engine, "local-ready.bin");
     try testing.expectEqual(@as(usize, 0), engine.model.wsAt(window).?.tab_count);
     try testing.expect(engine.model.terminal_limit_refused);
+}
+
+test "cutover new native window receives only its confirmed shared singleton" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const original = model.focusedTerminalRef().?;
+    try testing.expect(command(engine, .new_window, 0));
+    const window = model.active_window;
+    try testing.expect(window != 0);
+    try testing.expectEqual(@as(usize, 0), model.ws().tab_count);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try testing.expectEqual(@as(usize, 0), model.ws().tab_count);
+    try confirmCreation(engine, .add);
+    try testing.expectEqual(window, model.locateTerminal(refFor(8)).?.window);
+    try testing.expectEqual(@as(usize, 0), model.locateTerminal(original).?.window);
+    try testing.expect(model.focusedTerminalRef().?.eql(refFor(8)));
 }
 
 pub fn unknownOutcome() !void {
@@ -145,17 +210,19 @@ pub fn restoredSubscription() !void {
     defer engine.destroy();
     const model = engine.model;
     const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteTerminalId.fromPhux(0, 8, "") } };
-    try testing.expect(model.admitTab(ref));
-    engine.recovery.disconnect(model);
-    try testing.expect(model.attachmentPending(ref));
-    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
-    try fixture.expectOutgoing(model.phux().?.bridge, "attach-local-request.bin");
-    try testing.expect(model.attachmentPending(ref));
+    const remote = model.phux().?;
+    _ = try remote.requestWorkspaceRefresh();
+    try workspaceReply(engine, "workspace_split_metadata.bin", 8, 3);
+    try workspaceReply(engine, "workspace_split_state.bin", 7, 2);
+    try drain(engine);
+    try testing.expect(model.locateTerminal(ref) != null);
+    try testing.expect(remote.presentation(ref) == null);
+    try stageReply(engine, "tests", "restore-accepted.bin", 1, 2);
+    try drain(engine);
+    try testing.expect(remote.presentation(ref) == null);
     try feed(engine, "local-ready.bin");
-    try testing.expect(model.attachmentPending(ref));
-    try feed(engine, "restore-accepted.bin");
-    try testing.expect(!model.attachmentPending(ref));
     try testing.expect(model.remotePresentation(ref) != null);
+    try testing.expectEqual(@as(u32, 2), remote.host.operation_ledger.last_id);
 }
 
 pub fn destinationReservations() !void {
@@ -163,13 +230,10 @@ pub fn destinationReservations() !void {
     const engine = try start();
     defer engine.destroy();
     const model = engine.model;
-    while (model.primary.tab_count < model_module.max_tabs - 1) {
-        const pane = try model.provider.createTerminal();
-        try testing.expect(model.admitTab(pane.id));
-    }
-    try testing.expect(command(engine, .new_terminal, 0));
+    const available = model_module.max_tabs - model.primary.tab_count;
+    for (0..available) |_| try testing.expect(command(engine, .new_terminal, 0));
     try testing.expect(!command(engine, .new_terminal, 0));
-    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try testing.expectEqual(available, engine.creation.count());
 }
 
 pub fn windowRefusal() !void {
@@ -189,16 +253,10 @@ pub fn splitReservations() !void {
     const engine = try start();
     defer engine.destroy();
     const model = engine.model;
-    const tree = model.selectedTree().?;
-    const origin = tree.focusedTerminal().?;
-    while (tree.paneCount() < @import("layout.zig").max_panes - 1) {
-        const pane = try model.provider.createTerminal();
-        _ = try tree.split(tree.find(origin).?, .horizontal, pane.id);
-        _ = tree.focusTerminal(origin);
-    }
-    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    const available = @import("layout.zig").max_panes - model.selectedTree().?.paneCount();
+    for (0..available) |_| try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
     try testing.expect(!command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
-    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try testing.expectEqual(available, engine.creation.count());
 }
 
 pub fn restoredEmptyWorkspace() !void {
@@ -219,7 +277,9 @@ pub fn restoredEmptyWorkspace() !void {
     const engine = try engine_module.Engine.createFromInitialized(initialized);
     defer engine.destroy();
     try testing.expectEqual(@as(usize, 0), engine.model.provider.activeCount());
-    try testing.expect(engine.model.focusedTerminalRef() == null);
+    try fixture.attachHost(remote.host);
+    _ = try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    try testing.expectEqual(@as(u32, 7), engine.model.focusedTerminalRef().?.terminal_id.phux.id);
 }
 
 pub fn reconnectClosePublishes() !void {
@@ -304,5 +364,258 @@ pub fn emptyTitleReconnect() !void {
     _ = try remote.host.drainReadiness();
     try remote.host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
     try feed(engine, "attached.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try drain(engine);
     try testing.expectEqualStrings("", engine.model.remotePresentation(ref).?.title);
+}
+
+test "Phux creation refuses unavailable workspace before spawning or subscribing" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const ref = model.focusedTerminalRef().?;
+    const local_count = model.provider.activeCount();
+    model.shared_workspace.session = 0;
+    try testing.expectError(error.WorkspaceUnavailable, engine.creation.request(model, .tab));
+    try testing.expectError(error.WorkspaceUnavailable, engine.creation.requestAttach(model, ref));
+    try testing.expectError(error.WorkspaceUnavailable, engine.creation.requestAdmit(model, ref));
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(u32, 0), model.phux().?.host.operation_ledger.last_id);
+    try testing.expectEqual(local_count, model.provider.activeCount());
+}
+
+test "session change retires accepted creation without redirecting its queued mutation" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    try engine.creation.request(model, .tab);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try testing.expectEqual(@as(u32, 2), remote.host.operation_ledger.last_id);
+    model.shared_workspace.session = 2;
+    try testing.expect(engine.creation.pump(model));
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
+    try testing.expect(remote.host.operation_ledger.detaching(refFor(8)));
+    try testing.expect(model.terminal_limit_refused);
+    try expectCatalogTerminal(engine, 8);
+    try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+}
+
+test "refused shared creation retains the accepted durable terminal in the catalog" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    try engine.creation.request(model, .tab);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
+    // Another writer's unchanged singleton wins the confirmation read.
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
+    try drain(engine);
+    try testing.expectEqual(.refused, remote.workspaceSnapshot().status);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    try testing.expect(model.terminal_limit_refused);
+    try expectCatalogTerminal(engine, 8);
+}
+
+fn expectCatalogTerminal(engine: *engine_module.Engine, id: u32) !void {
+    const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteTerminalId.fromPhux(0, id, "") } };
+    const remote = engine.model.phux().?;
+    try testing.expect(remote.terminalKnown(ref));
+    for (remote.catalogTerminals()) |entry| {
+        if (entry.terminal_ref.eql(ref)) return;
+    }
+    return error.TerminalMissingFromCatalog;
+}
+
+fn refFor(id: u32) support.TerminalRef {
+    return .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = id } } };
+}
+
+fn navigationBytes(revision: u64, index: u16) [12]u8 {
+    var bytes = [_]u8{0} ** 12;
+    bytes[0] = 1;
+    bytes[1] = 13;
+    std.mem.writeInt(u64, bytes[2..10], revision, .little);
+    std.mem.writeInt(u16, bytes[10..12], index, .little);
+    return bytes;
+}
+
+fn navigationIndex(engine: *engine_module.Engine, destination: model_module.PaletteDestination) !u16 {
+    const projection = @import("native/workspace_projection.zig");
+    var entries: [16]projection.PaletteEntry = undefined;
+    const count = projection.paletteEntriesWindowIn(engine.model, engine.model.wsConst(), .{ .first = 0, .count = entries.len }, &entries);
+    for (entries[0..count], 0..) |entry, index| {
+        if (destinationMatches(entry, destination)) return @intCast(index);
+    }
+    return error.MissingNavigationDestination;
+}
+
+fn destinationMatches(actual: model_module.PaletteDestination, expected: model_module.PaletteDestination) bool {
+    if (std.meta.activeTag(actual) != std.meta.activeTag(expected)) return false;
+    return switch (expected) {
+        .available_terminal => |ref| actual.available_terminal.eql(ref),
+        .session => |id| actual.session == id,
+        .placed_terminal => false,
+    };
+}
+
+pub fn navigationSharedAdmission(fx: anytype) !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    // A terminal spawned by another command is live but remains catalog-only
+    // until an explicit navigation intent confirms its shared admission.
+    _ = try remote.requestSpawn(model.focusedTerminalRef(), remote.attach_viewport);
+    try feed(engine, "spawn-local.bin");
+    try fixture.stageFixture(remote.bridge, "local-ready.bin");
+    _ = try remote.drainReadiness();
+    _ = try remote.requestWorkspaceRefresh();
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    _ = try remote.drainReadiness();
+    _ = try model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    model.reconcileRemoteTerminals();
+    const ref = refFor(8);
+    try testing.expect(model.locateTerminal(ref) == null);
+    const available = navigationBytes(engine.revision, try navigationIndex(engine, .{ .available_terminal = ref }));
+    try testing.expect(engine.applyIntent(&available, fx));
+    try testing.expect(model.locateTerminal(ref) == null);
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
+    try drain(engine);
+    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 7);
+    try workspaceReply(engine, "workspace_add_state.bin", 13, 6);
+    try drain(engine);
+    try testing.expect(model.focusedTerminalRef().?.eql(ref));
+    try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
+    try testing.expectEqual(@as(u32, 4), remote.host.operation_ledger.last_id);
+    const session = navigationBytes(engine.revision, try navigationIndex(engine, .{ .session = 2 }));
+    try testing.expect(engine.applyIntent(&session, fx));
+    try testing.expectEqual(@as(?u32, 2), remote.session_id);
+    try testing.expectEqual(@as(?u32, 1), remote.selectedSessionId());
+    try testing.expectEqual(@as(usize, 1), fx.navigation_restarts);
+    try testing.expect(!engine.applyIntent(&session, fx));
+    remote.host.disconnect();
+    model.phux_connection_unavailable = true;
+    var reconnect = navigationBytes(engine.revision, 0);
+    reconnect[1] = 12;
+    try testing.expect(engine.applyIntent(&reconnect, fx));
+    try testing.expectEqual(@as(usize, 2), fx.navigation_restarts);
+}
+
+pub fn sharedCloseAndCatalogAdmission() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    try engine.creation.request(model, .tab);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try confirmCreation(engine, .add);
+    const ref = refFor(8);
+    const owner = remote.owner(ref).?;
+    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_focused_pane)));
+    try testing.expect(model.locateTerminal(ref) != null);
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 8);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 7);
+    try drain(engine);
+    try testing.expect(model.locateTerminal(ref) == null);
+    try testing.expect(!remote.ownerIsCurrent(owner));
+    try expectCatalogTerminal(engine, 8);
+    try stageReply(engine, "tests", "detach-ok.bin", 1, 5);
+    try drain(engine);
+    try testing.expect(remote.presentation(ref) == null);
+    const select = navigationBytes(engine.revision, try navigationIndex(engine, .{ .available_terminal = ref }));
+    try testing.expect(engine.applyIntent(&select, &engine_module.NoShells{}));
+    try testing.expect(model.locateTerminal(ref) == null);
+    try stageReply(engine, "tests", "restore-accepted.bin", 1, 6);
+    try drain(engine);
+    try feed(engine, "local-ready.bin");
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 11);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 10);
+    try drain(engine);
+    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 13);
+    try workspaceReply(engine, "workspace_add_state.bin", 13, 12);
+    try drain(engine);
+    try testing.expect(model.locateTerminal(ref) != null);
+    try testing.expect(remote.owner(ref) != null);
+    try testing.expectEqual(@as(u32, 8), remote.host.operation_ledger.last_id);
+}
+
+fn moveSharedWindowToSecondary(engine: *engine_module.Engine) !void {
+    const model = engine.model;
+    const remote = model.phux().?;
+    const id = model.primary.shared_ids[0].?;
+    _ = model.openWindow(1).?;
+    model.shared_workspace.placement_hint = .{ .shared_id = id, .window = 1, .window_epoch = model.window_epochs[1] };
+    _ = try model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    model.active_window = 1;
+    try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
+}
+
+pub fn nativeCloseRehomesWhileBusy() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    try moveSharedWindowToSecondary(engine);
+    const ref = model.focusedTerminalRef().?;
+    const owner = remote.owner(ref).?;
+    _ = try remote.requestWorkspaceRefresh();
+    try testing.expect(!command(engine, .close_tab, 0));
+    const close = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 1, .argument = 0 });
+    try testing.expect(engine.applyIntent(&close, &engine_module.NoShells{}));
+    try testing.expect(!model.windowOpen(1));
+    try testing.expectEqual(@as(usize, 0), model.locateTerminal(ref).?.window);
+    try testing.expect(remote.ownerIsCurrent(owner));
+    try testing.expectEqual(@as(u32, 1), remote.host.operation_ledger.last_id);
+}
+
+pub fn offlineSharedCloseRefuses() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    for ([_]protocol.IntentKind{ .native_command, .close_tab, .close_window }) |kind| {
+        const engine = try start();
+        defer engine.destroy();
+        const model = engine.model;
+        const remote = model.phux().?;
+        try moveSharedWindowToSecondary(engine);
+        const ref = model.focusedTerminalRef().?;
+        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
+        const close = protocol.encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .window = 1, .argument = if (kind == .native_command) @intFromEnum(protocol.NativeCommand.close_focused_pane) else 0 });
+        try testing.expectEqual(kind == .close_window, engine.applyIntent(&close, &engine_module.NoShells{}));
+        const native_window: usize = if (kind == .close_window) 0 else 1;
+        try testing.expectEqual(native_window, model.locateTerminal(ref).?.window);
+        try testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
+        try testing.expect(!remote.bridge.outgoing.hasPending());
+        try remote.host.reconnect("operations-test");
+        remote.attach_queued = false;
+        try fixture.stageFixture(remote.bridge, "hello.bin");
+        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+        try feed(engine, "attached.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+        try drain(engine);
+        try testing.expect(remote.owner(ref) != null);
+        try testing.expectEqual(native_window, model.locateTerminal(ref).?.window);
+    }
 }

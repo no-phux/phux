@@ -7,7 +7,9 @@ const support = @import("phux_support.zig");
 const projection = @import("native/workspace_projection.zig");
 const fixture = if (support.phux_enabled) support.PhuxProvider.test_support else struct {};
 const ChannelFx = struct {
-    pub fn openChannel(_: *const @This(), _: anytype) sdk.ChannelHandle { return .{}; }
+    pub fn openChannel(_: *const @This(), _: anytype) sdk.ChannelHandle {
+        return .{};
+    }
     pub fn closeChannel(_: *const @This(), _: u64) void {}
     pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
@@ -61,6 +63,14 @@ fn reconnect(engine: *engine_module.Engine, wrong: bool) !void {
     try remote.host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
     try stageReplaced(remote, "attached.bin", "COCKPIT FIXTURE", if (wrong) "UNPROVEN GRID!!" else "REPLACED GRID!!");
     _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    // A replacement server's reused numeric terminal is still unproven while
+    // its initial workspace read is outstanding. The original server completes
+    // that read before its restored live grid may replace the frozen paint.
+    if (!wrong) {
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    }
     remote.bridge.outgoing.reset();
 }
 
