@@ -1554,9 +1554,8 @@ pub const Engine = struct {
     }
 
     /// The tabs the band has room for, by the shipping projection's rule. The
-    /// strip hands `visibleTabRun` the width the markup leaves it: the surface
-    /// minus the traffic-light spacer and the row padding (app.native's own
-    /// numbers). The rail is rows of 32pt in the height its own furniture
+    /// strip uses the measured compiled markup slot, so toolbar changes cannot
+    /// make the run overlap controls. The rail is rows of 32pt in the height its own furniture
     /// leaves (an 8pt padding, a 40pt header, four 8pt gaps, three 28pt
     /// rows), with a 40pt cue reserved once anything is hidden. Before the
     /// first frame the surface is unknown and every tab is in the run.
@@ -1578,14 +1577,8 @@ pub const Engine = struct {
         if (total == 0) return .{};
         const size = workspace.surface_size;
         if (size.width <= 0 or size.height <= 0) return .{ .first = 0, .count = @intCast(total), .extent = 168 };
-        if (self.model.tab_placement == .top) {
-            const run_width = projection.tabRunWidthIn(self.model, workspace, size.width - 78 - 8);
-            const window = projection.visibleTabRun(workspace, run_width);
-            return .{
-                .first = @intCast(window.first),
-                .count = @intCast(window.count),
-                .extent = @intFromFloat(@max(0, @min(65535, window.extent))),
-            };
+        if (index != 0 or self.model.tab_placement == .top) {
+            return stripRun(workspace);
         }
         const row: f32 = 32;
         const furniture: f32 = 8 + 40 + 32 + 84;
@@ -1599,6 +1592,27 @@ pub const Engine = struct {
         const selected = @min(workspace.selected_tab, total - 1);
         const first: usize = if (selected >= count) selected - count + 1 else 0;
         return .{ .first = @intCast(first), .count = @intCast(count), .extent = 168 };
+    }
+
+    fn stripRun(workspace: *const model_module.Workspace) ts_snapshot.TabRun {
+        const total = workspace.tab_count;
+        if (total == 0) return .{};
+        // app.native and cockpit-window.native use 4pt gaps and one 32pt
+        // overflow cue. The old Zig chrome run also reserved an inline plus
+        // button and two cues; its surrounding toolbar was different too.
+        const gap = projection.chrome_band_inset;
+        const step = projection.tab_min_extent + gap;
+        var usable = @max(0, workspace.shipping_tab_strip_width) + gap;
+        var count = @max(1, @as(usize, @intFromFloat(@floor(usable / step))));
+        if (count < total) {
+            usable = @max(0, usable - projection.chrome_control_extent - gap);
+            count = @max(1, @as(usize, @intFromFloat(@floor(usable / step))));
+        }
+        count = @min(total, count);
+        const selected = @min(workspace.selected_tab, total - 1);
+        const first = if (selected >= count) selected - count + 1 else 0;
+        const extent = @max(0, @min(projection.tab_extent, usable / @as(f32, @floatFromInt(count)) - gap));
+        return .{ .first = @intCast(first), .count = @intCast(count), .extent = @intFromFloat(extent) };
     }
 
     /// Re-derive the run after a frame; true when it moved, in which case

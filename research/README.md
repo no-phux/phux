@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-05-28
+last-reviewed: 2026-09-09
 ---
 
 # research/
@@ -15,6 +15,9 @@ behavior, follow the cross-link to the ADR or to the relevant
 
 ## Files
 
+- [`2026-09-09-cockpit-recovery-design.md`](./2026-09-09-cockpit-recovery-design.md) —
+  version-correct Cockpit input investigation, runtime ownership recommendation,
+  live-development loop and shipping-path acceptance plan (`phux-h8x2`).
 - [`2026-05-25-awesome-libghostty-scan.md`](./2026-05-25-awesome-libghostty-scan.md) —
   competitive scan of the awesome-libghostty project list; what to steal
   and whether anything invalidates the SPEC or accepted ADRs.

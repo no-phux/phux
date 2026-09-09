@@ -489,6 +489,9 @@ pub const Workspace = struct {
     /// native search/notice bands. Null in the retained native presentation.
     shipping_terminal_space: ?geometry.RectF = null,
     shipping_terminal_size: geometry.SizeF = .{},
+    /// Available horizontal tab slot from the same compiled chrome layout.
+    /// Includes neither traffic lights nor toolbar controls.
+    shipping_tab_strip_width: f32 = 0,
     /// This window's canvas size and device scale. Per-window because two
     /// windows can sit on different monitors at different densities, and every
     /// geometric derivation (pane rects, hit tests, the PTY sizing pump) reads
