@@ -587,6 +587,65 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
     });
 }
 
+/// Drive one TERM-precedence case end to end: spawn a resource carrying the
+/// given wire `env` and `term`, then assert the child PTY actually saw
+/// `expected`.
+///
+/// The four tests below differ only in that pair and the value they expect.
+/// The scaffold lives here once, but each case stays its own `#[test]` rather
+/// than becoming a loop, so a failure still names which precedence rule broke.
+async fn assert_spawned_term(
+    request_id: u32,
+    env: Option<Vec<(String, String)>>,
+    term: Option<String>,
+    expected: &str,
+    why: &str,
+) {
+    let tmp = TempDir::new().unwrap();
+    let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
+
+    send_frame(
+        &mut stream,
+        &FrameKind::SpawnResource {
+            request_id,
+            group: DEFAULT_GROUP_ID,
+            command: Some(vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                // Wait until the test has received RESOURCE_SPAWNED so the
+                // TERM output cannot be consumed while finding it.
+                "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
+            ]),
+            cwd: None,
+            env,
+            term,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: None,
+        },
+    )
+    .await;
+
+    let new_id = match await_terminal_spawned(&mut stream, request_id).await {
+        SpawnResult::Ok(id) => id,
+        other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
+    };
+    release_spawned_child(&mut stream, &new_id).await;
+
+    let needle = format!("TERMIS={expected}");
+    let acc = await_output_contains(&mut stream, &new_id, needle.as_bytes()).await;
+    let body = String::from_utf8_lossy(&acc);
+    assert!(
+        acc.windows(needle.len()).any(|w| w == needle.as_bytes()),
+        "{why}; got output: {body:?}",
+    );
+
+    drop(stream);
+    join_after_shutdown(shutdown_tx, server_handle).await;
+}
+
 /// phux-ign Part 2: a `SPAWN_RESOURCE` whose wire `env` carries a `TERM`
 /// entry MUST have that value reach the spawned PTY, overriding the
 /// server's `defaults.term` baseline. The wire frame is authoritative for
@@ -598,49 +657,14 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
 #[test]
 fn spawn_terminal_env_term_overrides_default() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SpawnResource {
-                request_id: 7,
-                group: DEFAULT_GROUP_ID,
-                command: Some(vec![
-                    "/bin/sh".to_owned(),
-                    "-c".to_owned(),
-                    // Wait until the test has received RESOURCE_SPAWNED so
-                    // the TERM output cannot be consumed while finding it.
-                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
-                ]),
-                cwd: None,
-                env: Some(vec![("TERM".to_owned(), "phux-spawn-override".to_owned())]),
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+        assert_spawned_term(
+            7,
+            Some(vec![("TERM".to_owned(), "phux-spawn-override".to_owned())]),
+            None,
+            "phux-spawn-override",
+            "spawn-supplied TERM must override the default",
         )
         .await;
-
-        let new_id = match await_terminal_spawned(&mut stream, 7).await {
-            SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
-        };
-        release_spawned_child(&mut stream, &new_id).await;
-
-        let needle = b"TERMIS=phux-spawn-override";
-        let acc = await_output_contains(&mut stream, &new_id, needle).await;
-        let body = String::from_utf8_lossy(&acc);
-        assert!(
-            acc.windows(needle.len()).any(|w| w == needle),
-            "spawn-supplied TERM must override the default; got output: {body:?}",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -654,48 +678,14 @@ fn spawn_terminal_env_term_overrides_default() {
 #[test]
 fn spawn_terminal_default_term_is_xterm_256color() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SpawnResource {
-                request_id: 8,
-                group: DEFAULT_GROUP_ID,
-                command: Some(vec![
-                    "/bin/sh".to_owned(),
-                    "-c".to_owned(),
-                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
-                ]),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+        assert_spawned_term(
+            8,
+            None,
+            None,
+            "xterm-256color",
+            "spawn with env=None must inherit defaults.term (xterm-256color)",
         )
         .await;
-
-        let new_id = match await_terminal_spawned(&mut stream, 8).await {
-            SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
-        };
-        release_spawned_child(&mut stream, &new_id).await;
-
-        let needle = b"TERMIS=xterm-256color";
-        let acc = await_output_contains(&mut stream, &new_id, needle).await;
-        let body = String::from_utf8_lossy(&acc);
-        assert!(
-            acc.windows(needle.len()).any(|w| w == needle),
-            "spawn with env=None must inherit defaults.term (xterm-256color); \
-             got output: {body:?}",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -707,47 +697,14 @@ fn spawn_terminal_default_term_is_xterm_256color() {
 #[test]
 fn spawn_terminal_term_field_overrides_default() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SpawnResource {
-                request_id: 21,
-                group: DEFAULT_GROUP_ID,
-                command: Some(vec![
-                    "/bin/sh".to_owned(),
-                    "-c".to_owned(),
-                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
-                ]),
-                cwd: None,
-                env: None,
-                term: Some("phux-term-field".to_owned()),
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+        assert_spawned_term(
+            21,
+            None,
+            Some("phux-term-field".to_owned()),
+            "phux-term-field",
+            "spawn `term` field must override defaults.term",
         )
         .await;
-
-        let new_id = match await_terminal_spawned(&mut stream, 21).await {
-            SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
-        };
-        release_spawned_child(&mut stream, &new_id).await;
-
-        let needle = b"TERMIS=phux-term-field";
-        let acc = await_output_contains(&mut stream, &new_id, needle).await;
-        let body = String::from_utf8_lossy(&acc);
-        assert!(
-            acc.windows(needle.len()).any(|w| w == needle),
-            "spawn `term` field must override defaults.term; got output: {body:?}",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -758,47 +715,14 @@ fn spawn_terminal_term_field_overrides_default() {
 #[test]
 fn spawn_terminal_env_term_beats_term_field() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SpawnResource {
-                request_id: 22,
-                group: DEFAULT_GROUP_ID,
-                command: Some(vec![
-                    "/bin/sh".to_owned(),
-                    "-c".to_owned(),
-                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
-                ]),
-                cwd: None,
-                env: Some(vec![("TERM".to_owned(), "phux-env-wins".to_owned())]),
-                term: Some("phux-term-field".to_owned()),
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+        assert_spawned_term(
+            22,
+            Some(vec![("TERM".to_owned(), "phux-env-wins".to_owned())]),
+            Some("phux-term-field".to_owned()),
+            "phux-env-wins",
+            "wire env TERM must beat the `term` field",
         )
         .await;
-
-        let new_id = match await_terminal_spawned(&mut stream, 22).await {
-            SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
-        };
-        release_spawned_child(&mut stream, &new_id).await;
-
-        let needle = b"TERMIS=phux-env-wins";
-        let acc = await_output_contains(&mut stream, &new_id, needle).await;
-        let body = String::from_utf8_lossy(&acc);
-        assert!(
-            acc.windows(needle.len()).any(|w| w == needle),
-            "wire env TERM must beat the `term` field; got output: {body:?}",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 

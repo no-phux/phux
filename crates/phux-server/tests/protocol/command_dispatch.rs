@@ -310,62 +310,62 @@ fn get_screen_with_cells_requests_cell_projection() {
     });
 }
 
+/// Send a command naming a wire id the server never allocated, assert the
+/// reply is `TerminalNotFound`, and hand back the error message.
+///
+/// The three tests below differ only in which command carries the bogus id.
+/// Each stays its own `#[test]` so a failure names the command that regressed,
+/// and the message comes back so a caller can assert more than the code.
+async fn unknown_terminal_error(request_id: u32, command: Command) -> String {
+    let tmp = TempDir::new().unwrap();
+    let socket_path = tmp.path().join("phux.sock");
+    let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
+    let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+    send_frame(
+        &mut stream,
+        &FrameKind::Command {
+            request_id,
+            command,
+        },
+    )
+    .await;
+
+    match await_command_result(&mut stream, request_id).await {
+        CommandResult::Error { code, message } => {
+            assert_eq!(code, ErrorCode::TerminalNotFound);
+            message
+        }
+        other => panic!("expected Error(TerminalNotFound), got {other:?}"),
+    }
+}
+
 #[test]
 fn get_screen_unknown_id_returns_terminal_not_found() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 8,
-                command: Command::GetScreen {
-                    terminal_id: ResourceId::local(99_999),
-                    request_scrollback: None,
-                    cells: false,
-                },
+        unknown_terminal_error(
+            8,
+            Command::GetScreen {
+                terminal_id: ResourceId::local(99_999),
+                request_scrollback: None,
+                cells: false,
             },
         )
         .await;
-
-        let result = await_command_result(&mut stream, 8).await;
-        match result {
-            CommandResult::Error { code, .. } => assert_eq!(code, ErrorCode::TerminalNotFound),
-            other => panic!("expected Error(TerminalNotFound), got {other:?}"),
-        }
     });
 }
 
 #[test]
 fn kill_terminal_unknown_id_returns_terminal_not_found() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 7,
-                command: Command::KillResource {
-                    // A wire id the server never allocated.
-                    terminal_id: ResourceId::local(99_999),
-                },
+        unknown_terminal_error(
+            7,
+            Command::KillResource {
+                // A wire id the server never allocated.
+                terminal_id: ResourceId::local(99_999),
             },
         )
         .await;
-
-        let result = await_command_result(&mut stream, 7).await;
-        match result {
-            CommandResult::Error { code, .. } => {
-                assert_eq!(code, ErrorCode::TerminalNotFound);
-            }
-            other => panic!("expected Error(TerminalNotFound), got {other:?}"),
-        }
     });
 }
 
@@ -1376,36 +1376,19 @@ fn get_terminal_state_returns_structured_snapshot_for_live_pane() {
 #[test]
 fn get_terminal_state_unknown_terminal_returns_not_found_error() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        // Send GET_TERMINAL_STATE with a made-up terminal_id that doesn't exist.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 11,
-                command: Command::GetTerminalState {
-                    terminal_id: ResourceId::local(9999),
-                    include_scrollback: false,
-                    max_scrollback_lines: 0,
-                },
+        let message = unknown_terminal_error(
+            11,
+            Command::GetTerminalState {
+                terminal_id: ResourceId::local(9999),
+                include_scrollback: false,
+                max_scrollback_lines: 0,
             },
         )
         .await;
-
-        let result = await_command_result(&mut stream, 11).await;
-        match result {
-            CommandResult::Error { code, message } => {
-                assert_eq!(code, ErrorCode::TerminalNotFound);
-                assert!(
-                    message.contains("no such terminal"),
-                    "Error message: {message}"
-                );
-            }
-            other => panic!("expected Error(TerminalNotFound, ..), got {other:?}"),
-        }
+        assert!(
+            message.contains("no such terminal"),
+            "Error message: {message}"
+        );
     });
 }
 
