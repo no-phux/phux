@@ -14,7 +14,9 @@
 #   3. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny).
 #   4. sccache (optional): wraps rustc so unchanged workspace crates hit the
 #      GHA cache across commits; CARGO_INCREMENTAL=0 because sccache cannot
-#      cache incremental artifacts.
+#      cache incremental artifacts. Writes are restricted to main for the same
+#      reason rust-cache's saves are — see the step for why sccache is the
+#      larger offender.
 #   5. rust-cache: compiled workspace + the zig .a, saved only from main so
 #      PR writes cannot thrash the shared 10 GB LRU and evict the warm base.
 name: setup-rust-lane
@@ -73,10 +75,21 @@ runs:
     - name: enable sccache
       if: inputs.sccache == 'true'
       shell: bash
+      env:
+        # The GHA backend stores one cache entry per compilation object, so a
+        # single lane writes thousands. A PR-scoped entry is readable only from
+        # that PR — never from main, never from another PR — yet it counts in
+        # full against the repository's 10 GB LRU budget. Left read-write, PR
+        # lanes evict the warm main objects and the rust-cache archives that
+        # every lane restores from, which is the exact thrash rust-cache's
+        # save-if below already avoids. READ_ONLY keeps the PR speedup (main's
+        # objects still restore) and contributes nothing to the budget.
+        SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       run: |
         {
           echo "RUSTC_WRAPPER=sccache"
           echo "SCCACHE_GHA_ENABLED=true"
+          echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"
           echo "CARGO_INCREMENTAL=0"
         } >> "$GITHUB_ENV"
 
