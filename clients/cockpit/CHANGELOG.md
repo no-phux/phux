@@ -3,6 +3,24 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/no-phux/phux/compare/cockpit-v0.17.0...cockpit-v0.18.0) (2026-09-09)
+
+
+### Features
+
+* **cockpit:** complete native durable Phux interactions and recovery ([aee3681](https://github.com/no-phux/phux/commit/aee368117cf1b05ac11fbd051f8a8383aeceac0b))
+
+
+### Bug Fixes
+
+* **cockpit:** soak the coordinator-backed lifecycle of the packaged app ([#552](https://github.com/no-phux/phux/issues/552)) ([45575ac](https://github.com/no-phux/phux/commit/45575acf80013a28b4210175af27ff08752948b6))
+* **release:** use tap token for cross-repo updates ([a9b4161](https://github.com/no-phux/phux/commit/a9b4161682ed763fdb178fe3d1b2f73dcfb57a32))
+
+
+### Documentation
+
+* **homebrew:** explain tap trust requirement ([bd708f7](https://github.com/no-phux/phux/commit/bd708f7989b4ae009d5957c8e7e7903066d4f493))
+
 ## [0.17.0](https://github.com/no-phux/phux/compare/cockpit-v0.16.2...cockpit-v0.17.0) (2026-09-07)
 
 
