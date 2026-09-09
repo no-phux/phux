@@ -111,7 +111,7 @@ impl ServerIncarnation {
     )]
     fn random() -> Self {
         let mut bytes = [0; 16];
-        getrandom::getrandom(&mut bytes).expect("OS CSPRNG unavailable for server incarnation");
+        getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable for server incarnation");
         Self(bytes)
     }
 

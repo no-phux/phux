@@ -265,8 +265,8 @@ const fn kitty_format_code(format: ImageFormat) -> Option<u32> {
 fn write_base64(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         let n = (u32::from(chunk[0]) << 16) | (u32::from(chunk[1]) << 8) | u32::from(chunk[2]);
         out.write_all(&[
             TABLE[((n >> 18) & 0x3f) as usize],
@@ -276,7 +276,6 @@ fn write_base64(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
         ])?;
     }
 
-    let rem = chunks.remainder();
     if !rem.is_empty() {
         let b0 = rem[0];
         let b1 = rem.get(1).copied().unwrap_or(0);

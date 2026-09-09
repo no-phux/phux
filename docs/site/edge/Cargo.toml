@@ -3,7 +3,7 @@ name = "phux-edge"
 description = "A phux server that runs as WASM in a Cloudflare Durable Object: speaks the real phux wire to the browser client, backed by a curated demo shell (no OS processes — free, no Containers)."
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/phall1/phux-site"
 publish = false
@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 # The real phux wire codec. Default features are wasm-safe (ADR-0024: the wire
 # owns its input atoms, libghostty is gated behind the off-by-default `server`).
 phux-protocol = { git = "https://github.com/phall1/phux.git", branch = "main" }
-wasm-bindgen = "=0.2.121"
+wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

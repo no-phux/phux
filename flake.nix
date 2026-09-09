@@ -67,7 +67,7 @@
             pkgs.cargo-bloat
             # Web client (clients/phux-web, clients/phux-vt-web) toolchain.
             # wasm-bindgen-cli MUST match the `wasm-bindgen` crate version
-            # pinned in the client manifests (=0.2.121); the test harness
+            # pinned in the client manifests (=0.2.128); the test harness
             # rejects a schema mismatch.
             pkgs.wasm-pack
             pkgs.wasm-bindgen-cli
@@ -76,6 +76,9 @@
             pkgs.chromedriver
             # npm integration gates and workflow contracts use Node too.
             pkgs.nodejs_24
+            # Documentation site builds use Bun. Mise provides this outside
+            # Nix; keep the fully provisioned shell equivalent.
+            pkgs.bun
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just

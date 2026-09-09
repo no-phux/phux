@@ -3692,6 +3692,10 @@ mod writer_close_tests {
 
     struct RecordingWriter(Rc<RefCell<Vec<WriterEvent>>>);
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the recording test writer implements the production async transport trait without I/O"
+    )]
     impl FrameWriter for RecordingWriter {
         async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
             let event = match FrameKind::decode(frame).expect("encoded frame").0 {
@@ -3724,6 +3728,10 @@ mod writer_close_tests {
         batches: Rc<RefCell<Vec<usize>>>,
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the batch recording test writer implements the production async transport trait without I/O"
+    )]
     impl FrameWriter for BatchRecordingWriter {
         async fn write_frame(&mut self, _frame: &[u8]) -> io::Result<()> {
             self.batches.borrow_mut().push(1);
@@ -3773,6 +3781,10 @@ mod writer_close_tests {
         frames: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the slicing test writer implements the production async transport trait without I/O"
+    )]
     impl FrameWriter for SlicingWriter {
         async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
             self.frames.borrow_mut().push(frame.to_vec());

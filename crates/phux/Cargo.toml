@@ -79,7 +79,7 @@ toml_edit.workspace = true
 # dependency of phux-server, phux-relay, phux-dial, and phux-client-core (cert
 # fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
 # RustCrypto reference implementation, pure-safe Rust, no C deps.
-sha2 = "0.10"
+sha2 = "0.11"
 # `phux status` renders the server's up-since wall-clock timestamp. Already a
 # workspace dependency (protocol/server/config); no new third-party row
 # enters the lockfile.
@@ -97,7 +97,7 @@ uuid.workspace = true
 # a bare LF into CR LF) or echo a stray keystroke into the middle of a frame.
 # Same crate and the same two features phux-client already uses; no new
 # third-party dependency enters the workspace.
-rustix = { version = "0.38", default-features = false, features = ["std", "process", "termios", "fs"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }
 
 [dev-dependencies]
 # The one scripted server (`phux_client::testkit`), where the reference

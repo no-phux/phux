@@ -146,7 +146,10 @@ pub fn ensure_self_signed_for(
         .write(true)
         .mode(0o600)
         .open(key_path)?;
-    io::Write::write_all(&mut key_file, certified.key_pair.serialize_pem().as_bytes())?;
+    io::Write::write_all(
+        &mut key_file,
+        certified.signing_key.serialize_pem().as_bytes(),
+    )?;
     Ok(())
 }
 

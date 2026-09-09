@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
-FROM --platform=linux/amd64 rust:1.90.0-bookworm@sha256:3f6e6f8d8725a65a2db964bb828850f888d430c68784d661f753144e5d787207 AS phux-build
+FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS phux-build
 
 ARG PHUX_REVISION=1f2501f979be972886a1adb805bb598b9189e2f9
 ARG PHUX_SOURCE_SHA256=307dcf49b621e5c93d9cfb4f616985481930cca488cec3b6d2b607d6aec61d86
@@ -47,7 +47,7 @@ RUN RUSTFLAGS="-C target-cpu=x86-64" cargo \
       --config 'patch."https://github.com/uzaaft/libghostty-rs.git".libghostty-vt.path="/libghostty/crates/libghostty-vt"' \
       build --locked --release --bin phux
 
-FROM --platform=linux/amd64 oven/bun:1.3.14@sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834 AS phui-build
+FROM --platform=linux/amd64 oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS phui-build
 
 ARG PHUI_REVISION=81ddf0a00b73e522394181278ec78cce133b57d0
 ARG PHUI_SOURCE_SHA256=09600d6fa6a8069df3564cd94a4a5d6b75471df2017721f7cd221c83e8fe4682

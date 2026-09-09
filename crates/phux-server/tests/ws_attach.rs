@@ -113,7 +113,9 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: ClientCapabilities::default(),
         };
-        ws.send(Message::Binary(encode(&hello))).await.unwrap();
+        ws.send(Message::Binary(encode(&hello).into()))
+            .await
+            .unwrap();
         let attach = FrameKind::Attach {
             attach_id: 1,
             target: AttachTarget::ByName("default".to_owned()),
@@ -121,7 +123,9 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
             request_scrollback: false,
             scrollback_limit_lines: 0,
         };
-        ws.send(Message::Binary(encode(&attach))).await.unwrap();
+        ws.send(Message::Binary(encode(&attach).into()))
+            .await
+            .unwrap();
 
         // Collect frames until both ATTACHED and a TERMINAL_SNAPSHOT arrive.
         let mut got_attached = false;
@@ -156,7 +160,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         // length-prefixed FrameKind wire in both directions, not just the
         // attach path.
         let nonce = 0xCAFE_BABE_1234_5678_u64;
-        ws.send(Message::Binary(encode(&FrameKind::Ping { nonce })))
+        ws.send(Message::Binary(encode(&FrameKind::Ping { nonce }).into()))
             .await
             .unwrap();
         let pong_deadline = tokio::time::sleep(HANDSHAKE_DEADLINE);
@@ -186,13 +190,16 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         let socket = TcpStream::connect(&addr).await.unwrap();
         let (mut bad_ws, _) = tokio_tungstenite::client_async(&url, socket).await.unwrap();
         bad_ws
-            .send(Message::Binary(encode(&FrameKind::Hello {
-                client_name: "ws-zero-attach-test".to_owned(),
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::default(),
-            })))
+            .send(Message::Binary(
+                encode(&FrameKind::Hello {
+                    client_name: "ws-zero-attach-test".to_owned(),
+                    protocol_major: PROTOCOL_VERSION.major,
+                    protocol_minor: PROTOCOL_VERSION.minor,
+                    protocol_patch: PROTOCOL_VERSION.patch,
+                    client_caps: ClientCapabilities::default(),
+                })
+                .into(),
+            ))
             .await
             .unwrap();
         let Some(Ok(Message::Binary(hello_ok))) = bad_ws.next().await else {
@@ -203,13 +210,16 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
             FrameKind::HelloOk { .. }
         ));
         bad_ws
-            .send(Message::Binary(encode(&FrameKind::Attach {
-                attach_id: 0,
-                target: AttachTarget::ByName("default".to_owned()),
-                viewport: ViewportInfo::new(80, 24),
-                request_scrollback: false,
-                scrollback_limit_lines: 0,
-            })))
+            .send(Message::Binary(
+                encode(&FrameKind::Attach {
+                    attach_id: 0,
+                    target: AttachTarget::ByName("default".to_owned()),
+                    viewport: ViewportInfo::new(80, 24),
+                    request_scrollback: false,
+                    scrollback_limit_lines: 0,
+                })
+                .into(),
+            ))
             .await
             .unwrap();
         let Some(Ok(Message::Binary(error))) = bad_ws.next().await else {

@@ -386,7 +386,7 @@ impl WsWriter {
     /// Propagates transport failures as [`DialError`].
     pub async fn send(&mut self, frame: &[u8]) -> Result<(), DialError> {
         self.tx
-            .send(Message::Binary(frame.to_vec()))
+            .send(Message::Binary(frame.to_vec().into()))
             .await
             .map_err(ws_error)
     }
@@ -399,7 +399,7 @@ impl WsWriter {
     /// Propagates transport failures as [`DialError`].
     pub async fn send_ping(&mut self) -> Result<(), DialError> {
         self.tx
-            .send(Message::Ping(Vec::new()))
+            .send(Message::Ping(Vec::new().into()))
             .await
             .map_err(ws_error)
     }
@@ -443,7 +443,7 @@ impl WsReader {
                 None | Some(Ok(Message::Close(_))) => return Ok(None),
                 Some(Ok(Message::Binary(data))) => {
                     self.keepalive.note_inbound(Instant::now());
-                    return Ok(Some(data));
+                    return Ok(Some(data.to_vec()));
                 }
                 Some(Err(err)) => return Err(ws_error(err)),
                 // Text / ping / pong / raw: not a phux frame, but proof the
@@ -485,7 +485,7 @@ impl WsReader {
                 None | Some(Ok(Message::Close(_))) => return Ok(None),
                 Some(Ok(Message::Binary(data))) => {
                     self.keepalive.note_inbound(Instant::now());
-                    return Ok(Some(data));
+                    return Ok(Some(data.to_vec()));
                 }
                 Some(Err(err)) => return Err(ws_error(err)),
                 Some(Ok(_)) => self.keepalive.note_inbound(Instant::now()),

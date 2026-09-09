@@ -26,7 +26,7 @@ assert.equal(marketplaceEntry.version, claudePackage.version, "Claude marketplac
 assert.equal(marketplaceEntry.source, "./integrations/claude", "Claude marketplace source must remain repository-relative");
 
 const opencode = await json("integrations/opencode/package.json");
-assert.match(opencode.dependencies?.["@opencode-ai/plugin"] ?? "", /^0\.0\.0-next-[0-9]+$/, "OpenCode V2 API must be pinned exactly");
+assert.match(opencode.dependencies?.["@opencode-ai/plugin"] ?? "", /^\d+\.\d+\.\d+$/, "OpenCode plugin API must be pinned exactly");
 assert.equal(opencode.publishConfig?.access, "public");
 assert.equal(opencode.publishConfig?.provenance, true);
 

@@ -200,7 +200,7 @@ mod tests {
         // likely bug in the module and it is silent: playback still works,
         // it is just wrong in a way only a stopwatch catches.
         assert_eq!(due_at(10_000, speed(2.0)), Duration::from_millis(5_000));
-        assert_eq!(due_at(10_000, speed(0.5)), Duration::from_millis(20_000));
+        assert_eq!(due_at(10_000, speed(0.5)), Duration::from_secs(20));
         assert_eq!(due_at(10_000, speed(100.0)), Duration::from_millis(100));
     }
 
@@ -226,7 +226,9 @@ mod tests {
         let mut summed = Duration::ZERO;
         let mut previous = 0_u64;
         for time in &times {
-            summed += due_at(*time, rate) - due_at(previous, rate);
+            summed += due_at(*time, rate)
+                .checked_sub(due_at(previous, rate))
+                .expect("ordered input timestamps produce ordered deadlines");
             previous = *time;
         }
         assert_eq!(summed, due_at(*times.last().unwrap(), rate));

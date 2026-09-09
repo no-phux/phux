@@ -86,14 +86,13 @@ toml.workspace = true
 # `event` adds only `poll(2)` (no new crate): the OSC 10/11 palette probe waits
 # on its own deadline instead of the terminal's 100 ms `VTIME` timer, which sat
 # on the attach critical path.
-# `alloc` + `procfs` are what gate `termios::ttyname` (rustix files it under
-# procfs because that is how it answers the question on Linux; on other targets
-# it is `ttyname_r(3)`). The attach loop needs the outer terminal's device path
+# `alloc` gates `termios::ttyname`; Rustix 1 folds its old `procfs` feature
+# into that portable API. The attach loop needs the outer terminal's device path
 # so it can open its OWN non-blocking handle to it and read on reactor
 # readiness rather than on a blocking-pool thread (phux-l96p.4) -- it must not
 # set `O_NONBLOCK` on fd 0, whose open file description belongs to the parent
 # shell.
-rustix = { version = "0.38", default-features = false, features = ["std", "termios", "fs", "event", "alloc", "procfs"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "termios", "fs", "event", "alloc"] }
 # phux-l96p.8: pane titles are arbitrary OSC-2 strings, so the chrome clips
 # them to a CELL budget rather than a char count -- a CJK or emoji title
 # measured by `chars().count()` overruns its budget and overwrites the rule

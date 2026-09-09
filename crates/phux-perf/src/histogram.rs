@@ -233,10 +233,9 @@ impl HistogramSnapshot {
     /// Arithmetic mean, `0` when empty.
     #[must_use]
     pub const fn mean(&self) -> u64 {
-        if self.count == 0 {
-            0
-        } else {
-            self.sum / self.count
+        match self.sum.checked_div(self.count) {
+            Some(mean) => mean,
+            None => 0,
         }
     }
 

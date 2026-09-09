@@ -16,7 +16,7 @@ from pathlib import Path
 VERSION = "27.0.0"
 ROOT = Path(__file__).resolve().parents[2]
 HELP = """
-Install with the repository's Rust 1.90 toolchain (no global overwrite):
+Install with the repository's Rust 1.98 toolchain (no global overwrite):
   cargo install --locked cargo-mutants --version 27.0.0 \\
     --root target/mutation-tools/cargo-mutants-27.0.0
 Alternatively set CARGO_MUTANTS_BIN to that version's cargo-mutants executable.

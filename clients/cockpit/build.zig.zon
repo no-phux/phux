@@ -135,8 +135,10 @@
         // - A 32-slot PTY effect table, matching Cockpit's bounded terminal
         //   registry instead of silently binding the whole app at four shells.
         //
-        // cockpit/v0.9.5 (2026-09-02): the same Cockpit commits rebased onto
-        // upstream v0.9.5, plus the seam the TypeScript migration needs:
+        // cockpit/v0.10.1 (2026-09-09): the Cockpit lineage rebased onto
+        // upstream v0.10.1. It adds the native macOS app-updater surface and
+        // keeps Cockpit's packed-grid host on the draw-resource reuse path.
+        // The v0.9.5 lineage added the seam the TypeScript migration needs:
         //
         // - `AppOptions.native_extension`, an app-owned Zig module the
         //   generated core.ts runner calls to compose `host_calls`, the
@@ -164,8 +166,8 @@
         //   confinement through verified parent handles, and stream special
         //   files through the exact no-follow-opened handle.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/34cc9d5571599d5ea4feafc9260f36575e67e77b.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQtnzsgIuEmiEAXvRSAEqy20vbrYoBQ6yNRTlyJIj",
+            .url = "https://github.com/phall1/native/archive/07a3303b0f89a31584caea86f042676e940fddb1.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQn8OtQLWR60zMq7a_E5rKO__ZYSTzZdRPYz3-paa",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

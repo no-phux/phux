@@ -341,7 +341,7 @@ impl Drop for HelperPid {
         if common::process_exists(self.0) {
             let pid = rustix::process::Pid::from_raw(i32::try_from(self.0).expect("pid"))
                 .expect("nonzero");
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::Kill);
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
         }
     }
 }
@@ -415,7 +415,7 @@ fn deadline_kills_and_reaps_the_adoption_helper() {
 #[test]
 fn sigterm_kills_and_reaps_the_adoption_helper() {
     assert_helper_cleaned_up(
-        Some(rustix::process::Signal::Term),
+        Some(rustix::process::Signal::TERM),
         "#!/bin/sh\necho $$ > helper.pid\nexec /bin/sleep 60\n",
     );
 }
@@ -424,7 +424,7 @@ fn sigterm_kills_and_reaps_the_adoption_helper() {
 fn sigint_reaps_a_helper_that_closed_its_output_before_exiting() {
     // Exercise cancellation during waitid polling, rather than a pipe read.
     assert_helper_cleaned_up(
-        Some(rustix::process::Signal::Int),
+        Some(rustix::process::Signal::INT),
         "#!/bin/sh\nexec 2>/dev/null\necho $$ > helper.pid\nexec /bin/sleep 60\n",
     );
 }

@@ -35,7 +35,7 @@ where
 {
     let mut out = BytesMut::new();
     frame.encode(&mut out);
-    ws.send(Message::Binary(out.to_vec())).await.unwrap();
+    ws.send(Message::Binary(out.to_vec().into())).await.unwrap();
 }
 
 async fn accept_hello<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>)
@@ -126,6 +126,10 @@ async fn wss_with_pinned_cert_sends_bearer_token() {
         async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let tls = acceptor.accept(tcp).await.unwrap();
+            #[allow(
+                clippy::result_large_err,
+                reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+            )]
             let mut ws = tokio_tungstenite::accept_hdr_async(tls, |req: &Request, resp| {
                 assert_eq!(
                     req.headers()

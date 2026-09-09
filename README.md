@@ -83,7 +83,7 @@ tools. It transparently launches the bundled `phux-mcp` companion binary.
 Start at [Agents](./docs/consumers/agents.md).
 
 First-party, independently versioned host integrations are available for
-[OpenCode V2](./docs/consumers/opencode.md), [Pi](./docs/consumers/pi.md), and
+[OpenCode](./docs/consumers/opencode.md), [Pi](./docs/consumers/pi.md), and
 [Claude Code](./docs/consumers/claude.md). Their package, packed-artifact, and
 native host validation runs in the required CI gate.
 

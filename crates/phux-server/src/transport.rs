@@ -460,7 +460,7 @@ impl FrameWriter for WsWriter {
     /// segments and an idle connection still flushes on its single frame.
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         self.tx
-            .feed(Message::Binary(frame.to_vec()))
+            .feed(Message::Binary(frame.to_vec().into()))
             .await
             .map_err(io::Error::other)
     }
@@ -527,6 +527,10 @@ impl Incoming for WsListener {
                     std::cell::RefCell<Option<crate::auth::AuthenticatedCredential>>,
                 > = std::rc::Rc::new(std::cell::RefCell::new(None));
                 let sink = captured.clone();
+                #[allow(
+                    clippy::result_large_err,
+                    reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+                )]
                 let ws = tokio::time::timeout(
                     HANDSHAKE_DEADLINE,
                     tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
@@ -809,7 +813,9 @@ mod tests {
                 tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp)
                     .await
                     .expect("valid token must upgrade");
-            ws.send(Message::Binary(frame.clone())).await.unwrap();
+            ws.send(Message::Binary(frame.clone().into()))
+                .await
+                .unwrap();
             // Hold the connection open until the server has read.
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
@@ -855,7 +861,7 @@ mod tests {
                 tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp)
                     .await
                     .expect("valid token must upgrade");
-            ws.send(Message::Binary(overlong)).await.unwrap();
+            ws.send(Message::Binary(overlong.into())).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
 
@@ -913,7 +919,9 @@ mod tests {
                 tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp)
                     .await
                     .expect("valid token must upgrade after a stalled peer");
-            ws.send(Message::Binary(frame.clone())).await.unwrap();
+            ws.send(Message::Binary(frame.clone().into()))
+                .await
+                .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         let (got, ()) = tokio::join!(server, client);
@@ -1079,7 +1087,7 @@ mod tests {
                 let encode = |frame: FrameKind| {
                     let mut encoded = BytesMut::new();
                     frame.encode(&mut encoded);
-                    Message::Binary(encoded.to_vec())
+                    Message::Binary(encoded.to_vec().into())
                 };
                 client
                     .send(encode(FrameKind::Hello {
@@ -1224,21 +1232,21 @@ mod tests {
         assert_eq!(typed.stage, WsAcceptStage::TlsHandshake);
         assert_eq!(typed.source_ip, source_ip);
 
-        let auth_error = WebSocketError::Http(
+        let auth_error = WebSocketError::Http(Box::new(
             tokio_tungstenite::tungstenite::http::Response::builder()
                 .status(tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED)
                 .body(None::<Vec<u8>>)
                 .unwrap(),
-        );
+        ));
         assert_eq!(
             classify_ws_upgrade_stage(&auth_error),
             WsAcceptStage::PairingAuthentication
         );
 
         let unsafe_underlying = WebSocketError::Protocol(
-            tokio_tungstenite::tungstenite::error::ProtocolError::InvalidHeader(
+            tokio_tungstenite::tungstenite::error::ProtocolError::InvalidHeader(Box::new(
                 "authorization".parse().unwrap(),
-            ),
+            )),
         );
         assert_eq!(
             classify_ws_upgrade_stage(&unsafe_underlying),

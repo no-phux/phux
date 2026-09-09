@@ -271,9 +271,9 @@ pub enum LayoutBlob {
         /// `crates/phux/tests/conformance/layout_conformance.rs`.
         ratio: f32,
         /// Left (horizontal) / top (vertical) child.
-        left: Box<LayoutBlob>,
+        left: Box<Self>,
         /// Right (horizontal) / bottom (vertical) child.
-        right: Box<LayoutBlob>,
+        right: Box<Self>,
     },
 }
 

@@ -1102,9 +1102,7 @@ fn remote_cert_check(
 /// [`check_logs`] against explicit paths, so tests can drive it against a
 /// temp dir instead of the real environment.
 fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> Check {
-    let clients = crate::commands::logs::client_log_paths(state_dir)
-        .map(|paths| paths.len())
-        .unwrap_or(0);
+    let clients = crate::commands::logs::client_log_paths(state_dir).map_or(0, |paths| paths.len());
     let server = if server_log.exists() {
         format!("server log {}", server_log.display())
     } else {
@@ -1120,9 +1118,8 @@ fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> C
     // this catches the realistic case (a stray chmod) without an euid-aware
     // access(2) probe. A dir that does not exist yet is normal — the first
     // writer creates it.
-    let unwritable = std::fs::metadata(state_dir)
-        .map(|meta| meta.permissions().readonly())
-        .unwrap_or(false);
+    let unwritable =
+        std::fs::metadata(state_dir).is_ok_and(|metadata| metadata.permissions().readonly());
     if unwritable {
         Check::warn(
             "logs",

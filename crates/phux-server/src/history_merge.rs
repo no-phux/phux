@@ -156,10 +156,9 @@ impl RowAgreement {
     /// Agreement as a truncated percentage, for logs and payloads.
     #[must_use]
     pub(crate) const fn percent(self) -> usize {
-        if self.compared == 0 {
-            100
-        } else {
-            (self.matched * 100) / self.compared
+        match (self.matched * 100).checked_div(self.compared) {
+            Some(percent) => percent,
+            None => 100,
         }
     }
 }

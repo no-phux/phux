@@ -457,6 +457,11 @@ formula-check:
 zig-pin-check:
     bash scripts/check-zig-pins.sh
 
+# Rust's native manifest, verified Zig manifest, Mise, CI, standalone WASM
+# workspaces, and pinned container builders agree on their toolchains.
+toolchain-check:
+    bash scripts/check-toolchain-sync.sh
+
 # Install/release documentation contracts (README, INSTALL, RELEASING, the
 # installer, the formula generator, release.yml). Also run by
 # `just release-preflight`; in `ci` so it cannot rot between releases.
@@ -556,7 +561,7 @@ release-drift grace="120":
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
 # Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
-ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check skill-contract agent-integrations-check test
+ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check skill-contract agent-integrations-check test
     @echo "ok"
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.

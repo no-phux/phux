@@ -270,9 +270,7 @@ async fn handshake(
 /// explicit `mouse = false` falls back to pass-through-only — no DECSET, host
 /// native selection untouched.
 fn mouse_capture_enabled() -> bool {
-    phux_config::loader::load()
-        .map(|c| c.defaults.mouse)
-        .unwrap_or(true)
+    phux_config::loader::load().map_or(true, |config| config.defaults.mouse)
 }
 
 /// Drain queued output and stop the off-loop stdout writer, if this attach

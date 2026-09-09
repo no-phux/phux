@@ -935,10 +935,7 @@ fn scan_history_for_needle(
     let mut scan = NeedleScan::new(&needle, max_matches, case_sensitive);
     let cols = terminal.cols()?;
     let mut y = 0_u32;
-    loop {
-        let Some(wrapped) = history_row_wrapped_at(terminal, y)? else {
-            break;
-        };
+    while let Some(wrapped) = history_row_wrapped_at(terminal, y)? {
         if scan_history_row(terminal, &mut scan, cols, y)? {
             break;
         }

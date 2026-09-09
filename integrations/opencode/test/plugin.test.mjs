@@ -29,48 +29,31 @@ function toolContext(sessionID = "public-session") {
 }
 
 async function activate(options = {}) {
-  const tools = {};
-  const hooks = {};
-  let disposed = 0;
   const plugin = createPhuxPlugin(options);
-  const cleanup = await plugin.setup({
-    options: {},
-    tool: {
-      async transform(callback) {
-        callback({ add(definition) { tools[definition.name] = definition; } });
-        return { async dispose() { disposed += 1; } };
-      },
-    },
-    session: {
-      async hook(name, callback) {
-        hooks[name] = callback;
-        return { async dispose() { disposed += 1; } };
-      },
-    },
-    event: {
-      subscribe({ signal }) {
-        return {
-          async *[Symbol.asyncIterator]() {
-            await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
-          },
-        };
-      },
-    },
-  });
+  const registered = await plugin({}, {});
+  const systemTransform = registered["experimental.chat.system.transform"];
+  assert.ok(systemTransform, "plugin registers system context hook");
   return {
-    tools,
-    hooks,
+    tools: registered.tool,
+    hooks: {
+      async context(event) {
+        const output = { system: [] };
+        await systemTransform({ sessionID: event.sessionID, model: {} }, output);
+        event.system.push(...output.system);
+      },
+      async event(event) {
+        await registered.event?.({ event });
+      },
+    },
     async dispose() {
-      await cleanup();
-      assert.equal(disposed, 2, "V2 registrations must be released on plugin cleanup");
+      await registered.dispose?.();
     },
   };
 }
 
-test("exports one named OpenCode V2 plugin and registers six structural tools", async () => {
+test("exports one OpenCode plugin function and registers six tools", async () => {
   assert.equal(PhuxPlugin, NamedPhuxPlugin);
-  assert.equal(PhuxPlugin.id, "phux.terminal");
-  assert.equal(typeof PhuxPlugin.setup, "function");
+  assert.equal(typeof PhuxPlugin, "function");
 
   let calls = 0;
   const active = await activate({
@@ -86,9 +69,8 @@ test("exports one named OpenCode V2 plugin and registers six structural tools", 
     "phux_wait",
   ]);
   for (const [name, definition] of Object.entries(active.tools)) {
-    assert.equal(definition.name, name);
-    assert.equal(definition.input.type, "object");
-    assert.equal(definition.input.additionalProperties, false);
+    assert.equal(typeof definition.description, "string", name);
+    assert.equal(typeof definition.args, "object", name);
     assert.equal(typeof definition.execute, "function");
   }
   assert.equal(typeof active.hooks.context, "function");
@@ -97,7 +79,7 @@ test("exports one named OpenCode V2 plugin and registers six structural tools", 
   assert.equal(calls, 0);
 });
 
-test("V2 tools preserve target precedence, command shape, deadlines, and bounded results", async () => {
+test("tools preserve target precedence, command shape, deadlines, and bounded results", async () => {
   const requests = [];
   const cli = new PhuxCli({
     executable: "/opt/bin/phux",
@@ -145,9 +127,9 @@ test("V2 tools preserve target precedence, command shape, deadlines, and bounded
   assert.equal(runRequest.args.at(-2), "@44");
   assert.equal(runRequest.args.at(-1), "printf '%s' one two");
   assert.equal(runRequest.timeoutMs, undefined);
-  assert.equal(Buffer.byteLength(run.content.split("\n").slice(1).join("\n")), MAX_MODEL_BYTES);
-  assert.ok(run.content.split("\n").length <= MAX_MODEL_LINES + 1);
-  assert.match(run.content, /OpenCode adapter truncated terminal output/);
+  assert.equal(Buffer.byteLength(run.output.split("\n").slice(1).join("\n")), MAX_MODEL_BYTES);
+  assert.ok(run.output.split("\n").length <= MAX_MODEL_LINES + 1);
+  assert.match(run.output, /OpenCode adapter truncated terminal output/);
   assert.equal(run.metadata.modelOutputTruncated, true);
   const waitRequest = requests.find((request) => request.args[0] === "wait");
   assert.equal(waitRequest.args.includes("--until"), false);
@@ -159,7 +141,7 @@ test("V2 tools preserve target precedence, command shape, deadlines, and bounded
   await active.dispose();
 });
 
-test("V2 context hook keeps one stable fleet part and advances only on changes", async () => {
+test("context hook keeps one stable fleet part and advances only on changes", async () => {
   let state = "working";
   let calls = 0;
   const cli = new PhuxCli({ runner: async (request) => {
@@ -187,18 +169,18 @@ test("V2 context hook keeps one stable fleet part and advances only on changes",
   const first = { sessionID: "session-one", system: [], messages: [], tools: {}, agent: "build", model: {} };
   await active.hooks.context(first);
   assert.equal(first.system.length, 1);
-  assert.match(first.system[0].text, /kind="checkpoint" seq="1"/);
-  assert.match(first.system[0].text, /"self":"@65"/);
-  assert.doesNotMatch(first.system[0].text, /do not inject screen title|secret screen evidence|"contents"/);
+  assert.match(first.system[0], /kind="checkpoint" seq="1"/);
+  assert.match(first.system[0], /"self":"@65"/);
+  assert.doesNotMatch(first.system[0], /do not inject screen title|secret screen evidence|"contents"/);
 
   const unchanged = { ...first, system: [] };
   await active.hooks.context(unchanged);
-  assert.equal(unchanged.system[0].text, first.system[0].text, "unchanged context remains an exact cacheable suffix");
+  assert.equal(unchanged.system[0], first.system[0], "unchanged context remains an exact cacheable suffix");
   state = "idle";
   const changed = { ...first, system: [] };
   await active.hooks.context(changed);
-  assert.match(changed.system[0].text, /kind="delta" seq="2"/);
-  assert.match(changed.system[0].text, /"state":"idle"/);
+  assert.match(changed.system[0], /kind="delta" seq="2"/);
+  assert.match(changed.system[0], /"state":"idle"/);
   assert.equal(calls, 3);
   await active.dispose();
 });
@@ -216,15 +198,16 @@ test("context awareness can be disabled without probing phux", async () => {
   await active.dispose();
 });
 
-test("public V2 schemas are closed and encode required and bounded arguments", async () => {
+test("public schemas encode required and bounded arguments", async () => {
   const active = await activate({
     cli: new PhuxCli({ runner: async () => completed() }),
     env: { PHUX_CONTEXT_AWARENESS: "0" },
   });
-  assert.deepEqual(active.tools.phux_run.input.required, ["command"]);
-  assert.equal(active.tools.phux_run.input.properties.command.pattern, "\\S");
-  assert.equal(active.tools.phux_wait.input.properties.timeout_seconds.minimum, 1);
-  assert.equal(active.tools.phux_wait.input.additionalProperties, false);
+  assert.equal(active.tools.phux_run.args.command.safeParse(" ").success, false);
+  assert.equal(active.tools.phux_send_keys.args.keys.element.safeParse(" ").success, false);
+  assert.equal(active.tools.phux_wait.args.idle_ms.safeParse(0).success, true);
+  assert.equal(active.tools.phux_wait.args.idle_ms.safeParse(86_400_001).success, false);
+  assert.equal(active.tools.phux_wait.args.timeout_seconds.safeParse(0).success, false);
   await assert.rejects(
     active.tools.phux_wait.execute({ target: "@1", until: "done", idle_ms: 10 }, toolContext()),
     /either until or idle_ms/,

@@ -46,7 +46,7 @@ use tokio::sync::oneshot;
 use crate::terminal_actor::{WriteCompletion, WriteCompletionSink};
 
 pub(super) const DEDUPE_MAX_ENTRIES: usize = 65_536;
-pub(super) const DEDUPE_RETENTION: Duration = Duration::from_secs(10 * 60);
+pub(super) const DEDUPE_RETENTION: Duration = Duration::from_mins(10);
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------

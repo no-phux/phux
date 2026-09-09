@@ -133,8 +133,7 @@ impl ServerState {
                 created_at_unix_nanos: session
                     .created_at
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
+                    .map_or(0, |duration| duration.as_nanos()),
                 last_touched: self.sessions.last_touched_at(sid),
                 root: self.sessions.root(sid).cloned(),
             });

@@ -365,21 +365,23 @@ actually looking at.
   the same build commands. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@34cc9d55`](https://github.com/phall1/native/commit/34cc9d5571599d5ea4feafc9260f36575e67e77b),
-the fork's upstream-v0.9.5 Cockpit lineage: terminal interaction, viewport, and
+[`phall1/native@07a3303b`](https://github.com/phall1/native/commit/07a3303b0f89a31584caea86f042676e940fddb1),
+the fork's upstream-v0.10.1 Cockpit lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
 per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
 `native_extension` hook that keeps the TypeScript-core graph's engine native,
 axis-aware native split dividers, scoped post-present display-list refresh
-batching, and symlink-safe whole-file writes that retain file-access
-confinement.
+batching, symlink-safe whole-file writes that retain file-access confinement,
+and the native macOS app-updater surface.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.
 libghostty-vt is pinned
 to Ghostty commit `7aa9591746ffa4d2eee458960c76554352832595`, the existing
-Zig 0.16-compatible checkpoint.
+Zig 0.16-compatible checkpoint. Ghostty main at 44806257 is intentionally not
+pinned: its removed scrollback and stream constructors fail Cockpit's full
+provider build.
 
 Cockpit ships one ahead-of-time TypeScript coordinator in `src/core.ts` and
 one declarative chrome tree rooted at `src/app.native`. Native Zig remains

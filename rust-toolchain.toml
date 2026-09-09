@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.90.0"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
 # Browser, editor, and profiling components are opt-in for native contributors.
 # flake.nix adds them explicitly to the fully provisioned shell; see docs/SETUP.md.

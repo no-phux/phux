@@ -23,6 +23,15 @@ forbid_fixed() {
   fi
 }
 
+forbid_regex() {
+  local file="$1"
+  local regex="$2"
+  if grep -Eq -- "$regex" "$ROOT/$file"; then
+    printf 'stale claim: %s: %s\n' "$file" "$regex" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 require_regex() {
   local file="$1"
   local regex="$2"
@@ -137,7 +146,7 @@ forbid_fixed scripts/gen-formula.sh 'x86_64-apple-darwin'
 # it, and a hardcoded channel in a workflow rots exactly like a version in a
 # README (it did: the toml and two workflows carried separate pins).
 require_fixed .github/workflows/release.yml 'cargo build --locked --release --bin phux --bin phux-mcp'
-forbid_fixed .github/workflows/release.yml 'cargo +1.90.0'
+forbid_regex .github/workflows/release.yml 'cargo \+1\.[0-9]+\.[0-9]+'
 forbid_fixed .github/workflows/release.yml 'toolchain install 1.'
 require_fixed .github/workflows/release.yml 'rust-toolchain.toml'
 require_fixed docs/RELEASING.md 'cargo build --locked --release --bin phux --bin phux-mcp'
@@ -194,7 +203,7 @@ require_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/re
 # branch, against the toolchain rust-toolchain.toml pins — never a hardcoded
 # channel (see the release.yml guard above for why).
 require_fixed .github/workflows/release-please.yml 'cargo update --workspace'
-forbid_fixed .github/workflows/release-please.yml 'cargo +1.90.0'
+forbid_regex .github/workflows/release-please.yml 'cargo \+1\.[0-9]+\.[0-9]+'
 forbid_fixed .github/workflows/release-please.yml 'toolchain install .'
 
 # `release-type: rust` is fatally broken on this repo: its CargoToml updater

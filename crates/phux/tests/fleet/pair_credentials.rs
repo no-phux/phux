@@ -48,9 +48,9 @@ fn json(output: &Output) -> serde_json::Value {
 }
 
 fn bearer(encoded: &str) -> Vec<u8> {
-    encoded
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = encoded.as_bytes().as_chunks::<2>();
+    pairs
+        .iter()
         .map(|pair| {
             let text = std::str::from_utf8(pair).unwrap();
             u8::from_str_radix(text, 16).unwrap()

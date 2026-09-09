@@ -155,7 +155,7 @@ async fn read_when_ready(fd: &mut AsyncFd<OwnedFd>, buf: &mut [u8]) -> io::Resul
 /// way, and the interrupted read carried no bytes.
 fn read_uninterrupted(fd: &OwnedFd, buf: &mut [u8]) -> io::Result<usize> {
     loop {
-        match rustix::io::read(fd.as_fd(), buf) {
+        match rustix::io::read(fd.as_fd(), &mut *buf) {
             Ok(n) => return Ok(n),
             Err(rustix::io::Errno::INTR) => {}
             Err(err) => return Err(io::Error::from(err)),

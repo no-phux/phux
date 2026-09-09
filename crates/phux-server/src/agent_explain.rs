@@ -69,7 +69,7 @@ pub struct PredicateEvidence {
     /// Children of a combinator. Every child is evaluated, including the
     /// ones a short-circuiting matcher would have skipped.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<PredicateEvidence>,
+    pub children: Vec<Self>,
 }
 
 /// One rule's outcome on the captured screen.

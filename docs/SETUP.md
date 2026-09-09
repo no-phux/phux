@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-05
+last-reviewed: 2026-09-09
 ---
 
 # Contributor setup
@@ -32,6 +32,23 @@ availability/versions and prints remedies; it does not install, compile, or
 claim your change passes tests. `docs` and `integrations` do not invoke Rust or
 Zig. The scripts work with macOS's Bash 3.2; workflow routing checks additionally
 use Python 3.11+ and Node.
+
+### Fast local setup with Mise
+
+[`mise`](https://mise.jdx.dev/) reads the checked-in `mise.toml` to install the
+same Rust, Zig, Node, and Bun releases used by this repository. It is the
+lightweight alternative to Nix for contributors who want managed compilers but
+their native system packages from the host:
+
+```sh
+mise install
+just toolchain-check
+```
+
+`rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
+`.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
+Mise mirrors them for shell setup; `toolchain-check` is in CI so an update cannot
+leave the three surfaces out of sync.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
 wire codec and input atoms are pure Rust. Its `server` feature adds libghostty
@@ -167,7 +184,7 @@ tools. Ordinary client work uses the committed engine binary and needs no Zig:
 
 ```sh
 cargo install --locked wasm-pack --version 0.15.0
-cargo install --locked wasm-bindgen-cli --version 0.2.121
+cargo install --locked wasm-bindgen-cli --version 0.2.128
 # macOS; Linux equivalent: sudo apt-get install -y binaryen
 brew install binaryen
 ```

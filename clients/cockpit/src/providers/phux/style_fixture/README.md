@@ -37,7 +37,7 @@ invalid offsets, lengths, UTF-8 and arena budgets before replacing valid state.
   Its legacy copy preserves the supplied RGB. The additive metadata companion
   now supplies this provenance to the shipping `copyClient` path; see
   [Remote grid metadata](../../../../docs/REMOTE_GRID_METADATA.md).
-- Native SDK `34cc9d5571599d5ea4feafc9260f36575e67e77b` defines
+- Native SDK `07a3303b0f89a31584caea86f042676e940fddb1` defines
   `canvas.terminal_grid.TerminalUnderline`. Named C values map to its named
   styles; no numeric enum casts or new style constants are involved.
 - That SDK's `TerminalCell` has no hyperlink, faint, inverse, invisible or

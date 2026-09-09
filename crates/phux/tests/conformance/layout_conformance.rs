@@ -175,8 +175,8 @@ enum Shape {
     Divide {
         axis: Axis,
         ratio: f32,
-        first: Box<Shape>,
-        second: Box<Shape>,
+        first: Box<Self>,
+        second: Box<Self>,
     },
 }
 
