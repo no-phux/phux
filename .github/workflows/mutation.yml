@@ -54,6 +54,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Platform packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config mold
       - name: Pinned project Rust
         run: bash scripts/setup-rust.sh core
       - name: Pinned cargo-mutants
