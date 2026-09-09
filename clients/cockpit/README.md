@@ -634,6 +634,17 @@ VERSION="$(tr -d '\n' < version.txt)"
   --artifacts zig-out/soak
 ```
 
+The soak proves the shipping lifecycle, not an ephemeral one. Each cycle
+launches the bundle with an isolated `HOME`, XDG directories, a controlled
+`.zshrc`, and its own `PHUX_SOCKET`, so a developer's real coordinator is never
+touched. A fresh configured launch must own no shell of its own; it starts a
+coordinator through the bundled CLI, and that coordinator's seeded shell must
+run under the controlled environment. `SIGTERM` must end the app while the
+coordinator and its shell keep running, and `phux kill --server` through the
+bundled CLI must then end the coordinator, its shell, and its socket, leaving
+no zombie or orphan. Failure diagnostics (app and coordinator logs, the process
+table) land under `--artifacts`; CI uploads that directory when the soak fails.
+
 Local packaging ad-hoc signs the app. The hosted release accepts either no
 Apple credentials or a Developer ID identity with notarization credentials;
 partial credentials fail closed:
