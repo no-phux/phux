@@ -159,26 +159,36 @@
 <template name="cockpit-agents" args="open rows notice previous next status">
   <stack>
     <if test="{open}">
-      <row main="center" cross="start" padding="24">
-        <panel width="520" padding="16">
+      <!-- Geist sm/md insets; detail viewport = four default 40pt bands. -->
+      <row main="center" cross="start" padding="8">
+        <panel width="520" padding="12">
           <column gap="8">
             <row cross="center" gap="8">
-              <text grow="1">Agents</text>
+              <text>Agents</text>
+              <text grow="1" wrap="true" foreground="text_muted">{notice}</text>
               <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
             </row>
-            <text foreground="text_muted" overflow="ellipsis">{status}</text>
-            <for each="rows" key="id" as="agent">
-              <column gap="4">
-                <text overflow="ellipsis">{agent.label}</text>
-                <row gap="8"><text>Resource</text><text grow="1" overflow="ellipsis" label="Agent resource identity">{agent.resource}</text></row>
-                <row gap="8"><text>Parent</text><text grow="1" overflow="ellipsis" label="Agent terminal parent">{agent.parent}</text></row>
-                <row gap="8"><text>Native ID</text><text grow="1" overflow="ellipsis" label="Producer native identity">{agent.nativeId}</text></row>
-                <text overflow="ellipsis" foreground="text_muted" label="Agent state evidence">{agent.evidence}</text>
-                <if test="{agent.index != 65535}"><button size="sm" on-press="palette_submit">Jump to parent</button></if>
-                <else><text foreground="text_muted">Parent unavailable</text></else>
+            <scroll height="160" label="Agent inspection details">
+              <column gap="8">
+                <text wrap="true" foreground="text_muted">{status}</text>
+                <for each="rows" key="id" as="agent">
+                  <column gap="4">
+                    <text wrap="true">{agent.label}</text>
+                    <text foreground="text_muted">Resource</text>
+                    <text wrap="true" label="Agent resource identity">{agent.resource}</text>
+                    <text foreground="text_muted">Parent</text>
+                    <text wrap="true" label="Agent terminal parent">{agent.parent}</text>
+                    <text foreground="text_muted">Native ID</text>
+                    <text wrap="true" label="Producer native identity">{agent.nativeId}</text>
+                    <text wrap="true" foreground="text_muted" label="Agent state evidence">{agent.evidence}</text>
+                  </column>
+                </for>
               </column>
+            </scroll>
+            <for each="rows" key="id" as="agent">
+              <if test="{agent.index != 65535}"><button size="sm" on-press="palette_submit">Jump to parent</button></if>
+              <else><text foreground="text_muted">Parent unavailable</text></else>
             </for>
-            <text foreground="text_muted">{notice}</text>
             <row gap="8" cross="center">
               <if test="{previous}"><button size="sm" variant="ghost" on-press="palette_previous">Previous agent</button></if>
               <spacer grow="1" />

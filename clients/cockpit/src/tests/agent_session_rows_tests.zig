@@ -225,6 +225,92 @@ fn agentRequest(revision: u64, offset: u16) [13]u8 {
     return request;
 }
 
+fn inspectionField(page: []const u8, index: usize) ![]const u8 {
+    try testing.expect(page.len >= 19);
+    try testing.expectEqual(@as(u8, 1), page[15]);
+    var at: usize = 19 + @as(usize, page[18]);
+    for (0..index) |_| {
+        try testing.expect(at + 2 <= page.len);
+        at += 2 + @as(usize, std.mem.readInt(u16, page[at..][0..2], .little));
+    }
+    try testing.expect(at + 2 <= page.len);
+    const length = std.mem.readInt(u16, page[at..][0..2], .little);
+    try testing.expect(at + 2 + length <= page.len);
+    return page[at + 2 ..][0..length];
+}
+
+test "agent inspection preserves full reason provider identity and lossless u64 evidence" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const host = engine.model.phux().?.host;
+    const parent = try remoteParent(engine);
+    const provider_name: []const u8 = "p" ** 256;
+    const native_id: []const u8 = "n" ** 256;
+    try fixture.adoptAgentSessions(host, &.{.{ .id = 9001, .parent = parent.id, .provider_name = provider_name, .native_id = native_id, .state = "working" }});
+    const reason = "r" ** 1020 ++ "tail";
+    var record_buffer: [2048]u8 = undefined;
+    const record = try std.fmt.bufPrint(&record_buffer, "{{\"seq\":18446744073709551615,\"ts_ms\":18446744073709551615,\"type\":\"ask\",\"data\":{{\"question\":\"{s}\"}}}}", .{reason});
+    try testing.expect(try fixture.feedAgentRecords(host, 9001, .retained, record));
+    const request = agentRequest(engine.revision, 0);
+    var buffer: [4096]u8 = undefined;
+    const page = try engine.navigationSnapshot(&request, &buffer);
+    try testing.expect(page.len <= 4096);
+    try testing.expectEqualStrings(native_id, try inspectionField(page, 2));
+    const evidence = try inspectionField(page, 3);
+    try testing.expect(evidence.len > 1024);
+    try testing.expect(evidence.len <= ts_agents.max_evidence_bytes);
+    try testing.expect(std.mem.indexOf(u8, evidence, provider_name) != null);
+    try testing.expect(std.mem.indexOf(u8, evidence, "Latest record: ask\nSequence: 18446744073709551615\nCoordinator-stamped record time (ts_ms): 18446744073709551615") != null);
+    try testing.expect(std.mem.endsWith(u8, evidence, reason));
+    // Inspection only projects state; it does not consume or acknowledge it.
+    try testing.expect(projection.terminalNeedsAttention(engine.model, parent.ref));
+    try testing.expectError(error.BufferTooSmall, engine.navigationSnapshot(&request, buffer[0 .. page.len - 1]));
+}
+
+test "agent inspection makes missing evidence explicit and replaces repeated blocked reasons" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const host = engine.model.phux().?.host;
+    const parent = try remoteParent(engine);
+    try fixture.adoptAgentSessions(host, &.{.{ .id = 9001, .parent = parent.id, .provider_name = "claude", .state = "working" }});
+    const request = agentRequest(engine.revision, 0);
+    var buffer: [4096]u8 = undefined;
+    const missing = try inspectionField(try engine.navigationSnapshot(&request, &buffer), 3);
+    try testing.expect(std.mem.indexOf(u8, missing, "Latest record: not observed\nSequence: unknown\nCoordinator-stamped record time (ts_ms): unknown\nReason: not observed") != null);
+    try testing.expect(try fixture.feedAgentRecords(host, 9001, .live, "{\"type\":\"ask\",\"data\":{\"question\":\"first?\"}}"));
+    const first = try inspectionField(try engine.navigationSnapshot(&request, &buffer), 3);
+    try testing.expect(std.mem.endsWith(u8, first, "Reason: first?"));
+    try testing.expect(try fixture.feedAgentRecords(host, 9001, .live, "{\"type\":\"ask\",\"data\":{\"question\":\"second?\"}}"));
+    const second = try inspectionField(try engine.navigationSnapshot(&request, &buffer), 3);
+    try testing.expect(std.mem.indexOf(u8, second, "Sequence: unknown\nCoordinator-stamped record time (ts_ms): unknown") != null);
+    try testing.expect(std.mem.endsWith(u8, second, "Reason: second?"));
+    try testing.expect(projection.terminalNeedsAttention(engine.model, parent.ref));
+    try testing.expect(try fixture.feedAgentRecords(host, 9001, .live, "{\"type\":\"ask\"}"));
+    try testing.expect(std.mem.endsWith(u8, try inspectionField(try engine.navigationSnapshot(&request, &buffer), 3), "Reason: not supplied"));
+}
+
+test "agent inspection carries visibly truncated UTF8 reason without another truncation" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const host = engine.model.phux().?.host;
+    const parent = try remoteParent(engine);
+    try fixture.adoptAgentSessions(host, &.{.{ .id = 9001, .parent = parent.id, .provider_name = "claude", .state = "working" }});
+    const reason = "界" ** 400;
+    var record_buffer: [2048]u8 = undefined;
+    const record = try std.fmt.bufPrint(&record_buffer, "{{\"type\":\"ask\",\"data\":{{\"question\":\"{s}\"}}}}", .{reason});
+    try testing.expect(try fixture.feedAgentRecords(host, 9001, .live, record));
+    const request = agentRequest(engine.revision, 0);
+    var buffer: [4096]u8 = undefined;
+    const evidence = try inspectionField(try engine.navigationSnapshot(&request, &buffer), 3);
+    try testing.expect(std.unicode.utf8ValidateSlice(evidence));
+    try testing.expect(std.mem.indexOf(u8, evidence, "Reason (truncated): ") != null);
+    try testing.expect(std.mem.endsWith(u8, evidence, "界..."));
+    try testing.expect(std.mem.endsWith(u8, evidence, engine.model.phux().?.agentSessions()[0].latest_evidence.?.reason.slice()));
+}
+
 fn snapshotTabAttention(bytes: []const u8, tab: usize) u8 {
     var at: usize = ts_snapshot.header_len;
     for (0..tab) |_| at += 7 + @as(usize, bytes[at + 5]) + bytes[at + 6];

@@ -7,6 +7,10 @@ const navigation = @import("ts_navigation.zig");
 
 pub const no_parent: u16 = 65535;
 pub const max_identity_bytes = 288;
+/// Full provider identity (256), retained reason (1024), and a 512-byte
+/// envelope for state/type labels and two lossless decimal u64 values.
+/// Keep the fourth-field bound in protocol.ts in sync.
+pub const max_evidence_bytes = 256 + 1024 + 512;
 pub const max_snapshot_rows = 24;
 pub const Parent = struct { index: u16 = no_parent, window: u8 = 255, tab: u8 = 255 };
 
@@ -61,6 +65,50 @@ fn field(out: []u8, start: usize, value: []const u8) navigation.Error!usize {
     return start + 2 + value.len;
 }
 
+fn optionalNumber(value: ?u64, out: *[20]u8) []const u8 {
+    const number = value orelse return "unknown";
+    return std.fmt.bufPrint(out, "{d}", .{number}) catch unreachable;
+}
+
+const missing_evidence_text =
+    \\Latest record: not observed
+    \\Sequence: unknown
+    \\Coordinator-stamped record time (ts_ms): unknown
+    \\Reason: not observed
+;
+
+const latest_evidence_format =
+    \\Latest record: {s}
+    \\Sequence: {s}
+    \\Coordinator-stamped record time (ts_ms): {s}
+    \\Reason{s}: {s}
+;
+
+fn latestEvidenceText(session: *const model_module.AgentSession, out: []u8) navigation.Error![]const u8 {
+    if (comptime !support.phux_enabled) return "";
+    const latest = session.latest_evidence orelse return std.fmt.bufPrint(out, missing_evidence_text, .{}) catch error.BufferTooSmall;
+    var sequence: [20]u8 = undefined;
+    var timestamp: [20]u8 = undefined;
+    const reason = latest.reason.slice();
+    return std.fmt.bufPrint(out, latest_evidence_format, .{
+        latest.record_type,
+        optionalNumber(latest.seq, &sequence),
+        optionalNumber(latest.ts_ms, &timestamp),
+        if (latest.reason.truncated) " (truncated)" else "",
+        if (reason.len == 0) "not supplied" else reason,
+    }) catch error.BufferTooSmall;
+}
+
+fn evidenceText(session: *const model_module.AgentSession, out: []u8) navigation.Error![]const u8 {
+    if (comptime !support.phux_enabled) return "";
+    const source = if (session.stream_state) |state| state.word() else "not observed";
+    const header = std.fmt.bufPrint(out, "Provider: {s}\nCatalog: {s}; records: {s}\n", .{
+        session.provider_name, session.catalog_state.word(), source,
+    }) catch return error.BufferTooSmall;
+    const latest = try latestEvidenceText(session, out[header.len..]);
+    return out[0 .. header.len + latest.len];
+}
+
 fn encodeInspection(model: *const model_module.Model, session: *const model_module.AgentSession, out: []u8, start: usize) navigation.Error!usize {
     if (comptime !support.phux_enabled) return start;
     const target = parentTarget(model, session.parentRef());
@@ -76,9 +124,8 @@ fn encodeInspection(model: *const model_module.Model, session: *const model_modu
     var written = try field(out, start + 3 + label.len, identity(session.ref(), &resource_buffer));
     written = try field(out, written, if (session.parentRef()) |ref| identity(ref, &parent_buffer) else "No parent reported");
     written = try field(out, written, session.native_id);
-    var evidence: [128]u8 = undefined;
-    const source = if (session.stream_state) |state| state.word() else "not observed";
-    return field(out, written, std.fmt.bufPrint(&evidence, "Catalog: {s}; records: {s}", .{ session.catalog_state.word(), source }) catch unreachable);
+    var evidence: [max_evidence_bytes]u8 = undefined;
+    return field(out, written, try evidenceText(session, &evidence));
 }
 
 /// Kind 5: one complete inspection row per page. The usual navigation header

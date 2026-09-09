@@ -734,13 +734,21 @@ function navigationHeaderValid(bytes: Uint8Array): boolean {
 /// One identity-bound inspection row: the old catalog index/label framing,
 /// then the four length-delimited identity fields. A single row fills the
 /// page; the revision fence still rejects delayed replies.
+// ts_agents.max_evidence_bytes: provider 256 + reason 1024 + metadata 512.
+// Identities retain their independent bounds; the page is still at most 4096.
+function inspectionFieldLimit(index: number): number {
+  if (index === 3) return 1792;
+  if (index === 2) return 256;
+  return 288;
+}
+
 function inspectionFields(bytes: Uint8Array, start: number): readonly Uint8Array[] | null {
   const fields: Uint8Array[] = [];
   let at = start;
   for (let i = 0; i < 4; i += 1) {
     if (at + 2 > bytes.length) return null;
     const length = bytes[at] + bytes[at + 1] * 256;
-    if (length > 288 || at + 2 + length > bytes.length) return null;
+    if (length > inspectionFieldLimit(i) || at + 2 + length > bytes.length) return null;
     fields.push(bytes.subarray(at + 2, at + 2 + length));
     at += 2 + length;
   }
