@@ -19,6 +19,23 @@ struct Fixture {
     dir: tempfile::TempDir,
 }
 
+/// The `--ensure` deadline the two blocked-startup cases below run under, and
+/// the `{Duration:?}` rendering the error carries at that value. One constant
+/// so the two can never disagree.
+///
+/// Opt-in per test, NOT set on every `Fixture::command()`: the rest of this
+/// file needs a real coordinator to actually come up, and 1s is not enough for
+/// that. Applying it globally failed `invalid_config_reports_startup_failure`
+/// and `cancellation_cleans_up_descendants_...` for exactly that reason.
+const ENSURE_TIMEOUT_SECS: &str = "1";
+const ENSURE_TIMEOUT_RENDERED: &str = "within 1s";
+
+/// The deadline the adoption-helper case runs under. Longer than
+/// [`ENSURE_TIMEOUT_SECS`] on purpose: that test needs the fake init tool to
+/// start and write `helper.pid` BEFORE the deadline fires, so a 1s bound would
+/// race the thing the test is trying to observe.
+const HELPER_TIMEOUT_SECS: &str = "3";
+
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("isolated environment");
@@ -55,6 +72,16 @@ impl Fixture {
 
     fn config(&self, body: &str) {
         std::fs::write(self.dir.path().join("phux/config.toml"), body).expect("config");
+    }
+
+    /// `phux server --ensure` under the shortened deadline, for the cases
+    /// that block startup on purpose and assert the bound fires.
+    fn ensure_blocked(&self) -> Output {
+        bounded_output(
+            self.command()
+                .env(phux::ENSURE_TIMEOUT_ENV, ENSURE_TIMEOUT_SECS)
+                .args(["server", "--ensure"]),
+        )
     }
 
     fn ensure(&mut self) -> Output {
@@ -278,10 +305,11 @@ fn blocked_config_read_is_bounded_by_the_overall_deadline() {
         .expect("mkfifo");
     assert!(status.success());
     let started = Instant::now();
-    let output = fixture.ensure();
+    let output = fixture.ensure_blocked();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(started.elapsed() < Duration::from_secs(13));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("within 10s"));
+    assert!(started.elapsed() < Duration::from_secs(6));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(ENSURE_TIMEOUT_RENDERED), "{stderr}");
     assert!(!fixture.socket.exists());
 }
 
@@ -301,11 +329,13 @@ fn blocked_log_open_is_bounded_by_the_overall_deadline() {
         fixture
             .command()
             .env("PHUX_LOG", log)
+            .env(phux::ENSURE_TIMEOUT_ENV, ENSURE_TIMEOUT_SECS)
             .args(["server", "--ensure"]),
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(started.elapsed() < Duration::from_secs(13));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("within 10s"));
+    assert!(started.elapsed() < Duration::from_secs(6));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(ENSURE_TIMEOUT_RENDERED), "{stderr}");
 }
 
 /// Real adoption inputs, but every init-system executable is a private fake.
@@ -365,6 +395,7 @@ fn assert_helper_cleaned_up(signal: Option<rustix::process::Signal>, script: &st
     let child = fixture
         .command()
         .env("PATH", bin)
+        .env(phux::ENSURE_TIMEOUT_ENV, HELPER_TIMEOUT_SECS)
         .args(["server", "--ensure"])
         .spawn()
         .expect("ensure");
@@ -380,7 +411,8 @@ fn assert_helper_cleaned_up(signal: Option<rustix::process::Signal>, script: &st
     let limit = if signal.is_some() {
         Duration::from_secs(3)
     } else {
-        Duration::from_secs(13)
+        // The shortened deadline above plus slack for a loaded pool.
+        Duration::from_secs(6)
     };
     assert!(guard.wait_for_exit(limit).is_some(), "ensure did not exit");
     assert!(started.elapsed() < limit);

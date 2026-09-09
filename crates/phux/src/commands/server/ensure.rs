@@ -10,7 +10,35 @@ use std::time::Duration;
 
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 
+/// Overall ceiling for `phux server --ensure`.
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Test-only override for [`TIMEOUT`], in whole seconds.
+///
+/// Never set in production, exactly like [`crate::AUTO_SPAWN_IDLE_ENV`]. The
+/// acceptance tests that prove this deadline is enforced have to block on a
+/// FIFO until it fires, so at the shipped value each one costs ten wall-clock
+/// seconds and three of them sat in the default unit pool. What those tests
+/// establish is that the bound exists and reports the log path — not its
+/// magnitude — so they run it at 1s and the ceiling itself is pinned by
+/// `default_timeout_is_ten_seconds` below.
+///
+/// A missing, unparseable, or zero value falls back to [`TIMEOUT`]: a typo in
+/// a harness must not silently uncap the wait.
+pub const ENSURE_TIMEOUT_ENV: &str = "PHUX_ENSURE_TIMEOUT_SECS";
+
+fn timeout() -> Duration {
+    timeout_from(std::env::var(ENSURE_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// The parsing half, split out so it can be tested without touching process
+/// environment — `cargo test` shares one process across threads, so a test
+/// that set the variable would race every other test in the binary.
+fn timeout_from(raw: Option<&str>) -> Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map_or(TIMEOUT, Duration::from_secs)
+}
 const REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(25);
 
@@ -126,11 +154,12 @@ async fn watch(socket_path: PathBuf) -> io::Result<()> {
             HELPERS.set(None);
             let _ = sender.send(result);
         })?;
+    let deadline = timeout();
     tokio::select! {
         result = receiver => result.map_err(io::Error::other)?,
-        () = tokio::time::sleep(TIMEOUT) => Err(io::Error::new(
+        () = tokio::time::sleep(deadline) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            format!("coordinator startup did not complete within {TIMEOUT:?}; see {}",
+            format!("coordinator startup did not complete within {deadline:?}; see {}",
                 phux_server::telemetry::server_log_path().display()),
         )),
         _ = terminate.recv() => Err(cancelled()),
@@ -212,5 +241,33 @@ fn wait_for_helper(helpers: &Mutex<Helpers>) -> io::Result<std::process::ExitSta
             }
         }
         std::thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::{Duration, TIMEOUT, timeout_from};
+
+    /// The shipped ceiling. The acceptance tests run against a 1s override, so
+    /// without this the value they no longer exercise could drift unnoticed.
+    #[test]
+    fn default_timeout_is_ten_seconds() {
+        assert_eq!(TIMEOUT, Duration::from_secs(10));
+        assert_eq!(timeout_from(None), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_positive_override_is_honoured_and_whitespace_tolerated() {
+        assert_eq!(timeout_from(Some("1")), Duration::from_secs(1));
+        assert_eq!(timeout_from(Some("  3\n")), Duration::from_secs(3));
+    }
+
+    /// Fail closed: a harness typo must not uncap the wait, and zero must not
+    /// turn the deadline into an instant failure.
+    #[test]
+    fn junk_and_zero_fall_back_to_the_shipped_ceiling() {
+        for raw in ["", "0", "-1", "abc", "1.5", "99999999999999999999"] {
+            assert_eq!(timeout_from(Some(raw)), TIMEOUT, "input {raw:?}");
+        }
     }
 }

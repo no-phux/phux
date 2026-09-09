@@ -71,6 +71,7 @@ mod help_inventory;
 /// from, so the integration harness can arm it by name rather than by a
 /// literal of its own (see `AutoSpawnedServer::IDLE_BACKSTOP`).
 pub use commands::server::AUTO_SPAWN_IDLE_ENV;
+pub use commands::server::ENSURE_TIMEOUT_ENV;
 
 /// phux — a libghostty-backed terminal multiplexer and control plane.
 #[derive(Debug, Parser)]

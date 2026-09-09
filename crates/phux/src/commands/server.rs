@@ -11,6 +11,8 @@ use crate::print_banner;
 
 pub(super) mod ensure;
 
+pub use ensure::ENSURE_TIMEOUT_ENV;
+
 /// How long the auto-spawn path waits for the freshly-launched server
 /// to bind its socket before giving up. The server's bind is sub-ms on
 /// a healthy system; 2s tolerates a slow-CI host without making a
