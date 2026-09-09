@@ -4,7 +4,14 @@ use std::collections::{HashMap, HashSet};
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::TombstoneReason;
-use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
+use phux_protocol::{
+    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceKind, StreamId, TerminalId,
+};
+
+use agent_stream::{
+    AgentEventRecord, AgentLog, AgentRecordError, AgentSessionState, AgentSessionStatus,
+    parse_records,
+};
 
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
@@ -212,8 +219,30 @@ pub enum KernelInput<'a> {
         /// Closed terminal.
         terminal_id: &'a TerminalId,
     },
+    /// Register one `AgentSession` resource ahead of its record stream.
+    AgentSessionDeclared(AgentSessionDeclaration<'a>),
     /// Apply one explicit-terminal user action.
     Action(KernelAction<'a>),
+}
+
+/// Declared identity of one `AgentSession` resource, as the attach snapshot
+/// or a spawn reply states it before any record arrives.
+///
+/// An `AgentSession` is never an attach-barrier participant: the barrier gates
+/// the first paint, and a record stream paints nothing. Declaring one only
+/// fixes its kind and seeds the identity its stream may later refine.
+#[derive(Debug, Clone, Copy)]
+pub struct AgentSessionDeclaration<'a> {
+    /// The resource being declared.
+    pub terminal_id: &'a TerminalId,
+    /// The Terminal-kind parent the session is bound to.
+    pub parent: Option<&'a TerminalId>,
+    /// Provider slug from the facet, if any.
+    pub provider: Option<&'a str>,
+    /// Opaque provider session id from the facet, if any.
+    pub native_id: Option<&'a str>,
+    /// Server-derived state word from the facet, if any.
+    pub state: Option<&'a str>,
 }
 
 /// A normalized borrowed user action.
@@ -241,6 +270,9 @@ pub enum InputBlockReason {
     FrozenReplica,
     /// The terminal was permanently closed.
     Closed,
+    /// The resource is not a Terminal; only Terminal-kind resources accept
+    /// input atoms.
+    NotATerminal,
 }
 
 /// Explicit per-terminal input eligibility.
@@ -380,6 +412,17 @@ pub enum KernelEffect {
     Status(KernelStatus),
     /// Cooperative work for a host scheduler.
     Job(KernelJob),
+    /// Decoded records appended to one `AgentSession` stream, in order.
+    ///
+    /// Emitted once with every retained record when a stream generation
+    /// publishes, then once per live output frame. Raw stream bytes never
+    /// reach a frontend.
+    AgentRecords {
+        /// The `AgentSession` resource.
+        terminal_id: TerminalId,
+        /// The records this update appended.
+        records: Vec<AgentEventRecord>,
+    },
 }
 
 /// Reusable high-water-mark effect queue.
@@ -733,6 +776,27 @@ pub enum KernelError<E> {
     /// The terminal engine rejected an operation.
     #[error("terminal engine failed: {0}")]
     Engine(#[source] E),
+    /// A frame's kind disagreed with the resource's declared kind.
+    #[error("resource {terminal_id} is {declared:?}, frame implies {incoming:?}")]
+    KindMismatch {
+        /// Target resource.
+        terminal_id: TerminalId,
+        /// Kind the resource was declared or bootstrapped as.
+        declared: ResourceKind,
+        /// Kind the rejected frame implies.
+        incoming: ResourceKind,
+    },
+    /// A resource kind this build cannot host.
+    #[error("resource {terminal_id} has unsupported kind {kind:?}")]
+    UnsupportedKind {
+        /// Target resource.
+        terminal_id: TerminalId,
+        /// The declared kind.
+        kind: ResourceKind,
+    },
+    /// An `AgentSession` stream payload was not well-formed JSONL.
+    #[error("agent session stream failed: {0}")]
+    AgentRecord(#[from] AgentRecordError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -821,6 +885,50 @@ struct AttachParticipant {
     pending_removal: bool,
 }
 
+/// One published `AgentSession` stream generation.
+struct AgentGeneration {
+    key: ReplicaKey,
+    last_seq: u64,
+    next_seq: Option<u64>,
+}
+
+/// An `AgentSession` stream generation still receiving bootstrap chunks.
+struct AgentStaging {
+    key: ReplicaKey,
+    base_seq: u64,
+    next_chunk_seq: Option<u32>,
+    records: Vec<AgentEventRecord>,
+}
+
+/// Kernel state for one `AgentSession` resource: no replica, a record log.
+struct AgentStream {
+    parent: Option<TerminalId>,
+    /// Identity and state as declared before any record arrived; the
+    /// baseline every published generation folds its records onto.
+    declared: AgentSessionState,
+    state: AgentSessionState,
+    log: AgentLog,
+    published: Option<AgentGeneration>,
+    staging: Option<AgentStaging>,
+    retired: HashMap<GenerationId, TombstoneRecord>,
+}
+
+/// Borrowed view of one `AgentSession` resource for frontend projection.
+#[derive(Debug, Clone, Copy)]
+pub struct AgentSessionView<'a> {
+    /// The `AgentSession` resource.
+    pub terminal_id: &'a TerminalId,
+    /// Its Terminal-kind parent, when declared.
+    pub parent: Option<&'a TerminalId>,
+    /// Identity and lifecycle folded from the declaration and every record.
+    pub state: &'a AgentSessionState,
+    /// The retained record log, oldest first.
+    pub log: &'a AgentLog,
+    /// Whether a stream generation is published (records may still arrive
+    /// before the first one is).
+    pub published: bool,
+}
+
 struct AttachState {
     attach_id: u32,
     released: bool,
@@ -832,6 +940,12 @@ pub struct SessionKernel<E: EngineAdapter> {
     adapter: E,
     selected_profile: BootstrapProfile,
     terminals: HashMap<TerminalId, TerminalState<E::Replica>>,
+    /// Kind per resource, from the attach inventory, a declaration, or the
+    /// first bootstrap profile. Survives closure so a close can still be
+    /// classified; released with the resource.
+    kinds: HashMap<TerminalId, ResourceKind>,
+    /// `AgentSession` resources: record streams without replicas.
+    agents: HashMap<TerminalId, AgentStream>,
     closed: HashSet<TerminalId>,
     attach: Option<AttachState>,
     engine_effects: EngineEffectBuffer,
@@ -845,6 +959,7 @@ impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
             .debug_struct("SessionKernel")
             .field("selected_profile", &self.selected_profile)
             .field("terminal_count", &self.terminals.len())
+            .field("agent_session_count", &self.agents.len())
             .field("closed_terminal_count", &self.closed.len())
             .field(
                 "active_attach_id",
@@ -873,6 +988,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             adapter,
             selected_profile,
             terminals: HashMap::new(),
+            kinds: HashMap::new(),
+            agents: HashMap::new(),
             closed: HashSet::new(),
             attach: None,
             engine_effects: EngineEffectBuffer::new(),
@@ -956,9 +1073,44 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return false;
         }
         self.terminals.remove(terminal_id);
+        self.agents.remove(terminal_id);
+        self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);
         self.perf_echo.forget(terminal_id);
         true
+    }
+
+    /// The kind of one resource this kernel has seen, closed ones included.
+    #[must_use]
+    pub fn resource_kind(&self, terminal_id: &TerminalId) -> Option<ResourceKind> {
+        self.kinds.get(terminal_id).copied()
+    }
+
+    /// Borrow one open `AgentSession` resource.
+    #[must_use]
+    pub fn agent_session(&self, terminal_id: &TerminalId) -> Option<AgentSessionView<'_>> {
+        let (terminal_id, stream) = self.agents.get_key_value(terminal_id)?;
+        Some(Self::agent_view(terminal_id, stream))
+    }
+
+    /// Every open `AgentSession` resource, in no particular order.
+    pub fn agent_sessions(&self) -> impl Iterator<Item = AgentSessionView<'_>> + '_ {
+        self.agents
+            .iter()
+            .map(|(terminal_id, stream)| Self::agent_view(terminal_id, stream))
+    }
+
+    const fn agent_view<'a>(
+        terminal_id: &'a TerminalId,
+        stream: &'a AgentStream,
+    ) -> AgentSessionView<'a> {
+        AgentSessionView {
+            terminal_id,
+            parent: stream.parent.as_ref(),
+            state: &stream.state,
+            log: &stream.log,
+            published: stream.published.is_some(),
+        }
     }
 
     /// Borrow the published replica for one terminal.
@@ -1099,6 +1251,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
         if self.closed.contains(terminal_id) {
             return InputEligibility::Ineligible(InputBlockReason::Closed);
         }
+        if self
+            .kinds
+            .get(terminal_id)
+            .is_some_and(|kind| *kind != ResourceKind::Terminal)
+        {
+            return InputEligibility::Ineligible(InputBlockReason::NotATerminal);
+        }
         let Some(state) = self.terminals.get(terminal_id) else {
             return InputEligibility::Ineligible(InputBlockReason::UnknownTerminal);
         };
@@ -1143,41 +1302,73 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 profile,
                 geometry,
                 base_seq,
-            } => self.bootstrap_begin(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                geometry,
-                base_seq,
-                effects,
-            ),
+            } => {
+                if is_agent_profile(profile) {
+                    self.agent_bootstrap_begin(
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        profile,
+                        base_seq,
+                    )
+                } else {
+                    self.expect_kind(terminal_id, ResourceKind::Terminal)?;
+                    self.bootstrap_begin(
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        profile,
+                        geometry,
+                        base_seq,
+                        effects,
+                    )
+                }
+            }
             KernelInput::BootstrapChunk {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
                 chunk_seq,
                 payload,
-            } => self.bootstrap_chunk(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload,
-                effects,
-            ),
+            } => {
+                if self.agents.contains_key(terminal_id) {
+                    self.agent_bootstrap_chunk(
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq,
+                        payload,
+                        effects,
+                    )
+                } else {
+                    self.bootstrap_chunk(
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq,
+                        payload,
+                        effects,
+                    )
+                }
+            }
             KernelInput::BootstrapReady {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
                 history_cursor,
-            } => self.bootstrap_ready(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor,
-                effects,
-            ),
+            } => {
+                if self.agents.contains_key(terminal_id) {
+                    self.agent_bootstrap_ready(terminal_id, stream_id, bootstrap_id, effects)
+                } else {
+                    self.bootstrap_ready(
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        history_cursor,
+                        effects,
+                    )
+                }
+            }
             KernelInput::HistoryPage {
                 terminal_id,
                 stream_id,
@@ -1240,6 +1431,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 seq,
                 payload,
+            } if self.agents.contains_key(terminal_id) => {
+                self.agent_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects)
+            }
+            KernelInput::TerminalOutput {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+                payload,
             } => {
                 crate::perf::OUTPUT_FRAMES.incr();
                 crate::perf::OUTPUT_BYTES.add_len(payload.len());
@@ -1269,8 +1469,362 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 self.terminal_closed(terminal_id, effects);
                 Ok(())
             }
+            KernelInput::AgentSessionDeclared(declaration) => {
+                self.agent_session_declared(&declaration)
+            }
             KernelInput::Action(action) => self.action(&action, effects),
         }
+    }
+
+    /// Record `kind` for a resource, or reject a frame that implies a kind
+    /// other than the one already known.
+    fn expect_kind(
+        &mut self,
+        terminal_id: &TerminalId,
+        kind: ResourceKind,
+    ) -> Result<(), KernelError<E::Error>> {
+        match self.kinds.get(terminal_id) {
+            Some(declared) if *declared != kind => Err(KernelError::KindMismatch {
+                terminal_id: terminal_id.clone(),
+                declared: *declared,
+                incoming: kind,
+            }),
+            Some(_) => Ok(()),
+            None => {
+                self.kinds.insert(terminal_id.clone(), kind);
+                Ok(())
+            }
+        }
+    }
+
+    fn agent_session_declared(
+        &mut self,
+        declaration: &AgentSessionDeclaration<'_>,
+    ) -> Result<(), KernelError<E::Error>> {
+        let terminal_id = declaration.terminal_id;
+        self.ensure_open(terminal_id)?;
+        self.expect_kind(terminal_id, ResourceKind::AgentSession)?;
+        let declared = AgentSessionState {
+            provider: declaration.provider.map(ToOwned::to_owned),
+            native_id: declaration.native_id.map(ToOwned::to_owned),
+            status: declaration
+                .state
+                .map_or(AgentSessionStatus::Unknown, AgentSessionStatus::parse),
+        };
+        let stream = self
+            .agents
+            .entry(terminal_id.clone())
+            .or_insert_with(|| AgentStream {
+                parent: None,
+                declared: AgentSessionState::default(),
+                state: AgentSessionState::default(),
+                log: AgentLog::default(),
+                published: None,
+                staging: None,
+                retired: HashMap::new(),
+            });
+        if declaration.parent.is_some() {
+            stream.parent = declaration.parent.cloned();
+        }
+        // A declaration refines identity but never overrides what the
+        // stream itself has said: records outrank facets.
+        if stream.published.is_none() {
+            stream.state = declared.clone();
+        } else {
+            if stream.state.provider.is_none() {
+                stream.state.provider.clone_from(&declared.provider);
+            }
+            if stream.state.native_id.is_none() {
+                stream.state.native_id.clone_from(&declared.native_id);
+            }
+        }
+        stream.declared = declared;
+        Ok(())
+    }
+
+    fn agent_bootstrap_begin(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        profile: BootstrapStreamProfile,
+        base_seq: u64,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        self.expect_kind(terminal_id, ResourceKind::AgentSession)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let stream = self
+            .agents
+            .entry(terminal_id.clone())
+            .or_insert_with(|| AgentStream {
+                parent: None,
+                declared: AgentSessionState::default(),
+                state: AgentSessionState::default(),
+                log: AgentLog::default(),
+                published: None,
+                staging: None,
+                retired: HashMap::new(),
+            });
+        if stream.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        if stream
+            .published
+            .as_ref()
+            .is_some_and(|published| generation_of(&published.key) == generation)
+            || stream
+                .staging
+                .as_ref()
+                .is_some_and(|staging| generation_of(&staging.key) == generation)
+        {
+            return Err(KernelError::DuplicateGeneration {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+            });
+        }
+        if let Some(old) = stream.staging.replace(AgentStaging {
+            key: ReplicaKey {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile,
+            },
+            base_seq,
+            next_chunk_seq: Some(0),
+            records: Vec::new(),
+        }) {
+            stream.retired.insert(
+                generation_of(&old.key),
+                TombstoneRecord {
+                    reason: TombstoneReason::ExplicitReattach,
+                    last_valid_seq: old.base_seq,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Retire an `AgentSession` generation whose payload could not be decoded
+    /// and ask the frontend for a fresh stream.
+    fn retire_agent_generation(
+        stream: &mut AgentStream,
+        terminal_id: &TerminalId,
+        generation: GenerationId,
+        last_valid_seq: u64,
+        effects: &mut EffectBuffer,
+    ) {
+        if stream
+            .staging
+            .as_ref()
+            .is_some_and(|staging| generation_of(&staging.key) == generation)
+        {
+            stream.staging = None;
+        }
+        if stream
+            .published
+            .as_ref()
+            .is_some_and(|published| generation_of(&published.key) == generation)
+        {
+            stream.published = None;
+        }
+        stream.retired.insert(
+            generation,
+            TombstoneRecord {
+                reason: TombstoneReason::CodecFailure,
+                last_valid_seq,
+            },
+        );
+        effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+            terminal_id: terminal_id.clone(),
+            stream_id: generation.stream_id,
+            bootstrap_id: generation.bootstrap_id,
+            reason: TombstoneReason::CodecFailure,
+        }));
+    }
+
+    fn agent_bootstrap_chunk(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        chunk_seq: u32,
+        payload: &[u8],
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let stream = self
+            .agents
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if stream.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let staging = stream
+            .staging
+            .as_mut()
+            .filter(|staging| generation_of(&staging.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let Some(expected) = staging.next_chunk_seq else {
+            return Err(KernelError::ChunkSequenceExhausted);
+        };
+        if chunk_seq < expected {
+            return Err(KernelError::DuplicateChunk {
+                expected,
+                actual: chunk_seq,
+            });
+        }
+        if chunk_seq > expected {
+            return Err(KernelError::ChunkGap {
+                expected,
+                actual: chunk_seq,
+            });
+        }
+        let base_seq = staging.base_seq;
+        match parse_records(payload) {
+            Ok(records) => {
+                staging.records.extend(records);
+                staging.next_chunk_seq = chunk_seq.checked_add(1);
+                Ok(())
+            }
+            Err(error) => {
+                Self::retire_agent_generation(stream, terminal_id, generation, base_seq, effects);
+                Err(KernelError::AgentRecord(error))
+            }
+        }
+    }
+
+    fn agent_bootstrap_ready(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let stream = self
+            .agents
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if stream.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        if !stream
+            .staging
+            .as_ref()
+            .is_some_and(|staging| generation_of(&staging.key) == generation)
+        {
+            return Err(mismatch_error(terminal_id, generation));
+        }
+        let Some(staging) = stream.staging.take() else {
+            return Err(KernelError::MissingStaging(terminal_id.clone()));
+        };
+        // The bootstrap is the complete retained stream, so the published
+        // state is rebuilt from the declaration plus every record in it.
+        stream.state = stream.declared.clone();
+        stream.log.clear();
+        for record in &staging.records {
+            stream.state.fold(record);
+            stream.log.push(record.clone());
+        }
+        if let Some(old) = stream.published.replace(AgentGeneration {
+            key: staging.key,
+            last_seq: staging.base_seq,
+            next_seq: staging.base_seq.checked_add(1),
+        }) {
+            stream
+                .retired
+                .entry(generation_of(&old.key))
+                .or_insert(TombstoneRecord {
+                    reason: TombstoneReason::ExplicitReattach,
+                    last_valid_seq: old.last_seq,
+                });
+        }
+        effects.push(KernelEffect::AgentRecords {
+            terminal_id: terminal_id.clone(),
+            records: staging.records,
+        });
+        self.mark_attach_resolved(terminal_id);
+        Ok(())
+    }
+
+    fn agent_output(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        seq: u64,
+        payload: &[u8],
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let stream = self
+            .agents
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if stream.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let published = stream
+            .published
+            .as_mut()
+            .filter(|published| generation_of(&published.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let Some(expected) = published.next_seq else {
+            return Err(KernelError::SequenceExhausted);
+        };
+        if seq < expected {
+            return Err(KernelError::DuplicateSequence {
+                expected,
+                actual: seq,
+            });
+        }
+        if seq > expected {
+            return Err(KernelError::SequenceGap {
+                expected,
+                actual: seq,
+            });
+        }
+        let last_valid_seq = published.last_seq;
+        let records = match parse_records(payload) {
+            Ok(records) => records,
+            Err(error) => {
+                Self::retire_agent_generation(
+                    stream,
+                    terminal_id,
+                    generation,
+                    last_valid_seq,
+                    effects,
+                );
+                return Err(KernelError::AgentRecord(error));
+            }
+        };
+        published.last_seq = seq;
+        published.next_seq = seq.checked_add(1);
+        for record in &records {
+            stream.state.fold(record);
+            stream.log.push(record.clone());
+        }
+        effects.push(KernelEffect::AgentRecords {
+            terminal_id: terminal_id.clone(),
+            records,
+        });
+        Ok(())
     }
 
     fn attach_started(
@@ -1294,6 +1848,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
         }
 
+        for terminal_id in terminal_ids {
+            self.expect_kind(terminal_id, ResourceKind::Terminal)?;
+        }
         self.terminals.reserve(terminal_ids.len());
         for terminal_id in terminal_ids {
             self.terminals.entry(terminal_id.clone()).or_default();
@@ -2323,6 +2880,17 @@ impl<E: EngineAdapter> SessionKernel<E> {
             stream_id,
             bootstrap_id,
         };
+        if let Some(stream) = self.agents.get_mut(terminal_id) {
+            stream.retired.entry(generation).or_insert(record);
+            if stream
+                .staging
+                .as_ref()
+                .is_some_and(|staging| generation_of(&staging.key) == generation)
+            {
+                stream.staging = None;
+            }
+            return;
+        }
         let state = self.terminals.entry(terminal_id.clone()).or_default();
         state.retired.entry(generation).or_insert(record);
         if state
@@ -2343,6 +2911,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn terminal_closed(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
         self.perf_echo.forget(terminal_id);
+        self.agents.remove(terminal_id);
         let damage_blocked = self.attach_blocks(terminal_id);
         let had_published = self
             .terminals
@@ -2660,6 +3229,13 @@ fn retired_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> Kerne
     }
 }
 
+/// Whether a stream profile names the `AgentSession` record codec. Such a
+/// stream is legal under every connection profile: it carries no engine
+/// checkpoint and no VT, so profile negotiation does not constrain it.
+const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
+    matches!(profile, BootstrapStreamProfile::AgentEventsJsonlV1)
+}
+
 const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {
     match (selected, incoming) {
         (
@@ -2676,6 +3252,8 @@ const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamPr
         _ => false,
     }
 }
+
+pub mod agent_stream;
 
 #[cfg(test)]
 mod kernel_rig;

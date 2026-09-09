@@ -75,6 +75,7 @@ use phux_protocol::TerminalId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::info::SessionInfo;
 
+use super::agent_rows::{AgentSessionRow, AgentSessionRows};
 use super::pane_state::{PaneSlot, VcsIndex};
 use crate::layout::Workspace;
 use crate::render::overlay::SelectItem;
@@ -103,6 +104,9 @@ pub(super) struct FleetPaneMeta {
     /// The VCS branch of `cwd`, when it resolves inside a repository
     /// (phux-p4vp cached `.git/HEAD` read — never a `git` subprocess).
     pub branch: Option<String>,
+    /// `AgentSession` resources bound to this pane, from the kernel's record
+    /// streams. Each one is its own row; the pane is their click target.
+    pub sessions: Vec<AgentSessionRow>,
 }
 
 /// Snapshot the fleet-relevant metadata of every live pane.
@@ -113,6 +117,7 @@ pub(super) struct FleetPaneMeta {
 pub(super) fn collect_pane_meta(
     panes: &HashMap<TerminalId, PaneSlot>,
     vcs: &mut VcsIndex,
+    agent_sessions: &AgentSessionRows,
 ) -> HashMap<TerminalId, FleetPaneMeta> {
     panes
         .iter()
@@ -133,6 +138,7 @@ pub(super) fn collect_pane_meta(
                     title,
                     cwd: slot.cwd.clone(),
                     branch,
+                    sessions: agent_sessions.get(id).cloned().unwrap_or_default(),
                 },
             )
         })
@@ -222,46 +228,81 @@ fn current_session_pane_rows(
             .unwrap_or_default();
         for (p, id) in leaves.iter().enumerate() {
             let meta = pane_meta.get(id).cloned().unwrap_or_default();
-            rows.push(pane_row(w, &window.name, p, agent_meta.get(id), &meta));
+            if meta.sessions.is_empty() {
+                rows.push(pane_row(
+                    w,
+                    &window.name,
+                    p,
+                    agent_meta.get(id),
+                    &meta,
+                    None,
+                ));
+                continue;
+            }
+            for session in &meta.sessions {
+                rows.push(pane_row(
+                    w,
+                    &window.name,
+                    p,
+                    agent_meta.get(id),
+                    &meta,
+                    Some(session),
+                ));
+            }
         }
     }
     rows
 }
 
-/// One pane's fleet row.
+/// One pane's fleet row, or one of its `AgentSession` rows.
 ///
-/// The `phux.agent/v1` record, when present, supplies the display name
-/// (`name [kind]`) and the state glyph/word; absent, the OSC title is the
-/// compatibility fallback (ADR-0040 decision 3) with the `?` unknown
-/// glyph and no state word. The secondary column is `state - place` where
-/// place is the branch (preferred) or the cwd's last path component.
-/// Attention = the ADR-0035 asked flag OR the record's effective high
-/// attention; it drives the theme's `attention` label color.
+/// With a `session`, the row's state glyph/word comes from the stream and
+/// the display name is the record's name (with the provider as `[kind]`)
+/// or the provider alone. Otherwise the `phux.agent/v1` record, when
+/// present, supplies the display name (`name [kind]`) and the state
+/// glyph/word; absent, the OSC title is the compatibility fallback
+/// (ADR-0040 decision 3) with the `?` unknown glyph and no state word. The
+/// secondary column is `state - place` where place is the branch
+/// (preferred) or the cwd's last path component. Attention = the ADR-0035
+/// asked flag OR a blocked stream OR the record's effective high attention;
+/// it drives the theme's `attention` label color.
 fn pane_row(
     w: usize,
     window_name: &str,
     p: usize,
     record: Option<&AgentRecord>,
     meta: &FleetPaneMeta,
+    session: Option<&AgentSessionRow>,
 ) -> SelectItem {
-    let (glyph, who, state_word) = record.map_or_else(
-        || {
+    let (glyph, who, state_word) = match (session, record) {
+        (Some(session), record) => {
+            let who = match (record, session.provider.as_deref()) {
+                (Some(r), Some(provider)) => format!("{} [{provider}]", r.name),
+                (Some(r), None) => r.name.clone(),
+                (None, _) => session.name().to_owned(),
+            };
             (
-                '?',
-                meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
-                None,
+                state_glyph(session.state),
+                who,
+                Some(session.state.as_str()),
             )
-        },
-        |r| {
+        }
+        (None, Some(r)) => {
             let who = r
                 .kind
                 .as_ref()
                 .map_or_else(|| r.name.clone(), |kind| format!("{} [{kind}]", r.name));
             (state_glyph(r.state), who, Some(r.state.as_str()))
-        },
-    );
-    let attention =
-        meta.attention || record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
+        }
+        (None, None) => (
+            '?',
+            meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
+            None,
+        ),
+    };
+    let attention = meta.attention
+        || session.is_some_and(|s| s.state == AgentMetaState::Blocked)
+        || record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
     let label = format!("{glyph} {w}:{window_name}.{p} {who}");
     let place = meta
         .branch
@@ -597,6 +638,88 @@ mod tests {
             items[1].attention,
             "blocked derives high attention (ADR-0040) and must highlight"
         );
+    }
+
+    /// An `AgentSession` stream bound to a pane supplies the row's state; the
+    /// `phux.agent/v1` record still names it. Two sessions under one pane are
+    /// two rows that both commit the same `focus-pane`.
+    #[test]
+    fn stream_sessions_outrank_the_record_and_list_one_row_each() {
+        let workspace = Workspace::single(tid(1));
+        let mut agents = HashMap::new();
+        agents.insert(tid(1), record("reviewer", None, AgentMetaState::Idle));
+        let mut meta = HashMap::new();
+        meta.insert(
+            tid(1),
+            FleetPaneMeta {
+                sessions: vec![
+                    AgentSessionRow {
+                        id: tid(8),
+                        provider: Some("claude".to_owned()),
+                        native_id: None,
+                        state: AgentMetaState::Blocked,
+                    },
+                    AgentSessionRow {
+                        id: tid(9),
+                        provider: None,
+                        native_id: None,
+                        state: AgentMetaState::Working,
+                    },
+                ],
+                ..FleetPaneMeta::default()
+            },
+        );
+        let items = fleet_items(
+            &workspace,
+            &[],
+            None,
+            &agents,
+            &meta,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "! 0:1.0 reviewer [claude]");
+        assert_eq!(items[0].secondary.as_deref(), Some("blocked"));
+        assert!(items[0].attention, "a blocked stream highlights");
+        assert_eq!(items[1].label, "* 0:1.0 reviewer");
+        assert_eq!(items[1].secondary.as_deref(), Some("working"));
+        assert!(!items[1].attention);
+        assert!(
+            items.iter().all(|i| i.action.action == "focus-pane"),
+            "the parent pane is every session row's target"
+        );
+    }
+
+    /// With no record the provider names the stream row.
+    #[test]
+    fn a_stream_without_a_record_is_named_by_its_provider() {
+        let workspace = Workspace::single(tid(1));
+        let mut meta = HashMap::new();
+        meta.insert(
+            tid(1),
+            FleetPaneMeta {
+                title: Some("some title".to_owned()),
+                sessions: vec![AgentSessionRow {
+                    id: tid(8),
+                    provider: Some("codex".to_owned()),
+                    native_id: None,
+                    state: AgentMetaState::Done,
+                }],
+                ..FleetPaneMeta::default()
+            },
+        );
+        let items = fleet_items(
+            &workspace,
+            &[],
+            None,
+            &HashMap::new(),
+            &meta,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(items[0].label, ". 0:1.0 codex");
+        assert_eq!(items[0].secondary.as_deref(), Some("done"));
     }
 
     #[test]

@@ -229,7 +229,11 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
     if !overlays.is_active() {
         return StatusBarPaint::NotPublished;
     }
-    let meta = crate::attach::fleet::collect_pane_meta(panes, vcs);
+    let meta = crate::attach::fleet::collect_pane_meta(
+        panes,
+        vcs,
+        &crate::attach::agent_rows::agent_session_rows(engine_kernel),
+    );
     let items = crate::attach::fleet::fleet_items(
         workspace,
         sessions,

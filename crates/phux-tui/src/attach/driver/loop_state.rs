@@ -687,6 +687,7 @@ impl SessionLoop {
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
+            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
             self.peers.inputs(),
         )
     }

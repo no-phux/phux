@@ -4,16 +4,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
 use super::{
-    AgentMetaIndex, FrameOutcome, attach_participants,
+    AgentMetaIndex, FrameOutcome, attach_agent_sessions, attach_participants,
     handle_server_frame as handle_server_frame_with_kernel, route_engine_frame,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, SessionId, TerminalId, WindowId};
-use phux_protocol::wire::frame::{DetachReason, FrameKind};
+use phux_protocol::wire::frame::{CloseReason, DetachReason, FrameKind};
 use phux_protocol::wire::info::{
-    LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
+    AgentFacet, LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
 };
 
 use crate::attach::outcome::{AttachEnd, AttachError};
@@ -3856,4 +3857,447 @@ fn agent_metadata_rejects_malformed_records() {
     );
     assert!(!outcome.agent_meta_changed);
     assert!(agent_meta.records.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Resource kinds: AgentSession children ride the attach as record streams.
+// ---------------------------------------------------------------------------
+
+/// A snapshot with one Terminal pane and one `AgentSession` bound to it, the
+/// way a server advertises a `phux agent session open` child: no grid
+/// (`0x0`), no window, a parent, and an agent facet.
+fn mixed_kind_snapshot(pane: &TerminalId, agent: &TerminalId) -> SessionSnapshot {
+    let window = WindowId::new(1);
+    let session = SessionId::new(1);
+    SessionSnapshot::new(session, window, pane.clone())
+        .with_sessions(vec![SessionInfo::new(session, "work".to_owned())])
+        .with_windows(vec![WindowInfo::new(window, session, "w0".to_owned())])
+        .with_panes(vec![
+            TerminalInfo::new(pane.clone(), window, 100, 30),
+            TerminalInfo::new(agent.clone(), WindowId::new(0), 0, 0)
+                .with_kind(ResourceKind::AgentSession)
+                .with_parent(Some(pane.clone()))
+                .with_agent(Some(
+                    AgentFacet::new("claude", "working").with_native_id(Some("s-1".to_owned())),
+                )),
+        ])
+}
+
+fn kind_fixture() -> EngineFixture {
+    EngineFixture {
+        kernel: phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        ),
+        effects: phux_client_core::session::EffectBuffer::new(),
+    }
+}
+
+/// Drive one frame through the dispatcher with a caller-owned kernel, the
+/// shape every kind test below needs.
+fn drive_kind_frame(
+    fixture: &mut EngineFixture,
+    frame: FrameKind,
+    panes: &mut HashMap<TerminalId, PaneSlot>,
+    workspace: &mut Workspace,
+    focused: &mut Option<TerminalId>,
+) -> Result<FrameOutcome, AttachError> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut zoomed: Option<TerminalId> = None;
+    let mut session_name = String::new();
+    let mut predict = PredictionState::new(PredictiveConfig::disabled(), 100, 30);
+    let overlay = Overlay;
+    let mut pending_splits = HashMap::new();
+    let mut pending_windows = HashMap::new();
+    handle_server_frame_with_kernel(
+        &mut fixture.kernel,
+        &mut fixture.effects,
+        &mut out,
+        frame,
+        panes,
+        workspace,
+        focused,
+        &mut zoomed,
+        &mut session_name,
+        Some(SessionId::new(1)),
+        None,
+        None,
+        (100, 30),
+        &mut predict,
+        &overlay,
+        None,
+        &mut pending_splits,
+        &mut pending_windows,
+        &mut HashSet::new(),
+        &mut AgentMetaIndex::default(),
+        false,
+        false,
+    )
+}
+
+#[test]
+fn attach_participants_and_agent_sessions_split_a_mixed_kind_snapshot() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let snapshot = mixed_kind_snapshot(&pane, &agent);
+    let participants = attach_participants(&snapshot);
+    assert_eq!(
+        participants,
+        vec![pane],
+        "only the Terminal-kind resource is a barrier participant"
+    );
+    let children: Vec<&TerminalId> = attach_agent_sessions(&snapshot, &participants)
+        .into_iter()
+        .map(|info| &info.id)
+        .collect();
+    assert_eq!(children, vec![&agent]);
+    assert!(
+        attach_agent_sessions(&snapshot, &[]).is_empty(),
+        "a child whose parent is not attached is not declared"
+    );
+}
+
+#[test]
+fn attached_seeds_a_slot_only_for_the_terminal_and_declares_the_agent_session() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let mut fixture = kind_fixture();
+    let mut panes = HashMap::new();
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+
+    let outcome = drive_kind_frame(
+        &mut fixture,
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: mixed_kind_snapshot(&pane, &agent),
+            initial_client_id: ClientId::new(1),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("attached");
+
+    assert!(panes.contains_key(&pane));
+    assert!(
+        !panes.contains_key(&agent),
+        "an AgentSession never gets a pane slot (it would be sized from 0x0)"
+    );
+    assert_eq!(panes.len(), 1);
+    assert_eq!(
+        fixture.kernel.resource_kind(&agent),
+        Some(ResourceKind::AgentSession)
+    );
+    let view = fixture.kernel.agent_session(&agent).expect("declared");
+    assert_eq!(view.parent, Some(&pane));
+    assert_eq!(view.state.provider.as_deref(), Some("claude"));
+    assert_eq!(
+        view.state.status,
+        phux_client_core::session::agent_stream::AgentSessionStatus::Working
+    );
+    assert!(
+        outcome.pane_cwds.iter().all(|(id, _)| id != &agent),
+        "no cwd for a resource without one"
+    );
+    assert_eq!(
+        crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+        vec![pane],
+        "the layout holds the pane alone"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one stream lifecycle through the dispatcher: BEGIN, CHUNK, READY, live"
+)]
+fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let mut fixture = kind_fixture();
+    let mut panes = HashMap::new();
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    drive_kind_frame(
+        &mut fixture,
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: mixed_kind_snapshot(&pane, &agent),
+            initial_client_id: ClientId::new(1),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("attached");
+
+    let stream_id = stream();
+    let bootstrap_id = bootstrap();
+    let begin = drive_kind_frame(
+        &mut fixture,
+        FrameKind::BootstrapBegin {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+            cols: 0,
+            rows: 0,
+            base_seq: 0,
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("agent BEGIN at 0x0 is legal");
+    assert!(!begin.chrome_dirty);
+    assert!(
+        !panes.contains_key(&agent),
+        "BEGIN seeds no slot for a stream"
+    );
+
+    let chunk = "{\"seq\":1,\"ts_ms\":1,\"type\":\"ask\",\"data\":{}}\n";
+    drive_kind_frame(
+        &mut fixture,
+        FrameKind::BootstrapChunk {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: bytes::Bytes::from(chunk.as_bytes().to_vec()),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("chunk");
+    let ready = drive_kind_frame(
+        &mut fixture,
+        FrameKind::BootstrapReady {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("ready");
+    assert!(
+        ready.chrome_dirty,
+        "the published log changes what the sidebar shows"
+    );
+    assert!(
+        !ready.layout_replaced,
+        "no pane repaint for a record stream"
+    );
+
+    let live = "{\"seq\":2,\"ts_ms\":2,\"type\":\"stop\",\"data\":{}}\n";
+    let output = drive_kind_frame(
+        &mut fixture,
+        FrameKind::TerminalOutput {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            seq: 1,
+            bytes: bytes::Bytes::from(live.as_bytes().to_vec()),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("live records");
+    assert!(output.chrome_dirty);
+    assert!(
+        !panes.contains_key(&agent),
+        "live records never seed a slot either"
+    );
+
+    let rows = crate::attach::agent_rows::agent_session_rows(&fixture.kernel);
+    let under_pane = rows.get(&pane).expect("row under the parent pane");
+    assert_eq!(under_pane.len(), 1);
+    assert_eq!(under_pane[0].id, agent);
+    assert_eq!(under_pane[0].provider.as_deref(), Some("claude"));
+    assert_eq!(
+        under_pane[0].state,
+        phux_client::agent_meta::AgentMetaState::Done
+    );
+}
+
+#[test]
+fn closing_an_agent_session_removes_only_its_row() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let mut fixture = kind_fixture();
+    let mut panes = HashMap::new();
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    drive_kind_frame(
+        &mut fixture,
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: mixed_kind_snapshot(&pane, &agent),
+            initial_client_id: ClientId::new(1),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("attached");
+    let before = workspace.clone();
+
+    let outcome = drive_kind_frame(
+        &mut fixture,
+        FrameKind::TerminalClosed {
+            terminal_id: agent.clone(),
+            exit_status: None,
+            reason: CloseReason::ParentClosed,
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("child close");
+
+    assert!(!outcome.exit, "a child closing never ends the attach");
+    assert!(outcome.chrome_dirty, "the row leaves the strip");
+    assert!(!outcome.layout_replaced && !outcome.emit_set_metadata && !outcome.reflow_panes);
+    assert!(
+        outcome.notices.is_empty(),
+        "no pane-exit notice for a stream"
+    );
+    assert_eq!(workspace, before, "the parent's layout is untouched");
+    assert!(panes.contains_key(&pane));
+    assert!(fixture.kernel.agent_session(&agent).is_none());
+    assert!(
+        crate::attach::agent_rows::agent_session_rows(&fixture.kernel).is_empty(),
+        "no row survives the close"
+    );
+}
+
+#[test]
+fn a_layout_naming_an_agent_session_is_refused() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let mut fixture = kind_fixture();
+    let mut panes = HashMap::new();
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    drive_kind_frame(
+        &mut fixture,
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: mixed_kind_snapshot(&pane, &agent),
+            initial_client_id: ClientId::new(1),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("attached");
+
+    // A stale or foreign writer tiles the agent session as if it were a pane.
+    let mut bad = Workspace::single(pane.clone());
+    bad.windows[0].state = split2(1, 2, 1);
+    let bytes = bad.encode_cbor().expect("encode");
+    let outcome = drive_kind_frame(
+        &mut fixture,
+        FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            value: Some(bytes),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("broadcast");
+    assert!(
+        !outcome.layout_replaced,
+        "the envelope is refused, not adopted"
+    );
+    assert!(
+        outcome.attach_panes.is_empty(),
+        "nothing tries to attach the stream as a pane"
+    );
+    assert_eq!(
+        crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+        vec![pane],
+    );
+}
+
+#[test]
+fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
+    let pane = tid(1);
+    let agent = tid(2);
+    let late = tid(3);
+    let mut fixture = kind_fixture();
+    let mut panes = HashMap::new();
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    drive_kind_frame(
+        &mut fixture,
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: mixed_kind_snapshot(&pane, &agent),
+            initial_client_id: ClientId::new(1),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("attached");
+
+    let outcome = drive_kind_frame(
+        &mut fixture,
+        FrameKind::Event {
+            terminal: Some(late.clone()),
+            event: phux_protocol::wire::frame::AgentEvent::PaneSpawned {
+                kind: ResourceKind::AgentSession,
+                parent: Some(pane.clone()),
+            },
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("spawn event");
+    assert_eq!(
+        outcome.attach_panes,
+        vec![late.clone()],
+        "attach the stream"
+    );
+    assert!(outcome.chrome_dirty);
+    assert!(
+        !outcome.foreign_pane_set_dirty,
+        "our own child is not a peer change"
+    );
+    assert!(
+        !panes.contains_key(&late),
+        "still no pane slot for a stream"
+    );
+    let view = fixture.kernel.agent_session(&late).expect("declared");
+    assert_eq!(view.parent, Some(&pane));
+
+    // A child of a pane this client does not hold is a peer's business.
+    let outcome = drive_kind_frame(
+        &mut fixture,
+        FrameKind::Event {
+            terminal: Some(tid(4)),
+            event: phux_protocol::wire::frame::AgentEvent::PaneSpawned {
+                kind: ResourceKind::AgentSession,
+                parent: Some(tid(99)),
+            },
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+    )
+    .expect("peer spawn event");
+    assert!(outcome.attach_panes.is_empty());
+    assert!(outcome.foreign_pane_set_dirty);
+    assert!(fixture.kernel.agent_session(&tid(4)).is_none());
 }

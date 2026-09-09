@@ -140,6 +140,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                 own_client_id,
                 agent_meta,
                 vcs,
+                &crate::attach::agent_rows::agent_session_rows(engine_kernel),
                 peers,
             );
             if !overlays.is_active()

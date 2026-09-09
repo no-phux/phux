@@ -21,7 +21,7 @@ pub(super) use index::AgentMetaIndex;
 pub(super) use outcome::FrameOutcome;
 
 #[cfg(test)]
-use engine_route::{attach_participants, route_engine_frame};
+use engine_route::{attach_agent_sessions, attach_participants, route_engine_frame};
 #[cfg(test)]
 use handler::{handle_window_spawned, reconcile_loaded_workspace};
 #[cfg(test)]

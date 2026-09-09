@@ -4,10 +4,11 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
+use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, Scope, SpawnError,
-    SpawnResult, TerminalLifecycle,
+    AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind, Scope,
+    SpawnError, SpawnResult, TerminalLifecycle,
 };
 
 use crate::attach::actions::{
@@ -27,7 +28,7 @@ use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
 };
 
-use super::engine_route::{KernelRoute, route_engine_frame};
+use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
 use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
 
@@ -105,6 +106,43 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     /// The per-inbound-frame dispatch span. The heavy content arms record
     /// their identifiers and payload sizes onto it.
     frame_span: &'a tracing::Span,
+}
+
+impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
+    /// Whether the kernel knows `terminal_id` as an `AgentSession` resource:
+    /// a record stream with no grid, no pane slot, and no layout leaf.
+    fn is_agent_session(&self, terminal_id: &TerminalId) -> bool {
+        matches!(
+            self.engine_kernel.resource_kind(terminal_id),
+            Some(ResourceKind::AgentSession)
+        )
+    }
+
+    /// Whether a layout leaf may name `terminal_id`: anything the kernel does
+    /// not know to be a non-terminal kind. Peer ids it cannot classify pass.
+    fn may_be_layout_leaf(&self, terminal_id: &TerminalId) -> bool {
+        !matches!(
+            self.engine_kernel.resource_kind(terminal_id),
+            Some(kind) if kind != ResourceKind::Terminal
+        )
+    }
+
+    /// Decode one of OUR layout envelopes, refusing any leaf that names a
+    /// known non-terminal resource.
+    fn decode_own_layout(&self, bytes: &[u8]) -> Result<Workspace, layout::LayoutDecodeError> {
+        Workspace::decode_cbor_checked(bytes, &|leaf| self.may_be_layout_leaf(leaf))
+    }
+}
+
+/// The outcome for a frame on an `AgentSession` stream: nothing to paint, but
+/// the chrome projects the stream's state, so it refreshes when the log grew.
+fn agent_stream_outcome(terminal_id: &TerminalId, route: KernelRoute) -> FrameOutcome {
+    FrameOutcome {
+        chrome_dirty: route.agent_touched.contains(terminal_id),
+        pty_writes: route.pty_writes,
+        notices: route.notices,
+        ..FrameOutcome::default()
+    }
 }
 
 /// Process one server-to-client frame. Returns a [`FrameOutcome`]
@@ -249,6 +287,14 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             payload.len(),
             route,
         )),
+        // A record stream has nothing to paint: its READY and its live
+        // output only refresh the chrome that projects it.
+        FrameKind::BootstrapReady { terminal_id, .. }
+        | FrameKind::TerminalOutput { terminal_id, .. }
+            if ctx.is_agent_session(&terminal_id) =>
+        {
+            Ok(agent_stream_outcome(&terminal_id, route))
+        }
         FrameKind::BootstrapReady { terminal_id, .. } => {
             handle_bootstrap_ready(ctx, &terminal_id, route)
         }
@@ -293,9 +339,14 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::TerminalClosed {
             terminal_id,
             exit_status,
-            ..
-        } => Ok(handle_terminal_closed(ctx, &terminal_id, exit_status)),
-        event @ FrameKind::Event { .. } => Ok(handle_agent_event(ctx, event)),
+            reason,
+        } => Ok(handle_terminal_closed(
+            ctx,
+            &terminal_id,
+            exit_status,
+            reason,
+        )),
+        event @ FrameKind::Event { .. } => Ok(handle_agent_event(ctx, event, &route)),
         FrameKind::Error {
             request_id,
             code,
@@ -385,7 +436,11 @@ fn handle_attached<W: crate::attach::RenderSink>(
     // bootstrap transcript. VT interpretation is geometry-sensitive;
     // starting at 80x24 and resizing later corrupts wraps, clips,
     // and absolute cursor movement for wider/taller viewports.
-    for pane in &snapshot.panes {
+    //
+    // Only Terminal-kind resources get a slot: an AgentSession has no grid
+    // (its snapshot entry says 0x0), and a mirror sized from it would be a
+    // lie the first paint trips over. Its record stream lives in the kernel.
+    for pane in snapshot.panes.iter().filter(|pane| is_terminal(pane)) {
         if let std::collections::hash_map::Entry::Vacant(v) = ctx.panes.entry(pane.id.clone()) {
             let slot = v.insert(PaneSlot::new_with_size(pane.cols, pane.rows)?);
             // phux-foz.4: seed the pane's cwd from the snapshot (the
@@ -398,6 +453,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     let pane_cwds: Vec<(TerminalId, String)> = snapshot
         .panes
         .iter()
+        .filter(|pane| is_terminal(pane))
         .filter_map(|p| p.cwd.clone().map(|cwd| (p.id.clone(), cwd)))
         .collect();
     // Ensure the focused pane has a slot even if an older server's
@@ -439,12 +495,18 @@ fn handle_attached<W: crate::attach::RenderSink>(
 
 /// Point the pane's slot at the geometry `BOOTSTRAP_BEGIN` advertises,
 /// creating the slot at that size when this is the pane's first sight.
+///
+/// An `AgentSession` stream has no grid to size a slot from (its BEGIN says
+/// `0x0`), so it seeds nothing.
 fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal_id: TerminalId,
     cols: u16,
     rows: u16,
 ) -> Result<FrameOutcome, AttachError> {
+    if ctx.is_agent_session(&terminal_id) {
+        return Ok(FrameOutcome::default());
+    }
     let slot = match ctx.panes.entry(terminal_id) {
         std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
         std::collections::hash_map::Entry::Vacant(entry) => {
@@ -952,7 +1014,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
     let Some(bytes) = value else {
         return FrameOutcome::default();
     };
-    match Workspace::decode_cbor(&bytes) {
+    match ctx.decode_own_layout(&bytes) {
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
             FrameOutcome {
@@ -1028,7 +1090,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         };
     };
-    match Workspace::decode_cbor(&bytes) {
+    match ctx.decode_own_layout(&bytes) {
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
             FrameOutcome {
@@ -1264,10 +1326,12 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal_id: &TerminalId,
     exit_status: Option<i32>,
+    reason: CloseReason,
 ) -> FrameOutcome {
     tracing::info!(
         terminal = ?terminal_id,
         exit_status = ?exit_status,
+        ?reason,
         "TerminalClosed",
     );
     // phux-i0e8.2.2: was this close one WE asked for (kill-pane /
@@ -1275,6 +1339,16 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // consumes at most one expectation, whatever its exit status —
     // so a later spontaneous death of a re-used id still notifies.
     let expected = ctx.expected_closes.remove(terminal_id);
+    // An AgentSession occupies no slot and no leaf: its close (its own, or
+    // the cascade of its parent closing) removes only its chrome row. The
+    // parent pane, if it is still open, is untouched; if the parent closed
+    // too, the parent's own close frame folds the layout.
+    if ctx.is_agent_session(terminal_id) {
+        return FrameOutcome {
+            chrome_dirty: true,
+            ..FrameOutcome::default()
+        };
+    }
     // Always drop the slot — even for unknown leaves (could be
     // a spawn-failure cleanup race or a stale id from before
     // an attach).
@@ -1378,8 +1452,21 @@ fn pane_exit_notices(
 fn handle_agent_event<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     frame: FrameKind,
+    route: &KernelRoute,
 ) -> FrameOutcome {
     match frame {
+        // A live-spawned `AgentSession` under one of our panes: the kernel
+        // just declared it, so attach it as a record stream (the same
+        // per-resource attach a layout-discovered pane gets) and let the
+        // chrome grow its row once the stream publishes.
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::PaneSpawned { .. },
+        } if route.declared_agent.as_ref() == Some(&terminal) => FrameOutcome {
+            attach_panes: vec![terminal],
+            chrome_dirty: true,
+            ..FrameOutcome::default()
+        },
         FrameKind::Event {
             terminal: Some(terminal),
             event:
@@ -1409,10 +1496,12 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::PaneSpawned { .. } | AgentEvent::PaneClosed { .. },
-        } if !ctx.panes.contains_key(&terminal) => FrameOutcome {
-            foreign_pane_set_dirty: true,
-            ..FrameOutcome::default()
-        },
+        } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
+            FrameOutcome {
+                foreign_pane_set_dirty: true,
+                ..FrameOutcome::default()
+            }
+        }
         _ => FrameOutcome::default(),
     }
 }

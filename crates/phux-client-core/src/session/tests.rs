@@ -4,8 +4,11 @@ use phux_protocol::caps::{
 };
 use phux_protocol::input::{InputEvent, focus::FocusEvent};
 use phux_protocol::wire::frame::TombstoneReason;
-use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
+use phux_protocol::{
+    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceKind, StreamId, TerminalId,
+};
 
+use super::agent_stream::AgentSessionStatus;
 use super::{
     EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputBlockReason,
     InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError,
@@ -2728,4 +2731,510 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
             "tombstone_first={tombstone_first}: stale generation output must be ignored, got {stale:?}",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// AgentSession resources: kind tracking and the typed record log.
+// ---------------------------------------------------------------------------
+
+const AGENT_PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AgentEventsJsonlV1;
+
+fn agent_line(seq: u64, kind: &str, data: &str) -> String {
+    format!(
+        "{{\"seq\":{seq},\"ts_ms\":{},\"type\":\"{kind}\",\"data\":{data}}}\n",
+        seq * 10
+    )
+}
+
+fn declare_agent(
+    kernel: &mut SessionKernel<FakeAdapter>,
+    agent: &TerminalId,
+    parent: &TerminalId,
+    effects: &mut EffectBuffer,
+) {
+    kernel
+        .update(
+            KernelInput::AgentSessionDeclared(super::AgentSessionDeclaration {
+                terminal_id: agent,
+                parent: Some(parent),
+                provider: Some("claude"),
+                native_id: Some("s-1"),
+                state: Some("working"),
+            }),
+            effects,
+        )
+        .unwrap();
+}
+
+fn agent_begin(
+    kernel: &mut SessionKernel<FakeAdapter>,
+    agent: &TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    base_seq: u64,
+    effects: &mut EffectBuffer,
+) -> Result<(), KernelError<FakeError>> {
+    kernel.update(
+        KernelInput::BootstrapBegin {
+            terminal_id: agent,
+            stream_id,
+            bootstrap_id,
+            profile: AGENT_PROFILE,
+            // An AgentSession has no grid; the wire encodes that as 0x0.
+            geometry: CanonicalGeometry { cols: 0, rows: 0 },
+            base_seq,
+        },
+        effects,
+    )
+}
+
+fn agent_records_effect(effects: &EffectBuffer) -> Option<(TerminalId, Vec<u64>)> {
+    effects.as_slice().iter().find_map(|effect| match effect {
+        KernelEffect::AgentRecords {
+            terminal_id,
+            records,
+        } => Some((
+            terminal_id.clone(),
+            records.iter().map(|record| record.seq).collect(),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "one stream lifecycle end to end: declare, bootstrap, live, close"
+)]
+fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
+    let parent = terminal(1);
+    let agent = terminal(2);
+    let stream_id = stream(3);
+    let bootstrap_id = bootstrap(4);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 1,
+                terminals: std::slice::from_ref(&parent),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+    assert_eq!(
+        kernel.resource_kind(&agent),
+        Some(ResourceKind::AgentSession)
+    );
+    assert_eq!(kernel.resource_kind(&parent), Some(ResourceKind::Terminal));
+    let view = kernel.agent_session(&agent).expect("declared");
+    assert_eq!(view.parent, Some(&parent));
+    assert_eq!(view.state.provider.as_deref(), Some("claude"));
+    assert_eq!(view.state.status, AgentSessionStatus::Working);
+    assert!(!view.published);
+    assert_eq!(
+        kernel.input_eligibility(&agent),
+        InputEligibility::Ineligible(InputBlockReason::NotATerminal)
+    );
+
+    // A declared AgentSession is not an attach participant: the barrier
+    // releases on the parent alone.
+    publish_direct(
+        &mut kernel,
+        &parent,
+        stream(10),
+        bootstrap(11),
+        0,
+        &mut effects,
+    );
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 1 }, &mut effects)
+        .unwrap();
+
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream_id,
+        bootstrap_id,
+        5,
+        &mut effects,
+    )
+    .unwrap();
+    let chunk = format!(
+        "{}{}",
+        agent_line(
+            1,
+            "session_start",
+            r#"{"provider":"claude","native_id":"s-9"}"#
+        ),
+        agent_line(2, "ask", r#"{"question":"deploy?"}"#)
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: chunk.as_bytes(),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty(), "staging emits nothing until READY");
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![1, 2])),
+        "publication hands the frontend every retained record"
+    );
+    assert!(
+        !effects
+            .as_slice()
+            .iter()
+            .any(|effect| matches!(effect, KernelEffect::Damage(_))),
+        "an agent stream never damages a grid"
+    );
+    assert!(
+        kernel.published(&agent).is_none(),
+        "no replica for a record stream"
+    );
+    let view = kernel.agent_session(&agent).expect("published");
+    assert!(view.published);
+    assert_eq!(
+        view.state.native_id.as_deref(),
+        Some("s-9"),
+        "records refine identity"
+    );
+    assert_eq!(view.state.status, AgentSessionStatus::Blocked);
+    assert_eq!(view.log.len(), 2);
+
+    // Live output appends and re-derives.
+    let live = agent_line(3, "stop", "{}");
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id,
+                seq: 6,
+                payload: live.as_bytes(),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![3]))
+    );
+    let view = kernel.agent_session(&agent).expect("live");
+    assert_eq!(view.state.status, AgentSessionStatus::Done);
+    assert_eq!(view.log.last().map(|record| record.seq), Some(3));
+
+    // Sequencing stays exact.
+    assert!(matches!(
+        kernel.update(
+            KernelInput::TerminalOutput {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id,
+                seq: 8,
+                payload: live.as_bytes(),
+            },
+            &mut effects,
+        ),
+        Err(KernelError::SequenceGap {
+            expected: 7,
+            actual: 8
+        })
+    ));
+
+    // Closing the session drops the view; its kind is still known.
+    kernel
+        .update(
+            KernelInput::TerminalClosed {
+                terminal_id: &agent,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(
+        effects.is_empty(),
+        "closing a record stream removes no grid"
+    );
+    assert!(kernel.agent_session(&agent).is_none());
+    assert_eq!(
+        kernel.resource_kind(&agent),
+        Some(ResourceKind::AgentSession)
+    );
+    assert!(
+        kernel.published(&parent).is_some(),
+        "the parent is untouched"
+    );
+}
+
+#[test]
+fn agent_profile_skips_the_geometry_check_but_terminals_still_need_one() {
+    let agent = terminal(2);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    // No declaration at all: the profile alone fixes the kind.
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(1),
+        bootstrap(1),
+        0,
+        &mut effects,
+    )
+    .unwrap();
+    assert_eq!(
+        kernel.resource_kind(&agent),
+        Some(ResourceKind::AgentSession)
+    );
+    let zero = kernel.update(
+        KernelInput::BootstrapBegin {
+            terminal_id: &terminal(3),
+            stream_id: stream(2),
+            bootstrap_id: bootstrap(2),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            geometry: CanonicalGeometry { cols: 0, rows: 0 },
+            base_seq: 0,
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        zero,
+        Err(KernelError::InvalidGeometry { cols: 0, rows: 0 })
+    ));
+}
+
+#[test]
+fn kind_mismatches_are_rejected_in_both_directions() {
+    let parent = terminal(1);
+    let agent = terminal(2);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 1,
+                terminals: std::slice::from_ref(&parent),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+
+    // A terminal-profile bootstrap on a declared AgentSession.
+    let wrong = kernel.update(
+        KernelInput::BootstrapBegin {
+            terminal_id: &agent,
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            geometry: geometry(),
+            base_seq: 0,
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        wrong,
+        Err(KernelError::KindMismatch {
+            declared: ResourceKind::AgentSession,
+            incoming: ResourceKind::Terminal,
+            ..
+        })
+    ));
+    // An agent-profile bootstrap on an attach-inventory Terminal.
+    let wrong = agent_begin(
+        &mut kernel,
+        &parent,
+        stream(2),
+        bootstrap(2),
+        0,
+        &mut effects,
+    );
+    assert!(matches!(
+        wrong,
+        Err(KernelError::KindMismatch {
+            declared: ResourceKind::Terminal,
+            incoming: ResourceKind::AgentSession,
+            ..
+        })
+    ));
+    // Declaring an attach-inventory Terminal as an AgentSession.
+    let wrong = kernel.update(
+        KernelInput::AgentSessionDeclared(super::AgentSessionDeclaration {
+            terminal_id: &parent,
+            parent: None,
+            provider: None,
+            native_id: None,
+            state: None,
+        }),
+        &mut effects,
+    );
+    assert!(matches!(wrong, Err(KernelError::KindMismatch { .. })));
+}
+
+#[test]
+fn malformed_agent_records_retire_only_that_generation() {
+    let agent = terminal(2);
+    let stream_id = stream(3);
+    let bootstrap_id = bootstrap(4);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream_id,
+        bootstrap_id,
+        0,
+        &mut effects,
+    )
+    .unwrap();
+    let bad = kernel.update(
+        KernelInput::BootstrapChunk {
+            terminal_id: &agent,
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: b"{\"seq\":1,\"ts_ms\":1}\n",
+        },
+        &mut effects,
+    );
+    assert!(matches!(bad, Err(KernelError::AgentRecord(_))));
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::ResyncRequired {
+            reason: TombstoneReason::CodecFailure,
+            ..
+        })
+    )));
+    assert_eq!(
+        kernel.tombstone(&agent, stream_id, bootstrap_id),
+        None,
+        "agent generations retire inside the stream, not the terminal table"
+    );
+    assert!(matches!(
+        kernel.update(
+            KernelInput::BootstrapReady {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            &mut effects,
+        ),
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+    // A replacement generation is accepted and publishes cleanly.
+    let next = bootstrap(5);
+    agent_begin(&mut kernel, &agent, stream_id, next, 0, &mut effects).unwrap();
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &agent,
+                stream_id,
+                bootstrap_id: next,
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![]))
+    );
+    assert!(
+        kernel
+            .agent_session(&agent)
+            .is_some_and(|view| view.published)
+    );
+}
+
+#[test]
+fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
+    let parent = terminal(1);
+    let agent = terminal(2);
+    let stream_id = stream(3);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+    for (generation, kind) in [(1, "ask"), (2, "stop")] {
+        let bootstrap_id = bootstrap(generation);
+        agent_begin(
+            &mut kernel,
+            &agent,
+            stream_id,
+            bootstrap_id,
+            0,
+            &mut effects,
+        )
+        .unwrap();
+        let chunk = agent_line(1, kind, "{}");
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id: &agent,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq: 0,
+                    payload: chunk.as_bytes(),
+                },
+                &mut effects,
+            )
+            .unwrap();
+        kernel
+            .update(
+                KernelInput::BootstrapReady {
+                    terminal_id: &agent,
+                    stream_id,
+                    bootstrap_id,
+                    history_cursor: None,
+                },
+                &mut effects,
+            )
+            .unwrap();
+    }
+    let view = kernel.agent_session(&agent).expect("published");
+    assert_eq!(view.state.status, AgentSessionStatus::Done);
+    assert_eq!(
+        view.log.len(),
+        1,
+        "the log is the retained stream, not a concatenation"
+    );
+    assert_eq!(
+        view.state.provider.as_deref(),
+        Some("claude"),
+        "the declaration seeds every generation"
+    );
+    assert!(
+        kernel.tombstone(&agent, stream_id, bootstrap(1)).is_none()
+            && kernel
+                .update(
+                    KernelInput::TerminalOutput {
+                        terminal_id: &agent,
+                        stream_id,
+                        bootstrap_id: bootstrap(1),
+                        seq: 1,
+                        payload: b"",
+                    },
+                    &mut effects,
+                )
+                .is_err(),
+        "the replaced generation is retired"
+    );
 }
