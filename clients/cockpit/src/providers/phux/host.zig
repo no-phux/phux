@@ -11,13 +11,15 @@ const provider = @import("provider_contract");
 const presentation_module = @import("presentation.zig");
 const c = @import("abi.zig").c;
 const operations = @import("operations.zig");
+const workspace_bridge = @import("workspace_bridge.zig");
+const workspace = provider.workspace;
 pub const OperationResult = operations.types.Result;
 pub const test_support = @import("operation_test_support.zig");
 
 pub const enabled = true;
 pub const max_terminals: usize = 16;
-// Matches Cockpit's bounded discovery inventory; contains no engine replicas.
-pub const max_catalog_terminals: usize = 64;
+// Matches the ABI roster bound; independent from live engine replica slots.
+pub const max_catalog_terminals: usize = workspace.max_terminals;
 pub const max_notices: usize = 64;
 pub const max_search_results: usize = 4096;
 pub const max_sessions: usize = 256;
@@ -32,6 +34,7 @@ pub const max_grid_utf8_bytes = presentation_module.max_grid_utf8_bytes;
 
 pub const State = enum { new, hello_queued, negotiated, attached, detached, failed };
 pub const SyncDelta = struct {
+    workspace_changed: bool = false,
     metadata_changed: bool = false,
     ready_published: bool = false,
     generation_changed: bool = false,
@@ -92,6 +95,7 @@ const Terminal = struct {
     seen_in_attach: bool = false,
     remove_at_barrier: bool = false,
     published: bool = false,
+    catalog_pending: bool = false,
     canvas: CanvasStore = .{},
     title: std.ArrayListUnmanaged(u8) = .empty,
     pending_title: std.ArrayListUnmanaged(u8) = .empty,
@@ -175,6 +179,9 @@ pub const Host = struct {
     disconnected: bool = false,
     color_policy: ColorPolicy = .{},
     metadata_changed: bool = false,
+    workspace_changed: bool = false,
+    workspace_store: workspace_bridge.Store = .{},
+    attached_session_id: ?u32 = null,
 
     /// Presentation-only update: no input, render query or replica mutation.
     pub fn setColorPolicy(host: *Host, policy: ColorPolicy) void {
@@ -191,6 +198,7 @@ pub const Host = struct {
     }
 
     pub fn destroy(host: *Host) void {
+        host.workspace_store.deinit(host.gpa);
         host.clearSearchResults(null);
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
         host.terminals.deinit(host.gpa);
@@ -233,6 +241,79 @@ pub const Host = struct {
 
     pub fn takeOperationResult(host: *Host) ?OperationResult {
         return host.operation_ledger.take();
+    }
+
+    pub fn workspaceSnapshot(host: *const Host) workspace.Snapshot {
+        return host.workspace_store.snapshot();
+    }
+
+    pub fn catalogTerminals(host: *const Host) []const workspace.CatalogTerminal {
+        return host.workspace_store.catalog;
+    }
+
+    pub fn terminalSession(host: *const Host, ref: provider.TerminalRef) ?u32 {
+        return host.workspace_store.terminalSession(ref);
+    }
+
+    pub fn selectedSessionId(host: *const Host) ?u32 {
+        if (host.attached_session_id) |id| return id;
+        // Old synthetic tests have no FFI workspace publication.
+        for (host.sessions.items) |session| if (session.focused) return session.id;
+        return null;
+    }
+
+    pub fn requestWorkspaceRefresh(host: *Host) !?u32 {
+        try host.requireAttached();
+        if (host.workspace_store.info.status == .pending) return null;
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_workspace_refresh(host.client, request_id));
+        host.workspaceAccepted(request_id);
+        return request_id;
+    }
+
+    pub fn requestWorkspaceMutation(host: *Host, value: workspace.Mutation) !u32 {
+        try host.requireAttached();
+        const request_id = try host.operation_ledger.nextRequestId();
+        // Copy the bounded name as callers may pass our current snapshot bytes.
+        const name = try workspace.Text.init(value.name);
+        var owned = value;
+        owned.name = name.slice();
+        const raw = try workspace_bridge.mutation(&owned, request_id);
+        try resultError(c.phux_client_workspace_mutate(host.client, &raw));
+        host.workspaceAccepted(request_id);
+        return request_id;
+    }
+
+    fn workspaceAccepted(host: *Host, request_id: u32) void {
+        host.operation_ledger.last_id = request_id;
+        host.captureWorkspace();
+        // A local copy refusal must still correlate with the accepted request.
+        host.workspace_store.info.request_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+    }
+
+    fn captureWorkspace(host: *Host) void {
+        const previous_revision = host.workspace_store.info.revision;
+        const changed = host.copyWorkspace() catch |err| {
+            host.workspace_store.refuse(err);
+            host.workspace_changed = true;
+            return;
+        };
+        if (!changed) return;
+        host.workspace_changed = true;
+        if (previous_revision == host.workspace_store.info.revision) return;
+        host.refreshSessions() catch |err| host.workspace_store.refuse(err);
+        host.detached_catalog_count = 0;
+        for (host.terminals.items) |*terminal| terminal.catalog_pending = false;
+    }
+
+    fn copyWorkspace(host: *Host) !bool {
+        var raw = workspace_bridge.record(c.PhuxWorkspaceInfo);
+        try resultError(c.phux_client_workspace_info(host.client, &raw));
+        // Attached identity remains authoritative even if a roster conversion
+        // is refused; global GET_STATE focus is never a session-switch signal.
+        if (raw.session_id != 0) host.attached_session_id = raw.session_id;
+        return host.workspace_store.captureInfo(host.gpa, host.client, raw);
     }
 
     /// Queue acceptance returns an ID even if transport staging then fails.
@@ -286,9 +367,13 @@ pub const Host = struct {
     }
 
     fn preflightOperation(host: *Host) !u32 {
+        try host.requireAttached();
+        return host.operation_ledger.nextId();
+    }
+
+    fn requireAttached(host: *Host) !void {
         if (host.bridge.incoming.takeDisconnect() != null) host.disconnect();
         if (host.disconnected or host.state() != .attached) return error.InvalidState;
-        return host.operation_ledger.nextId();
     }
 
     pub fn requestDetach(host: *Host, terminal_ref: provider.TerminalRef) !u32 {
@@ -314,11 +399,13 @@ pub const Host = struct {
     }
 
     fn catalogContains(host: *const Host, ref: provider.TerminalRef) bool {
+        if (host.workspace_store.contains(ref)) return true;
         for (host.detached_catalog[0..host.detached_catalog_count]) |entry| if (entry.eql(ref)) return true;
         return false;
     }
 
     pub fn catalogRefs(host: *const Host, out: []provider.TerminalRef) usize {
+        if (host.workspace_store.has_catalog) return host.workspaceCatalogRefs(out);
         var count = host.terminalRefs(out);
         for (host.detached_catalog[0..host.detached_catalog_count]) |ref| {
             if (host.contains(ref)) continue;
@@ -326,6 +413,16 @@ pub const Host = struct {
             out[count] = ref;
             count += 1;
         }
+        return count;
+    }
+
+    fn workspaceCatalogRefs(host: *const Host, out: []provider.TerminalRef) usize {
+        var count: usize = 0;
+        for (host.workspace_store.catalog) |*entry| appendCatalogRef(out, &count, entry.terminal_ref);
+        for (host.terminals.items) |*terminal| {
+            if (terminal.catalog_pending) appendCatalogRef(out, &count, terminal.terminalRef());
+        }
+        for (host.detached_catalog[0..host.detached_catalog_count]) |ref| appendCatalogRef(out, &count, ref);
         return count;
     }
 
@@ -338,11 +435,16 @@ pub const Host = struct {
 
     fn reserveCatalogIdentity(host: *const Host, target: ?provider.TerminalRef) !void {
         if (target) |ref| if (host.catalogContains(ref)) return;
-        var count = host.detached_catalog_count + host.operation_ledger.pendingSpawns();
+        if (host.catalogIdentityCount() >= max_catalog_terminals) return error.TerminalCapacity;
+    }
+
+    fn catalogIdentityCount(host: *const Host) usize {
+        var count = host.workspace_store.catalog.len + host.detached_catalog_count + host.operation_ledger.pendingSpawns();
         for (host.terminals.items) |*terminal| {
+            if (host.workspace_store.has_catalog and !terminal.catalog_pending) continue;
             if (!host.catalogContains(terminal.terminalRef())) count += 1;
         }
-        if (count >= max_catalog_terminals) return error.TerminalCapacity;
+        return count;
     }
 
     fn admitOperationTerminal(host: *Host, remote: RemoteId) void {
@@ -366,6 +468,7 @@ pub const Host = struct {
         // Capture replies already observed before cancelling the remainder.
         host.captureOperations() catch {};
         _ = c.phux_client_disconnect(host.client);
+        host.captureWorkspace();
         host.operation_ledger.disconnect(host.client_generation);
         _ = c.phux_client_operation_clear(host.client);
         host.bridge.outgoing.reset();
@@ -416,6 +519,7 @@ pub const Host = struct {
         host.clearSearchResults(null);
         c.phux_client_free(host.client);
         host.client = replacement;
+        host.workspace_store.deinit(host.gpa);
         host.client_generation = next_generation;
         host.operation_ledger.last_id = 0;
         host.detached_catalog_count = 0;
@@ -431,6 +535,18 @@ pub const Host = struct {
             terminal.viewport = null;
         }
         try host.start(client_name);
+    }
+
+    /// Only for an explicit different-session selection. Same-session reconnect
+    /// must retain its last-good canvases until the replacement READY barrier.
+    pub fn clearSessionReplicas(host: *Host) void {
+        host.disconnect();
+        host.clearSearchResults(null);
+        for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
+        host.terminals.items.len = 0;
+        host.workspace_store.deinit(host.gpa);
+        host.detached_catalog_count = 0;
+        host.workspace_changed = true;
     }
 
     pub fn freezePublished(host: *Host) void {
@@ -449,7 +565,7 @@ pub const Host = struct {
             defer host.bridge.incoming.release(frame);
             try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
         }
-        if (host.state() == .attached and !host.attach_barrier_seen) try host.refreshSessions();
+        host.captureWorkspace();
         try host.captureEffects();
         delta.detached = host.state() == .detached;
         if (host.state() == .attached and !host.attach_barrier_seen) {
@@ -462,8 +578,10 @@ pub const Host = struct {
             try host.publishDirty(&delta);
         }
         try host.stageOutgoing();
-        delta.metadata_changed = host.metadata_changed;
+        delta.workspace_changed = host.workspace_changed;
+        delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
+        host.workspace_changed = false;
         return delta;
     }
 
@@ -889,19 +1007,25 @@ pub const Host = struct {
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
         const terminal_ref = result.terminal_ref orelse return;
         if (result.kind == .detach) {
-            if (result.status == .success) {
-                const terminal = host.findTerminal(terminal_ref) orelse return;
-                terminal.remove_at_barrier = true;
-            }
+            if (result.status == .success) host.removeOperationReplica(terminal_ref);
             return;
         }
         if (result.status == .success) {
-            const remote = remoteFromRef(terminal_ref) orelse return error.InvalidIdentity;
-            _ = try host.ensureTerminal(cId(&remote));
-        } else if (result.kind == .attach and result.status == .refused) {
-            const terminal = host.findTerminal(terminal_ref) orelse return;
-            terminal.remove_at_barrier = true;
+            try host.admitOperationReplica(terminal_ref);
+            return;
         }
+        if (result.kind == .attach and result.status == .refused) host.removeOperationReplica(terminal_ref);
+    }
+
+    fn removeOperationReplica(host: *Host, ref: provider.TerminalRef) void {
+        const terminal = host.findTerminal(ref) orelse return;
+        terminal.remove_at_barrier = true;
+    }
+
+    fn admitOperationReplica(host: *Host, ref: provider.TerminalRef) !void {
+        const remote = remoteFromRef(ref) orelse return error.InvalidIdentity;
+        const terminal = try host.ensureTerminal(cId(&remote));
+        terminal.catalog_pending = !host.workspace_store.contains(ref);
     }
 
     fn captureEffects(host: *Host) !void {
@@ -1179,6 +1303,13 @@ fn newClient() !*c.PhuxClient {
     };
     try resultError(c.phux_client_new(&options, &raw));
     return raw orelse error.InvalidState;
+}
+
+fn appendCatalogRef(out: []provider.TerminalRef, count: *usize, ref: provider.TerminalRef) void {
+    if (count.* == out.len) return;
+    for (out[0..count.*]) |existing| if (existing.eql(ref)) return;
+    out[count.*] = ref;
+    count.* += 1;
 }
 
 fn remoteFromC(raw: c.PhuxTerminalId) !RemoteId {
@@ -1498,6 +1629,209 @@ test "reconnect freezes complete canvases and preserves terminal identities" {
     try std.testing.expect(!second.grid.running);
     try std.testing.expectEqualStrings("first complete grid", first.grid.screen_text);
     try std.testing.expectEqualStrings("second complete grid", second.grid.screen_text);
+}
+
+test "replacement session admits one terminal after sixteen old replicas" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    for (0..max_terminals) |index| {
+        const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, @intCast(index + 100), "");
+        const terminal = try host.ensureTerminal(cId(&id));
+        terminal.published = true;
+        terminal.phase = .live;
+    }
+    host.clearSessionReplicas();
+    try host.reconnect("replacement-session");
+    try test_support.stageFixture(&bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    // Real captureEffects admits the new terminal before the READY prune.
+    try test_support.stageFixture(&bridge, "attached.bin");
+    const delta = try host.drainReadiness();
+    const replacement = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 7, "");
+    try std.testing.expect(delta.ready_published);
+    try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
+    try std.testing.expect(host.terminalKnown(phuxRef(replacement)));
+}
+
+test "workspace C publication owns borrowed bytes and rejects invalid capacity atomically" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const before = host.workspaceSnapshot();
+    try std.testing.expect(before.windows.len != 0);
+    const saved_name = try host.gpa.dupe(u8, before.windows[0].name.slice());
+    defer host.gpa.free(saved_name);
+    const saved_id = before.windows[0].id;
+    var borrowed = workspace_bridge.record(c.PhuxWorkspaceWindow);
+    try resultError(c.phux_client_workspace_window_get(host.client, 0, &borrowed));
+    try std.testing.expect(borrowed.name.len != 0);
+    try std.testing.expect(@intFromPtr(borrowed.name.data) != @intFromPtr(before.windows[0].name.slice().ptr));
+    // The FFI invalidates all borrows; the host snapshot remains independent.
+    try resultError(c.phux_client_effect_clear(host.client));
+    try std.testing.expectEqualStrings(saved_name, host.workspaceSnapshot().windows[0].name.slice());
+    var raw = workspace_bridge.record(c.PhuxWorkspaceInfo);
+    try resultError(c.phux_client_workspace_info(host.client, &raw));
+    raw.window_count = workspace.max_windows + 1;
+    try std.testing.expectError(error.WorkspaceCapacity, host.workspace_store.captureInfo(host.gpa, host.client, raw));
+    raw.window_count = 0;
+    raw.node_count = workspace.max_nodes + 1;
+    try std.testing.expectError(error.WorkspaceCapacity, host.workspace_store.captureInfo(host.gpa, host.client, raw));
+    raw.node_count = 0;
+    raw.terminal_count = workspace.max_terminals + 1;
+    try std.testing.expectError(error.WorkspaceCapacity, host.workspace_store.captureInfo(host.gpa, host.client, raw));
+    try std.testing.expectEqual(before.revision, host.workspaceSnapshot().revision);
+    try std.testing.expectEqualSlices(u8, &saved_id, &host.workspaceSnapshot().windows[0].id);
+    try std.testing.expectEqualStrings(saved_name, host.workspaceSnapshot().windows[0].name.slice());
+}
+
+test "workspace refresh shares spawn IDs and discovers other sessions without replicas" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    try std.testing.expectEqual(workspace.Status.confirmed, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(u32, 1), try host.requestSpawn(null, .{ .cols = 80, .rows = 24 }));
+    try test_support.stageFixture(&bridge, "spawn-local.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expectEqual(@as(u32, 1), host.takeOperationResult().?.request_id);
+    bridge.outgoing.reset();
+    const replicas = host.terminals.items.len;
+    const old_revision = host.workspaceSnapshot().revision;
+    try std.testing.expectEqual(@as(?u32, 2), try host.requestWorkspaceRefresh());
+    try std.testing.expectEqual(@as(?u32, null), try host.requestWorkspaceRefresh());
+    try std.testing.expectEqual(@as(u32, 2), host.operation_ledger.last_id);
+    try std.testing.expectEqual(@as(usize, 0), host.operation_ledger.len);
+    try std.testing.expectEqual(workspace.Status.pending, host.workspaceSnapshot().status);
+    try test_support.expectOutgoingCount(&bridge, 2);
+    try test_support.stageWorkspaceFixture(&bridge, "workspace_refresh_metadata.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expectEqual(old_revision, host.workspaceSnapshot().revision);
+    try test_support.stageWorkspaceFixture(&bridge, "workspace_refresh_state.bin");
+    const changed = try host.drainReadiness();
+    try std.testing.expect(changed.workspace_changed and changed.metadata_changed);
+    try std.testing.expect(host.workspaceSnapshot().revision > old_revision);
+    try std.testing.expectEqual(@as(usize, 3), host.catalogTerminals().len);
+    try std.testing.expectEqual(replicas, host.terminals.items.len);
+    const external = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 9, ""));
+    try std.testing.expectEqual(@as(?u32, 2), host.terminalSession(external));
+    try std.testing.expect(!host.terminalKnown(external));
+    try std.testing.expect(!host.contains(external));
+    var refs: [max_catalog_terminals]provider.TerminalRef = undefined;
+    try std.testing.expectEqual(@as(usize, 3), host.catalogRefs(&refs));
+    try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
+    try std.testing.expectEqual(@as(usize, 2), host.sessionCatalog().len);
+    try std.testing.expectEqualStrings("external", host.sessionCatalog()[1].name);
+    try std.testing.expectEqualStrings("unplaced terminal", host.catalogTerminals()[1].title.slice());
+}
+
+test "workspace rename split resize queue mapped requests and adopt only confirmation" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    _ = try host.requestWorkspaceRefresh();
+    try completeWorkspaceFixture(host, "workspace_refresh");
+    bridge.outgoing.reset();
+    const window_id = host.workspaceSnapshot().windows[0].id;
+    const revision = host.workspaceSnapshot().revision;
+    try std.testing.expectEqual(@as(u32, 2), try host.requestWorkspaceMutation(.{
+        .expected_revision = revision,
+        .session_id = 1,
+        .kind = .rename,
+        .window_id = window_id,
+        .name = "renamed",
+    }));
+    try std.testing.expectEqual(revision, host.workspaceSnapshot().revision);
+    try std.testing.expect(!std.mem.eql(u8, "renamed", host.workspaceSnapshot().windows[0].name.slice()));
+    try test_support.expectOutgoingCount(&bridge, 3);
+    try completeWorkspaceFixture(host, "workspace_rename");
+    try std.testing.expectEqualStrings("renamed", host.workspaceSnapshot().windows[0].name.slice());
+    try std.testing.expectEqual(workspace.Status.confirmed, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(u32, 3), try host.requestWorkspaceMutation(.{
+        .expected_revision = host.workspaceSnapshot().revision,
+        .session_id = 1,
+        .kind = .split,
+        .window_id = window_id,
+        .terminal_ref = phuxRef(try RemoteId.fromPhux(0, 7, "")),
+        .new_terminal_ref = phuxRef(try RemoteId.fromPhux(0, 8, "")),
+        .direction = .horizontal,
+        .ratio = 0.5,
+    }));
+    try test_support.expectOutgoingCount(&bridge, 3);
+    try completeWorkspaceFixture(host, "workspace_split");
+    try std.testing.expectEqual(@as(usize, 3), host.workspaceSnapshot().nodes.len);
+    try std.testing.expectEqual(.horizontal, host.workspaceSnapshot().nodes[0].kind);
+    try std.testing.expectEqual(@as(f32, 0.5), host.workspaceSnapshot().nodes[0].ratio);
+    try std.testing.expectEqual(@as(u32, 4), try host.requestWorkspaceMutation(.{
+        .expected_revision = host.workspaceSnapshot().revision,
+        .session_id = 1,
+        .kind = .resize,
+        .window_id = window_id,
+        .path_bits = 0,
+        .path_len = 0,
+        .ratio = 0.7,
+    }));
+    try test_support.expectOutgoingCount(&bridge, 3);
+    try completeWorkspaceFixture(host, "workspace_resize");
+    try std.testing.expectEqual(@as(f32, 0.7), host.workspaceSnapshot().nodes[0].ratio);
+    try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), host.operation_ledger.len);
+}
+
+fn completeWorkspaceFixture(host: *Host, comptime name: []const u8) !void {
+    // Reverse delivery order also preserves the two-reply publication barrier.
+    try test_support.stageWorkspaceFixture(host.bridge, name ++ "_state.bin");
+    _ = try host.drainReadiness();
+    try test_support.stageWorkspaceFixture(host.bridge, name ++ "_metadata.bin");
+    _ = try host.drainReadiness();
+}
+
+test "workspace accepted request retains ID and reports unknown outcome on staging failure" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const original = bridge.outgoing.gpa;
+    bridge.outgoing.gpa = std.testing.failing_allocator;
+    defer bridge.outgoing.gpa = original;
+    try std.testing.expectEqual(@as(?u32, 1), try host.requestWorkspaceRefresh());
+    try std.testing.expect(host.disconnected);
+    try std.testing.expectEqual(@as(u32, 1), host.workspaceSnapshot().request_id);
+    try std.testing.expectEqual(workspace.Status.unknown_outcome, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(usize, 0), host.operation_ledger.len);
+    try std.testing.expect(!bridge.outgoing.hasPending());
+}
+
+test "workspace request status advances without allocating or replacing last-good topology" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const revision = host.workspaceSnapshot().revision;
+    const state_before = host.workspaceSnapshot().state;
+    const windows = host.workspaceSnapshot().windows.ptr;
+    const original = host.gpa;
+    host.gpa = std.testing.failing_allocator;
+    defer host.gpa = original;
+    try std.testing.expectEqual(@as(?u32, 1), try host.requestWorkspaceRefresh());
+    try std.testing.expectEqual(@as(u32, 1), host.workspaceSnapshot().request_id);
+    try std.testing.expectEqual(workspace.Status.pending, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(state_before, host.workspaceSnapshot().state);
+    try std.testing.expectEqual(revision, host.workspaceSnapshot().revision);
+    try std.testing.expectEqual(@intFromPtr(windows), @intFromPtr(host.workspaceSnapshot().windows.ptr));
+    try test_support.expectOutgoingCount(&bridge, 2);
+    host.disconnect();
+    try std.testing.expectEqual(workspace.Status.unknown_outcome, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(u32, 1), host.workspaceSnapshot().request_id);
 }
 
 test "reordered remote enumeration retains stable refs and lookup" {

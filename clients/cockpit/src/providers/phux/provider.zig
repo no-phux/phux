@@ -138,9 +138,18 @@ pub const PhuxProvider = struct {
         self.worker = null;
         self.bridge.incoming.reset();
         self.bridge.outgoing.reset();
+        self.prepareSessionSwitch();
         try self.host.reconnect(self.client_name);
         self.attach_queued = false;
         self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.endpoint.borrowed());
+    }
+
+    /// Explicit session switches release old replica slots before incoming
+    /// effects can admit a full replacement inventory. Reconnects do not.
+    pub fn prepareSessionSwitch(self: *PhuxProvider) void {
+        const target = self.session_id orelse return;
+        const attached = self.host.selectedSessionId() orelse return;
+        if (target != attached) self.host.clearSessionReplicas();
     }
 
     /// ATTACH is queued once after negotiation. The host still withholds every
@@ -151,22 +160,20 @@ pub const PhuxProvider = struct {
             self.attach_queued = false;
             return delta;
         }
-        if (!self.attach_queued and self.host.state() == .negotiated) {
-            if (self.session_id) |session_id|
-                try self.host.attachSessionId(session_id, self.attach_viewport)
-            else
-                try self.host.attachExisting(self.session, self.attach_viewport);
-            self.attach_queued = true;
-        }
+        try self.queueNegotiatedAttach();
         if (self.host.state() == .attached and self.session_id == null) {
-            for (self.host.sessionCatalog()) |session| {
-                if (session.focused) {
-                    self.session_id = session.id;
-                    break;
-                }
-            }
+            self.session_id = self.host.selectedSessionId();
         }
         return delta;
+    }
+
+    fn queueNegotiatedAttach(self: *PhuxProvider) !void {
+        if (self.attach_queued or self.host.state() != .negotiated) return;
+        if (self.session_id) |session_id|
+            try self.host.attachSessionId(session_id, self.attach_viewport)
+        else
+            try self.host.attachExisting(self.session, self.attach_viewport);
+        self.attach_queued = true;
     }
 
     pub fn state(self: *const PhuxProvider) State {
@@ -186,6 +193,21 @@ pub const PhuxProvider = struct {
 
     pub fn catalogRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
         return self.host.catalogRefs(out);
+    }
+    pub fn workspaceSnapshot(self: *const PhuxProvider) provider.workspace.Snapshot {
+        return self.host.workspaceSnapshot();
+    }
+    pub fn catalogTerminals(self: *const PhuxProvider) []const provider.workspace.CatalogTerminal {
+        return self.host.catalogTerminals();
+    }
+    pub fn terminalSession(self: *const PhuxProvider, ref: provider.TerminalRef) ?u32 {
+        return self.host.terminalSession(ref);
+    }
+    pub fn requestWorkspaceRefresh(self: *PhuxProvider) !?u32 {
+        return self.host.requestWorkspaceRefresh();
+    }
+    pub fn requestWorkspaceMutation(self: *PhuxProvider, value: provider.workspace.Mutation) !u32 {
+        return self.host.requestWorkspaceMutation(value);
     }
     pub fn takeOperationResult(self: *PhuxProvider) ?host_mod.OperationResult {
         return self.host.takeOperationResult();
@@ -209,8 +231,7 @@ pub const PhuxProvider = struct {
         return self.host.sessionCatalog();
     }
     pub fn selectedSessionId(self: *const PhuxProvider) ?u32 {
-        for (self.host.sessionCatalog()) |session| if (session.focused) return session.id;
-        return null;
+        return self.host.selectedSessionId();
     }
     pub fn contains(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) bool {
         return self.host.contains(terminal_ref);
@@ -436,6 +457,30 @@ test "provider lookups keep remote identity across reordered enumeration" {
     try std.testing.expect(self.contains(second_owner.terminal_ref));
     try std.testing.expect(self.presentation(first_owner.terminal_ref).?.owner.eql(first_owner));
     try std.testing.expect(self.presentation(second_owner.terminal_ref).?.owner.eql(second_owner));
+}
+
+test "session switch clears old slots while same-session reconnect retains last-good canvas" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, null, "test");
+    defer self.destroy();
+    self.host.attached_session_id = 71;
+    self.session_id = 71;
+    const id = try provider.RemoteTerminalId.fromPhux(0, 1, "");
+    try self.host.terminals.append(self.gpa, .{ .id = id, .phase = .live, .published = true });
+    try self.host.terminals.items[0].canvas.screen_text.appendSlice(self.gpa, "last-good");
+    self.prepareSessionSwitch();
+    try std.testing.expectEqual(@as(usize, 1), self.host.terminals.items.len);
+    try std.testing.expectEqualStrings("last-good", self.host.terminals.items[0].canvas.screen_text.items);
+    self.session_id = 72;
+    self.prepareSessionSwitch();
+    try std.testing.expectEqual(@as(usize, 0), self.host.terminals.items.len);
+}
+
+test "selected session uses attached FFI identity rather than server catalog focus" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, null, "test");
+    defer self.destroy();
+    self.host.attached_session_id = 71;
+    try self.host.sessions.append(self.gpa, .{ .id = 72, .name = try self.gpa.dupe(u8, "global-focus"), .created_at_unix_secs = 0, .window_count = 1, .attached_client_count = 1, .focused = true });
+    try std.testing.expectEqual(@as(?u32, 71), self.selectedSessionId());
 }
 
 test "provider rejects a stale generation before forwarding host input" {
