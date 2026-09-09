@@ -27,10 +27,6 @@ pub fn start() !*engine_module.Engine {
     model_module.attachPhuxProvider(engine.model, remote);
     try fixture.attachHost(remote.host);
     remote.attach_queued = true;
-    _ = engine.recovery.pump(engine.model);
-    engine.model.reconcileRemoteTerminals();
-    _ = try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
-    _ = engine.recovery.pump(engine.model);
     try drain(engine);
     remote.bridge.outgoing.reset();
     return engine;
@@ -190,18 +186,44 @@ pub fn incarnationRecovery() !void {
     defer engine.destroy();
     const model = engine.model;
     const ref = model.focusedTerminalRef().?;
-    engine.recovery.disconnect(model);
+    const remote = model.phux().?;
+    const original_owner = model.terminalOwner(ref).?;
+    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
     try testing.expect(model.attachmentPending(ref));
-    try testing.expect(engine.recovery.pump(model));
+    try testing.expect(model.terminalOwner(ref) == null);
+    try reconnectBootstrap(engine, false);
+    try testing.expect(model.attachmentPending(ref));
+    try testing.expect(model.terminalOwner(ref) == null);
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try drain(engine);
     try testing.expect(!model.attachmentPending(ref));
-    const index = model.saved_attachments.find(ref).?;
-    model.saved_attachments.entries[index].?.context.server_id = try .init("different-incarnation");
-    engine.recovery.disconnect(model);
+    try testing.expect(model.terminalOwner(ref) != null);
+    try testing.expect(!remote.ownerIsCurrent(original_owner));
+    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
     const local_count = model.provider.activeCount();
-    try testing.expect(!engine.recovery.pump(model));
+    try reconnectBootstrap(engine, true);
+    // A reused numeric identity from a replacement server cannot authorize the
+    // old pane before that server publishes its own authoritative workspace.
     try testing.expect(model.attachmentPending(ref));
+    try testing.expect(model.terminalOwner(ref) == null);
     try testing.expectEqual(local_count, model.provider.activeCount());
-    try testing.expect(!model.phux().?.bridge.outgoing.hasPending());
+    try testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
+}
+
+fn reconnectBootstrap(engine: *engine_module.Engine, replacement: bool) !void {
+    const remote = engine.model.phux().?;
+    try remote.host.reconnect("shared-context-test");
+    remote.attach_queued = false;
+    const hello = try fixture.readFixture("hello.bin");
+    defer testing.allocator.free(hello);
+    if (replacement) {
+        const offset = std.mem.indexOf(u8, hello, "cockpit-fixture") orelse return error.MissingServerIdentity;
+        @memcpy(hello[offset..][0.."foreign-server!".len], "foreign-server!");
+    }
+    try testing.expect(remote.bridge.incoming.stage(hello));
+    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try feed(engine, "attached.bin");
 }
 
 pub fn restoredSubscription() !void {
@@ -358,7 +380,7 @@ pub fn emptyTitleReconnect() !void {
     const ref = engine.model.focusedTerminalRef().?;
     try feed(engine, "remote-title.bin");
     try testing.expectEqualStrings("remote-title-review", remote.presentation(ref).?.title);
-    engine.recovery.disconnect(engine.model);
+    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
     try remote.host.reconnect("title-reconnect");
     try fixture.stageFixture(remote.bridge, "hello.bin");
     _ = try remote.host.drainReadiness();
