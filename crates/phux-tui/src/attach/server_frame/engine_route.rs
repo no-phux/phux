@@ -5,12 +5,16 @@ use std::collections::HashSet;
 
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::session::{
-    EffectBuffer as KernelEffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
-    HistoryUnavailableReason, KernelEffect, KernelInput, KernelSend,
+    AgentSessionDeclaration, EffectBuffer as KernelEffectBuffer,
+    HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason, KernelEffect,
+    KernelInput, KernelSend,
 };
 use phux_protocol::ids::TerminalId;
-use phux_protocol::wire::frame::{FrameKind, HistoryRejectionReason, HistoryTombstoneReason};
-use phux_protocol::{BootstrapId, StreamId};
+use phux_protocol::wire::frame::{
+    AgentEvent, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
+};
+use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+use phux_protocol::{BootstrapId, ResourceKind, StreamId};
 
 use crate::render::chrome::status_bar::Notice;
 
@@ -22,6 +26,13 @@ pub(super) struct KernelRoute {
     pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
     pub(super) damaged: HashSet<TerminalId>,
+    /// `AgentSession` resources whose record log grew under this frame. The
+    /// chrome projects them, so the handler raises a chrome repaint.
+    pub(super) agent_touched: HashSet<TerminalId>,
+    /// An `AgentSession` this frame's `PaneSpawned` declared to the kernel for
+    /// the first time: a live-spawned child of one of our panes, which the
+    /// handler asks the driver to attach as a record stream.
+    pub(super) declared_agent: Option<TerminalId>,
     pub(super) resync_required: bool,
     pub(super) ignored: bool,
     pub(super) failed: Option<String>,
@@ -63,6 +74,31 @@ pub(super) const fn history_rejection_reason(
     })
 }
 
+/// Whether a snapshot entry is a Terminal-kind resource: the only kind that
+/// owns a grid, a pane slot, and a layout leaf.
+pub(super) const fn is_terminal(info: &TerminalInfo) -> bool {
+    matches!(info.kind, ResourceKind::Terminal)
+}
+
+/// The `AgentSession` resources bound to one of `participants`, in snapshot
+/// order. They are declared to the kernel as record streams and never
+/// become pane slots or barrier participants.
+pub(super) fn attach_agent_sessions<'a>(
+    snapshot: &'a SessionSnapshot,
+    participants: &[TerminalId],
+) -> Vec<&'a TerminalInfo> {
+    snapshot
+        .panes
+        .iter()
+        .filter(|info| matches!(info.kind, ResourceKind::AgentSession))
+        .filter(|info| {
+            info.parent
+                .as_ref()
+                .is_some_and(|parent| participants.contains(parent))
+        })
+        .collect()
+}
+
 /// The panes an ATTACH will actually bootstrap: those of the focused session.
 ///
 /// `SessionSnapshot` is a whole-workspace view — its own field docs say
@@ -92,9 +128,12 @@ pub(super) const fn history_rejection_reason(
 /// risks releasing the barrier before a pane has bootstrapped (it renders a
 /// beat late); including risks an attach that can never complete, which is
 /// the failure being fixed here.
-pub(super) fn attach_participants(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-) -> Vec<TerminalId> {
+///
+/// Only Terminal-kind resources participate. An `AgentSession` carries no
+/// grid (the snapshot encodes that as `0x0` and no window) and paints
+/// nothing, so it has no first paint for the barrier to gate; see
+/// [`attach_agent_sessions`] for how it enters the kernel instead.
+pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<TerminalId> {
     let focused_windows: Vec<_> = snapshot
         .windows
         .iter()
@@ -104,6 +143,7 @@ pub(super) fn attach_participants(
     snapshot
         .panes
         .iter()
+        .filter(|pane| is_terminal(pane))
         .filter(|pane| focused_windows.contains(&pane.window_id))
         .map(|pane| pane.id.clone())
         .collect()
@@ -120,8 +160,13 @@ pub(super) fn route_engine_frame(
     let input = match kernel_input_for(frame, &terminals) {
         Ok(Some(input)) => input,
         // A frame the session kernel does not model at all: the handler's own
-        // arm owns it end to end.
-        Ok(None) => return KernelRoute::default(),
+        // arm owns it end to end, except a spawn announcement naming a new
+        // `AgentSession` child, which the kernel must learn about.
+        Ok(None) => {
+            let mut route = KernelRoute::default();
+            declare_spawned_agent_session(frame, kernel, effects, &mut route);
+            return route;
+        }
         Err(failed) => {
             return KernelRoute {
                 failed: Some(failed.to_owned()),
@@ -134,7 +179,86 @@ pub(super) fn route_engine_frame(
     let result = kernel.update(input, effects);
     let mut route = classify_kernel_result(&result, frame, effects);
     collect_route_effects(&mut route, effects);
+    if route.failed.is_none()
+        && let FrameKind::Attached { snapshot, .. } = frame
+    {
+        declare_agent_sessions(snapshot, &terminals, kernel, effects, &mut route);
+    }
+    if route.failed.is_none() {
+        declare_spawned_agent_session(frame, kernel, effects, &mut route);
+    }
     route
+}
+
+/// Register a live-spawned `AgentSession` announced by `PaneSpawned` on the
+/// server-wide event stream, when its parent is a Terminal this kernel holds
+/// and the child is not yet known. A child of a pane in another session, or
+/// a spawn the attach snapshot already declared, is left alone.
+fn declare_spawned_agent_session(
+    frame: &FrameKind,
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+    route: &mut KernelRoute,
+) {
+    let FrameKind::Event {
+        terminal: Some(terminal_id),
+        event:
+            AgentEvent::PaneSpawned {
+                kind: ResourceKind::AgentSession,
+                parent: Some(parent),
+            },
+    } = frame
+    else {
+        return;
+    };
+    if kernel.resource_kind(terminal_id).is_some()
+        || kernel.resource_kind(parent) != Some(ResourceKind::Terminal)
+    {
+        return;
+    }
+    let declaration = AgentSessionDeclaration {
+        terminal_id,
+        parent: Some(parent),
+        provider: None,
+        native_id: None,
+        state: None,
+    };
+    effects.clear();
+    match kernel.update(KernelInput::AgentSessionDeclared(declaration), effects) {
+        Ok(()) => {
+            route.declared_agent = Some(terminal_id.clone());
+            collect_route_effects(route, effects);
+        }
+        Err(error) => route.failed = Some(error.to_string()),
+    }
+}
+
+/// Register every `AgentSession` child of an attach participant with the
+/// kernel, one declaration per resource, folding each update's effects into
+/// the same route.
+fn declare_agent_sessions(
+    snapshot: &SessionSnapshot,
+    participants: &[TerminalId],
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+    route: &mut KernelRoute,
+) {
+    for info in attach_agent_sessions(snapshot, participants) {
+        let facet = info.agent.as_ref();
+        let declaration = AgentSessionDeclaration {
+            terminal_id: &info.id,
+            parent: info.parent.as_ref(),
+            provider: facet.map(|facet| facet.provider.as_str()),
+            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
+            state: facet.map(|facet| facet.state.as_str()),
+        };
+        effects.clear();
+        if let Err(error) = kernel.update(KernelInput::AgentSessionDeclared(declaration), effects) {
+            route.failed = Some(error.to_string());
+            return;
+        }
+        collect_route_effects(route, effects);
+    }
 }
 
 /// The attach participants an `ATTACHED` frame declares; empty for every other
@@ -420,6 +544,9 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             }
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());
+            }
+            KernelEffect::AgentRecords { terminal_id, .. } => {
+                route.agent_touched.insert(terminal_id.clone());
             }
             // phux-ijuj: history degradation is per-pane and recoverable —
             // the live stream stays valid, only that pane's scrollback

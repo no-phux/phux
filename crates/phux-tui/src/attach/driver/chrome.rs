@@ -8,6 +8,7 @@ use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::ids::{ClientId, TerminalId};
 use phux_protocol::wire::frame::TerminalLifecycle;
 
+use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
@@ -155,6 +156,9 @@ pub(super) fn refresh_window_chrome(
     // phux-p4vp: pane cwd + branch memo; each window's branch line derives
     // from its focused leaf's working directory.
     vcs: &mut VcsIndex,
+    // AgentSession resources under each pane, projected from the kernel's
+    // record streams. A pane with one outranks its metadata record for state.
+    agent_sessions: &AgentSessionRows,
     // phux-k0cw: the peer-wide state zones 1 and 3 are projected from. One
     // struct rather than five more positional parameters — this function
     // already carried a `too_many_arguments` allow, and growing that list is
@@ -181,7 +185,7 @@ pub(super) fn refresh_window_chrome(
     // the ADR-0040 records produce, merged with every peer session's and
     // ranked as one list, because urgency ignores locality.
     changed |= sidebar_painter.set_needs_you(crate::attach::sidebar_zones::needs_you_queue(
-        agent_entries(workspace, panes, agent_meta),
+        agent_entries(workspace, panes, agent_meta, agent_sessions),
         &peers,
     ));
     // phux-k0cw: zone 3 is the roster — one rolled-up line per other session.
@@ -265,7 +269,13 @@ pub(super) fn window_infos(
 ///    same "no blocking cue found" default `phux agent`'s detector uses
 ///    for a quiet screen, without scanning screen text on the render path.
 ///
-/// A pane matching neither produces no row: the agents section lists
+/// Before either, **an `AgentSession` resource bound to the pane** (the
+/// record stream the server serves for it): one row per session, its state
+/// folded from the stream, its name from the `phux.agent/v1` record when one
+/// is declared and the stream's provider otherwise. The stream is the
+/// server-enforced source, so it outranks the advisory record for state.
+///
+/// A pane matching none of these produces no row: the agents section lists
 /// agents, not shells.
 ///
 /// # Ordering — the attention ladder
@@ -286,6 +296,7 @@ pub(super) fn agent_entries(
     workspace: &Workspace,
     panes: &HashMap<TerminalId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
+    agent_sessions: &AgentSessionRows,
 ) -> Vec<AgentEntry> {
     // (entry, rank, last-change) — rank and clock drive the sort but never
     // enter `AgentEntry`, which is the sidebar painter's content-cache key.
@@ -305,6 +316,25 @@ pub(super) fn agent_entries(
                 let rank = attention_rank(entry.state, entry.attention, entry.seen);
                 rows.push((entry, rank, change_at));
             };
+            if let Some(sessions) = agent_sessions.get(id).filter(|rows| !rows.is_empty()) {
+                let record = agent_meta.records.get(id);
+                for session in sessions {
+                    push(AgentEntry {
+                        session: None,
+                        window: i,
+                        window_name: w.name.clone(),
+                        pane: Some(leaf),
+                        name: record.map_or_else(|| session.name().to_owned(), |r| r.name.clone()),
+                        state: session.state,
+                        attention: asked
+                            || session.state == AgentMetaState::Blocked
+                            || record
+                                .is_some_and(|r| r.effective_attention() == AgentAttention::High),
+                        seen,
+                    });
+                }
+                continue;
+            }
             if let Some(record) = agent_meta.records.get(id) {
                 push(AgentEntry {
                     // Local rows: `None` commits the cheap client-local
@@ -613,7 +643,12 @@ mod tests {
         }
 
         // Layout order is working, done, blocked. The ladder must reorder.
-        let entries = agent_entries(&workspace, &panes, &meta_index(records.clone()));
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records.clone()),
+            &HashMap::new(),
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -624,7 +659,7 @@ mod tests {
         // Visiting the finished pane demotes it below the working one: it has
         // been reviewed, so it is no longer asking for anything.
         panes.get_mut(&done).expect("slot").seen = true;
-        let entries = agent_entries(&workspace, &panes, &meta_index(records));
+        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -674,7 +709,7 @@ mod tests {
 
         // The background agent finished while another pane was focused, so its
         // row is unreviewed: pinned to the top.
-        let names: Vec<String> = agent_entries(&workspace, &panes, &meta)
+        let names: Vec<String> = agent_entries(&workspace, &panes, &meta, &HashMap::new())
             .into_iter()
             .map(|e| e.name)
             .collect();
@@ -694,6 +729,7 @@ mod tests {
             None,
             &meta,
             &mut vcs,
+            &HashMap::new(),
             no_peers(),
         );
 
@@ -715,13 +751,14 @@ mod tests {
             None,
             &meta,
             &mut vcs,
+            &HashMap::new(),
             no_peers(),
         );
         assert!(
             chrome_changed,
             "the seen flip must dirty the chrome, or nothing repaints the strip"
         );
-        let entries = agent_entries(&workspace, &panes, &meta);
+        let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -754,6 +791,7 @@ mod tests {
                 None,
                 &meta,
                 &mut vcs,
+                &HashMap::new(),
                 no_peers(),
             ),
             "an unchanged chrome must stay zero-cost"
@@ -797,7 +835,7 @@ mod tests {
         index.change_at.insert(fresh, now);
         // `never` has no clock entry at all.
 
-        let entries = agent_entries(&workspace, &panes, &index);
+        let entries = agent_entries(&workspace, &panes, &index, &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fresh", "old", "never"]);
     }
@@ -823,7 +861,7 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records));
+        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].window, 0);
         assert_eq!(
@@ -850,7 +888,12 @@ mod tests {
             (&shell, 80, 24, b"\x1b]2;~/src/phux\x07"),
         ]);
 
-        let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &AgentMetaIndex::default(),
+            &HashMap::new(),
+        );
         assert_eq!(entries.len(), 1, "the plain shell pane must not list");
         assert_eq!(entries[0].name, "claude");
         assert_eq!(entries[0].state, AgentMetaState::Idle);
@@ -859,7 +902,12 @@ mod tests {
         // The asked flag (ADR-0035) is the one structured state signal the
         // fallback trusts: it flips the row to blocked + attention.
         panes.get_mut(&claude).expect("slot").attention = true;
-        let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &AgentMetaIndex::default(),
+            &HashMap::new(),
+        );
         assert_eq!(entries[0].state, AgentMetaState::Blocked);
         assert!(entries[0].attention);
     }
@@ -883,8 +931,93 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records));
+        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
         assert!(entries[0].attention);
+    }
+
+    /// An `AgentSession` stream bound to a pane is the server-enforced state
+    /// source: its state outranks the advisory `phux.agent/v1` record, while
+    /// the record still names the row when it exists.
+    #[test]
+    fn agent_entries_take_state_from_the_stream_and_name_from_the_record() {
+        use crate::attach::agent_rows::AgentSessionRow;
+        let id = TerminalId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        records.insert(
+            id.clone(),
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Idle,
+                ..AgentRecord::default()
+            },
+        );
+        let mut sessions: AgentSessionRows = HashMap::new();
+        sessions.insert(
+            id,
+            vec![AgentSessionRow {
+                id: TerminalId::local(9),
+                provider: Some("claude".to_owned()),
+                native_id: Some("s-1".to_owned()),
+                state: AgentMetaState::Blocked,
+            }],
+        );
+
+        let entries = agent_entries(&workspace, &panes, &meta_index(records), &sessions);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "reviewer", "the record names the row");
+        assert_eq!(
+            entries[0].state,
+            AgentMetaState::Blocked,
+            "the stream's state outranks the record's"
+        );
+        assert!(entries[0].attention, "a blocked stream wants a human");
+        assert_eq!(entries[0].pane, Some(0), "the parent pane is the target");
+    }
+
+    /// Without a record the stream still yields a row: the provider is the
+    /// name, and a pane whose OSC title says nothing agent-like still lists.
+    #[test]
+    fn agent_entries_list_a_stream_without_any_record() {
+        use crate::attach::agent_rows::AgentSessionRow;
+        let id = TerminalId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut sessions: AgentSessionRows = HashMap::new();
+        sessions.insert(
+            id,
+            vec![
+                AgentSessionRow {
+                    id: TerminalId::local(8),
+                    provider: Some("codex".to_owned()),
+                    native_id: None,
+                    state: AgentMetaState::Working,
+                },
+                AgentSessionRow {
+                    id: TerminalId::local(9),
+                    provider: None,
+                    native_id: None,
+                    state: AgentMetaState::Done,
+                },
+            ],
+        );
+
+        let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default(), &sessions);
+        let names: Vec<(&str, AgentMetaState)> =
+            entries.iter().map(|e| (e.name.as_str(), e.state)).collect();
+        // Unreviewed `done` outranks `working`; the nameless session reads
+        // as a plain agent.
+        assert_eq!(
+            names,
+            vec![
+                ("agent", AgentMetaState::Done),
+                ("codex", AgentMetaState::Working)
+            ]
+        );
+        assert!(!entries[1].attention);
     }
 
     #[test]

@@ -43,6 +43,10 @@ ciborium = "0.2"
 # `LayoutNode`/`TerminalId` don't derive serde (phux-protocol stays a
 # near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
 serde = { workspace = true }
+# AgentSession resources stream `AgentEventsJsonlV1` records (one JSON object
+# per line). The kernel decodes every line before a frontend sees it, so the
+# JSON parser lives in the substrate; the workspace already pins one.
+serde_json.workspace = true
 thiserror.workspace = true
 sha2 = "0.11"
 

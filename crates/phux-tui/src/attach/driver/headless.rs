@@ -338,6 +338,7 @@ impl HeadlessSession {
             &self.workspace,
             &self.panes,
             &self.agent_meta,
+            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
         ));
 
         let layout_state = self

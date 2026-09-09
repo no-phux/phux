@@ -627,7 +627,11 @@ fn push_agent_fleet(
     panes: &HashMap<TerminalId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
-    let meta = crate::attach::fleet::collect_pane_meta(panes, ctx.vcs);
+    let meta = crate::attach::fleet::collect_pane_meta(
+        panes,
+        ctx.vcs,
+        &crate::attach::agent_rows::agent_session_rows(ctx.engine_kernel),
+    );
     let items = crate::attach::fleet::fleet_items(
         ctx.workspace,
         ctx.sessions,
