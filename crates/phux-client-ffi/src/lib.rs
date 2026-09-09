@@ -21,7 +21,8 @@ use client::{Client, Limits, SessionSummary};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
-use phux_client_core::session::{KernelAction, KernelInput};
+use phux_client_core::session::{AgentSessionDeclaration, KernelAction, KernelInput};
+use phux_protocol::ResourceKind;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -959,12 +960,29 @@ fn apply_attached(
         .filter(|window| window.session_id == focused_session)
         .map(|window| window.id)
         .collect();
+    // Only Terminal-kind resources take part in the attach barrier: an
+    // AgentSession has no grid and paints nothing. It is declared to the
+    // kernel as a record stream instead, and its records reach the host as
+    // AGENT_RECORDS effects.
     let terminals: Vec<_> = snapshot
         .panes
         .iter()
+        .filter(|pane| pane.kind == ResourceKind::Terminal)
         .filter(|pane| focused_windows.contains(&pane.window_id))
         .map(|pane| pane.id.clone())
         .collect();
+    let agent_sessions: Vec<_> = snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.kind == ResourceKind::AgentSession)
+        .filter(|pane| {
+            pane.parent
+                .as_ref()
+                .is_some_and(|parent| terminals.contains(parent))
+        })
+        .collect();
+    client.agent_streams.clear();
+    client.resources = snapshot.panes.iter().map(resource_summary).collect();
     client.sessions = snapshot
         .sessions
         .into_iter()
@@ -983,6 +1001,43 @@ fn apply_attached(
             attach_id,
             terminals: &terminals,
         },
+    )?;
+    for pane in agent_sessions {
+        let facet = pane.agent.as_ref();
+        apply_kernel_input(
+            client,
+            KernelInput::AgentSessionDeclared(AgentSessionDeclaration {
+                terminal_id: &pane.id,
+                parent: pane.parent.as_ref(),
+                provider: facet.map(|facet| facet.provider.as_str()),
+                native_id: facet.and_then(|facet| facet.native_id.as_deref()),
+                state: facet.map(|facet| facet.state.as_str()),
+            }),
+        )?;
+        client
+            .agent_streams
+            .insert(pane.id.clone(), client::AgentStream::default());
+    }
+    Ok(())
+}
+
+/// Projects one snapshot resource into the host-facing catalog entry.
+fn resource_summary(pane: &phux_protocol::wire::info::TerminalInfo) -> client::ResourceSummary {
+    let facet = pane.agent.as_ref();
+    client::ResourceSummary::new(
+        pane.id.clone(),
+        u32::from(pane.kind.as_wire()),
+        pane.parent.clone(),
+        facet
+            .map(|facet| facet.provider.clone().into_bytes())
+            .unwrap_or_default(),
+        facet
+            .and_then(|facet| facet.native_id.clone())
+            .map(String::into_bytes)
+            .unwrap_or_default(),
+        facet
+            .map(|facet| facet.state.clone().into_bytes())
+            .unwrap_or_default(),
     )
 }
 
@@ -1008,13 +1063,31 @@ fn apply_bootstrap_begin(
     let selected_profile = client
         .selected_profile
         .ok_or_else(|| BridgeError::state("BOOTSTRAP_BEGIN arrived before profile negotiation"))?;
-    if !stream_profile_matches(selected_profile, profile) {
+    // An AgentSession stream always carries the record codec, whatever
+    // Terminal profile HELLO_OK selected; it has no grid, so its geometry is
+    // the 0x0 sentinel. A Terminal stream never carries it.
+    let agent_stream = client.is_agent_stream(stream.terminal_id);
+    let agent_profile = matches!(
+        profile,
+        phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
+    );
+    if agent_stream != agent_profile {
         return Err(BridgeError::protocol(
-            "BOOTSTRAP_BEGIN profile differs from HELLO_OK selection",
+            "BOOTSTRAP_BEGIN profile disagrees with the resource kind",
         ));
     }
-    let geometry = CanonicalGeometry::new(cols, rows)
-        .ok_or_else(|| BridgeError::protocol("BOOTSTRAP_BEGIN geometry is zero"))?;
+    let geometry = if agent_stream {
+        client.open_agent_generation(stream.terminal_id, stream.stream_id, stream.bootstrap_id);
+        CanonicalGeometry { cols, rows }
+    } else {
+        if !stream_profile_matches(selected_profile, profile) {
+            return Err(BridgeError::protocol(
+                "BOOTSTRAP_BEGIN profile differs from HELLO_OK selection",
+            ));
+        }
+        CanonicalGeometry::new(cols, rows)
+            .ok_or_else(|| BridgeError::protocol("BOOTSTRAP_BEGIN geometry is zero"))?
+    };
     apply_kernel_input(
         client,
         KernelInput::BootstrapBegin {
@@ -1064,6 +1137,9 @@ fn apply_bootstrap_ready(
             history_cursor,
         },
     )?;
+    if client.is_agent_stream(stream.terminal_id) {
+        return Ok(());
+    }
     client.invalidate_terminal_handles(stream.terminal_id);
     client.bump_document_revision(stream.terminal_id)
 }
@@ -1241,8 +1317,29 @@ fn apply_terminal_closed(
 ) -> Result<(), BridgeError> {
     client.ensure_participant(terminal_id)?;
     apply_kernel_input(client, KernelInput::TerminalClosed { terminal_id })?;
+    if client.is_agent_stream(terminal_id) {
+        // The kernel drops the stream silently (nothing was painted); the
+        // host still needs to retire its projection of the resource.
+        let (stream_id, bootstrap_id) = client
+            .agent_streams
+            .get(terminal_id)
+            .and_then(|state| state.generation)
+            .unwrap_or((0, 0));
+        let mut effect = OwnedEffect::simple(
+            EFFECT_AGENT_RECORDS,
+            AGENT_RECORDS_CLOSED,
+            terminal_id.clone(),
+        );
+        effect.stream_id = stream_id;
+        effect.bootstrap_id = bootstrap_id;
+        client.owned_effects.push(effect);
+        client.publish_effects();
+        client.forget_resource(terminal_id);
+        return Ok(());
+    }
     operations::release_terminal(client, terminal_id)?;
     forget_terminal(client, terminal_id);
+    client.forget_resource(terminal_id);
     Ok(())
 }
 
@@ -1339,6 +1436,69 @@ pub unsafe extern "C" fn phux_client_session_get(
             window_count: session.window_count,
             attached_client_count: session.attached_client_count,
             focused: session.focused,
+        };
+        Ok(())
+    })) {
+        Ok(Ok(())) => PhuxClientResult::Ok,
+        Ok(Err(error)) => error,
+        Err(_) => PhuxClientResult::Panic,
+    }
+}
+
+/// Returns the number of resources in the latest accepted ATTACHED snapshot
+/// that the server has not since reported closed. Zero means either no
+/// snapshot has arrived or the client pointer is invalid.
+///
+/// # Safety
+///
+/// `client`, when non-null, must remain valid and unmodified for the call and
+/// must be accessed only from its owning thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_resource_count(client: *const PhuxClient) -> usize {
+    unsafe { client.as_ref() }.map_or(0, |client| {
+        if client.inner.in_callback {
+            0
+        } else {
+            client.inner.resources.len()
+        }
+    })
+}
+
+/// Returns one borrowed resource summary from the latest ATTACHED.
+///
+/// # Safety
+///
+/// `client` must remain valid and unmodified for the call. `out_resource` must
+/// be writable with `size`/`version` initialised. Every span and the `parent`
+/// pointer remain valid until the next mutable call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_resource_get(
+    client: *const PhuxClient,
+    index: usize,
+    out_resource: *mut PhuxResourceInfo,
+) -> PhuxClientResult {
+    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
+        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        if client.inner.in_callback {
+            return Err(PhuxClientResult::InvalidState);
+        }
+        let out = unsafe { out_resource.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        check_struct(out.size, mem::size_of::<PhuxResourceInfo>(), out.version)
+            .map_err(|error| error.result)?;
+        *out = PhuxResourceInfo::default();
+        let resource = client
+            .inner
+            .resources
+            .get(index)
+            .ok_or(PhuxClientResult::NoValue)?;
+        *out = PhuxResourceInfo {
+            terminal_id: terminal_id_out(&resource.id),
+            kind: resource.kind,
+            parent: resource.parent_ptr(),
+            provider: bytes_out(&resource.provider),
+            native_id: bytes_out(&resource.native_id),
+            state: bytes_out(&resource.state),
+            ..PhuxResourceInfo::default()
         };
         Ok(())
     })) {
@@ -3471,6 +3631,380 @@ mod tests {
             PhuxClientResult::InvalidState
         );
         assert!(enabled);
+        unsafe { phux_client_free(client) };
+    }
+
+    fn effect_bytes(effect: &PhuxClientEffect) -> &[u8] {
+        if effect.bytes.len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(effect.bytes.data, effect.bytes.len) }
+        }
+    }
+
+    fn record(seq: u64, kind: &str, data: &str) -> String {
+        format!(
+            "{{\"seq\":{seq},\"ts_ms\":{},\"type\":\"{kind}\",\"data\":{data}}}\n",
+            seq * 10
+        )
+    }
+
+    fn effect_at(client: *mut PhuxClient, index: usize) -> PhuxClientEffect {
+        let mut effect = PhuxClientEffect::default();
+        assert_eq!(
+            unsafe { phux_client_effect_get(client, index, &raw mut effect) },
+            PhuxClientResult::Ok
+        );
+        effect
+    }
+
+    fn span_bytes(span: PhuxBytes) -> &'static [u8] {
+        if span.len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(span.data, span.len) }
+        }
+    }
+
+    /// A focused session holding one terminal and one agent session bound to it.
+    fn mixed_kind_snapshot(
+        terminal: &phux_protocol::TerminalId,
+        agent: &phux_protocol::TerminalId,
+    ) -> phux_protocol::wire::info::SessionSnapshot {
+        let session_id = SessionId::new(1);
+        let window_id = phux_protocol::WindowId::new(10);
+        phux_protocol::wire::info::SessionSnapshot::new(session_id, window_id, terminal.clone())
+            .with_sessions(vec![phux_protocol::wire::info::SessionInfo::new(
+                session_id, "working",
+            )])
+            .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
+                window_id, session_id, "working",
+            )])
+            .with_panes(vec![
+                phux_protocol::wire::info::TerminalInfo::new(terminal.clone(), window_id, 80, 24),
+                phux_protocol::wire::info::TerminalInfo::new(
+                    agent.clone(),
+                    phux_protocol::WindowId::new(0),
+                    0,
+                    0,
+                )
+                .with_kind(ResourceKind::AgentSession)
+                .with_parent(Some(terminal.clone()))
+                .with_agent(Some(
+                    phux_protocol::AgentFacet::new("claude", "working")
+                        .with_native_id(Some("s-1".to_owned())),
+                )),
+            ])
+    }
+
+    const MIXED_TERMINAL: u32 = 30;
+    const MIXED_AGENT: u32 = 31;
+
+    /// A client attached to [`mixed_kind_snapshot`] with the terminal READY and
+    /// the attach complete; the agent session is declared but has no stream yet.
+    fn attached_mixed_client() -> *mut PhuxClient {
+        let terminal = phux_protocol::TerminalId::local(MIXED_TERMINAL);
+        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+            (*client).inner.expected_attach_id = Some(7);
+            (*client).inner.selected_profile =
+                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        }
+        for frame in [
+            FrameKind::Attached {
+                attach_id: 7,
+                snapshot: mixed_kind_snapshot(&terminal, &agent),
+                initial_client_id: phux_protocol::ClientId::new(9),
+            },
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            FrameKind::AttachReady { attach_id: 7 },
+        ] {
+            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        }
+        assert_eq!(
+            unsafe { phux_client_effect_clear(client) },
+            PhuxClientResult::Ok
+        );
+        client
+    }
+
+    #[test]
+    fn agent_sessions_are_catalogued_but_never_gate_the_barrier() {
+        let terminal = phux_protocol::TerminalId::local(MIXED_TERMINAL);
+        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let client = attached_mixed_client();
+        let inner = unsafe { &(*client).inner };
+        assert!(
+            inner.attached,
+            "the terminal alone completes an attach the agent never bootstrapped"
+        );
+        assert!(inner.session.active_attach_contains(&terminal));
+        assert!(!inner.session.active_attach_contains(&agent));
+        assert_eq!(
+            inner.session.resource_kind(&agent),
+            Some(ResourceKind::AgentSession)
+        );
+        assert!(inner.is_agent_stream(&agent));
+
+        assert_eq!(unsafe { phux_client_resource_count(client) }, 2);
+        let mut resource = PhuxResourceInfo::default();
+        assert_eq!(
+            unsafe { phux_client_resource_get(client, 0, &raw mut resource) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(resource.kind, RESOURCE_KIND_TERMINAL);
+        assert!(resource.parent.is_null());
+        assert_eq!(
+            resource.provider.len + resource.native_id.len + resource.state.len,
+            0
+        );
+        assert_eq!(
+            unsafe { phux_client_resource_get(client, 1, &raw mut resource) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(resource.kind, RESOURCE_KIND_AGENT_SESSION);
+        assert_eq!(
+            (resource.terminal_id.kind, resource.terminal_id.id),
+            (0, MIXED_AGENT)
+        );
+        let parent = unsafe { resource.parent.as_ref() }.expect("parent is present");
+        assert_eq!((parent.kind, parent.id), (0, MIXED_TERMINAL));
+        assert_eq!(span_bytes(resource.provider), b"claude");
+        assert_eq!(span_bytes(resource.native_id), b"s-1");
+        assert_eq!(span_bytes(resource.state), b"working");
+
+        // A terminal profile on the agent stream, and the agent profile on a
+        // terminal, are both protocol errors before the kernel sees them.
+        for (terminal_id, profile) in [
+            (
+                agent,
+                phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            ),
+            (
+                terminal,
+                phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+            ),
+        ] {
+            assert_eq!(
+                feed_kind(
+                    client,
+                    &FrameKind::BootstrapBegin {
+                        terminal_id,
+                        stream_id: phux_protocol::StreamId::new(2).expect("stream"),
+                        bootstrap_id: phux_protocol::BootstrapId::new(2).expect("bootstrap"),
+                        profile,
+                        cols: 0,
+                        rows: 0,
+                        base_seq: 0,
+                    },
+                ),
+                PhuxClientResult::ProtocolError
+            );
+        }
+        unsafe { phux_client_free(client) };
+    }
+
+    const AGENT_STREAM: u64 = 4;
+    const AGENT_BOOTSTRAP: u64 = 5;
+
+    /// Opens generation (4, 5) on the agent stream with two retained records
+    /// and one live record: the retained backlog publishes once at READY,
+    /// then live records follow.
+    fn open_agent_stream(client: *mut PhuxClient) {
+        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).expect("bootstrap");
+        let retained = format!(
+            "{}{}",
+            record(1, "session_start", r#"{"provider":"claude"}"#),
+            record(2, "prompt", r#"{"length":3}"#)
+        );
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: agent.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+                cols: 0,
+                rows: 0,
+                base_seq: 2,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: agent.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from(retained),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: agent.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            FrameKind::TerminalOutput {
+                terminal_id: agent.clone(),
+                stream_id,
+                bootstrap_id,
+                seq: 3,
+                bytes: bytes::Bytes::from(record(3, "ask", "{}")),
+            },
+        ] {
+            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        }
+        assert!(
+            unsafe { (*client).inner.session.published(&agent) }.is_none(),
+            "an agent stream never publishes a terminal replica"
+        );
+    }
+
+    #[test]
+    fn agent_stream_frames_surface_as_records_effects() {
+        let client = attached_mixed_client();
+        open_agent_stream(client);
+        assert_eq!(unsafe { phux_client_effect_count(client) }, 2);
+        let effect = effect_at(client, 0);
+        assert_eq!(
+            (effect.kind, effect.detail, effect.seq),
+            (EFFECT_AGENT_RECORDS, AGENT_RECORDS_RETAINED, 2)
+        );
+        assert_eq!((effect.stream_id, effect.bootstrap_id), (4, 5));
+        assert_eq!(
+            (effect.terminal_id.kind, effect.terminal_id.id),
+            (0, MIXED_AGENT)
+        );
+        let lines: Vec<serde_json::Value> = effect_bytes(&effect)
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).expect("record line is JSON"))
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["type"], "session_start");
+        assert_eq!(lines[0]["data"]["provider"], "claude");
+        assert_eq!(lines[1]["seq"], 2);
+        assert_eq!(lines[1]["ts_ms"], 20);
+        let effect = effect_at(client, 1);
+        assert_eq!(
+            (effect.kind, effect.detail, effect.seq),
+            (EFFECT_AGENT_RECORDS, AGENT_RECORDS_LIVE, 3)
+        );
+        let live: serde_json::Value =
+            serde_json::from_slice(effect_bytes(&effect).trim_ascii()).expect("live record");
+        assert_eq!(live["type"], "ask");
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn agent_stream_faults_retire_the_generation_and_closes_retire_the_resource() {
+        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).expect("bootstrap");
+        let client = attached_mixed_client();
+        open_agent_stream(client);
+        assert_eq!(
+            unsafe { phux_client_effect_clear(client) },
+            PhuxClientResult::Ok
+        );
+
+        // History is a terminal facet: the kernel refuses it for an agent stream.
+        assert_ne!(
+            feed_kind(
+                client,
+                &FrameKind::HistoryRejected {
+                    terminal_id: agent.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    cursor: bytes::Bytes::from_static(b"c"),
+                    reason: phux_protocol::wire::frame::HistoryRejectionReason::Busy,
+                    required_bytes: 1,
+                    required_rows: 1,
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+
+        // A malformed payload retires the generation with a RESYNC_REQUIRED
+        // status instead of handing the host a log with a hole in it.
+        assert_ne!(
+            feed_kind(
+                client,
+                &FrameKind::TerminalOutput {
+                    terminal_id: agent.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    seq: 4,
+                    bytes: bytes::Bytes::from_static(b"{not json\n"),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+        let count = unsafe { phux_client_effect_count(client) };
+        assert!(count >= 1);
+        let effect = effect_at(client, count - 1);
+        assert_eq!((effect.kind, effect.detail), (2, 3));
+        assert_eq!(
+            (effect.terminal_id.kind, effect.terminal_id.id),
+            (0, MIXED_AGENT)
+        );
+        assert_eq!(
+            unsafe { phux_client_effect_clear(client) },
+            PhuxClientResult::Ok
+        );
+
+        // A close retires the resource with a CLOSED effect.
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::TerminalClosed {
+                    terminal_id: agent.clone(),
+                    exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(unsafe { phux_client_resource_count(client) }, 1);
+        assert_eq!(unsafe { phux_client_effect_count(client) }, 1);
+        let effect = effect_at(client, 0);
+        assert_eq!(
+            (effect.kind, effect.detail),
+            (EFFECT_AGENT_RECORDS, AGENT_RECORDS_CLOSED)
+        );
+        assert_eq!((effect.stream_id, effect.bootstrap_id), (4, 5));
+        assert!(!unsafe { (*client).inner.is_agent_stream(&agent) });
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::TerminalOutput {
+                    terminal_id: agent,
+                    stream_id,
+                    bootstrap_id,
+                    seq: 5,
+                    bytes: bytes::Bytes::from(record(5, "stop", "{}")),
+                },
+            ),
+            PhuxClientResult::ProtocolError,
+            "a closed agent resource is no longer a participant of any kind"
+        );
         unsafe { phux_client_free(client) };
     }
 }

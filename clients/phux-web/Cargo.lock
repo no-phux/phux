@@ -414,6 +414,7 @@ dependencies = [
  "phux-perf",
  "phux-protocol",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "unicode-segmentation",

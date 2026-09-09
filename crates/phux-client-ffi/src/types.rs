@@ -25,6 +25,25 @@ pub const CELL_HYPERLINK: u32 = 1 << 10;
 /// every ending nobody asked for.
 pub const DETACH_REASON_UNSTATED: u32 = 0xFFFF;
 
+/// `PhuxClientEffect.kind` carrying `AgentEventsJsonlV1` records.
+///
+/// One effect holds one or more complete records from an `AgentSession`
+/// resource stream. The bridge never rewrites or splits records; `bytes` is
+/// the wire payload byte-for-byte.
+pub const EFFECT_AGENT_RECORDS: u32 = 4;
+/// `detail` on an `AGENT_RECORDS` effect: the complete retained backlog of a
+/// stream generation, published once at `BOOTSTRAP_READY`.
+pub const AGENT_RECORDS_RETAINED: u32 = 1;
+/// `detail` on an `AGENT_RECORDS` effect: records from one live output frame.
+pub const AGENT_RECORDS_LIVE: u32 = 2;
+/// `detail` on an `AGENT_RECORDS` effect: the resource closed; `bytes` is
+/// empty and the resource leaves the resource list.
+pub const AGENT_RECORDS_CLOSED: u32 = 3;
+/// `PhuxResourceInfo.kind` wire tag for a PTY-backed Terminal resource.
+pub const RESOURCE_KIND_TERMINAL: u32 = 0;
+/// `PhuxResourceInfo.kind` wire tag for an `AgentSession` resource.
+pub const RESOURCE_KIND_AGENT_SESSION: u32 = 1;
+
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhuxClientResult {
@@ -82,6 +101,40 @@ pub struct PhuxSessionInfo {
     pub window_count: u16,
     pub attached_client_count: u16,
     pub focused: bool,
+}
+
+/// Borrowed resource summary from the latest `ATTACHED` snapshot.
+///
+/// `parent` is null when the resource has no parent; otherwise it points at
+/// bridge-owned storage valid until the next mutable call, like every other
+/// borrowed span. `provider`, `native_id`, and `state` are empty for kinds
+/// without an agent facet.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PhuxResourceInfo {
+    pub size: usize,
+    pub version: u32,
+    pub terminal_id: PhuxTerminalId,
+    pub kind: u32,
+    pub parent: *const PhuxTerminalId,
+    pub provider: PhuxBytes,
+    pub native_id: PhuxBytes,
+    pub state: PhuxBytes,
+}
+
+impl Default for PhuxResourceInfo {
+    fn default() -> Self {
+        Self {
+            size: std::mem::size_of::<Self>(),
+            version: ABI_VERSION,
+            terminal_id: PhuxTerminalId::default(),
+            kind: RESOURCE_KIND_TERMINAL,
+            parent: ptr::null(),
+            provider: PhuxBytes::default(),
+            native_id: PhuxBytes::default(),
+            state: PhuxBytes::default(),
+        }
+    }
 }
 
 #[repr(C)]

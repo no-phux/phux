@@ -34,6 +34,9 @@ use web_sys::{
 use crate::framing::FrameBuffer;
 use crate::{Metrics, render};
 
+/// DOM id of the element that holds the focused pane's agent badges.
+pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
+
 /// Connect to a phux server over WebSocket and render the attached terminal
 /// into the given canvas, routing keyboard input back. Resolves once wired up;
 /// the handlers then run for the connection's lifetime.
@@ -304,6 +307,12 @@ impl Client {
     pub fn selected_profile(&self) -> Option<BootstrapProfile> {
         self.app.borrow().session.selected_profile()
     }
+
+    /// Agent badges the DOM currently shows for the focused pane.
+    #[must_use]
+    pub fn agent_badges(&self) -> Vec<crate::AgentBadge> {
+        self.app.borrow().session.agent_badges()
+    }
 }
 
 /// The send half of whichever transport carried the connection. Both carry
@@ -368,6 +377,61 @@ impl App {
         for f in frames {
             self.tx.send(&f);
         }
+    }
+
+    /// Project the focused pane's agent badges into the DOM: one
+    /// `<span class="phux-agent-badge">` per `AgentSession` under a
+    /// `#phux-agent-badges` container beside the canvas, hidden when empty.
+    fn paint_badges(&self) {
+        let Some(container) = self.badge_container() else {
+            return;
+        };
+        let badges = self.session.agent_badges();
+        container.set_text_content(None);
+        let Some(document) = container.owner_document() else {
+            return;
+        };
+        for badge in &badges {
+            let Ok(span) = document.create_element("span") else {
+                continue;
+            };
+            span.set_class_name("phux-agent-badge");
+            let _ = span.set_attribute("data-provider", &badge.provider);
+            let _ = span.set_attribute("data-state", &badge.state);
+            let provider = if badge.provider.is_empty() {
+                "agent"
+            } else {
+                badge.provider.as_str()
+            };
+            let text = if badge.state.is_empty() || badge.state == "unknown" {
+                provider.to_owned()
+            } else {
+                format!("{provider}: {}", badge.state)
+            };
+            span.set_text_content(Some(&text));
+            let _ = container.append_child(&span);
+        }
+        let _ = container.set_attribute("hidden", "");
+        if !badges.is_empty() {
+            let _ = container.remove_attribute("hidden");
+        }
+    }
+
+    /// The badge container, created next to the canvas on first use.
+    fn badge_container(&self) -> Option<web_sys::Element> {
+        let document = self.canvas.owner_document()?;
+        if let Some(existing) = document.get_element_by_id(BADGE_CONTAINER_ID) {
+            return Some(existing);
+        }
+        let container = document.create_element("div").ok()?;
+        container.set_id(BADGE_CONTAINER_ID);
+        let _ = container.set_attribute("hidden", "");
+        let parent = self
+            .canvas
+            .parent_element()
+            .or_else(|| document.body().map(Into::into))?;
+        parent.append_child(&container).ok()?;
+        Some(container)
     }
 
     fn paint(&self) {
@@ -481,6 +545,9 @@ fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> ReceiveFlow {
     }
     if outcome.render {
         a.paint();
+    }
+    if outcome.badges {
+        a.paint_badges();
     }
     ReceiveFlow::Continue
 }

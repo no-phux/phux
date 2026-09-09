@@ -330,6 +330,39 @@ typedef struct PhuxSessionInfo {
     bool focused;
 } PhuxSessionInfo;
 
+/**
+ * Wire ResourceKind tags. PhuxResourceInfo.kind carries the raw tag, so a kind
+ * this header does not name still reaches the host; treat it as opaque and
+ * never as a terminal.
+ */
+typedef enum PhuxResourceKind {
+    PHUX_RESOURCE_TERMINAL = 0,
+    PHUX_RESOURCE_AGENT_SESSION = 1
+} PhuxResourceKind;
+
+/**
+ * Borrowed resource summary from the latest ATTACHED snapshot. Initialize
+ * size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION before
+ * phux_client_resource_get. Every resource the snapshot listed appears, across
+ * sessions and kinds, minus resources the server has since reported closed.
+ * Only PHUX_RESOURCE_TERMINAL resources in the focused session take part in the
+ * attach and have grids; other kinds never publish a replica and refuse
+ * terminal-facet calls with PHUX_CLIENT_INVALID_STATE. parent is NULL when the
+ * resource has no parent, otherwise it borrows bridge storage until the next
+ * mutable call. provider/native_id/state are UTF-8 spans, empty for kinds
+ * without an agent facet.
+ */
+typedef struct PhuxResourceInfo {
+    size_t size;
+    uint32_t version;
+    PhuxTerminalId terminal_id;
+    uint32_t kind;
+    const PhuxTerminalId *parent;
+    PhuxBytes provider;
+    PhuxBytes native_id;
+    PhuxBytes state;
+} PhuxResourceInfo;
+
 typedef struct PhuxClientOptions {
     size_t size;
     uint32_t version;
@@ -485,11 +518,33 @@ typedef struct PhuxOperationResult {
     PhuxBytes message;
 } PhuxOperationResult;
 
+/**
+ * PHUX_CLIENT_EFFECT_AGENT_RECORDS carries AgentEventsJsonlV1 records from an
+ * AgentSession resource (PhuxResourceInfo.kind == PHUX_RESOURCE_AGENT_SESSION).
+ * terminal_id is the resource id, stream_id/bootstrap_id the generation its
+ * BOOTSTRAP_BEGIN opened, detail a PhuxClientAgentRecordsKind, and bytes zero
+ * or more complete records, one JSON object per line
+ * ({"seq","ts_ms","type","data"}; key order is not significant). The kernel
+ * validated every record before it reached the bridge; a stream whose payload
+ * fails validation retires its generation with a STATUS RESYNC_REQUIRED effect
+ * instead. RETAINED is the whole retained backlog of a generation, delivered
+ * once at BOOTSTRAP_READY; LIVE is one live output frame; seq is the newest
+ * record's server-assigned sequence for both. CLOSED has empty bytes and
+ * retires the resource from the catalog. Hosts must tolerate effect kinds they
+ * do not recognise; new kinds are additive.
+ */
 typedef enum PhuxClientEffectKind {
     PHUX_CLIENT_EFFECT_DAMAGE = 1,
     PHUX_CLIENT_EFFECT_STATUS = 2,
-    PHUX_CLIENT_EFFECT_JOB = 3
+    PHUX_CLIENT_EFFECT_JOB = 3,
+    PHUX_CLIENT_EFFECT_AGENT_RECORDS = 4
 } PhuxClientEffectKind;
+
+typedef enum PhuxClientAgentRecordsKind {
+    PHUX_CLIENT_AGENT_RECORDS_RETAINED = 1,
+    PHUX_CLIENT_AGENT_RECORDS_LIVE = 2,
+    PHUX_CLIENT_AGENT_RECORDS_CLOSED = 3
+} PhuxClientAgentRecordsKind;
 
 typedef enum PhuxClientJobKind {
     PHUX_CLIENT_JOB_WAKEUP = 1
@@ -762,6 +817,11 @@ PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
+/* Read-only resource catalog from the latest ATTACHED (see PhuxResourceInfo).
+ * Zero before ATTACHED or for an invalid client. Spans borrowed until the next
+ * mutable call. */
+size_t phux_client_resource_count(const PhuxClient *client);
+PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index, PhuxResourceInfo *out_resource);
 size_t phux_client_outgoing_count(const PhuxClient *client);
 PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index, PhuxBytes *out_frame);
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);

@@ -2,6 +2,7 @@
 
 use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::ResourceKind;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, EngineCodec, EngineFeatureSet,
     ImageProtocolSet,
@@ -9,7 +10,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+use phux_protocol::wire::info::{AgentFacet, SessionSnapshot, TerminalInfo};
 use phux_vt_web::{NativeDecodeKind, Vt};
 use phux_web::Session;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -829,4 +830,189 @@ async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
         .collect();
     assert!(row.starts_with("once"));
     assert!(!row.contains("must-not-apply"));
+}
+
+/// A focused session holding one terminal pane and one `AgentSession`
+/// resource bound to it, the way a RESOURCE_KINDS server reports them.
+fn attached_with_agent(
+    terminal_id: TerminalId,
+    agent_id: TerminalId,
+    cols: u16,
+    rows: u16,
+) -> FrameKind {
+    FrameKind::Attached {
+        attach_id: 1,
+        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal_id.clone())
+            .with_panes(vec![
+                TerminalInfo::new(terminal_id.clone(), WindowId::new(1), cols, rows),
+                TerminalInfo::new(agent_id, WindowId::new(0), 0, 0)
+                    .with_kind(ResourceKind::AgentSession)
+                    .with_parent(Some(terminal_id))
+                    .with_agent(Some(AgentFacet::new("claude", "idle"))),
+            ]),
+        initial_client_id: ClientId::new(1),
+    }
+}
+
+fn agent_record(seq: u64, kind: &str, data: &str) -> Bytes {
+    Bytes::from(format!(
+        "{{\"seq\":{seq},\"ts_ms\":{},\"type\":\"{kind}\",\"data\":{data}}}\n",
+        seq * 10
+    ))
+}
+
+fn badge_summary(session: &Session) -> Vec<(String, String)> {
+    session
+        .agent_badges()
+        .into_iter()
+        .map(|badge| (badge.provider, badge.state))
+        .collect()
+}
+
+#[wasm_bindgen_test]
+async fn agent_sessions_become_badges_and_never_panes() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 10, 2);
+    let terminal_id = TerminalId::local(8);
+    let agent_id = TerminalId::local(9);
+    let stream_id = stream(8);
+    let bootstrap_id = bootstrap(8);
+    let agent_stream = stream(9);
+    let agent_bootstrap = bootstrap(9);
+    session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+
+    // The snapshot facet seeds the badge; the agent is not a pane.
+    let attached = session.on_frame(attached_with_agent(
+        terminal_id.clone(),
+        agent_id.clone(),
+        10,
+        2,
+    ));
+    assert!(attached.fatal.is_none());
+    assert!(attached.badges);
+    assert_eq!(
+        badge_summary(&session),
+        vec![("claude".to_owned(), "idle".to_owned())]
+    );
+
+    // The terminal alone completes the attach; the agent never bootstrapped.
+    session.on_frame(begin(
+        terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+        10,
+        2,
+        0,
+    ));
+    session.on_frame(FrameKind::BootstrapChunk {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        chunk_seq: 0,
+        payload: Bytes::from_static(b"pane"),
+    });
+    session.on_frame(FrameKind::BootstrapReady {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    assert!(
+        session
+            .on_frame(FrameKind::AttachReady { attach_id: 1 })
+            .render
+    );
+    assert!(session.render_visible());
+    let key_frame = session.key_frame(key()).expect("terminal accepts input");
+    let (decoded, _) = FrameKind::decode(&key_frame).expect("decode key frame");
+    assert!(
+        matches!(decoded, FrameKind::InputKey { terminal_id: ref id, .. } if *id == terminal_id),
+        "input goes to the terminal, never the agent session"
+    );
+
+    // The agent stream publishes its retained backlog, then live records,
+    // and each update refreshes the badge.
+    let began = session.on_frame(begin(
+        agent_id.clone(),
+        agent_stream,
+        agent_bootstrap,
+        phux_protocol::caps::BootstrapStreamProfile::AgentEventsJsonlV1,
+        0,
+        0,
+        1,
+    ));
+    assert!(began.fatal.is_none());
+    assert!(!began.render, "an agent stream never paints");
+    session.on_frame(FrameKind::BootstrapChunk {
+        terminal_id: agent_id.clone(),
+        stream_id: agent_stream,
+        bootstrap_id: agent_bootstrap,
+        chunk_seq: 0,
+        payload: agent_record(1, "prompt", r#"{"length":4}"#),
+    });
+    let ready = session.on_frame(FrameKind::BootstrapReady {
+        terminal_id: agent_id.clone(),
+        stream_id: agent_stream,
+        bootstrap_id: agent_bootstrap,
+        history_cursor: None,
+    });
+    assert!(ready.badges);
+    assert!(!ready.render);
+    assert_eq!(
+        badge_summary(&session),
+        vec![("claude".to_owned(), "working".to_owned())]
+    );
+    let live = session.on_frame(FrameKind::TerminalOutput {
+        terminal_id: agent_id.clone(),
+        stream_id: agent_stream,
+        bootstrap_id: agent_bootstrap,
+        seq: 2,
+        bytes: agent_record(2, "ask", r#"{"question":"?"}"#),
+    });
+    assert!(live.badges);
+    assert_eq!(
+        badge_summary(&session),
+        vec![("claude".to_owned(), "blocked".to_owned())]
+    );
+
+    // A malformed record retires the agent generation but never the terminal.
+    let broken = session.on_frame(FrameKind::TerminalOutput {
+        terminal_id: agent_id.clone(),
+        stream_id: agent_stream,
+        bootstrap_id: agent_bootstrap,
+        seq: 3,
+        bytes: Bytes::from_static(b"{not json\n"),
+    });
+    assert!(broken.fatal.is_none());
+    assert!(!session.is_failed());
+    let output = session.on_frame(FrameKind::TerminalOutput {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        seq: 1,
+        bytes: Bytes::from_static(b"!"),
+    });
+    assert!(output.render);
+    let grid = session.grid();
+    let row0: String = grid.cells[..usize::from(grid.cols)]
+        .iter()
+        .map(|cell| cell.ch)
+        .collect();
+    assert!(row0.starts_with("pane!"), "row 0 = {row0:?}");
+
+    // Closing the agent retracts its badge and leaves the pane alone.
+    let closed = session.on_frame(FrameKind::TerminalClosed {
+        terminal_id: agent_id,
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+    });
+    assert!(closed.badges);
+    assert!(closed.fatal.is_none());
+    assert!(session.agent_badges().is_empty());
+    assert!(session.render_visible());
+    assert!(session.key_frame(key()).is_some());
 }
