@@ -1,0 +1,33 @@
+name: classify-changes
+description: Dependency-aware CI routes from event SHAs; caller must checkout with fetch-depth 0. Requires Git and Python 3.
+outputs:
+  phux_needed:
+    description: Root Rust check and test lanes.
+    value: ${{ steps.detect.outputs.phux_needed }}
+  cockpit_needed:
+    description: Cockpit app, bundled coordinator and FFI validation.
+    value: ${{ steps.detect.outputs.cockpit_needed }}
+  docs_only:
+    description: Every path is documentation (embedded skills excluded).
+    value: ${{ steps.detect.outputs.docs_only }}
+  workflow_only:
+    description: Every path is compile-free workflow infrastructure.
+    value: ${{ steps.detect.outputs.workflow_only }}
+  web_needed:
+    description: Browser adapters, package and browser tests.
+    value: ${{ steps.detect.outputs.web_needed }}
+  web_engine_needed:
+    description: Reproduce the committed WASM engine from pinned inputs.
+    value: ${{ steps.detect.outputs.web_engine_needed }}
+  integrations_needed:
+    description: Node integration packages and their shared version contract.
+    value: ${{ steps.detect.outputs.integrations_needed }}
+  native_needed:
+    description: Clean native setup assurance (setup/toolchain/Cargo/build/link inputs).
+    value: ${{ steps.detect.outputs.native_needed }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      run: python3 scripts/ci/detect-changes.py >> "$GITHUB_OUTPUT"
