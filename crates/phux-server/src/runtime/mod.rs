@@ -49,6 +49,7 @@ pub mod commands;
 pub mod input_lane;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
+pub mod resource_commands;
 mod resume;
 mod upgrade;
 mod upload;
@@ -113,6 +114,12 @@ pub struct ServerConfig {
     /// usually the byte bound (ADR-0094). The binary populates this from
     /// `phux_config`; [`Self::with_default_socket`] uses the schema defaults.
     pub scrollback: phux_config::ScrollbackLimits,
+    /// Bytes of `AgentEventsJsonlV1` records each agent session retains
+    /// (`defaults.agent-log-bytes`, ADR-0103 §4). Threaded into every
+    /// `AgentSessionActor` at construction, the same way `scrollback` is
+    /// threaded into every Terminal engine. The binary populates this from
+    /// `phux_config`; [`Self::with_default_socket`] uses the schema default.
+    pub agent_log_bytes: u32,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`, SPEC DESIGN.md). Threaded into
     /// shared state so `SPAWN_TERMINAL` resolves the new pane's CWD when
@@ -271,6 +278,7 @@ impl ServerConfig {
             seed_with_pty: false,
             seed_command: None,
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
+            agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
@@ -1017,7 +1025,10 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // Mirror `defaults.history-limit` / `defaults.history-bytes` so the
     // attach-time creation path (`CreateIfMissing`) and `SPAWN_TERMINAL`
     // build their panes with the configured bounds.
-    state.with_mut(|s| s.set_scrollback_limits(cfg.scrollback));
+    state.with_mut(|s| {
+        s.set_scrollback_limits(cfg.scrollback);
+        s.set_agent_log_bytes(cfg.agent_log_bytes);
+    });
     // Mirror `defaults.cwd-inheritance` so the `SPAWN_TERMINAL` handler
     // resolves a new pane's working directory from the configured policy.
     state.with_mut(|s| s.set_cwd_inheritance(cfg.cwd_inheritance));

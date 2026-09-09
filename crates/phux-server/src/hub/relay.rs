@@ -234,6 +234,10 @@ pub(crate) struct SatelliteSpawn {
     pub(crate) owner_terminal: Option<u32>,
     /// Initial grid and PTY dimensions requested by the consumer.
     pub(crate) initial_size: Option<(u16, u16)>,
+    /// Kind, parent, and agent-session provenance, with the parent already
+    /// reduced to the satellite's `Local` space (ADR-0104 §6). `None` for
+    /// the plain Terminal spawn every pre-kinds consumer sends.
+    pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
 }
 
 /// A request from a hub-side consumer path to one satellite's relay.
@@ -1033,7 +1037,11 @@ impl RelaySession {
                     owner_terminal: spawn.owner_terminal.map(TerminalId::local),
                     agent_session: None,
                     initial_size: spawn.initial_size,
-                    resource: None,
+                    // The kind and its already-retagged parent cross the
+                    // link intact: a satellite-addressed AgentSession spawn
+                    // is the satellite's to validate and bind, exactly as a
+                    // local one would be (ADR-0104 §6).
+                    resource: spawn.resource,
                 }))
             }
             RelayRequest::Subscribe {
@@ -1308,8 +1316,8 @@ impl RelaySession {
             FrameKind::TerminalClosed {
                 terminal_id,
                 exit_status,
-                ..
-            } => self.relay_terminal_closed(&terminal_id, exit_status),
+                reason,
+            } => self.relay_terminal_closed(&terminal_id, exit_status, reason),
             FrameKind::Bell { terminal_id } => self.relay_bell(&terminal_id),
             other => {
                 return Err(format!(
@@ -1474,7 +1482,16 @@ impl RelaySession {
 
     /// Deliver `TERMINAL_CLOSED`, then reap everything the satellite terminal
     /// owned on this link.
-    fn relay_terminal_closed(&mut self, terminal_id: &TerminalId, exit_status: Option<i32>) {
+    ///
+    /// `reason` is the satellite's (ADR-0104 §4): the hub retags the id and
+    /// forwards the fact unchanged. A hub that substituted its own reason
+    /// would tell a consumer a satellite-side cascade was a plain exit.
+    fn relay_terminal_closed(
+        &mut self,
+        terminal_id: &TerminalId,
+        exit_status: Option<i32>,
+        reason: phux_protocol::wire::frame::CloseReason,
+    ) {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
         };
@@ -1488,7 +1505,7 @@ impl RelaySession {
             &FrameKind::TerminalClosed {
                 terminal_id: TerminalId::satellite(self.host.clone(), id),
                 exit_status,
-                reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                reason,
             },
         );
         // The satellite terminal is gone; its proxy
@@ -3124,6 +3141,7 @@ mod tests {
                 term: None,
                 owner_terminal: None,
                 initial_size: None,
+                resource: None,
             },
             reply,
         }
@@ -3208,6 +3226,7 @@ mod tests {
             term: Some("xterm-256color".to_owned()),
             owner_terminal: Some(91),
             initial_size: Some((132, 43)),
+            resource: None,
         };
         let expected = FrameKind::SpawnTerminal {
             request_id: 0,

@@ -305,6 +305,8 @@ impl TerminalActor {
             last_progress: String::new(),
             agent_detect: None,
             agent_state_sink: None,
+            live_session_probe: None,
+            agent_session_append: None,
             agent_dirty_since_detect: false,
             last_ask: None,
             ask_retry_owed: false,

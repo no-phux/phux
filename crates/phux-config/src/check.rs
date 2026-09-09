@@ -250,12 +250,14 @@ fn semantic_pass(
 
 /// Semantic validation for `[defaults]` values whose *range* matters.
 ///
-/// `defaults.history-bytes` is the only one so far. It parses as any `u32`,
-/// but a value above [`crate::MAX_HISTORY_BYTES`] is not a memory question —
-/// retained history is re-encoded per pane on every attach (ADR-0094), so a
-/// large value buys deep scrollback at a cost measured in blocked server
-/// thread. Flag it here rather than clamping silently, so the operator learns
-/// what they asked for instead of wondering why their setting did nothing.
+/// `defaults.history-bytes` and `defaults.agent-log-bytes` are the two so
+/// far. Both parse as any `u32`, but a value above their ceiling is not a
+/// memory question — retained scrollback is re-encoded per pane on every
+/// attach (ADR-0094) and a retained agent-session ring is replayed in full
+/// on every attach to its stream (ADR-0103), so a large value buys depth at
+/// a cost measured in blocked server thread. Flag them here rather than
+/// clamping silently, so the operator learns what they asked for instead of
+/// wondering why their setting did nothing.
 fn defaults_findings(
     defaults: &DefaultsCfg,
     provenance: &crate::ConfigProvenance,
@@ -273,6 +275,21 @@ fn defaults_findings(
                  thread for most of a second per pane",
                 defaults.history_bytes,
                 crate::MAX_HISTORY_BYTES,
+            ),
+        );
+    }
+    if defaults.agent_log_bytes > crate::MAX_AGENT_LOG_BYTES {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.agent-log-bytes".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} bytes (64 MiB); a session's retained \
+                 records are replayed in full on every attach to its stream, so a larger \
+                 value buys a transcript nobody waits out",
+                defaults.agent_log_bytes,
+                crate::MAX_AGENT_LOG_BYTES,
             ),
         );
     }

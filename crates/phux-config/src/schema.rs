@@ -176,6 +176,23 @@ pub struct DefaultsCfg {
     #[serde(default = "default_history_bytes", rename = "history-bytes")]
     pub history_bytes: u32,
 
+    /// Bytes of agent-session records retained per `AgentSession` resource.
+    ///
+    /// An `AgentSession` (ADR-0103) keeps a bounded ring of the
+    /// `AgentEventsJsonlV1` records its producer appends, and replays that
+    /// ring as the stream's bootstrap. This is the ring's ceiling, counted
+    /// over the retained records' own bytes; when an append would carry the
+    /// ring past it the oldest records are evicted and a tombstone counter
+    /// records how many were lost, which the bootstrap surfaces.
+    ///
+    /// The same ADR-0094 shape as [`Self::history_bytes`], and the same
+    /// tradeoff: the retained window is what a late `phux agent log`
+    /// observer gets to see, and it is re-sent per attach. Records are
+    /// small (a `tool_start` is a few hundred bytes), so 4 MiB is tens of
+    /// thousands of them. The accepted ceiling is [`MAX_AGENT_LOG_BYTES`].
+    #[serde(default = "default_agent_log_bytes", rename = "agent-log-bytes")]
+    pub agent_log_bytes: u32,
+
     /// Whether the client enables its own outer-terminal mouse tracking
     /// on attach (ADR-0048). `true` (default) emits DECSET
     /// `?1002h?1006h` so divider drag-to-resize and click-to-focus work
@@ -257,6 +274,7 @@ impl Default for DefaultsCfg {
             term: default_term(),
             history_limit: default_history_limit(),
             history_bytes: default_history_bytes(),
+            agent_log_bytes: default_agent_log_bytes(),
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
@@ -329,6 +347,23 @@ pub const DEFAULT_HISTORY_BYTES: u32 = 2 * 1024 * 1024;
 
 const fn default_history_bytes() -> u32 {
     DEFAULT_HISTORY_BYTES
+}
+
+/// Largest accepted `defaults.agent-log-bytes`, in bytes (64 MiB).
+///
+/// The same latency bound [`MAX_HISTORY_BYTES`] is: the retained ring is
+/// replayed in full on every attach to the session's stream, so a value
+/// above this trades a longer transcript for an attach nobody waits out.
+/// Rejected by `phux config check` rather than silently accepted.
+pub const MAX_AGENT_LOG_BYTES: u32 = 64 * 1024 * 1024;
+
+/// Shipped `defaults.agent-log-bytes`: 4 MiB per agent session.
+///
+/// See [`DefaultsCfg::agent_log_bytes`] for what the window buys.
+pub const DEFAULT_AGENT_LOG_BYTES: u32 = 4 * 1024 * 1024;
+
+const fn default_agent_log_bytes() -> u32 {
+    DEFAULT_AGENT_LOG_BYTES
 }
 const fn default_true() -> bool {
     true

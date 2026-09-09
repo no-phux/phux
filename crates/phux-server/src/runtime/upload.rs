@@ -37,14 +37,29 @@ pub(super) struct PutFileChunk {
 }
 
 pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) -> CommandResult {
-    if state
-        .with(|server| server.terminal_from_wire(&chunk.terminal_id))
-        .is_none()
-    {
-        return error(
-            ErrorCode::TerminalNotFound,
-            format!("no such terminal: {:?}", chunk.terminal_id),
-        );
+    // docs/spec/L1.md §1.1: PUT_FILE is a Terminal-facet command — the
+    // upload lands beside a PTY's working directory, which an
+    // `AgentSession` does not have.
+    match state.with(|server| {
+        server.terminal_from_wire(&chunk.terminal_id).map(|core| {
+            server
+                .resource_handle(core)
+                .is_some_and(|h| h.terminal().is_ok())
+        })
+    }) {
+        None => {
+            return error(
+                ErrorCode::TerminalNotFound,
+                format!("no such terminal: {:?}", chunk.terminal_id),
+            );
+        }
+        Some(false) => {
+            return error(
+                ErrorCode::WrongResourceKind,
+                format!("not a Terminal: {:?}", chunk.terminal_id),
+            );
+        }
+        Some(true) => {}
     }
 
     let root = match upload_dir() {

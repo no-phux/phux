@@ -375,6 +375,19 @@ pub(crate) struct AgentDetector {
     pending_occupant: Option<identify::PaneOccupant>,
     /// Latest hook edge received just before process identity resolved.
     pending_hook: Option<(DetectedState, Instant)>,
+    /// Which rung of the evidence ladder wrote [`Self::published`].
+    ///
+    /// The ladder itself is [`crate::agent_state::EvidenceSource`]; this is
+    /// where a pane's current incumbent lives. Only the two edge-triggered
+    /// rungs consult it — a hook must not overwrite what a live stream said,
+    /// because both carry the same facts and the stream carries them in
+    /// order. The screen path is ranked by the live-child probe instead
+    /// (see [`Self::tick_for_pane`]), which is a level, not an edge, and so
+    /// cannot be expressed as an incumbent.
+    ///
+    /// `Screen` is the floor: it is what a pane starts at and what a
+    /// `session_end` returns it to.
+    published_source: crate::agent_state::EvidenceSource,
     /// Injected answer to "does this pane's Terminal own a live
     /// `AgentSession` child?" (ADR-0103 decision 5).
     ///
@@ -431,6 +444,63 @@ impl AgentDetector {
         state: DetectedState,
         now: Instant,
     ) -> Option<AgentReport> {
+        if !crate::agent_state::EvidenceSource::Hook.outranks(self.published_source) {
+            // Recorded, not published: a stream that is currently asserting
+            // this pane's state carries the same facts in order, so letting
+            // the hook edge race it would make the record depend on mailbox
+            // timing. The pending slot keeps the fallback's latest view for
+            // whenever the stream retracts.
+            self.pending_hook = Some((state, now));
+            return None;
+        }
+        let Some(kind) = self.identified.clone() else {
+            self.pending_hook = Some((state, now));
+            return None;
+        };
+        let report = AgentReport {
+            name: self.manifest_name(&kind),
+            kind,
+            state,
+        };
+        self.pending_idle = None;
+        self.cadence = Cadence::Identified;
+        self.current = Some(state);
+        self.published_source = crate::agent_state::EvidenceSource::Hook;
+        if self.published.as_ref() == Some(&report) {
+            return None;
+        }
+        self.published = Some(report.clone());
+        Some(report)
+    }
+
+    /// Publish an `AgentSession` child's derived state at the `Stream`
+    /// rank, above the hook edge (ADR-0103 §5).
+    ///
+    /// `None` retracts: the session ended, the stream stops asserting, and
+    /// the hook and screen paths resume. A retraction publishes nothing on
+    /// its own — withdrawing a claim is not a new claim, and the next
+    /// ordinary tick derives whatever is actually true now.
+    ///
+    /// Like [`Self::report_hook_state`] this needs an identified pane: the
+    /// record names a `kind`, and asserting a state beside a kind nobody has
+    /// established would violate invariant I2 in [`crate::agent_state`]. The
+    /// evidence is held in the pending slot until identity resolves.
+    pub(crate) fn report_stream_state(
+        &mut self,
+        state: Option<DetectedState>,
+        now: Instant,
+    ) -> Option<AgentReport> {
+        let Some(state) = state else {
+            // A `session_end` withdraws the stream's claim; it does not
+            // assert a final state. Dropping the rank is the whole of the
+            // retraction — the resumed screen path derives what is true now,
+            // which is what the falling-edge filter invalidation in
+            // `tick_for_pane` makes it reassert.
+            self.published_source = crate::agent_state::EvidenceSource::Screen;
+            self.pending_idle = None;
+            return None;
+        };
+        self.published_source = crate::agent_state::EvidenceSource::Stream;
         let Some(kind) = self.identified.clone() else {
             self.pending_hook = Some((state, now));
             return None;
@@ -469,6 +539,7 @@ impl AgentDetector {
             published_occupant: None,
             pending_occupant: None,
             pending_hook: None,
+            published_source: crate::agent_state::EvidenceSource::Screen,
             live_session: None,
             live_session_held: false,
             cadence: Cadence::Unidentified,

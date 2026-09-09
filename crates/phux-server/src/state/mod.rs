@@ -41,6 +41,7 @@ use phux_protocol::ids::GroupId;
 
 mod agent;
 mod agent_tracking;
+mod bindings;
 mod client;
 mod client_table;
 mod config;
@@ -240,6 +241,19 @@ pub struct ServerState {
     /// the connection count and the idle clock may only be written
     /// together.
     lifecycle: Lifecycle,
+    /// Why each closing resource is closing (ADR-0104 §4).
+    ///
+    /// Written by whoever decides a resource must go — a `KILL_TERMINAL`, a
+    /// parent cascade, a shutdown — and read once by that resource's exit
+    /// watcher, which stamps it on the `TERMINAL_CLOSED` frame. An entry
+    /// exists only between the decision and the frame, and the reap drops
+    /// any that outlived it, so the map is bounded by the resources
+    /// currently in the act of closing. See [`bindings`] for the claim rule
+    /// that keeps exactly one closer per resource.
+    close_reasons: std::collections::HashMap<
+        phux_core::ids::ResourceId,
+        phux_protocol::wire::frame::CloseReason,
+    >,
 }
 
 impl Default for ServerState {

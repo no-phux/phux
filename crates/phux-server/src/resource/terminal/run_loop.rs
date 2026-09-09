@@ -520,7 +520,15 @@ impl TerminalActor {
     fn install_agent_detector(&mut self) {
         let rules = crate::agent_detect::rules::global();
         if self.pty.is_some() && self.agent_state_sink.is_some() && !rules.is_empty() {
-            self.agent_detect = Some(AgentDetector::new(rules, std::time::Instant::now()));
+            let mut detector = AgentDetector::new(rules, std::time::Instant::now());
+            // ADR-0103 §5: the ladder's top rung is a live `AgentSession`
+            // child, and only the spawn path knows how to ask about one.
+            // A pane built without the probe answers "no live child", which
+            // is the world every path outside this program lives in.
+            if let Some(probe) = self.live_session_probe.clone() {
+                detector.set_live_session_probe(probe);
+            }
+            self.agent_detect = Some(detector);
         }
     }
 

@@ -11,19 +11,15 @@
 //! The detector cannot answer "is there a live child" itself: bindings live
 //! on `ServerState`, and the detector runs inside a pane engine that has no
 //! view of it. So the answer is *injected*, and this module is the whole of
-//! the injection. Both halves default to "no live child", which is exactly
-//! the world before the `AgentSession` engine exists, so every shipped path
-//! keeps its current behaviour until the producer lands.
+//! the injection: [`server_has_live_session`] asks `ServerState` directly,
+//! for the command handlers that hold one, and [`LiveSessionProbe`] is the
+//! per-pane closure the spawn path binds so the detector can ask the same
+//! question from inside its own tick.
 //!
-//! # For the `AgentSession` engine lane
-//!
-//! Two edits, both one line:
-//!
-//! 1. [`server_has_live_session`] — replace the body with the binding-graph
-//!    lookup (`children(terminal)` containing a live `AgentSession`).
-//! 2. [`AgentDetector::set_live_session_probe`] — call it where the pane
-//!    engine builds its detector, with a [`LiveSessionProbe`] closed over
-//!    that pane's id and a handle to the same lookup.
+//! A pane whose spawn path installed no probe answers "no live child",
+//! which is correct for every actor built outside the server's spawn paths
+//! — the test actors, and the rebuilt actors of a graceful upgrade, neither
+//! of which has a session under it.
 //!
 //! [`AgentDetector::set_live_session_probe`]: super::AgentDetector::set_live_session_probe
 
@@ -57,11 +53,11 @@ pub(crate) type LiveSessionProbe = Rc<dyn Fn() -> bool>;
 /// one source of truth feeds the arbiter; without one it takes the ADR-0085
 /// path straight into the detector.
 ///
-/// Answers `false` until the `AgentSession` engine lands, which is the honest
-/// answer while no resource of that kind can exist.
-pub(crate) const fn server_has_live_session(
-    _state: &ServerState,
-    _terminal: &WireTerminalId,
-) -> bool {
-    false
+/// `false` for an id that resolves to nothing on this server: an unknown or
+/// satellite-tagged Terminal owns no local child, and the routing question
+/// belongs to the caller, not to a kind lookup.
+pub(crate) fn server_has_live_session(state: &ServerState, terminal: &WireTerminalId) -> bool {
+    state
+        .terminal_from_wire(terminal)
+        .is_some_and(|core| state.has_live_agent_session_child(core))
 }

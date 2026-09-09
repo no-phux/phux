@@ -72,7 +72,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x17` | `REPORT_AGENT_STATE`        | [L1.md](./L1.md) | shipped |
 | `0x18` | `GET_PERF`                  | [L1.md](./L1.md) | shipped |
 | `0x19` | `TRANSCRIBE`                | [L1.md](./L1.md) | shipped |
-| `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | partial |
+| `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | shipped |
 
 `KILL_TERMINALS` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per

@@ -1551,6 +1551,10 @@ pub(crate) struct SpawnRequest {
     /// `(cols, rows)` to build the pane's grid and PTY at (phux-a5xj),
     /// `None` for the server's default.
     pub(crate) initial_size: Option<(u16, u16)>,
+    /// Kind, parent, and agent-session provenance (`SPAWN_TERMINAL` fields
+    /// 11 to 14). `None` — the shape every pre-kinds consumer sends — is a
+    /// plain Terminal with no parent.
+    pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
 }
 
 /// Only an owner explicitly addressed to this satellite can cross its link.
@@ -1601,7 +1605,7 @@ async fn relay_spawn_to_satellite(
 ///
 /// Only a validated payload reaches route lookup. Ownership or independent
 /// agent-session provenance refusals are returned without touching the link.
-async fn dispatch_satellite_spawn(
+pub(crate) async fn dispatch_satellite_spawn(
     state: &SharedState,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     request_id: u32,
@@ -1833,8 +1837,52 @@ pub(crate) async fn handle_spawn_terminal(
         satellite,
         owner_terminal,
         agent_session,
+        resource,
         ..
     } = request;
+
+    // Kind dispatch (ADR-0102): fields 1 to 10 back a Terminal, so a spawn
+    // that names another kind leaves this handler entirely. An unrecognised
+    // kind is refused rather than silently spawned as a Terminal — the open
+    // `u8` exists so a newer consumer gets a typed refusal, not a shell.
+    let kind = resource
+        .as_ref()
+        .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
+    match crate::resource::core_kind(kind) {
+        Some(crate::resource::ResourceKind::Terminal) => {}
+        Some(crate::resource::ResourceKind::AgentSession) => {
+            let resource = resource.unwrap_or_default();
+            crate::runtime::resource_commands::spawn_agent_session(
+                state,
+                client_id,
+                request_id,
+                &resource,
+                satellite.as_ref(),
+                out_tx,
+                root_token,
+                bootstrap_limits,
+                connection_token,
+            )
+            .await;
+            return;
+        }
+        _ => {
+            warn!(
+                ?client_id,
+                request_id,
+                ?kind,
+                "SPAWN_TERMINAL: unknown kind"
+            );
+            refuse_spawn(out_tx, request_id, SpawnError::UnsupportedKind).await;
+            return;
+        }
+    }
+    // A Terminal spawn takes no parent: the one edge v1 defines runs the
+    // other way (ADR-0104 §5).
+    if resource.as_ref().is_some_and(|r| r.parent.is_some()) {
+        refuse_spawn(out_tx, request_id, SpawnError::ParentKindMismatch).await;
+        return;
+    }
 
     // Satellite-targeted spawn (phux-v45.6, L1 §3.1 / §9.1): relay over
     // the owning hub link; the group and PTY details are validated on the
@@ -1850,6 +1898,7 @@ pub(crate) async fn handle_spawn_terminal(
                 term,
                 owner_terminal,
                 initial_size,
+                resource: None,
             },
         );
         dispatch_satellite_spawn(state, out_tx, request_id, &host, spawn).await;
@@ -2729,6 +2778,13 @@ impl AttachStaging {
         frames.extend(
             terminal_ids
                 .into_iter()
+                // `Unknown` is the honest reason here and the one place it
+                // is: these panes were in the snapshot and had no engine
+                // left by the time the attach captured them, so the close
+                // ledger that would have named a reason (ADR-0104 §4) was
+                // claimed and dropped by their own exit watcher before this
+                // ran. Every site that still knows why a resource left
+                // states it.
                 .map(|terminal_id| FrameKind::TerminalClosed {
                     terminal_id,
                     exit_status: None,

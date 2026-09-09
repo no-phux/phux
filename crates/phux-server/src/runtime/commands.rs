@@ -32,9 +32,23 @@ use crate::terminal_actor::{
 /// of another kind. Every command handler that reaches a Terminal facet
 /// maps [`ResourceHandle::terminal`]'s error through here, so the wire code
 /// for the condition is chosen in one place.
-fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
+/// The per-pane answer to "does this Terminal own a live `AgentSession`
+/// child?", bound for `terminal` (ADR-0103 §5).
+///
+/// One state-lock read per detector tick — the detector ticks at 100 to 500
+/// ms per pane and the read is a children walk over one slotmap, so this is
+/// cheaper than the screen projection it gates.
+fn live_session_probe(
+    state: &SharedState,
+    terminal: phux_core::ids::TerminalId,
+) -> crate::agent_detect::live_session::LiveSessionProbe {
+    let state = state.clone();
+    std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
+}
+
+pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
     CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
+        code: ErrorCode::WrongResourceKind,
         message: error.to_string(),
     }
 }
@@ -258,6 +272,7 @@ fn seed_session_with_pty_and_colors_and_metadata(
     // spawn, while the wire `TerminalId` the drain needs only exists after.
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
+    actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         s.intern_terminal_wire(terminal)
@@ -405,6 +420,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     // spawn, while the wire `TerminalId` the drain needs only exists after.
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
+    actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         s.intern_terminal_wire(terminal)
@@ -561,6 +577,17 @@ pub(crate) fn handle_terminal_resize(
             Ok(terminal) => terminal,
             Err(error) => {
                 debug!(?client_id, ?terminal, %error, "TERMINAL_RESIZE: not a Terminal; dropping");
+                // docs/spec/L1.md §1.1's WRONG_RESOURCE_KIND rule: no reply
+                // frame exists for TERMINAL_RESIZE, so the refusal rides an
+                // uncorrelated ERROR to the sender instead of a log line
+                // only the server ever sees.
+                if let Some(mailbox) = s.client_mailbox(client_id) {
+                    let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::WrongResourceKind,
+                        message: error.to_string(),
+                    }));
+                }
                 return;
             }
         };
@@ -712,6 +739,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::PutFile { .. } => "put_file",
         Command::GetPerf { .. } => "get_perf",
         Command::Transcribe { .. } => "transcribe",
+        Command::AppendResourceOutput { .. } => "append_resource_output",
         _ => "other",
     }
 }
@@ -949,6 +977,15 @@ pub(crate) async fn handle_command(
             terminal_id,
             state: reported,
         } => handle_report_agent_state(state, &terminal_id, reported).await,
+        Command::AppendResourceOutput { terminal_id, bytes } => {
+            crate::runtime::resource_commands::handle_append_resource_output(
+                state,
+                client_id,
+                &terminal_id,
+                bytes::Bytes::from(bytes),
+            )
+            .await
+        }
         // `Command` is `#[non_exhaustive]`: a forward-compat command this
         // server doesn't implement decodes only if a newer peer sent a
         // tag we allocated but haven't wired (the decoder rejects truly
@@ -990,7 +1027,12 @@ fn handle_kill_terminal(
                 message: format!("no such terminal: {terminal_id:?}"),
             },
             |core_id| {
-                state.with_mut(|s| s.detach_resource_actor(core_id));
+                // ADR-0104 §2: the target and everything bound to it close
+                // in one acquisition of the lock, so no client observes a
+                // child whose parent is gone.
+                state.with_mut(|s| {
+                    s.close_resources(&[core_id], phux_protocol::wire::frame::CloseReason::Killed)
+                });
                 CommandResult::Ok
             },
         )
@@ -1043,6 +1085,24 @@ async fn handle_attach_terminal(
             message: format!("no such terminal: {terminal_id:?}"),
         };
     };
+
+    // A non-Terminal stream has its own bootstrap shape, and none of the
+    // grid machinery below applies to it: it forks here, with the
+    // subscription already registered and nothing else yet committed
+    // (ADR-0103 §4).
+    if handle.kind == crate::resource::ResourceKind::AgentSession {
+        return crate::runtime::resource_commands::attach_agent_session(
+            state,
+            client_id,
+            terminal_id,
+            core,
+            &handle,
+            out_tx,
+            bootstrap_limits,
+            connection_token,
+        )
+        .await;
+    }
 
     // Allocated before the session takes ownership of the handle: exhausting
     // the id space leaves the subscription registered above in place, exactly
@@ -2269,6 +2329,18 @@ async fn handle_shutdown(
     }
 
     info!(?client_id, "SHUTDOWN requested; stopping the server");
+    // ADR-0104 §4: every resource still live is leaving because the server
+    // is, so its `TERMINAL_CLOSED` says so rather than claiming the inner
+    // process exited. Recorded before the root token cancels, so whichever
+    // exit watchers still reach a client find the reason waiting.
+    state.with_mut(|s| {
+        for resource in s.resource_ids() {
+            s.mark_resource_closing(
+                resource,
+                phux_protocol::wire::frame::CloseReason::ServerShutdown,
+            );
+        }
+    });
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::CommandResult {
             request_id,
@@ -2826,16 +2898,18 @@ pub(crate) fn handle_kill_terminals(
     // and an unknown id both collapse to a silent skip (satellite ids were
     // partitioned above and resolve to no local pane here).
     let killed = state.with_mut(|s| {
-        let mut killed = 0u32;
+        let mut targets = Vec::with_capacity(ids.len());
         for wire_id in ids {
             if let Some(core_id) = s.terminal_from_wire(wire_id) {
-                s.detach_resource_actor(core_id);
-                killed = killed.saturating_add(1);
+                targets.push(core_id);
             } else {
                 debug!(?wire_id, "KILL_TERMINALS: unknown / dead id; skipping");
             }
         }
-        killed
+        // The closure — targets plus everything bound to one of them — is
+        // computed and closed in this one borrow (ADR-0104 §2). An id named
+        // twice, or named alongside its own parent, is closed exactly once.
+        s.close_resources(&targets, phux_protocol::wire::frame::CloseReason::Killed)
     });
     debug!(
         requested = ids.len(),
@@ -3114,12 +3188,12 @@ pub(crate) async fn handle_get_state_federated(
                         continue;
                     };
                     pane.id = id;
-                    // parent retag lands with the protocol lane: when
-                    // `TerminalInfo` gains `parent`, retag it here with
-                    //     pane.parent = retag_satellite_resource_id(
-                    //         &host, pane.parent.as_ref());
-                    // and nothing else changes. A parent id is a resource
-                    // id (ADR-0104), so it retags by exactly this rule.
+                    // A parent id is a resource id and retags by the same
+                    // rule (ADR-0104): a satellite child is reported under
+                    // its satellite parent, and a Satellite-tagged parent
+                    // (chaining) drops the binding rather than pointing at
+                    // an unrelated hub-local pane.
+                    pane.parent = retag_satellite_resource_id(&host, pane.parent.as_ref());
                     snapshot.panes.push(pane);
                 }
             }
@@ -3588,6 +3662,10 @@ fn wire_client_id(id: ClientId) -> phux_protocol::ids::ClientId {
 enum AcquireOutcome {
     /// The wire id resolved to no pane.
     NotFound,
+    /// The resource exists but is not a Terminal (docs/spec/L1.md §1.1's
+    /// `WRONG_RESOURCE_KIND` rule): an input lease is a Terminal-facet
+    /// concept, and an `AgentSession`'s stream has no lease to hold.
+    WrongKind(WrongResourceKind),
     /// A cooperative acquire lost to an existing holder (carried for the
     /// diagnostic).
     Denied(ClientId),
@@ -3626,6 +3704,9 @@ pub(crate) async fn handle_acquire_input(
         let Some(handle) = s.resource_handle(core).cloned() else {
             return AcquireOutcome::NotFound;
         };
+        if let Err(error) = handle.terminal() {
+            return AcquireOutcome::WrongKind(error);
+        }
         let prior = s.input_lease_holder(core);
         if mode == InputMode::Cooperative
             && let Some(holder) = prior
@@ -3648,6 +3729,7 @@ pub(crate) async fn handle_acquire_input(
             code: ErrorCode::TerminalNotFound,
             message: format!("no such terminal: {terminal_id:?}"),
         },
+        AcquireOutcome::WrongKind(error) => wrong_resource_kind(error),
         AcquireOutcome::Denied(holder) => CommandResult::Error {
             code: ErrorCode::InputLeaseHeld,
             message: format!("input lease held by client {}", holder.0),
@@ -3677,17 +3759,30 @@ pub(crate) async fn handle_release_input(
 ) -> CommandResult {
     // No satellite guard here (phux-v45.11 finding 5): same rationale as
     // `handle_acquire_input` — `route_to_satellite` owns that dispatch.
+    enum Released {
+        NotFound,
+        WrongKind(WrongResourceKind),
+        Ok(ResourceHandle, bool),
+    }
     let released = state.with_mut(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
-        let handle = s.resource_handle(core).cloned()?;
-        Some((handle, s.release_input_lease(core, client_id)))
+        let Some(core) = s.terminal_from_wire(terminal_id) else {
+            return Released::NotFound;
+        };
+        let Some(handle) = s.resource_handle(core).cloned() else {
+            return Released::NotFound;
+        };
+        if let Err(error) = handle.terminal() {
+            return Released::WrongKind(error);
+        }
+        Released::Ok(handle, s.release_input_lease(core, client_id))
     });
     match released {
-        None => CommandResult::Error {
+        Released::NotFound => CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
             message: format!("no such terminal: {terminal_id:?}"),
         },
-        Some((handle, did_release)) => {
+        Released::WrongKind(error) => wrong_resource_kind(error),
+        Released::Ok(handle, did_release) => {
             if did_release {
                 let _ = handle
                     .control
@@ -3736,6 +3831,11 @@ pub(crate) async fn handle_signal_terminal(
             };
         }
     };
+    // docs/spec/L1.md §1.1: a signal targets a Terminal's PTY child, which
+    // an `AgentSession` does not have.
+    if let Err(error) = handle.terminal() {
+        return wrong_resource_kind(error);
+    }
     let (reply_tx, reply_rx) = oneshot::channel();
     if handle
         .control
@@ -3805,6 +3905,16 @@ pub(crate) async fn handle_report_agent_state(
             };
         }
     };
+    // docs/spec/L1.md §1.1: REPORT_AGENT_STATE addresses a Terminal — the
+    // hook reports on the pane it instrumented, not on a child stream
+    // directly. `live_session` above is what routes the report onto an
+    // `AgentSession` child once one exists; naming the child itself is the
+    // wrong-kind case this rejects before it ever reaches its own control
+    // mailbox, which would otherwise answer with the generic "derives its
+    // state from its own stream" refusal instead of the typed one.
+    if let Err(error) = handle.terminal() {
+        return wrong_resource_kind(error);
+    }
     let (reply, result) = oneshot::channel();
     let request = if live_session {
         ControlRequest::SynthesizeAgentStateRecord {
@@ -3914,7 +4024,15 @@ pub(crate) fn handle_report_asked(
     elapsed_seconds: Option<u64>,
 ) -> CommandResult {
     let terminal = match state.with(|s| s.resolve_resource(terminal_id).into_owned()) {
-        ResolvedOwned::Local(local) => local.id,
+        ResolvedOwned::Local(local) => {
+            // docs/spec/L1.md §1.1: REPORT_ASKED is a Terminal-facet
+            // command — the ask ladder it feeds is rendered on a pane, and
+            // an `AgentSession` has no pane of its own to render one on.
+            if let Err(error) = local.handle.terminal() {
+                return wrong_resource_kind(error);
+            }
+            local.id
+        }
         ResolvedOwned::Remote(_) => {
             return CommandResult::Error {
                 code: ErrorCode::UnsupportedSatelliteRoute,
@@ -4268,6 +4386,17 @@ pub(crate) fn with_attached_input_destination<R>(
             Ok(terminal) => terminal.clone(),
             Err(error) => {
                 warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
+                // docs/spec/input.md §9: an input atom named a live
+                // resource of another kind. It carries no reply of its
+                // own, so the refusal rides an uncorrelated ERROR frame to
+                // the sender instead of just a server-side log line.
+                if let Some(mailbox) = s.client_mailbox(client_id) {
+                    let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::WrongResourceKind,
+                        message: error.to_string(),
+                    }));
+                }
                 return None;
             }
         };

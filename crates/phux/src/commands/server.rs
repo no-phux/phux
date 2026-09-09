@@ -255,6 +255,7 @@ fn build_server_config(
         seed_with_pty: true,
         seed_command,
         scrollback: defaults.scrollback_limits(),
+        agent_log_bytes: defaults.agent_log_bytes,
         cwd_inheritance: defaults.cwd_inheritance,
         term: defaults.term,
         shell,

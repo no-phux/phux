@@ -70,6 +70,18 @@ impl ServerState {
         self.config.scrollback
     }
 
+    /// Set the per-session agent-log byte ceiling. Called once at startup
+    /// to mirror `defaults.agent-log-bytes`.
+    pub const fn set_agent_log_bytes(&mut self, bytes: u32) {
+        self.config.agent_log_bytes = bytes;
+    }
+
+    /// Bytes of records each new agent session retains (ADR-0103 §4).
+    #[must_use]
+    pub const fn agent_log_bytes(&self) -> u32 {
+        self.config.agent_log_bytes
+    }
+
     /// Set the `[voice]` transcriber settings `TRANSCRIBE` runs. Called once
     /// at server startup to mirror [`crate::runtime::ServerConfig::voice`].
     pub fn set_voice(&mut self, voice: phux_config::VoiceCfg) {
