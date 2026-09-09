@@ -39,6 +39,18 @@ use super::effects::encode_layout_or_log;
 use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
 use super::run_action::run_action;
 
+fn edits_workspace(action: &str) -> bool {
+    matches!(
+        action,
+        "split-pane"
+            | "new-window"
+            | "kill-pane"
+            | "kill-window"
+            | "rename-window"
+            | "resize-pane"
+            | "plugin-pane"
+    )
+}
 /// A stage's verdict on one input event: whether the event is fully
 /// handled (the batch loop advances to the next event) and whether the
 /// stage mutated state the caller must repaint.
@@ -332,6 +344,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         &mut self,
         resolved: &phux_config::keybind::ResolvedAction,
     ) -> Result<bool, AttachError> {
+        if !self.ctx.layout_read_complete && edits_workspace(&resolved.action) {
+            tracing::debug!(action = %resolved.action, "waiting for initial shared layout read");
+            return Ok(false);
+        }
         let effects = run_action(resolved, self.ctx, self.focused_pane.as_ref(), self.panes);
         apply_action_effects(
             effects,
@@ -625,7 +641,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// Broadcast the layout a finished divider drag produced via
     /// `SET_METADATA`, so other attached clients converge on it.
     async fn broadcast_dragged_layout(&mut self) -> Result<(), AttachError> {
-        if let Some(session) = self.ctx.focused_session
+        if self.ctx.layout_read_complete
+            && let Some(session) = self.ctx.focused_session
             && let Some(bytes) = encode_layout_or_log(self.ctx.workspace)
         {
             let request_id = *self.ctx.next_request_id;
@@ -1012,7 +1029,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         node_path: crate::layout::NodePath,
         axis: crate::layout::SplitDir,
     ) -> bool {
-        if !is_left_press(mouse) {
+        if !self.ctx.layout_read_complete || !is_left_press(mouse) {
             tracing::trace!(x = mouse.x, y = mouse.y, "dropping mouse on divider");
             return false;
         }

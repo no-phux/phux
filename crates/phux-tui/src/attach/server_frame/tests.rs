@@ -851,23 +851,20 @@ fn window_leaves(ws: &Workspace, idx: usize) -> Vec<TerminalId> {
         .unwrap_or_default()
 }
 
-/// phux-jy4t: a freshly created session reads the group-shared layout
-/// metadata, which holds a DIFFERENT session's tree. When this session's
-/// real ATTACHED pane is not a leaf of ANY window, the whole loaded
-/// workspace is foreign and must be discarded for a clean single pane — not
-/// rendered as the old layout with dead/empty panes.
 #[test]
-fn reconcile_discards_a_foreign_session_layout() {
-    let foreign = ws1(split2(1, 2, 1)); // leaves {1, 2}, from another session
+fn reconcile_accepts_authorized_replacement_without_terminal_overlap() {
+    let mut replacement = ws1(split2(1, 2, 1));
     let local = Workspace::single(tid(9));
-    let out = super::reconcile_loaded_workspace(foreign, &local, Some(&tid(9)), &HashMap::new());
+    replacement.windows[0].id = local.windows[0].id;
+    let out = super::reconcile_loaded_workspace(replacement, &local, Some(&tid(9)));
     assert_eq!(out.windows.len(), 1);
     assert_eq!(
         window_leaves(&out, 0),
-        vec![tid(9)],
-        "foreign layout discarded → clean single pane of the real terminal"
+        vec![tid(1), tid(2)],
+        "session authority does not depend on currently admitted replicas"
     );
-    assert_eq!(out.windows[0].state.focus, Some(tid(9)));
+    assert_eq!(out.windows[0].state.focus, Some(tid(1)));
+    assert_eq!(out.windows[0].id, local.windows[0].id);
 }
 
 #[test]
@@ -876,7 +873,7 @@ fn reconcile_keeps_a_layout_that_contains_the_session_pane() {
     // multi-pane tree is preserved (not discarded).
     let own = ws1(split2(1, 2, 1));
     let local = Workspace::single(tid(1));
-    let out = super::reconcile_loaded_workspace(own, &local, Some(&tid(1)), &HashMap::new());
+    let out = super::reconcile_loaded_workspace(own, &local, Some(&tid(1)));
     let leaves = window_leaves(&out, 0);
     assert!(
         leaves.contains(&tid(1)) && leaves.contains(&tid(2)),
@@ -888,7 +885,7 @@ fn reconcile_keeps_a_layout_that_contains_the_session_pane() {
 fn reconcile_without_bootstrap_focus_keeps_the_tree() {
     // No ATTACHED focus to validate against ⇒ don't discard.
     let tree = ws1(split2(1, 2, 1));
-    let out = super::reconcile_loaded_workspace(tree, &Workspace::default(), None, &HashMap::new());
+    let out = super::reconcile_loaded_workspace(tree, &Workspace::default(), None);
     assert_eq!(
         window_leaves(&out, 0).len(),
         2,
@@ -913,7 +910,7 @@ fn reconcile_multi_window_does_not_alias_non_active_windows() {
     };
     // Focus is on window 0's pane (tid 1); window 1 (tid 2) is non-active.
     let local = ws.clone();
-    let out = super::reconcile_loaded_workspace(ws, &local, Some(&tid(1)), &HashMap::new());
+    let out = super::reconcile_loaded_workspace(ws, &local, Some(&tid(1)));
     assert_eq!(out.windows.len(), 2, "both windows survive");
     assert_eq!(window_leaves(&out, 0), vec![tid(1)]);
     assert_eq!(
@@ -1287,11 +1284,8 @@ fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
     assert_eq!(outcome.foreign_layout, Some((SessionId::new(2), None)));
 }
 
-/// The bare legacy key predates per-session keying, so it can only be
-/// ours and must still be adopted — the guard tightens attribution
-/// without breaking a config written by an older client.
 #[test]
-fn the_bare_legacy_layout_key_is_still_adopted() {
+fn an_unscoped_layout_key_has_no_session_authority() {
     use phux_protocol::wire::frame::Scope;
 
     let mut local = Workspace::single(tid(1));
@@ -1312,8 +1306,9 @@ fn the_bare_legacy_layout_key_is_still_adopted() {
         &mut panes,
     );
 
-    assert!(outcome.layout_replaced, "the legacy key is ours");
+    assert!(!outcome.layout_replaced);
     assert!(outcome.foreign_layout.is_none());
+    assert_eq!(window_leaves(&local, 0), vec![tid(1)]);
 }
 
 /// phux-k0cw: a `phux.agent/v1` push for a pane we hold no slot for is a
@@ -1365,7 +1360,7 @@ fn rejected_cross_session_layout_emits_no_attach_panes() {
     let outcome = drive_layout_frame(
         FrameKind::MetadataChanged {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
-            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            key: phux_client::layout_ops::layout_key(SessionId::new(2)),
             value: Some(bytes),
         },
         None,
@@ -1377,6 +1372,33 @@ fn rejected_cross_session_layout_emits_no_attach_panes() {
     assert!(outcome.attach_panes.is_empty());
     assert_eq!(window_leaves(&local, 0), vec![tid(9)]);
     assert_eq!(focused, Some(tid(9)));
+}
+
+#[test]
+fn session_keyed_replacement_keeps_stable_window_with_all_new_leaves() {
+    let mut local = ws1(split2(1, 2, 2));
+    let stable_id = local.windows[0].id;
+    let mut replacement = ws1(split2(5, 6, 6));
+    replacement.windows[0].id = stable_id;
+    let mut focused = Some(tid(2));
+    let mut panes = panes_for(&[&tid(1), &tid(2)]);
+    let outcome = drive_layout_frame(
+        FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            value: Some(replacement.encode_cbor().unwrap()),
+        },
+        None,
+        &mut local,
+        &mut focused,
+        &mut panes,
+    );
+    assert_eq!(local.windows[0].id, stable_id);
+    assert_eq!(window_leaves(&local, 0), vec![tid(5), tid(6)]);
+    assert_eq!(focused, Some(tid(5)));
+    assert_eq!(outcome.attach_panes, vec![tid(5), tid(6)]);
+    assert!(!outcome.emit_set_metadata);
+    assert_eq!(panes.len(), 2);
 }
 
 #[test]
@@ -1454,9 +1476,7 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
         ],
         active: 0,
     };
-    let panes = panes_for(&[&tid(1), &tid(2), &tid(3), &tid(4), &tid(9)]);
-
-    let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)), &panes);
+    let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)));
 
     assert_eq!(out.active, 1, "removed local index clamps to last window");
     assert_eq!(out.windows[0].state.focus, Some(tid(1)));

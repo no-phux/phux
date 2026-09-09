@@ -369,6 +369,61 @@ fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operatio
 }
 
 #[test]
+fn wrong_reply_kinds_refuse_owned_ids_and_allow_the_next_refresh() {
+    for role in 0..4 {
+        let mut client = harness();
+        let before = client.inner.workspace.topology.clone();
+        if role < 2 {
+            // SAFETY: live exclusive client.
+            assert_eq!(
+                unsafe { phux_client_workspace_refresh(&raw mut *client, 1) },
+                PhuxClientResult::Ok
+            );
+        } else {
+            let input = edit(&client, 1, 6);
+            // SAFETY: live disjoint client and input.
+            assert_eq!(
+                unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+                PhuxClientResult::Ok
+            );
+        }
+        let pending = client.inner.workspace.pending.as_ref().unwrap();
+        let id = match role {
+            0 => pending.state_id.unwrap(),
+            1 => pending.metadata_id,
+            _ => pending.set_id.unwrap(),
+        };
+        let wrong = if role == 0 || role == 3 {
+            FrameKind::MetadataValue {
+                request_id: id,
+                value: None,
+            }
+        } else {
+            FrameKind::CommandResult {
+                request_id: id,
+                result: CommandResult::Ok,
+            }
+        };
+        feed(&mut client, wrong.clone());
+        assert_eq!(client.inner.workspace.status, 3);
+        assert!(client.inner.workspace.pending.is_none());
+        assert_eq!(client.inner.workspace.topology, before);
+        // SAFETY: live exclusive client; prior refusal must not wedge the slot.
+        assert_eq!(
+            unsafe { phux_client_workspace_refresh(&raw mut *client, 2) },
+            PhuxClientResult::Ok
+        );
+        feed(&mut client, wrong);
+        assert_eq!(
+            client.inner.workspace.status, 1,
+            "stale IDs are no longer owned"
+        );
+        finish(&mut client, registry(1, false), None);
+        assert_eq!(client.inner.workspace.status, 2);
+    }
+}
+
+#[test]
 fn operation_interleaving_and_internal_duplicates_are_fenced() {
     let mut client = harness();
     // SAFETY: client and stack options are live and disjoint.

@@ -123,6 +123,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: Some(&mut resolver),
         focus_history: FocusHistory::default(),
@@ -256,6 +257,7 @@ async fn dispatch_with_passthrough_popup(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: Some(&mut resolver),
         focus_history: FocusHistory::default(),
@@ -433,6 +435,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -691,6 +694,7 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -918,6 +922,7 @@ async fn dispatch_bar_click(
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
@@ -1195,6 +1200,10 @@ async fn dispatch_mouse_two_pane_with(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "composed DispatchCtx fixture includes the confirmed initial-read state"
+)]
 async fn dispatch_mouse_two_pane_into(
     overlays: &mut OverlayState,
     mut events: Vec<InputEvent>,
@@ -1244,6 +1253,7 @@ async fn dispatch_mouse_two_pane_into(
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
@@ -1826,6 +1836,7 @@ fn run_set_pane(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -2065,6 +2076,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         // No resolver: every key forwards straight through to the pane,
         // past the predict layer — no keybinding interception to muddy

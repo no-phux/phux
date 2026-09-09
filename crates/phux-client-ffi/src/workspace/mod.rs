@@ -229,10 +229,13 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
                 client.workspace.fail(&BridgeError::state(message));
             }
         }
-        FrameKind::TerminalSpawned { request_id, .. } if request_id >= INTERNAL_START => {
+        FrameKind::TerminalSpawned { request_id, .. }
+        | FrameKind::TerminalMoved { request_id, .. }
+            if request_id >= INTERNAL_START =>
+        {
             if pending_id(&client.workspace, request_id) {
                 client.workspace.fail(&BridgeError::invalid(
-                    "spawn reply cannot answer a workspace read",
+                    "unexpected reply kind for workspace transaction",
                 ));
             }
         }
@@ -242,10 +245,20 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
 }
 
 fn pending_id(workspace: &SharedWorkspace, id: u32) -> bool {
-    workspace
-        .pending
-        .as_ref()
-        .is_some_and(|p| p.state_id == Some(id) || p.metadata_id == id || p.set_id == Some(id))
+    workspace.pending.as_ref().is_some_and(|p| {
+        p.state_id == Some(id)
+            || (p.metadata_id == id && p.metadata.is_none())
+            || p.set_id == Some(id)
+    })
+}
+
+fn reject_owned_reply(workspace: &SharedWorkspace, id: u32) -> Result<(), BridgeError> {
+    if pending_id(workspace, id) {
+        return Err(BridgeError::invalid(
+            "unexpected reply kind for workspace transaction",
+        ));
+    }
+    Ok(())
 }
 
 fn receive_state(client: &mut Client, id: u32, result: CommandResult) -> Result<(), BridgeError> {
@@ -253,7 +266,7 @@ fn receive_state(client: &mut Client, id: u32, result: CommandResult) -> Result<
         return Ok(());
     };
     if pending.state_id != Some(id) {
-        return Ok(());
+        return reject_owned_reply(&client.workspace, id);
     }
     let snapshot = match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
@@ -272,7 +285,10 @@ fn receive_metadata(client: &mut Client, id: u32, bytes: Option<&[u8]>) -> Resul
     let Some(pending) = client.workspace.pending.as_ref() else {
         return Ok(());
     };
-    if pending.metadata_id != id || pending.metadata.is_some() {
+    if pending.metadata_id != id {
+        return reject_owned_reply(&client.workspace, id);
+    }
+    if pending.metadata.is_some() {
         return Ok(());
     }
     if bytes.is_some_and(|bytes| bytes.len() > 256 * 1024) {

@@ -58,8 +58,8 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     zoomed: &'a mut Option<TerminalId>,
     session_name: &'a mut String,
     // phux-k0cw: this client's own session, so the layout arm can tell OUR
-    // layout broadcast from a peer's. `None` before ATTACHED resolves one, in
-    // which case only the bare legacy key is adopted — the safe direction.
+    // layout broadcast from a peer's. No layout is attributed locally until
+    // ATTACHED resolves the session.
     focused_session: Option<SessionId>,
     /// `Option` so an attach with no configured widgets pays nothing for the
     /// chrome path.
@@ -1012,7 +1012,10 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
         return Ok(FrameOutcome::default());
     }
     let Some(bytes) = value else {
-        return Ok(FrameOutcome::default());
+        return Ok(FrameOutcome {
+            layout_get_answered: true,
+            ..FrameOutcome::default()
+        });
     };
     match ctx.decode_own_layout(&bytes) {
         Ok(new_ws) => {
@@ -1058,20 +1061,13 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         });
     }
-    let Some(key_session) = layout_key_scope_session(scope, key) else {
+    let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
     };
-    // phux-k0cw: adopt ONLY our own session's layout. The legacy
-    // key predates per-session keying and is ours by construction;
-    // any NAMED session must match our own, including when we have no
-    // session yet, in which case nothing named is ours. A peer's
-    // topology routes out as `foreign_layout` for the roster to read;
-    // adopting it here would replace the local pane tree.
-    if let LayoutKeyOwner::Session(session) = key_session
-        && ctx.focused_session != Some(session)
-    {
+    // Session-key attribution is the authority; a bare key identifies no owner.
+    if ctx.focused_session != Some(key_session) {
         return Ok(FrameOutcome {
-            foreign_layout: Some((session, value)),
+            foreign_layout: Some((key_session, value)),
             ..FrameOutcome::default()
         });
     }
@@ -1148,24 +1144,15 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
 /// the leaves this client has never seen.
 ///
 /// Also re-anchors the driver's focused-pane mirror onto the active window's
-/// client-local reconciled focus. Leaves are only discovered when the
-/// foreign-session guard accepted the envelope.
+/// client-local reconciled focus. The correlated GET or session-key guard has
+/// already established ownership; missing replicas are discovered after adoption.
 fn adopt_workspace<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     incoming: Workspace,
 ) -> Vec<TerminalId> {
-    let (reconciled, accepted) = reconcile_loaded_workspace_checked(
-        incoming,
-        ctx.workspace,
-        ctx.focused_pane.as_ref(),
-        ctx.panes,
-    );
+    let reconciled = reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_pane.as_ref());
     *ctx.workspace = reconciled;
-    let attach_panes = if accepted {
-        unknown_layout_leaves(ctx.workspace, ctx.panes)
-    } else {
-        Vec::new()
-    };
+    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes);
     *ctx.focused_pane = ctx
         .workspace
         .active_window()
@@ -1772,58 +1759,13 @@ pub(super) fn unknown_layout_leaves(
         .collect()
 }
 
-#[cfg(test)]
+/// Reconcile a workspace whose session ownership was established by its key or
+/// correlated GET. Terminal overlap and replica admission are not authority.
 pub(super) fn reconcile_loaded_workspace(
-    incoming: Workspace,
-    local: &Workspace,
-    bootstrap_focus: Option<&TerminalId>,
-    panes: &HashMap<TerminalId, PaneSlot>,
-) -> Workspace {
-    reconcile_loaded_workspace_checked(incoming, local, bootstrap_focus, panes).0
-}
-
-/// Reconcile topology and report whether the foreign-session guard accepted it.
-/// Callers must only discover/attach new leaves when `accepted` is true.
-pub(super) fn reconcile_loaded_workspace_checked(
     mut incoming: Workspace,
     local: &Workspace,
     bootstrap_focus: Option<&TerminalId>,
-    panes: &HashMap<TerminalId, PaneSlot>,
-) -> (Workspace, bool) {
-    let incoming_leaves: Vec<TerminalId> = incoming
-        .windows
-        .iter()
-        .flat_map(|w| {
-            w.state
-                .tree
-                .as_ref()
-                .map(crate::layout::leaves)
-                .unwrap_or_default()
-        })
-        .collect();
-    let local_leaves: Vec<TerminalId> = local
-        .windows
-        .iter()
-        .flat_map(|w| {
-            w.state
-                .tree
-                .as_ref()
-                .map(crate::layout::leaves)
-                .unwrap_or_default()
-        })
-        .collect();
-    let has_session_evidence = !local_leaves.is_empty() || !panes.is_empty();
-    let belongs_to_session = incoming_leaves
-        .iter()
-        .any(|leaf| local_leaves.contains(leaf) || panes.contains_key(leaf));
-    if !incoming_leaves.is_empty()
-        && has_session_evidence
-        && !belongs_to_session
-        && let Some(focus) = bootstrap_focus
-    {
-        return (Workspace::single(focus.clone()), false);
-    }
-
+) -> Workspace {
     for window in &mut incoming.windows {
         let local_focus = local
             .windows
@@ -1834,7 +1776,7 @@ pub(super) fn reconcile_loaded_workspace_checked(
         reconcile_loaded_layout(&mut window.state, local_focus);
     }
     incoming.active = reconciled_active_window(&incoming, local, bootstrap_focus);
-    (incoming, true)
+    incoming
 }
 
 fn reconciled_active_window(

@@ -71,6 +71,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     );
     send_layout_metadata(
         effects.set_metadata,
+        ctx.layout_read_complete,
         conn,
         ctx.workspace,
         ctx.focused_session,
@@ -180,12 +181,13 @@ fn apply_focus_effect(
 /// session's layout, not a key every session shares.
 async fn send_layout_metadata(
     set_metadata: bool,
+    layout_read_complete: bool,
     conn: &mut Connection,
     workspace: &Workspace,
     focused_session: Option<phux_protocol::ids::SessionId>,
     next_request_id: &mut u32,
 ) -> Result<(), AttachError> {
-    if !set_metadata {
+    if !set_metadata || !layout_read_complete {
         return Ok(());
     }
     let Some(session) = focused_session else {

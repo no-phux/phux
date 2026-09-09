@@ -233,6 +233,7 @@ fn run_with_last_and_spawn_size(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: last_focused.map_or_else(FocusHistory::default, FocusHistory::with_previous),
@@ -782,6 +783,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -858,6 +860,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -969,6 +972,7 @@ fn run_capturing_with_sessions(
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
@@ -1144,6 +1148,7 @@ fn run_with_panes(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -1616,6 +1621,7 @@ fn run_attention(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         workspace,
@@ -2103,6 +2109,7 @@ fn detach_action_requests_detach_effect() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -2200,6 +2207,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
