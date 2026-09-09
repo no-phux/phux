@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-15
+last-reviewed: 2026-09-09
 ---
 
 # Releasing
@@ -68,6 +68,7 @@ tap build.
 | Browser CI | shared classifier on PR/main, manual | Node adapters/session tests, shipping package, and three real Chrome canvas/live-server tests. Only engine inputs reproduce the committed WASM binary. |
 | Native setup | setup inputs, weekly, manual | Uncached native setup/linker assurance; ordinary Rust source changes use the product lanes. |
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title. Live rules require `ci` and `commitlint` (verified 2026-09-09). |
+| pr-janitor | `pull_request` `closed`, or manual dispatch with a PR number | Cancels the closed PR's still-live runs to free standard/macOS concurrency, then deletes its `refs/pull/N/merge` caches to free the 10 GB repository cap. See "Cache budget". |
 | Main CI | push to `main` | Reuses successful same-repository validation only for an identical tree, workflow and routed coverage; otherwise runs the normal lanes. Cheap guards always run. |
 | release-please | push to `main` | Maintains the release PR; creates tags/drafts, waits for validation of each emitted tag's exact commit, then calls artifact workflows. |
 | Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
@@ -89,6 +90,34 @@ standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-22.04`,
 `ubuntu-22.04-arm` and `macos-26` labels. Blacksmith and larger hosted runners
 are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
 runner registration. GitHub artifact/cache storage is a separate billing surface.
+
+### Cache budget
+
+Free runner minutes are not the scarce resource; the two shared budgets below
+are, and both are reclaimed by `pr-janitor` when a pull request closes.
+
+**Actions cache is capped at 10 GB for the whole repository**, evicted
+least-recently-used across every ref. A cache saved on `refs/pull/N/merge` is
+restorable only from that pull request — never from `main`, never from another
+PR — so once the PR closes the entry is unreachable while still occupying the
+cap until the 7-day idle eviction. The budget is therefore shared between the
+warm `main` entries every lane restores from and the per-PR entries nothing can
+restore.
+
+Two policies keep `main`'s entries resident, and they are deliberately
+symmetric. `rust-cache` sets `save-if` to `main` only. sccache's GHA backend
+sets `SCCACHE_GHA_RW_MODE=READ_ONLY` off `main`: it stores one cache entry per
+compilation object, so a read-write PR lane writes thousands of unreachable
+entries and evicts the very objects it wants to restore next time. Read-only PR
+lanes still restore `main`'s objects and contribute nothing to the cap. Any new
+cache added to a PR-triggered lane needs the same treatment or an explanation
+of why it does not.
+
+**Standard-runner concurrency is 20 jobs, and only 5 of them may be macOS.**
+That is the account limit, not a per-workflow one, so the macOS Cockpit and
+release legs contend across every open PR at once. Runs for a closed PR keep
+holding those slots until they time out, which is what `pr-janitor` cancels.
+
 
 Root release targets retain their artifact names and native architectures:
 
