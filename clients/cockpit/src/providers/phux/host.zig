@@ -931,6 +931,8 @@ pub const Host = struct {
                     try host.appendNotice(.status, &effect, generation);
                 },
                 c.PHUX_CLIENT_EFFECT_JOB => try host.appendNotice(.job, &effect, generation),
+                // AgentSession records are accepted and dropped; their projection lands in phux-am9y.25.
+                c.PHUX_CLIENT_EFFECT_AGENT_RECORDS => {},
                 else => return error.Protocol,
             }
         }

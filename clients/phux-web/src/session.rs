@@ -12,10 +12,10 @@ use phux_client_core::engine::{
 };
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
-    EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason,
-    InputEligibility, KernelAction, KernelEffect, KernelInput, KernelSend, SessionKernel,
+    AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
+    HistoryUnavailableReason, InputEligibility, KernelAction, KernelEffect, KernelInput,
+    KernelSend, SessionKernel,
 };
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
@@ -27,6 +27,7 @@ use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ViewportInfo,
 };
+use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
 
 const ATTACH_ID: u32 = 1;
@@ -141,6 +142,22 @@ fn validate_hello_ok(
     Ok(())
 }
 
+/// One `AgentSession` resource projected for the pane on screen: the badge
+/// the DOM shows beside the canvas. Provider and state come from the kernel,
+/// which folds the attach snapshot's facet and every stream record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentBadge {
+    /// The resource id the server assigned to the agent session.
+    pub id: TerminalId,
+    /// The terminal the session is bound to, when the server reported one.
+    pub parent: Option<TerminalId>,
+    /// Provider name, for example `claude`; empty until something names one.
+    pub provider: String,
+    /// Derived lifecycle state word (`working`, `blocked`, `done`, `idle`,
+    /// `ended`, or `unknown`).
+    pub state: String,
+}
+
 /// The result of handling one incoming frame.
 #[derive(Default)]
 pub struct Outcome {
@@ -148,6 +165,8 @@ pub struct Outcome {
     pub send: Vec<Vec<u8>>,
     /// Whether a published replica changed and should be repainted.
     pub render: bool,
+    /// Whether the set of agent badges changed and should be repainted.
+    pub badges: bool,
     /// Fatal protocol/kernel failure; the transport must close.
     pub fatal: Option<String>,
 }
@@ -587,11 +606,57 @@ impl Session {
         })]
     }
 
+    /// Agent badges for the pane on screen: every `AgentSession` the kernel
+    /// holds whose parent is that terminal, in resource-id order. Empty when
+    /// the server reported none or every parent is another pane.
+    #[must_use]
+    pub fn agent_badges(&self) -> Vec<AgentBadge> {
+        let Some(kernel) = self.kernel.as_ref() else {
+            return Vec::new();
+        };
+        let focused = self
+            .first_published_terminal()
+            .or_else(|| self.focused_terminal.clone());
+        let mut badges: Vec<AgentBadge> = kernel
+            .agent_sessions()
+            .filter(|view| view.parent.is_none() || view.parent == focused.as_ref())
+            .map(|view| AgentBadge {
+                id: view.terminal_id.clone(),
+                parent: view.parent.cloned(),
+                provider: view.state.provider.clone().unwrap_or_default(),
+                state: view.state.status.as_str().to_owned(),
+            })
+            .collect();
+        badges.sort_by(|left, right| left.id.cmp(&right.id));
+        badges
+    }
+
+    /// Whether the kernel knows `terminal_id` as an `AgentSession` resource.
+    fn is_agent_session(&self, terminal_id: &TerminalId) -> bool {
+        self.kernel.as_ref().is_some_and(|kernel| {
+            kernel.resource_kind(terminal_id) == Some(ResourceKind::AgentSession)
+        })
+    }
+
     /// Reduce one decoded server frame through the shared kernel.
+    ///
+    /// A fault on an `AgentSession` stream (the kernel retires that generation
+    /// and asks for a resync) never fails the session: the browser cannot
+    /// reopen an agent stream, and a badge is not worth the terminal.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         if self.failed {
             return Outcome::default();
         }
+        let agent_frame = frame_resource_id(&frame).is_some_and(|id| self.is_agent_session(id));
+        let mut outcome = self.reduce_frame(frame);
+        if agent_frame && outcome.fatal.is_some() {
+            self.failed = false;
+            outcome.fatal = None;
+        }
+        outcome
+    }
+
+    fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
         match frame {
             FrameKind::HelloOk {
                 protocol_major,
@@ -643,8 +708,7 @@ impl Session {
                         request_scrollback: true,
                         scrollback_limit_lines: HISTORY_LINES,
                     })],
-                    render: false,
-                    fatal: None,
+                    ..Outcome::default()
                 }
             }
             FrameKind::Attached {
@@ -655,18 +719,51 @@ impl Session {
                 if attach_id != ATTACH_ID {
                     return self.protocol_failure("ATTACHED used the wrong attach identifier");
                 }
-                let terminal_ids: Vec<_> =
-                    snapshot.panes.iter().map(|pane| pane.id.clone()).collect();
+                // Only Terminal-kind resources build panes and gate the
+                // barrier; an AgentSession bound to one of them is declared
+                // to the kernel as a record stream and projected as a badge.
+                let terminal_ids: Vec<_> = snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.kind == ResourceKind::Terminal)
+                    .map(|pane| pane.id.clone())
+                    .collect();
                 let focused_terminal = snapshot.focused_pane;
-                let (outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
+                let (mut outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
                     attach_id,
                     terminals: &terminal_ids,
                 });
-                if applied {
-                    self.focused_terminal = Some(focused_terminal);
-                    self.terminal_order = terminal_ids;
-                    self.render_visible = false;
+                if !applied {
+                    return outcome;
                 }
+                for pane in snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.kind == ResourceKind::AgentSession)
+                    .filter(|pane| {
+                        pane.parent
+                            .as_ref()
+                            .is_some_and(|parent| terminal_ids.contains(parent))
+                    })
+                {
+                    let facet = pane.agent.as_ref();
+                    let (declared, applied) = self.apply_kernel(KernelInput::AgentSessionDeclared(
+                        AgentSessionDeclaration {
+                            terminal_id: &pane.id,
+                            parent: pane.parent.as_ref(),
+                            provider: facet.map(|facet| facet.provider.as_str()),
+                            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
+                            state: facet.map(|facet| facet.state.as_str()),
+                        },
+                    ));
+                    if !applied {
+                        return declared;
+                    }
+                    outcome.badges = true;
+                }
+                self.focused_terminal = Some(focused_terminal);
+                self.terminal_order = terminal_ids;
+                self.render_visible = false;
                 outcome
             }
             FrameKind::BootstrapBegin {
@@ -686,7 +783,7 @@ impl Session {
                     geometry: CanonicalGeometry { cols, rows },
                     base_seq,
                 });
-                if applied {
+                if applied && !self.is_agent_session(&terminal_id) {
                     self.focused_terminal
                         .get_or_insert_with(|| terminal_id.clone());
                 }
@@ -820,11 +917,15 @@ impl Session {
             }
             FrameKind::TerminalClosed { terminal_id, .. } => {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
-                let (outcome, applied) = self.apply_kernel(KernelInput::TerminalClosed {
+                let was_agent = self.is_agent_session(&terminal_id);
+                let (mut outcome, applied) = self.apply_kernel(KernelInput::TerminalClosed {
                     terminal_id: &terminal_id,
                 });
                 if applied && was_focused {
                     self.focused_terminal = self.first_published_terminal();
+                }
+                if applied && was_agent {
+                    outcome.badges = true;
                 }
                 outcome
             }
@@ -944,6 +1045,7 @@ impl Session {
                         outcome.render = true;
                     }
                 }
+                KernelEffect::AgentRecords { .. } => outcome.badges = true,
                 KernelEffect::Status(_) | KernelEffect::Job(_) => {}
             }
         }
@@ -1004,4 +1106,20 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf.to_vec()
+}
+
+/// The resource a terminal-stream frame addresses, when it addresses one.
+fn frame_resource_id(frame: &FrameKind) -> Option<&TerminalId> {
+    match frame {
+        FrameKind::BootstrapBegin { terminal_id, .. }
+        | FrameKind::BootstrapChunk { terminal_id, .. }
+        | FrameKind::BootstrapReady { terminal_id, .. }
+        | FrameKind::BootstrapTombstone { terminal_id, .. }
+        | FrameKind::HistoryPage { terminal_id, .. }
+        | FrameKind::HistoryTombstone { terminal_id, .. }
+        | FrameKind::HistoryRejected { terminal_id, .. }
+        | FrameKind::TerminalOutput { terminal_id, .. }
+        | FrameKind::TerminalClosed { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
 }

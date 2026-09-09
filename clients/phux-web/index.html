@@ -29,6 +29,23 @@
       .hint {
         color: #6a6a73;
       }
+      /* Agent badges the client projects for the pane on screen. */
+      #phux-agent-badges {
+        display: flex;
+        gap: 8px;
+      }
+      .phux-agent-badge {
+        border: 1px solid #232329;
+        border-radius: 4px;
+        padding: 2px 8px;
+        color: #a9a9b3;
+      }
+      .phux-agent-badge[data-state="working"] {
+        color: #d7d7dd;
+      }
+      .phux-agent-badge[data-state="blocked"] {
+        color: #e6b450;
+      }
     </style>
   </head>
   <body>

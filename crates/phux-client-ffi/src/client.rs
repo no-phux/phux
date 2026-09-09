@@ -45,6 +45,89 @@ pub(crate) struct SessionSummary {
     pub focused: bool,
 }
 
+/// One resource from the latest `ATTACHED` snapshot, owned so the C view can
+/// borrow every span until the next mutable call.
+#[derive(Debug)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's resource summaries are populated by the crate-root frame dispatcher"
+)]
+pub(crate) struct ResourceSummary {
+    pub id: TerminalId,
+    pub kind: u32,
+    pub parent: Option<TerminalId>,
+    pub provider: Vec<u8>,
+    pub native_id: Vec<u8>,
+    pub state: Vec<u8>,
+    /// C projection of `parent`; its host span borrows `parent_host`, which
+    /// never moves once the summary is built.
+    parent_view: PhuxTerminalId,
+    parent_host: Vec<u8>,
+}
+
+impl ResourceSummary {
+    pub(crate) fn new(
+        id: TerminalId,
+        kind: u32,
+        parent: Option<TerminalId>,
+        provider: Vec<u8>,
+        native_id: Vec<u8>,
+        state: Vec<u8>,
+    ) -> Self {
+        let parent_host = match &parent {
+            Some(TerminalId::Satellite { host, .. }) => host.as_str().as_bytes().to_vec(),
+            _ => Vec::new(),
+        };
+        let mut summary = Self {
+            id,
+            kind,
+            parent,
+            provider,
+            native_id,
+            state,
+            parent_view: PhuxTerminalId::default(),
+            parent_host,
+        };
+        summary.parent_view = match &summary.parent {
+            Some(TerminalId::Local { id }) => PhuxTerminalId {
+                kind: 0,
+                id: *id,
+                host: PhuxBytes::default(),
+            },
+            Some(TerminalId::Satellite { id, .. }) => PhuxTerminalId {
+                kind: 1,
+                id: *id,
+                host: bytes_out(&summary.parent_host),
+            },
+            None => PhuxTerminalId::default(),
+        };
+        summary
+    }
+
+    /// Null when the resource has no parent; otherwise borrows this summary.
+    pub(crate) const fn parent_ptr(&self) -> *const PhuxTerminalId {
+        if self.parent.is_some() {
+            ptr::from_ref(&self.parent_view)
+        } else {
+            ptr::null()
+        }
+    }
+}
+
+/// Bridge-side bookkeeping for one `AgentSession` stream the kernel owns:
+/// the generation `BOOTSTRAP_BEGIN` opened, and whether the next records
+/// effect is that generation's retained backlog (published at READY) rather
+/// than live output.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's stream records are driven by the crate-root frame dispatcher"
+)]
+pub(crate) struct AgentStream {
+    pub generation: Option<(u64, u64)>,
+    pub retained_pending: bool,
+}
+
 const NO_HYPERLINK: (u32, u32) = (0, 0);
 
 #[cfg(test)]
@@ -182,6 +265,11 @@ pub(crate) struct Client {
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
     pub sessions: Vec<SessionSummary>,
+    /// Every resource in the latest `ATTACHED` snapshot, minus closed ones.
+    pub resources: Vec<ResourceSummary>,
+    /// `AgentSession` resources the active attach declared to the kernel,
+    /// keyed by resource id.
+    pub agent_streams: HashMap<TerminalId, AgentStream>,
     pub operations: crate::operations::Operations,
     pub server_id: Vec<u8>,
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
@@ -232,6 +320,8 @@ impl Client {
             next_document_revision: 1,
             search_results: Vec::new(),
             sessions: Vec::new(),
+            resources: Vec::new(),
+            agent_streams: HashMap::new(),
             operations: crate::operations::Operations::default(),
             server_id: Vec::new(),
             last_error: Vec::new(),
@@ -349,7 +439,9 @@ impl Client {
                 "terminal state frame arrived outside an active ATTACH phase",
             ));
         }
-        if self.session.active_attach_contains(terminal_id) || self.operations.admitted(terminal_id)
+        if self.session.active_attach_contains(terminal_id)
+            || self.operations.admitted(terminal_id)
+            || self.is_agent_stream(terminal_id)
         {
             Ok(())
         } else {
@@ -370,10 +462,80 @@ impl Client {
         self.anchors.clear();
         self.selections.clear();
         self.viewport_anchors.clear();
+        self.agent_streams.clear();
         self.attach_queued = false;
         self.expected_attach_id = None;
         self.attached = false;
         self.detached = true;
+    }
+
+    /// True when `id` names an `AgentSession` resource declared to the kernel
+    /// by the active attach; its stream has no replica and its records reach
+    /// the host as `AGENT_RECORDS` effects.
+    pub(crate) fn is_agent_stream(&self, id: &TerminalId) -> bool {
+        self.agent_streams.contains_key(id)
+    }
+
+    /// Records the generation a `BOOTSTRAP_BEGIN` opened for an agent stream.
+    pub(crate) fn open_agent_generation(
+        &mut self,
+        id: &TerminalId,
+        stream_id: phux_protocol::StreamId,
+        bootstrap_id: phux_protocol::BootstrapId,
+    ) {
+        if let Some(state) = self.agent_streams.get_mut(id) {
+            state.generation = Some((stream_id.get(), bootstrap_id.get()));
+            state.retained_pending = true;
+        }
+    }
+
+    /// Stages one `AGENT_RECORDS` effect from the kernel's decoded records,
+    /// re-encoded as one JSON object per line.
+    fn process_agent_records(
+        &mut self,
+        terminal_id: TerminalId,
+        records: &[phux_client_core::session::agent_stream::AgentEventRecord],
+    ) -> Result<(), BridgeError> {
+        let (generation, retained) =
+            self.agent_streams
+                .get_mut(&terminal_id)
+                .map_or((None, false), |state| {
+                    (
+                        state.generation,
+                        std::mem::replace(&mut state.retained_pending, false),
+                    )
+                });
+        let mut bytes = Vec::new();
+        for record in records {
+            let line = serde_json::json!({
+                "seq": record.seq,
+                "ts_ms": record.ts_ms,
+                "type": record.kind.as_str(),
+                "data": record.data,
+            });
+            serde_json::to_writer(&mut bytes, &line)
+                .map_err(|error| BridgeError::engine(error.to_string()))?;
+            bytes.push(b'\n');
+        }
+        let detail = if retained {
+            crate::types::AGENT_RECORDS_RETAINED
+        } else {
+            crate::types::AGENT_RECORDS_LIVE
+        };
+        let mut out = OwnedEffect::simple(crate::types::EFFECT_AGENT_RECORDS, detail, terminal_id);
+        let (stream_id, bootstrap_id) = generation.unwrap_or((0, 0));
+        out.stream_id = stream_id;
+        out.bootstrap_id = bootstrap_id;
+        out.seq = records.last().map_or(0, |record| record.seq);
+        out.bytes = bytes;
+        self.owned_effects.push(out);
+        Ok(())
+    }
+
+    /// Drops a resource the server reported closed from the catalog.
+    pub(crate) fn forget_resource(&mut self, id: &TerminalId) {
+        self.agent_streams.remove(id);
+        self.resources.retain(|resource| &resource.id != id);
     }
 
     pub(crate) fn terminal_key(&self, id: &TerminalId) -> Result<ReplicaKey, BridgeError> {
@@ -577,6 +739,10 @@ impl Client {
                         out.bootstrap_id = job.key.bootstrap_id.get();
                         self.owned_effects.push(out);
                     }
+                    KernelEffect::AgentRecords {
+                        terminal_id,
+                        records,
+                    } => self.process_agent_records(terminal_id, &records)?,
                 }
             }
             Ok(())

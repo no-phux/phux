@@ -11,7 +11,7 @@ pub mod client;
 pub mod framing;
 pub mod session;
 
-pub use session::{Outcome, Session};
+pub use session::{AgentBadge, Outcome, Session};
 
 use phux_vt_web::{Grid, Rgb};
 use wasm_bindgen::JsCast;

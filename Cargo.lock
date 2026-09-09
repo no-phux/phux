@@ -2221,6 +2221,7 @@ dependencies = [
  "libghostty-vt",
  "phux-client-core",
  "phux-protocol",
+ "serde_json",
 ]
 
 [[package]]

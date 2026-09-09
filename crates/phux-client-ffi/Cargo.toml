@@ -20,5 +20,9 @@ bytes.workspace = true
 libghostty-vt.workspace = true
 phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-protocol.workspace = true
+# The kernel hands the bridge decoded AgentEventsJsonlV1 records; the C ABI
+# carries them as JSON lines again, so the same workspace-pinned encoder
+# re-emits them. No new crate enters the lockfile.
+serde_json.workspace = true
 
 [dev-dependencies]
