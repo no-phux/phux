@@ -225,6 +225,38 @@ fn agentRequest(revision: u64, offset: u16) [13]u8 {
     return request;
 }
 
+fn snapshotTabAttention(bytes: []const u8, tab: usize) u8 {
+    var at: usize = ts_snapshot.header_len;
+    for (0..tab) |_| at += 7 + @as(usize, bytes[at + 5]) + bytes[at + 6];
+    return bytes[at + 4];
+}
+
+test "snapshot attention includes a blocked agent under a nonfocused split" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    var local_refs: [model_module.max_tabs]support.TerminalRef = undefined;
+    try testing.expect(model.provider.terminalRefs(&local_refs) > 0);
+    const local = local_refs[0];
+    const tab = model.ws().tabOfTerminal(parent.ref).?;
+    const tree = model.ws().tree(tab).?;
+    _ = try tree.split(tree.focus, .horizontal, local);
+    try testing.expect(model.focusedTerminalRef().?.eql(local));
+    var buffer: [ts_snapshot.max_bytes]u8 = undefined;
+    try testing.expectEqual(@as(u8, 0), snapshotTabAttention(try engine.snapshot(&buffer), tab));
+    try fixture.adoptAgentSessions(model.phux().?.host, &.{
+        .{ .id = 9100, .parent = parent.id, .provider_name = "claude", .state = "blocked" },
+    });
+    // The selected local split is quiet; the remote sibling owns the agent.
+    // The tab marker must summarize the whole tree, not just its focused leaf.
+    try testing.expect(!projection.terminalNeedsAttention(model, local));
+    try testing.expectEqual(@as(u8, 1), snapshotTabAttention(try engine.snapshot(&buffer), tab));
+    try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9100, .closed, ""));
+    try testing.expectEqual(@as(u8, 0), snapshotTabAttention(try engine.snapshot(&buffer), tab));
+}
+
 test "agent inspection reaches every overflow row with catalog and producer evidence" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try start();

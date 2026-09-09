@@ -263,7 +263,7 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
         if (written + needed > out.len) return error.BufferTooSmall;
 
         std.mem.writeInt(u32, out[written..][0..4], workspace.tabId(index) orelse 0, .little);
-        out[written + 4] = if (projection.terminalNeedsAttention(model, terminal)) 1 else 0;
+        out[written + 4] = if (projection.tabNeedsAttention(model, workspace, index)) 1 else 0;
         out[written + 5] = @intCast(bounded.len);
         out[written + 6] = @intCast(cwd.len);
         @memcpy(out[written + 7 ..][0..bounded.len], bounded);

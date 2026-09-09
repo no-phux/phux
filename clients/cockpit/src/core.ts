@@ -543,13 +543,26 @@ function decimalBytes(value: number): Uint8Array {
   const out = new Uint8Array(5);
   let rest = value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
   let first = 4;
-  for (let i = 4; i >= 0; i -= 1) {
-    const digit = rest % 10;
-    out[i] = digit >= 0 && digit <= 9 ? Math.trunc(digit) + 48 : 48;
-    if (rest > 0) first = i;
-    rest = Math.floor(rest / 10);
+  for (let i = 0; i < 5; i += 1) {
+    const place = decimalPlace(i);
+    let digit = 0;
+    // Division would taint the caller's navigation indices as AOT floats.
+    while (rest >= place) {
+      rest -= place;
+      digit += 1;
+    }
+    out[i] = digit + 48;
+    if (digit > 0 && first === 4) first = i;
   }
   return out.subarray(first);
+}
+
+function decimalPlace(index: number): number {
+  if (index === 0) return 10000;
+  if (index === 1) return 1000;
+  if (index === 2) return 100;
+  if (index === 3) return 10;
+  return 1;
 }
 
 function overflowLabel(hidden: number): Uint8Array {
@@ -661,11 +674,16 @@ function navigationRequestFor(model: Model): Uint8Array {
 }
 
 function jumpAgentParent(model: Model, index: number): Model | [Model, Cmd<Msg>] {
-  if (!model.engineConnected || index === 65535) return model;
+  if (!validAgentParent(model, index)) return model;
+  return [model, Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index))];
+}
+
+function validAgentParent(model: Model, index: number): boolean {
+  if (!model.engineConnected || index === 65535) return false;
   for (const row of model.railRows) {
-    if (row.agent && row.parentIndex === index) return [model, Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index))];
+    if (row.agent && row.parentIndex === index) return true;
   }
-  return model;
+  return false;
 }
 
 function submitAgentParent(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
@@ -679,8 +697,10 @@ function submitAgentParent(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
 }
 
 function failedAgentNavigation(model: Model): Model {
-  return { ...model, paletteRows: NO_ROWS, paletteLoading: false,
+  if (model.agentsMode) return { ...model, paletteRows: NO_ROWS, paletteLoading: false,
     palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Agent catalog unavailable. Refresh to inspect again.") };
+  if (model.paletteOffset > 0) return requestNavigation(model, 0);
+  return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
 }
 
 function loadedNavigation(model: Model, body: Uint8Array): Model {
@@ -1288,10 +1308,10 @@ function engineUnavailable(model: Model, status: Uint8Array): Model {
 }
 
 function withdrawAgentRows(model: Model): Model {
-  return { ...model, railRows: railRows(stampSlots(model.visibleTabs, 0, NO_AGENTS)),
-    tabs: stampSlots(model.tabs, 0, NO_AGENTS), visibleTabs: stampSlots(model.visibleTabs, 0, NO_AGENTS),
-    window1Tabs: stampSlots(model.window1Tabs, 1, NO_AGENTS), window2Tabs: stampSlots(model.window2Tabs, 2, NO_AGENTS),
-    window3Tabs: stampSlots(model.window3Tabs, 3, NO_AGENTS), window4Tabs: stampSlots(model.window4Tabs, 4, NO_AGENTS) };
+  return { ...model, railRows: railRows(stampSlots(model.visibleTabs, 0, NO_AGENTS, 2)),
+    tabs: stampSlots(model.tabs, 0, NO_AGENTS, 2), visibleTabs: stampSlots(model.visibleTabs, 0, NO_AGENTS, 2),
+    window1Tabs: stampSlots(model.window1Tabs, 1, NO_AGENTS, 2), window2Tabs: stampSlots(model.window2Tabs, 2, NO_AGENTS, 2),
+    window3Tabs: stampSlots(model.window3Tabs, 3, NO_AGENTS, 2), window4Tabs: stampSlots(model.window4Tabs, 4, NO_AGENTS, 2) };
 }
 
 /// Only the active native window presents the global core-owned modal. The
@@ -1406,19 +1426,26 @@ function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: 
   for (let i = 0; i < agents.length; i += 1) {
     const row = agents[i];
     if (row.window !== window || row.tab !== tab) continue;
-    const state = row.state;
-    if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) continue;
-    if (!(ordinal >= 0 && ordinal <= 255)) continue;
-    out.push({
-      id: Math.trunc(ordinal),
-      provider: row.provider,
-      state: reportedAgentState(AGENT_STATE_WORDS[Math.trunc(state)], connection),
-      attention: row.attention && connection === 2,
-      resource: row.resource, parent: row.parent, parentIndex: row.parentIndex,
-    });
+    const projected = projectAgentRow(row, ordinal, connection);
+    if (projected === null) continue;
+    out.push(projected);
     ordinal += 1;
   }
   return out.length === 0 ? NO_AGENT_ROWS : out;
+}
+
+function projectAgentRow(row: SnapshotAgentRow, ordinal: number, connection: number): AgentRow | null {
+  const state = row.state;
+  if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) return null;
+  if (!(ordinal >= 0 && ordinal <= 255)) return null;
+  const parentIndex = row.parentIndex;
+  return {
+    id: Math.trunc(ordinal), provider: row.provider,
+    state: reportedAgentState(AGENT_STATE_WORDS[Math.trunc(state)], connection),
+    attention: row.attention && connection === 2,
+    resource: row.resource, parent: row.parent,
+    parentIndex: parentIndex >= 0 && parentIndex < 65535 ? Math.trunc(parentIndex) : 65535,
+  };
 }
 
 function reportedAgentState(state: Uint8Array, connection: number): Uint8Array {
@@ -1426,7 +1453,7 @@ function reportedAgentState(state: Uint8Array, connection: number): Uint8Array {
   return joinBytes(connection === 3 ? asciiBytes("offline / ") : asciiBytes("stale / "), state, NO_BYTES);
 }
 
-function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readonly SnapshotAgentRow[], connection: number = 2): readonly Tab[] {
+function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readonly SnapshotAgentRow[], connection: number): readonly Tab[] {
   const out: Tab[] = [];
   const w = window >= 0 && window <= 4 ? Math.trunc(window) : 0;
   for (let i = 0; i < tabs.length; i += 1) {
@@ -2273,12 +2300,13 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "agent_parent": return jumpAgentParent(model, msg.index);
     case "navigation_loaded":
       return loadedNavigation(model, msg.body);
-    case "navigation_failed":
-      if (model.agentsMode) return failedAgentNavigation(model);
-      if (model.paletteOffset > 0) return [requestNavigation(model, 0), Cmd.request("cockpit.navigation", scopedNavigationRequest(requestNavigation(model, 0)), {
+    case "navigation_failed": {
+      const next = failedAgentNavigation(model);
+      if (!next.paletteLoading) return next;
+      return [next, Cmd.request("cockpit.navigation", navigationRequestFor(next), {
         key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
       })];
-      return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
+    }
     case "settings_reveal":
       if (!model.settingsOpen || !model.configExists) return model;
       return [model, Cmd.host("cockpit.intent", intent(6, model.engineRevision, 0, 0))];
