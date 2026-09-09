@@ -1,9 +1,12 @@
 import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
+import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
 import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
+  type SnapshotTab,
+  type SecondaryWindow,
   invalidation,
   intent,
   sameU64,
@@ -26,8 +29,8 @@ export interface AgentRow {
 }
 
 /// One drawn row of the side rail: a terminal tab, or an agent session
-/// indented under the tab above it. `agent` picks the shape; `index` is the
-/// tab a press selects, which for an agent row is the terminal it runs in.
+/// indented under the tab above it. `agent` picks the shape. A terminal row
+/// captures its tab target; an agent summary has no selection handler.
 export interface RailRow {
   readonly id: number;
   readonly index: number;
@@ -36,6 +39,7 @@ export interface RailRow {
   readonly mark: Uint8Array;
   readonly selected: boolean;
   readonly agent: boolean;
+  readonly target: Uint8Array;
 }
 
 export interface Tab {
@@ -49,6 +53,7 @@ export interface Tab {
   /// Live, never persisted: the rows come from the snapshot the engine just
   /// sent, so a session that closed is simply absent from the next one.
   readonly agents: readonly AgentRow[];
+  readonly target: Uint8Array;
 }
 
 /// One row of the terminal switcher: the tab's position as the person reads
@@ -164,10 +169,15 @@ export interface Model {
   readonly engineConnected: boolean;
   readonly engineSequence: WireU64;
   readonly engineRevision: WireU64;
+  readonly tabCommands: TabCommandState;
+  readonly commandNotice: Uint8Array;
   readonly status: Uint8Array;
 }
 
 export type Msg =
+  | { readonly kind: "select_target"; readonly target: Uint8Array }
+  | { readonly kind: "tab_command_completed"; readonly body: Uint8Array }
+  | { readonly kind: "tab_command_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_tab"; readonly index: number }
   | { readonly kind: "select_active_tab"; readonly index: number }
   | { readonly kind: "select_slot"; readonly slot: number }
@@ -210,6 +220,11 @@ export type Msg =
     };
 
 export const viewUnbound = [
+  "select_tab",
+  "select_slot",
+  "tabCommands",
+  "tab_command_completed",
+  "tab_command_failed",
   "selectedTab",
   "activeWindow",
   "paletteOpen",
@@ -528,7 +543,7 @@ function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: 
   return out.length === 0 ? NO_AGENT_ROWS : out;
 }
 
-function stampSlots(tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[], window: number, agents: readonly SnapshotAgentRow[]): readonly Tab[] {
+function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readonly SnapshotAgentRow[]): readonly Tab[] {
   const out: Tab[] = [];
   const w = window >= 0 && window <= 4 ? Math.trunc(window) : 0;
   for (let i = 0; i < tabs.length; i += 1) {
@@ -538,7 +553,7 @@ function stampSlots(tabs: readonly { readonly id: number; readonly index: number
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, agents: agentRowsFor(agents, w, index) });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, agents: agentRowsFor(agents, w, index), target: t.target });
   }
   return out;
 }
@@ -552,13 +567,13 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
   for (let i = 0; i < tabs.length; i += 1) {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
-    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: NO_BYTES, selected: tab.selected, agent: false });
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: NO_BYTES, selected: tab.selected, agent: false, target: tab.target });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label: row.provider, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label: row.provider, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, target: NO_BYTES });
       ordinal += 1;
     }
   }
@@ -581,7 +596,7 @@ function closedWindow(index: number): WindowState {
   return { ...CLOSED_WINDOW, index: at };
 }
 
-function windowState(index: number, section: { readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] } | null, agents: readonly SnapshotAgentRow[]): WindowState {
+function windowState(index: number, section: SecondaryWindow | null, agents: readonly SnapshotAgentRow[]): WindowState {
   if (section === null) return closedWindow(index);
   const at = index >= 0 && index <= 4 ? Math.trunc(index) : 0;
   const tabs = stampSlots(section.tabs, at, agents);
@@ -735,7 +750,7 @@ export function commandMsg(name: string): Msg | null {
   return null;
 }
 
-function findSection(sections: readonly { readonly index: number; readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] }[], index: number) {
+function findSection(sections: readonly SecondaryWindow[], index: number) {
   for (let i = 0; i < sections.length; i += 1) {
     if (sections[i].index === index) return sections[i];
   }
@@ -756,8 +771,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -820,6 +835,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window4SettingsOpen: false,
       engineConnected: false,
       engineSequence: ZERO_U64,
+      tabCommands: initialTabCommands(),
+      commandNotice: NO_BYTES,
       engineRevision: ZERO_U64,
       status: asciiBytes("Starting Cockpit..."),
     },
@@ -839,7 +856,67 @@ function selectTab(tabs: readonly Tab[], selected: number): readonly Tab[] {
   return tabs.map((tab) => ({ ...tab, selected: tab.index === selected }));
 }
 
+function speculateTabTarget(model: Model, target: Uint8Array): Model {
+  for (const tab of model.tabs) {
+    if (!sameBytes(tab.target, target)) continue;
+    const visibleTabs = selectTab(model.visibleTabs, tab.index);
+    return { ...model, tabs: selectTab(model.tabs, tab.index), visibleTabs, railRows: railRows(visibleTabs), selectedTab: tab.index };
+  }
+  return model;
+}
+
+function tabCommandNotice(outcome: number): Uint8Array {
+  if (outcome === 3) return asciiBytes("Tab selection refused. Select a current tab.");
+  if (outcome === 4) return asciiBytes("Tab selection queue full. New selection not sent.");
+  if (outcome === 5) return asciiBytes("Selection outcome unknown; queued selections canceled.");
+  if (outcome === 6) return asciiBytes("Selection command IDs exhausted. Restart Cockpit.");
+  return NO_BYTES;
+}
+
+function tabCommandModel(model: Model, decision: TabCommandDecision): Model {
+  return { ...model, tabCommands: decision.state, commandNotice: tabCommandNotice(decision.state.outcome) };
+}
+
+interface TabCommandTransition {
+  readonly model: Model;
+  readonly request: Uint8Array;
+}
+
+function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | null {
+  if (msg.kind === "select_target") {
+    const decision = enqueueTabCommand(model.tabCommands, msg.target);
+    const next = tabCommandModel(model, decision);
+    return { model: decision.state.outcome === 1 ? speculateTabTarget(next, msg.target) : next, request: decision.request };
+  }
+  if (msg.kind === "tab_command_completed") {
+    const decision = receiveTabReceipt(model.tabCommands, msg.body);
+    return { model: tabCommandModel(model, decision), request: decision.request };
+  }
+  if (msg.kind === "tab_command_failed") {
+    return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
+  }
+  return null;
+}
+
+function legacySlotIntent(revision: WireU64, slot: number): Uint8Array {
+  if (!(slot >= 0 && slot <= 159)) return NO_BYTES;
+  let window = 0;
+  let index = Math.trunc(slot);
+  while (index >= 32) {
+    index -= 32;
+    window += 1;
+  }
+  return intent(1, revision, index, window);
+}
+
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  const command = tabCommandTransition(model, msg);
+  if (command !== null) {
+    if (command.request.length === 0) return command.model;
+    return [command.model, Cmd.request("cockpit.tab-command", command.request, {
+      key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed",
+    })];
+  }
   switch (msg.kind) {
     case "select_tab":
       return [
@@ -854,17 +931,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "select_active_tab":
       return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 255))];
     case "select_slot": {
-      // A tab pressed in a secondary window's chrome: the intent names that
-      // window so it cannot land on whichever window is active.
-      const slot = msg.slot;
-      if (!(slot >= 0 && slot <= 159)) return model;
-      let window = 0;
-      let index = Math.trunc(slot);
-      while (index >= 32) {
-        index -= 32;
-        window += 1;
-      }
-      return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, index, window))];
+      const payload = legacySlotIntent(model.engineRevision, msg.slot);
+      if (payload.length === 0) return model;
+      return [model, Cmd.host("cockpit.intent", payload)];
     }
     case "new_terminal":
       return [model, Cmd.host("cockpit.intent", intent(2, model.engineRevision, 0, 255))];
@@ -1079,5 +1148,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         }),
       ];
     }
+    default:
+      return model;
   }
 }

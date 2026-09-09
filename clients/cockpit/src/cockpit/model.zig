@@ -450,6 +450,9 @@ pub const Workspace = struct {
     /// Durable Phux layout identity, distinct from the process-local chrome key.
     shared_ids: [max_tabs]?[16]u8 = @splat(null),
     next_tab_id: u32 = 1,
+    /// Invalidates command targets when a retired u32 label ID can be reused.
+    /// Saturation permanently disables identity commands in this workspace.
+    tab_generation: u64 = 0,
     /// The summoned working-set index. Presentational plus a keyboard mode,
     /// and deliberately NOT part of `topologySnapshot`: an open index is not a
     /// workspace shape and must never be restored on launch.
@@ -565,7 +568,10 @@ pub const Workspace = struct {
         while (true) {
             const candidate = workspace.next_tab_id;
             workspace.next_tab_id +%= 1;
-            if (workspace.next_tab_id == 0) workspace.next_tab_id = 1;
+            if (workspace.next_tab_id == 0) {
+                workspace.next_tab_id = 1;
+                workspace.tab_generation +|= 1;
+            }
             if (candidate == 0) continue;
             var used = false;
             for (workspace.tab_ids[0..workspace.tab_count]) |existing| {
@@ -996,7 +1002,7 @@ pub const Model = struct {
     /// every close path drains them through the ordinary pane-close cascade
     /// first, so this only releases storage the model no longer names.
     pub fn closeWindow(model: *Model, index: usize) void {
-        if (index < max_windows) model.window_epochs[index] +%= 1;
+        if (index < max_windows) model.window_epochs[index] +|= 1;
         if (index == 0) {
             model.primary_open = false;
             model.primary = .{};

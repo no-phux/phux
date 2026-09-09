@@ -72,6 +72,34 @@ fingerprints. They do not scan terminal cell content or change the native output
 path. A quiet split click must update the tab's projected title immediately;
 ordinary output in the same pane must not request another chrome snapshot.
 
+## Identity-qualified tab selection
+
+Tab chrome captures the native target bytes in its painted event. The target
+qualifies the existing tab ID by native window slot, window epoch, and tab-ID
+allocation generation. Native resolves all components before adopting a window;
+title, directory, attention, and tab reordering cannot retarget a held click.
+Closed/reused windows and retired tabs reject without changing focus. Epochs
+and allocation generations saturate; exhausted identities reject rather than
+alias an earlier lifetime. These are process-local presentation identities.
+Snapshot extension `tab_contexts` carries the five native window contexts beside
+the independent agent-row record. Both the tab strip and side rail retain the
+same captured target; agent summaries do not acquire selection authority.
+
+`cockpit.tab-command` has one outstanding request and a 16-entry core FIFO,
+including the outstanding request. Every queued entry owns its original target
+and full-u64 command ID. A dedicated native completion slot returns applied or
+rejected with the exact command ID, reason, and resulting sequence/revision.
+Snapshot/navigation requests cannot overwrite it; invalidations cannot settle
+commands. The core cancels unsent selections on an unknown/malformed outcome,
+reports that uncertainty, and never automatically retries. A fresh explicit
+selection receives a new ID. Exhausted command IDs require a new app lifetime.
+
+This route selects an existing presentation synchronously. Durable creation,
+shared close, catalog navigation, and their placement continuations still use
+their existing contracts. Their later command receipts must distinguish
+admission from eventual execution/placement; queueing provider work is not an
+applied presentation result.
+
 ## Acceptance evidence
 
 The shipping extension tests exercise the compiled core and native bridge:
@@ -95,9 +123,18 @@ The shipping extension tests exercise the compiled core and native bridge:
   focus-dependent titles and ordinary-output publication silence.
 - `refused command window adoption still fences ambient targets` checks the
   independent revision fence after refusal and successful-command deduplication.
+- `held painted tab action follows identity after metadata and reorder` checks
+  an event captured from compiled markup, delivered after replacement snapshots.
+- `tab command receipt survives snapshot and navigation requests and rejects
+  reused windows` checks completion independence, exact high command-ID bits,
+  and refusal without focus mutation.
+- `retired tab targets cannot alias reused IDs after allocation rollover`
+  checks tab and window lifetime exhaustion.
 
 The source-side `src/tests/navigation.test.mjs` suite also checks boot/transition
 command order and the exact navigation payload following the commit marker.
+`src/tests/tab-commands.test.mjs` checks FIFO capacity, captured-data ownership,
+exact receipt matching, unknown delivery, and command-ID carry/exhaustion.
 
 The first and third tests were observed failing against `81d78dff` before the
 fix. Run `just cockpit-test` for the same-checkout FFI and compiled-core gate.

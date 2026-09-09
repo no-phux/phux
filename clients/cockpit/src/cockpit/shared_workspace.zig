@@ -25,6 +25,7 @@ const Placement = struct {
     native_window: usize,
     window_epoch: u64 = 0,
     tab_id: u32,
+    tab_generation: u64 = 0,
     focus: ?TerminalRef,
     selected: bool,
     order: usize = 0,
@@ -354,6 +355,7 @@ fn captureWindow(view: *SessionView, workspace: *const model_module.Workspace, n
             .native_window = native_window,
             .window_epoch = epoch,
             .tab_id = workspace.tab_ids[index],
+            .tab_generation = workspace.tab_generation,
             .focus = workspace.tabs[index].focusedTerminal(),
             .selected = workspace.selected_tab == index,
             .order = index,
@@ -488,17 +490,27 @@ const Candidate = struct {
             const tab = workspace.tab_count;
             workspace.tabs[tab] = self.trees[index];
             workspace.shared_ids[tab] = placement.id;
-            workspace.tab_ids[tab] = placement.tab_id;
+            workspace.tab_ids[tab] = if (placement.tab_generation == workspace.tab_generation) placement.tab_id else 0;
             workspace.tab_count += 1;
-            workspace.assignRestoredTabId(tab);
             if (placement.selected) workspace.selected_tab = tab;
         }
+        mintUnrestoredTabIds(model);
         if (model.windowOpen(previous.active_window) and model.window_epochs[previous.active_window] == previous.active_epoch) {
             model.active_window = previous.active_window;
         } else model.active_window = model.firstOpenWindow();
         model.pruneAttachmentState();
     }
 };
+
+/// Reserve every preserved key before minting missing ones. A rollover can
+/// revisit a key belonging to a later candidate; incremental publication would
+/// not yet expose that reservation to the workspace allocator.
+fn mintUnrestoredTabIds(model: *Model) void {
+    for (0..model_module.max_windows) |window| {
+        const workspace = model.wsAt(window) orelse continue;
+        for (0..workspace.tab_count) |tab| workspace.assignRestoredTabId(tab);
+    }
+}
 
 fn validPlacement(model: *const Model, placement: Placement) bool {
     return model.windowOpen(placement.native_window) and model.window_epochs[placement.native_window] == placement.window_epoch;
@@ -630,6 +642,58 @@ test "session A B A restores local native placement and exact terminal selection
     try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
     try std.testing.expect(model.focusedTerminalRef().?.eql(testRef(11)));
     try std.testing.expect(model.shared_workspace.desired_terminal == null);
+}
+
+test "cached session tab identity cannot alias a newer allocation generation" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const commands = @import("native/tab_commands.zig");
+    const aw = [_]shared.Window{testWindow(1, 0)};
+    const an = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(11) }};
+    const a: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &aw, .nodes = &an };
+    const bw = [_]shared.Window{ testWindow(2, 0), testWindow(3, 1), testWindow(4, 2) };
+    const bn = [_]shared.Node{ .{ .kind = .leaf, .terminal_ref = testRef(21) }, .{ .kind = .leaf, .terminal_ref = testRef(22) }, .{ .kind = .leaf, .terminal_ref = testRef(23) } };
+    const b: shared.Snapshot = .{ .session_id = 2, .revision = 1, .state = .authoritative, .windows = &bw, .nodes = &bn };
+    _ = try model.shared_workspace.apply(model, a, 1);
+    const old = commands.capture(model, 0, 0).?;
+    try model.shared_workspace.leaveSession(model);
+    model.primary.next_tab_id = std.math.maxInt(u32);
+    _ = try model.shared_workspace.apply(model, b, 2);
+    const newer = commands.capture(model, 0, 2).?;
+    try std.testing.expectEqual(old.tab_id, newer.tab_id);
+    try std.testing.expect(old.tab_generation != newer.tab_generation);
+    try model.shared_workspace.leaveSession(model);
+    _ = try model.shared_workspace.apply(model, a, 3);
+    try std.testing.expect(newer.resolve(model) == null);
+    try std.testing.expect(old.resolve(model) == null);
+}
+
+test "shared reconstruction reserves later preserved tab IDs before rollover allocation" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const windows = [_]shared.Window{testWindow(1, 0)};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(11) }};
+    var snapshot: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &windows, .nodes = &nodes };
+    _ = try model.shared_workspace.apply(model, snapshot, 1);
+    const preserved = model.primary.tab_ids[0];
+    model.primary.next_tab_id = std.math.maxInt(u32);
+    const replacement = [_]shared.Window{ testWindow(2, 0), testWindow(3, 1), testWindow(4, 2), testWindow(1, 3) };
+    const expanded = [_]shared.Node{
+        .{ .kind = .leaf, .terminal_ref = testRef(21) },
+        .{ .kind = .leaf, .terminal_ref = testRef(22) },
+        .{ .kind = .leaf, .terminal_ref = testRef(23) },
+        .{ .kind = .leaf, .terminal_ref = testRef(11) },
+    };
+    snapshot.windows = &replacement;
+    snapshot.nodes = &expanded;
+    snapshot.revision = 2;
+    _ = try model.shared_workspace.apply(model, snapshot, 1);
+    try std.testing.expectEqual(preserved, model.primary.tab_ids[3]);
+    for (model.primary.tab_ids[0..4], 0..) |id, index| {
+        for (model.primary.tab_ids[index + 1 .. 4]) |later| try std.testing.expect(id != later);
+    }
 }
 
 test "invalid shared replacement leaves last good geometry selection and revision intact" {

@@ -6,6 +6,7 @@ const SNAPSHOT = 2;
 const INVALIDATION_LENGTH = 18;
 /// `ts_snapshot.ExtensionKind.agent_rows`.
 const EXTENSION_AGENT_ROWS = 1;
+const EXTENSION_TAB_CONTEXTS = 2;
 
 const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 
@@ -38,6 +39,7 @@ export interface SnapshotTab {
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
+  readonly target: Uint8Array;
 }
 
 export interface ThemeEntry {
@@ -92,7 +94,7 @@ function readU32(bytes: Uint8Array, at: number): number {
   return value >= 0 && value <= 4294967295 ? Math.trunc(value) : 0;
 }
 
-function readU64(bytes: Uint8Array, at: number): WireU64 {
+export function readU64(bytes: Uint8Array, at: number): WireU64 {
   const low = readU32(bytes, at);
   const high = readU32(bytes, at + 4);
   return {
@@ -127,27 +129,28 @@ function readTabs(bytes: Uint8Array, start: number, count: number, selected: num
   const tabs: SnapshotTab[] = [];
   let at = start;
   for (let index = 0; index < count; index += 1) {
-    if (!(index >= 0 && index <= 255)) return null;
-    if (at + 7 > bytes.length) return null;
-    const rawId = readU32(bytes, at);
-    const titleLength = bytes[at + 5];
-    const cwdLength = bytes[at + 6];
-    if (!(rawId >= 1 && rawId <= 4294967295)) return null;
-    const id = Math.trunc(rawId);
-    if (!(titleLength >= 0 && titleLength <= 255)) return null;
-    if (!(cwdLength >= 0 && cwdLength <= 255)) return null;
-    if (at + 7 + titleLength + cwdLength > bytes.length) return null;
-    tabs.push({
-      id,
-      index,
-      title: bytes.subarray(at + 7, at + 7 + titleLength),
-      cwd: bytes.subarray(at + 7 + titleLength, at + 7 + titleLength + cwdLength),
-      selected: index === selected,
-      attention: bytes[at + 4] !== 0,
-    });
-    at += 7 + titleLength + cwdLength;
+    const tab = readTab(bytes, at, index, selected);
+    if (tab === null) return null;
+    tabs.push(tab);
+    at += 7 + tab.title.length + tab.cwd.length;
   }
   return { tabs, at };
+}
+
+function readTab(bytes: Uint8Array, at: number, index: number, selected: number): SnapshotTab | null {
+  if (!(index >= 0 && index <= 255)) return null;
+  if (at + 7 > bytes.length) return null;
+  const rawId = readU32(bytes, at);
+  if (!(rawId >= 1 && rawId <= 4294967295)) return null;
+  const titleLength = bytes[at + 5];
+  const cwdLength = bytes[at + 6];
+  if (at + 7 + titleLength + cwdLength > bytes.length) return null;
+  return {
+    id: Math.trunc(rawId), index: Math.trunc(index),
+    title: bytes.subarray(at + 7, at + 7 + titleLength),
+    cwd: bytes.subarray(at + 7 + titleLength, at + 7 + titleLength + cwdLength),
+    selected: index === selected, attention: bytes[at + 4] !== 0, target: new Uint8Array(0),
+  };
 }
 
 interface ThemeRecords {
@@ -224,6 +227,7 @@ function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
 interface SecondaryRecords {
   readonly windows: readonly SecondaryWindow[];
   readonly terminalStates: Uint8Array;
+  readonly contexts: Uint8Array;
   readonly agents: readonly SnapshotAgentRow[];
 }
 
@@ -264,8 +268,14 @@ function readAgentRows(bytes: Uint8Array, start: number, length: number): readon
 /// that many payload bytes. A kind this build does not know is stepped over
 /// by its length rather than read as whatever follows it, so the seam grows
 /// by adding kinds and never by moving bytes anybody already parses.
-function readExtensions(bytes: Uint8Array, start: number): readonly SnapshotAgentRow[] | null {
+interface SnapshotExtensions {
+  readonly agents: readonly SnapshotAgentRow[];
+  readonly contexts: Uint8Array;
+}
+
+function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
   let agents: readonly SnapshotAgentRow[] = NO_AGENTS;
+  let contexts: Uint8Array = new Uint8Array(0);
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
@@ -276,10 +286,13 @@ function readExtensions(bytes: Uint8Array, start: number): readonly SnapshotAgen
       const rows = readAgentRows(bytes, at + 3, length);
       if (rows === null) return null;
       agents = rows;
+    } else if (kind === EXTENSION_TAB_CONTEXTS) {
+      if (length !== 80) return null;
+      contexts = bytes.subarray(at + 3, at + 3 + length);
     }
     at += 3 + length;
   }
-  return agents;
+  return { agents, contexts };
 }
 
 function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | null {
@@ -296,14 +309,34 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
     at += 7;
     for (const tab of section.tabs) at += 7 + tab.title.length + tab.cwd.length;
   }
+  return readSnapshotTrailer(bytes, at, secondary);
+}
+
+function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly SecondaryWindow[]): SecondaryRecords | null {
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS };
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0) };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
-  const agents = readExtensions(bytes, at + 5);
-  if (agents === null) return null;
-  return { windows: secondary, terminalStates, agents };
+  const extensions = readExtensions(bytes, at + 5);
+  if (extensions === null) return null;
+  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts };
+}
+
+function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
+  return tabs.map((tab) => ({ ...tab, target: tabTarget(contexts, window, tab.id) }));
+}
+
+/// Retain the native lifetime bytes from THIS projection in the painted event.
+/// They are never reconstructed from a later model when a click is delivered.
+function tabTarget(contexts: Uint8Array, window: number, id: number): Uint8Array {
+  if (contexts.length !== 80) return new Uint8Array(0);
+  const out = new Uint8Array(22);
+  out[0] = 1;
+  out[1] = window;
+  for (let i = 0; i < 16; i += 1) out[2 + i] = contexts[window * 16 + i];
+  writeU32(out, 18, id);
+  return out;
 }
 
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
@@ -325,7 +358,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (secondary === null) return null;
   return {
     connection: bytes[23],
-    secondary: secondary.windows,
+    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, secondary.contexts, window.index) })),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,
@@ -343,12 +376,12 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     runStart: bytes[24],
     runCount: bytes[25],
     tabWidth: bytes[26] + bytes[27] * 256,
-    tabs: main.tabs,
+    tabs: targetTabs(main.tabs, secondary.contexts, 0),
     agents: secondary.agents,
   };
 }
 
-function writeU32(bytes: Uint8Array, at: number, input: number): void {
+export function writeU32(bytes: Uint8Array, at: number, input: number): void {
   const value = input >= 0 && input <= 4294967295 ? Math.trunc(input) : 0;
   bytes[at] = value % 256;
   bytes[at + 1] = Math.floor(value / 256) % 256;

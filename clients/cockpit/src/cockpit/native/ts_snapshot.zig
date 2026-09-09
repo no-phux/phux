@@ -5,6 +5,7 @@ const protocol = @import("ts_protocol.zig");
 const navigation = @import("ts_navigation.zig");
 const theme_module = @import("../../config/theme.zig");
 const signals = @import("remote_signals.zig");
+const tab_commands = @import("tab_commands.zig");
 
 const Model = model_module.Model;
 
@@ -26,7 +27,7 @@ pub const Error = error{BufferTooSmall};
 /// byte, a `u16` length, then that many payload bytes. A decoder that does
 /// not know a kind steps over it by its length instead of reading what
 /// follows as something it is not, so a later kind costs the seam nothing.
-pub const ExtensionKind = enum(u8) { agent_rows = 1 };
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2 };
 
 /// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
 /// what keeps the record inside `max_bytes` beside a full workspace; the
@@ -55,7 +56,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -94,6 +95,7 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     if (written + model_module.max_windows > out.len) return error.BufferTooSmall;
     for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
     written += model_module.max_windows;
+    written = try encodeTargetContexts(model, out, written);
     written = try encodeAgentRows(model, out, written);
     return out[0..written];
 }
@@ -142,6 +144,19 @@ fn encodeAgentRows(model: *const Model, out: []u8, start: usize) Error!usize {
     out[start + 3] = @intCast(emitted);
     std.mem.writeInt(u16, out[start + 1 ..][0..2], @intCast(written - (start + 3)), .little);
     return written;
+}
+
+fn encodeTargetContexts(model: *const Model, out: []u8, start: usize) Error!usize {
+    if (start + 3 + tab_commands.context_len > out.len) return error.BufferTooSmall;
+    out[start] = @intFromEnum(ExtensionKind.tab_contexts);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], tab_commands.context_len, .little);
+    for (0..model_module.max_windows) |window| {
+        const at = start + 3 + window * 16;
+        const workspace_at = model.wsAtConst(window);
+        std.mem.writeInt(u64, out[at..][0..8], model.window_epochs[window], .little);
+        std.mem.writeInt(u64, out[at + 8 ..][0..8], if (workspace_at) |ws| ws.tab_generation else std.math.maxInt(u64), .little);
+    }
+    return start + 3 + tab_commands.context_len;
 }
 
 /// The open secondary windows, each as its own section: index, tab count,

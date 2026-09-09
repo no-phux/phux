@@ -11,7 +11,7 @@
               width="{tabWidth}"
               role="tab"
               selected="{tab.selected}"
-              on-toggle="select_tab:{tab.index}"
+              on-toggle="select_target:{tab.target}"
             >{tab.title}</toggle-button>
           </for>
           <if test="{hasOverflow}">
@@ -27,7 +27,8 @@
         </if>
       </row>
       <spacer grow="1" label="phux-terminal-space" />
-      <status-bar>{connectionStatus}</status-bar>
+      <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
+      <else><status-bar>{connectionStatus}</status-bar></else>
     </column>
   </if>
   <else>
@@ -38,7 +39,7 @@
           <button size="sm" variant="ghost" icon="plus" label="New terminal" on-press="new_terminal" />
         </row>
         <list grow="1" gap="4">
-          <for each="railRows" key="id" as="row">
+            <for each="railRows" key="id" as="row">
             <if test="{row.agent}">
               <row gap="4" cross="center">
                 <spacer width="20" />
@@ -52,7 +53,7 @@
                 icon="terminal"
                 role="tab"
                 selected="{row.selected}"
-                on-press="select_tab:{row.index}"
+                  on-press="select_target:{row.target}"
               >{row.label}</list-item>
             </else>
           </for>
@@ -65,7 +66,8 @@
         <if test="{canReconnect}">
           <button size="sm" variant="ghost" on-press="reconnect">Reconnect to Phux</button>
         </if>
-        <status-bar>{connectionStatus}</status-bar>
+        <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
+        <else><status-bar>{connectionStatus}</status-bar></else>
       </column>
       <spacer width="8" />
       <spacer grow="1" label="phux-terminal-space" />
