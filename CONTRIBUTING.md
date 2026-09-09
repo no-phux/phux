@@ -92,19 +92,27 @@ is not enough for `just ci` to be *similar* to CI: a gate that CI runs and
 local run, because `just ci` had no rustdoc step. Every row below is a
 commitment to keep the two columns aligned.
 
+Most rows now say "same recipe" rather than "(identical)". That is the point:
+`ci.yml` used to re-type the cargo invocations, and "identical" was a promise a
+human had to keep on every edit. The workflow calls the recipes instead, so the
+flags exist in exactly one place — the `justfile` — and the columns cannot
+disagree. A row that names a bare `cargo` command under CI is a row where that
+promise is back; prefer adding the recipe.
+
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|
-| formatting | `cargo fmt --all -- --check` | `just fmt-check` (identical) |
-| clippy | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `just lint` (identical) |
-| rustdoc | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features` | `just doc` (identical) |
-| dependency hygiene | `cargo deny check` | `just deny` (identical) |
-| production feature boundaries | `python3 scripts/check-build-features.py` | `just build-features-check` (identical) |
-| opt-out feature compilation | `just build-features-compile` | `just build-features-compile` (identical) |
-| doc system | `scripts/check-docs.sh` | `just docs-check` (identical) |
-| generated glyph table | `scripts/check-generated-font.sh` | `just font-check` (identical) |
-| e2e lane coverage | `scripts/check-e2e-lanes.sh` | `just e2e-lane-check` (identical) |
-| Homebrew formula | `scripts/check-formula.sh` | `just formula-check` (identical) |
-| unit tests | `cargo nextest run --workspace` (default features) | `just test` (identical); `just test-cargo` if nextest is unavailable |
+| formatting | `just fmt-check` | same recipe |
+| clippy | `just lint` | same recipe |
+| rustdoc | `just doc` | same recipe |
+| dependency hygiene | `just deny` | same recipe |
+| production feature boundaries | `just build-features-check` | same recipe |
+| opt-out feature compilation | `just build-features-compile` | same recipe |
+| doc system | `just docs-check` | same recipe |
+| generated glyph table | `just font-check` | same recipe |
+| e2e lane coverage | `just e2e-lane-check` | same recipe |
+| Homebrew formula | `just formula-check` | same recipe |
+| toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
+| unit tests | `NEXTEST_PROFILE=ci just test` (default features) | `just test`; `just test-cargo` if nextest is unavailable |
 | workflow/setup contracts | `just workflow-check` | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `just agent-integrations-check` | same; `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |

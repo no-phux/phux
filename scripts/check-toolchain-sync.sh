@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Guard the native manifests, Mise convenience environment, CI, and containers
+# Guard the native manifests, the Mise and Nix environments, CI, and containers
 # from quietly drifting apart. The authoritative Rust and Zig inputs stay where
 # their native consumers require them: rust-toolchain.toml and zig-toolchain.json.
+#
+# This is a STATIC check: it reads files, so it runs on a CI checkout with no
+# Nix, no Mise and no compilers. `just toolchain-parity` is the complementary
+# runtime check that actually resolves both environments and compares binaries.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/dev-toolchain.sh
 source "$ROOT/scripts/lib/dev-toolchain.sh"
 MISE="$ROOT/mise.toml"
+FLAKE="$ROOT/flake.nix"
 
 failures=0
 
@@ -30,6 +35,26 @@ bun_version="$(mise_value bun)"
 [[ "$(mise_value zig)" == "$zig_version" ]] || fail "mise Zig must be $zig_version"
 [[ "$node_version" =~ ^[0-9]+$ ]] || fail "mise Node must use a major version"
 [[ "$bun_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise Bun must use an exact release"
+
+# The Nix shell must resolve the same compilers and runtimes as the Mise path.
+# Nothing checked this before, and the two had already parted: nixpkgs carried
+# Bun 1.3.13 while mise.toml, `@types/bun` and the site's production builder
+# were all on 1.4.0, so the Nix path type-checked docs/site against a runtime
+# nobody ships. These are string checks against flake.nix rather than an
+# evaluation, so they cost nothing and run without Nix installed.
+#
+# Rust needs no check here: the flake reads rust-toolchain.toml directly.
+zig_attr="zig_$(printf '%s' "${zig_version%.*}" | tr '.' '_')"
+grep -Fq "pkgs.$zig_attr" "$FLAKE" || fail "flake.nix must use pkgs.$zig_attr for Zig $zig_version"
+grep -Fq "pkgs.nodejs_$node_version" "$FLAKE" ||
+    fail "flake.nix must use pkgs.nodejs_$node_version for Node $node_version"
+
+# Bun is pinned by construction: the flake reads mise.toml, so the two cannot
+# hold different versions. What CAN rot is the digest table the pinned build
+# needs, so require an entry for whatever version mise.toml now names.
+grep -Fq 'miseTools.bun' "$FLAKE" || fail 'flake.nix must read the Bun pin from mise.toml (bunVersion = miseTools.bun)'
+grep -Eq "^[[:space:]]*\"$bun_version\" = \{" "$FLAKE" ||
+    fail "flake.nix bunDigests has no entry for Bun $bun_version; add the per-system hashes (see the comment there)"
 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"

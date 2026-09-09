@@ -1,8 +1,50 @@
+# The Mise environment: managed toolchains on top of your own system packages.
+# `flake.nix` is the other supported environment and the fully provisioned one.
+# docs/SETUP.md#choosing-an-environment says which to pick and what each covers.
+#
+# Both environments are held together rather than merely documented as similar:
+# `just toolchain-check` (a `just ci` gate) checks this file against the
+# manifests their native consumers actually read AND against flake.nix, and
+# `just toolchain-parity` compares the two resolved environments tool by tool
+# when both are installed.
+
 [tools]
-# Rust and Zig are duplicated only because their native manifests are consumed
-# by Cargo/rustup and the verified Zig installer. `just toolchain-check` keeps
-# these convenience pins synchronized with those authoritative inputs.
+# --- Compilers and runtimes -------------------------------------------------
+# These change build OUTPUT, so Nix, Mise, CI and the container builders must
+# resolve the same release. Rust and Zig appear here only as a convenience
+# mirror: `rust-toolchain.toml` stays Cargo/rustup's authoritative input and
+# `.config/zig-toolchain.json` stays the verified Zig release-and-digest input.
 rust = "1.98.1"
 zig = "0.16.0"
 node = "24"
+# docs/site builds, tests and type-checks against this exact Bun, and
+# docs/site/worker/Dockerfile pins the same tag for production builds.
+# flake.nix reads this value directly, so the Nix shell cannot lag behind it
+# the way it did at 1.3.13 while this said 1.4.0.
 bun = "1.4.0"
+
+# --- Root gate tools --------------------------------------------------------
+# With these installed, the Mise path runs `just ci`, not just `cargo` loops.
+# Each is pinned to the release the Nix shell currently resolves, so a gate
+# cannot pass in one environment and fail in the other over a linter version.
+# `just toolchain-parity` is what catches them diverging on a nixpkgs bump.
+just = "1.58.0"
+cargo-deny = "0.20.2"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+jq = "1.8.2"
+python = "3.14.7"
+
+# --- Deliberately absent ----------------------------------------------------
+# cargo-nextest has no prebuilt entry in Mise's registry, and the `cargo:`
+# backend would build it from source — which docs/SETUP.md specifically warns
+# against, since nextest's source releases can need a newer compiler than this
+# repository's Rust pin. Install the official prebuilt binary instead:
+# https://nexte.st/docs/installation/pre-built-binaries/. `bash
+# scripts/doctor.sh ci` reports it missing.
+#
+# The browser-client tools (wasm-pack, wasm-bindgen-cli, binaryen, trunk,
+# chromedriver), the Cockpit SDK toolchain, the build-observability crates
+# (cargo-llvm-lines, cargo-bloat, cargo-watch, cargo-insta, cargo-mutants),
+# mold and lldb stay Nix-only or native-install. They are area tools, not root
+# gate tools; `bash scripts/doctor.sh web|cockpit` names each with its remedy.

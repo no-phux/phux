@@ -42,6 +42,57 @@
           ];
           targets = [ "wasm32-unknown-unknown" ];
         };
+
+        # The Nix and Mise environments must resolve the SAME versions, so the
+        # tools whose version this flake would otherwise leave to nixpkgs read
+        # their pin from mise.toml instead. `just toolchain-check` gates the
+        # rest of the matrix (Cargo manifests, clippy MSRV, CI, containers) and
+        # now also gates this file, so no surface can move alone.
+        miseTools = (builtins.fromTOML (builtins.readFile ./mise.toml)).tools;
+
+        # Bun is pinned to an exact release rather than whatever nixpkgs
+        # carries. docs/site builds and tests with it, its `@types/bun` tracks
+        # that release, and docs/site/worker/Dockerfile pins the same tag for
+        # production builds. nixpkgs lagged at 1.3.13 while the pin was 1.4.0,
+        # so the dev shell was type-checking the site against a runtime nobody
+        # ships — the exact drift this whole block exists to prevent.
+        #
+        # The DIGESTS are updated by hand on a version bump, deliberately: a
+        # bump that forgets them fails here loudly ("no digests pinned") rather
+        # than silently resolving to a different bun. Get a new one with
+        #   nix store prefetch-file --hash-type sha256 <asset-url>
+        bunVersion = miseTools.bun;
+        bunAssets = {
+          aarch64-darwin = "bun-darwin-aarch64";
+          x86_64-linux = "bun-linux-x64";
+          aarch64-linux = "bun-linux-aarch64";
+        };
+        bunDigests = {
+          "1.4.0" = {
+            aarch64-darwin = "sha256-xmnpf2Fk4cluBwF0jbmN+ndJKQjL2DlMdVcTSnNd44E=";
+            x86_64-linux = "sha256-LQP7X7g6yLVnrKCigbLOGhoZ1Ij1bClo2Iw/Jekv5FI=";
+            aarch64-linux = "sha256-SxozLuhhmD65O8/m93D/+U4+MbLDiL2uo8jtNeWO7Q4=";
+          };
+        };
+        bunPinned =
+          if pkgs.bun.version == bunVersion then
+            # nixpkgs caught up; prefer its build and let the digests go stale.
+            pkgs.bun
+          else
+            let
+              digests =
+                bunDigests.${bunVersion}
+                  or (throw "flake.nix: no bun digests pinned for ${bunVersion} (mise.toml). Add them to bunDigests.");
+              asset =
+                bunAssets.${system} or (throw "flake.nix: bun has no release asset for ${system}");
+            in
+            pkgs.bun.overrideAttrs (_: {
+              version = bunVersion;
+              src = pkgs.fetchurl {
+                url = "https://github.com/oven-sh/bun/releases/download/bun-v${bunVersion}/${asset}.zip";
+                hash = digests.${system};
+              };
+            });
       in
       {
         devShells.default = pkgs.mkShell {
@@ -76,9 +127,10 @@
             pkgs.chromedriver
             # npm integration gates and workflow contracts use Node too.
             pkgs.nodejs_24
-            # Documentation site builds use Bun. Mise provides this outside
-            # Nix; keep the fully provisioned shell equivalent.
-            pkgs.bun
+            # Documentation site builds use Bun, at the exact release pinned
+            # in mise.toml (see bunPinned above) so this shell, the Mise path
+            # and the site's production builder all agree.
+            bunPinned
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just

@@ -5,13 +5,16 @@ default:
     @just --list
 
 # Check prerequisites for only this work area; also works without just via bash.
+[group('setup')]
 doctor SCOPE="native":
     bash scripts/doctor.sh "{{SCOPE}}"
 
 # Small pure-Rust loop: no Zig, Node, nextest, or browser tools.
+[group('gates')]
 core-check: (doctor "core") (crate-check "phux-core")
 
 # One crate's gate; optional test features (e.g. phux-protocol server).
+[group('gates')]
 crate-check PACKAGE FEATURES="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -23,6 +26,7 @@ crate-check PACKAGE FEATURES="":
     {{AUTO_SPAWN_BACKSTOP}} cargo test "${args[@]}"
 
 # One agent integration's type, unit, packed-artifact, and audit gates.
+[group('gates')]
 integration-check PACKAGE:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -34,10 +38,12 @@ integration-check PACKAGE:
     npm --prefix "integrations/{{PACKAGE}}" run gates
 
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
+[group('setup')]
 native-smoke:
     bash scripts/native-smoke.sh
 
 # Setup helper behavior, including missing tools and rejected compiler downloads.
+[group('setup')]
 setup-check:
     bash scripts/test-dev-setup.sh
 
@@ -81,77 +87,113 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 # (./.phux-xdg) so you can test config changes without touching your real
 # ~/.config/phux. Re-run freely: `phux config init` refuses to clobber.
 # Inspect the result with: XDG_CONFIG_HOME="$PWD/.phux-xdg" phux config show
+[group('setup')]
+[doc('Scaffold a starter config into a worktree-local XDG dir (./.phux-xdg).')]
 scaffold-config:
     XDG_CONFIG_HOME="{{justfile_directory()}}/.phux-xdg" cargo run -q -p phux -- config init
 
 # Quick type-check across the workspace.
+[group('build')]
 check:
     cargo check --workspace --all-targets
 
 # Build the developer executables (debug).
+[group('build')]
 build:
     cargo build --locked -p phux -p phux-mcp
 
 # Build every workspace target, including test harnesses, examples and benches.
+[group('build')]
 build-all:
     cargo build --workspace --all-targets
 
 # Build without browser HTTP/3 support; UDS, WebSocket and raw QUIC remain.
+[group('build')]
 build-lean:
     cargo build --locked -p phux -p phux-mcp --no-default-features
 
 # Release executables with full LTO.
+[group('build')]
 build-release:
     cargo build --locked -p phux -p phux-mcp --release
 
 # Build the stable C ABI and the native macOS Cockpit from this checkout.
-cockpit-build:
-    bash clients/cockpit/scripts/build-phux-artifacts.sh ffi-dev
-    cd clients/cockpit && bash ./scripts/build-shipping-app.sh -Dphux-client-ffi-profile=ffi-dev --summary all
+[group('cockpit')]
+[working-directory('clients/cockpit')]
+cockpit-build: cockpit-artifacts
+    bash ./scripts/build-shipping-app.sh -Dphux-client-ffi-profile=ffi-dev --summary all
 
 # Run the shipping TypeScript graph, native engine regressions, and repository
 # and release contract checks.
-cockpit-test: cockpit-ffi
+[group('cockpit')]
+[doc('Cockpit TypeScript graph, native engine regressions, and contract checks.')]
+[working-directory('clients/cockpit')]
+cockpit-test: cockpit-ffi cockpit-build-contracts
+    ./scripts/check-release-version.sh
+    ./scripts/check-sdk-pin.sh
+    ./scripts/lib/zon_test.sh
+    ./scripts/lib/measure_test.sh
+    ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
+
+# Split out of cockpit-test only because it is the one step that runs from the
+# repository root; the rest share [working-directory('clients/cockpit')].
+[group('cockpit')]
+[private]
+cockpit-build-contracts:
     python3 clients/cockpit/scripts/check-build-contracts.py
-    cd clients/cockpit && ./scripts/check-release-version.sh
-    cd clients/cockpit && ./scripts/check-sdk-pin.sh
-    cd clients/cockpit && ./scripts/lib/zon_test.sh
-    cd clients/cockpit && ./scripts/lib/measure_test.sh
-    cd clients/cockpit && ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
 # Optional bounded mutation scans; arguments are passed to the language runner.
 # These are independent of cockpit-test and the ordinary Rust test gates.
 [positional-arguments]
+[group('mutation')]
+[doc('Bounded Zig mutation scan; arguments pass through to the runner.')]
 mutation-zig *args:
     bash scripts/mutation/zig.sh "$@"
 
 [positional-arguments]
+[group('mutation')]
+[doc('Bounded Rust mutation scan; arguments pass through to the runner.')]
 mutation-rust *args:
     bash scripts/mutation/rust.sh "$@"
 
 # Real-tool adapter acceptance in disposable fixtures (requires the pinned tool).
+[group('mutation')]
 mutation-rust-check:
     python3 scripts/mutation/rust_check.py
 
+[group('mutation')]
+[doc('Zig mutation adapter acceptance against disposable fixtures.')]
 mutation-zig-check:
     PHUX_ZIG_MUTATION_INTEGRATION=1 python3 -B -m unittest discover -s scripts/mutation -p test_zig.py -v
 
 # Build only Cockpit's static archive, with fast unwind-safe development codegen.
+[group('cockpit')]
 cockpit-ffi:
     cargo rustc --locked --profile ffi-dev -p phux-client-ffi --lib --crate-type staticlib
 
 # Production static FFI archive; release codegen with the required panic boundary.
+[group('cockpit')]
 cockpit-ffi-release:
     cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
 
 # Run the isolated developer app with the Phux-backed production graph.
-cockpit-dev:
+[group('cockpit')]
+[working-directory('clients/cockpit')]
+cockpit-dev: cockpit-artifacts
+    ./scripts/dev-run.sh --phux --ffi-profile ffi-dev
+
+# The FFI + header artifacts both app recipes need, built from the repository
+# root before either drops into clients/cockpit.
+[group('cockpit')]
+[private]
+cockpit-artifacts:
     bash clients/cockpit/scripts/build-phux-artifacts.sh ffi-dev
-    cd clients/cockpit && ./scripts/dev-run.sh --phux --ffi-profile ffi-dev
 
 # Build the current checkout and atomically install its developer binaries.
 # The binaries live in Cargo's bin dir, matching normal source installs. Keep
 # that directory ahead of Homebrew in PATH so there is one developer binary.
+[group('build')]
+[doc('Build and atomically install the developer binaries into Cargo bin dir.')]
 install-dev:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -168,19 +210,24 @@ install-dev:
 # Install the rebuilt developer binaries, then hot-swap a server that was
 # already started from the source-install path, preserving sessions (ADR-0032).
 # A server originally started by Homebrew needs a one-time restart first.
+[group('build')]
+[doc('Install rebuilt binaries, then hot-swap the running server, keeping sessions.')]
 rebuild:
     just install-dev
     "${CARGO_HOME:-$HOME/.cargo}/bin/phux" upgrade
 
 # Format every Rust file in place.
+[group('gates')]
 fmt:
     cargo fmt --all
 
 # CI-style format check — fails if anything is dirty.
+[group('gates')]
 fmt-check:
     cargo fmt --all -- --check
 
 # Clippy with warnings denied. The bar.
+[group('gates')]
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -205,6 +252,8 @@ lint:
 # NOTE: no backticks in the echo below — `just` runs backticks as a shell
 # command, so a friendly "run `just ci`" hint would actually RUN `just ci`
 # on every precommit, which is precisely the waste this recipe avoids.
+[group('gates')]
+[doc('Iteration loop: the fast gates ci would reject you on, in the order ci hits them.')]
 precommit: fmt lint docs-gen test e2e
     @echo "precommit clean - now run 'just ci' once to confirm the remaining gates"
 
@@ -213,6 +262,8 @@ precommit: fmt lint docs-gen test e2e
 # Match ci.yml and the e2e/stress lanes: all use the workspace's default feature
 # union. Optional debugger/profiler surfaces compile under lint/doc instead of
 # causing a second test dependency graph. Heap profiling has its own executable.
+[group('test')]
+[doc('Run the workspace unit test pool via nextest.')]
 test:
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace
 
@@ -260,10 +311,16 @@ test:
 # doc claimed "run via `just e2e`"), and workspace_archive_e2e — which is why
 # the filterset below now names them. They add ~2.6s to the lane.
 #
-# Corollary: changes to ci.yml's test build selection must be mirrored here
-# and in stress, otherwise the double-compile comes straight back.
+# Corollary: the build selection here and in `test` must stay identical, or
+# the double-compile comes straight back. This used to say "and in ci.yml",
+# because ci.yml re-typed the cargo invocation and a human had to keep three
+# copies in step. It no longer does: ci.yml's test job runs `just test` and
+# `just e2e`, and its check job runs `just fmt-check|lint|doc|deny`, so the
+# flags exist once, here. Keep it that way — a workflow that inlines a cargo
+# command again reintroduces exactly the drift this note used to beg for.
 
 # Fast e2e lane (every #[ignore]d phux e2e binary + the perf gates) — gates every PR.
+[group('test')]
 e2e:
     # MCP's discovery integration test makes Cargo build its normal executable
     # in this same graph; first_five_minutes_e2e can copy both payload binaries.
@@ -292,6 +349,7 @@ e2e:
 # post-merge/nightly.
 
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
+[group('test')]
 stress:
     cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
@@ -303,6 +361,7 @@ stress:
 # inspection. See crates/phux-server/examples/e2e-repro.rs.
 #
 # One-command real-server repro of a lag/crash edge case.
+[group('test')]
 e2e-repro:
     cargo run -p phux-server --example e2e-repro
 
@@ -315,6 +374,8 @@ e2e-repro:
 #   just trace-attach                 # session "default"
 #   just trace-attach work            # a named session
 #   just trace-attach work phux=trace # crank the level
+[group('perf')]
+[doc('Capture a real traced client session to a timestamped JSON log.')]
 trace-attach session="default" level="phux=debug":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -328,6 +389,8 @@ trace-attach session="default" level="phux=debug":
 # Live performance telemetry of the running server (ADR-0096). One row per
 # hot-path metric, one interval per second; Ctrl-C to stop. Same as
 # `phux perf --watch 1` on the installed binary, built from this tree.
+[group('perf')]
+[doc('Live performance telemetry of the running server (ADR-0096).')]
 perf interval="1":
     cargo run -q -p phux -- perf --watch {{interval}}
 
@@ -338,6 +401,8 @@ perf interval="1":
 # printed artifacts directory. Never touches a running server.
 #   just perf-echo                  # 188x48, full flood
 #   just perf-echo none 120 40      # quiet baseline at 120x40
+[group('perf')]
+[doc('Reproducible echo-latency benchmark against an isolated release server.')]
 perf-echo flood="full" cols="188" rows="48" iters="60":
     cargo build --release -p phux
     bash scripts/bench/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
@@ -348,17 +413,23 @@ perf-echo flood="full" cols="188" rows="48" iters="60":
 # noise in snapshots), then runs every example and fails on any non-zero
 # exit. Like `e2e` it spawns real PTY-backed servers, so it stays OUT of
 # the parallel `ci` pool and runs on demand or as its own CI step.
+[group('test')]
+[doc('Smoke-test the examples/agents/ scripts against a throwaway server.')]
 examples-smoke:
     bash scripts/examples-smoke.sh
 
 # Hermetic argv/control-flow gate for the placed-fleet worked example. Uses a
 # fake phux binary, so it needs neither a server nor installed agent CLIs.
+[group('test')]
+[doc('Hermetic argv and control-flow gate for the placed-fleet example.')]
 agents-fleet-smoke:
     bash examples/agents/tests/placed-fleet-smoke.sh
 
 # Real isolated server dogfood for placement/layout/watch/ask with shell panes;
 # no external agent binary is needed. Set PHUX_DOGFOOD_REAL_AGENTS=1 to also
 # spawn installed claude/codex binaries on the private server.
+[group('test')]
+[doc('Real isolated-server dogfood for placement, layout, watch, and ask.')]
 agents-fleet-live:
     cargo build -p phux
     PHUX="{{justfile_directory()}}/target/debug/phux" \
@@ -366,23 +437,32 @@ agents-fleet-live:
 
 # Run the checked-in plugin package through the same discover/validate/run
 # sequence documented in examples/plugins/agent-tools/README.md.
+[group('test')]
+[doc('Run the checked-in plugin package through discover, validate, and run.')]
 plugin-demo:
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config plugins
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config plugins --json
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect --json
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools list-integrations
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools validate-integrations
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools status-integrations
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools smoke-integrations
-    XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config" cargo run -q -p phux -- config run com.phux.demo.agent-tools detect-agents
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config"
+    demo() { cargo run -q -p phux -- "$@"; }
+    demo config plugins
+    demo config plugins --json
+    demo config run com.phux.demo.agent-tools inspect
+    demo config run com.phux.demo.agent-tools inspect --json
+    demo config run com.phux.demo.agent-tools list-integrations
+    demo config run com.phux.demo.agent-tools validate-integrations
+    demo config run com.phux.demo.agent-tools status-integrations
+    demo config run com.phux.demo.agent-tools smoke-integrations
+    demo config run com.phux.demo.agent-tools detect-agents
 
 # List and verify the herdr parity QA gate without running heavy surfaces.
+[group('test')]
 parity-check-list:
     bash scripts/parity-gate.sh --check-list
 
 # Run the herdr parity QA gate. With no args, runs every parity scenario;
 # pass scenario names to run a subset, e.g. `just parity-gate plugin-demo`.
+[group('test')]
+[doc('Run the herdr parity QA gate: all scenarios, or the named subset.')]
 parity-gate *SCENARIOS:
     bash scripts/parity-gate.sh --run {{SCENARIOS}}
 
@@ -391,6 +471,8 @@ parity-gate *SCENARIOS:
 # `warning` severity: the examples carry deliberate `info`-level nits
 # (sourced libs shellcheck can't follow, single-quoted heredoc-ish
 # program strings) that are correct as written. On-demand, not in `ci`.
+[group('gates')]
+[doc('Lint the harness, guard, and example shell scripts at warning severity.')]
 shellcheck:
     shellcheck --severity=warning scripts/*.sh scripts/ci/*.sh \
       examples/agents/*.sh \
@@ -399,6 +481,8 @@ shellcheck:
 
 # GitHub workflow + composite-action syntax, the fail-closed CI path-routing
 # truth table, and the SHA-pin policy for action references.
+[group('gates')]
+[doc('Workflow syntax, the CI path-routing truth table, and action SHA pins.')]
 workflow-check:
     actionlint .github/workflows/*.yml
     python3 scripts/mutation/test_recipes.py
@@ -411,32 +495,40 @@ workflow-check:
     node scripts/check-release-drift-policy.mjs
 
 # Stable-cargo test for environments without nextest.
+[group('test')]
 test-cargo:
     {{AUTO_SPAWN_BACKSTOP}} cargo test --workspace
 
 # Dependency hygiene: licenses, advisories, bans.
+[group('gates')]
 deny:
     cargo deny check
 
 # Default, lean and headless production dependency boundaries (compile-free).
+[group('gates')]
 build-features-check:
     python3 scripts/check-build-features.py
 
 # Compile opt-out consumers separately: workspace feature unification masks them.
+[group('build')]
 build-features-compile:
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
 
 # Build rustdoc with warnings denied — mirrors the CI `doc` gate.
+[group('gates')]
 doc:
     RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 
 # Watch loop — re-check + test on every save.
+[group('build')]
 watch:
     cargo watch -x check -x 'nextest run --workspace'
 
 # Doc system gates: frontmatter, TL;DR, dead links, ADR status, spec version.
 # See docs/CONVENTIONS.md.
+[group('gates')]
+[doc('Doc gates: frontmatter, TL;DR, dead links, ADR status, spec version.')]
 docs-check:
     bash scripts/check-docs.sh
 
@@ -445,30 +537,60 @@ docs-check:
 # crates/phux/src/refdocs/ byte-compares the tree against this generator's
 # output on every `just test`, so a stale tree fails CI with this recipe as
 # the remedy. Idempotent. See docs/CONVENTIONS.md §"Generated reference docs".
+[group('gates')]
+[doc('Regenerate docs/reference/ from the compiled binary; run after CLI changes.')]
 docs-gen:
     cargo run -q -p phux --bin phux -- gen-reference-docs
 
 # Homebrew formula generator vs the shapes release.yml's matrix can produce.
+[group('gates')]
 formula-check:
     bash scripts/check-formula.sh
 
 # release.yml's pinned Zig tarball digests vs ziglang.org's published index.
 # Skips (exit 0) when the index is unreachable, so it is safe offline.
+[group('gates')]
+[doc('Pinned Zig tarball digests vs the published ziglang.org index.')]
 zig-pin-check:
     bash scripts/check-zig-pins.sh
 
-# Rust's native manifest, verified Zig manifest, Mise, CI, standalone WASM
-# workspaces, and pinned container builders agree on their toolchains.
+# Rust's native manifest, verified Zig manifest, Mise, the Nix flake, CI,
+# standalone WASM workspaces, and pinned container builders agree on their
+# toolchains. Static: reads files, so it runs on a CI checkout with no Nix, no
+# Mise and no compilers, which is why it can be a `ci` gate.
+[group('setup')]
+[doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
     bash scripts/check-toolchain-sync.sh
+
+# The runtime half of toolchain-check: realize BOTH supported environments and
+# compare the binaries they actually hand you, tool by tool.
+#
+# The static check can only see that the files agree. It cannot see nixpkgs
+# quietly resolving a different release than the one mise.toml pins — which is
+# how the Nix shell came to ship Bun 1.3.13 while mise.toml, `@types/bun` and
+# the site's production builder were all on 1.4.0. Run this after bumping a
+# pin or flake.lock.
+#
+# DELIBERATELY NOT IN `ci`: a CI checkout has no Mise, and realizing the dev
+# shell to compare linter versions is not a bar to hold a PR to. It skips
+# (exit 0) when either environment is missing, so it is safe to run anywhere.
+
+# Nix and Mise resolve the same tool versions — advisory, local-only.
+[group('setup')]
+toolchain-parity:
+    bash scripts/check-toolchain-parity.sh
 
 # Install/release documentation contracts (README, INSTALL, RELEASING, the
 # installer, the formula generator, release.yml). Also run by
 # `just release-preflight`; in `ci` so it cannot rot between releases.
+[group('gates')]
+[doc('Install and release doc contracts: README, INSTALL, RELEASING, installer.')]
 install-surface-check:
     bash scripts/check-install-surface.sh
 
 # Every released agent-facing binary embeds a configless, EPIPE-safe --skill.
+[group('gates')]
 skill-contract:
     cargo build -p phux -p phux-mcp
     bash scripts/check-skill-contract.sh
@@ -479,6 +601,7 @@ skill-contract:
 # and not a build.rs.
 
 # Generated glyph table vs its .bdf source — catches hand edits and stale regens.
+[group('gates')]
 font-check:
     bash scripts/check-generated-font.sh
 
@@ -487,6 +610,7 @@ font-check:
 # otherwise it executes nowhere and stays green on nothing. Compile-free.
 
 # Every #[ignore]d e2e binary is named by some lane — no test rots unrun.
+[group('gates')]
 e2e-lane-check:
     bash scripts/check-e2e-lanes.sh
 
@@ -526,6 +650,7 @@ e2e-lane-check:
 #   just complexity 10     # tighter sweep, for finding the next candidates
 
 # Cyclomatic complexity of production code over a CCN ceiling — advisory, local-only.
+[group('perf')]
 complexity CCN="15":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -538,10 +663,12 @@ complexity CCN="15":
       || echo "no production function exceeds CCN {{CCN}}"
 
 # Every non-closed bead carries exactly one of rc-1.0 / post-1.0 — advisory, local-only.
+[group('release')]
 milestone-check:
     node scripts/check-milestone-labels.mjs
 
 # All integration packages and their shared version contract.
+[group('gates')]
 agent-integrations-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -555,21 +682,28 @@ agent-integrations-check:
 # manifest versions with no release. Needs an authenticated `gh`, so it is NOT
 # in `ci` — it reads live GitHub state, not the working tree. release-drift.yml
 # runs it daily; this is the same check, on demand.
+[group('release')]
+[doc('Report stuck releases: drafts, assetless publishes, untagged release PRs.')]
 release-drift grace="120":
     GRACE_MINUTES={{ grace }} node scripts/check-release-drift.mjs
 
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
 # Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
+[group('gates')]
+[doc('Full root gate set: the deterministic and unit bar.')]
 ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check skill-contract agent-integrations-check test
     @echo "ok"
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.
 # Browser and Cockpit clients have separate gates; see docs/SETUP.md.
+[group('gates')]
+[doc('Full root PR bar: ci plus the real-server e2e and agent smoke lanes.')]
 ci-full: ci e2e agents-fleet-smoke
     @echo "ok (full)"
 
 # Print the toolchain we are pinned to.
+[group('setup')]
 toolchain:
     @rustc --version
     @cargo --version
@@ -578,31 +712,43 @@ toolchain:
 # release workflow's naming (phux-<tag>-<target>.tar.gz) under dist/. Used
 # to seed the first Homebrew release locally; CI does this per-target on a
 # `v*` tag. Pass the tag, e.g. `just dist v0.0.1`.
+[group('release')]
+[doc('Package host-target release binaries into dist/, matching release.yml naming.')]
 dist TAG:
     bash scripts/dist.sh {{TAG}}
 
 # Local release preflight before pressing the GitHub Actions release button.
 # Runs version/tag checks, install-surface drift checks, formula generation,
 # and a phux-protocol crates.io package dry-run.
+[group('release')]
+[doc('Release preflight: version/tag, install surface, formula, crate dry-run.')]
 release-preflight TAG:
     bash scripts/release-preflight.sh {{TAG}}
 
 # Same release preflight, but skip the crates.io dry-run when offline or when
 # this is a binary/Homebrew-only release and cargo registry access is flaky.
+[group('release')]
+[doc('Release preflight without the crates.io dry-run, for offline or binary-only.')]
 release-preflight-fast TAG:
     bash scripts/release-preflight.sh {{TAG}} --skip-crate-dry-run
 
 # Check that a release tag matches the resolved Cargo package versions.
+[group('release')]
 release-check TAG:
     bash scripts/check-release-version.sh {{TAG}}
 
 # Dry-run the crates.io publish of phux-protocol (package + verify, no
 # upload). The only publishable crate. Mirrors the publish-crate workflow.
+[group('release')]
+[doc('Dry-run the phux-protocol crates.io publish: package and verify, no upload.')]
 publish-protocol-dry:
     cargo publish --locked --dry-run -p phux-protocol
 
 # Publish phux-protocol to crates.io. IRREVERSIBLE. Requires `cargo login`
 # (or CARGO_REGISTRY_TOKEN). Run `just publish-protocol-dry` first.
+[group('release')]
+[doc('Publish phux-protocol to crates.io. IRREVERSIBLE.')]
+[confirm('Publish phux-protocol to crates.io? This cannot be undone. [y/N]')]
 publish-protocol:
     cargo publish --locked -p phux-protocol
 
@@ -616,6 +762,7 @@ publish-protocol:
 # samply is not a workspace dep — install with `cargo install samply`.
 
 # CPU-profile the phux binary with samply.
+[group('perf')]
 profile *ARGS:
     @if ! command -v samply >/dev/null 2>&1; then \
         echo "error: samply not found on PATH." >&2; \
@@ -653,6 +800,7 @@ profile *ARGS:
 # lane that builds cold for you any more (ADR-0082) — this is the tool.
 
 # HTML compile-time report (critical path, codegen vs frontend).
+[group('perf')]
 timings *ARGS:
     cargo build --workspace --all-targets --timings {{ARGS}}
     @echo "report -> target/cargo-timings/cargo-timing.html"
@@ -667,6 +815,7 @@ timings *ARGS:
 #   just llvm-lines phux --bin phux     # a specific binary target
 
 # Per-function LLVM IR line counts (monomorphization bloat) for one crate.
+[group('perf')]
 llvm-lines PKG='phux-protocol' *ARGS:
     cargo llvm-lines -p {{PKG}} {{ARGS}}
 
@@ -677,11 +826,14 @@ llvm-lines PKG='phux-protocol' *ARGS:
 #   just bloat --bin phux-mcp    # a different binary
 
 # Attribute release binary size by crate (or per-fn with args).
+[group('perf')]
 bloat *ARGS:
     cargo bloat --release --bin phux {{ if ARGS == "" { "--crates" } else { ARGS } }}
 
 # Dependency-graph stats without compiling: locked-package count, duplicate
 # versions (each compiles separately in cold CI), proc-macro and
 # build-script crate counts. Prints markdown to stdout.
+[group('perf')]
+[doc('Dependency-graph stats without compiling: counts, duplicates, proc-macros.')]
 dep-stats:
     bash scripts/ci/dep-stats.sh

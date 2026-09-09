@@ -119,11 +119,11 @@ jobs:
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
-          timed fmt    cargo fmt --all -- --check
-          timed clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
-          timed doc    env RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features
-          timed deny   cargo deny check
-          timed features python3 scripts/check-build-features.py
+          timed fmt    just fmt-check
+          timed clippy just lint
+          timed doc    just doc
+          timed deny   just deny
+          timed features just build-features-check
           timed feature-compile just build-features-compile
           EOF
       - name: sccache stats
@@ -155,7 +155,7 @@ jobs:
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
-          timed unit env NEXTEST_PROFILE=ci cargo nextest run --workspace
+          timed unit env NEXTEST_PROFILE=ci just test
           timed e2e  just e2e
           EOF
       - name: sccache stats

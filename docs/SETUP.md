@@ -6,11 +6,56 @@ last-reviewed: 2026-09-09
 
 # Contributor setup
 
-**TL;DR.** Pick the area you are changing and install only its prerequisites.
-Native tools and the Nix shell run the same build and test commands. Rust and
-Zig use repository pins; Nix additionally pins system dependencies. Start with
-a scoped check, then expand validation for shared code. Browser-client work
-uses the committed engine binary; rebuilding it uses verified pinned source.
+**TL;DR.** Choose an environment (Nix or Mise), then pick the area you are
+changing and install only its prerequisites. Both environments run the same
+build and test commands and are held to the same tool versions by
+`just toolchain-check` and `just toolchain-parity`. Start with a scoped check,
+then expand validation for shared code. Browser-client work uses the committed
+engine binary; rebuilding it uses verified pinned source.
+
+## Choosing an environment
+
+Two are supported. They are not tiers of the same thing: Nix provisions every
+tool this repository uses, Mise provisions the toolchains and lets your own
+system supply the rest.
+
+| | Nix (`flake.nix`) | Mise (`mise.toml`) |
+|---|---|---|
+| Provides | Compilers, every root gate tool, browser and Cockpit toolchains, observability and debugging tools, pinned system libraries | Compilers and runtimes, plus the root gate tools |
+| Runs | Everything, including `just ci-full`, the browser lanes, and Cockpit | `just ci`, once `cargo-nextest` is installed separately |
+| Costs | A dev-shell build on first use | Seconds; per-tool downloads |
+| Choose it when | You want one command to reproduce any lane, or you are touching the browser client, Cockpit, or release infrastructure | You already run a working native toolchain and want the pins managed without adopting Nix |
+
+```sh
+nix develop             # Nix: the fully provisioned shell
+mise install            # Mise: toolchains and gate tools
+```
+
+With [direnv](https://direnv.net), `.envrc` loads Nix by default. To make Mise
+the environment it loads, create an untracked `.envrc.local`:
+
+```sh
+echo 'export PHUX_ENV=mise' > .envrc.local && direnv allow
+```
+
+**They are held together, not merely documented as similar.**
+`just toolchain-check` is a `just ci` gate that reads `mise.toml`, `flake.nix`,
+`rust-toolchain.toml`, `.config/zig-toolchain.json`, the Cargo manifests, the
+workflows, and the container builders and fails if any of them names a
+different Rust, Zig, Node, or Bun. `just toolchain-parity` is the runtime
+half: it resolves both environments and compares the binaries they actually
+hand you. Run it after bumping a pin or `flake.lock` — a static check cannot
+see nixpkgs quietly resolving a different release than the one `mise.toml`
+pins, which is how the Nix shell came to ship Bun 1.3.13 while `mise.toml`,
+`@types/bun`, and the site's production builder were all on 1.4.0.
+
+`cargo-nextest` is the one root gate tool Mise does not supply: it has no
+prebuilt entry in Mise's registry, and building it from source can require a
+newer compiler than this repository's Rust pin. Install the
+[official prebuilt binary](https://nexte.st/docs/installation/pre-built-binaries/);
+`bash scripts/doctor.sh ci` reports it missing. The browser, Cockpit, and
+build-observability tools are likewise Nix-or-native; `mise.toml` lists them
+under "deliberately absent" with the reason.
 
 ## Pick your work area
 
@@ -33,22 +78,16 @@ claim your change passes tests. `docs` and `integrations` do not invoke Rust or
 Zig. The scripts work with macOS's Bash 3.2; workflow routing checks additionally
 use Python 3.11+ and Node.
 
-### Fast local setup with Mise
+### Where the pins actually live
 
-[`mise`](https://mise.jdx.dev/) reads the checked-in `mise.toml` to install the
-same Rust, Zig, Node, and Bun releases used by this repository. It is the
-lightweight alternative to Nix for contributors who want managed compilers but
-their native system packages from the host:
-
-```sh
-mise install
-just toolchain-check
-```
-
+[`mise`](https://mise.jdx.dev/) reads the checked-in `mise.toml`, but that file
+is a mirror for shell setup, not the source of truth for everything in it.
 `rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
-Mise mirrors them for shell setup; `toolchain-check` is in CI so an update cannot
-leave the three surfaces out of sync.
+Bun is the exception in the other direction: `flake.nix` reads its pin from
+`mise.toml` directly, so the Nix shell cannot lag behind it. `just
+toolchain-check` gates every one of these surfaces against the others, so an
+update cannot leave any of them behind.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
 wire codec and input atoms are pure Rust. Its `server` feature adds libghostty
@@ -311,7 +350,9 @@ bounded scopes, report interpretation, and the Rust/FFI/Zig evidence boundary.
 ### Full root validation
 
 Add `just`, `cargo-nextest`, `cargo-deny`, Bash 4+, `actionlint`, `shellcheck`,
-`jq`, Python 3, curl, and Node 24 to the native tools. With Homebrew:
+`jq`, Python 3, curl, and Node 24 to the native tools. `mise install` supplies
+all of these except `cargo-nextest`, Bash and curl; the Nix shell supplies all
+of them. With Homebrew:
 
 ```sh
 brew install just cargo-nextest cargo-deny bash actionlint shellcheck jq python node@24
