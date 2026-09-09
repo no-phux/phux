@@ -344,7 +344,9 @@ fn topologyTimer(_: native_sdk.EffectTimer) core.Msg {
 
 fn topologyWritten(result: native_sdk.EffectFileResult) core.Msg {
     if (bridge.engine) |engine| {
+        const before = engine.beginPublication();
         if (engineFx()) |fx| engine.topologyPersisted(result, fx, topologyTimer);
+        if (engine.finishPublication(before)) bridge.announce(engine);
     }
     return .engine_wake;
 }
@@ -771,8 +773,7 @@ const PointerHost = struct {
         defer _ = bridge.replayInteraction();
         defer self.syncSelectionAutoscrollTimer(runtime) catch {};
         const engine = bridge.engine;
-        const before_window = if (engine) |current| current.model.active_window else 0;
-        const before_sequence = if (engine) |current| current.sequence else 0;
+        const before = if (engine) |current| current.beginPublication() else null;
         if (value == .timer and value.timer.id == workspace_timer_id and !bridge.replayInteraction()) {
             if (engine) |current| current.refreshWorkspace();
         }
@@ -780,7 +781,7 @@ const PointerHost = struct {
         try self.inner.event(runtime, value);
         if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
         if (engine) |current| {
-            if (current.commitWindowAdoption(before_window, before_sequence)) bridge.announce(current);
+            if (current.finishPublication(before.?)) bridge.announce(current);
         }
     }
     fn stop(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
@@ -1344,6 +1345,101 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try rig.app_state.drainEffects(&rig.harness.runtime);
     try std.testing.expect(!engine.model.state.inflight);
     try std.testing.expect(!engine.model.state.pending);
+}
+
+test "persistence failure and recovery publish without a later command" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const state = &engine.model.state;
+    state.inflight = true;
+    state.inflight_fingerprint = state.fingerprint;
+    state.retry_count = 3;
+    const revision = engine.revision;
+    const sequence = engine.sequence;
+    _ = topologyWritten(.{ .key = cockpit.topology_state_file_key, .outcome = .io_failed });
+    try std.testing.expect(state.write_failed);
+    try rig.settle(@intCast(sequence + 1), "ACTION REFUSED");
+    // Persistence feedback does not change any positional command target.
+    try std.testing.expectEqual(revision, engine.revision);
+    state.inflight = true;
+    state.pending = false;
+    _ = topologyWritten(.{ .key = cockpit.topology_state_file_key, .outcome = .ok });
+    try rig.settle(@intCast(sequence + 2), "READY");
+    try std.testing.expectEqual(revision, engine.revision);
+}
+
+test "quiet split pointer focus publishes chrome without terminal output" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const left = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const right = engine.model.focusedTerminalRef().?;
+    const left_key = engine.model.provider.terminal(left).?.pty_key;
+    const right_key = engine.model.provider.terminal(right).?.pty_key;
+    _ = shellEvent(.{ .key = left_key, .kind = .output, .bytes = "\x1b]2;quiet-left\x07" });
+    _ = shellEvent(.{ .key = right_key, .kind = .output, .bytes = "\x1b]2;quiet-right\x07" });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqualStrings("quiet-right", rig.app_state.model.tabs[0].title);
+    const before = bridge.posts_accepted;
+    const revision = engine.revision;
+    const frame = cockpit.projection.paneFrameFor(engine.model, .init(1100, 640), left).?;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .x = frame.x + 10,
+        .y = frame.y + 10,
+    } });
+    try std.testing.expect(left.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(before + 1, bridge.posts_accepted);
+    try std.testing.expectEqual(revision + 1, engine.revision);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqualStrings("quiet-left", rig.app_state.model.tabs[0].title);
+    const published = bridge.posts_accepted;
+    _ = shellEvent(.{ .key = left_key, .kind = .output, .bytes = "ordinary output" });
+    try std.testing.expectEqual(published, bridge.posts_accepted);
+}
+
+test "refused command window adoption still fences ambient targets" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try rig.dispatch(.{ .select_tab = 0 });
+    try rig.settle(2, "READY");
+    const engine = bridge.engine.?;
+    engine.model.wsAt(0).?.window_id = 1;
+    engine.model.wsAt(1).?.window_id = 42;
+    const revision = engine.revision;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
+        .name = "pane.focus-left",
+        .window_id = 42,
+    } });
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expect(engine.intent_refused);
+    try std.testing.expectEqual(revision + 1, engine.revision);
+    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
+    const stale = protocol.encodeIntent(.{ .kind = .new_terminal, .argument = 0, .window = 255, .expected_revision = revision });
+    const host = bridge.binding();
+    host.send_fn(host.context, protocol.intent_command, &stale);
+    try std.testing.expect(engine.intent_refused);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
+
+    const posts = bridge.posts_accepted;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
+        .name = "terminal.new",
+        .window_id = 1,
+    } });
+    // A successful command already fenced/published the adoption and new view.
+    try std.testing.expectEqual(posts + 1, bridge.posts_accepted);
+    try rig.settle(@intCast(engine.sequence), "READY");
 }
 
 test "shipping close detaches a Phux pane without destroying a local terminal" {

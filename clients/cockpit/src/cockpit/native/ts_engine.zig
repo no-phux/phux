@@ -39,6 +39,7 @@ const theme_module = @import("../../config/theme.zig");
 const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
 const session_state = @import("../session_state.zig");
+const publication = @import("publication.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -1117,17 +1118,30 @@ pub const Engine = struct {
         }
     }
 
-    /// A platform event may adopt a window before the core handles it. Native
-    /// commands already advance the ordered seam inside that same dispatch;
-    /// core-only commands (the switcher) do not, so finish the adoption here
-    /// exactly once after the inner app has run.
-    pub fn commitWindowAdoption(self: *Engine, before_window: usize, before_sequence: u64) bool {
+    pub fn beginPublication(self: *const Engine) publication.Checkpoint {
+        return publication.Checkpoint.capture(self.model, self.sequence, self.revision);
+    }
+
+    /// Finish one native transition. Focus changes invalidate ambient/positional
+    /// targets; persistence feedback only publishes status. A refusal announces
+    /// a sequence but supplies no target fence, so those are checked separately.
+    pub fn finishPublication(self: *Engine, before: publication.Checkpoint) bool {
         defer self.syncRemoteFocus();
-        if (self.model.active_window == before_window or self.sequence != before_sequence) return false;
+        const changes = before.changes(self.model);
+        if (!changes.needsSnapshot()) return false;
+        const needs_focus_fence = changes.focus and self.revision == before.revision;
+        if (self.sequence != before.sequence and !needs_focus_fence) return false;
+        if (needs_focus_fence) self.revision +%= 1;
         self.sequence +%= 1;
-        self.revision +%= 1;
-        self.intent_refused = false;
         return true;
+    }
+
+    /// Compatibility entry for hosts that only observe window adoption.
+    pub fn commitWindowAdoption(self: *Engine, before_window: usize, before_sequence: u64) bool {
+        var before = self.beginPublication();
+        before.window = before_window;
+        before.sequence = before_sequence;
+        return self.finishPublication(before);
     }
 
     // ------------------------------------------------------------ shells
