@@ -71,6 +71,13 @@ jobs:
       - id: detect
         run: |
           set -euo pipefail
+          # A manual dispatch is an explicit request for the full job (it is
+          # the documented way to run the package-and-soak step off main),
+          # and it has no base ref to diff against.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo 'cockpit_needed=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${{ github.event_name }}" = "push" ]; then
             # Mirror ci.yml's push classification: a release merge commit has
             # an exact tree; a vanished `before` (branch reset) falls back to
@@ -194,6 +201,17 @@ jobs:
             --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \
             --cycles 3 \
             --artifacts clients/cockpit/zig-out/soak-ci
+
+      # The soak's failure directory carries the app log, the coordinator log,
+      # and the process table; without it a red soak is one line of stderr.
+      - name: Upload soak diagnostics
+        if: failure() && hashFiles('clients/cockpit/zig-out/soak-ci/**') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cockpit-soak-diagnostics
+          path: clients/cockpit/zig-out/soak-ci
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Save last so a failed build never poisons the cache with a partial
       # compile, only from main so PRs never write (see above), and only on

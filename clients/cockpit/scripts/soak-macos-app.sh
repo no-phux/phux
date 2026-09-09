@@ -11,15 +11,34 @@ Required:
 
 Options:
   --cycles COUNT             launch/termination cycles (default: 10)
-  --expected-shells COUNT    direct shells expected after launch (default: 1)
-  --startup-timeout SECONDS  time to wait for shells (default: 15)
-  --shutdown-timeout SECONDS time to wait for clean shutdown (default: 10)
+  --expected-shells COUNT    coordinator-seeded shells expected after
+                             launch (default: 1)
+  --startup-timeout SECONDS  time to wait for the coordinator and its
+                             shells (default: 20)
+  --shutdown-timeout SECONDS time to wait for each clean shutdown
+                             (default: 10)
+  --cli PATH                 Phux CLI used to stop the coordinator
+                             (default: the bundle's Contents/MacOS/phux)
   --artifacts PATH           failure diagnostics directory
                              (default: ./soak-artifacts)
   -h, --help                 show this help
 
-The bundle executable is launched directly. Each cycle gets an isolated HOME
-and ZDOTDIR with a controlled .zshrc. No Accessibility permission is needed.
+The bundle executable is launched directly. Each cycle gets an isolated HOME,
+XDG directories, ZDOTDIR with a controlled .zshrc, and its own PHUX_SOCKET, so
+a developer's real coordinator is never touched. No Accessibility permission
+is needed.
+
+What one cycle proves (the shipping app's process-lifecycle contract):
+
+  1. A fresh configured launch owns no shell itself. It starts a coordinator
+     beside the bundled CLI (`phux server --ensure`), and that coordinator's
+     seeded shell runs under the controlled environment.
+  2. The app reaps its startup helper: no zombie child survives startup.
+  3. SIGTERM ends the app inside the shutdown budget while the coordinator
+     and its shell keep running. Durable work outlives the window.
+  4. `phux kill --server` through the bundled CLI ends the coordinator, its
+     shell, and its socket inside the shutdown budget, leaving no zombie or
+     orphan behind.
 EOF
 }
 
@@ -37,9 +56,10 @@ valid_path() {
 }
 
 APP=''
+CLI=''
 CYCLES=10
 EXPECTED_SHELLS=1
-STARTUP_TIMEOUT=15
+STARTUP_TIMEOUT=20
 SHUTDOWN_TIMEOUT=10
 ARTIFACTS="${PWD}/soak-artifacts"
 
@@ -48,6 +68,11 @@ while [[ "$#" -gt 0 ]]; do
         --app)
             require_value "$@"
             APP="$2"
+            shift 2
+            ;;
+        --cli)
+            require_value "$@"
+            CLI="$2"
             shift 2
             ;;
         --cycles)
@@ -79,14 +104,16 @@ while [[ "$#" -gt 0 ]]; do
             usage
             exit 0
             ;;
-        --*) die "unknown option: $1" ;;
-        *) die "unexpected argument: $1" ;;
+        *)
+            die "unknown argument: $1"
+            ;;
     esac
 done
 
 [[ -n "${APP}" ]] || die '--app is required'
-valid_path "${APP}" || die '--app must not contain control characters'
-valid_path "${ARTIFACTS}" || die '--artifacts must not contain control characters'
+valid_path "${APP}" || die '--app must be a printable path'
+valid_path "${ARTIFACTS}" || die '--artifacts must be a printable path'
+[[ -z "${CLI}" ]] || valid_path "${CLI}" || die '--cli must be a printable path'
 [[ "${CYCLES}" =~ ^[1-9][0-9]*$ ]] || die '--cycles must be a positive integer'
 [[ "${EXPECTED_SHELLS}" =~ ^[1-9][0-9]*$ ]] || die '--expected-shells must be a positive integer'
 [[ "${STARTUP_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] ||
@@ -110,19 +137,32 @@ EXECUTABLE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "${PLIST
 EXECUTABLE="${APP}/Contents/MacOS/${EXECUTABLE_NAME}"
 [[ -f "${EXECUTABLE}" && -x "${EXECUTABLE}" ]] ||
     die "bundle executable is missing or not executable: ${EXECUTABLE}"
+# The app discovers the coordinator CLI beside its own executable; the soak
+# stops the coordinator through that same binary unless told otherwise.
+[[ -n "${CLI}" ]] || CLI="${APP}/Contents/MacOS/phux"
+[[ -f "${CLI}" && -x "${CLI}" ]] ||
+    die "Phux CLI is missing or not executable: ${CLI}"
 if [[ -e "${ARTIFACTS}" && ! -d "${ARTIFACTS}" ]]; then
     die "artifacts path is not a directory: ${ARTIFACTS}"
 fi
 
+# sockaddr_un leaves 104 bytes for a path on macOS; per-cycle sockets live in
+# a short /tmp directory rather than under TMPDIR's deep per-user folder.
+MAX_SOCKET_BYTES=100
+ANOMALY_POLLS=5
+
 RUN_DIR=''
+SOCKET_DIR=''
 CURRENT_CYCLE=0
 CURRENT_CYCLE_DIR=''
 CURRENT_PID_FILE=''
+CURRENT_SOCKET=''
 CURRENT_APP_PID=''
 CURRENT_APP_IDENTITY=''
+COORDINATOR_PID=''
+COORDINATOR_IDENTITY=''
 TRACKED_SHELL_PIDS=()
 TRACKED_SHELL_IDENTITIES=()
-DIRECT_SHELL_PIDS=()
 RECORDED_SHELL_PIDS=()
 PID_FILE_MALFORMED='false'
 LAST_ARTIFACT=''
@@ -149,12 +189,26 @@ process_comm() {
     printf '%s\n' "${comm}"
 }
 
-app_identity_matches() {
+identity_matches() {
+    local pid="$1"
+    local expected="$2"
     local identity
 
-    [[ -n "${CURRENT_APP_PID}" && -n "${CURRENT_APP_IDENTITY}" ]] || return 1
-    identity="$(process_identity "${CURRENT_APP_PID}" || true)"
-    [[ -n "${identity}" && "${identity}" == "${CURRENT_APP_IDENTITY}" ]]
+    [[ -n "${pid}" && -n "${expected}" ]] || return 1
+    identity="$(process_identity "${pid}" || true)"
+    [[ -n "${identity}" && "${identity}" == "${expected}" ]]
+}
+
+app_identity_matches() {
+    identity_matches "${CURRENT_APP_PID}" "${CURRENT_APP_IDENTITY}"
+}
+
+coordinator_identity_matches() {
+    identity_matches "${COORDINATOR_PID}" "${COORDINATOR_IDENTITY}"
+}
+
+is_zombie() {
+    [[ "$(process_state "$1" || true)" == Z* ]]
 }
 
 shell_is_tracked() {
@@ -181,27 +235,11 @@ track_shell() {
 }
 
 tracked_shell_identity_matches() {
-    local index="$1"
-    local identity
-
-    identity="$(process_identity "${TRACKED_SHELL_PIDS[${index}]}" || true)"
-    [[ -n "${identity}" && "${identity}" == "${TRACKED_SHELL_IDENTITIES[${index}]}" ]]
+    identity_matches "${TRACKED_SHELL_PIDS[$1]}" "${TRACKED_SHELL_IDENTITIES[$1]}"
 }
 
-load_direct_shells() {
-    local pid
-
-    DIRECT_SHELL_PIDS=()
-    [[ -n "${CURRENT_APP_PID}" ]] || return 0
-    while IFS= read -r pid; do
-        pid="${pid//[[:space:]]/}"
-        [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || continue
-        [[ "$(process_ppid "${pid}" || true)" == "${CURRENT_APP_PID}" ]] || continue
-        [[ "$(process_comm "${pid}" || true)" == 'zsh' ]] || continue
-        DIRECT_SHELL_PIDS+=("${pid}")
-    done < <(/usr/bin/pgrep -P "${CURRENT_APP_PID}" -x zsh 2>/dev/null || true)
-}
-
+# Coordinator-owned shells are found by identity, never by walking the tree:
+# the coordinator is a detached daemon, so its children are not the app's.
 load_recorded_shells() {
     local pid extra seen
     local existing
@@ -226,80 +264,248 @@ load_recorded_shells() {
     done < "${CURRENT_PID_FILE}"
 }
 
-same_expected_pids() {
-    local pid found recorded
+# The daemon's argv names the socket the app asked for, which is what ties it
+# to this cycle. The app's own `--socket PATH server --ensure` helper and the
+# soak's `--socket PATH kill --server` order the words differently.
+find_coordinator() {
+    local pids
 
-    [[ "${#DIRECT_SHELL_PIDS[@]}" -eq "${EXPECTED_SHELLS}" &&
-        "${#RECORDED_SHELL_PIDS[@]}" -eq "${EXPECTED_SHELLS}" ]] ||
-        return 1
-    for pid in "${DIRECT_SHELL_PIDS[@]}"; do
-        found='false'
-        for recorded in "${RECORDED_SHELL_PIDS[@]}"; do
-            [[ "${recorded}" == "${pid}" ]] && found='true'
-        done
-        [[ "${found}" == 'true' ]] || return 1
-    done
+    pids="$(/usr/bin/pgrep -f -- "server --socket ${CURRENT_SOCKET}( |$)" 2>/dev/null || true)"
+    [[ -n "${pids}" ]] || return 1
+    [[ "${pids}" != *$'\n'* ]] || return 2
+    printf '%s\n' "${pids}"
 }
 
-refresh_owned_shells() {
+adopt_coordinator() {
+    local pid
+
+    [[ -z "${COORDINATOR_PID}" ]] || return 0
+    pid="$(find_coordinator)" || {
+        [[ "$?" -ne 2 ]] || fail_cycle "more than one coordinator claims socket ${CURRENT_SOCKET}"
+        return 1
+    }
+    [[ "$(process_comm "${pid}" || true)" == 'phux' ]] ||
+        fail_cycle "coordinator ${pid} is not a phux process"
+    COORDINATOR_PID="${pid}"
+    COORDINATOR_IDENTITY="$(process_identity "${pid}" || true)"
+    [[ -n "${COORDINATOR_IDENTITY}" ]] || fail_cycle "could not establish identity for coordinator ${pid}"
+}
+
+# The app's `server --ensure` helper is a zombie for the moment between its
+# exit and the socket worker's next reap poll, so one observation proves
+# nothing. A child that stays a zombie across several polls is a leak.
+app_children_are_healthy() {
+    local pid
+    local zombie=''
+
+    while IFS= read -r pid; do
+        pid="${pid//[[:space:]]/}"
+        [[ -n "${pid}" ]] || continue
+        [[ "$(process_comm "${pid}" || true)" != 'zsh' ]] ||
+            fail_cycle "app spawned a direct shell ${pid} on a coordinator-configured launch"
+        is_zombie "${pid}" && zombie="${pid}"
+    done < <(/usr/bin/pgrep -P "${CURRENT_APP_PID}" 2>/dev/null || true)
+    if [[ -z "${zombie}" || "${zombie}" != "${APP_ZOMBIE_CHILD}" ]]; then
+        APP_ZOMBIE_CHILD="${zombie}"
+        APP_ZOMBIE_POLLS=0
+        return 0
+    fi
+    APP_ZOMBIE_POLLS=$((APP_ZOMBIE_POLLS + 1))
+    [[ "${APP_ZOMBIE_POLLS}" -lt "${ANOMALY_POLLS}" ]] ||
+        fail_cycle "app left child ${zombie} as a zombie during startup"
+}
+
+recorded_shells_are_ready() {
     local pid
 
     load_recorded_shells
-    for pid in "${RECORDED_SHELL_PIDS[@]:-}"; do
-        if app_identity_matches && [[ "$(process_ppid "${pid}" || true)" == "${CURRENT_APP_PID}" ]]; then
-            track_shell "${pid}" || true
-        fi
+    [[ "${PID_FILE_MALFORMED}" == 'false' ]] ||
+        fail_cycle 'controlled .zshrc produced malformed or duplicate shell PID records'
+    [[ "${#RECORDED_SHELL_PIDS[@]}" -le "${EXPECTED_SHELLS}" ]] ||
+        fail_cycle "coordinator seeded too many shells (${#RECORDED_SHELL_PIDS[@]}, expected ${EXPECTED_SHELLS})"
+    [[ "${#RECORDED_SHELL_PIDS[@]}" -eq "${EXPECTED_SHELLS}" ]] || return 1
+    for pid in "${RECORDED_SHELL_PIDS[@]}"; do
+        [[ -n "$(process_state "${pid}" || true)" ]] || fail_cycle "recorded shell ${pid} is missing"
+        is_zombie "${pid}" && fail_cycle "recorded shell ${pid} is a zombie"
+        [[ "$(process_ppid "${pid}" || true)" == "${COORDINATOR_PID}" ]] ||
+            fail_cycle "recorded shell ${pid} is not a child of coordinator ${COORDINATOR_PID}"
+        track_shell "${pid}" || fail_cycle "could not establish identity for recorded shell ${pid}"
     done
-    if app_identity_matches; then
-        load_direct_shells
-        for pid in "${DIRECT_SHELL_PIDS[@]:-}"; do
-            track_shell "${pid}" || true
-        done
+}
+
+startup_status() {
+    printf 'coordinator=%s recorded=%s' \
+        "${COORDINATOR_PID:-none}" "${#RECORDED_SHELL_PIDS[@]}"
+}
+
+await_startup() {
+    local deadline=$((SECONDS + STARTUP_TIMEOUT))
+
+    APP_ZOMBIE_CHILD=''
+    APP_ZOMBIE_POLLS=0
+    while true; do
+        if ! app_identity_matches; then
+            wait "${CURRENT_APP_PID}" 2>/dev/null || true
+            fail_cycle "app exited before its coordinator became ready ($(startup_status))"
+        fi
+        is_zombie "${CURRENT_APP_PID}" && fail_cycle 'app became a zombie during startup'
+        app_children_are_healthy
+        if adopt_coordinator && recorded_shells_are_ready; then
+            return 0
+        fi
+        [[ "${SECONDS}" -lt "${deadline}" ]] ||
+            fail_cycle "startup timed out ($(startup_status), expected ${EXPECTED_SHELLS} shells)"
+        /bin/sleep 0.1
+    done
+}
+
+await_app_exit() {
+    local deadline=$((SECONDS + SHUTDOWN_TIMEOUT))
+
+    /bin/kill -TERM "${CURRENT_APP_PID}" || fail_cycle 'could not terminate the exact app PID'
+    while app_identity_matches && ! is_zombie "${CURRENT_APP_PID}"; do
+        [[ "${SECONDS}" -lt "${deadline}" ]] ||
+            fail_cycle 'shutdown timed out before the app exited'
+        /bin/sleep 0.1
+    done
+    wait "${CURRENT_APP_PID}" 2>/dev/null || true
+    [[ -z "$(process_identity "${CURRENT_APP_PID}" || true)" ]] ||
+        fail_cycle 'app PID still exists after shutdown'
+}
+
+# Durable work must not end with the window that displayed it.
+assert_coordinator_survived() {
+    local index pid
+
+    coordinator_identity_matches || fail_cycle 'coordinator did not survive the app exiting'
+    is_zombie "${COORDINATOR_PID}" && fail_cycle 'coordinator became a zombie when the app exited'
+    for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
+        pid="${TRACKED_SHELL_PIDS[${index}]}"
+        tracked_shell_identity_matches "${index}" ||
+            fail_cycle "coordinator shell ${pid} did not survive the app exiting"
+        is_zombie "${pid}" && fail_cycle "coordinator shell ${pid} became a zombie when the app exited"
+        [[ "$(process_ppid "${pid}" || true)" == "${COORDINATOR_PID}" ]] ||
+            fail_cycle "coordinator shell ${pid} was orphaned when the app exited"
+    done
+}
+
+# A process can be observed briefly between exit and reap. Report a zombie or
+# orphan only when it persists across several polls.
+shell_anomaly() {
+    local pid="$1"
+
+    if is_zombie "${pid}"; then
+        printf 'tracked shell %s remained a zombie during coordinator shutdown\n' "${pid}"
+    elif [[ "$(process_ppid "${pid}" || true)" != "${COORDINATOR_PID}" ]]; then
+        printf 'tracked shell %s remained an orphan during coordinator shutdown\n' "${pid}"
     fi
 }
 
-cleanup_owned_processes() {
-    local deadline index pid
+tracked_shells_present() {
+    local index anomaly
+    local present='false'
 
-    refresh_owned_shells || true
-    if app_identity_matches; then
-        /bin/kill -TERM "${CURRENT_APP_PID}" 2>/dev/null || true
-        deadline=$((SECONDS + 2))
-        while app_identity_matches && [[ "${SECONDS}" -lt "${deadline}" ]]; do
-            /bin/sleep 0.1
-        done
-        if app_identity_matches; then
-            /bin/kill -KILL "${CURRENT_APP_PID}" 2>/dev/null || true
+    for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
+        tracked_shell_identity_matches "${index}" || continue
+        present='true'
+        anomaly="$(shell_anomaly "${TRACKED_SHELL_PIDS[${index}]}")"
+        if [[ -z "${anomaly}" ]]; then
+            SHELL_ANOMALY_COUNTS[index]=0
+            continue
         fi
+        SHELL_ANOMALY_COUNTS[index]=$((SHELL_ANOMALY_COUNTS[index] + 1))
+        [[ "${SHELL_ANOMALY_COUNTS[${index}]}" -lt "${ANOMALY_POLLS}" ]] || fail_cycle "${anomaly}"
+    done
+    [[ "${present}" == 'true' ]]
+}
+
+coordinator_present() {
+    coordinator_identity_matches || return 1
+    if is_zombie "${COORDINATOR_PID}"; then
+        COORDINATOR_ANOMALY_COUNT=$((COORDINATOR_ANOMALY_COUNT + 1))
+        [[ "${COORDINATOR_ANOMALY_COUNT}" -lt "${ANOMALY_POLLS}" ]] ||
+            fail_cycle 'coordinator remained a zombie during its shutdown'
     fi
+    return 0
+}
+
+stop_coordinator() {
+    local deadline=$((SECONDS + SHUTDOWN_TIMEOUT))
+    local index
+
+    SHELL_ANOMALY_COUNTS=()
+    for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
+        SHELL_ANOMALY_COUNTS[index]=0
+    done
+    COORDINATOR_ANOMALY_COUNT=0
+    "${CLI}" --socket "${CURRENT_SOCKET}" kill --server \
+        > "${CURRENT_CYCLE_DIR}/kill-server.stdout" \
+        2> "${CURRENT_CYCLE_DIR}/kill-server.stderr" ||
+        fail_cycle "phux kill --server failed with status $?"
+    while coordinator_present || tracked_shells_present || [[ -S "${CURRENT_SOCKET}" ]]; do
+        [[ "${SECONDS}" -lt "${deadline}" ]] ||
+            fail_cycle 'shutdown timed out before the coordinator, its shells, and its socket disappeared'
+        /bin/sleep 0.1
+    done
+}
+
+assert_nothing_remains() {
+    local index
+
+    [[ -z "$(process_identity "${COORDINATOR_PID}" || true)" ]] ||
+        fail_cycle 'coordinator PID still exists after its shutdown'
+    for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
+        tracked_shell_identity_matches "${index}" &&
+            fail_cycle "tracked shell ${TRACKED_SHELL_PIDS[${index}]} still exists after shutdown"
+    done
+    ! find_coordinator >/dev/null || fail_cycle "a coordinator still claims socket ${CURRENT_SOCKET}"
+}
+
+terminate_pid() {
+    local pid="$1"
+    local expected="$2"
+    local deadline
+
+    identity_matches "${pid}" "${expected}" || return 0
+    /bin/kill -TERM "${pid}" 2>/dev/null || true
+    deadline=$((SECONDS + 2))
+    while identity_matches "${pid}" "${expected}" && [[ "${SECONDS}" -lt "${deadline}" ]]; do
+        /bin/sleep 0.1
+    done
+    identity_matches "${pid}" "${expected}" && /bin/kill -KILL "${pid}" 2>/dev/null || true
+}
+
+cleanup_owned_processes() {
+    local index
+
+    terminate_pid "${CURRENT_APP_PID}" "${CURRENT_APP_IDENTITY}"
     if [[ -n "${CURRENT_APP_PID}" ]]; then
         wait "${CURRENT_APP_PID}" 2>/dev/null || true
     fi
-
-    deadline=$((SECONDS + 1))
-    while [[ "${SECONDS}" -lt "${deadline}" ]]; do
-        local_any='false'
-        for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
-            tracked_shell_identity_matches "${index}" && local_any='true'
-        done
-        [[ "${local_any}" == 'false' ]] && break
-        /bin/sleep 0.1
-    done
+    if [[ -z "${COORDINATOR_PID}" ]]; then
+        adopt_coordinator_quietly
+    fi
+    if coordinator_identity_matches; then
+        "${CLI}" --socket "${CURRENT_SOCKET}" kill --server >/dev/null 2>&1 || true
+        terminate_pid "${COORDINATOR_PID}" "${COORDINATOR_IDENTITY}"
+    fi
     for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
-        if tracked_shell_identity_matches "${index}"; then
-            pid="${TRACKED_SHELL_PIDS[${index}]}"
-            /bin/kill -TERM "${pid}" 2>/dev/null || true
-        fi
-    done
-    /bin/sleep 0.2
-    for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
-        if tracked_shell_identity_matches "${index}"; then
-            pid="${TRACKED_SHELL_PIDS[${index}]}"
-            /bin/kill -KILL "${pid}" 2>/dev/null || true
-        fi
+        terminate_pid "${TRACKED_SHELL_PIDS[${index}]}" "${TRACKED_SHELL_IDENTITIES[${index}]}"
     done
     CURRENT_APP_PID=''
     CURRENT_APP_IDENTITY=''
+    COORDINATOR_PID=''
+    COORDINATOR_IDENTITY=''
+}
+
+# Cleanup runs from failure paths, so it must not call fail_cycle recursively.
+adopt_coordinator_quietly() {
+    local pid
+
+    [[ -n "${CURRENT_SOCKET}" ]] || return 0
+    pid="$(find_coordinator)" || return 0
+    COORDINATOR_PID="${pid}"
+    COORDINATOR_IDENTITY="$(process_identity "${pid}" || true)"
 }
 
 collect_diagnostics() {
@@ -314,7 +520,10 @@ collect_diagnostics() {
         printf 'reason=%s\n' "${reason}"
         printf 'app=%s\n' "${APP}"
         printf 'executable=%s\n' "${EXECUTABLE}"
+        printf 'cli=%s\n' "${CLI}"
+        printf 'socket=%s\n' "${CURRENT_SOCKET}"
         printf 'app_pid=%s\n' "${CURRENT_APP_PID}"
+        printf 'coordinator_pid=%s\n' "${COORDINATOR_PID}"
         printf 'tracked_shell_pids='
         printf '%s ' "${TRACKED_SHELL_PIDS[@]:-}"
         printf '\n'
@@ -329,6 +538,9 @@ on_exit() {
     cleanup_owned_processes || true
     if [[ -n "${RUN_DIR}" && -d "${RUN_DIR}" ]]; then
         /bin/rm -rf -- "${RUN_DIR}"
+    fi
+    if [[ -n "${SOCKET_DIR}" && -d "${SOCKET_DIR}" ]]; then
+        /bin/rm -rf -- "${SOCKET_DIR}"
     fi
 }
 
@@ -345,7 +557,6 @@ on_signal() {
 fail_cycle() {
     local reason="$1"
 
-    refresh_owned_shells || true
     if ! collect_diagnostics "${reason}"; then
         printf 'error: cycle %s: %s (diagnostic collection failed)\n' \
             "${CURRENT_CYCLE}" "${reason}" >&2
@@ -364,20 +575,14 @@ trap 'on_signal TERM 143' TERM
 
 RUN_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/soak-macos-app.XXXXXX")" ||
     die 'could not create temporary run directory'
+SOCKET_DIR="$(/usr/bin/mktemp -d /tmp/soak-app.XXXXXX)" ||
+    die 'could not create temporary socket directory'
 
-printf 'soak: app=%s cycles=%s startup=%ss shutdown=%ss\n' \
-    "${APP}" "${CYCLES}" "${STARTUP_TIMEOUT}" "${SHUTDOWN_TIMEOUT}"
+prepare_cycle() {
+    local home_dir="$1"
 
-for ((CURRENT_CYCLE = 1; CURRENT_CYCLE <= CYCLES; CURRENT_CYCLE++)); do
-    CURRENT_CYCLE_DIR="${RUN_DIR}/cycle-${CURRENT_CYCLE}"
-    HOME_DIR="${CURRENT_CYCLE_DIR}/home"
-    CURRENT_PID_FILE="${CURRENT_CYCLE_DIR}/shell-pids.txt"
-    CURRENT_APP_PID=''
-    CURRENT_APP_IDENTITY=''
-    TRACKED_SHELL_PIDS=()
-    TRACKED_SHELL_IDENTITIES=()
-    /bin/mkdir -p -- "${HOME_DIR}"
-    cat > "${HOME_DIR}/.zshrc" <<'EOF'
+    /bin/mkdir -p -- "${home_dir}/.config" "${home_dir}/.local/state" "${home_dir}/.cache"
+    cat > "${home_dir}/.zshrc" <<'EOF'
 # Controlled by soak-macos-app.sh; do not load user startup files.
 unset HISTFILE
 PROMPT='soak%# '
@@ -385,9 +590,25 @@ RPROMPT=''
 print -r -- "$$" >> "${SOAK_SHELL_PID_FILE:?}"
 EOF
     : > "${CURRENT_PID_FILE}"
+    [[ "${#CURRENT_SOCKET}" -le "${MAX_SOCKET_BYTES}" ]] ||
+        die "socket path is too long for sockaddr_un: ${CURRENT_SOCKET}"
+}
 
-    HOME="${HOME_DIR}" \
-        ZDOTDIR="${HOME_DIR}" \
+# Every location the app or the coordinator resolves from the environment
+# points into the cycle: config, state, caches, and the socket. A developer's
+# runtime dir, session choice, and Cockpit overrides are unset rather than
+# blanked so neither binary sees an empty value it has to interpret.
+launch_app() {
+    local home_dir="$1"
+
+    /usr/bin/env -u XDG_RUNTIME_DIR -u PHUX_SESSION \
+        -u PHUX_COCKPIT_CONFIG -u PHUX_COCKPIT_STATE -u PHUX_COCKPIT_TABS \
+        HOME="${home_dir}" \
+        ZDOTDIR="${home_dir}" \
+        XDG_CONFIG_HOME="${home_dir}/.config" \
+        XDG_STATE_HOME="${home_dir}/.local/state" \
+        XDG_CACHE_HOME="${home_dir}/.cache" \
+        PHUX_SOCKET="${CURRENT_SOCKET}" \
         SOAK_SHELL_PID_FILE="${CURRENT_PID_FILE}" \
         "${EXECUTABLE}" \
         > "${CURRENT_CYCLE_DIR}/app.stdout" \
@@ -395,103 +616,44 @@ EOF
     CURRENT_APP_PID=$!
     CURRENT_APP_IDENTITY="$(process_identity "${CURRENT_APP_PID}" || true)"
     [[ -n "${CURRENT_APP_IDENTITY}" ]] || fail_cycle 'app exited immediately after launch'
+}
 
-    startup_deadline=$((SECONDS + STARTUP_TIMEOUT))
-    while true; do
-        if ! app_identity_matches; then
-            wait "${CURRENT_APP_PID}" 2>/dev/null || true
-            fail_cycle 'app exited before its shells became ready'
-        fi
-        app_state="$(process_state "${CURRENT_APP_PID}" || true)"
-        [[ "${app_state}" != Z* ]] || fail_cycle 'app became a zombie during startup'
+run_cycle() {
+    local home_dir="${CURRENT_CYCLE_DIR}/home"
+    local app_pid
 
-        load_direct_shells
-        load_recorded_shells
-        [[ "${PID_FILE_MALFORMED}" == 'false' ]] ||
-            fail_cycle 'controlled .zshrc produced malformed or duplicate shell PID records'
-        [[ "${#DIRECT_SHELL_PIDS[@]}" -le "${EXPECTED_SHELLS}" ]] ||
-            fail_cycle "found too many direct zsh children (${#DIRECT_SHELL_PIDS[@]}, expected ${EXPECTED_SHELLS})"
-        [[ "${#RECORDED_SHELL_PIDS[@]}" -le "${EXPECTED_SHELLS}" ]] ||
-            fail_cycle "controlled .zshrc recorded too many shell PIDs (${#RECORDED_SHELL_PIDS[@]}, expected ${EXPECTED_SHELLS})"
+    prepare_cycle "${home_dir}"
+    launch_app "${home_dir}"
+    await_startup
+    app_pid="${CURRENT_APP_PID}"
+    await_app_exit
+    /bin/sleep 1
+    assert_coordinator_survived
+    stop_coordinator
+    assert_nothing_remains
+    printf 'cycle %s/%s: ok (app pid %s; coordinator %s; shells %s)\n' \
+        "${CURRENT_CYCLE}" "${CYCLES}" "${app_pid}" "${COORDINATOR_PID}" "${TRACKED_SHELL_PIDS[*]}"
+}
 
-        if same_expected_pids; then
-            for shell_pid in "${DIRECT_SHELL_PIDS[@]}"; do
-                shell_state="$(process_state "${shell_pid}" || true)"
-                [[ -n "${shell_state}" && "${shell_state}" != Z* ]] ||
-                    fail_cycle "direct shell ${shell_pid} is missing or a zombie"
-                track_shell "${shell_pid}" ||
-                    fail_cycle "could not establish identity for direct shell ${shell_pid}"
-            done
-            break
-        fi
-        [[ "${SECONDS}" -lt "${startup_deadline}" ]] ||
-            fail_cycle "startup timed out with ${#DIRECT_SHELL_PIDS[@]} direct and ${#RECORDED_SHELL_PIDS[@]} recorded shells"
-        /bin/sleep 0.1
-    done
+printf 'soak: app=%s cli=%s cycles=%s startup=%ss shutdown=%ss\n' \
+    "${APP}" "${CLI}" "${CYCLES}" "${STARTUP_TIMEOUT}" "${SHUTDOWN_TIMEOUT}"
 
-    app_pid_for_wait="${CURRENT_APP_PID}"
-    /bin/kill -TERM "${CURRENT_APP_PID}" || fail_cycle 'could not terminate the exact app PID'
-    shutdown_deadline=$((SECONDS + SHUTDOWN_TIMEOUT))
-    shell_anomaly_counts=()
-    shell_anomaly_reasons=()
-    for ((shell_index = 0; shell_index < ${#TRACKED_SHELL_PIDS[@]}; shell_index++)); do
-        shell_anomaly_counts[shell_index]=0
-        shell_anomaly_reasons[shell_index]=''
-    done
-    while true; do
-        app_present='false'
-        if app_identity_matches; then
-            app_present='true'
-            app_state="$(process_state "${CURRENT_APP_PID}" || true)"
-            if [[ "${app_state}" == Z* ]]; then
-                wait "${app_pid_for_wait}" 2>/dev/null || true
-                app_present='false'
-            fi
-        fi
-
-        shells_present='false'
-        for ((shell_index = 0; shell_index < ${#TRACKED_SHELL_PIDS[@]}; shell_index++)); do
-            shell_pid="${TRACKED_SHELL_PIDS[${shell_index}]}"
-            if tracked_shell_identity_matches "${shell_index}"; then
-                shells_present='true'
-                shell_state="$(process_state "${shell_pid}" || true)"
-                shell_ppid="$(process_ppid "${shell_pid}" || true)"
-                if [[ "${shell_state}" == Z* ]]; then
-                    shell_anomaly_reasons[shell_index]="tracked shell ${shell_pid} remained a zombie during shutdown"
-                    shell_anomaly_counts[shell_index]=$((shell_anomaly_counts[shell_index] + 1))
-                elif [[ "${shell_ppid}" != "${CURRENT_APP_PID}" ]]; then
-                    shell_anomaly_reasons[shell_index]="tracked shell ${shell_pid} remained an orphan (ppid ${shell_ppid:-unknown})"
-                    shell_anomaly_counts[shell_index]=$((shell_anomaly_counts[shell_index] + 1))
-                else
-                    shell_anomaly_reasons[shell_index]=''
-                    shell_anomaly_counts[shell_index]=0
-                fi
-                # A process can be observed briefly between exit and reap. Fail
-                # only when a zombie/orphan persists across several polls.
-                [[ "${shell_anomaly_counts[${shell_index}]}" -lt 5 ]] ||
-                    fail_cycle "${shell_anomaly_reasons[${shell_index}]}"
-            fi
-        done
-
-        if [[ "${app_present}" == 'false' && "${shells_present}" == 'false' ]]; then
-            wait "${app_pid_for_wait}" 2>/dev/null || true
-            break
-        fi
-        [[ "${SECONDS}" -lt "${shutdown_deadline}" ]] ||
-            fail_cycle 'shutdown timed out before the app and tracked shells disappeared'
-        /bin/sleep 0.1
-    done
-
-    [[ -z "$(process_identity "${app_pid_for_wait}" || true)" ]] ||
-        fail_cycle 'app PID still exists after shutdown'
-    for ((shell_index = 0; shell_index < ${#TRACKED_SHELL_PIDS[@]}; shell_index++)); do
-        tracked_shell_identity_matches "${shell_index}" &&
-            fail_cycle "tracked shell ${TRACKED_SHELL_PIDS[${shell_index}]} still exists after shutdown"
-    done
-    printf 'cycle %s/%s: ok (app pid %s; shells %s)\n' \
-        "${CURRENT_CYCLE}" "${CYCLES}" "${app_pid_for_wait}" "${TRACKED_SHELL_PIDS[*]}"
+for ((CURRENT_CYCLE = 1; CURRENT_CYCLE <= CYCLES; CURRENT_CYCLE++)); do
+    CURRENT_CYCLE_DIR="${RUN_DIR}/cycle-${CURRENT_CYCLE}"
+    CURRENT_PID_FILE="${CURRENT_CYCLE_DIR}/shell-pids.txt"
+    CURRENT_SOCKET="${SOCKET_DIR}/c${CURRENT_CYCLE}.sock"
     CURRENT_APP_PID=''
     CURRENT_APP_IDENTITY=''
+    COORDINATOR_PID=''
+    COORDINATOR_IDENTITY=''
+    TRACKED_SHELL_PIDS=()
+    TRACKED_SHELL_IDENTITIES=()
+    /bin/mkdir -p -- "${CURRENT_CYCLE_DIR}"
+    run_cycle
+    CURRENT_APP_PID=''
+    CURRENT_APP_IDENTITY=''
+    COORDINATOR_PID=''
+    COORDINATOR_IDENTITY=''
 done
 
 printf 'soak passed: %s/%s cycles\n' "${CYCLES}" "${CYCLES}"
