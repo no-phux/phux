@@ -470,4 +470,30 @@ only for an attached emulator processing that Terminal's output. The current
 one-server-per-user trust model authenticates the caller at the transport
 boundary; per-connection `PRIMARY` / `VIEWER` roles gate attached input.
 
+---
+
+## 9. Non-terminal targets
+
+<!-- impl-status: spec-only; probe: ResourceKind -->
+> **Status: spec-only.** Every id on the wire today names a Terminal, so the
+> refusal below is unreachable against the reference server. It binds a
+> server that advertises `RESOURCE_KINDS`.
+
+Every frame in this document is a Terminal-facet frame: it exists to reach a
+PTY through an encoder or an ordered input lane, and only a Terminal-kind
+resource has either ([L1.md §1.1](./L1.md)). An `INPUT_KEY`, `INPUT_PASTE`,
+`INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_RAW`, or `INPUT_TERMINAL_REPLY` whose
+`terminal_id` names a live resource of another kind is dropped without
+writing a byte anywhere, and the server pushes an uncorrelated
+`ERROR { code: WRONG_RESOURCE_KIND }`; the frames have no reply of their own
+to carry the refusal. `ROUTE_INPUT` and `APPLY_INPUT` carry the same atoms
+inside a `COMMAND` and refuse in the command's own shape,
+`COMMAND_RESULT { ERROR(WRONG_RESOURCE_KIND, ..) }`. The check runs after
+existence — an unknown id is still `TERMINAL_NOT_FOUND` — and after the
+workload classifier and the subscription and lease checks of §8, so a
+mis-addressed frame is never mistaken for an authority failure and never
+reaches an encoder. An `AGENT_SESSION` resource's input channel is
+`APPEND_RESOURCE_OUTPUT` ([L1.md §5.5](./L1.md)), which is producer-fed and
+carries records, not keystrokes.
+
 [ADR-0033]: ../../ADR/0033-input-authority-and-process-signals.md

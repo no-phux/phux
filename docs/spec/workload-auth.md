@@ -473,6 +473,9 @@ Terminal, current Group, owning Host, or Global selector according to §6.
 | `SPAWN_TERMINAL { satellite: None, owner_terminal: None }` | `CREATE` | payload Group |
 | `SPAWN_TERMINAL { satellite: None, owner_terminal: Some }` | `CREATE` and `BIND` | CREATE on the owner Terminal's side-effect-free resolved Group and BIND on that Terminal; payload Group MUST equal the resolved Group |
 | `SPAWN_TERMINAL { satellite: Some, owner_terminal: Some }` | default-deny | invalid local/remote ownership combination |
+| `SPAWN_TERMINAL { kind: AGENT_SESSION, satellite: None, parent: Some }` | `CREATE` and `BIND` | CREATE on the parent Terminal's side-effect-free resolved Group and BIND on that parent Terminal; the parent MUST lie within the effective grant; payload Group MUST equal the resolved Group |
+| `SPAWN_TERMINAL { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | `CREATE` and `BIND` | CREATE on the satellite Host H and BIND on the satellite-tagged parent Terminal; a `LOCAL` or different-host parent is default-deny |
+| `SPAWN_TERMINAL { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | default-deny | kind and binding disagree; the decoder's `SPAWN_FAILED` never runs |
 | `TERMINAL_RESIZE` | `BIND` | named Terminal |
 | `MOVE_TERMINAL` | `BIND` | both moved and destination-owner Terminals |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | `OBSERVE` | named Terminal |
@@ -523,7 +526,22 @@ point before any handler or satellite branch:
 | `SHUTDOWN` | `SIGNAL` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; remote paired grants cannot stop the server |
 | `GET_PERF { reset: false }` | `OBSERVE` | Global |
 | `GET_PERF { reset: true }` | `OBSERVE` and `BIND` | Global |
+| `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
+
+<!-- impl-status: spec-only; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
+> **Status: spec-only.** The kind-bearing spawn rows and the
+> `APPEND_RESOURCE_OUTPUT` row classify frames no codec decodes yet; they
+> bind the classifier the day the `AGENT_SESSION` kind lands
+> ([L1.md §1.1](./L1.md)).
+
+A resource bound to a parent ([L1.md §1.2](./L1.md)) is admitted through
+that parent: for every row above whose subject is "named Terminal", a child
+resource named in the frame matches when its parent matches the selector.
+Producing into the child is the one operation classified on the parent
+alone, because the child's stream is that parent's agent account of itself
+and a workload allowed to type into a pane is exactly the workload allowed
+to narrate it.
 
 For a metadata `Scope::Terminal`, `Scope::Group`, or `Scope::Global`, the subject
 is respectively that Terminal, Group, or Global. A result assembled from several
