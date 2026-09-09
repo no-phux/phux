@@ -186,7 +186,7 @@
               </column>
             </scroll>
             <for each="rows" key="id" as="agent">
-              <if test="{agent.index != 65535}"><button size="sm" on-press="palette_submit">Jump to parent</button></if>
+              <if test="{agent.index != 65535}"><button size="sm" autofocus="true" on-press="palette_submit">Jump to parent</button></if>
               <else><text foreground="text_muted">Parent unavailable</text></else>
             </for>
             <row gap="8" cross="center">

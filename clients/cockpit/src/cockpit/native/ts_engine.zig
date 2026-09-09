@@ -161,6 +161,7 @@ const SplitDrag = struct {
     shared_id: ?[16]u8 = null,
     shared_revision: u64 = 0,
     window_epoch: u64 = 0,
+    local_fingerprint: u64 = 0,
     original_fraction: f32 = 0.5,
     /// The coordinator whose tab holds the divider; its projection's
     /// revision is the one `shared_revision` was taken from.
@@ -785,14 +786,16 @@ pub const Engine = struct {
         self.sequence +%= 1;
         if (protocol.decodeNavigationIntent(bytes)) |intent| return self.applyNavigationIntent(intent, fx);
         const intent = protocol.decodeIntent(bytes) orelse return self.refuse();
-        if (intent.expected_revision != self.revision) return self.refuse();
+        // A config probe reads process-wide disk state and names no positional
+        // target. Title/output churn cannot make that read unsafe or retarget it.
+        if (intent.kind != .probe_config and intent.expected_revision != self.revision) return self.refuse();
         // A tab intent means the window whose chrome sent it. Adopting it as
         // active first is what CockpitHost does with a routed event's window.
         // 255 means "the platform event's already-adopted focused window".
         // Markup intents carry an explicit 0..4 slot; native command mapping
         // has no window field, so the extension adopts CommandEvent.window_id
         // before the compiled core dispatches this intent.
-        if (intent.window != 255) {
+        if (windowScoped(intent.kind) and intent.window != 255) {
             if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
             self.model.active_window = intent.window;
         }
@@ -800,6 +803,15 @@ pub const Engine = struct {
         self.intent_refused = false;
         self.revision +%= 1;
         return true;
+    }
+
+    /// Process-wide settings and creation have no originating window target.
+    /// Their legacy zero byte is not permission to move focus to the primary.
+    fn windowScoped(kind: protocol.IntentKind) bool {
+        return switch (kind) {
+            .probe_config, .reveal_config, .set_theme, .set_tab_placement, .new_window => false,
+            else => true,
+        };
     }
 
     fn applyModelIntent(self: *Engine, intent: protocol.Intent, fx: anytype) bool {
@@ -2239,6 +2251,54 @@ pub const Engine = struct {
         return scene.windowIndexForCanvas(label);
     }
 
+    /// Bind the native incarnation as soon as the SDK materializes a window,
+    /// including a close before its first GPU frame. Never replace a known id
+    /// from a delayed native notification for a previously retired slot.
+    pub fn noteNativeWindow(self: *Engine, info: platform.WindowInfo) void {
+        if (!info.open) return;
+        for (0..model_module.max_windows) |index| {
+            if (!std.mem.eql(u8, info.label, scene.windowLabelFor(index))) continue;
+            const workspace = self.model.wsAt(index) orelse return;
+            if (workspace.window_id == 0) workspace.window_id = info.id;
+            return;
+        }
+    }
+
+    /// An OS close is an observed fact, not an index-based command computed
+    /// from a snapshot. Match its exact native incarnation, then publish the
+    /// retirement even when unrelated title evidence advanced the revision.
+    pub fn closeNativeWindow(self: *Engine, fx: anytype, window_id: platform.WindowId) bool {
+        if (window_id == 0) return false;
+        for (1..model_module.max_windows) |index| {
+            const workspace = self.model.wsAtConst(index) orelse continue;
+            if (workspace.window_id != window_id) continue;
+            self.retireWindowInput(fx, window_id);
+            if (self.closeWindow(@intCast(index), fx)) return self.commitProviderChange(true);
+            // The OS incarnation is gone even when there is no room to
+            // rehome shared tabs. Keep that workspace and recover its native
+            // presentation through the next snapshot, with a fresh id.
+            self.model.wsAt(index).?.window_id = 0;
+            _ = self.commitProviderChange(true);
+            self.intent_refused = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn retireWindowInput(self: *Engine, fx: anytype, window_id: platform.WindowId) void {
+        if (self.split_drag) |drag| {
+            if (drag.window_id == window_id) self.cancelSplitDrag();
+        }
+        shipping_pointer.cancelLocalWindow(self.model, fx, window_id);
+        self.remote_pointer.cancelWindow(self.model, window_id);
+    }
+
+    pub fn matchesNativeWindow(self: *const Engine, index: usize, window_id: platform.WindowId) bool {
+        if (!self.model.windowOpen(index)) return false;
+        const workspace = self.model.wsAtConst(index) orelse return false;
+        return workspace.window_id == window_id;
+    }
+
     /// Adopt the platform's focused window as the active one, the way
     /// CockpitHost adopts a routed event's window; a window this engine has
     /// not painted yet has no id to match.
@@ -2323,10 +2383,8 @@ pub const Engine = struct {
         switch (event.kind) {
             .output => self.feedShellOutput(fx, pane, event.bytes),
             .exit => {
-                pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
-                pane.exit_code = event.code;
-                pane.exit_signal = event.signal;
-                pane.exit_reason = event.reason;
+                terminal_runtime.finishSession(pane, event);
+                pointer_input.endCapturesForTerminal(self.model, fx, pane.id);
                 if (pane.phase == .ended) {
                     _ = lifecycle.closePane(self.model, fx, pane.id, false);
                     return self.commitProviderChange(true);
@@ -2360,6 +2418,22 @@ pub const Engine = struct {
         if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
         terminal_runtime.flushOutbound(pane, fx);
         terminal_runtime.moveResponsesToOutbound(pane, fx);
+    }
+
+    pub fn maintenancePending(self: *const Engine) bool {
+        return terminal_runtime.maintenancePending(self.model);
+    }
+
+    pub fn maintain(self: *Engine, fx: anytype) bool {
+        var chrome_changed = false;
+        for (0..max_terminals) |index| {
+            if (self.model.provider.states[index] != .active) continue;
+            const pane = self.model.provider.slot(index);
+            const before = self.paneChromeFingerprint(pane);
+            terminal_runtime.maintainPane(pane, fx);
+            chrome_changed = chrome_changed or before != self.paneChromeFingerprint(pane);
+        }
+        return self.commitProviderChange(chrome_changed);
     }
 
     // ------------------------------------------------------------- input
@@ -2461,13 +2535,18 @@ pub const Engine = struct {
             self.onRemoteKey(fx, ref, event);
             return;
         }
-        const pane = self.focusedPane() orelse return;
+        self.onLocalKey(fx, ref, event);
+    }
+
+    fn onLocalKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
+        const pane = self.model.provider.terminal(ref) orelse return;
         if (pane.session.search.open) {
             self.searchKey(fx, pane, event);
             return;
         }
         if (self.localShortcut(fx, pane, event)) return;
         if (pane.selecting) return self.localSelectionKey(fx, pane, event);
+        if (!pane.acceptsInput()) return;
         interaction.rememberKey(self.model, ref, event);
         terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
     }
@@ -2618,21 +2697,38 @@ pub const Engine = struct {
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
         if (!self.pointerInputEnabled()) return .ignored;
         const window_index = windowIndexForCanvas(raw.label) orelse return .ignored;
-        if (!self.model.windowOpen(window_index)) return .ignored;
-        self.model.active_window = window_index;
-        defer self.syncRemoteFocus();
+        if (!self.matchesNativeWindow(window_index, raw.window_id)) return .ignored;
         const model = self.model;
         const phase = shipping_pointer.phase(raw) orelse return .ignored;
         if (phase == .down) {
             self.supersedeSelection();
+            self.cancelSplitPointer(raw);
             shipping_pointer.cancelLocal(model, fx, raw);
             self.remote_pointer.cancelPointer(model, raw);
         }
+        if (!self.pointerInWorkspace(raw, window_index)) return .ignored;
+        model.active_window = window_index;
+        defer self.syncRemoteFocus();
         const point = geometry.PointF.init(raw.x, raw.y);
         if (self.routeSplitDrag(raw, point)) |changed| {
             return if (changed) .geometry_changed else .consumed;
         }
         return self.routeTerminalPointer(fx, raw, phase, point);
+    }
+
+    fn pointerInWorkspace(self: *const Engine, raw: platform.GpuSurfaceInputEvent, window_index: usize) bool {
+        const workspace = self.model.wsAtConst(window_index).?;
+        const content = projection.workspaceChromeIn(self.model, workspace, workspace.surface_size).content;
+        if (content.containsPoint(.init(raw.x, raw.y))) return true;
+        if (self.split_drag) |drag| {
+            if (drag.window_id == raw.window_id and drag.pointer_id == raw.pointer_id) return true;
+        }
+        return shipping_pointer.localCaptured(self.model, raw) or self.remote_pointer.hasCapture(raw);
+    }
+
+    fn cancelSplitPointer(self: *Engine, raw: platform.GpuSurfaceInputEvent) void {
+        const drag = self.split_drag orelse return;
+        if (drag.window_id == raw.window_id and drag.pointer_id == raw.pointer_id) self.cancelSplitDrag();
     }
 
     fn routeTerminalPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent, phase: canvas.WidgetPointerPhase, point: geometry.PointF) PointerOutcome {
@@ -2666,8 +2762,8 @@ pub const Engine = struct {
 
     fn splitDragTree(self: *Engine, drag: SplitDrag) ?*layout.Tree {
         const workspace = self.model.wsAt(drag.window_index) orelse return null;
-        const id = drag.shared_id orelse return workspace.selectedTree();
         if (self.model.window_epochs[drag.window_index] != drag.window_epoch) return null;
+        const id = drag.shared_id orelse return localSplitDragTree(workspace, drag);
         if (self.projectionRevision(drag.authority) != drag.shared_revision) return null;
         for (workspace.shared_ids[0..workspace.tab_count], 0..) |candidate, index| {
             const known = candidate orelse continue;
@@ -2687,6 +2783,29 @@ pub const Engine = struct {
         const id = authority orelse return self.model.shared_workspace.revision;
         const state = self.model.sharedWorkspaceFor(id) orelse return self.model.shared_workspace.revision;
         return state.revision;
+    }
+
+    fn localSplitDragTree(workspace: *model_module.Workspace, drag: SplitDrag) ?*layout.Tree {
+        const tree = workspace.selectedTree() orelse return null;
+        if (localSplitFingerprint(tree) != drag.local_fingerprint) return null;
+        return tree;
+    }
+
+    /// Ignore presentation fractions/focus, but bind the capture to all exact
+    /// terminal identities and branch relationships. A recycled node or tab
+    /// position is not the divider the pointer originally pressed.
+    fn localSplitFingerprint(tree: *const layout.Tree) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHash(&hasher, tree.root);
+        for (tree.nodes) |node| {
+            std.hash.autoHash(&hasher, node.kind);
+            std.hash.autoHash(&hasher, node.parent);
+            std.hash.autoHash(&hasher, node.first);
+            std.hash.autoHash(&hasher, node.second);
+            std.hash.autoHash(&hasher, node.orientation);
+            std.hash.autoHash(&hasher, node.terminal);
+        }
+        return hasher.final();
     }
 
     fn moveSplitDrag(self: *Engine, drag: SplitDrag, point: geometry.PointF) bool {
@@ -2766,6 +2885,7 @@ pub const Engine = struct {
                 .shared_id = workspace.shared_ids[workspace.selected_tab],
                 .shared_revision = self.projectionRevision(authority),
                 .window_epoch = self.model.window_epochs[window_index],
+                .local_fingerprint = localSplitFingerprint(tree),
                 .original_fraction = tree.node(divider.node).fraction,
                 .authority = authority,
             };
@@ -2842,6 +2962,7 @@ pub const Engine = struct {
         if (model.focused == focused) return;
         model.focused = focused;
         if (!focused) {
+            self.cancelSplitDrag();
             self.last_click_count = 0;
             self.remote_pointer.cancelAll(model);
             self.remote_natural_keys_held = 0;
@@ -2921,6 +3042,7 @@ pub const Engine = struct {
         const model = self.model;
         const index = windowIndexForCanvas(frame.label) orelse return;
         const workspace = model.wsAt(index) orelse return;
+        if (workspace.window_id != 0 and workspace.window_id != frame.window_id) return;
         workspace.surface_size = frame.size;
         workspace.surface_measured = true;
         workspace.window_id = frame.window_id;

@@ -71,6 +71,52 @@ pub fn spawnPane(pane: *Pane, fx: anytype, on_event: anytype) void {
 pub fn paneForKey(model: *Model, key: u64) ?*Pane {
     return model.provider.terminalForPty(key);
 }
+
+/// A terminal event ends this generation's delivery obligation. Retaining
+/// queued input after a failed spawn both misreports loss and risks replaying
+/// it into a later process. Shipping and retained reducers share this policy.
+pub fn finishSession(pane: *Pane, event: native_sdk.EffectPtyEvent) void {
+    pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
+    pane.exit_code = event.code;
+    pane.exit_signal = event.signal;
+    pane.exit_reason = event.reason;
+    pane.native_delivery_failures = event.dropped_writes -| pane.write_refusals_total;
+    pane.write_refusals = 0;
+    pane.outbound_dropped += pane.outbound_len + pane.session.pendingResponses().len;
+    pane.outbound_head = 0;
+    pane.outbound_len = 0;
+    pane.session.clearResponses();
+    pane.macos_natural_keys_held = 0;
+}
+
+/// Local work is demand-driven, independent of visible frames or child output.
+/// Each pane has a bounded outbound ring and the search engine's existing
+/// per-slice budget. Failed panes remain searchable, but never write again.
+pub fn maintenancePending(model: *const Model) bool {
+    for (0..model_module.max_terminals) |index| {
+        if (model.provider.states[index] != .active) continue;
+        if (paneMaintenancePending(model.provider.slotConst(index))) return true;
+    }
+    return false;
+}
+
+fn paneMaintenancePending(pane: *const Pane) bool {
+    if (pane.session.searchPending()) return true;
+    if (!pane.acceptsInput()) return false;
+    return pane.outbound_len > 0 or pane.session.response_len > 0;
+}
+
+pub fn drainPane(pane: *Pane, fx: anytype) void {
+    if (!pane.acceptsInput()) return;
+    flushOutbound(pane, fx);
+    moveResponsesToOutbound(pane, fx);
+}
+
+pub fn maintainPane(pane: *Pane, fx: anytype) void {
+    drainPane(pane, fx);
+    _ = pane.session.searchPump(grid.Session.search_frame_slice_steps);
+}
+
 /// Append outbound bytes (typed keys, pastes, or query replies) to the
 /// pending ring in stream order, then flush what the pty's stdin FIFO
 /// will take. A large payload is not submitted all at once: `flushOutbound`
@@ -128,7 +174,7 @@ pub fn enqueueTransient(model: *Pane, fx: anytype, bytes: []const u8) void {
 /// Push as much pending outbound as the pty's stdin FIFO will accept, in
 /// per-write-bound chunks. `ptyWrite` reports acceptance — it alone knows
 /// the byte- and record-ring limits — so a refused chunk stays in the
-/// ring and is retried on the next output, resize, or frame: a
+/// ring and is retried by demand-driven maintenance (or output/resize): a
 /// non-reading child pauses the stream instead of losing its tail, and a
 /// reply is never removed before it actually lands.
 pub fn flushOutbound(model: *Pane, fx: anytype) void {
@@ -182,7 +228,7 @@ pub fn feedOutput(model: *Pane, fx: anytype, bytes: []const u8) void {
 /// retries, never cleared before it lands (which would hang a child
 /// blocking on it). Replies are DURABLE (the emulator's buffer holds
 /// them), so a ring too full right now leaves them IN PLACE — uncleared,
-/// retried on the next output, resize, or frame — instead of discarding
+/// retried by maintenance or new output — instead of discarding
 /// an answer the child may be blocked on. Only a queued (or impossible,
 /// counted) batch clears; never a torn escape sequence either way.
 pub fn moveResponsesToOutbound(model: *Pane, fx: anytype) void {
