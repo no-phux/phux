@@ -55,6 +55,23 @@ so journaled results have matching slots. Registration does not open a provider
 transport or a real process; the workspace-refresh timer also skips live
 provider refresh while replay is armed.
 
+## Native publication transactions
+
+Native event handling and persistence completion capture a small publication
+checkpoint before mutation. The checkpoint compares active-window/focused
+terminal identity and persistence failure state after the transition. A focus
+change publishes chrome and advances the existing positional target fence;
+persistence feedback publishes status without invalidating those targets.
+An intent/provider commit that already announced the same dispatch supplies
+its own sequence and revision, avoiding duplicate event announcements. A
+refused command advances only sequence: any accompanying window/focus change
+still receives a target revision and publication, without erasing the refusal.
+
+These first observed domains complement the existing phase/title/cwd/attention
+fingerprints. They do not scan terminal cell content or change the native output
+path. A quiet split click must update the tab's projected title immediately;
+ordinary output in the same pane must not request another chrome snapshot.
+
 ## Acceptance evidence
 
 The shipping extension tests exercise the compiled core and native bridge:
@@ -72,6 +89,12 @@ The shipping extension tests exercise the compiled core and native bridge:
   recovery and the decorated host's all-window routing.
 - `cold replay registers provider and PTY results without live startup` checks
   replay armed before the first lifecycle/frame event.
+- `persistence failure and recovery publish without a later command` checks
+  status-only publication without a positional revision change.
+- `quiet split pointer focus publishes chrome without terminal output` checks
+  focus-dependent titles and ordinary-output publication silence.
+- `refused command window adoption still fences ambient targets` checks the
+  independent revision fence after refusal and successful-command deduplication.
 
 The source-side `src/tests/navigation.test.mjs` suite also checks boot/transition
 command order and the exact navigation payload following the commit marker.
