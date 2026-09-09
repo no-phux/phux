@@ -11,12 +11,14 @@ use crate::{ResourceKind, client::Client, error::BridgeError};
 pub(crate) struct Subscriptions {
     pending: HashMap<u32, ResourceId>,
     withdrawn: HashSet<ResourceId>,
+    closed: HashSet<ResourceId>,
 }
 
 impl Subscriptions {
     pub(super) fn clear(&mut self) {
         self.pending.clear();
         self.withdrawn.clear();
+        self.closed.clear();
     }
 
     pub(crate) fn was_withdrawn(&self, id: &ResourceId) -> bool {
@@ -25,6 +27,10 @@ impl Subscriptions {
 
     pub(crate) fn cancel(&mut self, id: &ResourceId) {
         self.pending.retain(|_, pending| pending != id);
+    }
+
+    pub(crate) fn mark_closed(&mut self, id: &ResourceId) {
+        self.closed.insert(id.clone());
     }
 
     fn contains(&self, id: &ResourceId) -> bool {
@@ -62,9 +68,15 @@ pub(super) fn reconcile(
     client.resources = snapshot
         .resources
         .iter()
+        // A federated GET_STATE may have captured its local contribution before
+        // an explicit close that we already received. Durable closure wins.
+        .filter(|resource| !client.workspace.subscriptions.closed.contains(&resource.id))
         .map(crate::resource_summary)
         .collect();
     for resource in &snapshot.resources {
+        if client.workspace.subscriptions.closed.contains(&resource.id) {
+            continue;
+        }
         if subscribable(resource, catalog, client.workspace.selected) {
             subscribe(client, resource)?;
         }

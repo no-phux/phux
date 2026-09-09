@@ -1356,6 +1356,7 @@ fn apply_terminal_closed(
     client.workspace.subscriptions.cancel(terminal_id);
     if client.workspace.subscriptions.was_withdrawn(terminal_id) {
         apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
+        client.workspace.subscriptions.mark_closed(terminal_id);
         client.forget_resource(terminal_id);
         return Ok(());
     }
@@ -1367,6 +1368,7 @@ fn apply_terminal_closed(
     client.ensure_participant(terminal_id)?;
     apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
     if client.is_agent_stream(terminal_id) {
+        client.workspace.subscriptions.mark_closed(terminal_id);
         retire_agent_stream(client, terminal_id);
         client.forget_resource(terminal_id);
         return Ok(());

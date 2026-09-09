@@ -678,3 +678,69 @@ fn discovered_agent_delivers_multi_record_live_batch_at_its_final_sequence() {
         phux_client_free(client);
     }
 }
+
+#[test]
+fn stale_inventory_cannot_resurrect_a_closed_agent_or_block_later_discovery() {
+    assert_closed_agent_precedes_stale_inventory(false);
+}
+
+#[test]
+fn stale_inventory_cannot_resurrect_an_agent_closed_after_withdrawal() {
+    assert_closed_agent_precedes_stale_inventory(true);
+}
+
+fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
+    let client = attached_mixed_client();
+    answer_read(client, snapshot(true));
+    subscription(client);
+    if withdraw_first {
+        refresh(client, 1, snapshot(false));
+    }
+    let fresh_id = ResourceId::local(MIXED_AGENT + 1);
+    let mut stale = snapshot(true);
+    let mut fresh = stale.resources[1].clone();
+    fresh.id = fresh_id.clone();
+    stale.resources.push(fresh);
+    // SAFETY: fixture owns this client and output records through final free.
+    unsafe {
+        assert_eq!(
+            phux_client_workspace_refresh(client, 2),
+            PhuxClientResult::Ok
+        );
+        let requests = outgoing(client);
+        // Federated GET_STATE captures local inventory before awaiting satellites;
+        // a local close can reach the subscriber before that stale result.
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::ResourceClosed {
+                    terminal_id: ResourceId::local(MIXED_AGENT),
+                    exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                }
+            ),
+            PhuxClientResult::Ok
+        );
+        answer_requests(client, &requests, stale, None);
+        let info = workspace_info(client);
+        assert_eq!(
+            (info.request_id, info.status),
+            (2, 2),
+            "a stale closed entry must not fail refresh or later discovery"
+        );
+        assert_eq!(phux_client_resource_count(client), 2);
+        let mut resource = PhuxResourceInfo::default();
+        assert_eq!(
+            phux_client_resource_get(client, 1, &raw mut resource),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            resource.terminal_id.id,
+            MIXED_AGENT + 1,
+            "closed agent stays absent"
+        );
+        subscription_for(client, &fresh_id);
+        bootstrap_agent(client, &fresh_id, AGENT_BOOTSTRAP, 1, "ask");
+        phux_client_free(client);
+    }
+}
