@@ -1,0 +1,5 @@
+{
+  "graph": "standalone-module-pilot",
+  "modules": ["clients/cockpit/src/cockpit/native/ts_protocol.zig"],
+  "operators": ["equality_swap", "comparison_boundary", "logical_and_or", "arithmetic_add_sub", "boolean_literal"]
+}

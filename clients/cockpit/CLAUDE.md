@@ -116,6 +116,26 @@ README.md, "Reading the result of `zig build test`", has the FFI search order.
 From the repository root, `just cockpit-test` builds the same-checkout FFI and
 runs the shipping TypeScript graph plus retained native engine regressions.
 
+### Regression Tests and Mutation Testing
+
+Ordinary behavioral regression tests gate PRs. For a bug fix, show the named
+test failing against the actual buggy behavior once, then passing with the fix.
+Record the revision, command, expected assertion failure and restored green
+result in the PR or Beads evidence. Compilation errors and unrelated failures
+do not establish that the test catches the defect. Contract tests without a
+historical bug do not need an invented counterfactual.
+
+Keep useful defect explanations beside the test. Historical RED evidence stays
+historical; refactoring does not require maintaining or re-proving a permanent
+patch. The `.guard` files, source markers and patch-applicability gate are
+retired.
+
+Automatic mutation scans are separate, opt-in and diff-scoped. Use their reports
+to investigate missing assertions; survivors need judgment, not a permanent
+patch or a 100% kill quota. See the repository's
+[mutation testing policy](../../docs/TESTING_MUTATIONS.md) for the workflow and
+[guard retirement note](docs/GUARDS.md) for historical context.
+
 ### Running it
 
 ```sh
@@ -212,8 +232,8 @@ one.
 **Measure constants, never pick them**, and keep the deriving command beside the
 number — `--min-solid 4000` and the 32-shell pty ceiling both carry theirs.
 
-**Show every regression test failing first.** Disable the fix, watch red,
-restore, watch green, and report what you disabled.
+For bug-fix RED/GREEN evidence, follow
+[Regression Tests and Mutation Testing](#regression-tests-and-mutation-testing).
 
 Settled questions live in docs/DECISIONS.md; reopen one by adding information,
 not by re-litigating it. Track work with `bd` and keep durable knowledge in

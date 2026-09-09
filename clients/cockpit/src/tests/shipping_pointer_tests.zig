@@ -122,7 +122,6 @@ const Fixture = struct {
     }
 };
 
-// GUARD: ts-remote-pointer
 test "shipping raw remote drag uses provider selection and fences a frozen capture" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var fixture = try Fixture.start();
@@ -150,7 +149,6 @@ test "shipping raw remote drag uses provider selection and fences a frozen captu
     try std.testing.expectEqual(.ignored, engine.onPointer(&fx, fixture.event(.pointer_down, 0, 0)));
 }
 
-// GUARD: ts-remote-drop
 test "shipping remote file drop quotes paths and refuses unavailable owners" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -176,7 +174,6 @@ test "shipping remote file drop quotes paths and refuses unavailable owners" {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-remote-wheel
 test "shipping remote wheel scrolls history and emits bounded mouse reports" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -217,7 +214,6 @@ fn expectMouse(fixture: Fixture, action: u32) !void {
     try std.testing.expectEqual(action, std.mem.readInt(u32, bytes[16..20], .big));
 }
 
-// GUARD: ts-remote-capture-release
 test "shipping remote captures balance reports and Shift retains native selection" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -264,7 +260,6 @@ test "shipping remote captures balance reports and Shift retains native selectio
     try expectMouse(fixture, 1);
 }
 
-// GUARD: ts-remote-gestures
 test "shipping remote word and line gestures retain Ghostty drag semantics" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -284,7 +279,6 @@ test "shipping remote word and line gestures retain Ghostty drag semantics" {
     try fixture.expectSelection("hello world next");
 }
 
-// GUARD: ts-remote-unwrap
 test "shipping remote copy unwraps provider selected Unicode words" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -300,7 +294,6 @@ test "shipping remote copy unwraps provider selected Unicode words" {
     try fixture.expectSelection("界");
 }
 
-// GUARD: ts-remote-measured-pointer
 test "shipping remote pointer maps the canvas measured fractional cell pitch" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -313,7 +306,6 @@ test "shipping remote pointer maps the canvas measured fractional cell pitch" {
     try fixture.expectSelection("OCKPIT");
 }
 
-// GUARD: ts-remote-mouse-modes
 test "shipping remote full mouse modes gate hover and drag reports" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -354,7 +346,6 @@ test "shipping remote full mouse modes gate hover and drag reports" {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-remote-horizontal-wheel
 test "shipping remote horizontal wheels retain fractional signs" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -376,7 +367,6 @@ test "shipping remote horizontal wheels retain fractional signs" {
     }
 }
 
-// GUARD: ts-remote-typed-selection
 test "shipping remote typing releases anchors and retires held selection gestures" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -409,7 +399,6 @@ test "shipping remote typing releases anchors and retires held selection gesture
     try std.testing.expect(!engine.model.remotePresentation(fixture.ref).?.grid.selection_active);
 }
 
-// GUARD: ts-remote-pointer-suspended
 test "shipping input suspension gates pointer and file drops" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -422,7 +411,6 @@ test "shipping input suspension gates pointer and file drops" {
     engine.setInputSuspended(&fx, false);
 }
 
-// GUARD: ts-remote-keyboard-anchors
 test "shipping keyboard selection releases retained pointer anchors" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -449,7 +437,6 @@ test "shipping keyboard selection releases retained pointer anchors" {
     try std.testing.expectEqual(@as(u64, 0), state.gesture_handle);
 }
 
-// GUARD: ts-remote-history-selection
 test "shipping remote autoscroll keeps offscreen document anchors highlighted" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -474,7 +461,6 @@ test "shipping remote autoscroll keeps offscreen document anchors highlighted" {
     try std.testing.expectEqual(@as(u64, 0), engine.model.remoteUi(fixture.ref).?.gesture_handle);
 }
 
-// GUARD: ts-remote-clear-publication
 test "shipping remote provider clearing republishes the selection grid" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -488,7 +474,6 @@ test "shipping remote provider clearing republishes the selection grid" {
     try std.testing.expect(!engine.model.remotePresentation(fixture.ref).?.grid.selection_active);
 }
 
-// GUARD: ts-remote-suspend-capture
 test "shipping input suspension releases provider gesture capture" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -504,7 +489,6 @@ test "shipping input suspension releases provider gesture capture" {
     try std.testing.expect(engine.model.remotePresentation(fixture.ref).?.grid.selection_active);
 }
 
-// GUARD: ts-remote-background-pointer
 test "shipping background windows accept wheel scrolling and Finder drops" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -521,7 +505,6 @@ test "shipping background windows accept wheel scrolling and Finder drops" {
     try std.testing.expect(engine.onDrop(&fx, .{ .window_id = 1, .view_label = cockpit.scene.canvas_label, .paths = &.{"/background drop"} }));
 }
 
-// GUARD: ts-remote-effective-mouse
 test "shipping mouse routing follows Ghostty effective mode after conflicting DEC sets" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -544,7 +527,6 @@ test "shipping mouse routing follows Ghostty effective mode after conflicting DE
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-remote-empty-gesture
 test "shipping remote drag back to origin clears the range without ending capture" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();

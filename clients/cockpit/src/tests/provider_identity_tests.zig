@@ -107,7 +107,6 @@ test "provider dispatch refuses a provider-qualified remote identity at the loca
     try testing.expect(!model.selectTerminal(remote));
 }
 
-// GUARD: switcher-stable-id
 test "keyboard session activation keeps the highlighted id across catalog rebuilds" {
     if (comptime app.phux_enabled) {
         const remote = try app.PhuxProvider.create(

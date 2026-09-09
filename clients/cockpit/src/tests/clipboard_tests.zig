@@ -375,7 +375,6 @@ test "a copied selection persists while failure remains retryable" {
 // so what is reachable from a default build is the rule itself. The local half
 // of the same rule is pinned end-to-end by "a copied selection persists while
 // failure remains retryable" above.
-// GUARD: copy-retains-remote-selection
 test "a successful copy ends selection mode on a remote pane and keeps its range" {
     var state: app.RemoteUiState = .{
         .selecting = true,

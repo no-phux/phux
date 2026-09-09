@@ -1,3 +1,0 @@
-# Guard files contain unified diffs: a single space is an intentional empty
-# context line, including when it is the final line of the embedded patch.
-clients/cockpit/scripts/guards/*.guard whitespace=-blank-at-eol,-blank-at-eof

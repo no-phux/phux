@@ -102,6 +102,53 @@ fn nested_split_descends_into_the_target_leaf() {
     );
 }
 
+#[test]
+fn split_rejects_invalid_ratios_without_changing_layout() {
+    let (mut reg, w, p1) = seeded();
+    let p2 = reg.new_terminal(w).expect("window exists");
+    let win = reg.window_mut(w).expect("window exists");
+    win.layout = Some(LayoutNode::Leaf(p1));
+    let original = win.layout.clone();
+
+    for ratio in [
+        f32::NEG_INFINITY,
+        -0.5,
+        -0.0,
+        0.0,
+        1.0,
+        1.5,
+        f32::INFINITY,
+        f32::NAN,
+    ] {
+        assert!(
+            matches!(
+                win.split(p1, p2, SplitDir::Horizontal, ratio),
+                Err(phux_core::LayoutError::InvalidRatio(_))
+            ),
+            "split must reject ratio {ratio}"
+        );
+        assert_eq!(
+            win.layout, original,
+            "rejected ratio {ratio} changed the layout"
+        );
+    }
+}
+
+#[test]
+fn split_missing_target_preserves_the_existing_leaf() {
+    let (mut reg, w, p1) = seeded();
+    let missing = reg.new_terminal(w).expect("window exists");
+    let new_pane = reg.new_terminal(w).expect("window exists");
+    let win = reg.window_mut(w).expect("window exists");
+    win.layout = Some(LayoutNode::Leaf(p1));
+
+    assert_eq!(
+        win.split(missing, new_pane, SplitDir::Horizontal, 0.5),
+        Err(phux_core::LayoutError::PaneNotInLayout(missing))
+    );
+    assert_eq!(win.layout, Some(LayoutNode::Leaf(p1)));
+}
+
 // ---------------------------------------------------------------------------
 // kill_pane
 // ---------------------------------------------------------------------------
@@ -128,13 +175,12 @@ fn kill_pane_collapses_parent_split() {
 fn kill_pane_not_in_layout_errors() {
     let (mut reg, w, p1) = seeded();
     let bogus = TerminalId::default();
+    assert_ne!(bogus, p1);
     let win = reg.window_mut(w).expect("window exists");
     win.layout = Some(LayoutNode::Leaf(p1));
     let err = win.kill_pane(bogus).unwrap_err();
-    assert!(matches!(
-        err,
-        phux_core::LayoutError::PaneNotInLayout(_) | phux_core::LayoutError::LastPane
-    ));
+    assert_eq!(err, phux_core::LayoutError::PaneNotInLayout(bogus));
+    assert_eq!(win.layout, Some(LayoutNode::Leaf(p1)));
 }
 
 #[test]

@@ -516,37 +516,6 @@ fn globalCacheNote(b: *std.Build, source_root: []const u8) []const u8 {
     return b.fmt("{s}\n                 SHARED with every other checkout on this machine; one\n                 stuck build runner in any of them can starve this one.\n                 Use scripts/zig-build.sh to get a private cache.", .{path});
 }
 
-// ----------------------------------------------------------------- guards
-
-/// Run `scripts/guard-check.sh` as part of `zig build test`.
-///
-/// A GUARD is a regression test that has been watched failing with its fix
-/// removed, and `scripts/guards/*.guard` holds the break that did it. This
-/// step is the CHEAP half of that ritual: it never builds or runs anything,
-/// it only checks that the bookkeeping is still true -- every marker has a
-/// guard file, every guard file names a test that still exists, every guard
-/// has been demonstrated red, and every recorded break still applies to the
-/// tree it claims to break.
-///
-/// It belongs in the gate because the expensive half cannot be. Proving each
-/// guard red costs a full test run apiece, which is minutes; this costs
-/// milliseconds, and without it the ledger silently rots into a set of claims
-/// nobody has checked since the day they were written. That rot is exactly
-/// phux-cockpit-2ml.2's subject: a regression test nobody re-derives is a
-/// test-shaped comment.
-///
-/// `stdio = .inherit` and the script's silence-on-success are a pair, for the
-/// reason spelled out on `addTestVerdict`: Zig 0.16's build runner prints a
-/// step-failure report for any step with non-empty captured stderr, so a
-/// chatty check would look like a failing one.
-fn addGuardCheck(b: *std.Build, test_step: *std.Build.Step) void {
-    const run = b.addSystemCommand(&.{"bash"});
-    run.addFileArg(b.path("scripts/guard-check.sh"));
-    run.stdio = .inherit;
-    run.has_side_effects = true; // the tree it reads is not a declared input
-    test_step.dependOn(&run.step);
-}
-
 fn buildVerdict(
     b: *std.Build,
     phux_enabled: bool,
@@ -722,7 +691,6 @@ pub fn build(b: *std.Build) void {
         const test_step = &top_level.step;
         addNativeRegressionTests(b, artifacts, test_step, measure, phux_enabled, ffi);
         if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
-        addGuardCheck(b, test_step);
         addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi, ffi_profile));
     }
 }

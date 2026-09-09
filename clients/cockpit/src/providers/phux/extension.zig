@@ -668,7 +668,6 @@ test "localhost resolves without requiring a numeric TCP address" {
         try std.testing.expectEqual(@as(u16, 4321), address.getPort());
 }
 
-// GUARD: outgoing-socket-wake
 test "staging after the idle flush makes socket wait outgoing-ready" {
     const sockets = try socketPair();
     defer _ = std.c.close(sockets[0]);
@@ -815,7 +814,6 @@ test "partial inbound frame does not hold outgoing bursts behind its read" {
     try std.testing.expectEqualSlices(u8, frame, incoming);
 }
 
-// GUARD: local-coordinator-before-connect
 test "Unix worker ensures selected coordinator before attempting its socket" {
     var fixture = try startup.TestFixture.init();
     defer fixture.deinit();

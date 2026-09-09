@@ -1,5 +1,9 @@
 # Native Phux completion: validation record
 
+> **Historical evidence (2026-09-08).** Results and guard references below
+> describe that acceptance run. The permanent guard ledger is retired; see
+> the current [mutation testing policy](../../../docs/TESTING_MUTATIONS.md).
+
 ## Verdict (2026-09-08)
 
 The composed native implementation passes the automated gates below. Final

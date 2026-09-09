@@ -238,6 +238,12 @@ available through Node. See [Cockpit's guide](../clients/cockpit/README.md) for
 the isolated development app and the distinction between headless tests and
 actual host-rendering evidence.
 
+### Mutation testing
+
+Mutation tools are optional and separate from contributor and ordinary CI
+gates. See [Scoped mutation testing](TESTING_MUTATIONS.md) for pinned runners,
+bounded scopes, report interpretation, and the Rust/FFI/Zig evidence boundary.
+
 ### Full root validation
 
 Add `just`, `cargo-nextest`, `cargo-deny`, Bash 4+, `actionlint`, `shellcheck`,

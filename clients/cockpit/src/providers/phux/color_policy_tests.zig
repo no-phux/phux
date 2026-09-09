@@ -40,7 +40,6 @@ const second: provider.ColorPolicy = .{
     .selection_color = canvas.Color.rgb8(51, 151, 101),
 };
 
-// GUARD: remote-configured-colors
 test "shipping Host preserves configured colors across OSC reset and idle theme repaint" {
     const remote = try attached();
     defer remote.destroy();
