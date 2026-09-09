@@ -23,12 +23,13 @@ by a newer one, the newer line is the operative reading.
 
 ## Identity and kinds
 
+- [0104](./0104-parent-bindings-are-l1-lifecycle.md) A parent is bound at spawn; closing it closes every child with `ParentClosed`, atomically.
+- [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; `ResourceId` replaces `TerminalId`, with Terminal as kind 0.
 - [0064](./0064-playback-as-a-pane.md) `phux play` creates a real Terminal fed from a cast; no wire change.
 - [0062](./0062-headless-resize-and-window-size-policy.md) An explicit headless resize applies now but does not outrank the `window-size` policy.
 - [0056](./0056-cross-session-terminal-move.md) `MOVE_RESOURCE` re-parents a live Terminal across sessions on L1; geometry stays L3.
 - [0050](./0050-explicit-spawn-ownership.md) `SPAWN_RESOURCE` may name an owning Terminal; placement remains a client-written L3 concern.
 - [0027](./0027-terminal-references-and-l3-links.md) A Terminal is one identity with one geometry; views, tags, and links are client-side.
-- [0016](./0016-terminal-id-as-wire-primary.md) `ResourceId`, local or satellite, is the wire primary; `PaneId` is consumer-side.
 - [0015](./0015-protocol-layering.md) The wire is L1 Terminals, L2 Collections, L3 metadata; sessions and windows are conventions.
 - [0011](./0011-protocol-core-independence.md) `phux-protocol` and `phux-core` share no dependency edge; `IdBridge` is their meeting point.
 
@@ -39,7 +40,6 @@ by a newer one, the newer line is the operative reading.
 - [0060](./0060-self-contained-session-recording.md) Recording is a consumer-side projection over the attach contract; encoders run in-process.
 - [0059](./0059-sandboxed-chunked-file-upload.md) `PUT_FILE` sends bounded chunks into a server-chosen sandbox directory under the command envelope.
 - [0034](./0034-kitty-graphics-image-passthrough.md) Kitty graphics prefer Unicode placeholders; the client repaints from its cell grid only.
-- [0030](./0030-engine-delegated-wire-and-projection-consumers.md) Both ends run one engine; every structured surface is a consumer projection, not a tier.
 - [0024](./0024-wire-owns-input-atoms.md) The wire protocol owns its input atoms instead of reusing libghostty's types.
 - [0021](./0021-control-plane-commands.md) CLI verbs ride `COMMAND`/`COMMAND_RESULT`; selectors resolve client-side against `GET_STATE`.
 - [0013](./0013-libghostty-bytes-on-wire.md) Terminal content crosses the wire as VT bytes; input stays structured events.
@@ -97,6 +97,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
 - [0095](./0095-the-blackbird-boundary.md) phux and Blackbird never connect; one optional field in the agent record joins their ledgers.
 - [0085](./0085-hook-sourced-agent-state.md) Hook-reported working, blocked, and done states are detector evidence, published immediately.
 - [0084](./0084-starting-an-agent-in-an-existing-shell.md) `phux agent start` types the integration argv into a live shell; detection verifies the kind.
@@ -149,9 +150,6 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
-- [0104](./0104-parent-bindings-are-l1-lifecycle.md) Parent bindings between resources are L1 lifecycle; closing a parent closes its children.
-- [0103](./0103-agent-session-resource-and-producer-fed-streams.md) An `AgentSession` is the second resource kind, fed by a producer over an append command.
-- [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; Terminal is the first; `ResourceId` replaces `ResourceId`.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

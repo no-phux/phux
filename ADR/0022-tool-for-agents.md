@@ -20,6 +20,7 @@ while maximizing zero-shot legibility for today's bash-trained models.
 
 Status: Accepted
 Date: 2026-05-29
+See [ADR-0102](./0102-resources-the-server-serves-kinds.md) for the current scope: projections are per resource kind, not Terminal alone.
 
 ## Context
 

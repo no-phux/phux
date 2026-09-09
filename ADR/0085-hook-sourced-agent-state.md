@@ -14,6 +14,7 @@ Status: Accepted
 Date: 2026-08-14
 Builds on: ADR-0040 (agent metadata), ADR-0046 (server-side detection), and
 ADR-0061 (capability-gated wire additions)
+See [ADR-0103](./0103-agent-session-resource-and-producer-fed-streams.md) for the current scope: the hook path is a fallback below the AgentSession stream.
 
 ## Context
 

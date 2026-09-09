@@ -11,6 +11,7 @@ last-reviewed: 2026-05-28
 Status: Accepted
 Date: 2026-05-25
 See [ADR-0016](./0016-terminal-id-as-wire-primary.md) for the rename: PaneActor, PaneId, PaneHandle, and PaneInput below are TerminalActor, TerminalId, and the matching Terminal* types in the tree.
+See [ADR-0102](./0102-resources-the-server-serves-kinds.md) for the actor's current scope: it is the Terminal engine inside a kind-agnostic resource core.
 
 ## Context
 

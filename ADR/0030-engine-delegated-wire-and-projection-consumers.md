@@ -16,8 +16,10 @@ single atomic L1 batch operation (`KILL_TERMINALS`), names phux-web as the
 reference projection pattern, and reaffirms ADR-0017 as the constraint that
 keeps the reference TUI a pure consumer.
 
-Status: Accepted
+Status: Superseded by ADR-0102
 Date: 2026-06-06
+Superseded by [ADR-0102](./0102-resources-the-server-serves-kinds.md): the engine-delegation principle survives inside it, generalized from Terminal to every kind.
+Amended by [ADR-0104](./0104-parent-bindings-are-l1-lifecycle.md): the one-irreducible-op rule becomes two, atomic teardown and the parent-close cascade.
 
 ## Context
 
