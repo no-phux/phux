@@ -6,6 +6,7 @@
 //! fences work to one published provider generation.
 
 const std = @import("std");
+pub const workspace = @import("workspace.zig");
 const native_sdk = @import("native_sdk");
 
 const canvas = native_sdk.canvas;
