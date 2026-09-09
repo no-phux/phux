@@ -25,7 +25,7 @@ def parse_args():
     begin.add_argument("--require-markup-watch", action="store_true")
     mark = commands.add_parser("mark-problem", help="retain an identity-checked incident capture")
     mark.add_argument("--run", type=Path, required=True)
-    mark.add_argument("--target", help="observed SDK widget address (not terminal content or title)")
+    mark.add_argument("--target", help="request widget verification (refused at the current unescaped SDK pin)")
     mark.add_argument("--input-scope", choices=evidence.SCOPES, default="unknown")
     watch = commands.add_parser("watch", help="retain periodic diagnostics until refusal or Ctrl-C")
     watch.add_argument("--run", type=Path, required=True)

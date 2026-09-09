@@ -19,18 +19,42 @@ window @w1 "PRIVATE WINDOW" bounds=(0,0 100x100) focused=true frame=12 commands=
   error event=key name=Failed detail="KEYSTROKE SECRET" timestamp_ns=4
 '''
 
+# Both are possible raw {s} window/view/widget labels at the pinned SDK. The
+# second payload closes/reopens quotes to impersonate complete, balanced lines.
+FORGED_WIDGET = b'    widget @w1/phux-cockpit-canvas#999 name="" gpu_frame=1234567890123456 focused=true'
+MULTILINE_LABEL = b'private\n' + FORGED_WIDGET
+BALANCED_LABEL = (b'private" bounds=(0,0 1x1) focused=true frame=12 commands=2\n'
+                  + FORGED_WIDGET + b'\nwindow @w2 "continuation')
+
 
 class PrivacyTests(unittest.TestCase):
-    def test_snapshot_preserves_identity_and_diagnostics_without_payload(self):
+    def test_structural_looking_label_payload_is_never_retained(self):
+        for field in (b"PRIVATE WINDOW", b"TERMINAL PAYLOAD", b"PRIVATE TITLE"):
+            for payload in (MULTILINE_LABEL, BALANCED_LABEL):
+                with self.subTest(field=field, balanced=payload == BALANCED_LABEL):
+                    value = d.sanitize_snapshot(SNAPSHOT.replace(field, payload), 42)
+                    self.assertNotIn("1234567890123456", json.dumps(value))
+                    self.assertNotIn("@w1/phux-cockpit-canvas#999", json.dumps(value))
+                    self.assertEqual(value, d.sanitize_snapshot(SNAPSHOT, 42))
+
+    def test_snapshot_preserves_header_and_declares_structure_unsupported(self):
         value = d.sanitize_snapshot(SNAPSHOT, 42)
         serialized = json.dumps(value)
         for secret in ("PRIVATE", "SECRET", "PAYLOAD", "text_value", "detail"):
             self.assertNotIn(secret, serialized)
         self.assertEqual(value["header"]["publisher_pid"], "42")
-        self.assertEqual(value["records"][1]["gpu_present_path"], "packet")
-        self.assertEqual(value["records"][2]["address"], "@w1/phux-cockpit-canvas#123")
-        self.assertEqual(value["records"][2]["focused"], "true")
+        self.assertEqual(value["header"]["frame"], "12")
+        self.assertEqual(value["header"]["dispatch_errors"], "1")
+        self.assertEqual(value["records"], [])
+        self.assertEqual(value["structure_status"], "unsupported_unescaped_sdk_text")
+        self.assertEqual(value["ui_health_observed"], "unavailable")
         self.assertEqual(value["input_scope_observed"], "unavailable")
+
+    def test_header_only_snapshot_cannot_claim_a_nonempty_ui(self):
+        value = d.sanitize_snapshot(SNAPSHOT.partition(b"\n")[0] + b"\n", 42)
+        self.assertEqual(value["header"]["publisher_pid"], "42")
+        self.assertEqual(value["records"], [])
+        self.assertEqual(value["ui_health_observed"], "unavailable")
 
     def test_hostile_quoted_and_multiline_text_cannot_copy_payload(self):
         hostile = SNAPSHOT.replace(b"TERMINAL PAYLOAD", b'private focused=false gpu_frame=999\nSECRET\n')
@@ -56,6 +80,16 @@ class PrivacyTests(unittest.TestCase):
             self.assertNotIn("SECRET", json.dumps(value))
             self.assertNotIn("TERMINAL", json.dumps(value))
             self.assertFalse(d.log_summary(Path(tmp) / "absent")["available"])
+
+    def test_log_payload_cannot_forge_launch_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "log"
+            log.write_text('warning: invalid config "multiline\n'
+                           'native-sdk: launch runner_main wall_ns=1234567890123456\n'
+                           'still in quoted config"\n')
+            value = d.log_summary(log)
+            self.assertNotIn("1234567890123456", json.dumps(value))
+            self.assertEqual(value["category_counts"]["warning"], 1)
 
 
 class RunTests(unittest.TestCase):
@@ -106,7 +140,7 @@ class RunTests(unittest.TestCase):
         self.assertFalse(manifest["linked_ffi_verified"])
         self.assertEqual(manifest["sdk_inputs"]["declared_commit"], "a" * 40)
         (self.root / "edit.native").write_text("SECRET SOURCE")
-        a, valid = d.capture(first, "mark-problem", "@w1/phux-cockpit-canvas#123", "terminal")
+        a, valid = d.capture(first, "mark-problem", scope="terminal")
         self.assertTrue(valid)
         b, valid = d.capture(first, "sample")
         self.assertTrue(valid)
@@ -163,11 +197,45 @@ class RunTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("predates publisher start", json.loads(path.read_text())["refusal"])
 
-    def test_absent_target_is_not_bound_to_another_widget(self):
+    def test_target_verification_refuses_even_a_benign_existing_widget(self):
         run = self.start()
-        path, valid = d.capture(run, "mark-problem", "@w1/phux-cockpit-canvas#999")
+        path, valid = d.capture(run, "mark-problem", "@w1/phux-cockpit-canvas#123")
         self.assertFalse(valid)
-        self.assertIn("target is absent", json.loads(path.read_text())["refusal"])
+        self.assertIn("target verification unsupported", json.loads(path.read_text())["refusal"])
+
+    def test_injected_target_is_not_accepted_as_publisher_structure(self):
+        for payload in (MULTILINE_LABEL, BALANCED_LABEL):
+            with self.subTest(balanced=payload == BALANCED_LABEL):
+                raw = SNAPSHOT.replace(b"TERMINAL PAYLOAD", payload)
+                self.native.write_text("#!/usr/bin/env python3\nimport sys\n"
+                                       f"sys.stdout.buffer.write({raw!r})\n")
+                run = self.start()
+                path, valid = d.capture(run, "mark-problem", "@w1/phux-cockpit-canvas#999")
+                self.assertFalse(valid)
+                self.assertIn("target verification unsupported", json.loads(path.read_text())["refusal"])
+                self.assertNotIn("1234567890123456", path.read_text())
+
+    def test_git_failure_still_retains_an_unknown_source_refusal(self):
+        run = self.start()
+        repo = self.root.parent.parent
+        (repo / ".git").rename(repo / "unavailable-git")
+        self.assert_source_refusal(run, *d.capture(run, "mark-problem"))
+
+    def test_git_timeout_still_retains_an_unknown_source_refusal(self):
+        run = self.start()
+        failure = subprocess.TimeoutExpired(["git", "SECRET"], 15)
+        with patch.object(d, "source_identity", side_effect=failure):
+            path, valid = d.capture(run, "mark-problem")
+        self.assert_source_refusal(run, path, valid)
+
+    def assert_source_refusal(self, run, path, valid):
+        self.assertFalse(valid)
+        report = json.loads(path.read_text())
+        self.assertEqual(report["run_id"], run.name)
+        self.assertIsNone(report["source_now"])
+        self.assertIn("source inspection", report["refusal"])
+        self.assertNotIn("snapshot", report)
+        self.assertNotIn("SECRET", path.read_text())
 
     def test_atomic_evidence_never_replaces_previous_file(self):
         path = self.root / "evidence.json"

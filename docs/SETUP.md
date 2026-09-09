@@ -363,8 +363,8 @@ check its exit status before starting `watch`. The default artifact is
 publisher's executable path and CWD must match the artifact and app source root.
 Both normal and dev-named Cockpit processes are counted: exactly the selected
 PID must be live. Each capture checks the process start time, publisher PID,
-nonempty window/view tree, and unchanged binary/CLI file identities on both
-sides of inspection. Snapshot publication times/ages are retained; a file from
+and unchanged binary/CLI file identities on both sides of inspection. Snapshot
+publication times/ages are retained; a file from
 before this process started (or its ambiguous launch second) is refused. Retry
 after the app has published. `--require-markup-watch` verifies the live `armed`
 field, including when the binary was launched directly without building.
@@ -373,16 +373,21 @@ At a problem, use another shell at the app root:
 
 ```sh
 python3 scripts/dev-diagnostics.py mark-problem --run "$RUN" \
-  --target '@w1/phux-cockpit-canvas#123' --input-scope terminal
+  --input-scope terminal
 ```
 
-Replace the example target with the SDK widget address for the affected control,
-or omit it if unknown. It must be present in that capture. The retained window,
-view, and widget addresses include observed focus/selection flags. Input scope
-is explicitly operator-declared (`terminal`, `chrome`, `switcher`, `settings`,
-`web`, or `unknown`); the current snapshot has no authoritative provider resource
-ID or input-routing scope, so those observed fields remain unavailable. Widget
-addresses are presentation identities, not durable resource IDs.
+Input scope is explicitly operator-declared (`terminal`, `chrome`, `switcher`,
+`settings`, `web`, or `unknown`). The current SDK writes unescaped window/view/
+widget labels into its snapshot body: embedded quotes and newlines can forge
+even balanced structural records. Capture therefore retains only the typed
+first header (publisher, frame/command counts, uptime, error/drop counts, and
+markup-watch state). The body is omitted wholesale and structure is marked
+unsupported. A valid capture proves publisher/header checks, **not** a healthy
+or nonempty UI. GPU/view diagnostics, widget identities, focus/selection, input
+routing scope, and provider ResourceId are unavailable. `--target` requests
+verification and produces an invalid capture/refusal at this pin; even a real
+widget's presence cannot be proved from this format. Structural evidence needs
+an escaped or length-framed SDK surface, not more permissive text parsing.
 
 The private `.dev-run/diagnostics/<timestamp>-<unique-id>/` directory retains an
 immutable `run.json` and timestamped diagnostic samples/incident files. The
@@ -395,8 +400,9 @@ untracked contents are not included. Pass `--phux-cli PATH` with `--socket` at
 selection is operator-declared; coordinator incarnation is unavailable through
 that status surface and remains null.
 
-`--log PATH` at `begin` adds bounded, allowlisted diagnostic summaries and launch
-phase timestamps from that invocation's log to each retained sample. The last
+`--log PATH` at `begin` adds bounded diagnostic category counts from that
+invocation's log to each retained sample. Raw log lines are likewise unframed,
+so apparent launch timestamps may be payload and are not retained. The last
 1 MiB is inspected; truncation is explicit. A two-second `watch` retains runtime
 diagnostics until Ctrl-C or the first invalid capture, including process-exit
 refusals. It never stops the app. Logs/snapshots are not copied wholesale:
@@ -405,6 +411,12 @@ details, config contents, and process arguments/environment are excluded. Raw
 logs redirected by the operator and SDK dropbox files stay outside this bundle
 and may contain content. Retained evidence persists until explicitly deleted;
 `dev-run.sh --fresh` removes the whole default `.dev-run` home, including it.
+
+New evidence uses schema 2. Existing run manifests remain readable, but earlier
+schema-1 captures may contain payload-forged body fields and are not sanitized
+retroactively; take new captures for diagnostic handoff. Git inspection failures
+and timeouts retain an invalid incident envelope with null current-source
+identity and a safe refusal reason, even when runtime inspection cannot proceed.
 
 An on-disk hash is not proof of bytes already mapped into a process. Source SDK
 pins, candidate FFI archives, and license notices do not attest what an existing
