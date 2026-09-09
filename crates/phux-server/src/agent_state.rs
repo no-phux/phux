@@ -70,6 +70,80 @@ use phux_protocol::ids::TerminalId as WireTerminalId;
 
 use crate::agent_detect::record::AgentRecordJson;
 
+/// Where a claim about a Terminal's agent `state` came from, ordered by
+/// authority (ADR-0103 decision 5).
+///
+/// The ladder answers one question: when two sources describe the same pane
+/// and disagree, which one lands in the record? Rank is a property of how
+/// close the source sits to the agent's own knowledge of itself, not of how
+/// fresh its evidence is - a screen scrape is fresher than anything and knows
+/// least.
+///
+/// Orthogonal to [`AgentRecordArbiter`], which arbitrates between the SERVER
+/// and an explicit `SET_METADATA` writer (ADR-0046 §E). This ranks the
+/// server's own sources against each other; a declaration still outranks all
+/// four of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the Stream producer lands with the AgentSession engine; the ladder is defined and pinned by tests here so the screen detector's side of the precedence is already correct when it does"
+)]
+pub(crate) enum EvidenceSource {
+    /// Derived from the pane's grid by the rule set (ADR-0046). Inferential,
+    /// self-healing, and the weakest thing in the room: it reads pixels an
+    /// agent painted for a human and guesses what they mean.
+    Screen,
+    /// The PTY's foreground process group (`agent_detect::identify`). It
+    /// establishes IDENTITY and departure rather than lifecycle state, and it
+    /// is positive evidence rather than inference, so it outranks the screen.
+    Process,
+    /// An opt-in integration reporting through `REPORT_AGENT_STATE`
+    /// (ADR-0085). The agent itself is speaking, so it outranks anything the
+    /// server infers - but it is edge-triggered and lossy, which is why it
+    /// does not outrank a stream it could have been carried on.
+    Hook,
+    /// A record on a live `AgentSession` child's stream (ADR-0103).
+    ///
+    /// The producer is the `AgentSession` engine, which derives state from
+    /// the records the agent appends (`prompt` / `tool_start` mean working;
+    /// `ask` and a `permission` / `elicitation` notification mean blocked;
+    /// `stop` means done; `session_end` retracts). Top of the ladder because
+    /// it is the agent describing itself over a sequenced, gap-detecting
+    /// channel it owns - the same evidence a hook carries, minus the lossiness
+    /// that caps a hook's rank.
+    Stream,
+}
+
+#[allow(
+    dead_code,
+    reason = "read by the ladder's own tests and by the AgentSession engine, which lands with that engine"
+)]
+impl EvidenceSource {
+    /// Rank within the ladder: higher wins. Same shape and same reason as
+    /// [`crate::agent_asked::AskedSource::priority`], which ranks the ask
+    /// ladder (ADR-0036) - a deliberately separate ledger, because "who is
+    /// asking" and "what state is the pane in" have different sources and
+    /// different retraction rules.
+    pub(crate) const fn priority(self) -> u8 {
+        match self {
+            Self::Screen => 0,
+            Self::Process => 1,
+            Self::Hook => 2,
+            Self::Stream => 3,
+        }
+    }
+
+    /// Whether evidence from `self` may publish over a record an `incumbent`
+    /// source currently holds.
+    ///
+    /// Reflexive on purpose: a source re-asserting its own claim is a
+    /// refresh, not a usurpation, and the edge filter - not the ladder - is
+    /// what keeps that quiet.
+    pub(crate) const fn outranks(self, incumbent: Self) -> bool {
+        self.priority() >= incumbent.priority()
+    }
+}
+
 /// Who currently owns each Terminal's `phux.agent/v1` record.
 #[derive(Debug, Default)]
 pub(crate) struct AgentRecordArbiter {
@@ -442,8 +516,8 @@ mod tests {
     use phux_protocol::ids::TerminalId as WireTerminalId;
 
     use super::{
-        AgentRecordArbiter, IdentityOwnership, compose, explicit_kind_is_contradicted,
-        withdraw_state,
+        AgentRecordArbiter, EvidenceSource, IdentityOwnership, compose,
+        explicit_kind_is_contradicted, withdraw_state,
     };
     use crate::agent_detect::record::AgentRecordJson;
     use crate::agent_detect::rules::{ManifestSpec, RuleSet};
@@ -981,5 +1055,37 @@ mod tests {
     fn withdraw_state_has_nothing_to_rewrite_without_a_record() {
         assert!(withdraw_state(None).is_none());
         assert!(withdraw_state(Some(b"}{ nonsense")).is_none());
+    }
+
+    /// The state ladder, end to end (ADR-0103 decision 5): `Stream` >
+    /// `Hook` > `Process` > `Screen`, strictly, with no rung able to
+    /// displace one above it.
+    #[test]
+    fn the_evidence_ladder_runs_stream_hook_process_screen() {
+        use EvidenceSource::{Hook, Process, Screen, Stream};
+
+        let ladder = [Screen, Process, Hook, Stream];
+        for pair in ladder.windows(2) {
+            let (lower, upper) = (pair[0], pair[1]);
+            assert!(
+                upper.priority() > lower.priority(),
+                "{upper:?} must outrank {lower:?}",
+            );
+            assert!(
+                upper.outranks(lower),
+                "{upper:?} may publish over {lower:?}"
+            );
+            assert!(
+                !lower.outranks(upper),
+                "{lower:?} must not publish over {upper:?}",
+            );
+        }
+        // Transitivity is not free from the pairwise checks alone, and the
+        // top-to-bottom pair is the one the detector's suppression relies on.
+        assert!(Stream.outranks(Screen) && !Screen.outranks(Stream));
+        assert!(
+            Stream.outranks(Stream),
+            "a source re-asserting its own claim is a refresh, not a usurpation",
+        );
     }
 }

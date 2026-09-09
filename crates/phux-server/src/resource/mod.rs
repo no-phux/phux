@@ -214,6 +214,22 @@ pub enum ControlRequest {
         /// Whether the detector accepted the evidence.
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Turn hook-reported state into a synthesized `state` record on this
+    /// Terminal's live `AgentSession` child, so one source of truth - the
+    /// stream - feeds the arbiter (ADR-0103 decision 6).
+    ///
+    /// Routed here instead of [`Self::ReportAgentState`] only when the
+    /// binding graph says a live child exists; otherwise `REPORT_AGENT_STATE`
+    /// takes the ADR-0085 path unchanged. Two requests rather than a flag on
+    /// one, because the two do genuinely different things to different
+    /// resources and a boolean would hide that at every call site.
+    SynthesizeAgentStateRecord {
+        /// Hook-reported state, to be appended as
+        /// `{"type":"state","data":{"state":...,"source":"hook"}}`.
+        state: ReportedAgentState,
+        /// Whether the record was accepted.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Deliver `signal` to the pane's process group, update the lifecycle
     /// (`Freeze` → `Frozen`, `Resume` → `Running`), and broadcast a
     /// `TerminalControl`. `reply` carries `Ok(())` on delivery or a

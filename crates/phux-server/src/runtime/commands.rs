@@ -3766,13 +3766,28 @@ pub(crate) async fn handle_signal_terminal(
     }
 }
 
-/// Feed integration-hook lifecycle evidence into a pane's detector.
+/// Feed integration-hook lifecycle evidence into a pane (ADR-0085), by the
+/// route the resource graph makes right (ADR-0103 decision 6).
+///
+/// With a live `AgentSession` child the report becomes a synthesized `state`
+/// record on that child's stream, so the arbiter keeps receiving one source's
+/// account of the pane instead of two that can disagree. Without one — every
+/// pane, until the `AgentSession` engine lands — it goes straight into the
+/// detector exactly as it always has.
 pub(crate) async fn handle_report_agent_state(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::TerminalId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
-    let resolved = state.with(|server| server.resolve_resource(terminal_id).into_owned());
+    // The handle and the live-child answer are read under ONE borrow of the
+    // state: taking them separately would let a `session_end` land between
+    // them and route the report at a child that is already gone.
+    let (resolved, live_session) = state.with(|server| {
+        let resolved = server.resolve_resource(terminal_id).into_owned();
+        let live_session = matches!(resolved, ResolvedOwned::Local(_))
+            && crate::agent_detect::live_session::server_has_live_session(server, terminal_id);
+        (resolved, live_session)
+    });
     let handle = match resolved {
         ResolvedOwned::Local(local) => local.handle,
         ResolvedOwned::Remote(_) => {
@@ -3791,15 +3806,18 @@ pub(crate) async fn handle_report_agent_state(
         }
     };
     let (reply, result) = oneshot::channel();
-    if handle
-        .control
-        .send(ControlRequest::ReportAgentState {
+    let request = if live_session {
+        ControlRequest::SynthesizeAgentStateRecord {
             state: reported,
             reply,
-        })
-        .await
-        .is_err()
-    {
+        }
+    } else {
+        ControlRequest::ReportAgentState {
+            state: reported,
+            reply,
+        }
+    };
+    if handle.control.send(request).await.is_err() {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for REPORT_AGENT_STATE".to_owned(),

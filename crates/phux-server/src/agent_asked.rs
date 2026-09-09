@@ -44,6 +44,24 @@ pub(crate) enum AskedSource {
     /// An opt-in agent integration reporting through `REPORT_ASKED`. It owns
     /// identity and lifecycle, so it is authoritative.
     Hook,
+    /// An `ask` record - or a `notification` record whose kind is
+    /// `permission` or `elicitation` - on a live `AgentSession` child's
+    /// stream (ADR-0103 decision 5).
+    ///
+    /// Top of the ladder for the same reason
+    /// [`crate::agent_state::EvidenceSource::Stream`] is top of the state
+    /// ladder: it is the agent describing itself over a sequenced channel it
+    /// owns, so it carries the question's identity and lifecycle exactly as a
+    /// hook does, and it cannot be silently lost the way an edge-triggered
+    /// hook call can. Entered through
+    /// [`crate::state::ServerState::report_stream_ask`]; retraction is
+    /// per-source and unchanged, so a stream that goes quiet clears only what
+    /// the stream itself asserted.
+    #[allow(
+        dead_code,
+        reason = "the AgentSession stream producer lands with the engine; the rung is defined here so the ladder is complete and ordered when it does"
+    )]
+    Stream,
 }
 
 impl AskedSource {
@@ -54,6 +72,7 @@ impl AskedSource {
             Self::Scrape => 0,
             Self::Sentinel => 1,
             Self::Hook => 2,
+            Self::Stream => 3,
         }
     }
 }
@@ -358,5 +377,63 @@ mod tests {
         let cleared = detector.clear_terminal(terminal).unwrap();
         assert_eq!(cleared.id, "hook");
         assert!(detector.current(terminal).is_none());
+    }
+
+    /// The `Stream` rung (ADR-0103 decision 5) sits above `Hook`, and
+    /// retraction stays per-source: a hook that takes its own question back
+    /// cannot clear one the stream is standing behind.
+    #[test]
+    fn a_stream_ask_outranks_a_hook_ask() {
+        let terminal = TerminalId::default();
+        let mut detector = AskedDetector::default();
+
+        assert!(matches!(
+            detector.report(terminal, AskedSource::Hook, payload("h", "Approve?")),
+            AskedTransition::Entered(_)
+        ));
+        assert!(
+            matches!(
+                detector.report(terminal, AskedSource::Stream, payload("s", "Deploy?")),
+                AskedTransition::Updated(_)
+            ),
+            "a record on the agent's own stream outranks its hook call",
+        );
+        assert_eq!(
+            detector.report(terminal, AskedSource::Hook, payload("h2", "Approve?")),
+            AskedTransition::Ignored,
+            "and cannot be displaced from below",
+        );
+        assert_eq!(
+            detector.retract(terminal, AskedSource::Hook),
+            None,
+            "retraction is per-source: the hook no longer owns the question",
+        );
+        assert_eq!(
+            detector
+                .retract(terminal, AskedSource::Stream)
+                .map(|p| p.id),
+            Some("s".to_owned()),
+            "the stream retracts what the stream asserted",
+        );
+    }
+
+    /// The full ask ladder in rank order, so a rung inserted in the wrong
+    /// place is a failure here rather than a mystery in the sidebar.
+    #[test]
+    fn the_ask_ladder_runs_scrape_sentinel_hook_stream() {
+        let ladder = [
+            AskedSource::Scrape,
+            AskedSource::Sentinel,
+            AskedSource::Hook,
+            AskedSource::Stream,
+        ];
+        for pair in ladder.windows(2) {
+            assert!(
+                pair[1].priority() > pair[0].priority(),
+                "{:?} must outrank {:?}",
+                pair[1],
+                pair[0],
+            );
+        }
     }
 }
