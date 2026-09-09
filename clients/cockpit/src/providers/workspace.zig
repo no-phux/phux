@@ -5,6 +5,8 @@ pub const max_text_bytes = 4096;
 pub const max_windows = 32;
 pub const max_nodes = 512;
 pub const max_terminals = 256;
+/// Live engine admission; discovery remains bounded by max_terminals.
+pub const max_replicas = 16;
 pub const WindowId = [16]u8;
 pub const Text = struct {
     storage: [max_text_bytes]u8 = undefined,

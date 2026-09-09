@@ -80,7 +80,6 @@ pub const Store = struct {
     windows: []ws.Window = &.{},
     nodes: []ws.Node = &.{},
     catalog: []ws.CatalogTerminal = &.{},
-    has_catalog: bool = false,
 
     pub fn deinit(self: *Store, gpa: std.mem.Allocator) void {
         gpa.free(self.windows);
@@ -134,7 +133,7 @@ pub const Store = struct {
             self.message = message;
             return true;
         }
-        var next: Store = .{ .info = info, .message = message, .has_catalog = raw.revision != 0 };
+        var next: Store = .{ .info = info, .message = message };
         errdefer next.deinit(gpa);
         try next.copyRecords(gpa, client, raw);
         self.deinit(gpa);
@@ -143,7 +142,7 @@ pub const Store = struct {
     }
 
     fn samePublication(self: *const Store, info: ws.Snapshot) bool {
-        return self.has_catalog and self.info.revision == info.revision and self.info.session_id == info.session_id;
+        return self.info.revision != 0 and self.info.revision == info.revision and self.info.session_id == info.session_id;
     }
 
     fn copyRecords(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient, info: c.PhuxWorkspaceInfo) !void {
@@ -202,7 +201,7 @@ fn nodeFromC(raw: c.PhuxWorkspaceNode, count: u32) !ws.Node {
 
 fn validateSplit(raw: c.PhuxWorkspaceNode, count: u32) !void {
     if (raw.first >= count or raw.second >= count) return error.InvalidWorkspace;
-    if (!std.math.isFinite(raw.ratio) or raw.ratio < 0 or raw.ratio > 1) return error.InvalidWorkspace;
+    if (!std.math.isFinite(raw.ratio) or raw.ratio <= 0 or raw.ratio >= 1) return error.InvalidWorkspace;
 }
 
 test "workspace mutation maps every field and borrows the owning satellite IDs" {
@@ -255,4 +254,17 @@ test "workspace text and identity copies reject overflow without truncation" {
     const ref = try terminalRef(.{ .kind = c.PHUX_TERMINAL_SATELLITE, .id = 1, .host = bytes(&host_name) });
     host_name[0] = 'x';
     try std.testing.expectEqualStrings("build", ref.terminal_id.phux.host());
+}
+
+test "workspace split ratios require two nonempty panes" {
+    var raw = record(c.PhuxWorkspaceNode);
+    raw.kind = 2;
+    raw.first = 0;
+    raw.second = 1;
+    raw.ratio = 0;
+    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2));
+    raw.ratio = 1;
+    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2));
+    raw.ratio = 0.5;
+    try std.testing.expectEqual(@as(f32, 0.5), (try nodeFromC(raw, 2)).ratio);
 }

@@ -376,7 +376,7 @@ test "reconnect allocation failure after queue reset leaves old generation froze
     try std.testing.expectEqual(provider.Phase.frozen, presentation_value.?.phase);
 }
 
-test "session selection accepts only server-advertised stable ids" {
+test "session selection follows actual attachment and server-advertised stable ids" {
     const self = try PhuxProvider.create(
         std.testing.allocator,
         std.testing.io,
@@ -386,31 +386,23 @@ test "session selection accepts only server-advertised stable ids" {
     );
     defer self.destroy();
 
-    try self.host.sessions.append(self.gpa, .{
-        .id = 71,
-        .name = try self.gpa.dupe(u8, "shared-build"),
-        .created_at_unix_secs = 100,
-        .window_count = 2,
-        .attached_client_count = 3,
-        .focused = true,
-    });
-    try self.host.sessions.append(self.gpa, .{
-        .id = 72,
-        .name = try self.gpa.dupe(u8, "shared-test"),
-        .created_at_unix_secs = 200,
-        .window_count = 1,
-        .attached_client_count = 1,
-        .focused = false,
-    });
+    try std.testing.expectEqual(@as(?u32, null), self.selectedSessionId());
+    try host_mod.test_support.attachHost(self.host);
+    try discoverFixtureSessions(self);
     try std.testing.expectEqual(@as(usize, 2), self.sessionCatalog().len);
-    try std.testing.expectEqual(@as(?u32, 71), self.selectedSessionId());
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
     try std.testing.expectError(error.InvalidIdentity, self.selectSession(99));
-    try std.testing.expect(!try self.selectSession(71));
-    try std.testing.expect(try self.selectSession(72));
-    try std.testing.expectEqual(@as(?u32, 71), self.selectedSessionId());
-    self.host.sessions.items[0].focused = false;
-    self.host.sessions.items[1].focused = true;
-    try std.testing.expectEqual(@as(?u32, 72), self.selectedSessionId());
+    try std.testing.expect(!try self.selectSession(1));
+    try std.testing.expect(try self.selectSession(2));
+    // Selection queues an intent; GET_STATE's global focus cannot complete it.
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
+}
+
+fn discoverFixtureSessions(self: *PhuxProvider) !void {
+    _ = try self.requestWorkspaceRefresh();
+    try host_mod.test_support.stageWorkspaceFixture(self.bridge, "workspace_refresh_metadata.bin");
+    try host_mod.test_support.stageWorkspaceFixture(self.bridge, "workspace_refresh_state.bin");
+    _ = try self.drainReadiness();
 }
 
 test "provider lookups keep remote identity across reordered enumeration" {
@@ -462,25 +454,16 @@ test "provider lookups keep remote identity across reordered enumeration" {
 test "session switch clears old slots while same-session reconnect retains last-good canvas" {
     const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, null, "test");
     defer self.destroy();
-    self.host.attached_session_id = 71;
-    self.session_id = 71;
-    const id = try provider.RemoteTerminalId.fromPhux(0, 1, "");
-    try self.host.terminals.append(self.gpa, .{ .id = id, .phase = .live, .published = true });
-    try self.host.terminals.items[0].canvas.screen_text.appendSlice(self.gpa, "last-good");
+    try host_mod.test_support.attachHost(self.host);
+    try discoverFixtureSessions(self);
+    const before = try self.gpa.dupe(u8, self.host.terminals.items[0].canvas.screen_text.items);
+    defer self.gpa.free(before);
     self.prepareSessionSwitch();
     try std.testing.expectEqual(@as(usize, 1), self.host.terminals.items.len);
-    try std.testing.expectEqualStrings("last-good", self.host.terminals.items[0].canvas.screen_text.items);
-    self.session_id = 72;
+    try std.testing.expectEqualStrings(before, self.host.terminals.items[0].canvas.screen_text.items);
+    try std.testing.expect(try self.selectSession(2));
     self.prepareSessionSwitch();
     try std.testing.expectEqual(@as(usize, 0), self.host.terminals.items.len);
-}
-
-test "selected session uses attached FFI identity rather than server catalog focus" {
-    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, null, "test");
-    defer self.destroy();
-    self.host.attached_session_id = 71;
-    try self.host.sessions.append(self.gpa, .{ .id = 72, .name = try self.gpa.dupe(u8, "global-focus"), .created_at_unix_secs = 0, .window_count = 1, .attached_client_count = 1, .focused = true });
-    try std.testing.expectEqual(@as(?u32, 71), self.selectedSessionId());
 }
 
 test "provider rejects a stale generation before forwarding host input" {

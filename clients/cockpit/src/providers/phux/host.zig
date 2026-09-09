@@ -17,7 +17,7 @@ pub const OperationResult = operations.types.Result;
 pub const test_support = @import("operation_test_support.zig");
 
 pub const enabled = true;
-pub const max_terminals: usize = 16;
+pub const max_terminals: usize = workspace.max_replicas;
 // Matches the ABI roster bound; independent from live engine replica slots.
 pub const max_catalog_terminals: usize = workspace.max_terminals;
 pub const max_notices: usize = 64;
@@ -95,7 +95,6 @@ const Terminal = struct {
     seen_in_attach: bool = false,
     remove_at_barrier: bool = false,
     published: bool = false,
-    catalog_pending: bool = false,
     canvas: CanvasStore = .{},
     title: std.ArrayListUnmanaged(u8) = .empty,
     pending_title: std.ArrayListUnmanaged(u8) = .empty,
@@ -174,8 +173,6 @@ pub const Host = struct {
     attach_barrier_seen: bool = false,
     client_generation: u64 = 1,
     operation_ledger: operations.Ledger(max_terminals) = .{},
-    detached_catalog: [max_catalog_terminals]provider.TerminalRef = undefined,
-    detached_catalog_count: usize = 0,
     disconnected: bool = false,
     color_policy: ColorPolicy = .{},
     metadata_changed: bool = false,
@@ -256,10 +253,7 @@ pub const Host = struct {
     }
 
     pub fn selectedSessionId(host: *const Host) ?u32 {
-        if (host.attached_session_id) |id| return id;
-        // Old synthetic tests have no FFI workspace publication.
-        for (host.sessions.items) |session| if (session.focused) return session.id;
-        return null;
+        return host.attached_session_id;
     }
 
     pub fn requestWorkspaceRefresh(host: *Host) !?u32 {
@@ -303,8 +297,6 @@ pub const Host = struct {
         host.workspace_changed = true;
         if (previous_revision == host.workspace_store.info.revision) return;
         host.refreshSessions() catch |err| host.workspace_store.refuse(err);
-        host.detached_catalog_count = 0;
-        for (host.terminals.items) |*terminal| terminal.catalog_pending = false;
     }
 
     fn copyWorkspace(host: *Host) !bool {
@@ -380,8 +372,6 @@ pub const Host = struct {
         const request_id = try host.preflightOperation();
         const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
         if (!terminal.published) return error.InvalidState;
-        if (!host.catalogContains(terminal_ref) and host.detached_catalog_count == max_catalog_terminals)
-            return error.TerminalCapacity;
         const options: c.PhuxDetachTerminalOptions = .{
             .size = @sizeOf(c.PhuxDetachTerminalOptions),
             .version = c.PHUX_CLIENT_ABI_VERSION,
@@ -390,39 +380,13 @@ pub const Host = struct {
         };
         try resultError(c.phux_client_queue_detach_terminal(host.client, &options));
         host.operation_ledger.accepted(request_id, host.client_generation, .detach, terminal_ref);
-        if (!host.catalogContains(terminal_ref)) {
-            host.detached_catalog[host.detached_catalog_count] = terminal_ref;
-            host.detached_catalog_count += 1;
-        }
         host.stageOutgoing() catch host.disconnect();
         return request_id;
     }
 
-    fn catalogContains(host: *const Host, ref: provider.TerminalRef) bool {
-        if (host.workspace_store.contains(ref)) return true;
-        for (host.detached_catalog[0..host.detached_catalog_count]) |entry| if (entry.eql(ref)) return true;
-        return false;
-    }
-
     pub fn catalogRefs(host: *const Host, out: []provider.TerminalRef) usize {
-        if (host.workspace_store.has_catalog) return host.workspaceCatalogRefs(out);
-        var count = host.terminalRefs(out);
-        for (host.detached_catalog[0..host.detached_catalog_count]) |ref| {
-            if (host.contains(ref)) continue;
-            if (count == out.len) break;
-            out[count] = ref;
-            count += 1;
-        }
-        return count;
-    }
-
-    fn workspaceCatalogRefs(host: *const Host, out: []provider.TerminalRef) usize {
-        var count: usize = 0;
-        for (host.workspace_store.catalog) |*entry| appendCatalogRef(out, &count, entry.terminal_ref);
-        for (host.terminals.items) |*terminal| {
-            if (terminal.catalog_pending) appendCatalogRef(out, &count, terminal.terminalRef());
-        }
-        for (host.detached_catalog[0..host.detached_catalog_count]) |ref| appendCatalogRef(out, &count, ref);
+        const count = @min(out.len, host.workspace_store.catalog.len);
+        for (out[0..count], host.workspace_store.catalog[0..count]) |*ref, entry| ref.* = entry.terminal_ref;
         return count;
     }
 
@@ -434,15 +398,14 @@ pub const Host = struct {
     }
 
     fn reserveCatalogIdentity(host: *const Host, target: ?provider.TerminalRef) !void {
-        if (target) |ref| if (host.catalogContains(ref)) return;
+        if (target) |ref| if (host.workspace_store.contains(ref)) return;
         if (host.catalogIdentityCount() >= max_catalog_terminals) return error.TerminalCapacity;
     }
 
     fn catalogIdentityCount(host: *const Host) usize {
-        var count = host.workspace_store.catalog.len + host.detached_catalog_count + host.operation_ledger.pendingSpawns();
+        var count = host.workspace_store.catalog.len + host.operation_ledger.pendingSpawns();
         for (host.terminals.items) |*terminal| {
-            if (host.workspace_store.has_catalog and !terminal.catalog_pending) continue;
-            if (!host.catalogContains(terminal.terminalRef())) count += 1;
+            if (!host.workspace_store.contains(terminal.terminalRef())) count += 1;
         }
         return count;
     }
@@ -522,7 +485,6 @@ pub const Host = struct {
         host.workspace_store.deinit(host.gpa);
         host.client_generation = next_generation;
         host.operation_ledger.last_id = 0;
-        host.detached_catalog_count = 0;
         host.disconnected = false;
         host.attach_barrier_seen = false;
         for (host.terminals.items) |*terminal| {
@@ -545,7 +507,6 @@ pub const Host = struct {
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
         host.terminals.items.len = 0;
         host.workspace_store.deinit(host.gpa);
-        host.detached_catalog_count = 0;
         host.workspace_changed = true;
     }
 
@@ -1024,8 +985,7 @@ pub const Host = struct {
 
     fn admitOperationReplica(host: *Host, ref: provider.TerminalRef) !void {
         const remote = remoteFromRef(ref) orelse return error.InvalidIdentity;
-        const terminal = try host.ensureTerminal(cId(&remote));
-        terminal.catalog_pending = !host.workspace_store.contains(ref);
+        _ = try host.ensureTerminal(cId(&remote));
     }
 
     fn captureEffects(host: *Host) !void {
@@ -1303,13 +1263,6 @@ fn newClient() !*c.PhuxClient {
     };
     try resultError(c.phux_client_new(&options, &raw));
     return raw orelse error.InvalidState;
-}
-
-fn appendCatalogRef(out: []provider.TerminalRef, count: *usize, ref: provider.TerminalRef) void {
-    if (count.* == out.len) return;
-    for (out[0..count.*]) |existing| if (existing.eql(ref)) return;
-    out[count.*] = ref;
-    count.* += 1;
 }
 
 fn remoteFromC(raw: c.PhuxTerminalId) !RemoteId {
@@ -1700,6 +1653,9 @@ test "workspace refresh shares spawn IDs and discovers other sessions without re
     try test_support.stageFixture(&bridge, "spawn-local.bin");
     _ = try host.drainReadiness();
     try std.testing.expectEqual(@as(u32, 1), host.takeOperationResult().?.request_id);
+    var refs: [max_catalog_terminals]provider.TerminalRef = undefined;
+    // A successful spawn is an admission record, not an invented roster row.
+    try std.testing.expectEqual(@as(usize, 1), host.catalogRefs(&refs));
     bridge.outgoing.reset();
     const replicas = host.terminals.items.len;
     const old_revision = host.workspaceSnapshot().revision;
@@ -1722,7 +1678,6 @@ test "workspace refresh shares spawn IDs and discovers other sessions without re
     try std.testing.expectEqual(@as(?u32, 2), host.terminalSession(external));
     try std.testing.expect(!host.terminalKnown(external));
     try std.testing.expect(!host.contains(external));
-    var refs: [max_catalog_terminals]provider.TerminalRef = undefined;
     try std.testing.expectEqual(@as(usize, 3), host.catalogRefs(&refs));
     try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
     try std.testing.expectEqual(@as(usize, 2), host.sessionCatalog().len);
@@ -1791,6 +1746,35 @@ fn completeWorkspaceFixture(host: *Host, comptime name: []const u8) !void {
     _ = try host.drainReadiness();
     try test_support.stageWorkspaceFixture(host.bridge, name ++ "_metadata.bin");
     _ = try host.drainReadiness();
+}
+
+test "old shared schema is refused without replacing last-good topology or writing metadata" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const before = host.workspaceSnapshot();
+    const window_id = before.windows[0].id;
+    try std.testing.expectEqual(@as(?u32, 1), try host.requestWorkspaceRefresh());
+    try completeWorkspaceFixture(host, "workspace_old_schema");
+    const refused = host.workspaceSnapshot();
+    try std.testing.expectEqual(workspace.State.last_good_error, refused.state);
+    try std.testing.expectEqual(workspace.Status.refused, refused.status);
+    try std.testing.expectEqual(@as(u32, 1), refused.request_id);
+    try std.testing.expect(refused.message.len != 0);
+    try std.testing.expectEqual(before.revision, refused.revision);
+    try std.testing.expectEqualSlices(u8, &window_id, &refused.windows[0].id);
+    try std.testing.expectEqual(@as(usize, 1), host.catalogTerminals().len);
+    bridge.outgoing.reset();
+    try std.testing.expectError(error.InvalidState, host.requestWorkspaceMutation(.{
+        .expected_revision = refused.revision,
+        .session_id = 1,
+        .kind = .rename,
+        .window_id = window_id,
+        .name = "must-not-overwrite",
+    }));
+    try std.testing.expect(!bridge.outgoing.hasPending());
 }
 
 test "workspace accepted request retains ID and reports unknown outcome on staging failure" {
@@ -1915,7 +1899,7 @@ test "spawn result acceptance is separate from canonical READY publication" {
     try std.testing.expect(std.mem.startsWith(u8, host.presentation(result.terminal_ref.?).?.grid.screen_text, "OPERATION READY"));
 }
 
-test "detach churn beyond replica capacity retains durable catalog without engine slots" {
+test "detach churn leaves discovery to authoritative registry refresh" {
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
     const host = try Host.create(std.testing.allocator, &bridge);
@@ -1945,7 +1929,11 @@ test "detach churn beyond replica capacity retains durable catalog without engin
     }
     try std.testing.expectEqual(encoded.len, offset);
     var refs: [max_catalog_terminals]provider.TerminalRef = undefined;
-    try std.testing.expectEqual(initial + 20, host.catalogRefs(&refs));
+    try std.testing.expectEqual(initial, host.catalogRefs(&refs));
+    _ = try host.requestWorkspaceRefresh();
+    try completeWorkspaceFixture(host, "workspace_refresh");
+    try std.testing.expectEqual(@as(usize, 3), host.catalogRefs(&refs));
+    try std.testing.expectEqual(initial, host.terminals.items.len);
 }
 
 test "satellite spawn requires explicit attach and permits READY before command acknowledgment" {

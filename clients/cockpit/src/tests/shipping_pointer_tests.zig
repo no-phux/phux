@@ -7,33 +7,24 @@ const NoShells = cockpit.engine.NoShells;
 const Fixture = struct {
     engine: *Engine,
     ref: cockpit.TerminalRef,
+    local_ref: cockpit.TerminalRef,
 
     fn start() !Fixture {
         if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
         const engine = try Engine.create(std.testing.allocator, std.testing.io);
         errdefer engine.destroy();
+        const local_ref = engine.model.tabTerminal(0).?;
         engine.model.ws().surface_size = .{ .width = 1100, .height = 640 };
         var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/unused-pointer-fixture.sock", .session = "fixture" });
         const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
         cockpit.attachPhuxProvider(engine.model, remote);
-        try remote.host.start("shipping-pointer-fixture");
-        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("fixtures/hello.bin")));
-        _ = try remote.drainReadiness();
-        remote.bridge.outgoing.reset();
-        const attached = @embedFile("fixtures/attached.bin");
-        var offset: usize = 0;
-        while (offset < attached.len) {
-            const size = 4 + std.mem.readInt(u32, attached[offset..][0..4], .big);
-            try std.testing.expect(remote.bridge.incoming.stage(attached[offset..][0..size]));
-            offset += size;
-        }
-        _ = try remote.drainReadiness();
+        try @TypeOf(remote.*).test_support.attachHost(remote.host);
         engine.model.reconcileRemoteTerminals();
-        try std.testing.expect(engine.model.admitAndSelectCurrentRemoteTerminal());
+        try std.testing.expect(try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch()));
         const ref = engine.model.focusedTerminalRef().?;
         try std.testing.expectEqual(.live, engine.model.remotePresentation(ref).?.phase);
         remote.bridge.outgoing.reset();
-        const fixture = Fixture{ .engine = engine, .ref = ref };
+        const fixture = Fixture{ .engine = engine, .ref = ref, .local_ref = local_ref };
         try fixture.paint();
         const fx = NoShells{};
         engine.setFocused(&fx, false);
@@ -128,8 +119,7 @@ test "shipping raw remote drag uses provider selection and fences a frozen captu
     defer fixture.engine.destroy();
     const engine = fixture.engine;
     const fx = NoShells{};
-    const local_ref = engine.model.tabTerminal(0).?;
-    engine.model.dropTab(0);
+    const local_ref = fixture.local_ref;
     const tree = engine.model.selectedTree().?;
     _ = try tree.split(tree.focus, .horizontal, local_ref);
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(local_ref));

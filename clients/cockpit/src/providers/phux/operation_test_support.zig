@@ -34,11 +34,16 @@ pub fn attachHost(host: anytype) !void {
     try stageFixture(host.bridge, "attached.bin");
     const delta = try host.drainReadiness();
     try std.testing.expect(delta.ready_published);
+    try std.testing.expectEqual(.unavailable, host.workspaceSnapshot().state);
+    try std.testing.expectEqual(@as(usize, 0), host.workspaceSnapshot().windows.len);
     // Complete the automatic workspace read deliberately. Terminal-operation
     // fixtures retain their low request IDs; workspace correlation is internal.
     try stageWorkspaceFixture(host.bridge, "workspace_initial_metadata.bin");
     try stageWorkspaceFixture(host.bridge, "workspace_initial_state.bin");
     _ = try host.drainReadiness();
+    try std.testing.expectEqual(.confirmed, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(.fallback, host.workspaceSnapshot().state);
+    try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
     host.bridge.outgoing.reset();
 }
 
