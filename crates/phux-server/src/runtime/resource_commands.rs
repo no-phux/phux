@@ -169,12 +169,19 @@ pub(crate) async fn spawn_agent_session(
     // The same announcement a Terminal spawn makes, carrying what the
     // envelope cannot say: this resource is a session, and it lives inside
     // that pane.
-    crate::runtime::client::broadcast_event(
+    //
+    // It goes to the PANE's event subscribers as well as the session's. A
+    // consumer cannot subscribe to a resource it is being told about for the
+    // first time, so a fan-out scoped to the child alone reaches nobody but
+    // the server-wide watchers — which is what left `phux watch @parent`
+    // never seeing a session open inside the pane it was following.
+    crate::runtime::client::broadcast_child_event(
         state,
-        Some(&wire_session),
+        &wire_session,
+        Some(&wire_parent),
         &AgentEvent::PaneSpawned {
             kind: ResourceKind::AgentSession,
-            parent: Some(wire_parent),
+            parent: Some(wire_parent.clone()),
         },
     );
     // A Terminal spawn's auto-subscribed owner also gets a live output

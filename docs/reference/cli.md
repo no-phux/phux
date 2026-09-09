@@ -285,9 +285,7 @@ Arguments:
 
 Options:
       --type <T>
-          Record type, one of the closed `AgentEventsJsonlV1` set
-
-          [possible values: session_start, prompt, tool_start, tool_end, notification, ask, stop, session_end, state, provider_raw]
+          Record type, one of the closed `AgentEventsJsonlV1` set. A type outside it is refused as `record_invalid`, with nothing written
 
       --data <JSON>
           Record payload: a JSON object inline, or `-` to read it from stdin. `{}` when omitted

@@ -379,8 +379,16 @@ pub(crate) enum AgentAction {
     Emit {
         /// The session: its resource id, the pane hosting it, or `%name`.
         target: String,
-        /// Record type, one of the closed `AgentEventsJsonlV1` set.
-        #[arg(long = "type", value_name = "T", value_parser = phux_client::agent_session::EVENT_TYPES.to_vec())]
+        /// Record type, one of the closed `AgentEventsJsonlV1` set. A type
+        /// outside it is refused as `record_invalid`, with nothing written.
+        // Deliberately an open string at the argv layer. The closed set is
+        // enforced one layer down, in `EmitRecord::new`, where the refusal
+        // is the `record_invalid` document the consumer guide promises a
+        // producer: exit 2, nothing written, a machine-readable `code`. A
+        // clap `value_parser` here beat it to the answer with a usage error
+        // on stderr, which is the one shape an agent harness cannot parse
+        // alongside the other four refusals of the same verb.
+        #[arg(long = "type", value_name = "T")]
         event_type: String,
         /// Record payload: a JSON object inline, or `-` to read it from
         /// stdin. `{}` when omitted.

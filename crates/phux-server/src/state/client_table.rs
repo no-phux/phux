@@ -335,22 +335,29 @@ impl ClientTable {
     }
 
     /// Collect the outbound mailbox of every client subscribed to an agent
-    /// event scoped to `terminal` (SPEC §7.5, phux-y2t).
+    /// event scoped to `terminal`, or to the `parent` that event is a
+    /// lifecycle edge of (SPEC §7.5, phux-y2t; ADR-0104 §2).
     ///
     /// Resolves the mailbox from the subscription registry, NOT from
     /// [`Self::attached`], so a pure `watch` client (subscribed without an
-    /// attach) is still reached.
+    /// attach) is still reached. One mailbox per client however many of the
+    /// three scopes match: the subscription entry is per client, so the
+    /// filter cannot yield a duplicate.
     #[must_use]
     pub(super) fn event_targets(
         &self,
         terminal: Option<&WireTerminalId>,
+        parent: Option<&WireTerminalId>,
     ) -> Vec<mpsc::Sender<Outbound>> {
+        let watches = |sub: &EventSubscription, id: Option<&WireTerminalId>| {
+            id.is_some_and(|tid| sub.scopes.contains(&EventScope::Terminal(tid.clone())))
+        };
         self.event_subscriptions
             .values()
             .filter(|sub| {
                 sub.scopes.contains(&EventScope::Server)
-                    || terminal
-                        .is_some_and(|tid| sub.scopes.contains(&EventScope::Terminal(tid.clone())))
+                    || watches(sub, terminal)
+                    || watches(sub, parent)
             })
             .map(|sub| sub.tx.clone())
             .collect()

@@ -40,18 +40,22 @@
 //! plain-pane refusals in scenario 4 use `cat`, where having no agent at all
 //! is exactly the point.
 //!
-//! ## Why the state edges are read from `watch` and not from `agent show`
+//! ## Why the state edges are read from `watch`, and why `show` is read too
 //!
-//! A stream-derived `working` / `done` is published by the arbiter and then
-//! superseded by the ADR-0046 detector's very next screen tick, because the
-//! screen's no-rule-matched fail-safe derives `idle` and `idle` is the one
-//! verdict the live-session precedence gate lets through. `phux watch` sees
-//! every published edge; a polling verb sees whichever one happens to be
-//! current, which on a blank pane is `idle` within ~300 ms. So the ladder
-//! assertions here read the event stream — which is also the surface an
-//! agent harness would actually gate on. The gap between that and what
-//! `docs/consumers/agents.md` §2 promises a reporting verb is recorded
-//! against `phux-am9y.17`, not worked around here.
+//! `phux watch` sees every published edge; a polling verb sees whichever one
+//! is current when it asks. Ordering — `working` strictly before `done` — is
+//! therefore only provable on the event stream, which is also the surface an
+//! agent harness would actually gate on, so that is where the ladder
+//! assertions are made.
+//!
+//! The final LEVEL is then read back from `agent show`, and it has to agree.
+//! It did not: the screen's no-rule-matched fail-safe derived `idle` on a
+//! blank pane and the live-session precedence gate let `idle` through, so the
+//! detector's very next tick reverted the record ~300 ms after the stream
+//! moved it and the pane reported `idle` with no `stream` source in sight.
+//! The gate now admits a screen verdict over a live stream only for a
+//! POSITIVE idle that a rule actually matched, and only once the stream has
+//! stopped asserting — see `agent_detect::tick_for_pane` step 4b.
 //!
 //! Harness discipline follows `agent_record_e2e.rs`: a real `phux server`
 //! child on a private UDS under a temp dir, `--exit-after-idle` as the
@@ -579,11 +583,23 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     // already the phux session name and still is.
     assert_eq!(agent["session"], SESSION, "{shown}");
 
-    // The pane's `state` is deliberately NOT asserted here. The arbiter
-    // publishes the stream's verdict and the detector's next screen tick
-    // supersedes it ~300 ms later on a blank pane, so a polling verb reads
-    // whichever side of that race it lands on. The edges themselves are
-    // proven above, on the surface that can actually see them.
+    // The LEVEL agrees with the last edge, and says where it came from.
+    // A blank pane matches no rule on every 300 ms tick forever, so this is
+    // exactly the shape whose fail-safe `idle` used to overwrite the
+    // stream's `done` before a polling verb could read it.
+    assert_eq!(
+        agent["state"], "done",
+        "the stream's last word must survive the detector's screen tick: {shown}"
+    );
+    let sources = agent["sources"].as_array().expect("agent sources");
+    let stream = sources
+        .iter()
+        .find(|source| source["kind"] == "stream")
+        .unwrap_or_else(|| panic!("the top rung of the ladder must be named: {shown}"));
+    assert_eq!(
+        stream["observed"], "done",
+        "the stream source carries the state the session derived: {shown}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -724,15 +740,12 @@ fn a_session_opens_again_on_a_fresh_pane_after_a_cascade_close() {
 // 4. The refusals a producer meets first.
 // ---------------------------------------------------------------------------
 
-/// Every refusal in this scenario exits `2` and writes nothing.
-///
-/// One of them is not quite what `docs/consumers/agents.md` §2 describes: a
-/// `--type` outside the closed v1 set is refused by clap's `value_parser` at
-/// argv-parse time, so it is a usage error on stderr rather than the
-/// `record_invalid` JSON document the doc attributes to the server. The exit
-/// code and the "nothing written" guarantee hold either way, and the
-/// assertions below pin what the binary actually does; the divergence is
-/// recorded against `phux-am9y.17` rather than papered over here.
+/// Every refusal in this scenario exits `2`, writes nothing, and comes back
+/// as the `record_invalid` / `no_agent_session` document
+/// `docs/consumers/agents.md` §2 promises a producer — including the unknown
+/// `--type`, which used to die at argv as a clap usage error on stderr and so
+/// was the one refusal of this verb a harness could not parse alongside the
+/// others.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {
@@ -781,20 +794,18 @@ fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {
     );
     assert_eq!(refusal["error"]["code"], "record_invalid", "{refusal}");
 
-    // A `type` outside the closed v1 set. Refused, with the closed set named
-    // in the diagnostic, before anything is sent.
-    let out = server.try_run(&["agent", "emit", &session, "--type", "not_a_type", "--json"]);
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "an unknown record type is a refusal, not a write: stdout={} stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    // A `type` outside the closed v1 set: the same document shape as the two
+    // above, with the closed set named in the remedy rather than in a usage
+    // error a harness would have to tell apart from the rest.
+    let refusal = server.refusal(
+        &["agent", "emit", &session, "--type", "not_a_type", "--json"],
+        2,
     );
-    let told = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(refusal["error"]["code"], "record_invalid", "{refusal}");
+    let remedy = refusal["remedy"].as_str().unwrap_or_default();
     assert!(
-        told.contains("session_start") && told.contains("provider_raw"),
-        "the refusal must name the closed set it is enforcing: {told}"
+        remedy.contains("session_start") && remedy.contains("provider_raw"),
+        "the refusal must name the closed set it is enforcing: {refusal}"
     );
 
     // An AgentSession is not a parent another session can hang off.
