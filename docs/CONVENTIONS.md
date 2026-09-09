@@ -415,9 +415,12 @@ scope.
   what is a direction. Never write unbuilt behavior in present tense in a
   `stable` doc.
 - **Divergence honesty.** When the code and the target shape disagree,
-  state the current code reality, mark the divergence inline, and point
-  at the ADR that owns the target plus its tracking bead. Never document
-  aspiration as shipped, and never silently drop a roadmap capability.
+  state the current code reality in prose and list every target-versus-
+  shipped gap in the doc's single `Status` table: one table per doc, the
+  last section before "Where to go next" or at the end of the doc. Each
+  row points at the ADR that owns the target and the bead that tracks the
+  work. Never document aspiration as shipped, and never silently drop a
+  roadmap capability.
 - **No competitor comparison tables** built on unverifiable claims.
   Positioning is the substrate-vs-product argument
   ([ADR-0009](../ADR/0009-phux-vs-mux-positioning.md)) in plain prose.
