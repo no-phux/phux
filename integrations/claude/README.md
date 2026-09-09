@@ -5,7 +5,7 @@ publishes lifecycle metadata for Claude sessions running inside phux panes. It
 requires `phux` and `phux-mcp` on `PATH` and a running local phux server.
 
 ```sh
-claude plugin marketplace add phall1/phux
+claude plugin marketplace add no-phux/phux
 claude plugin install phux@phux
 ```
 

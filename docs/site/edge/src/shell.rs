@@ -494,7 +494,7 @@ fn links() -> String {
          {CYAN}  {}{RESET}\r\n\
          {}\r\n",
         osc8("https://phux.sh", "phux.sh"),
-        osc8("https://github.com/phall1/phux", "github.com/phall1/phux"),
+        osc8("https://github.com/no-phux/phux", "github.com/no-phux/phux"),
         truecolor_bar(),
     )
 }

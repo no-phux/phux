@@ -8,7 +8,7 @@ export const SITE = {
   tagline: "share real terminals with your agents",
   description:
     "phux makes every terminal an object on a wire. Humans, GUIs, and agents can observe or drive the same real terminal while the libghostty-backed stream passes through untouched. The terminal is the first kind of thing the server holds; an agent's session inside it is the second.",
-  github: "https://github.com/phall1/phux",
+  github: "https://github.com/no-phux/phux",
   // One switch for the visual system. Mode tokens live in global.css.
   designMode: "terminal",
   // Set when the WS demo backend is deployed. When empty the terminal island

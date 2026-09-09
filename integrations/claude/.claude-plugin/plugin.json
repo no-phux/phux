@@ -7,8 +7,8 @@
   "author": {
     "name": "phall"
   },
-  "homepage": "https://github.com/phall1/phux/tree/main/integrations/claude",
-  "repository": "https://github.com/phall1/phux",
+  "homepage": "https://github.com/no-phux/phux/tree/main/integrations/claude",
+  "repository": "https://github.com/no-phux/phux",
   "license": "MIT OR Apache-2.0",
   "keywords": [
     "phux",

@@ -21,7 +21,7 @@
 //! drafts carried `PaneDiff` at type byte `0x40`; that slot is retired
 //! and `RESOURCE_OUTPUT` (type `0x90` per SPEC §7.2) takes its place.
 //!
-//! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 
 /// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
 /// ("at most `16_777_216` (16 MiB)").

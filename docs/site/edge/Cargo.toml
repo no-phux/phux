@@ -5,10 +5,11 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/phall1/phux-site"
+repository = "https://github.com/no-phux/phux"
 publish = false
 
-# Standalone workspace (wasm-only); phux-site has no cargo workspace.
+# Standalone workspace (wasm-only); the site tree has no cargo workspace of
+# its own, and this crate is excluded from the root one.
 [workspace]
 
 [lib]

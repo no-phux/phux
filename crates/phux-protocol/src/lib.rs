@@ -15,8 +15,8 @@
 //!   and engine-dependent SGR, Kitty replay, and render-pool helpers. Native
 //!   terminal consumers enable it; decoding wire messages does not require it.
 //!
-//! [`docs/spec/`]: https://github.com/phall1/phux/tree/main/docs/spec
-//! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [`docs/spec/`]: https://github.com/no-phux/phux/tree/main/docs/spec
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

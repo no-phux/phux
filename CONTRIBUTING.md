@@ -268,7 +268,7 @@ Asking saves us both time:
 
 If your change conflicts with these, open a [Discussion] before a PR.
 
-[Discussion]: https://github.com/phall1/phux/discussions
+[Discussion]: https://github.com/no-phux/phux/discussions
 
 ## Git workflow
 

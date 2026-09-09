@@ -62,7 +62,7 @@ this repo's CI. From the operator's machine, with dsr already installed and
 this repo registered in dsr's local config:
 
 ```sh
-dsr check phall1/phux                      # is a release run currently throttled?
+dsr check no-phux/phux                      # is a release run currently throttled?
 dsr build phux --targets linux/amd64       # build one or more targets locally
 dsr release phux --version vX.Y.Z          # upload already-built artifacts to the release
 dsr fallback phux --version vX.Y.Z         # check, build every configured target, and release, in one shot
