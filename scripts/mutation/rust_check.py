@@ -9,8 +9,11 @@ Reports remain under target/mutation/rust-check-*/; fixtures are removed.
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +43,32 @@ mod tests {
     }
 }
 """
+TOPOLOGY = '''#!/usr/bin/env python3
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+directory = Path(__file__).parent
+role = sys.argv[-1]
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+if role == "--version" and directory.name == "external-sigterm":
+    # Exit early during graceful cleanup so descendants are reparented.
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+(directory / (role + ".pid")).write_text(str(os.getpid()))
+print("partial diagnostic: " + role, flush=True)
+if role == "--version":
+    subprocess.Popen([sys.executable, __file__, "middle"], start_new_session=True)
+elif role == "middle":
+    subprocess.Popen([sys.executable, __file__, "leaf"], start_new_session=True)
+else:
+    (directory / "ready").touch()
+while True:
+    time.sleep(1)
+'''
 
 
 def command(argv, root):
@@ -146,6 +175,102 @@ def invocation_timeout(root, reports):
     assert root.name not in command(["ps", "-axo", "command="], root)
 
 
+def topology_pids(directory):
+    return [int(path.read_text()) for path in directory.glob("*.pid")]
+
+
+def topology_alive(pid, helper):
+    process = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             text=True, capture_output=True, check=False)
+    return str(helper) in process.stdout
+
+
+def check_topology(root, reports, mode):
+    directory = root / "target" / mode
+    directory.mkdir(parents=True)
+    helper = directory / "topology.py"
+    helper.write_text(TOPOLOGY)
+    helper.chmod(0o755)
+    output = reports / mode
+    env = dict(os.environ, CARGO_MUTANTS_BIN=str(helper))
+    source = (root / "src/lib.rs").read_bytes()
+    before = command(["git", "status", "--porcelain"], root)
+    started = time.monotonic()
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                          start_new_session=True) as sentinel, subprocess.Popen(
+                          ["bash", str(RUNNER), "--root", str(root), "--output", str(output),
+                           "--run-timeout", "2"], env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as runner:
+        try:
+            wait_ready(directory)
+            if mode == "external-sigterm":
+                runner.send_signal(signal.SIGTERM)
+            stdout, stderr = collect_runner(runner)
+            evidence = topology_evidence(output, helper, runner.returncode)
+            evidence["elapsed"] = time.monotonic() - started
+            evidence["stdout"] = stdout
+            evidence["stderr"] = stderr
+            evidence["unrelated_survived"] = sentinel.poll() is None
+            (reports / (mode + "-evidence.json")).write_text(json.dumps(evidence, indent=2))
+        finally:
+            sentinel.terminate()
+            if runner.poll() is None:
+                runner.kill()
+            # Red tests must clean up the exact helper processes they created.
+            for pid in topology_pids(directory):
+                if topology_alive(pid, helper):
+                    os.kill(pid, signal.SIGKILL)
+    assert (root / "src/lib.rs").read_bytes() == source
+    assert command(["git", "status", "--porcelain"], root) == before
+    return evidence
+
+
+def collect_runner(runner):
+    try:
+        return runner.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        return "", "runner did not terminate within 10 seconds"
+
+
+def wait_ready(directory):
+    deadline = time.monotonic() + 5
+    while not (directory / "ready").exists():
+        if time.monotonic() > deadline:
+            raise AssertionError("topology did not start")
+        time.sleep(0.02)
+
+
+def topology_evidence(output, helper, code):
+    summary = output / "summary.json"
+    log = output / "version.stdout.log"
+    return {
+        "exit": code,
+        "summary": json.loads(summary.read_text()) if summary.exists() else None,
+        "partial_stdout": log.read_text() if log.exists() else "",
+        "survivors": [pid for pid in topology_pids(helper.parent) if topology_alive(pid, helper)],
+    }
+
+
+def process_checks(root, reports):
+    results = [check_topology(root, reports, mode)
+               for mode in ("external-sigterm", "detached-timeout")]
+    print("Process topology evidence:", reports)
+    for result in results:
+        assert_topology_evidence(result)
+    assert results[0]["exit"] == 143, results[0]
+    assert results[0]["summary"]["status"] == "interrupted", results[0]
+    assert results[1]["exit"] == 1, results[1]
+
+
+def assert_topology_evidence(result):
+    assert not result["survivors"], result
+    assert result["exit"] > 0, result
+    assert result["summary"]["status"] in ("interrupted", "tool_error"), result
+    assert "partial diagnostic:" in result["partial_stdout"], result
+    assert result["elapsed"] < 10, result
+    assert result["unrelated_survived"], result
+
+
 def main():
     parent = ROOT / "target/mutation"
     parent.mkdir(parents=True, exist_ok=True)
@@ -157,6 +282,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rust-fixture-", dir=scratch) as directory:
         root = Path(directory)
         fixture(root)
+        process_checks(root, reports)
+        if "--process-only" in sys.argv:
+            return
         classifications(root, reports)
         diff_and_sample(root, reports)
         invalid_ref(root, reports)

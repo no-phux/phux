@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 VERSION = "27.0.0"
@@ -46,6 +47,9 @@ or listed/empty scope. Exit 1: tool/discovery/incomplete-run error. Exit 4: base
 failed/timed out. Exit 2: CLI usage error. summary.json records status, counts,
 baseline, raw tool exit, selection and commands. Timeouts need investigation;
 only 'caught' means killed by tests. Unviable means compile failure, not a kill.
+SIGTERM/SIGINT exit 143/130 with status 'interrupted'. Partial stdout/stderr stay
+in command logs. Shutdown allows 5s for graceful cleanup, then kills tracked
+descendants across process groups, checking PID/start-time identity via ps.
 
 Rust cargo test is not a Rust->FFI->Zig test. For that evidence, each mutated
 scratch checkout must rebuild phux-client-ffi (--profile ffi-dev or ffi-release)
@@ -88,29 +92,97 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+class Interrupted(Exception):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__(f"interrupted by {signal.Signals(signum).name}")
+
+
+def interrupt(signum, _frame):
+    raise Interrupted(signum)
+
+
+def process_snapshot():
+    """Portable PID/PPID traversal; birth times prevent targeting reused PIDs."""
+    output = subprocess.check_output(
+        ["ps", "-axo", "pid=,ppid=,lstart="], text=True, timeout=1,
+    )
+    processes = {}
+    for line in output.splitlines():
+        pid, parent, birth = line.split(None, 2)
+        processes[int(pid)] = (int(parent), birth)
+    return processes
+
+
+def living(owned, processes):
+    return {pid for pid, birth in owned.items()
+            if processes.get(pid, (None, None))[1] == birth}
+
+
+def track_descendants(owned, processes):
+    """Retain identities even after a known child is orphaned/reparented."""
+    while True:
+        parents = living(owned, processes)
+        children = {pid: birth for pid, (parent, birth) in processes.items()
+                    if parent in parents and pid not in owned}
+        if not children:
+            return
+        owned.update(children)
+
+
+def signal_process(pid, signum):
+    try:
+        os.kill(pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def stop_invocation(child, report):
+    """Allow cargo-mutants cleanup, then escalate across its owned child groups."""
+    # Repeated termination signals must not interrupt cleanup or the final report.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    processes = process_snapshot()
+    owned = {}
+    # An unreaped direct child retains its PID even if it has already exited.
+    # Never adopt a PID after Popen has reaped it: it could belong to a new process.
+    if child.returncode is None and child.pid in processes:
+        owned[child.pid] = processes[child.pid][1]
+    track_descendants(owned, processes)
+    if child.pid in living(owned, processes):
+        signal_process(child.pid, signal.SIGINT)
+    deadline = time.monotonic() + 5
+    while living(owned, processes) and time.monotonic() < deadline:
+        child.poll()  # Reap the leader, including after early graceful exit.
+        time.sleep(0.05)
+        processes = process_snapshot()
+        track_descendants(owned, processes)
+    # Refresh immediately before escalation, including any late descendants.
+    processes = process_snapshot()
+    track_descendants(owned, processes)
+    remaining = living(owned, processes)
+    for pid in sorted(remaining, key=lambda pid: pid == child.pid):
+        signal_process(pid, signal.SIGKILL)
+    report["cleanup"] = {"tracked_pids": sorted(owned), "escalated_pids": sorted(remaining)}
+    child.wait(timeout=1)
+
+
 def invoke(command, cwd, output, label, timeout, report):
-    """Keep diagnostics and let cargo-mutants reap its separate child groups."""
+    """File-backed output survives interruption and cannot block pipe draining."""
     report["commands"].append(command)
     env = os.environ.copy()
     env.pop("CARGO_TARGET_DIR", None)
     env.pop("CARGO_BUILD_TARGET_DIR", None)
-    with (output / (label + ".stderr.log")).open("w") as errors, subprocess.Popen(
-        command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-        stderr=errors, text=True, start_new_session=True,
-    ) as child:
+    stdout = output / (label + ".stdout.log")
+    with stdout.open("w") as log, (output / (label + ".stderr.log")).open("w") as errors:
+        child = subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
+                                 stderr=errors, text=True, start_new_session=True)
         try:
-            stdout, _ = child.communicate(timeout=timeout)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt):
-            # cargo-mutants handles SIGINT, but not SIGTERM, for scratch cleanup.
-            os.killpg(child.pid, signal.SIGINT)
-            try:
-                child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.communicate()
+            child.wait(timeout=timeout)
+        except (subprocess.TimeoutExpired, Interrupted):
+            stop_invocation(child, report)
             raise
-    (output / (label + ".stdout.log")).write_text(stdout)
-    return child.returncode, stdout
+    return child.returncode, stdout.read_text()
 
 
 def checked(command, args, output, label, report):
@@ -238,8 +310,14 @@ def main():
     report = {"schema_version": 1, "tool_version": VERSION, "root": str(args.root),
               "status": "tool_error", "commands": [], "counts": {}, "baseline": []}
     code = 1
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGINT, interrupt)
     try:
         code = run(args, output, report)
+    except Interrupted as error:
+        report["status"] = "interrupted"
+        report["error"] = str(error)
+        code = 128 + error.signum
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         report["status"] = "tool_error"
         report["error"] = str(error)
