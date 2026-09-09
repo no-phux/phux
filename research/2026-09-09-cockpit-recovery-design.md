@@ -27,7 +27,8 @@ sequence was performed in this design investigation.
 |---|---|---|
 | Cockpit | 0.17.0 | 0.18.0 |
 | Phux source | `c6c37118ac084fd323ea2d4e9d42b29f60616045` | `6bb68787747fb196299a274a3676c3f346802fe0` from bundled FFI provenance |
-| Native SDK pin | `34cc9d5571599d5ea4feafc9260f36575e67e77b` | `71bbce511187b9e071d3ca8cbf3b1b19138577da` |
+| Declared/materialized SDK dependency | `34cc9d5571599d5ea4feafc9260f36575e67e77b` | **Still `34cc9d5571599d5ea4feafc9260f36575e67e77b` in source at `6bb68787`** |
+| Packaged SDK attribution | Not used to establish the initial dependency | Notice says `71bbce511187b9e071d3ca8cbf3b1b19138577da`; this disagrees with the build input and does not certify the linked SDK |
 | Installed executable SHA-256 | Not applicable | `afa89d6de48be22919b239a1f47d488b7969e2bae4bbb5383a7af0b2304a5f33` |
 
 The parent read the installed bundle's version and provenance and computed its
@@ -35,6 +36,15 @@ executable hash. The test investigator also verified its signature and SDK notic
 Neither installed nor dev Cockpit was running at the initial process inspection.
 The FFI provenance identifies its source revision; it does not by itself prove
 that every executable byte is reproducible from that revision.
+
+The final SDK review caught this attribution/dependency discrepancy after the
+first design commit. The parent verified the current `.zon` and installed notice;
+the SDK investigator compared 484 materialized SDK source/build/core-package
+files with the matching `34cc9d55` archive and found no differences. SDK source
+findings here therefore describe the **declared/materialized `34cc9d55`**, not a
+verified installed `71bbce51` build. Record machine-readable SDK build provenance
+alongside FFI provenance and derive packaged attribution from the same resolved
+input. Do not use the notice to infer an SDK upgrade or regression.
 
 Fetching the repository exposed `aee36811`, **complete native durable Phux
 interactions and recovery**, followed by release and soak fixes. The isolated
@@ -91,6 +101,7 @@ Paths are under `clients/cockpit/src/`.
 |---|---|---|
 | P1 | **No shipping local progress loop.** `native_extension.onFrame:588-602` spawns, sizes and refreshes tab runs. `ts_engine.feedShellOutput:1012-1028` drains writes on output, but no shipping `searchPump`/periodic outbound drain exists. `terminal_runtime:128-150,178-193` retains blocked writes/replies; `terminal/session:1241-1269,1297-1335` needs later search slices. | One runtime maintenance scheduler; refused-write recovery with no additional input/output, deep-search completion and occluded-window progress. This is local-only, not an explanation for all remote keyboard failures. |
 | P1 | **Input scope is frame/paint-derived.** `native_extension:583-610` updates overlay globals and `input_suspended` during paint/frame; painting also assigns `tab_placement`. `ts_engine.onKey:1122` and `onText:1227` refuse unfocused/suspended input. | Capture current focus/scope at failure. Test modal open/close followed by input before any frame; commit scope synchronously at the model transition, keep painting read-only. The stale-scope consequence needs executable ordering proof. |
+| P1 | **Command origin is still implicit.** `native_extension.routeNativeInput:741-773` adopts commands/routed keys/raw pointer echoes but not routed widget-pointer events. The materialized SDK dispatches routed pointers before their raw echo (`runtime/gpu_surface_events.zig:706-710,973`). Separately, `core.ts:818-825` sends window 0 for Settings' config probe; `ts_engine:472-490` adopts that window before probing. | Test the first context-free chrome click in a secondary window without a prior grid click/key. Preserve its origin before dispatch. An accepted read-only Settings probe must not change the active workspace. The event-order risk needs a shipping-route reproduction; the probe's window-zero mutation is source-proven. |
 | P2 | **Divider capture lacks tab/tree identity.** `ts_engine.routeSplitDrag:1319-1381` stores window/node but applies later movement to that window's currently selected tree. `setFocused:1450-1460` does not clear `split_drag`. | Drag in A, switch to another split tab B before release, then move. Cancel on invalidating transitions or fence to originating stable tab/tree/branch; blur must end capture. |
 | P2 | **Failed local pane still admits special keys.** `ts_engine.onKey:1130-1138` checks search/selection but not `acceptsInput` before encoding. `interaction.rememberKey` checks liveness only for ownership recording, not transmission. Text/paste do gate liveness. | Retain failed-spawn presentation operations but assert Enter/control/release produce no PTY write. Add the liveness gate at transmission. |
 | Investigation | **Global revision refusals can affect non-positional commands.** `Engine.applyIntent` and current navigation documentation retain the all-intent revision contract. | Ordering tests before any relaxation; preserve positional catalog fences and window epochs. No claim of reproduced lost user commands yet. |
@@ -205,6 +216,10 @@ exported functions to an arbitrary target.
   transformed presses must not create unmatched physical releases.
 - **Commit input scope before another event.** Palette/search/settings ownership
   cannot depend on a later render frame. Painting reads application state.
+  Define the window scope explicitly: current visible overlays are window-scoped,
+  while interaction-tree suppression and native suspension are application-wide.
+  Test the focused editable widget's Escape/arrows, not just the app fallback;
+  the SDK correctly consumes editor input before that fallback.
 - **Preserve physical key versus committed text.** IME/dead-key text is already
   composed; do not apply modifiers twice. Phux input stays structured and the
   server's terminal modes own its VT encoding.
@@ -365,6 +380,9 @@ hash; app and publisher PID; focused window/view/provider/generation; interactio
 scope; recent event kinds/outcomes and queue/refusal counters. Exclude terminal,
 key and clipboard payloads by default; allow a deliberate content capture for a
 specific reproduction. Retain per-run logs instead of overwriting one `app.log`.
+SDK provenance must come from resolved build inputs, with a consistency check
+against packaged notices; the current attribution mismatch is why this is part
+of the tool's contract rather than an optional diagnostic detail.
 
 The loop is: **use -> mark -> reproduce through shipping hooks -> fix -> validate
 -> relaunch -> repeat with the user**. One serial driver owns activation and
@@ -400,6 +418,7 @@ that machinery as part of recovery.
 | Attach; text then Enter | Computed output absent before Enter, present in intended server PTY and app afterward. |
 | Create tab/split/window then return | Exact published owner and target; correct shell responds; no input in another pane. |
 | Actual secondary-window command | Source window's command context is preserved, even during snapshot churn. |
+| First secondary-window chrome click; Settings probe | Correct origin without a prior grid/key event; reading config does not select main. |
 | Press/repeat/release with focus changes | Full gesture reaches original owner or explicitly cancels; no orphan release. |
 | Search and menu/key Paste | Visible query changes, zero shell paste; delayed completion remains fenced. |
 | Open/close modal then immediate input before frame | Scope changes synchronously; terminal cannot consume overlay input or stay suspended afterward. |
@@ -440,8 +459,8 @@ design invents no speedup or arbitrary latency threshold.
 |---|---|---|
 | First | `phux-mz6e.1` | Provenance-matched reproduction and hermetic packaged command round trip. Inspect the actual 0.18.0 focus/suspension/target before diagnosing its symptom. |
 | Independent narrow repair | `phux-mz6e.6` | Bounded local outbound/reply/search maintenance, with quiet-child and occlusion liveness proofs. |
-| Independent narrow repair | `phux-mz6e.4` | Synchronous modal scope, stable divider capture and failed-local-pane liveness gates, with adversarial ordering tests. |
-| Support the first loop | `phux-mz6e.2` | Identity-bound problem capture, retained run logs, serial launcher preflight and proved Debug markup reload. |
+| Independent targeted repairs | `phux-mz6e.4` | Explicit command origin and synchronous modal scope, stable divider capture and failed-local-pane liveness gates, in separately verified slices. |
+| Support the first loop | `phux-mz6e.2` | Identity-bound problem capture with resolved SDK build provenance, retained run logs, serial launcher preflight and proved Debug markup reload. |
 | Evidence before interface change | `phux-mz6e.7` | Burst-command/title/OS-close ordering cases; command-specific preconditions only if justified, preserving positional catalog safety. |
 | Consolidate after these behaviors are pinned | `phux-mz6e.3` | One runtime implementation shared by app/tests; read-only paint, explicit context/outcomes, remove redundant policies. |
 | Separate architecture project | Existing `phux-l7e5` | Shared workspace identity/projection authority and migration of current client-local composition. Not needed for today's durable terminal creation. |
