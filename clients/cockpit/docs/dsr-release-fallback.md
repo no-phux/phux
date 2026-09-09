@@ -82,10 +82,10 @@ ad-hoc-signed draft; a credentialed recovery is still required to publish it.
 
 ## The Homebrew tap stop point
 
-`HOMEBREW_TAP_DEPLOY_KEY` is optional at the `workflow_call` boundary so a
+`HOMEBREW_TAP_TOKEN` is optional at the `workflow_call` boundary so a
 keyless local replay can build and preserve its result. The workflow itself has
 one explicit keyless stop:
-`Require Homebrew tap deploy key before publication`.
+`Require Homebrew tap token before publication`.
 
 The order is deliberate:
 
@@ -96,19 +96,19 @@ The order is deliberate:
 3. download the assets; compare them byte-for-byte with the local package only
    when this run uploaded them, then intrinsically verify the remote checksums,
    signature mode, archive, and disk image;
-4. fail with `KEYLESS_RELEASE_STOP` when the tap deploy key is absent;
-5. when the key is present, check out `no-phux/homebrew-tap`, generate and
+4. fail with `KEYLESS_RELEASE_STOP` when the tap token is absent;
+5. when the token is present, check out `no-phux/homebrew-tap`, generate and
    validate the cask, hash that generated working-tree file, push the real tap
    update, fetch `origin/main`, and prove its cask blob equals the pre-push hash;
 6. only after that remote equality proof, annotate and publish the draft.
 
 Consequently, `dsr fallback phux-cockpit --version cockpit-vX.Y.Z` without the
-deploy key is expected to exit nonzero at `KEYLESS_RELEASE_STOP`. The verified
+tap token is expected to exit nonzero at `KEYLESS_RELEASE_STOP`. The verified
 assets remain attached to the **draft** Release for a credentialed rerun, but
 the Release is not published and the tap is not changed. Do not describe this
 state as a published or partially published release.
 
-After `HOMEBREW_TAP_DEPLOY_KEY` is restored in the repository secrets, rerun the
+After `HOMEBREW_TAP_TOKEN` is restored in the repository secrets, rerun the
 release workflow for the same tag:
 
 ```sh

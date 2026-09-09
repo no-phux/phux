@@ -155,7 +155,7 @@ red build in one of them, the answer is on the runner, not on your machine.
   PR's base/head SHAs and the PR title, which only exist server-side. Write
   conventional commits and it never fires.
 - **Release and publish lanes** (`release`, `release-please`,
-  `publish-crate`). Need tags, a deploy key, and a crates.io token.
+  `publish-crate`). Need tags, a tap token, and a crates.io token.
   `just release-preflight <tag>` runs the parts that do not — version
   checks, install-surface drift, formula generation, and a `phux-protocol`
   package dry-run.

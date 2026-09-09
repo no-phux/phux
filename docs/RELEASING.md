@@ -102,7 +102,7 @@ Required secrets:
 
 | Secret | Used by | Required for | Set? |
 |---|---|---|---|
-| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml`, `cockpit-release.yml` | Automatic push to `no-phux/homebrew-tap`. Root Phux may publish without it; Cockpit fails before asset publication because its cask update is part of the release contract. | yes |
+| `HOMEBREW_TAP_TOKEN` | `release.yml`, `cockpit-release.yml` | Token authorized to write `no-phux/homebrew-tap`. Root Phux may publish without it; Cockpit fails before asset publication because its cask update is part of the release contract. | yes |
 | `CARGO_REGISTRY_TOKEN` | `publish-crate.yml` | Publishing `phux-protocol` to crates.io. Not needed for binary/Homebrew-only releases. | yes |
 | `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY` | `cockpit-release.yml` | Optional all-or-nothing Developer ID signing. With none, Cockpit is explicitly ad-hoc signed. | no |
 | `APPLE_NOTARY_KEY`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | `cockpit-release.yml` | Optional all-or-nothing notarization; required whenever Developer ID signing is configured. | no |
@@ -275,7 +275,7 @@ tag against Cargo's resolved versions and builds `phux` + `phux-mcp` for
 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
 `aarch64-unknown-linux-gnu`, packages `phux-<tag>-<target>.tar.gz` + `.sha256`,
 uploads them onto that release, and publishes the draft once every target and
-asset is present. Only then — if the `HOMEBREW_TAP_DEPLOY_KEY` secret is set —
+asset is present. Only then — if the `HOMEBREW_TAP_TOKEN` secret is set —
 does it regenerate and push `Formula/phux.rb` to the tap. A failed tap push no
 longer holds the release in draft; the tap's own scheduled update workflow
 re-resolves the public release and lands the same formula within fifteen
@@ -338,8 +338,8 @@ do not link to Nix-store libraries.
 
 ### Required secret
 
-`HOMEBREW_TAP_DEPLOY_KEY` — the **private** half of an SSH key whose
-public half is a write-enabled deploy key on `no-phux/homebrew-tap`.
+`HOMEBREW_TAP_TOKEN` — a token authorized to write
+`no-phux/homebrew-tap`.
 Without it the release still publishes; only the automatic formula bump
 is skipped (a warning annotation is emitted). The formula itself is
 produced by [`scripts/gen-formula.sh`](../scripts/gen-formula.sh), which

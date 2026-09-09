@@ -45,13 +45,13 @@ contains_once() {
 }
 
 required="$(awk '
-    /^      HOMEBREW_TAP_DEPLOY_KEY:/ { in_tap_secret = 1; next }
+    /^      HOMEBREW_TAP_TOKEN:/ { in_tap_secret = 1; next }
     in_tap_secret && /^        required:/ { print $2; exit }
 ' "${WORKFLOW}")"
 if [[ "${required}" == false ]]; then
     ok 'workflow_call admits a keyless replay'
 else
-    bad "workflow_call HOMEBREW_TAP_DEPLOY_KEY required value is ${required:-missing}, not false"
+    bad "workflow_call HOMEBREW_TAP_TOKEN required value is ${required:-missing}, not false"
 fi
 
 assets="$(line_of '- name: Attach and verify release assets' "${WORKFLOW}")" || assets=''
@@ -61,7 +61,7 @@ download="$(line_of 'gh release download "${RELEASE_TAG}"' "${WORKFLOW}")" || do
 compare_guard="$(line_of 'if [[ "${uploaded_this_run}" == "true" ]]; then' "${WORKFLOW}")" || compare_guard=''
 compare="$(line_of 'cmp "clients/cockpit/zig-out/release/${archive}" "${existing}/${archive}"' "${WORKFLOW}")" || compare=''
 restore="$(line_of 'cp "${existing}/${archive}" "${existing}/${image}" "${existing}/SHA256SUMS" clients/cockpit/zig-out/release/' "${WORKFLOW}")" || restore=''
-gate="$(line_of '- name: Require Homebrew tap deploy key before publication' "${WORKFLOW}")" || gate=''
+gate="$(line_of '- name: Require Homebrew tap token before publication' "${WORKFLOW}")" || gate=''
 tap_checkout="$(line_of 'repository: no-phux/homebrew-tap' "${WORKFLOW}")" || tap_checkout=''
 tap_generation="$(line_of 'bash .github/scripts/gen-phux-cockpit-cask.sh' "${WORKFLOW}")" || tap_generation=''
 tap_mutation="$(line_of 'bash .github/scripts/commit-update.sh Casks/phux-cockpit.rb' "${WORKFLOW}")" || tap_mutation=''
@@ -105,10 +105,10 @@ else
 fi
 
 contains_once 'workflow has one named keyless stop' 'KEYLESS_RELEASE_STOP:' "${WORKFLOW}"
-contains_once 'workflow has one deploy-key gate after asset verification' \
-    '- name: Require Homebrew tap deploy key' "${WORKFLOW}"
+contains_once 'workflow has one tap-token gate after asset verification' \
+    '- name: Require Homebrew tap token' "${WORKFLOW}"
 contains_once 'release creation remains draft-first' '"draft": true' "${RELEASE_CONFIG}"
-contains_once 'documentation names the keyless stop' 'fail with `KEYLESS_RELEASE_STOP` when the tap deploy key is absent' "${DOC}"
+contains_once 'documentation names the keyless stop' 'fail with `KEYLESS_RELEASE_STOP` when the tap token is absent' "${DOC}"
 contains_once 'documentation names the credentialed rerun command' \
     '--repo no-phux/phux' "${DOC}"
 contains_once 'documentation delegates stale-tap recovery to the real external workflow' \
