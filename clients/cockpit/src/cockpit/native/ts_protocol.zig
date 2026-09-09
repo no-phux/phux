@@ -275,3 +275,23 @@ test "TypeScript intents fence positional arguments with the engine revision" {
     unknown[1] = 255;
     try std.testing.expect(decodeIntent(&unknown) == null);
 }
+
+test "TypeScript intents reject unsupported versions and nonexact packet lengths" {
+    const valid = encodeIntent(.{
+        .kind = .new_terminal,
+        .expected_revision = 9,
+        .argument = 0,
+        .window = 0,
+    });
+    var wrong_version = valid;
+    wrong_version[0] +%= 1;
+    try std.testing.expect(decodeIntent(&wrong_version) == null);
+
+    for (0..intent_len) |length| {
+        try std.testing.expect(decodeIntent(valid[0..length]) == null);
+    }
+    var overlong: [intent_len + 1]u8 = undefined;
+    @memcpy(overlong[0..intent_len], &valid);
+    overlong[intent_len] = 0;
+    try std.testing.expect(decodeIntent(&overlong) == null);
+}
