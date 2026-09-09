@@ -2,7 +2,7 @@
 //!
 //! The byc.1 registry proptest covers parent↔child symmetry. This one
 //! adds the layout-specific invariant: `LayoutNode::leaves()` matches
-//! `Window::panes` as a set. Exact-tiling invariants live with the
+//! `Window::slots` as a set. Exact-tiling invariants live with the
 //! canonical (divider-aware) walk in `phux-client-core`'s `multi_pane`
 //! module — phux-core carries no tiling walk (bead phux-nnjx).
 
@@ -45,14 +45,14 @@ proptest! {
                 Op::KillPaneAt(idx) => {
                     let target = {
                         let win = reg.window(w).unwrap();
-                        if win.panes.is_empty() {
+                        if win.slots.is_empty() {
                             None
                         } else {
-                            Some(win.panes[idx % win.panes.len()])
+                            Some(win.slots[idx % win.slots.len()])
                         }
                     };
                     if let Some(t) = target {
-                        let _ = reg.remove_terminal(t);
+                        let _ = reg.remove_resource(t);
                     }
                 }
             }
@@ -60,8 +60,8 @@ proptest! {
 
         let win = reg.window(w).unwrap();
 
-        // Invariant: layout leaves == window.panes (as sets).
-        let panes_set: HashSet<_> = win.panes.iter().copied().collect();
+        // Invariant: layout leaves == window.slots (as sets).
+        let panes_set: HashSet<_> = win.slots.iter().copied().collect();
         let leaf_set: HashSet<_> = win
             .layout
             .as_ref()

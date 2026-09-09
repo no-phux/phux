@@ -163,7 +163,7 @@ impl TerminalActor {
         // reference it installs.
         let tick_managed = self.consumer_tick_emits || wants_state_sync;
         let result = (|| {
-            let base_seq = self.raw_seq;
+            let base_seq = self.core.seq();
             let next_seq = if tick_managed {
                 base_seq
                     .checked_add(1)

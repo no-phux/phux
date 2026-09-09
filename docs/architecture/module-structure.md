@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-09
 ---
 
 # Module structure
@@ -62,10 +62,15 @@ layer boundary, so this sibling cycle is accepted (phux-4fbs.5).
 src/
   lib.rs              — re-exports
   ids.rs              — typed slotmap keys
-  registry.rs         — Registry: SlotMaps + cascading deletes
+  registry.rs         — Registry: SlotMaps + cascading deletes (a parent
+                        resource takes its children with it)
   session.rs          — Session
-  window.rs           — Window + binary split-tree LayoutNode
-  terminal.rs         — Pane/Terminal metadata (no PTY, no libghostty state)
+  window.rs           — Window (Terminal-kind slots) + binary split-tree
+                        LayoutNode
+  resource.rs         — ResourceKind, ResourceDescriptor (kind + parent +
+                        window + the kind's facet), AgentFacet
+  terminal.rs         — TerminalFacet: dims/cwd/title (no PTY, no
+                        libghostty state)
   screen.rs           — ScreenState: the GET_SCREEN / snapshot projection
   session_list.rs     — SessionListJson: the `phux ls --json` projection
 ```
@@ -86,63 +91,49 @@ src/
                         spawns per-client tasks on a LocalSet (ADR-0014)
     mod.rs, attach.rs, client.rs, commands.rs, input_lane.rs, resume.rs,
     upgrade.rs, upload.rs
-  state/              — ServerState: sessions, windows, terminals, leases,
+  state/              — ServerState: sessions, windows, resources, leases,
                         metadata, hub table, agent tracking, config —
                         one module per concern rather than one large file
-    mod.rs, sessions.rs, terminals.rs, session_table.rs, terminal_table.rs,
-    client.rs, client_table.rs, metadata.rs, leases.rs, lease_table.rs,
-    hub.rs, hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
+    mod.rs, sessions.rs, terminals.rs, session_table.rs, resource_table.rs
+    (ResourceTable: ResourceHandle per live resource, its cancel token,
+    subscribers, output pumps, and the engine JoinSet), client.rs,
+    client_table.rs, metadata.rs, leases.rs, lease_table.rs, hub.rs,
+    hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
     hook_dispatch.rs, lifecycle.rs, snapshot.rs, viewport.rs, ...
-  terminal_actor/     — owns one pane's libghostty `Terminal` (!Send, in a
-                        RefCell on the LocalSet), its input encoders, PTY
-                        reader/writer threads, the actor-global live
-                        sequence, and coherent bootstrap capture cuts
-                        (ADR-0070)
-    mod.rs, osc133.rs (OSC-133 command-boundary scanner, phux-foz.4),
-    requests.rs, spawn.rs, sync.rs, tick.rs
-  grid/               — synthesized-VT compatibility bootstrap/StateSync
-                        emitter (never used to construct native records)
-    mod.rs, reference.rs, synthesizer.rs
-  downsample.rs       — compatibility-profile rewrite of outbound VT bytes
-                        (truecolor -> 256/16, OSC 8 / image / KIP gating);
-                        native checkpoint/history/raw live bytes bypass it
-  agent_detect/       — level-triggered per-terminal agent-state detector
-                        (ADR-0046): mod.rs is the state machine (adaptive
-                        tick, hysteresis, edge-filtered publish); regions.rs
-                        slices the live screen; rules.rs loads the TOML
-                        manifests; identify.rs names the agent from the
-                        PTY's foreground process; record.rs is the
-                        phux.agent/v1 JSON shape
-  agent_state.rs      — arbitration between an explicit SET_METADATA and
-                        the detector's writes (ADR-0046)
-  agent_asked.rs      — the `phux ask` / `asked` event ingress (ADR-0036)
-  hooks.rs            — server-side event-hook dispatcher (config
-                        `[[hooks.<name>]]` plus plugin `[[events]]`),
-                        argv-only execution, no in-process host
-  hub/                — federation hub: satellite registry, outbound
-                        dialer/link supervisor, byte relay/splice
-                        (phux-v45, ADR-0007)
-    mod.rs, link.rs, relay.rs
-  transport/          — QUIC / TLS / WebTransport listener bindings for
-                        remote (non-UDS) attach (ADR-0007, ADR-0031)
-    quic.rs, tls.rs, webtransport.rs
-  upgrade/            — graceful server re-exec / PTY handoff (ADR-0032)
-    mod.rs, blob.rs
-  native_state.rs     — native checkpoint bootstrap plumbing (ADR-0070)
-  input/              — server-side encoders bridging wire input -> PTY
-                        bytes; each pane owns its own PerPane{Key,Mouse,
-                        Focus,Paste} encoder, refreshed from Terminal state
-    key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
-  auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
-  policy.rs, search.rs, extract.rs, telemetry.rs
-    — auth token checks, outbound connector dialing, kernel cwd/process
-      introspection, core<->wire id translation, tracing setup
+  resource/           — the generic resource core and the engines behind it
+    mod.rs            — ResourceCore (engine-side: checked u64 output
+                        sequence, output broadcast, event-subscriber
+                        registry + fan-out, cancel token + exit notify,
+                        control mailbox), ResourceHandle (the Send + Clone
+                        channel set the runtime holds: output, consumer
+                        attach/detach/ack, event subscribe/unsubscribe,
+                        upgrade, control, plus `facet`), ResourceFacetHandle
+                        (one variant per engine), WrongResourceKind
+    terminal/         — the Terminal engine: TerminalActor owns one pane's
+                        libghostty `Terminal` (!Send, in a RefCell on the
+                        LocalSet), its input encoders, PTY reader/writer
+                        threads, and coherent bootstrap capture cuts
+                        (ADR-0070); embeds a ResourceCore and serves the
+                        TerminalHandle facet (input, snapshot, screen,
+                        resize, cwd, palette, native checkpoints)
+      mod.rs, construct.rs, run_loop.rs, io.rs, native.rs, consumers.rs,
+      events.rs, osc133.rs (OSC-133 command-boundary scanner, phux-foz.4),
+      requests.rs, spawn.rs, sync.rs, tick.rs
+  terminal_actor      — `pub use resource::terminal as terminal_actor`: the
+                        path every existing `terminal_actor::` import
+                        resolves through
 ```
 
-PTY supervision lives inside `terminal_actor/` (two `std::thread`s bridging
-blocking `portable_pty` I/O — via `portable-pty-adopt` for re-adoption on
-upgrade — to the async actor over `mpsc` channels), not a separate `pty/`
-module.
+The facet rule: runtime code holds a `ResourceHandle` and reaches a
+Terminal-only channel only through `ResourceHandle::terminal()`, the one
+place that produces `WrongResourceKind`. Nothing else in the crate matches
+on the facet enum, so a second engine adds a variant and a constructor, not
+a sweep of the runtime.
+
+PTY supervision lives inside `resource/terminal/` (two `std::thread`s
+bridging blocking `portable_pty` I/O — via `portable-pty-adopt` for
+re-adoption on upgrade — to the async actor over `mpsc` channels), not a
+separate `pty/` module.
 
 ## `phux-client`
 

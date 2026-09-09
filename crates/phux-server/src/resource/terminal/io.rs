@@ -337,7 +337,7 @@ impl TerminalActor {
         // broadcast channel's live-subscriber count; the seed receiver
         // held by the actor was dropped at construction, so this is the
         // attached-pump count.
-        if self.output_tx.receiver_count() == 0 {
+        if self.core.output_tx.receiver_count() == 0 {
             return;
         }
         match self.synthesize() {
@@ -353,11 +353,11 @@ impl TerminalActor {
                 // client mirror resizes to `(cols, rows)` before applying
                 // the replay. Delivered as raw output it could not resize
                 // the mirror, stranding a resize-grow with blank space.
-                let _ = self.output_tx.send(PaneOutput::Resync {
+                let _ = self.core.output_tx.send(PaneOutput::Resync {
                     cols: self.cols,
                     rows: self.rows,
                     reason,
-                    base_seq: self.raw_seq,
+                    base_seq: self.core.seq(),
                     bytes: Bytes::from(snap.bytes),
                 });
             }
@@ -440,9 +440,7 @@ impl TerminalActor {
         debug!("PTY EOF; firing exit_notify and keeping actor alive for late snapshot/input drain");
         self.pty_rx = None;
         let exit_status = self.reap_child_if_any();
-        if let Some(tx) = self.exit_notify.take() {
-            let _ = tx.send(exit_status);
-        }
+        self.core.notify_exit(exit_status);
     }
 
     /// Tear down the PTY: gracefully stop the child if still alive, drop

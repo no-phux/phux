@@ -122,6 +122,8 @@ fn pty_output_reaches_broadcast_and_terminal() {
         // ended up on the grid.
         let (tx, rx) = oneshot::channel();
         handle
+            .terminal()
+            .expect("terminal facet")
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -153,7 +155,7 @@ fn pty_output_reaches_broadcast_and_terminal() {
     }));
 }
 
-/// Input sent via `handle.input` reaches the PTY: a `cat` child echoes
+/// Input sent via `handle.terminal().expect("terminal facet").input` reaches the PTY: a `cat` child echoes
 /// whatever we feed it, and we observe the echo on the broadcast.
 #[test]
 fn input_keystroke_reaches_pty_and_echoes_back() {
@@ -184,6 +186,8 @@ fn input_keystroke_reaches_pty_and_echoes_back() {
             unshifted_codepoint: Some(u32::from('a')),
         };
         handle
+            .terminal()
+            .expect("terminal facet")
             .input
             .send(TerminalInput::Key(key))
             .await
@@ -200,6 +204,8 @@ fn input_keystroke_reaches_pty_and_echoes_back() {
             unshifted_codepoint: None,
         };
         handle
+            .terminal()
+            .expect("terminal facet")
             .input
             .send(TerminalInput::Key(enter))
             .await
@@ -281,6 +287,8 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
 
         let (tx, rx) = oneshot::channel();
         handle
+            .terminal()
+            .expect("terminal facet")
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -383,6 +391,8 @@ fn resize_path_does_not_panic_against_pty() {
         let join = tokio::task::spawn_local(bundle.actor.run());
 
         handle
+            .terminal()
+            .expect("terminal facet")
             .resize
             .send(ResizeRequest {
                 cols: 120,

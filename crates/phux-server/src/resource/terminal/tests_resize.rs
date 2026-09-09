@@ -19,6 +19,8 @@ async fn resize_updates_terminal_dims() {
             let join = tokio::task::spawn_local(bundle.actor.run());
 
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 120,
@@ -88,6 +90,8 @@ async fn resize_with_cell_px_updates_pty_winsize_pixels() {
 
             // 100x40 cells at 9x18 px per cell: 900x720 px text area.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 100,
@@ -102,6 +106,8 @@ async fn resize_with_cell_px_updates_pty_winsize_pixels() {
 
             // Pixel-less resize: grid changes, cell size sticks.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 90,
@@ -179,6 +185,8 @@ async fn winsize_pixels_default_when_no_client_reports_metrics() {
             // A pixel-less resize keeps deriving pixels from the default
             // cell size: 100x40 cells at 8x16 px -> 800x640 px.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 100,
@@ -224,6 +232,8 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
             let join = tokio::task::spawn_local(bundle.actor.run());
 
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 100,
@@ -315,6 +325,8 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
             let join = tokio::task::spawn_local(bundle.actor.run());
 
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 40,
@@ -439,6 +451,8 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
             // Exactly what the reflow emits for a pane the spawn already
             // sized: the geometry it is already at.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 80,
@@ -460,6 +474,8 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
             // still resyncs, carrying the post-reflow dims (phux-8v1 /
             // phux-3ns5).
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 40,
@@ -506,6 +522,8 @@ async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
             // resync_only: geometry fields are ignored, so the bogus 0x0
             // must NOT become the grid size.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 0,
@@ -588,6 +606,8 @@ async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
             // the RESIZE_RESYNC_DEBOUNCE window.
             for w in [70u16, 60, 50, 60, 70, 80, 90, 100] {
                 handle
+                    .terminal()
+                    .expect("terminal facet")
                     .resize
                     .send(ResizeRequest {
                         cols: w,
@@ -679,6 +699,8 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
             ];
             for &(cols, rows) in storm {
                 handle
+                    .terminal()
+                    .expect("terminal facet")
                     .resize
                     .send(ResizeRequest {
                         cols,
@@ -698,6 +720,8 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
             // A final sane resize must still take effect — proof the
             // actor survived and is processing, not wedged.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .resize
                 .send(ResizeRequest {
                     cols: 100,

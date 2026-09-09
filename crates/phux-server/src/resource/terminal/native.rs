@@ -164,7 +164,7 @@ impl TerminalActor {
             scratch,
             max_chunks,
             chunk_bytes,
-            base_seq: self.raw_seq,
+            base_seq: self.core.seq(),
             chunk_count: 0,
             limits,
             replay: VecDeque::new(),
@@ -705,7 +705,7 @@ impl TerminalActor {
             return;
         }
         let replay = publication.replay.iter().cloned().collect();
-        let live = self.output_tx.subscribe();
+        let live = self.core.output_tx.subscribe();
         let remove = publication.waiting.is_empty();
         if remove {
             self.native_publications.remove(&req.cursor);
@@ -923,7 +923,10 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn publish_native_control(&self, owner: u64, frame: FrameKind) {
-        let _ = self.output_tx.send(PaneOutput::Control { owner, frame });
+        let _ = self
+            .core
+            .output_tx
+            .send(PaneOutput::Control { owner, frame });
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -937,7 +940,7 @@ impl TerminalActor {
         }
         let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
         self.native_publications.clear();
-        let last_valid_seq = self.raw_seq;
+        let last_valid_seq = self.core.seq();
         for (owner, binding) in bindings {
             self.publish_native_control(
                 owner,
@@ -982,7 +985,7 @@ impl TerminalActor {
                 stream_id: binding.stream_id,
                 bootstrap_id: binding.bootstrap_id,
                 reason,
-                last_valid_seq: self.raw_seq,
+                last_valid_seq: self.core.seq(),
             },
         );
         if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {

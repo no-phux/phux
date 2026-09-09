@@ -83,7 +83,7 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
     let client = ClientId(8);
     let (outbound, mut outbound_rx) = dummy_outbound();
     let (gate_tx, gate_rx) = watch::channel(false);
-    let next_seq = actor.raw_seq.checked_add(1).expect("next live sequence");
+    let next_seq = actor.core.seq().checked_add(1).expect("next live sequence");
     actor
         .register_consumer_generation(
             client,
@@ -374,7 +374,7 @@ fn tick_emit_is_silent_while_gate_is_off() {
 fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
     let bundle = TerminalActor::new(20, 5).expect("new");
     let mut actor = bundle.actor;
-    actor.raw_seq = 7;
+    actor.core.seq = 7;
     actor.vt_write_for_test(b"before-cut");
 
     let client = ClientId(1);
@@ -574,7 +574,7 @@ fn osc_progress_is_mirrored_without_event_listeners() {
     let bundle = TerminalActor::new(20, 5).expect("new");
     let mut actor = bundle.actor;
     assert!(actor.event_sink.is_none());
-    assert!(actor.event_subscribers.borrow().is_empty());
+    assert!(actor.core.has_no_event_subscribers());
 
     actor.source_events_from_chunk(b"\x1b]9;4;");
     assert!(
@@ -1710,10 +1710,23 @@ fn detect_tick_consumes_the_dirty_flag_when_it_scans() {
 #[test]
 fn input_snapshot_publishes_after_seed_output_and_resize() {
     let seeded = TerminalActor::new_with_seed(80, 24, b"\x1b[?2004h").expect("seeded");
-    assert!(seeded.handle.input_snapshot.borrow().bracketed_paste);
+    assert!(
+        seeded
+            .handle
+            .terminal()
+            .expect("terminal facet")
+            .input_snapshot
+            .borrow()
+            .bracketed_paste
+    );
 
     let mut actor = seeded.actor;
-    let mut snapshots = seeded.handle.input_snapshot;
+    let mut snapshots = seeded
+        .handle
+        .terminal()
+        .expect("terminal facet")
+        .input_snapshot
+        .clone();
     snapshots.borrow_and_update();
     actor.vt_write_for_test(b"\x1b[?1004h");
     assert!(snapshots.has_changed().expect("publisher alive"));

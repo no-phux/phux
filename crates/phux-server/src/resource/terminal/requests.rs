@@ -1,4 +1,9 @@
-//! Submodule for terminal actor internals.
+//! Request and reply types the Terminal engine serves, and the
+//! [`TerminalHandle`] facet that carries their senders.
+//!
+//! The backing-agnostic channel set (output broadcast, event subscription,
+//! control) and its payload types live in [`crate::resource`]; they are
+//! re-exported here so engine code and tests name them from one place.
 
 use std::os::fd::OwnedFd;
 
@@ -7,66 +12,13 @@ use crate::mailbox::{Outbound, TerminalInput};
 use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::wire::frame::{
-    ControlAction, FrameKind, ReportedAgentState, TerminalEventType, TerminalSignal,
-};
+use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-/// A supervisory control request delivered to a [`super::TerminalActor`] over
-/// its `control` mailbox (ADR-0033, "take the wheel + kill").
-///
-/// The input *lease* itself lives in [`crate::state::ServerState`] (the input
-/// gate runs there, under the state lock, where the originating `ClientId` is
-/// known). The actor is the emitter of the
-/// [`phux_protocol::wire::frame::AgentEvent::TerminalControl`] broadcast
-/// because it owns both the event-subscriber list and the process lifecycle —
-/// so the handler forwards the *fact* of a change and lets the actor stamp its
-/// current lifecycle and fan the event out.
-#[derive(Debug)]
-pub enum ControlRequest {
-    /// The input lease changed in `ServerState`; emit a `TerminalControl`
-    /// broadcast reflecting the new holder and the action that produced it.
-    LeaseChanged {
-        /// The client now holding the lease, or `None` if released to `Open`.
-        input_holder: Option<ClientId>,
-        /// What just happened (`Acquired` / `Seized` / `Released`).
-        action: ControlAction,
-        /// The client that performed the action.
-        actor: ClientId,
-    },
-    /// Something other than the detector wrote this pane's `phux.agent/v1`
-    /// record (an explicit `SET_METADATA` or `DELETE_METADATA`), so the
-    /// detector's edge filter — a model of its own emissions — is now a model
-    /// of a store that no longer exists (ADR-0046 §E).
-    ///
-    /// The actor clears the filter, re-arming exactly one republish on the
-    /// next tick. This is what makes `DELETE` mean "the detector resumes"
-    /// rather than "the record vanishes until the agent's state happens to
-    /// change" — which, for an agent sitting idle waiting on a human, is
-    /// never. No-op on a pane with no detector.
-    AgentRecordInvalidated,
-    /// Feed lifecycle-hook evidence into the pane's detector.
-    ReportAgentState {
-        /// Hook-reported state.
-        state: ReportedAgentState,
-        /// Whether the detector accepted the evidence.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// Deliver `signal` to the pane's process group, update the lifecycle
-    /// (`Freeze` → `Frozen`, `Resume` → `Running`), and broadcast a
-    /// `TerminalControl`. `reply` carries `Ok(())` on delivery or a
-    /// human-readable error (no PTY / no pid / `killpg` failed).
-    Signal {
-        /// The signal to deliver.
-        signal: TerminalSignal,
-        /// The lease holder at the time of the signal, for the broadcast.
-        input_holder: Option<ClientId>,
-        /// The client requesting the signal.
-        by: ClientId,
-        /// Delivery acknowledgement.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-}
+pub use crate::resource::{
+    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResyncReason, SubscribeToEventsRequest,
+    TerminalEventSubscriber, UnsubscribeFromEventsRequest,
+};
 
 /// Request to register a new consumer with the actor.
 ///
@@ -389,80 +341,6 @@ pub(crate) const fn echo_probe_for(input: &TerminalInput) -> bool {
     matches!(input, TerminalInput::Key(_) | TerminalInput::Paste(_))
 }
 
-/// Default capacity of the per-pane output broadcast channel.
-///
-/// Bytes fan out to subscribed clients. Sized for "burst tolerance" —
-/// a busy pane can emit a few dozen frames in a short window before a
-/// slow subscriber falls behind and gets a `RecvError::Lagged`.
-pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
-
-/// Continuity reason carried with an actor-generated full resync.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResyncReason {
-    /// Authoritative geometry changed.
-    Resize,
-    /// A bounded output subscriber observed a sequence gap.
-    OutboundGap,
-}
-/// Payload of the per-pane output broadcast ([`TerminalHandle::output`]).
-///
-/// Subscribers (the per-attach output pumps in `runtime::attach`) map each
-/// variant to a distinct wire frame:
-///
-/// * [`PaneOutput::Live`] → `TERMINAL_OUTPUT` — a post-snapshot byte delta.
-/// * [`PaneOutput::Resync`] → `TERMINAL_SNAPSHOT` — the full post-reflow
-///   grid, carrying the new `(cols, rows)` so the client mirror RESIZES to
-///   them and repaints from authoritative state.
-/// * [`PaneOutput::Control`] → an ordered generation/history control frame
-///   routed only by the pump whose server-local owner matches.
-///
-/// Routing the resize-resync as a `TERMINAL_SNAPSHOT` (rather than raw
-/// output) is load-bearing. The client resizes its libghostty mirror ONLY
-/// on `TERMINAL_SNAPSHOT` (ADR-0013 / phux-wurs: the mirror's grid size is
-/// server-authoritative and never guessed from a client-side rect). A
-/// resync delivered as `TERMINAL_OUTPUT` would `vt_write` into a mirror
-/// still at its old size, so a resize that GROWS a pane — kill-pane reflow
-/// promoting the survivor, or enlarging the outer window — could never fill
-/// the freed space (phux-3ns5). The snapshot path resizes first, then
-/// applies the synthesized grid, so grow and shrink both reconverge.
-
-#[derive(Clone, Debug)]
-pub enum PaneOutput {
-    /// Live PTY byte chunk forwarded as `TERMINAL_OUTPUT`.
-    Live {
-        /// Actor-global, strictly increasing raw output sequence.
-        seq: u64,
-        /// Verbatim PTY bytes for this sequence.
-        bytes: Bytes,
-    },
-    /// Post-resize grid resync forwarded as `TERMINAL_SNAPSHOT` at the
-    /// carried dims (phux-8v1 reconverge mechanism + phux-3ns5 mirror
-    /// resize). `bytes` is the synthesized grid replay (with its
-    /// `DECSTR + ED2 + home` reset preamble); `cols`/`rows` are the
-    /// post-reflow grid size the client mirror must adopt.
-    Resync {
-        /// Post-reflow grid width the client mirror resizes to.
-        cols: u16,
-        /// Post-reflow grid height the client mirror resizes to.
-        rows: u16,
-        /// Why the prior generation can no longer continue.
-        reason: ResyncReason,
-        /// Actor-global raw sequence included by the replacement cut.
-        base_seq: u64,
-        /// Synthesized grid replay (with reset preamble) for `vt_write`.
-        bytes: Bytes,
-    },
-    /// Ordered native control. It shares the broadcast sequence with
-    /// [`Self::Live`] so a pump observes every prior raw sequence before
-    /// invalidating the matching generation or history cursor.
-    Control {
-        /// Server-local pump owner; other subscribers ignore this control.
-        owner: u64,
-        /// Fully-owned tombstone/control frame for the matching pump.
-        frame: FrameKind,
-    },
-}
-
 /// Request for the pane's current `vt_replay_bytes` snapshot.
 ///
 /// Sent by the ATTACH handler on the per-client task; the actor walks
@@ -744,12 +622,15 @@ pub struct ResizeRequest {
     pub resync_only: bool,
 }
 
-/// Cross-task handle to a [`super::TerminalActor`].
+/// The Terminal facet of a [`ResourceHandle`](crate::resource::ResourceHandle):
+/// the channels only the Terminal engine serves.
 ///
-/// `TerminalHandle` is `Send + Clone`: per-client tasks clone it freely to
-/// request snapshots, send input, or subscribe to the output broadcast.
-/// The actor itself (which owns the `!Send` `Terminal`) lives on the
-/// `LocalSet` and never crosses a thread boundary.
+/// `TerminalHandle` is `Send + Clone`. Runtime code obtains it through
+/// [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal),
+/// never by holding one directly, so a request that only a Terminal can
+/// answer is refused at that one seam for any other kind. The actor itself
+/// (which owns the `!Send` `Terminal`) lives on the `LocalSet` and never
+/// crosses a thread boundary.
 #[derive(Debug, Clone)]
 pub struct TerminalHandle {
     /// Sender for input events (keys, mouse, etc.). Drained by the
@@ -791,92 +672,43 @@ pub struct TerminalHandle {
     /// child, see [`PwdRequest`]) and seeds the new pane's
     /// `CommandBuilder.cwd` with it.
     pub pwd: mpsc::Sender<PwdRequest>,
-    /// Output broadcast channel; subscribers receive every PTY byte
-    /// chunk ([`PaneOutput::Live`]) plus post-resize grid resyncs
-    /// ([`PaneOutput::Resync`]) forwarded by the actor.
-    pub output: broadcast::Sender<PaneOutput>,
     /// Resize control channel. The actor honours each request by
     /// resizing libghostty's `Terminal` and the PTY winsize ioctl, and
     /// (when [`ResizeRequest::resync_clients`] is set) re-broadcasting a
     /// full grid snapshot so client mirrors reconverge after reflow
     /// (phux-8v1).
     pub resize: mpsc::Sender<ResizeRequest>,
-    /// ADR-0018 per-consumer state-sync lifecycle (phux-q0e.2). The
-    /// runtime sends a [`ConsumerAttachRequest`] on each successful
-    /// ATTACH so the actor allocates the per-consumer `RenderState`
-    /// before the `TERMINAL_SNAPSHOT` goes out. Future state-sync work
-    /// (phux-q0e.3 tick driver, phux-q0e.4 `FRAME_ACK`) reads from the
-    /// resulting per-consumer state map.
-    pub consumer_attach: mpsc::Sender<ConsumerAttachRequest>,
-    /// Counterpart to [`Self::consumer_attach`]. The runtime sends
-    /// this on DETACH (and on the EOF cleanup path) to free the
-    /// per-consumer `RenderState`. Silent no-op if the consumer was
-    /// never attached.
-    pub consumer_detach: mpsc::Sender<ConsumerDetachRequest>,
-    /// ADR-0018 inbound `FRAME_ACK` channel (phux-q0e.4). The runtime
-    /// sends one [`ConsumerAckRequest`] per decoded `FRAME_ACK` whose
-    /// `terminal_id` resolved to this actor; the actor evicts the
-    /// per-consumer dirty cache so the next tick re-diffs against the
-    /// freshly-acked reference. Silent no-op if the consumer is not
-    /// currently registered.
-    pub consumer_ack: mpsc::Sender<ConsumerAckRequest>,
-    /// Subscribe to semantic terminal events for this pane. The runtime sends
-    /// a [`SubscribeToEventsRequest`] when a client subscribes; the actor
-    /// registers the subscriber and begins broadcasting matching events.
-    pub subscribe_to_events: mpsc::Sender<SubscribeToEventsRequest>,
-    /// Unsubscribe from semantic terminal events. The runtime sends an
-    /// [`UnsubscribeFromEventsRequest`] when a client detaches; the actor
-    /// removes the subscriber from its list (idempotent).
-    pub unsubscribe_from_events: mpsc::Sender<UnsubscribeFromEventsRequest>,
-    /// Graceful-upgrade handoff channel (ADR-0032). The upgrade producer sends
-    /// an [`UpgradeHandleRequest`] per pane to collect its PTY descriptors +
-    /// replay snapshot into the [`StateBlob`](crate::upgrade::blob::StateBlob).
-    pub upgrade: mpsc::Sender<UpgradeHandleRequest>,
-    /// Supervisory control channel (ADR-0033). The runtime sends a
-    /// [`ControlRequest`] when a client takes the wheel, releases it, or
-    /// signals the pane's process group. The actor delivers signals (it owns
-    /// the PTY child pid) and broadcasts `TerminalControl` events (it owns the
-    /// event-subscriber list).
-    pub control: mpsc::Sender<ControlRequest>,
     /// Pane viewport width in cells at construction time.
     pub cols: u16,
     /// Pane viewport height in cells at construction time.
     pub rows: u16,
 }
 
-/// A client subscribed to semantic events for a single Terminal (pane).
-/// Holds the client's outbound mailbox and event type filter.
-#[derive(Clone, Debug)]
-pub struct TerminalEventSubscriber {
-    /// Client's outbound frame channel (where Event frames are sent).
-    pub outbound: tokio::sync::mpsc::Sender<Outbound>,
-    /// Event type filter (empty = all types). Only events matching a type
-    /// in this list are forwarded; if empty, all events are sent.
-    pub event_types: Vec<TerminalEventType>,
-}
-
-/// Request to subscribe to semantic terminal events.
-#[derive(Debug)]
-pub struct SubscribeToEventsRequest {
-    /// The new subscriber to register.
-    pub subscriber: TerminalEventSubscriber,
-    /// Wire-level terminal id for Event frames (SPEC §7.1).
-    /// The runtime passes this when registering.
-    pub wire_terminal_id: u32,
-}
-
-/// Request to unsubscribe from semantic terminal events.
-#[derive(Debug)]
-pub struct UnsubscribeFromEventsRequest {
-    /// Address of the subscriber's outbound mailbox, used for identity
-    /// comparison against the actor's registered subscribers.
-    ///
-    /// A `usize` address rather than a `*const Sender<Outbound>`: a raw
-    /// pointer is `!Send`, which would make [`TerminalHandle`] — and through
-    /// it the entire [`ServerState`](crate::state::ServerState) — `!Send`,
-    /// blocking the dedicated input lane (phux-51n6.2, ADR-0044) that routes
-    /// input from a separate thread. The identity semantics are unchanged: the
-    /// actor compares this against `&raw const sub.outbound as usize`, exactly
-    /// as the prior pointer equality did.
-    pub outbound_addr: usize,
+impl TerminalHandle {
+    /// A facet whose every sender is disconnected, for tests that need a
+    /// registered handle but never drive the actor behind it.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn detached_for_test(cols: u16, rows: u16) -> Self {
+        Self {
+            input: mpsc::channel(1).0,
+            encoded_input: mpsc::channel(1).0,
+            input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
+            snapshot: mpsc::channel(1).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_bootstrap: mpsc::channel(1).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_publication: mpsc::channel(1).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_history: mpsc::channel(1).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_release: mpsc::channel(1).0,
+            set_default_colors: mpsc::channel(1).0,
+            screen: mpsc::channel(1).0,
+            pwd: mpsc::channel(1).0,
+            resize: mpsc::channel(1).0,
+            cols,
+            rows,
+        }
+    }
 }

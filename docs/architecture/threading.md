@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-09-09
 ---
 
 # Threading and I/O
@@ -63,8 +63,9 @@ with the current-thread/LocalSet runtime rather than competing with it.
 
 Because the state is shared with the input lane below, `ServerState` must be
 `Send` (so `Arc<Mutex<ServerState>>` is `Send`). That is a real constraint on
-what may live in it: message types reachable from a `TerminalHandle` cannot
-carry `!Send` payloads (a raw pointer, an `Rc`). The event-unsubscribe request
+what may live in it: message types reachable from a `ResourceHandle` (and
+its `TerminalHandle` facet) cannot carry `!Send` payloads (a raw pointer, an
+`Rc`). The event-unsubscribe request
 identifies a subscriber by a `usize` address rather than a
 `*const Sender<Outbound>` for exactly this reason.
 

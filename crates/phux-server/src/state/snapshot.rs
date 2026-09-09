@@ -82,7 +82,7 @@ impl ServerState {
                         .with_active_pane(active_pane_wire),
                 );
 
-                for pid in &window.panes {
+                for pid in &window.slots {
                     let Some(terminal) = self.sessions.registry.terminal(*pid).cloned() else {
                         continue;
                     };
@@ -137,10 +137,10 @@ impl ServerState {
                 .sessions
                 .registry
                 .window(wid)
-                .map(|w| w.panes.clone())
+                .map(|w| w.slots.clone())
                 .unwrap_or_default();
             for pid in window_panes {
-                if let Some(handle) = self.terminal_handle(pid).cloned() {
+                if let Some(handle) = self.resource_handle(pid).cloned() {
                     panes.push(AttachSnapshotPane {
                         terminal_id: pid,
                         handle,

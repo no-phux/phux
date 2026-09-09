@@ -1,6 +1,8 @@
 //! Integration tests for [`phux_core::Registry`].
 
-use phux_core::{LayoutNode, Registry, RegistryError, SessionId, TerminalId, WindowId};
+use phux_core::{
+    AgentFacet, LayoutNode, Registry, RegistryError, ResourceKind, SessionId, TerminalId, WindowId,
+};
 
 #[test]
 fn new_session_window_pane_chain_yields_distinct_lookups() {
@@ -11,9 +13,11 @@ fn new_session_window_pane_chain_yields_distinct_lookups() {
 
     assert!(reg.session(s).is_some());
     assert!(reg.window(w).is_some());
-    let pane = reg.terminal(p).expect("pane exists");
+    let pane = reg.resource(p).expect("pane exists");
     assert_eq!(pane.id, p);
-    assert_eq!(pane.window, w);
+    assert_eq!(pane.kind, ResourceKind::Terminal);
+    assert_eq!(pane.window, Some(w));
+    assert!(pane.terminal().is_some());
 
     // Parent linkage is bidirectional.
     let session = reg.session(s).expect("session exists");
@@ -22,7 +26,7 @@ fn new_session_window_pane_chain_yields_distinct_lookups() {
 
     let window = reg.window(w).expect("window exists");
     assert_eq!(window.session, s);
-    assert_eq!(window.panes, vec![p]);
+    assert_eq!(window.slots, vec![p]);
     // A single-pane window's layout is a Leaf for that pane.
     assert_eq!(window.layout, Some(LayoutNode::Leaf(p)));
     assert_eq!(window.active, Some(p));
@@ -56,13 +60,13 @@ fn remove_terminal_invalidates_key_and_unlinks_from_window() {
     let p1 = reg.new_terminal(w).expect("window exists");
     let p2 = reg.new_terminal(w).expect("window exists");
 
-    let removed = reg.remove_terminal(p1).expect("pane existed");
+    let removed = reg.remove_resource(p1).expect("pane existed");
     assert_eq!(removed.id, p1);
     assert!(reg.terminal(p1).is_none());
 
     let window = reg.window(w).expect("window exists");
-    assert!(!window.panes.contains(&p1));
-    assert_eq!(window.panes, vec![p2]);
+    assert!(!window.slots.contains(&p1));
+    assert_eq!(window.slots, vec![p2]);
     // Layout collapsed the split — p2 is now the sole Leaf.
     assert_eq!(window.layout, Some(LayoutNode::Leaf(p2)));
     // Active rolled forward to the remaining pane.
@@ -76,10 +80,10 @@ fn remove_terminal_clears_active_when_last() {
     let w = reg.new_window(s).expect("session exists");
     let p = reg.new_terminal(w).expect("window exists");
 
-    reg.remove_terminal(p).expect("pane existed");
+    reg.remove_resource(p).expect("pane existed");
     let window = reg.window(w).expect("window exists");
     assert_eq!(window.active, None);
-    assert!(window.panes.is_empty());
+    assert!(window.slots.is_empty());
     // Layout is cleared when the last pane is removed.
     assert!(window.layout.is_none());
 }
@@ -88,7 +92,7 @@ fn remove_terminal_clears_active_when_last() {
 fn remove_terminal_unknown_returns_none() {
     let mut reg = Registry::new();
     let bogus: TerminalId = TerminalId::default();
-    assert!(reg.remove_terminal(bogus).is_none());
+    assert!(reg.remove_resource(bogus).is_none());
 }
 
 #[test]
@@ -157,7 +161,7 @@ fn ids_are_distinct_across_kinds() {
     assert_eq!(reg.session_count(), 1);
     assert_eq!(reg.window_count(), 1);
     // Force the IDs to be used so the bindings are not dead code.
-    assert_eq!(reg.terminal(p).map(|x| x.id), Some(p));
+    assert_eq!(reg.resource(p).map(|x| x.id), Some(p));
 }
 
 // ---- proptest: random op sequences keep the registry self-consistent ------
@@ -218,7 +222,7 @@ proptest! {
                 Op::RemovePane(i) => {
                     if !panes.is_empty() {
                         let p = panes.swap_remove(i % panes.len());
-                        let _ = reg.remove_terminal(p);
+                        let _ = reg.remove_resource(p);
                     }
                 }
                 Op::RemoveWindow(i) => {
@@ -236,8 +240,8 @@ proptest! {
             }
 
             // Invariant: every WindowId in a Session.windows resolves and
-            // links back; every TerminalId in a Window.panes resolves and links
-            // back; layout.panes mirrors panes; active references are live.
+            // links back; every TerminalId in a Window.slots resolves and links
+            // back; layout.slots mirrors panes; active references are live.
             let session_ids: Vec<SessionId> = sessions.iter().copied().filter(|id| reg.session(*id).is_some()).collect();
             for sid in session_ids {
                 let session = reg.session(sid).expect("filtered to live");
@@ -250,16 +254,16 @@ proptest! {
                         .as_ref()
                         .map(LayoutNode::leaves)
                         .unwrap_or_default();
-                    let pane_set: std::collections::HashSet<_> = window.panes.iter().copied().collect();
+                    let pane_set: std::collections::HashSet<_> = window.slots.iter().copied().collect();
                     let leaf_set: std::collections::HashSet<_> = leaves.iter().copied().collect();
                     prop_assert_eq!(pane_set, leaf_set);
-                    prop_assert_eq!(leaves.len(), window.panes.len());
-                    for pid in &window.panes {
-                        let pane = reg.terminal(*pid).expect("window points at live pane");
-                        prop_assert_eq!(pane.window, *wid);
+                    prop_assert_eq!(leaves.len(), window.slots.len());
+                    for pid in &window.slots {
+                        let pane = reg.resource(*pid).expect("window points at live pane");
+                        prop_assert_eq!(pane.window, Some(*wid));
                     }
                     if let Some(a) = window.active {
-                        prop_assert!(window.panes.contains(&a));
+                        prop_assert!(window.slots.contains(&a));
                     }
                 }
                 if let Some(a) = session.active {
@@ -273,9 +277,10 @@ proptest! {
             // instead, iterate our tracked panes vec and check those still
             // present in the registry.
             for pid in &panes {
-                if let Some(pane) = reg.terminal(*pid) {
-                    let window = reg.window(pane.window).expect("pane's parent window must be live");
-                    prop_assert!(window.panes.contains(pid));
+                if let Some(pane) = reg.resource(*pid) {
+                    let wid = pane.window.expect("a Terminal holds a window slot");
+                    let window = reg.window(wid).expect("pane's parent window must be live");
+                    prop_assert!(window.slots.contains(pid));
                 }
             }
         }
@@ -362,14 +367,14 @@ fn move_terminal_reparents_across_sessions() {
 
     reg.move_terminal(p1, w2).expect("move succeeds");
 
-    assert_eq!(reg.terminal(p1).expect("pane survives").window, w2);
+    assert_eq!(reg.resource(p1).expect("pane survives").window, Some(w2));
     let source = reg.window(w1).expect("window exists");
-    assert_eq!(source.panes, vec![p2]);
+    assert_eq!(source.slots, vec![p2]);
     assert_eq!(source.layout, Some(LayoutNode::Leaf(p2)));
     assert_eq!(source.active, Some(p2));
     let dest = reg.window(w2).expect("window exists");
-    assert_eq!(dest.panes, vec![p3, p1]);
-    assert!(dest.panes.contains(&p1));
+    assert_eq!(dest.slots, vec![p3, p1]);
+    assert!(dest.slots.contains(&p1));
 }
 
 #[test]
@@ -386,7 +391,7 @@ fn move_terminal_out_of_solo_window_leaves_empty_window() {
     reg.move_terminal(p, w2).expect("move succeeds");
 
     let source = reg.window(w1).expect("window persists");
-    assert!(source.panes.is_empty());
+    assert!(source.slots.is_empty());
     assert_eq!(source.layout, None);
     assert_eq!(source.active, None);
     // Destination was empty: the moved pane seeds it.
@@ -407,7 +412,7 @@ fn move_terminal_to_current_window_is_a_no_op() {
     reg.move_terminal(p1, w).expect("no-op move succeeds");
 
     let after = reg.window(w).expect("window exists");
-    assert_eq!(after.panes, before.panes);
+    assert_eq!(after.slots, before.slots);
     assert_eq!(after.layout, before.layout);
     let _ = p2;
 }
@@ -427,8 +432,145 @@ fn move_terminal_rejects_unknown_ends_without_mutating() {
     let s2 = reg2.new_session("b".to_string());
     let w2 = reg2.new_window(s2).expect("session exists");
     match reg2.move_terminal(TerminalId::default(), w2) {
-        Err(RegistryError::UnknownTerminal(_)) => {}
-        other => panic!("expected UnknownTerminal, got {other:?}"),
+        Err(RegistryError::UnknownResource(_)) => {}
+        other => panic!("expected UnknownResource, got {other:?}"),
     }
-    assert_eq!(reg.terminal(p).expect("untouched").window, w);
+    assert_eq!(reg.resource(p).expect("untouched").window, Some(w));
+}
+
+// ---- resource kinds and parent bindings -----------------------------------
+
+fn agent(provider: &str) -> AgentFacet {
+    AgentFacet {
+        provider: provider.to_string(),
+        native_id: None,
+        state: None,
+    }
+}
+
+#[test]
+fn agent_session_binds_to_terminal_parent_and_holds_no_slot() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let t = reg.new_terminal(w).expect("window exists");
+
+    let a = reg
+        .new_agent_session(t, agent("claude"))
+        .expect("terminal parent");
+    let desc = reg.resource(a).expect("agent session exists");
+    assert_eq!(desc.kind, ResourceKind::AgentSession);
+    assert_eq!(desc.parent, Some(t));
+    assert_eq!(desc.window, None);
+    assert!(desc.terminal().is_none());
+    assert_eq!(desc.agent().map(|f| f.provider.as_str()), Some("claude"));
+    assert!(
+        reg.terminal(a).is_none(),
+        "no Terminal facet on an agent session"
+    );
+
+    let window = reg.window(w).expect("window exists");
+    assert_eq!(window.slots, vec![t], "agent sessions never occupy a slot");
+    assert_eq!(reg.children(t), vec![a]);
+    assert_eq!(reg.resource_count(), 2);
+    assert_eq!(reg.terminal_count(), 1);
+}
+
+#[test]
+fn agent_session_requires_a_live_terminal_parent() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let t = reg.new_terminal(w).expect("window exists");
+    let a = reg
+        .new_agent_session(t, agent("claude"))
+        .expect("terminal parent");
+
+    let bogus = TerminalId::default();
+    assert_eq!(
+        reg.new_agent_session(bogus, agent("claude")),
+        Err(RegistryError::UnknownResource(bogus))
+    );
+    assert_eq!(
+        reg.new_agent_session(a, agent("claude")),
+        Err(RegistryError::ParentKindMismatch {
+            parent: a,
+            actual: ResourceKind::AgentSession,
+            required: ResourceKind::Terminal,
+        })
+    );
+    assert_eq!(reg.resource_count(), 2, "nothing inserted on error");
+}
+
+#[test]
+fn removing_a_parent_removes_its_children_but_not_vice_versa() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let t = reg.new_terminal(w).expect("window exists");
+    let a1 = reg
+        .new_agent_session(t, agent("claude"))
+        .expect("terminal parent");
+    let a2 = reg
+        .new_agent_session(t, agent("codex"))
+        .expect("terminal parent");
+
+    reg.remove_resource(a1).expect("child existed");
+    assert!(
+        reg.resource(t).is_some(),
+        "closing a child leaves the parent"
+    );
+    assert_eq!(reg.children(t), vec![a2]);
+
+    reg.remove_resource(t).expect("parent existed");
+    assert!(
+        reg.resource(a2).is_none(),
+        "closing the parent closes the child"
+    );
+    assert_eq!(reg.resource_count(), 0);
+}
+
+#[test]
+fn window_and_session_removal_cascade_through_children() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w1 = reg.new_window(s).expect("session exists");
+    let w2 = reg.new_window(s).expect("session exists");
+    let t1 = reg.new_terminal(w1).expect("window exists");
+    let t2 = reg.new_terminal(w2).expect("window exists");
+    let a1 = reg
+        .new_agent_session(t1, agent("claude"))
+        .expect("terminal parent");
+    let a2 = reg
+        .new_agent_session(t2, agent("claude"))
+        .expect("terminal parent");
+
+    reg.remove_window(w1).expect("window existed");
+    assert!(reg.resource(a1).is_none());
+    assert!(reg.resource(a2).is_some());
+
+    reg.remove_session(s).expect("session existed");
+    assert!(reg.resource(a2).is_none());
+    assert_eq!(reg.resource_count(), 0);
+}
+
+#[test]
+fn move_terminal_keeps_children_bound() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w1 = reg.new_window(s).expect("session exists");
+    let w2 = reg.new_window(s).expect("session exists");
+    let t = reg.new_terminal(w1).expect("window exists");
+    let a = reg
+        .new_agent_session(t, agent("claude"))
+        .expect("terminal parent");
+
+    reg.move_terminal(t, w2).expect("both ends live");
+    assert_eq!(reg.resource(t).and_then(|r| r.window), Some(w2));
+    assert_eq!(reg.resource(a).and_then(|r| r.parent), Some(t));
+    assert_eq!(
+        reg.move_terminal(a, w1),
+        Err(RegistryError::UnknownResource(a)),
+        "an agent session holds no slot to move"
+    );
 }

@@ -209,7 +209,7 @@ impl TerminalActor {
             tokio::select! {
                 biased;
 
-                () = self.token.cancelled() => {
+                () = self.core.token.cancelled() => {
                     debug!("TerminalActor cancellation token fired");
                     self.shutdown_pty().await;
                     return;
@@ -294,18 +294,18 @@ impl TerminalActor {
 
                 // Semantic event subscription request. Register the subscriber
                 // and begin broadcasting matching events to their outbound mailbox.
-                Some(req) = self.subscribe_to_events_rx.recv() => self.subscribe_to_events(req),
+                Some(req) = self.core.subscribe_to_events_rx.recv() => self.core.subscribe_events(req),
 
                 // Semantic event unsubscription request. Remove the subscriber
                 // from the broadcast list. Silent no-op if already unsubscribed.
-                Some(req) = self.unsubscribe_from_events_rx.recv() =>
-                    self.unsubscribe_from_events(&req),
+                Some(req) = self.core.unsubscribe_from_events_rx.recv() =>
+                    self.core.unsubscribe_events(&req),
 
                 // Supervisory control (ADR-0033): lease-change broadcasts and
                 // process signals. The lease itself lives in `ServerState`; the
                 // actor is the emitter (it owns the subscriber list + lifecycle)
                 // and the signal deliverer (it owns the PTY child pid).
-                Some(req) = self.control_rx.recv() => self.handle_control_request(req),
+                Some(req) = self.core.control_rx.recv() => self.handle_control_request(req),
 
                 // Disarmed while there is nothing for a tick to do (see
                 // `state_tick_armed`). A `select!` arm whose precondition is
@@ -594,12 +594,11 @@ impl TerminalActor {
             bytes = burst.payload.len(),
             "vt_write: PTY chunk(s) -> Terminal"
         );
-        let Some(seq) = self.raw_seq.checked_add(1) else {
-            error!("actor-global raw output sequence exhausted");
+        let Some(seq) = self.core.next_seq() else {
+            error!("resource output sequence exhausted");
             self.shutdown_pty().await;
             return PtyTurn::Shutdown;
         };
-        self.raw_seq = seq;
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let deferred = self.buffer_native_live_output(seq, &burst.payload);
         #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
@@ -609,7 +608,7 @@ impl TerminalActor {
             self.ingest_pty_payload(&burst.payload);
             crate::perf::PTY_VT_APPLY.record_elapsed(apply_started);
         }
-        let _ = self.output_tx.send(PaneOutput::Live {
+        let _ = self.core.output_tx.send(PaneOutput::Live {
             seq,
             bytes: burst.payload,
         });
@@ -753,7 +752,7 @@ impl TerminalActor {
         }
         let _ = req
             .reply
-            .send(snap.map(|snapshot| (snapshot, self.raw_seq)));
+            .send(snap.map(|snapshot| (snapshot, self.core.seq())));
     }
 
     /// Install the effective default palette an interactive client reported,

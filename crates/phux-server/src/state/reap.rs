@@ -21,8 +21,8 @@ impl ServerState {
     /// interning, and per-Terminal L3 metadata).
     pub fn reap_terminal(&mut self, pane: TerminalId) -> bool {
         // Resolve the parent window before the registry drops the pane.
-        let window_id = self.sessions.registry.terminal(pane).map(|t| t.window);
-        if self.sessions.registry.remove_terminal(pane).is_some() {
+        let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
+        if self.sessions.registry.remove_resource(pane).is_some() {
             self.forget_terminal_bookkeeping(pane);
         }
         let Some(window_id) = window_id else {
@@ -45,7 +45,7 @@ impl ServerState {
             .sessions
             .registry
             .window(window_id)
-            .is_some_and(|w| w.panes.is_empty());
+            .is_some_and(|w| w.slots.is_empty());
         if window_empty {
             let session_id = self.sessions.registry.window(window_id).map(|w| w.session);
             if self.sessions.registry.remove_window(window_id).is_some() {
@@ -72,7 +72,7 @@ impl ServerState {
     fn forget_terminal_bookkeeping(&mut self, pane: TerminalId) {
         // Handle, actor token, subscribers, and the pane's ATTACH_TERMINAL
         // pumps (phux-v45.7) all go in one step.
-        self.terminal_table.forget_terminal(pane);
+        self.resources.forget_resource(pane);
         // The asked-detector is keyed by core pane id, so it clears before
         // the wire id is retired; the arbiter half is keyed by wire id and
         // clears after.

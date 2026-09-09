@@ -242,19 +242,19 @@ fn snapshot_plus_output_reconstructs_server_grid() {
         // Take S0 BEFORE releasing any block. The shell is blocked on the
         // first `read`, so the stream is empty and S0 has nothing to reconcile
         // — this is what makes the capture race-free.
-        let s0 = snapshot(&handle.snapshot).await;
+        let s0 = snapshot(&handle.terminal().expect("terminal facet").snapshot).await;
 
         // Release both blocks; collect the broadcast through the final
         // sentinel. Each block is one atomic printf, so the sentinel appears
         // exactly once and the whole stream up to S1 is captured.
-        release_block(&handle.input).await;
-        release_block(&handle.input).await;
+        release_block(&handle.terminal().expect("terminal facet").input).await;
+        release_block(&handle.terminal().expect("terminal facet").input).await;
         let mut tail = collect_until(&mut rx, b"SENTINEL").await;
 
         // Sweep any bytes still queued behind the sentinel, then take S1 — it
         // reflects exactly the stream we have collected.
         tail.extend_from_slice(&drain_pending(&mut rx));
-        let s1 = snapshot(&handle.snapshot).await;
+        let s1 = snapshot(&handle.terminal().expect("terminal facet").snapshot).await;
 
         assert_eq!(
             (s0.cols, s0.rows),
@@ -314,7 +314,7 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
         let join = tokio::task::spawn_local(bundle.actor.run());
 
         // S0 at the OLD size, before any block — race-free (see steady test).
-        let s0 = snapshot(&handle.snapshot).await;
+        let s0 = snapshot(&handle.terminal().expect("terminal facet").snapshot).await;
         assert_eq!(
             (s0.cols, s0.rows),
             (80, 24),
@@ -322,12 +322,14 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
         );
 
         // Pre-resize block so the old-size grid is non-trivial.
-        release_block(&handle.input).await;
+        release_block(&handle.terminal().expect("terminal facet").input).await;
         let mut tail = collect_until(&mut rx, b"bravo").await;
 
         // Live resize to a different geometry. `resync_clients: true` arms the
         // debounced resync snapshot the actor re-broadcasts as output.
         handle
+            .terminal()
+            .expect("terminal facet")
             .resize
             .send(ResizeRequest {
                 cols: 100,
@@ -341,7 +343,7 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
 
         // Post-resize block ending in the sentinel, so we know we have the full
         // post-resize stream.
-        release_block(&handle.input).await;
+        release_block(&handle.terminal().expect("terminal facet").input).await;
         tail.extend_from_slice(&collect_until(&mut rx, b"SENTINEL").await);
 
         // The debounced resync snapshot (RESIZE_RESYNC_DEBOUNCE = 50ms) can
@@ -355,7 +357,7 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
         tail.extend_from_slice(&drain_pending(&mut rx));
 
         // S1 is the server's authoritative grid at the NEW size.
-        let s1 = snapshot(&handle.snapshot).await;
+        let s1 = snapshot(&handle.terminal().expect("terminal facet").snapshot).await;
         assert_eq!(
             (s1.cols, s1.rows),
             (100, 30),

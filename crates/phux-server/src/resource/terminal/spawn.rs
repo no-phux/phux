@@ -682,7 +682,7 @@ pub fn apply_term(cmd: &mut CommandBuilder, term: &str) {
 /// Set only for a `Local` wire id — the sole shape a freshly-spawned pane
 /// receives. A `Satellite` id has no server-local `@N` and yields no var.
 /// Interning the wire id is idempotent, so callers can intern pre-spawn
-/// (to inject here) and re-intern after `spawn_terminal_actor` for the
+/// (to inject here) and re-intern after `spawn_resource_actor` for the
 /// same value.
 pub fn apply_terminal_id(
     cmd: &mut CommandBuilder,

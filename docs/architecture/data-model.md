@@ -1,16 +1,17 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-06-06
+last-reviewed: 2026-09-09
 ---
 
 # Data model
 
-**TL;DR.** The in-process types the server manipulates: the terminals it
-owns, the grouping metadata over them, and the attached clients. Pure-data
+**TL;DR.** The in-process types the server manipulates: the resources it
+owns (a Terminal is the first kind, an agent session the second), the
+grouping metadata over them, and the attached clients. Pure-data
 `phux-core::Registry` on slotmaps with generational keys; I/O state lives
 separately on `phux-server::ServerState`. This shape is distinct from the
-wire; the bridge crosses at `IdBridge`. Grouping is metadata over terminals,
+wire; the bridge crosses at `IdBridge`. Grouping is metadata over resources,
 not a built collection type.
 
 ---
@@ -52,37 +53,64 @@ as L3 metadata, never a protocol-privileged concept.
 ```rust
 // phux-core::registry::Registry — domain only, no I/O.
 pub struct Registry {
-    sessions: SlotMap<SessionId, Session>,   // grouping metadata, not an L2 tier
-    windows:  SlotMap<WindowId,  Window>,    // TUI L3 convention
-    panes:    SlotMap<PaneId,    Pane>,      // L1 terminal
+    sessions:  SlotMap<SessionId,  Session>,             // grouping metadata, not an L2 tier
+    windows:   SlotMap<WindowId,   Window>,              // TUI L3 convention
+    resources: SlotMap<ResourceId, ResourceDescriptor>,  // L1 resources of every kind
 }
 
 pub struct Session  { id, name, windows: Vec<WindowId>, active: Option<WindowId> }
-pub struct Window   { id, session, panes: Vec<PaneId>, layout: Option<LayoutNode>, active: Option<PaneId> }
-pub struct Pane     { id, window, dims, cwd, title }
-// LayoutNode is a binary split tree of PaneId leaves. Per ADR-0017 the
-// whole tree (LayoutNode + Window + active-pane focus) is a TUI-consumer
-// convention stored in L3 metadata, not a wire concept. ADR-0012's
-// "binary split, not n-ary" decision applies to the TUI's tree, not the wire.
+pub struct Window   { id, session, slots: Vec<ResourceId>, layout: Option<LayoutNode>, active: Option<ResourceId> }
+pub struct ResourceDescriptor {
+    id, kind: ResourceKind, parent: Option<ResourceId>,
+    window: Option<WindowId>,          // Terminal kind only
+    terminal: Option<TerminalFacet>,   // present iff kind == Terminal
+    agent: Option<AgentFacet>,         // present iff kind == AgentSession
+}
+pub struct TerminalFacet { dims, cwd, title }
+pub struct AgentFacet    { provider, native_id, state }
+// ResourceId is the slotmap key (still spelled `TerminalId` in phux-core
+// until the wire rename lands); location and kind are orthogonal.
+// LayoutNode is a binary split tree of ResourceId leaves; only a Terminal
+// occupies a window slot. Per ADR-0017 the whole tree (LayoutNode + Window
+// + active-slot focus) is a TUI-consumer convention stored in L3 metadata,
+// not a wire concept. ADR-0012's "binary split, not n-ary" decision applies
+// to the TUI's tree, not the wire.
 ```
 
-The PTY handle and `libghostty_vt::Terminal` for a pane are not fields of
-`Pane`. They are server-side concerns and hang off `PaneId` in side tables in
-`phux-server`. Keeping `Pane` free of I/O is what lets `phux-core` stay
-`forbid(unsafe_code)` and ship without an async runtime.
+Exactly the facet named by `kind` is populated, and the `Registry` is the
+only constructor of a descriptor. A resource's `parent` is set at creation
+and never changes; removing a parent removes its children, and removing a
+window or session removes every resource in its slots and their children.
+Removing a child never touches the parent.
+
+The PTY handle and `libghostty_vt::Terminal` for a Terminal are not fields
+of the descriptor. They are server-side concerns and hang off `ResourceId`
+in side tables in `phux-server`. Keeping the descriptor free of I/O is what
+lets `phux-core` stay `forbid(unsafe_code)` and ship without an async
+runtime.
 
 ```rust
 // phux-server::state::ServerState — domain + clients + I/O.
 pub struct ServerState {
     pub registry:        Registry,
     pub attached:        HashMap<ClientId, AttachedClient>,
-    pub pane_subscribers: HashMap<PaneId, Vec<ClientId>>,
-    // Per-pane input log; merge point for multi-client keystrokes.
-    pane_inputs:         HashMap<PaneId, Vec<PaneInput>>,
+    // ResourceTable: one ResourceHandle per live resource, its cancel
+    // token, its subscribers, its output pumps, and the engine JoinSet.
+    resources:           ResourceTable,
     // Core ids (slotmap keys, generational) <-> wire ids (u32), for
     // sessions, terminals, and windows. All three go through `IdBridge`.
     pub idspace:         IdSpace,
     next_client_id:      u64,
+}
+
+// phux-server::resource — what the table holds for any kind.
+pub struct ResourceHandle {
+    pub kind: ResourceKind, pub parent: Option<ResourceId>,
+    pub output: broadcast::Sender<PaneOutput>,
+    pub consumer_attach, consumer_detach, consumer_ack,    // ADR-0018 consumers
+    pub subscribe_to_events, unsubscribe_from_events,      // semantic events
+    pub upgrade, control,                                  // ADR-0032, ADR-0033
+    pub facet: ResourceFacetHandle,   // Terminal(TerminalHandle) | ...
 }
 
 pub struct AttachedClient {
@@ -96,6 +124,16 @@ pub struct AttachedClient {
 [threading and I/O](./threading.md) for why a synchronous mutex is safe on
 the current-thread runtime and how `KILL_TERMINALS` applies atomically under
 one acquisition.
+
+The engine side of a resource is `ResourceCore`: the checked output
+sequence, the output broadcast sender, the event-subscriber registry and
+fan-out, the cancel token and exit notification, and the control mailbox.
+An engine (today `resource::terminal::TerminalActor`) embeds one, keeps its
+own kind-specific state beside it, and builds the `ResourceHandle` in its
+constructor. Runtime code never holds a `TerminalHandle` on its own: it
+holds a `ResourceHandle` and calls `ResourceHandle::terminal()` where a
+grid, PTY, or input operation is needed — the one place a request aimed at
+a resource of another kind becomes a `WrongResourceKind` error.
 
 Session name lookup goes through `Registry::sessions()` rather than a side
 index — it is O(N) in session count, which is fine: session count is small
