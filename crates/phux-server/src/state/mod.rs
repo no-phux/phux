@@ -59,6 +59,7 @@ mod lifecycle_state;
 mod metadata;
 mod policy;
 mod reap;
+mod resolve;
 mod resource_table;
 mod session_table;
 mod sessions;
@@ -84,6 +85,7 @@ use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
 pub use metadata::{MetadataSetOutcome, MetadataStore, RenameOutcome};
+pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
 pub use upgrade_blob::RebuildError;
@@ -342,7 +344,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         tx
     }
-    fn mk_handle() -> ResourceHandle {
+    pub(super) fn mk_handle() -> ResourceHandle {
         let (core, channels) = crate::resource::ResourceCore::new(
             crate::resource::ResourceKind::Terminal,
             None,

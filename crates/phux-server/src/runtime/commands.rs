@@ -20,7 +20,9 @@ use super::{
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
-use crate::state::{ClientId, Outbound, SharedState, TerminalInput};
+use crate::state::{
+    ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, SharedState, TerminalInput,
+};
 use crate::terminal_actor::{
     ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenRequest,
     TerminalActor, TerminalHandle,
@@ -498,42 +500,46 @@ pub(crate) fn handle_terminal_resize(
     cols: u16,
     rows: u16,
 ) {
-    if !wire_terminal_id.is_local() {
-        // Federation relay (phux-v45.4): forward the frame verbatim with
-        // the id rewritten to the satellite's Local space. Off-hub (or
-        // for an unknown host) it stays a warn-drop.
-        if !relay_satellite_frame(
-            state,
-            client_id,
-            wire_terminal_id,
-            "TERMINAL_RESIZE",
-            |id| FrameKind::TerminalResize {
-                terminal_id: id,
-                cols,
-                rows,
-            },
-        ) {
-            warn!(
-                ?client_id,
-                ?wire_terminal_id,
-                cols,
-                rows,
-                "TERMINAL_RESIZE: SATELLITE-routed pane id rejected on non-federation-hub server",
-            );
-        }
-        return;
-    }
     state.with_mut(|s| {
-        let Some(terminal) = s.terminal_from_wire(wire_terminal_id) else {
-            debug!(
-                ?client_id,
-                ?wire_terminal_id,
-                cols,
-                rows,
-                "TERMINAL_RESIZE: unknown pane; dropping (no-reply per wire frame design)",
-            );
-            return;
+        let local = match s.resolve_resource(wire_terminal_id).into_owned() {
+            ResolvedOwned::Remote(route) => {
+                // Federation relay (phux-v45.4): forward the frame verbatim
+                // with the id rewritten to the satellite's Local space.
+                // Off-hub (or for an unknown host) it stays a warn-drop.
+                if !relay_satellite_frame(
+                    client_id,
+                    wire_terminal_id,
+                    &route,
+                    "TERMINAL_RESIZE",
+                    |id| FrameKind::TerminalResize {
+                        terminal_id: id,
+                        cols,
+                        rows,
+                    },
+                ) {
+                    warn!(
+                        ?client_id,
+                        ?wire_terminal_id,
+                        cols,
+                        rows,
+                        "TERMINAL_RESIZE: SATELLITE-routed pane id rejected on non-federation-hub server",
+                    );
+                }
+                return;
+            }
+            ResolvedOwned::Unknown => {
+                debug!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    cols,
+                    rows,
+                    "TERMINAL_RESIZE: unknown pane; dropping (no-reply per wire frame design)",
+                );
+                return;
+            }
+            ResolvedOwned::Local(local) => local,
         };
+        let terminal = local.id;
         // Clamp to the same one-cell floor `TerminalActor::handle_resize`
         // applies. libghostty has no zero-dimension grid, so a `0` on either
         // axis becomes a `1` down there regardless; recording the raw request
@@ -551,17 +557,7 @@ pub(crate) fn handle_terminal_resize(
         if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
             pane.dims = (cols, rows);
         }
-        let Some(handle) = s.resource_handle(terminal) else {
-            debug!(
-                ?client_id,
-                ?terminal,
-                cols,
-                rows,
-                "TERMINAL_RESIZE: no TerminalHandle registered for pane; dropping",
-            );
-            return;
-        };
-        let terminal = match handle.terminal() {
+        let terminal = match local.handle.terminal() {
             Ok(terminal) => terminal,
             Err(error) => {
                 debug!(?client_id, ?terminal, %error, "TERMINAL_RESIZE: not a Terminal; dropping");
@@ -2735,26 +2731,23 @@ fn notify_satellite_lease_seized(
 /// hub consumer that attached the terminal through the hub flow end to
 /// end; `ROUTE_INPUT` remains the attach-free input path.
 fn relay_satellite_frame(
-    state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    route: &RelayRoute,
     frame_label: &'static str,
     build: impl FnOnce(phux_protocol::ids::TerminalId) -> FrameKind,
 ) -> bool {
-    let Some((host, id)) = crate::hub::relay::satellite_route(wire_terminal_id) else {
-        return false;
-    };
-    let Some(relay) = state.with(|s| s.hub_relay(&host)) else {
+    let Some(relay) = route.relay.as_ref() else {
         return false;
     };
     trace!(
         ?client_id,
         ?wire_terminal_id,
         frame_label,
-        satellite = %host,
+        satellite = %route.host,
         "relaying satellite-routed frame"
     );
-    relay.forward(build(phux_protocol::ids::TerminalId::local(id)));
+    relay.forward(build(route.local_wire_id()));
     true
 }
 
@@ -3076,6 +3069,10 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 /// un-correlated `ERROR` frame (typically `SatelliteUnreachable`), naming
 /// the host, pushed to the requesting consumer before the
 /// `COMMAND_RESULT`.
+///
+/// Every id a satellite reports is retagged by
+/// [`retag_satellite_resource_id`] — the one hook parent ids will use when
+/// `TerminalInfo` gains the field.
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
     scope: &StateScope,
@@ -3108,22 +3105,22 @@ pub(crate) async fn handle_get_state_federated(
         match result {
             CommandResult::OkWith(CommandValue::State(sat)) => {
                 for mut pane in sat.panes {
-                    match pane.id {
-                        phux_protocol::ids::TerminalId::Local { id } => {
-                            pane.id = phux_protocol::ids::TerminalId::satellite(host.clone(), id);
-                            snapshot.panes.push(pane);
-                        }
-                        // Hub-and-spoke does not chain (L1 §9.1): a
-                        // satellite must never report Satellite-tagged
-                        // terminals of its own.
-                        phux_protocol::ids::TerminalId::Satellite { .. } => {
-                            warn!(
-                                satellite = %host,
-                                pane = %pane.id,
-                                "satellite listed a Satellite-tagged terminal; dropping (no chaining)"
-                            );
-                        }
-                    }
+                    let Some(id) = retag_satellite_resource_id(&host, Some(&pane.id)) else {
+                        warn!(
+                            satellite = %host,
+                            pane = %pane.id,
+                            "satellite listed a Satellite-tagged terminal; dropping (no chaining)"
+                        );
+                        continue;
+                    };
+                    pane.id = id;
+                    // parent retag lands with the protocol lane: when
+                    // `TerminalInfo` gains `parent`, retag it here with
+                    //     pane.parent = retag_satellite_resource_id(
+                    //         &host, pane.parent.as_ref());
+                    // and nothing else changes. A parent id is a resource
+                    // id (ADR-0104), so it retags by exactly this rule.
+                    snapshot.panes.push(pane);
                 }
             }
             CommandResult::Error { code, message } => {
@@ -3155,6 +3152,31 @@ pub(crate) async fn handle_get_state_federated(
         }
     }
     CommandResult::OkWith(CommandValue::State(snapshot))
+}
+
+/// Retag one id a satellite reported into the hub's id space, for
+/// `GET_STATE` aggregation.
+///
+/// A satellite names its own resources `Local { id }`; the hub republishes
+/// them as `Satellite { host, id }` so the merged snapshot is addressable
+/// from the hub. `None` in yields `None` out, and a `Satellite`-tagged id
+/// also yields `None`: hub-and-spoke does not chain (L1 §9.1), so an id a
+/// satellite already tagged has no hub-side form.
+///
+/// `Option` in, `Option` out because every id a `TerminalInfo` carries
+/// retags by this one rule. `parent` (ADR-0104) is a resource id like any
+/// other and routes through here the moment the protocol lane adds the
+/// field.
+fn retag_satellite_resource_id(
+    host: &phux_protocol::ids::SatelliteHost,
+    id: Option<&phux_protocol::ids::TerminalId>,
+) -> Option<phux_protocol::ids::TerminalId> {
+    match id? {
+        phux_protocol::ids::TerminalId::Local { id } => {
+            Some(phux_protocol::ids::TerminalId::satellite(host.clone(), *id))
+        }
+        phux_protocol::ids::TerminalId::Satellite { .. } => None,
+    }
 }
 
 /// Build the `OK_WITH(JSON(..))` reply for `GET_SCREEN`.
@@ -3471,19 +3493,23 @@ pub(crate) fn with_route_input_destination<R>(
     terminal_id: &phux_protocol::ids::TerminalId,
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
-    if !terminal_id.is_local() {
-        return Err(CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("ROUTE_INPUT to satellite route unsupported: {terminal_id:?}"),
-        });
-    }
     state.with(|s| {
-        let Some(pane) = s.terminal_from_wire(terminal_id) else {
-            return Err(CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            });
+        let local = match s.resolve_resource(terminal_id) {
+            Resolved::Remote(_) => {
+                return Err(CommandResult::Error {
+                    code: ErrorCode::UnsupportedSatelliteRoute,
+                    message: format!("ROUTE_INPUT to satellite route unsupported: {terminal_id:?}"),
+                });
+            }
+            Resolved::Unknown => {
+                return Err(CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: format!("no such terminal: {terminal_id:?}"),
+                });
+            }
+            Resolved::Local(local) => local,
         };
+        let pane = local.id;
         if s.input_blocked(pane, client_id) {
             debug!(
                 ?client_id,
@@ -3495,13 +3521,11 @@ pub(crate) fn with_route_input_destination<R>(
                 message: "input lease held by another client".to_owned(),
             });
         }
-        let Some(handle) = s.resource_handle(pane) else {
-            return Err(CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            });
-        };
-        let handle = handle.terminal().map_err(wrong_resource_kind)?.clone();
+        let handle = local
+            .handle
+            .terminal()
+            .map_err(wrong_resource_kind)?
+            .clone();
         Ok(action(InputDestination { pane, handle }))
     })
 }
@@ -3689,22 +3713,28 @@ pub(crate) async fn handle_signal_terminal(
     terminal_id: &phux_protocol::ids::TerminalId,
     signal: TerminalSignal,
 ) -> CommandResult {
-    if !terminal_id.is_local() {
-        return CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("SIGNAL_TERMINAL on satellite route unsupported: {terminal_id:?}"),
-        };
-    }
     let resolved = state.with(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
-        let holder = s.input_lease_holder(core).map(wire_client_id);
-        s.resource_handle(core).cloned().map(|h| (h, holder))
-    });
-    let Some((handle, input_holder)) = resolved else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
+        let resolved = s.resolve_resource(terminal_id).into_owned();
+        let holder = match &resolved {
+            ResolvedOwned::Local(local) => s.input_lease_holder(local.id).map(wire_client_id),
+            ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => None,
         };
+        (resolved, holder)
+    });
+    let (handle, input_holder) = match resolved {
+        (ResolvedOwned::Local(local), holder) => (local.handle, holder),
+        (ResolvedOwned::Remote(_), _) => {
+            return CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!("SIGNAL_TERMINAL on satellite route unsupported: {terminal_id:?}"),
+            };
+        }
+        (ResolvedOwned::Unknown, _) => {
+            return CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message: format!("no such terminal: {terminal_id:?}"),
+            };
+        }
     };
     let (reply_tx, reply_rx) = oneshot::channel();
     if handle
@@ -3742,21 +3772,23 @@ pub(crate) async fn handle_report_agent_state(
     terminal_id: &phux_protocol::ids::TerminalId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
-    if !terminal_id.is_local() {
-        return CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("REPORT_AGENT_STATE on satellite route unsupported: {terminal_id:?}"),
-        };
-    }
-    let handle = state.with(|server| {
-        let core = server.terminal_from_wire(terminal_id)?;
-        server.resource_handle(core).cloned()
-    });
-    let Some(handle) = handle else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        };
+    let resolved = state.with(|server| server.resolve_resource(terminal_id).into_owned());
+    let handle = match resolved {
+        ResolvedOwned::Local(local) => local.handle,
+        ResolvedOwned::Remote(_) => {
+            return CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!(
+                    "REPORT_AGENT_STATE on satellite route unsupported: {terminal_id:?}"
+                ),
+            };
+        }
+        ResolvedOwned::Unknown => {
+            return CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message: format!("no such terminal: {terminal_id:?}"),
+            };
+        }
     };
     let (reply, result) = oneshot::channel();
     if handle
@@ -3863,17 +3895,20 @@ pub(crate) fn handle_report_asked(
     suggestions: Vec<String>,
     elapsed_seconds: Option<u64>,
 ) -> CommandResult {
-    if !terminal_id.is_local() {
-        return CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("REPORT_ASKED on satellite route unsupported: {terminal_id:?}"),
-        };
-    }
-    let Some(terminal) = state.with(|s| s.terminal_from_wire(terminal_id)) else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        };
+    let terminal = match state.with(|s| s.resolve_resource(terminal_id).into_owned()) {
+        ResolvedOwned::Local(local) => local.id,
+        ResolvedOwned::Remote(_) => {
+            return CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!("REPORT_ASKED on satellite route unsupported: {terminal_id:?}"),
+            };
+        }
+        ResolvedOwned::Unknown => {
+            return CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message: format!("no such terminal: {terminal_id:?}"),
+            };
+        }
     };
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {
@@ -4093,19 +4128,11 @@ fn relay_satellite_input(
     state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    route: &RelayRoute,
     input: TerminalInput,
     frame_label: &'static str,
 ) {
-    let Some((proxy_host, proxy_id)) = crate::hub::relay::satellite_route(wire_terminal_id) else {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            frame_label,
-            "satellite-routed input has no relay route; dropping",
-        );
-        return;
-    };
-    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &proxy_host, proxy_id)) {
+    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &route.host, route.id)) {
         warn!(
             ?client_id,
             ?wire_terminal_id,
@@ -4119,12 +4146,10 @@ fn relay_satellite_input(
     // ADR-0033 "another client holds the wheel" drop must happen here.
     // Dropped, not errored — the fire-and-forget input invariant holds,
     // exactly like the local gate in `handle_terminal_input`.
-    if let Some((host, id)) = crate::hub::relay::satellite_route(wire_terminal_id)
-        && state.with(|s| {
-            s.satellite_lease_holder(&host, id)
-                .is_some_and(|holder| holder != client_id)
-        })
-    {
+    if state.with(|s| {
+        s.satellite_lease_holder(&route.host, route.id)
+            .is_some_and(|holder| holder != client_id)
+    }) {
         trace!(
             ?client_id,
             ?wire_terminal_id,
@@ -4135,9 +4160,9 @@ fn relay_satellite_input(
     }
     let relayed =
         relay_satellite_frame(
-            state,
             client_id,
             wire_terminal_id,
+            route,
             frame_label,
             |id| match input {
                 TerminalInput::Key(event) => FrameKind::InputKey {
@@ -4171,6 +4196,11 @@ fn relay_satellite_input(
 /// Apply subscription, lease, and activity gates for attached local input,
 /// then running `action` with the generational pane and current actor handle
 /// while the authority lock remains held.
+///
+/// Local-only by contract: these are the *hub's* gates, and a satellite runs
+/// its own, so every caller settles location through
+/// [`crate::state::ServerState::resolve_resource`] and relays a
+/// [`crate::state::ResolvedOwned::Remote`] before reaching here.
 pub(crate) fn with_attached_input_destination<R>(
     state: &SharedState,
     client_id: ClientId,
@@ -4179,15 +4209,19 @@ pub(crate) fn with_attached_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Option<R> {
     state.with_mut(|s| {
-        let Some(pane) = s.terminal_from_wire(wire_terminal_id) else {
-            warn!(
-                ?client_id,
-                ?wire_terminal_id,
-                frame_label,
-                "input frame for unknown pane; dropping"
-            );
-            return None;
+        let local = match s.resolve_resource(wire_terminal_id).into_owned() {
+            ResolvedOwned::Local(local) => local,
+            ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => {
+                warn!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    frame_label,
+                    "input frame for unknown pane; dropping"
+                );
+                return None;
+            }
         };
+        let pane = local.id;
         if !s.subscribers_for_terminal(pane).contains(&client_id) {
             warn!(
                 ?client_id,
@@ -4212,16 +4246,7 @@ pub(crate) fn with_attached_input_destination<R>(
         if let Some(session) = touched_session {
             s.touch_session(session);
         }
-        let Some(handle) = s.resource_handle(pane) else {
-            warn!(
-                ?client_id,
-                ?wire_terminal_id,
-                frame_label,
-                "no ResourceHandle for pane; dropping input"
-            );
-            return None;
-        };
-        let handle = match handle.terminal() {
+        let handle = match local.handle.terminal() {
             Ok(terminal) => terminal.clone(),
             Err(error) => {
                 warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
@@ -4247,8 +4272,17 @@ pub(crate) fn handle_terminal_input(
     // protocol-level response is `ERROR { UnsupportedSatelliteRoute }`;
     // surfacing it from this fire-and-forget helper is still a follow-up
     // tied to phux-byc.9).
-    if !wire_terminal_id.is_local() {
-        relay_satellite_input(state, client_id, wire_terminal_id, input, frame_label);
+    if let ResolvedOwned::Remote(route) =
+        state.with(|s| s.resolve_resource(wire_terminal_id).into_owned())
+    {
+        relay_satellite_input(
+            state,
+            client_id,
+            wire_terminal_id,
+            &route,
+            input,
+            frame_label,
+        );
         return;
     }
     // docs/consumers/tui.md §9 (phux-r82.1): an INPUT_FOCUS gained event
@@ -4320,8 +4354,17 @@ pub(crate) fn handle_terminal_reply(
 ) {
     const FRAME_LABEL: &str = "INPUT_TERMINAL_REPLY";
 
-    if !wire_terminal_id.is_local() {
-        relay_terminal_reply(state, client_id, wire_terminal_id, bytes, FRAME_LABEL);
+    if let ResolvedOwned::Remote(route) =
+        state.with(|s| s.resolve_resource(wire_terminal_id).into_owned())
+    {
+        relay_terminal_reply(
+            state,
+            client_id,
+            wire_terminal_id,
+            &route,
+            bytes,
+            FRAME_LABEL,
+        );
         return;
     }
 
@@ -4349,18 +4392,11 @@ fn relay_terminal_reply(
     state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    route: &RelayRoute,
     bytes: Bytes,
     frame_label: &'static str,
 ) {
-    let Some((host, id)) = crate::hub::relay::satellite_route(wire_terminal_id) else {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            "terminal reply carried an unroutable satellite terminal id; dropping",
-        );
-        return;
-    };
-    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &host, id)) {
+    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &route.host, route.id)) {
         warn!(
             ?client_id,
             ?wire_terminal_id,
@@ -4369,7 +4405,7 @@ fn relay_terminal_reply(
         return;
     }
     if state.with(|s| {
-        s.satellite_lease_holder(&host, id)
+        s.satellite_lease_holder(&route.host, route.id)
             .is_some_and(|holder| holder != client_id)
     }) {
         trace!(
@@ -4380,9 +4416,9 @@ fn relay_terminal_reply(
         return;
     }
     if !relay_satellite_frame(
-        state,
         client_id,
         wire_terminal_id,
+        route,
         frame_label,
         |terminal_id| FrameKind::InputTerminalReply { terminal_id, bytes },
     ) {
@@ -4457,21 +4493,34 @@ pub(crate) fn handle_frame_ack(
     // Satellite-routed acks relay like input frames (phux-v45.4): forward
     // verbatim on a hub, warn-drop off one. FRAME_ACK is hint-shaped
     // (ADR-0018), so the bounded-relay drop contract is safe here too.
-    if !wire_terminal_id.is_local() {
-        relay_frame_ack(
-            state,
-            client_id,
-            wire_terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-        );
-        return;
-    }
     state.with_mut(|s| {
-        let Some(handle) = frame_ack_destination(s, client_id, wire_terminal_id, seq) else {
-            return;
+        let local = match s.resolve_resource(wire_terminal_id).into_owned() {
+            ResolvedOwned::Remote(route) => {
+                relay_frame_ack(
+                    client_id,
+                    wire_terminal_id,
+                    &route,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                );
+                return;
+            }
+            ResolvedOwned::Unknown => {
+                warn!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    seq,
+                    "FRAME_ACK for unknown pane; dropping",
+                );
+                return;
+            }
+            ResolvedOwned::Local(local) => local,
         };
+        if !frame_ack_subscribed(s, client_id, wire_terminal_id, local.id, seq) {
+            return;
+        }
+        let handle = &local.handle;
         // Bridge `state::ClientId` (u64 newtype) → `phux_protocol::ClientId`
         // (u32), matching the conversion `handle_attach` already does for
         // the per-consumer state map keys. The wire ClientId space caps at
@@ -4491,14 +4540,14 @@ pub(crate) fn handle_frame_ack(
 /// Forward a satellite-routed `FRAME_ACK` over the hub link, warn-dropping it
 /// on a server that is not a federation hub for that host.
 fn relay_frame_ack(
-    state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    route: &RelayRoute,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     seq: u64,
 ) {
-    let relayed = relay_satellite_frame(state, client_id, wire_terminal_id, "FRAME_ACK", |id| {
+    let relayed = relay_satellite_frame(client_id, wire_terminal_id, route, "FRAME_ACK", |id| {
         FrameKind::FrameAck {
             terminal_id: id,
             stream_id,
@@ -4516,46 +4565,31 @@ fn relay_frame_ack(
     }
 }
 
-/// Resolve the pane actor an inbound `FRAME_ACK` may reach, applying the three
-/// drop gates from [`handle_frame_ack`]'s contract in order.
-fn frame_ack_destination<'a>(
-    s: &'a crate::state::ServerState,
+/// The observation gate from [`handle_frame_ack`]'s contract: may `client_id`
+/// ack `pane`? The location and existence gates are the seam's
+/// ([`crate::state::ServerState::resolve_resource`]); this is the one gate
+/// left that the seam cannot answer.
+fn frame_ack_subscribed(
+    s: &crate::state::ServerState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    pane: phux_core::ids::TerminalId,
     seq: u64,
-) -> Option<&'a ResourceHandle> {
-    let Some(pane) = s.terminal_from_wire(wire_terminal_id) else {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            seq,
-            "FRAME_ACK for unknown pane; dropping",
-        );
-        return None;
-    };
+) -> bool {
     // Same gate as `handle_terminal_input` (phux-v45.7): subscription
     // — established by ATTACH or ATTACH_TERMINAL — is the ack gate; a
     // session attachment is not required (the federation hub's link
     // consumer acks relayed frames without one).
-    if !s.subscribers_for_terminal(pane).contains(&client_id) {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            seq,
-            "FRAME_ACK from client not subscribed to pane; dropping",
-        );
-        return None;
+    if s.subscribers_for_terminal(pane).contains(&client_id) {
+        return true;
     }
-    let Some(handle) = s.resource_handle(pane) else {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            seq,
-            "FRAME_ACK with no ResourceHandle for pane; dropping",
-        );
-        return None;
-    };
-    Some(handle)
+    warn!(
+        ?client_id,
+        ?wire_terminal_id,
+        seq,
+        "FRAME_ACK from client not subscribed to pane; dropping",
+    );
+    false
 }
 
 /// Log the outcome of routing one `FRAME_ACK` to its pane actor.
@@ -4762,5 +4796,38 @@ mod hub_detach_fence_tests {
         });
         assert!(matches!(detach.await, CommandResult::Error { .. }));
         assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+    }
+}
+
+#[cfg(test)]
+mod get_state_retag_tests {
+    use phux_protocol::ids::{SatelliteHost, TerminalId};
+
+    use super::retag_satellite_resource_id;
+
+    /// The one rule `GET_STATE` aggregation applies to every id a satellite
+    /// reports — the hook `parent` will use unchanged (ADR-0104).
+    #[test]
+    fn retag_lifts_satellite_local_ids_and_refuses_to_chain() {
+        let host = SatelliteHost::from("edge");
+
+        assert_eq!(
+            retag_satellite_resource_id(&host, Some(&TerminalId::local(7))),
+            Some(TerminalId::satellite(host.clone(), 7)),
+            "a satellite's own Local id is republished under its host",
+        );
+        assert_eq!(
+            retag_satellite_resource_id(&host, None),
+            None,
+            "an absent id stays absent",
+        );
+        assert_eq!(
+            retag_satellite_resource_id(
+                &host,
+                Some(&TerminalId::satellite(SatelliteHost::from("other"), 7)),
+            ),
+            None,
+            "hub-and-spoke does not chain (L1 §9.1)",
+        );
     }
 }
