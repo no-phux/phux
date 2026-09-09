@@ -31,21 +31,6 @@ HEADER_KEYS = ("protocol", "frame", "commands", "runtime_uptime_ns", "dispatch_e
                "dropped_trace_records", "publisher_pid", "markup_watch")
 VIEW = r"@w\d+/phux-cockpit-canvas(?:-\d+)?"
 ADDRESS = re.compile(rf"{VIEW}(?:#\d+)?")
-# SDK names/text/detail fields are not escaped consistently. Never serialize
-# arbitrary tokens, even when their key looks diagnostic. Only bounded enums or
-# numbers in the known structural records cross this boundary.
-NUMERIC_FIELDS = (
-    "gpu_frame", "gpu_timestamp_ns", "gpu_input_latency_ns", "gpu_input_count",
-    "gpu_first_frame_latency_ns", "canvas_revision", "canvas_commands",
-    "canvas_frame_budget_exceeded", "present_patch_bytes", "present_patch_upserts",
-    "present_patch_evicts", "present_retained_commands",
-)
-ENUM_FIELDS = {
-    "focused": ("true", "false"), "selected": ("true", "false"),
-    "enabled": ("true", "false"), "gpu_nonblank": ("true", "false"),
-    "gpu_present_path": ("packet", "pixels", "none"),
-    "present_mode": ("patch", "full", "none"),
-}
 SCOPES = ("unknown", "terminal", "chrome", "switcher", "settings", "web")
 
 
@@ -156,45 +141,22 @@ def check_publisher(expected, actual, pids):
     require(actual == expected, "publisher executable or start time changed")
 
 
-def safe_fields(text):
-    fields = {}
-    for key in NUMERIC_FIELDS:
-        match = re.search(rf"(?:^| ){key}=(\d{{1,20}})(?: |$)", text)
-        if match:
-            fields[key] = int(match.group(1))
-    for key, values in ENUM_FIELDS.items():
-        match = re.search(rf"(?:^| ){key}=({'|'.join(values)})(?: |$)", text)
-        if match:
-            fields[key] = match.group(1)
-    return fields
-
-
-def snapshot_record(line):
-    match = re.match(rf"\s*(view|widget) ({VIEW}(?:#\d+)?) ", line)
-    if match:
-        # Strip quoted payloads before reading diagnostic fields. A malformed
-        # quote discards the rest; nothing raw is retained even on parse failure.
-        structural = re.sub(r'"[^"\n]*(?:"|$)', '""', line)
-        return {"type": match.group(1), "address": match.group(2), **safe_fields(structural)}
-    match = re.match(r"window (@w\d+) ", line)
-    if match:
-        structural = re.sub(r'"[^"\n]*(?:"|$)', '""', line)
-        return {"type": "window", "address": match.group(1), **safe_fields(structural)}
-    return None
-
-
 def sanitize_snapshot(raw, pid):
+    # Pinned SDK snapshot.zig:339 emits a typed header before any user data.
+    # At :367/:383/:581 it interpolates window.title, view.text and widget.name
+    # as raw {s}. A label can close quotes and forge perfectly balanced records.
+    # Neither line splitting nor quote tracking can recover their provenance.
+    # Retain only the first physical header; no byte of the body is interpreted.
     require(len(raw) <= MAX_SNAPSHOT, "snapshot exceeds capture limit")
-    lines = raw.decode("utf-8", errors="replace").splitlines()
-    require(bool(lines), "snapshot is empty")
-    header = HEADER.fullmatch(lines[0])
+    first_line, newline, _ = raw.partition(b"\n")
+    require(bool(newline), "snapshot header is unterminated")
+    header = HEADER.fullmatch(first_line.decode("ascii", errors="replace"))
     require(header is not None, "snapshot header is missing or unsupported")
     fields = dict(zip(HEADER_KEYS, header.groups()))
     require(int(fields["publisher_pid"]) == pid, "snapshot publisher does not match run")
-    records = [record for line in lines[1:] if (record := snapshot_record(line))]
-    require(any(r["type"] == "window" for r in records), "snapshot has no windows")
-    require(any(r["type"] == "view" for r in records), "snapshot has no Cockpit views")
-    return {"header": fields, "records": records,
+    return {"header": fields, "records": [],
+            "structure_status": "unsupported_unescaped_sdk_text",
+            "ui_health_observed": "unavailable",
             "input_scope_observed": "unavailable",
             "resource_identity_observed": "unavailable"}
 
@@ -214,14 +176,8 @@ def log_summary(path):
     return {"available": True, "file_size": size, "tail_bytes": len(data),
             "truncated": size > MAX_LOG,
             "category_counts": {name: data.lower().count(name.encode()) for name in categories},
-            "launch_events": launch_events(data),
+            "launch_events_status": "unsupported_unframed_log_text",
             "attribution": "operator-supplied log; counts are not publisher-verified"}
-
-
-def launch_events(data):
-    pattern = rb"(?m)^native-sdk: launch (runner_main|scene_loaded|first_present_recorded|first_plan_done) wall_ns=(\d{1,20})$"
-    return [{"phase": phase.decode(), "wall_ns": int(stamp)}
-            for phase, stamp in re.findall(pattern, data)]
 
 
 def coordinator_identity(options):
@@ -277,7 +233,7 @@ def new_run(root, options):
     require(process["executable"] == binary["path"], "PID does not execute the selected artifact")
     require(process["cwd"] == str(root), "publisher CWD is not the native dev source root")
     check_publisher(process, process, live_publishers())
-    manifest = {"schema": 1, "run_id": run.name, "created_ns": time.time_ns(),
+    manifest = {"schema": 2, "run_id": run.name, "created_ns": time.time_ns(),
                 "source": source_identity(root), "process": process,
                 "binary_on_disk_at_bind": binary, "native_cli": artifact(options["native"]),
                 "sdk_inputs": sdk_identity(root),
@@ -332,22 +288,25 @@ def capture(run, kind, target=None, scope="unknown"):
     root = Path(manifest["source"]["root"])
     options = manifest["options"]
     with exclusive(root / ".dev-run/diagnostics/capture.lock"):
-        evidence = {"schema": 1, "run_id": manifest["run_id"], "kind": kind,
-                    "captured_ns": time.time_ns(), "status": "valid",
-                    "source_now": source_identity(root),
+        evidence = {"schema": 2, "run_id": manifest["run_id"], "kind": kind,
+                    "captured_ns": time.time_ns(), "status": "invalid",
+                    "source_now": None,
                     "target_declared": target, "input_scope_declared": scope,
-                    "coordinator": coordinator_identity(options),
-                    "log_diagnostics": log_summary(options.get("log"))}
+                    "coordinator": None, "log_diagnostics": None}
+        phase = "source"
         try:
+            evidence["source_now"] = source_identity(root)
+            phase = "runtime"
+            evidence["coordinator"] = coordinator_identity(options)
+            evidence["log_diagnostics"] = log_summary(options.get("log"))
             snapshot = bound_snapshot(manifest)
-            if target:
-                require(any(record["address"] == target for record in snapshot["records"]),
-                        "declared target is absent from this publisher snapshot")
+            require(target is None, "target verification unsupported: SDK snapshot body is unescaped text")
             evidence["snapshot"] = snapshot
+            evidence["status"] = "valid"
         except EvidenceError as error:
-            evidence.update(status="invalid", refusal=str(error))
+            evidence["refusal"] = str(error) if phase == "runtime" else "source inspection failed"
         except (OSError, ValueError, subprocess.TimeoutExpired):
-            evidence.update(status="invalid", refusal="runtime inspection unavailable")
+            evidence["refusal"] = f"{phase} inspection unavailable"
         name = f"{evidence['captured_ns']}-{uuid.uuid4().hex[:8]}-{kind}.json"
         write_json(run / name, evidence)
     return run / name, evidence["status"] == "valid"
