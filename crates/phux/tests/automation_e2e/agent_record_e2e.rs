@@ -709,18 +709,17 @@ impl ServerGuard {
 /// step: none of the three markers planted in prompt text, tool input, and
 /// tool output may appear anywhere in it.
 ///
-/// Until the session verbs land (phux-am9y.12) a server does not advertise
-/// `resource_kinds`; the test then reports that and returns without
-/// asserting, so `just e2e` (which runs ignored tests) stays honest instead
-/// of red. Once the bit is advertised, the guard is a no-op and the body
-/// runs in full.
+/// The lifecycle states are read from a `phux watch` running for the whole
+/// scenario rather than by polling `phux agent show`, and that is not a
+/// stylistic preference: the arbiter publishes the stream's verdict and the
+/// ADR-0046 detector's very next screen tick supersedes it (~300 ms on a
+/// pane painting nothing), so a hook-fed state edge is observable on the
+/// event stream and essentially never on a reporting verb. `watch` is also
+/// the surface a harness would gate on, which makes it the right thing to
+/// prove.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 #[allow(clippy::too_many_lines, reason = "one linear hook-by-hook scenario")]
-#[allow(
-    clippy::print_stderr,
-    reason = "the pre-verbs skip must say why it did nothing; a silent pass would be a lie"
-)]
 fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     const SESSION_ID: &str = "e2e-claude-session-0001";
 
@@ -748,14 +747,31 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
 
     let server =
         ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
-    if !server.serves_resource_kinds() {
-        eprintln!(
-            "skipping: this server does not advertise resource_kinds (phux-am9y.12 not landed)"
-        );
-        return;
-    }
+    // The wrapper takes its stream path only on a server that serves
+    // `AgentSession` resources, probing for exactly this bit through exactly
+    // this verb. With the session verbs landed (phux-am9y.12) the bit is no
+    // longer optional, so a server without it is a failure and not a reason
+    // to skip: the shim would quietly take its pre-resource-model fallback
+    // path and everything below would prove nothing.
+    assert!(
+        server.serves_resource_kinds(),
+        "this server must advertise `resource_kinds`"
+    );
     let terminal_id = server.spawn_pane(&fake_claude);
     let target = format!("@{terminal_id}");
+    // Live for the whole scenario: every state edge below is a published
+    // record that the detector's next tick supersedes.
+    let watch = common::WatchChild::start(
+        std::path::Path::new(PHUX),
+        &server.socket,
+        &target,
+        &[],
+        RECORD_POLL,
+        DETECT_DEADLINE,
+    );
+    watch.await_line("an initial agent_state line for the pane", |line| {
+        line["event"] == "agent_state" && line["terminal"] == target.as_str()
+    });
     let payload = |event: &str, extra: serde_json::Value| {
         let mut base = serde_json::json!({
             "session_id": SESSION_ID,
@@ -794,9 +810,12 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let records = server.await_record(&target, "session_start", DETECT_DEADLINE);
     assert_eq!(records[0]["type"], "session_start", "{records:?}");
     let shown = server.agent_show(&target);
+    // The key is `agent_session`, not `session`: `session` in this document
+    // was already the phux session name, and still is.
     let session = &shown["agents"][0]["agent_session"];
     assert_eq!(session["provider"], "claude", "{shown}");
     assert_eq!(session["native_id"], SESSION_ID, "{shown}");
+    assert_eq!(shown["agents"][0]["session"], SESSION, "{shown}");
 
     // --- 2. UserPromptSubmit: a count, never the text; working ------------
     run_hook_with_payload(
@@ -816,7 +835,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         .expect("prompt record");
     assert_eq!(prompt["data"]["chars"], 25, "{prompt}");
     assert_private(&records);
-    server.await_agent_state(&target, "working", DETECT_DEADLINE);
+    watch.await_agent_state("working");
 
     // --- 3. Tool records name the tool and nothing else -------------------
     run_hook_with_payload(
@@ -876,7 +895,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
     let records = server.await_record(&target, "ask", DETECT_DEADLINE);
     assert_private(&records);
-    server.await_agent_state(&target, "blocked", DETECT_DEADLINE);
+    watch.await_agent_state("blocked");
 
     // --- 5. Stop: done ----------------------------------------------------
     run_hook_with_payload(
@@ -891,9 +910,23 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
     let records = server.await_record(&target, "stop", DETECT_DEADLINE);
     assert_private(&records);
-    server.await_agent_state(&target, "done", DETECT_DEADLINE);
+    watch.await_agent_state("done");
+    // The whole ordered ladder, on one stream: the hooks drove the pane
+    // through working, blocked and done in that order, from a screen that
+    // never painted a character.
+    let timeline = watch.seen();
+    let at = |state: &str| {
+        common::first_index(&timeline, |line| {
+            line["event"] == "agent_state" && line["state"] == state
+        })
+        .unwrap_or_else(|| panic!("a {state} edge: {timeline:?}"))
+    };
+    assert!(
+        at("working") < at("blocked") && at("blocked") < at("done"),
+        "the hook order must reach the consumer in order: {timeline:?}"
+    );
 
-    // --- 6. SessionEnd: session_end, closed, cleared ----------------------
+    // --- 6. SessionEnd: session_end, and the session is closed ------------
     run_hook_with_payload(
         &shim,
         "clear",
@@ -904,20 +937,43 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
             serde_json::json!({ "reason": "prompt_input_exit" }),
         ),
     );
+    // The stream-mode wrapper ends the session; it deliberately does NOT run
+    // `phux agent clear` (that is the pre-resource-model arm's job). So what
+    // `SessionEnd` must produce is the session gone from the pane's report
+    // and from the resource inventory — the record itself stays, handed back
+    // to the detector that owns a pane's idle state (ADR-0085).
     let end = Instant::now() + DETECT_DEADLINE;
     loop {
         let shown = server.agent_show(&target);
-        let session_gone = shown["agents"][0]["agent_session"].is_null();
-        let record_gone = shown["agents"][0]["sources"]
-            .as_array()
-            .is_some_and(|sources| sources.iter().all(|s| s["kind"] != "agent_record"));
-        if session_gone && record_gone {
+        let listed = server.run(&["ls", "--json"], &[]);
+        let inventory: serde_json::Value =
+            serde_json::from_str(&listed).unwrap_or_else(|err| panic!("ls JSON ({err}): {listed}"));
+        let gone_from_report = shown["agents"][0]["agent_session"].is_null();
+        let gone_from_inventory = inventory["resources"].as_array().is_some_and(|resources| {
+            resources
+                .iter()
+                .all(|entry| entry["kind"] != "agent_session")
+        });
+        if gone_from_report && gone_from_inventory {
             break;
         }
         assert!(
             Instant::now() < end,
-            "SessionEnd must close the session and clear the record; last: {shown}"
+            "SessionEnd must close the session; last report: {shown}; inventory: {inventory}"
         );
         std::thread::sleep(RECORD_POLL);
     }
+    // And the closed session's stream is no longer readable through the pane.
+    let out = Command::new(PHUX)
+        .arg("agent")
+        .args(["log", &target, "--json", "--socket"])
+        .arg(&server.socket)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run phux agent log");
+    assert!(
+        !out.status.success(),
+        "`agent log` on a pane whose session ended must refuse: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
