@@ -8,7 +8,8 @@ Prepare the same-checkout Phux CLI, ffi-dev archive and pinned Native CLI first:
 This command launches its OWN coordinator and official `native dev` Debug loop
 (which may build), creates/splits/switches terminals, tests a secondary window,
 pastes text and text+newline, then restarts the app against the same coordinator.
-It stops its processes and deletes private HOME/config/state/logs on exit.
+It stops its processes and deletes private HOME/config/state/logs after confirmed
+exit. An unconfirmed cleanup retains the private directory for recovery.
 Only results, counts and identities enter .dev-run/input-roundtrip/*.json.
 The SDK still manages its own source-root automation cache; do not export it.
 
@@ -25,6 +26,7 @@ import argparse
 import json
 from pathlib import Path
 import secrets
+import shutil
 import signal
 import tempfile
 import time
@@ -32,7 +34,7 @@ import time
 from lib import dev_diagnostics as identity
 from lib.input_roundtrip import (
     ROOT, AppKit, Failure, Launcher, added_terminal, find_widget, fixture_widgets,
-    require, require_owner, run, terminal_ids, wait_for,
+    child_stopped, persisted_state_effect, require, require_owner, run, terminal_ids, wait_for,
 )
 
 
@@ -41,6 +43,7 @@ class Probe:
         self.launcher, self.appkit, self.evidence = launcher, appkit, evidence
         self.titles = {}
         self.groups = []
+        self.window_groups = []
         self.nonce = secrets.token_hex(4)
 
     def server(self, *args):
@@ -184,6 +187,7 @@ class Probe:
         self.await_publication()
         view = self.textbox(initial)["view"]
         self.groups.append([initial])
+        self.window_groups.append([initial])
         self.roundtrip("initial-attach", initial, view)
         return initial, view
 
@@ -193,14 +197,43 @@ class Probe:
         require(len(tabs) == 1, "restored fixture tab ownership ambiguous or missing")
         self.click(tabs[0])
         widget = self.textbox(target)
+        require(widget["view"] == tabs[0]["view"], "restored textbox left its tab window/view")
         self.click(widget)
         wait_for(lambda: self.textbox(target)["focused"] == "true", "clicked terminal focus")
         return widget["view"]
+
+    def await_persisted_state(self):
+        self.launcher.check_app()
+        path = Path(self.launcher.env["PHUX_COCKPIT_STATE"])
+        wait_for(lambda: persisted_state_effect(path), "debounced state file before shutdown")
+        self.launcher.check_app()
+        self.evidence["state_effect_before_shutdown"] = True
+
+    def restored_roundtrips(self):
+        windows = {}
+        for group in self.groups:
+            for target in group:
+                view = self.select_group_target(target, group)
+                self.require_restored_window(target, view, windows)
+                self.roundtrip("restart-attach", target, view)
+        self.evidence["restart_window_groups"] = [
+            {"targets": group, "window": windows[i]} for i, group in enumerate(self.window_groups)
+        ]
+
+    def require_restored_window(self, target, view, windows):
+        expected = next(i for i, group in enumerate(self.window_groups) if target in group)
+        window = view.split("/", 1)[0]
+        if expected in windows:
+            require(windows[expected] == window, "restored window group split across windows")
+            return
+        require(window not in windows.values(), "distinct restored window groups collapsed into one window")
+        windows[expected] = window
 
     def restart(self):
         self.evidence["phase"] = "restart"
         before = self.inventory()
         old = self.launcher.app
+        self.await_persisted_state()
         self.launcher.stop_app()
         require(self.inventory() == before, "app exit destroyed durable terminals")
         for target in before:
@@ -210,16 +243,14 @@ class Probe:
         self.appkit.activate(self.launcher.app["pid"])
         self.await_publication()
         require(self.inventory() == before, "restart changed durable terminal identities")
-        for group in self.groups:
-            for target in group:
-                view = self.select_group_target(target, group)
-                self.roundtrip("restart-attach", target, view)
+        self.restored_roundtrips()
 
     def matrix(self):
         initial, main = self.start()
         created, _ = self.transition("toolbar-create", lambda: self.click(self.widget("button", "New terminal", main)))
         split, _ = self.transition("split-right", lambda: self.automate("native-command", "pane.split-right", main))
         self.groups.append([created, split])
+        self.window_groups[0].extend([created, split])
         self.evidence["phase"] = "switch-previous"
         self.automate("native-command", "tab.previous", main)
         self.roundtrip("switch-previous", initial, main)
@@ -227,8 +258,9 @@ class Probe:
         self.automate("native-command", "tab.next", main)
         self.roundtrip("switch-next", split, main)
         secondary, second = self.transition("secondary-window", lambda: self.automate("native-command", "window.new", main))
-        require(second != main, "new window reused main window/view")
+        require(second.split("/", 1)[0] != main.split("/", 1)[0], "new window reused main window")
         self.groups.append([secondary])
+        self.window_groups.append([secondary])
         self.roundtrip("paste-text", secondary, second, "paste")
         self.roundtrip("paste-text-newline", secondary, second, "paste-newline")
         self.restart()
@@ -247,15 +279,40 @@ def arguments():
 def execute_matrix(args, work, evidence):
     launcher = Launcher(args, work, evidence)
     appkit = None
+    evidence["processes_stopped"] = False
     try:
         appkit = AppKit(work, launcher.env)
         Probe(launcher, appkit, evidence).matrix()
     finally:
+        close_matrix(launcher, appkit, evidence)
+
+
+def close_matrix(launcher, appkit, evidence):
+    try:
         try:
             if appkit is not None:
                 appkit.close()
         finally:
             launcher.close()
+    finally:
+        helper = None if appkit is None else appkit.child
+        evidence["processes_stopped"] = launcher.stopped() and child_stopped(helper)
+
+
+def private_matrix(args, scratch, evidence):
+    work = Path(tempfile.mkdtemp(prefix="rt-", dir=scratch if scratch.is_dir() else None))
+    # Initialization spawns nothing; execute_matrix marks uncertainty before
+    # launching anything. No TemporaryDirectory finalizer may erase live state.
+    evidence["processes_stopped"] = True
+    try:
+        execute_matrix(args, work, evidence)
+        require(evidence["processes_stopped"], "owned process exit unconfirmed")
+    finally:
+        if evidence["processes_stopped"]:
+            shutil.rmtree(work)
+        else:
+            evidence["private_state_retained"] = str(work)
+            evidence["retention"] = "private state/logs retained because owned process exit is unconfirmed"
 
 
 def interrupted(_signal, _frame):
@@ -276,8 +333,7 @@ def main():
     scratch = Path(tempfile.gettempdir()) / "opencode"
     try:
         with identity.exclusive(output / "run.lock"):
-            with tempfile.TemporaryDirectory(prefix="rt-", dir=scratch if scratch.is_dir() else None) as temporary:
-                execute_matrix(args, Path(temporary), evidence)
+            private_matrix(args, scratch, evidence)
         evidence["status"] = "PASS"
     except (Exception, KeyboardInterrupt) as error:
         # Never serialize str(SubprocessError): it includes argv and payloads.

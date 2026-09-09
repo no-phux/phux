@@ -30,6 +30,10 @@ WIDGET = re.compile(
 )
 
 
+class WaitTimeout(Failure):
+    pass
+
+
 def run(argv, *, cwd=ROOT, env=None, timeout=20):
     result = subprocess.run([str(a) for a in argv], cwd=cwd, env=env,
                             capture_output=True, timeout=timeout, check=False)
@@ -44,7 +48,7 @@ def wait_for(check, description, timeout=20):
         if value:
             return value
         time.sleep(0.1)
-    raise Failure(f"timeout: {description}")
+    raise WaitTimeout(f"timeout: {description}")
 
 
 def terminal_ids(report):
@@ -99,7 +103,7 @@ def isolated_environment(work, inherited):
                XDG_RUNTIME_DIR=str(work / "runtime"), TMPDIR=str(work / "tmp"),
                PHUX_SOCKET=str(work / "p.sock"), PHUX_SESSION="default",
                PHUX_COCKPIT_CONFIG=str(work / "cockpit.config"),
-               PHUX_COCKPIT_STATE=str(work / "layout.json"),
+               PHUX_COCKPIT_STATE=str(work / "tmp/dev.phux.cockpit/layout.state"),
                PHUX_LOG=str(work / "client.log"), PHUX_LOG_FORMAT="json",
                LC_ALL="C", TERM="xterm-256color")
     return env
@@ -110,6 +114,8 @@ def prepare_environment(work):
     require(len(os.fsencode(env["PHUX_SOCKET"])) < 104, "temporary socket path exceeds macOS limit")
     for name in ("home", "config", "state", "cache", "data", "runtime", "tmp"):
         (work / name).mkdir(mode=0o700)
+    # app_runner confines file effects to app_dirs, including TMPDIR/bundle-id.
+    Path(env["PHUX_COCKPIT_STATE"]).parent.mkdir(mode=0o700)
     (work / "cockpit.config").write_text("font-size = 13\n")
     (work / "config/phux").mkdir(mode=0o700)
     (work / "config/phux/config.toml").write_text('[defaults]\nsession-name-template = "default"\n')
@@ -161,6 +167,8 @@ def descendant(pid, ancestor):
 
 
 def stop_child(child):
+    # Popen owns/reaps this PID and its signal methods recheck poll(), unlike
+    # native dev's unobserved grandchild, which needs a bound identity below.
     if child is None or child.poll() is not None:
         return
     child.terminate()
@@ -172,6 +180,54 @@ def stop_child(child):
         raise Failure("owned process required SIGKILL during cleanup")
 
 
+def child_stopped(child):
+    # Popen.poll reaps our direct child; its unreaped PID cannot be reused.
+    return child is None or child.poll() is not None
+
+
+def process_running(pid):
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                            capture_output=True, timeout=5, check=False)
+    require(result.returncode in (0, 1), "cannot verify owned process exit")
+    state = result.stdout.strip()
+    return bool(state) and not state.startswith(b"Z")
+
+
+def signal_publisher(expected, sig):
+    if not process_running(expected["pid"]):
+        return
+    require(identity.process_identity(expected["pid"]) == expected, "refuse to stop replaced publisher")
+    try:
+        os.kill(expected["pid"], sig)
+    except ProcessLookupError:
+        pass  # Exit raced the signal; the caller still confirms exit.
+
+
+def stop_publisher(expected):
+    signal_publisher(expected, signal.SIGTERM)
+    try:
+        wait_for(lambda: not process_running(expected["pid"]), "owned app shutdown", 20)
+        return False
+    except WaitTimeout:
+        # native dev only forwards TERM and exits. Check the bound identity
+        # again before escalation; launcher exit is not evidence of app exit.
+        signal_publisher(expected, signal.SIGKILL)
+        wait_for(lambda: not process_running(expected["pid"]), "owned app SIGKILL exit", 5)
+        return True
+
+
+def persisted_state_effect(path):
+    try:
+        with path.open("rb") as state:
+            data = state.read(96 * 1024 + 1)
+    except FileNotFoundError:
+        return False
+    # The private file may be empty/partial while the SDK writes it. Remote
+    # topology is in Phux metadata; this proves the debounced file seam only.
+    return (len(data) <= 96 * 1024 and data.startswith(b"phux-cockpit-state 5\nplacement ")
+            and data.endswith(b"\nend\n"))
+
+
 class Launcher:
     def __init__(self, args, work, evidence):
         self.args, self.work, self.evidence = args, work, evidence
@@ -179,6 +235,7 @@ class Launcher:
         self.server = None
         self.dev = None
         self.app = None
+        self.app_shutdown_confirmed = True
         self.server_identity = None
         self.artifacts, sdk, pin = preflight(args.native, args.phux, args.ffi_lib)
         self.env.update(NATIVE_SDK_PATH=str(sdk), ZIG_GLOBAL_CACHE_DIR=str(ROOT / ".zig-global-cache"))
@@ -227,6 +284,7 @@ class Launcher:
         require(not identity.live_publishers(), "another Cockpit publisher is running")
         self.check_inputs()
         self.dev = self.spawn(native_dev_argv(self.args.native, self.args.ffi_lib))
+        self.app_shutdown_confirmed = False
         self.app = wait_for(self.find_app, "native dev publisher (including build)", self.args.startup_timeout)
         self.binary = identity.artifact(ROOT / "zig-out/bin/phux-cockpit")
         self.check_app()
@@ -241,6 +299,7 @@ class Launcher:
             return None
         process = identity.process_identity(pids[0])
         require(descendant(pids[0], self.dev.pid), "publisher was not launched by this harness")
+        self.app = process  # Retain owned identity even if later validation fails.
         require(process["executable"] == str(ROOT / "zig-out/bin/phux-cockpit"), "wrong app executable")
         require(process["cwd"] == str(ROOT), "wrong app source-root CWD")
         return process
@@ -251,16 +310,21 @@ class Launcher:
         identity.check_artifact_stamp(self.binary)
 
     def stop_app(self):
-        try:
-            if self.app is not None and self.app["pid"] in identity.live_publishers():
-                actual = identity.process_identity(self.app["pid"])
-                require(actual == self.app, "refuse to stop replaced publisher")
-                os.kill(self.app["pid"], signal.SIGTERM)
-                wait_for(lambda: self.app["pid"] not in identity.live_publishers(), "owned app shutdown")
-                self.app = None
-        finally:
-            stop_child(self.dev)
-            self.dev = None
+        forced = False
+        if self.app is None and not child_stopped(self.dev):
+            self.find_app()
+        if self.app is not None:
+            forced = stop_publisher(self.app)
+            self.app = None
+            self.app_shutdown_confirmed = True
+        # On identity refusal leave native dev alone too: it forwards signals.
+        stop_child(self.dev)
+        self.dev = None
+        require(self.app_shutdown_confirmed, "app exit unconfirmed after incomplete launch")
+        require(not forced, "owned app required SIGKILL during cleanup")
+
+    def stopped(self):
+        return self.app_shutdown_confirmed and child_stopped(self.dev) and child_stopped(self.server)
 
     def close(self):
         try:
@@ -269,7 +333,7 @@ class Launcher:
             try:
                 stop_child(self.server)
             finally:
-                self.evidence["coordinator_stopped"] = self.server is None or self.server.poll() is not None
+                self.evidence["coordinator_stopped"] = child_stopped(self.server)
 
 
 # AppKit activation requires a GUI login session, not System Events/AX access.
@@ -379,5 +443,19 @@ class AppKit:
         try:
             self.request("restore")
         finally:
-            self.child.stdin.close()
+            try:
+                try:
+                    self.child.stdin.close()
+                finally:
+                    self.finish()
+            finally:
+                self.child.stdout.close()
+
+    def finish(self):
+        try:
             self.child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # Give EOF restoration a budget, then release the owned helper.
+            # Forced exit cannot claim clipboard restoration succeeded.
+            stop_child(self.child)
+            raise Failure("AppKit helper required termination; clipboard restoration unconfirmed")

@@ -5,7 +5,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -29,6 +31,14 @@ def textbox(title="rt-fixture-r4", view="@w1/phux-cockpit-canvas"):
 
 
 class IsolationTests(unittest.TestCase):
+    def test_state_destination_is_within_sdk_private_app_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = helpers.prepare_environment(Path(d))
+            allowed = Path(env["TMPDIR"]) / "dev.phux.cockpit"
+            state = Path(env["PHUX_COCKPIT_STATE"])
+            self.assertTrue(state.is_relative_to(allowed), "SDK refuses debounced state write")
+            self.assertTrue(state.parent.is_dir())
+
     def test_scrubbed_environment_reaches_child_without_inherited_payload_knobs(self):
         hostile = {"PATH": os.environ["PATH"], "HOME": "/private-real-home",
                    "PHUX_SOCKET": "/live.sock", "PHUX_PROFILE": "live",
@@ -90,12 +100,13 @@ class IsolationTests(unittest.TestCase):
         launcher = helpers.Launcher.__new__(helpers.Launcher)
         launcher.app = {"pid": 128, "started": "old"}
         launcher.dev = Mock()
-        with patch.object(helpers.identity, "live_publishers", return_value=[128]), \
+        with patch.object(helpers, "process_running", return_value=True), \
              patch.object(helpers.identity, "process_identity", return_value={"pid": 128, "started": "new"}), \
-             patch.object(helpers.os, "kill") as kill, patch.object(helpers, "stop_child"):
+             patch.object(helpers.os, "kill") as kill, patch.object(helpers, "stop_child") as stop:
             with self.assertRaisesRegex(helpers.Failure, "replaced publisher"):
                 launcher.stop_app()
             kill.assert_not_called()
+            stop.assert_not_called()
 
 
 class IdentityTests(unittest.TestCase):
@@ -158,6 +169,26 @@ class IdentityTests(unittest.TestCase):
 
 
 class FailureRetentionTests(unittest.TestCase):
+    def test_unconfirmed_cleanup_preserves_private_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = []
+
+            def failed(_args, path, evidence):
+                work.append(path)
+                (path / "layout.json").write_text("private fixture")
+                evidence["processes_stopped"] = False
+                raise helpers.Failure("owned process exit unconfirmed")
+
+            with patch.object(cli, "arguments", return_value=Mock()), \
+                 patch.object(cli, "ROOT", Path(d)), \
+                 patch.object(cli, "execute_matrix", side_effect=failed), \
+                 patch("builtins.print"):
+                self.assertEqual(cli.main(), 1)
+            try:
+                self.assertTrue((work[0] / "layout.json").exists(), "unconfirmed app lost its state")
+            finally:
+                shutil.rmtree(work[0], ignore_errors=True)
+
     def test_timeout_retains_failure_without_command_payload(self):
         with tempfile.TemporaryDirectory() as d:
             args = Mock()
@@ -173,6 +204,149 @@ class FailureRetentionTests(unittest.TestCase):
             self.assertNotIn("private-input", raw)
             self.assertNotIn("private-screen", raw)
             self.assertEqual(json.loads(raw)["failure_kind"], "TimeoutExpired")
+
+
+class CleanupTests(unittest.TestCase):
+    def test_unconfirmed_kill_keeps_cleanup_unconfirmed(self):
+        launcher = helpers.Launcher.__new__(helpers.Launcher)
+        launcher.app = {"pid": 128, "started": "owned"}
+        launcher.app_shutdown_confirmed = False
+        launcher.dev = launcher.server = None
+        launcher.evidence = {}
+        evidence = {}
+        with patch.object(helpers, "process_running", return_value=True), \
+             patch.object(helpers.identity, "process_identity", return_value=launcher.app), \
+             patch.object(helpers, "wait_for", side_effect=helpers.WaitTimeout("timeout")), \
+             patch.object(helpers.os, "kill") as kill:
+            with self.assertRaises(helpers.Failure):
+                cli.close_matrix(launcher, None, evidence)
+        self.assertEqual(kill.call_count, 2)
+        self.assertIsNotNone(launcher.app)
+        self.assertFalse(evidence["processes_stopped"])
+
+    def test_replacement_before_escalation_is_not_killed(self):
+        launcher = helpers.Launcher.__new__(helpers.Launcher)
+        launcher.app = {"pid": 128, "started": "owned"}
+        launcher.dev = Mock()
+        with patch.object(helpers, "process_running", return_value=True), \
+             patch.object(helpers.identity, "process_identity", side_effect=[launcher.app, {"pid": 128, "started": "replaced"}]), \
+             patch.object(helpers, "wait_for", side_effect=helpers.WaitTimeout("timeout")), \
+             patch.object(helpers.os, "kill") as kill, patch.object(helpers, "stop_child") as stop:
+            with self.assertRaisesRegex(helpers.Failure, "replaced publisher"):
+                launcher.stop_app()
+            kill.assert_called_once_with(128, helpers.signal.SIGTERM)
+            stop.assert_not_called()
+
+    def stubborn_child(self):
+        child = subprocess.Popen([sys.executable, "-c",
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('ready', flush=True); time.sleep(60)"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        self.addCleanup(child.stdout.close)
+        self.addCleanup(child.stdin.close)
+        self.addCleanup(lambda: self.reap(child))
+        return child
+
+    @staticmethod
+    def reap(child):
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=2)
+
+    def test_hung_owned_app_is_escalated_and_exit_confirmed(self):
+        child = self.stubborn_child()
+        launcher = helpers.Launcher.__new__(helpers.Launcher)
+        launcher.app = {"pid": child.pid, "started": "owned"}
+        launcher.dev = None
+        original_wait = helpers.wait_for
+        with patch.object(helpers.identity, "live_publishers", side_effect=lambda: [child.pid] if child.poll() is None else []), \
+             patch.object(helpers.identity, "process_identity", return_value=launcher.app), \
+             patch.object(helpers, "wait_for", side_effect=lambda f, d, *a: original_wait(f, d, 0.2)):
+            try:
+                launcher.stop_app()
+            except helpers.Failure:
+                pass
+        self.assertIsNotNone(child.poll(), "SIGTERM timeout left owned app running")
+        self.assertIsNone(launcher.app)
+
+    def test_hung_appkit_helper_is_killed_and_reaped(self):
+        child = self.stubborn_child()
+        appkit = helpers.AppKit.__new__(helpers.AppKit)
+        appkit.child = child
+        appkit.request = Mock()
+        original_wait = child.wait
+        with patch.object(child, "wait", side_effect=lambda timeout: original_wait(timeout=0.2)):
+            try:
+                appkit.close()
+            except (helpers.Failure, subprocess.TimeoutExpired):
+                pass
+        self.assertIsNotNone(child.poll(), "helper retained saved clipboard after close")
+
+
+class RestartTests(unittest.TestCase):
+    def test_partial_state_is_not_a_persisted_effect(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state"
+            for partial in (b"", b"phux-cockpit-state 5\nplacement top\n", b"garbage\nend\n"):
+                path.write_bytes(partial)
+                self.assertFalse(helpers.persisted_state_effect(path))
+
+    def probe(self, work, views):
+        state = Path(work) / "layout.state"
+        state.write_text("phux-cockpit-state 5\nplacement top\nend\n")
+        launcher = Mock(app={"pid": 50}, env={"PHUX_COCKPIT_STATE": str(state)})
+        launcher.start_app.side_effect = lambda: setattr(launcher, "app", {"pid": 51})
+        probe = cli.Probe(launcher, Mock(), {"results": []})
+        probe.groups = [["@1"], ["@2"], ["@3"]]
+        probe.window_groups = [["@1", "@2"], ["@3"]]
+        probe.titles = {t: f"rt-fixture-r{t[1:]}" for t in views}
+        probe.inventory = lambda: set(views)
+        probe.screen = lambda t: {"title": probe.titles[t]}
+        probe.textbox = lambda t: textbox(probe.titles[t], views[t])
+
+        def widget(role, title, view=None):
+            target = next(t for t in views if probe.titles[t] == title)
+            return {**textbox(title, views[target]), "role": role}
+
+        probe.widget = widget
+        probe.click = Mock()
+        probe.await_publication = Mock()
+        probe.roundtrip = Mock()
+        return probe, state
+
+    def test_shutdown_only_state_cannot_satisfy_persistence_acceptance(self):
+        with tempfile.TemporaryDirectory() as d:
+            probe, state = self.probe(d, {"@1": "@w7/canvas", "@2": "@w7/canvas", "@3": "@w9/canvas"})
+            state.unlink()
+            probe.launcher.stop_app.side_effect = lambda: state.write_text("phux-cockpit-state 5\nplacement top\nend\n")
+            original_wait = helpers.wait_for
+            with patch.object(cli, "wait_for", side_effect=lambda f, d, *a: original_wait(f, d, 0.2)):
+                with self.assertRaises(helpers.Failure):
+                    probe.restart()
+            probe.launcher.stop_app.assert_not_called()
+
+    def test_secondary_collapsed_into_main_cannot_pass_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            probe, _ = self.probe(d, {t: "@w7/canvas" for t in ("@1", "@2", "@3")})
+            with self.assertRaisesRegex(helpers.Failure, "window"):
+                probe.restart()
+
+    def test_main_tabs_split_across_windows_cannot_pass_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            probe, _ = self.probe(d, {"@1": "@w7/canvas", "@2": "@w8/canvas", "@3": "@w9/canvas"})
+            with self.assertRaisesRegex(helpers.Failure, "window"):
+                probe.restart()
+
+    def test_restart_accepts_new_ids_with_same_window_relationships(self):
+        with tempfile.TemporaryDirectory() as d:
+            probe, _ = self.probe(d, {"@1": "@w7/canvas", "@2": "@w7/canvas", "@3": "@w9/canvas"})
+            probe.restart()
+            self.assertEqual(probe.roundtrip.call_count, 3)
+            self.assertTrue(probe.evidence["state_effect_before_shutdown"])
+            self.assertEqual(probe.evidence["restart_window_groups"], [
+                {"targets": ["@1", "@2"], "window": "@w7"},
+                {"targets": ["@3"], "window": "@w9"},
+            ])
 
 
 class RoutingTests(unittest.TestCase):
