@@ -9,7 +9,7 @@ _Static_assert(offsetof(PhuxSelectionGestureResult, start) == sizeof(uint64_t),
 
 PhuxClientResult pointer_abi(PhuxClient *client, const PhuxResourceId *id) {
     PhuxSelectionGestureEvent event = {
-        .size = sizeof(event), .version = 1, .phase = 0, .clicks = 2,
+        .size = sizeof(event), .version = PHUX_CLIENT_ABI_VERSION, .phase = 0, .clicks = 2,
         .columns = 80, .cell_width = 10, .screen_height = 480,
     };
     PhuxSelectionGestureResult result = {0};
