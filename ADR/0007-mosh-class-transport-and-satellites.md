@@ -8,98 +8,10 @@ last-reviewed: 2026-07-10
 
 **TL;DR.** Mosh is decomposed: snapshot-on-attach is adopted via byte replay, predictive echo is adopted as a client feature, SSP is rejected in favor of QUIC for v0.2+. Transport is a trait so v0.1's Unix socket and a future QUIC impl share one boundary. SessionId (and every other identity) carries a `{LOCAL, SATELLITE}` tag from day one so hub-and-spoke federation drops in without a wire break.
 
-> **Post-ADR-0013 amendment (2026-05-25):** ADR-0013 supersedes
-> ADR-0002 — pane content now ships as VT bytes (`PANE_OUTPUT`), not
-> structured cell diffs. The Mosh-decomposition table below has been
-> updated inline; the rest of this ADR (Transport trait, URI-shaped
-> SessionId, hub-and-spoke satellites, forward-compat invariants)
-> stands as-is. Satellite relaying is in fact *simpler* under ADR-0013
-> because the hub forwards opaque byte payloads instead of having to
-> understand cell structure.
->
-> Predictive local echo prose: pre-ADR-0013 the client maintained a
-> "diff mirror" that the prediction overlay sat on top of. Under
-> ADR-0013 the client maintains a libghostty `Terminal` directly;
-> predictive echo speculatively `vt_write`s encoded keystrokes into a
-> shadow terminal (or overlay), reconciles when authoritative
-> `PANE_OUTPUT` bytes arrive. The UX guarantee is unchanged; the
-> substrate is libghostty, not a phux-defined mirror.
-
 Status: Accepted (forward-compat)
 Date: 2026-05-25
-
-> **Update 2026-05-26:** [ADR-0015](./0015-protocol-layering.md)
-> §"Cross-cutting: Federation" generalizes the `{LOCAL, SATELLITE}`
-> tagged-union shape introduced here on `SessionId` to *every* protocol
-> identity uniformly — `TerminalId` ([ADR-0016](./0016-terminal-id-as-wire-primary.md)),
-> `CollectionId`, `SessionId`. v0.1 servers construct `LOCAL` only;
-> v0.1 decoders MUST accept `SATELLITE` and respond
-> `ERROR { code: UnsupportedSatelliteRoute }` when not configured as a
-> federation hub. The §"Sessions are URI-shaped" decision below is
-> preserved and broadened: it is now an *identity* invariant, not a
-> `SessionId`-specific one.
->
-> Additionally, [ADR-0013](./0013-libghostty-bytes-on-wire.md) renamed
-> the per-pane content frame and snapshot frame to `TERMINAL_OUTPUT`
-> and `TERMINAL_SNAPSHOT`; the inline references to `PANE_OUTPUT` /
-> `PANE_SNAPSHOT` below should be read with that substitution.
-
-> **Update 2026-06-11 (phux-y8v6):** the QUIC transport is **built**.
-> Decision §2's "v0.2+ adds `QuicTransport`" is realized as a server-side
-> `QuicListener` (`phux-server::transport::quic`) implementing the actual
-> trait surface the code evolved to — frame-level `Incoming` / `FrameReader`
-> / `FrameWriter`, not the `AsyncRead + AsyncWrite` sketch below — so it
-> slots in beside the UDS and WebSocket listeners with no domain-module
-> change. It carries the identical length-prefixed frames over one
-> bidirectional QUIC stream (`docs/spec/proto.md` §4), reuses the `wss://`
-> path's persisted self-signed cert + token store, and authenticates
-> routable consumers with a bearer-token preamble (ADR-0031 parity). Opt-in
-> via `phux server --quic <HOST:PORT>`. **`quinn`, not `quiche`:** the choice
-> this ADR named is confirmed against cloudflare/quiche on implementation —
-> quiche is sans-I/O (we would hand-drive UDP sockets + the connection state
-> machine) and links BoringSSL via cmake, whereas quinn is tokio-native (its
-> streams are `AsyncRead`/`AsyncWrite`) and rides the rustls 0.23 + `ring`
-> provider already in the tree, adding no native toolchain. Still deferred:
-> SSH-stdio and satellites.
-
-> **Update 2026-06-15 (phux-y8v6):** the **client dialer** is built, so QUIC
-> is now end-to-end. `phux attach --quic <HOST:PORT>` mirrors the listener:
-> one bidirectional stream, the `phux-quic/1` ALPN (now owned by
-> `phux-protocol::policy::QUIC_ALPN` so both ends cannot drift), the same
-> length-prefixed frames, and the bearer-token preamble for routable hosts.
-> The client's `Connection` grew a transport enum (`UdsReader`/`QuicReader`,
-> `UdsWriter`/`QuicWriter`) so the driver and reconnect loop stay
-> transport-agnostic; the attach chain threads a `Dial { Uds | Quic }`. TLS
-> trust is fingerprint-pinning (`--cert-fingerprint`, the value `phux pair`
-> prints) for routable hosts, falling back to skip-verify only on loopback
-> dev; a non-loopback dial without a pin is refused, not silently trusted.
-> Connection migration / 0-RTT remain inherent-but-unexercised — the dialer
-> reconnects on a dropped link (the graceful-upgrade blink) but does not yet
-> actively roam across network changes.
-
-> **Update 2026-07-10 (phux-v45.9):** the **SSH-stdio transport** is built,
-> closing the "still deferred" note above. Realized shape: the dialing side
-> spawns the system `ssh` binary (override: `$PHUX_SSH`) running the new
-> `phux stdio-bridge` verb on the target host, which splices its
-> stdin/stdout byte-transparently to that host's server UDS — the
-> `SshStdioTransport` of Decision §2, as a child-process pipe rather than a
-> trait impl by name. First consumer is the federation hub: `ssh://`
-> satellite endpoints in the registry now dial through it, with the same
-> supervisor/backoff loop as QUIC/WSS links (an exiting ssh child is a
-> dropped link). Auth on this transport is SSH's own; see the ADR-0038
-> addendum for why no bearer token rides the bridged stream. The
-> phux-v45.4 frame relay runs over ssh links exactly as over QUIC/WSS —
-> the bridged stream carries the identical length-prefixed framing.
-
-> **Security amendment 2026-09-03
-> ([ADR-0098](./0098-workload-proof-and-closed-scope-authority.md)):**
-> SSH authentication is no longer sufficient to mint terminal authority after
-> the closed `local`/`paired` policy cutover. `local` admits owner UDS only;
-> `paired` requires a `phux-workload/v1` binding, and SSH-stdio exposes no
-> independently verifiable TLS exporter or peer-process binding. SSH-stdio is
-> therefore unavailable in both modes until a later workload profile defines a
-> closed cryptographic `SSH_SESSION` binding. Implementations MUST NOT retain an
-> unnamed SSH-auth-suffices fallback.
+Superseded in part by [ADR-0098](./0098-workload-proof-and-closed-scope-authority.md): SSH authentication no longer suffices to mint terminal authority, SSH-stdio is unavailable until a closed SSH_SESSION binding exists, and implementations MUST NOT retain an SSH-auth-suffices fallback.
+Superseded in part by [ADR-0015](./0015-protocol-layering.md): the {LOCAL, SATELLITE} tag on SessionId became an invariant of every protocol identity.
 
 ## Context
 

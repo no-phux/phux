@@ -15,24 +15,9 @@ supersession by ADR-0008; see git history for the original draft and
 its two amendments. ADR-0008 is the *why*; this ADR is the *what* for
 the input wire.
 
-> **Post-ADR-0013 note (2026-05-25):** ADR-0013 supersedes ADR-0002
-> (bytes-on-wire for pane content). This ADR is *reinforced*, not
-> weakened, by ADR-0013: structured input is exactly what ADR-0013
-> keeps phux-defined on the client→server direction, because only the
-> server knows the pane's current mode and therefore which PTY byte
-> encoding a key/mouse event should land in. Re-exporting libghostty's
-> input atoms is now the load-bearing wire shape for input, full stop.
-
 Date: 2026-05-24 (original) / 2026-05-25 (rewrite)
-
-> **Update 2026-05-26:** [ADR-0008](./0008-use-libghostty-types-directly.md)
-> supersedes the discriminant-equality claim; phux re-exports
-> libghostty's input atoms directly. [ADR-0016](./0016-terminal-id-as-wire-primary.md)
-> renamed `PaneId → TerminalId` at the wire level (commit `9f4bb2e`).
-> The "pane" / `pane_id` wording in the tables and prose below refers
-> to what is now a "terminal" / `terminal_id` on the wire; under
-> [ADR-0015](./0015-protocol-layering.md) the L1 substrate knows only
-> terminals, and "pane" is a TUI-consumer convention.
+See [ADR-0013](./0013-libghostty-bytes-on-wire.md) for why structured input stays phux-defined client-to-server while pane content became bytes.
+See [ADR-0016](./0016-terminal-id-as-wire-primary.md) for the rename: PaneId and pane_id below are TerminalId and terminal_id on the wire, and "pane" is a TUI-consumer convention per [ADR-0015](./0015-protocol-layering.md).
 
 ## Context
 
@@ -207,7 +192,7 @@ intact. The implementation just got simpler.
   (bytes-on-wire for pane content). Partial-supersede-by-0008 note for
   input and style atoms is now subsumed by 0013's broader change on
   the output side; the input side (this ADR) is unaffected by 0013
-  and in fact reinforced — see the post-ADR-0013 note above.
+  and in fact reinforced — see ADR-0013.
 - ADR-0013 — libghostty bytes on the wire. The reason structured input
   becomes more, not less, justified: only the server knows pane mode,
   so input cannot be pre-encoded client-side.

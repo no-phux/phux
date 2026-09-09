@@ -4,6 +4,10 @@ stability: scratch
 last-reviewed: 2026-06-06
 ---
 
+> **Archived 2026-09-09.** Superseded by [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md):
+> there is no L2 collection tier. Preserved for the design record; not the
+> authoritative source. For current behavior see the ADR and `docs/spec/`.
+
 # L2 Server-Side Architecture
 
 **TL;DR.** Superseded scratch. This file designs how phux-server would have implemented a server-side Collection lifecycle tier (state in the `Registry` alongside Terminals; events via `CollectionEventEmitter` channels to per-Collection subscriber lists; a handler routing create/kill/rename commands). [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md) dissolves that tier — grouping becomes L3 metadata plus client logic, and the one atomic need (multi-terminal teardown) becomes a single L1 op, `KILL_TERMINALS { ids }`. Kept for design history, not as a build target.

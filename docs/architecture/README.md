@@ -19,7 +19,7 @@ are). What you read to understand how phux is built.
 |---|---|
 | [process-model.md](./process-model.md) | Per-user server, single process, current-thread runtime; supervision (ADR-0003, ADR-0014) |
 | [threading.md](./threading.md) | `!Send`/`!Sync` constraints, LocalSet, why this matters for libghostty |
-| [transport.md](./transport.md) | The Transport trait: UDS, WebSocket, QUIC, and SSH-stdio (ADR-0007) |
+| [transport.md](./transport.md) | The byte streams under the wire codec: UDS, WebSocket, QUIC, WebTransport, and SSH-stdio. Listeners and frame reader/writer types live in `phux-server`'s transport modules; outbound dialing is the `phux-dial` crate. There is no `Transport` trait (ADR-0007) |
 | [crate-graph.md](./crate-graph.md) | Crate dependency edges and the protocol-core independence (ADR-0011) |
 | [data-model.md](./data-model.md) | Sessions, windows, terminals, layouts as in-process types — distinct from wire shape |
 | [state-sync.md](./state-sync.md) | What happens on attach: snapshots, replay, scrollback policy (ADR-0018) |
@@ -30,16 +30,16 @@ are). What you read to understand how phux is built.
 
 ## Scratch (not in the published set)
 
-These files exist in the tree but are marked `stability: scratch` and are
-not part of the published architecture docs. Read them as working notes,
-not as design of record.
+One file here is marked `stability: scratch` and is not part of the
+published architecture docs. Read it as a working note, not as design of
+record.
 
 - `DIAGRAM.md` — a one-glance system shape sketch (PTY, server libghostty,
   transport, client libghostty, TUI).
-- `l2-server-design.md` — a design for an L2 collection tier, superseded by
-  [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md):
-  there is no L2 tier. Group lifecycle is L3 metadata plus a single atomic
-  L1 batch operation.
+
+The former L2 server design note, superseded by
+[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
+(there is no L2 tier), now lives under `research/archive/`.
 
 ## What's not here
 

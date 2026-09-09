@@ -8,57 +8,10 @@ last-reviewed: 2026-05-30
 
 **TL;DR.** phux is TUI-first: the reference TUI is the only consumer that has ever exercised the wire. The architecture must not preclude a non-TUI frontend — domain code carries no frontend-specific assumption and rendering goes through one seam — but that property is structural, derivable from the wire on paper, not validated by a second consumer. tmux control mode is not on the roadmap. ADR-0017 later reclaims the `CC_FRONTEND` capability bit reserved here.
 
-> **Post-ADR-0013 note (2026-05-25):** ADR-0013 supersedes ADR-0002 —
-> pane content moves from structured cell diffs to VT bytes on the
-> wire. The "native > CC" argument below is *stronger* under ADR-0013,
-> not weaker, but the substrate it leans on changes:
->
-> - **Pre-0013 framing:** native wins because cell-diffs are more
->   structured than CC's region-redraw model.
-> - **Post-0013 framing:** native wins because (a) the wire is bytes
->   + structured input, so every libghostty wire feature (Kitty
->   graphics, modern key protocol, sixel, hyperlinks, selection APIs)
->   reaches phux clients on `cargo update` with no protocol work —
->   the ADR-0008 dividend extended to grid content; (b) the wire is
->   simpler than tmux CC's framing while losing no fidelity; and (c)
->   a byte-stream wire is *more* friendly to non-libghostty
->   consumers (recording, inspection, replay) than CC's tmux-shaped
->   messages, which means the frontend-agnosticism claim is
->   structurally stronger than it was under ADR-0002.
->
-> Inline prose below has been touched up where it leaned specifically
-> on cell-diff terminology; the conclusion is unchanged.
-
 Status: Accepted (forward-compat)
 Date: 2026-05-25
-
-> **Update 2026-05-26:** [ADR-0017](./0017-tui-not-protocol-privileged.md)
-> ("The reference TUI is not protocol-privileged") re-anchors this
-> decision. The **frontend-agnostic principle still holds** —
-> phux-server, phux-protocol, and phux-client must not preclude a
-> second consumer of the protocol. The **"tmux CC reserved as compat
-> option" portion is REJECTED**: under ADR-0017, tmux CC is one
-> consumer among several with no protocol-level standing, and the
-> reference TUI itself has no protocol-level privileges either.
-> Concretely:
->
-> - The `CC_FRONTEND` capability bit in `ServerFeature` (invariant 2
->   below) is **reclaimed** — the bit slot is reserved as unassigned,
->   not assigned to "CC adapter present." See SPEC.md after Wave C of
->   the L1 cascade (epic `phux-vp0`).
-> - References to CC as "canonical alternative frontend," "peer
->   frontend protocol," or "reserved as compat" should be read as
->   overturned. If anyone ever builds a CC adapter, it consumes the
->   same L1/L2/L3 conformance tiers as the reference TUI per
->   ADR-0017; it does not get a dedicated capability bit.
->
-> Additionally, [ADR-0015](./0015-protocol-layering.md) demotes
-> session/window/pane vocabulary out of the L1 substrate. The "native
-> wire" referenced below is now specifically the L1 substrate (bytes
-> + structured envelopes + libghostty `Terminal` on both ends, per
-> [ADR-0013](./0013-libghostty-bytes-on-wire.md)). [ADR-0016](./0016-terminal-id-as-wire-primary.md)
-> renamed `PaneId → TerminalId` and the corresponding `PANE_*` frames
-> to `TERMINAL_*`.
+Superseded in part by [ADR-0017](./0017-tui-not-protocol-privileged.md): tmux control mode is no longer reserved as a compat option and the CC_FRONTEND capability bit is reclaimed; the frontend-agnostic principle stands.
+See [ADR-0013](./0013-libghostty-bytes-on-wire.md) and [ADR-0015](./0015-protocol-layering.md) for the byte-stream L1 substrate that the "native wire" below now names.
 
 ## Context
 

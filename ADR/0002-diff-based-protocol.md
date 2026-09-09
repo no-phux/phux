@@ -8,14 +8,9 @@ last-reviewed: 2026-05-28
 
 **TL;DR.** Historical decision to ship structured cell-level diffs from server to clients instead of VT byte replay. The cost model (parsing as the dominant cost; one parse vs three) turned out to be wrong at modern libghostty speeds, and protocol-design cost was perpetual. Superseded in full by ADR-0013; preserved as historical context.
 
-> **Status update (2026-05-25):** SUPERSEDED by [ADR-0013](./0013-libghostty-bytes-on-wire.md).
-> The cost model that motivated this decision was wrong (parse cost is invisible at modern
-> libghostty speeds; protocol-design cost is perpetual). The decision below is preserved as
-> historical context. Do not implement against it.
-
 Status: Superseded by ADR-0013
 Date: 2026-05-24
-Superseded: 2026-05-25
+Superseded by [ADR-0013](./0013-libghostty-bytes-on-wire.md): the whole decision; VT bytes on the wire replace structured cell diffs.
 
 ## Context
 

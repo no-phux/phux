@@ -34,7 +34,7 @@ Reference (one source of truth per concept, addressable)
   docs/reference/ ───────► GENERATED from the binary (just docs-gen; no hand edits)
 
 Decision (one decision per file, strict)
-  ADR/ ──────────────────► Nygard template, ~150 line cap
+  ADR/ ──────────────────► Nygard template, 150-line cap, immutable once accepted
 
 Discipline (this file + CI)
   docs/CONVENTIONS.md ───► you are here
@@ -200,8 +200,15 @@ What we give up. Often the most useful section to future-you.
 One short paragraph per real alternative. Not an essay.
 ```
 
-Hard cap: **~150 lines**. If a decision needs more, the body belongs in
-`docs/architecture/` and the ADR points at it.
+Hard cap: **150 lines**, frontmatter included. If a decision needs more,
+the body belongs in `docs/architecture/` and the ADR points at it. The
+`adr-length` gate in `just docs-check` counts every `ADR/NNNN-*.md` and
+fails any file over the cap. ADRs that were already over it when the gate
+arrived are listed in `ADR/.length-baseline`, one number per line; that
+list only shrinks. Bring a listed ADR under the cap and delete its entry in
+the same commit — the gate also fails while a listed ADR fits the cap, so
+the baseline cannot become a standing exemption. New ADRs are never added
+to it.
 
 ### `Status:` controlled vocabulary
 
@@ -218,6 +225,40 @@ One line. Exactly one of:
 
 No multi-line statuses. No prose qualifiers on the line. If a
 qualification is important, it goes in the TL;DR or the body.
+
+### Supersede, don't amend
+
+An ADR body is immutable once accepted. The only lines that change
+afterwards are the `Status:` line and a **pointer block of at most two
+lines directly under `Date:`**. Each pointer line takes one of two forms,
+with `ADR-NNNN` written as a relative markdown link to the new file:
+
+```
+Superseded in part by ADR-NNNN: <which section or claim>.
+See ADR-NNNN for <what it settles>.
+```
+
+When a decision changes, write a new ADR. If the whole old decision is
+dead, the old ADR gets `Status: Superseded by ADR-NNNN` and one pointer
+line. If only part of it changes, the status stays and a pointer line
+names the new ADR and the section it replaces. The reader learns the
+current state from the pointer and the reasoning from the new ADR; the
+old body stays as it was ratified, so its context and tradeoffs remain
+legible.
+
+What may not be added to an ADR after acceptance:
+
+- Blockquote banners (`> **Amendment ...**`, `> **Update ...**`,
+  `> **Note ...**`, and their relatives), anywhere in the file.
+- `Amended:` or `Superseded:` lines, or any other line under `Date:`
+  beyond the two-line pointer block.
+- Implementation-status updates ("shipped in ...", "built on ...",
+  "closed by ..."). Whether a described surface exists is the job of the
+  spec's implementation-status marker (below) and
+  `docs/spec/CHANGELOG.md`, not of the decision record.
+
+A `Proposed` ADR is still a draft and may be edited freely until it is
+accepted or withdrawn.
 
 ### The index row
 
@@ -400,6 +441,7 @@ The discipline layer is mechanically checked. See
 | adr-status | An ADR with a non-vocabulary `Status:` line |
 | adr-number-unique | Two files under `ADR/` sharing the same leading `NNNN` number |
 | adr-index-sync | An ADR file with no row in `ADR/README.md`'s index, an index row that does not resolve to its file, or rows out of numeric order |
+| adr-length | An ADR over 150 lines that is not in `ADR/.length-baseline`, a baselined ADR that now fits the cap, or a baseline entry with no ADR file |
 | spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version |
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 

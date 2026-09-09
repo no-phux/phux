@@ -15,12 +15,8 @@ transcribes a hex string.
 
 Status: Accepted
 Date: 2026-07-25
-Amended: 2026-09-02 — the launchd unit's `ProcessType` is `Interactive`, not
-`Background`. `Background` asked the scheduler to throttle the one process
-whose keystroke echo the user feels; measured under CPU contention it turned a
-0.5 ms echo p99 into 15-60 ms with the server near idle. `phux service
-reconcile` moves an installed unit over. See ADR-0096 and `docs/operations.md`
-§"Scheduling class".
+Superseded in part by [ADR-0080](./0080-socket-lifecycle-and-instance-isolation.md): the generated unit's restart policy.
+See [ADR-0096](./0096-always-on-performance-telemetry.md) for the measurement that moved the launchd unit's ProcessType from Background to Interactive.
 
 ## Context
 
