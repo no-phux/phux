@@ -220,17 +220,21 @@ impl core::fmt::Debug for FileUploadId {
 /// federation layer's concern; the wire treats it as bytes.
 ///
 /// [ADR-0007]: https://github.com/phall1/phux/blob/main/ADR/0007-mosh-class-transport-and-satellites.md
+///
+/// Stored as a `Box<str>` rather than a `String`: the token is immutable
+/// once built, and the two-word representation keeps [`TerminalId`] at 24
+/// bytes, which every frame that carries one or two ids inherits.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub struct SatelliteHost(String);
+pub struct SatelliteHost(Box<str>);
 
 impl SatelliteHost {
     /// Wrap a host token. The string is taken verbatim; no validation is
     /// performed here — the federation handshake validates upstream.
     #[must_use]
     pub fn new(host: impl Into<String>) -> Self {
-        Self(host.into())
+        Self(host.into().into_boxed_str())
     }
 
     /// Borrow the underlying host token.
@@ -242,7 +246,7 @@ impl SatelliteHost {
     /// Consume and return the underlying host token.
     #[must_use]
     pub fn into_string(self) -> String {
-        self.0
+        self.0.into_string()
     }
 }
 
@@ -254,13 +258,13 @@ impl core::fmt::Display for SatelliteHost {
 
 impl From<String> for SatelliteHost {
     fn from(value: String) -> Self {
-        Self(value)
+        Self::new(value)
     }
 }
 
 impl From<&str> for SatelliteHost {
     fn from(value: &str) -> Self {
-        Self(value.to_owned())
+        Self::new(value)
     }
 }
 
@@ -393,6 +397,106 @@ impl core::fmt::Display for TerminalId {
     }
 }
 
+/// Alias for [`TerminalId`] naming any served resource.
+///
+/// Every server-owned addressable thing is a *resource*: a PTY-backed
+/// Terminal is one [`ResourceKind`], an agent session is another. All kinds
+/// share one identifier space and one tagged-union wire shape (`Local` /
+/// `Satellite`), so location stays orthogonal to kind. The alias lets
+/// kind-agnostic code say what it means; the underlying type is still
+/// `TerminalId` on the wire and in every consumer.
+pub type ResourceId = TerminalId;
+
+/// Wire tag byte for [`ResourceKind::Terminal`].
+pub const RESOURCE_KIND_TAG_TERMINAL: u8 = 0;
+/// Wire tag byte for [`ResourceKind::AgentSession`].
+pub const RESOURCE_KIND_TAG_AGENT_SESSION: u8 = 1;
+
+/// What backs a served resource.
+///
+/// An open `u8` enum on the wire: a decoder never fails on a tag it does not
+/// recognise but surfaces it as [`ResourceKind::Unknown`], so a newer peer
+/// can introduce a kind and an older one still parses the frame and refuses
+/// the operation (`SpawnError::UnsupportedKind`, `ErrorCode::WrongResourceKind`)
+/// rather than dropping the connection. Tags are allocated sequentially and
+/// never reused.
+///
+/// - [`Terminal`](Self::Terminal): a PTY plus a libghostty terminal; the
+///   only kind that accepts input atoms, resize, screen reads, history, input
+///   leases, signals, uploads, and transcription.
+/// - [`AgentSession`](Self::AgentSession): an agent harness's structured
+///   event stream, fed by a producer through `APPEND_RESOURCE_OUTPUT` and
+///   always bound to a Terminal parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum ResourceKind {
+    /// A PTY-backed terminal (wire tag = 0).
+    Terminal,
+    /// A producer-fed agent session stream (wire tag = 1).
+    AgentSession,
+    /// A kind this protocol build does not recognise; the tag is preserved
+    /// verbatim so a relay re-encodes it unchanged.
+    Unknown {
+        /// The unrecognised wire tag.
+        tag: u8,
+    },
+}
+
+impl ResourceKind {
+    /// Stable wire tag byte.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        match self {
+            Self::Terminal => RESOURCE_KIND_TAG_TERMINAL,
+            Self::AgentSession => RESOURCE_KIND_TAG_AGENT_SESSION,
+            Self::Unknown { tag } => tag,
+        }
+    }
+
+    /// Decode a wire tag. Never fails: an unrecognised tag becomes
+    /// [`ResourceKind::Unknown`].
+    #[must_use]
+    pub const fn from_wire(tag: u8) -> Self {
+        match tag {
+            RESOURCE_KIND_TAG_TERMINAL => Self::Terminal,
+            RESOURCE_KIND_TAG_AGENT_SESSION => Self::AgentSession,
+            other => Self::Unknown { tag: other },
+        }
+    }
+
+    /// `true` iff this is the PTY-backed Terminal kind.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Terminal)
+    }
+
+    /// Lower-case stable name (`terminal`, `agent_session`), or `unknown`
+    /// for a tag this build does not recognise.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::AgentSession => "agent_session",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+}
+
+impl Default for ResourceKind {
+    fn default() -> Self {
+        Self::Terminal
+    }
+}
+
+impl core::fmt::Display for ResourceKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unknown { tag } => write!(f, "unknown({tag})"),
+            other => f.write_str(other.as_str()),
+        }
+    }
+}
+
 /// Identifier for a terminal frame. Monotonically increasing per terminal; `0`
 /// is the empty initial frame.
 #[derive(
@@ -429,7 +533,25 @@ impl core::fmt::Display for FrameId {
 
 #[cfg(test)]
 mod tests {
-    use super::InputOperationId;
+    use super::{InputOperationId, ResourceKind};
+
+    #[test]
+    fn resource_kind_tags_are_stable_and_unknown_round_trips() {
+        assert_eq!(ResourceKind::Terminal.as_wire(), 0);
+        assert_eq!(ResourceKind::AgentSession.as_wire(), 1);
+        assert_eq!(ResourceKind::from_wire(0), ResourceKind::Terminal);
+        assert_eq!(ResourceKind::from_wire(1), ResourceKind::AgentSession);
+        assert_eq!(
+            ResourceKind::from_wire(200),
+            ResourceKind::Unknown { tag: 200 }
+        );
+        assert_eq!(ResourceKind::Unknown { tag: 200 }.as_wire(), 200);
+        assert_eq!(ResourceKind::default(), ResourceKind::Terminal);
+        assert!(ResourceKind::Terminal.is_terminal());
+        assert!(!ResourceKind::AgentSession.is_terminal());
+        assert_eq!(ResourceKind::AgentSession.to_string(), "agent_session");
+        assert_eq!(ResourceKind::Unknown { tag: 9 }.to_string(), "unknown(9)");
+    }
 
     #[test]
     fn input_operation_id_rejects_zero_and_redacts_debug() {

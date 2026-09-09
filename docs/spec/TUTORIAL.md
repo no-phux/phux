@@ -278,11 +278,11 @@ Server sends (frame type 0xB1):
 
 ## Step 7: Bind an agent session to the terminal
 
-<!-- impl-status: partial; probe: ResourceKind -->
-> **Status: spec-only —** this whole step. No server advertises
-> `RESOURCE_KINDS`, `SPAWN_TERMINAL` has no field 11, and tag `0x1a` decodes
-> as unknown. [L1.md §1.1, §1.2, §4.8, and §5.5](./L1.md) carry the contract
-> this step walks through.
+<!-- impl-status: partial; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: partial —** this whole step. The codec carries `SPAWN_TERMINAL`
+> field 11 and tag `0x1a`, but no server advertises `RESOURCE_KINDS` or
+> serves the kind. [L1.md §1.1, §1.2, §4.8, and §5.5](./L1.md) carry the
+> contract this step walks through.
 
 **What happens:** an agent harness running inside terminal 42 wants a
 durable, structured account of what it is doing — turns, tool calls,

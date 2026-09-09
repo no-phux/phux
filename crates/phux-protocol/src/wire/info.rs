@@ -12,7 +12,7 @@
 //! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
 //! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
 
-use crate::ids::{ClientId, SessionId, TerminalId, WindowId};
+use crate::ids::{ClientId, ResourceKind, SessionId, TerminalId, WindowId};
 
 use super::decode::Decoder;
 use super::encode::Encoder;
@@ -248,7 +248,53 @@ impl WindowInfo {
     }
 }
 
-/// Description of a single terminal, sufficient for layout chrome.
+/// The agent-session facet of a [`ResourceKind::AgentSession`] resource, as
+/// carried in the snapshot.
+///
+/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AgentFacet {
+    /// Agent provider name, e.g. `claude`.
+    pub provider: String,
+    /// Opaque provider-native session id, when the producer supplied one.
+    pub native_id: Option<String>,
+    /// Server-derived lifecycle state as an open lower-case string
+    /// (`working`, `blocked`, `done`, `idle`, `unknown`, ...). A consumer
+    /// treats an unrecognised value as `unknown`.
+    pub state: String,
+}
+
+impl AgentFacet {
+    /// Construct an `AgentFacet` from its provider and derived state.
+    /// `native_id` defaults to `None`.
+    #[must_use]
+    pub fn new(provider: impl Into<String>, state: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            native_id: None,
+            state: state.into(),
+        }
+    }
+
+    /// Builder setter for [`Self::native_id`].
+    #[must_use]
+    pub fn with_native_id(mut self, native_id: Option<String>) -> Self {
+        self.native_id = native_id;
+        self
+    }
+}
+
+/// Description of a single served resource, sufficient for layout chrome.
+///
+/// Every resource the server serves has an entry here, whatever its
+/// [`ResourceKind`]; the name is the Terminal-era one and stays until the
+/// wire rename. For a Terminal the entry carries its grid and window. For a
+/// non-Terminal kind the Terminal facet is absent, which the positional
+/// prefix encodes as `window_id = WindowId(0)` and `cols = rows = 0`: no
+/// window owns such a resource and it has no grid, and a `WindowId` of zero
+/// is never allocated. Consumers key layout on [`Self::kind`], not on those
+/// sentinels.
 ///
 /// Excludes grid contents, cursor state, scrollback, and process info.
 /// Grid contents and retained history flow through separate bootstrap/history
@@ -256,17 +302,27 @@ impl WindowInfo {
 /// `phux_core::TerminalDescriptor`; adding wire fields the server can only send
 /// `None` for is premature. Revisit when core grows process tracking.
 ///
+/// [`Self::kind`], [`Self::parent`], and [`Self::agent`] are additive: the
+/// positional per-entry prefix is unchanged, and the snapshot carries the
+/// non-default values in one trailing list decoded with the `at_body_end`
+/// convention (see [`SessionSnapshot`]), so a Terminal-only snapshot is
+/// byte-identical to one encoded before the fields existed and a snapshot
+/// from a peer that predates them decodes with every entry at the defaults.
+///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TerminalInfo {
-    /// Stable terminal identifier.
+    /// Stable resource identifier.
     pub id: TerminalId,
-    /// Foreign key into [`SessionSnapshot::windows`].
+    /// Foreign key into [`SessionSnapshot::windows`]; `WindowId(0)` for a
+    /// non-Terminal kind, which no window owns.
     pub window_id: WindowId,
-    /// Current grid width in cells (from `core::TerminalDescriptor::dims.0`).
+    /// Current grid width in cells (from `core::TerminalDescriptor::dims.0`);
+    /// `0` for a non-Terminal kind.
     pub cols: u16,
-    /// Current grid height in cells (from `core::TerminalDescriptor::dims.1`).
+    /// Current grid height in cells (from `core::TerminalDescriptor::dims.1`);
+    /// `0` for a non-Terminal kind.
     pub rows: u16,
     /// User-set title, distinct from any title the shell may set.
     pub title: Option<String>,
@@ -276,13 +332,22 @@ pub struct TerminalInfo {
     /// `to_string_lossy().into_owned()`. Lossy on non-UTF-8 cwds (rare on
     /// modern systems) and acceptable for a display field.
     pub cwd: Option<String>,
+    /// What backs the resource. Defaults to [`ResourceKind::Terminal`].
+    pub kind: ResourceKind,
+    /// The resource this one is bound to, when it is a child. Set at spawn
+    /// and immutable; closing the parent closes the child.
+    pub parent: Option<TerminalId>,
+    /// The agent-session facet, present iff `kind` is
+    /// [`ResourceKind::AgentSession`].
+    pub agent: Option<AgentFacet>,
 }
 
 impl TerminalInfo {
     /// Construct a `TerminalInfo` from its load-bearing fields.
     ///
-    /// `title` and `cwd` default to `None`; set them via the `with_*`
-    /// helpers when the server has the data.
+    /// `title` and `cwd` default to `None`; `kind` to `Terminal`; `parent`
+    /// and `agent` to `None`. Set them via the `with_*` helpers when the
+    /// server has the data.
     #[must_use]
     pub const fn new(id: TerminalId, window_id: WindowId, cols: u16, rows: u16) -> Self {
         Self {
@@ -292,6 +357,26 @@ impl TerminalInfo {
             rows,
             title: None,
             cwd: None,
+            kind: ResourceKind::Terminal,
+            parent: None,
+            agent: None,
+        }
+    }
+
+    /// Construct the entry for a non-Terminal resource: no window
+    /// (`WindowId(0)`), no grid (`0 x 0`), the given `kind`.
+    #[must_use]
+    pub const fn resource(id: TerminalId, kind: ResourceKind) -> Self {
+        Self {
+            id,
+            window_id: WindowId::new(0),
+            cols: 0,
+            rows: 0,
+            title: None,
+            cwd: None,
+            kind,
+            parent: None,
+            agent: None,
         }
     }
 
@@ -308,6 +393,34 @@ impl TerminalInfo {
         self.cwd = cwd;
         self
     }
+
+    /// Builder setter for [`Self::kind`].
+    #[must_use]
+    pub const fn with_kind(mut self, kind: ResourceKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Builder setter for [`Self::parent`].
+    #[must_use]
+    pub fn with_parent(mut self, parent: Option<TerminalId>) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// Builder setter for [`Self::agent`].
+    #[must_use]
+    pub fn with_agent(mut self, agent: Option<AgentFacet>) -> Self {
+        self.agent = agent;
+        self
+    }
+
+    /// Whether this entry carries anything beyond the Terminal-era
+    /// positional prefix, i.e. whether the snapshot's trailing resource
+    /// facet list needs a row for it.
+    const fn has_resource_facets(&self) -> bool {
+        !self.kind.is_terminal() || self.parent.is_some() || self.agent.is_some()
+    }
 }
 
 /// Flat graph of sessions/windows/panes delivered with `ATTACHED`.
@@ -317,6 +430,32 @@ impl TerminalInfo {
 /// per-container `SessionInfo::active_window` / `WindowInfo::active_pane`,
 /// which record the container's remembered focus from when no client was
 /// attached (tmux behavior: detach → attach later restores last focus).
+///
+/// # Wire shape and the trailing resource facets
+///
+/// The snapshot is positional: three `u32`-counted lists, then the focus
+/// triple. After `focused_pane` an encoder appends one more `u32`-counted
+/// list, the *resource facets*, with one row per `panes` entry whose
+/// [`TerminalInfo::kind`], [`TerminalInfo::parent`], or
+/// [`TerminalInfo::agent`] is non-default:
+///
+/// ```text
+/// facet_row = id: TerminalId
+///          || kind: u8
+///          || parent: optional<TerminalId>
+///          || agent: optional<provider: str || native_id: optional<str> || state: str>
+/// ```
+///
+/// The list is written only when it would be non-empty, so a Terminal-only
+/// snapshot is byte-identical to one encoded before it existed. A decoder
+/// reads it only when bytes remain in the enclosing field (`at_body_end`),
+/// so a snapshot from an older peer decodes with every entry at the defaults,
+/// and an older decoder stops at `focused_pane` and never sees the list.
+/// Rows are joined onto `panes` by id on decode; a row naming no entry is
+/// ignored. This is the trailing-additive convention of
+/// `docs/spec/appendix-encoding.md` §2 applied at the one place in the
+/// snapshot where a trailing value is unambiguous: a per-entry suffix would
+/// not be, because the next entry's id tag follows it.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 ///
@@ -600,7 +739,76 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<TerminalInfo
         rows,
         title,
         cwd,
+        kind: ResourceKind::Terminal,
+        parent: None,
+        agent: None,
     })
+}
+
+/// Write the trailing resource-facet list (see [`SessionSnapshot`]), or
+/// nothing when every entry is a plain Terminal.
+fn encode_resource_facets(panes: &[TerminalInfo], enc: &mut Encoder<'_>) {
+    let rows = panes.iter().filter(|p| p.has_resource_facets()).count();
+    if rows == 0 {
+        return;
+    }
+    encode_list_len(rows, enc);
+    for pane in panes.iter().filter(|p| p.has_resource_facets()) {
+        encode_terminal_id(&pane.id, enc);
+        enc.write_u8(pane.kind.as_wire());
+        encode_option_terminal_id(pane.parent.as_ref(), enc);
+        match &pane.agent {
+            None => enc.write_u8(0),
+            Some(agent) => {
+                enc.write_u8(1);
+                enc.write_str(&agent.provider);
+                encode_option_str(agent.native_id.as_deref(), enc);
+                enc.write_str(&agent.state);
+            }
+        }
+    }
+}
+
+/// Read the trailing resource-facet list if the enclosing field has bytes
+/// left, joining each row onto its `panes` entry by id.
+fn decode_resource_facets(
+    dec: &mut Decoder<'_>,
+    panes: &mut [TerminalInfo],
+) -> Result<(), DecodeError> {
+    if dec.at_body_end() {
+        return Ok(());
+    }
+    let rows = decode_list_len(dec)?;
+    for _ in 0..rows {
+        let id = decode_terminal_id(dec)?;
+        let kind = ResourceKind::from_wire(dec.read_u8()?);
+        let parent = decode_option_terminal_id(dec)?;
+        let agent = match dec.read_u8()? {
+            0 => None,
+            1 => {
+                let provider = dec.read_str()?.to_owned();
+                let native_id = decode_option_str(dec)?.map(str::to_owned);
+                let state = dec.read_str()?.to_owned();
+                Some(AgentFacet {
+                    provider,
+                    native_id,
+                    state,
+                })
+            }
+            other => {
+                return Err(DecodeError::UnknownEnumValue {
+                    field: "Option<AgentFacet> tag",
+                    value: u32::from(other),
+                });
+            }
+        };
+        if let Some(pane) = panes.iter_mut().find(|p| p.id == id) {
+            pane.kind = kind;
+            pane.parent = parent;
+            pane.agent = agent;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<'_>) {
@@ -619,6 +827,7 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_pane, enc);
+    encode_resource_facets(&snap.panes, enc);
 }
 
 pub(super) fn decode_session_snapshot(
@@ -647,6 +856,7 @@ pub(super) fn decode_session_snapshot(
     let focused_session = SessionId::new(dec.read_u32_be()?);
     let focused_window = WindowId::new(dec.read_u32_be()?);
     let focused_pane = decode_terminal_id(dec)?;
+    decode_resource_facets(dec, &mut panes)?;
     Ok(SessionSnapshot {
         sessions,
         windows,

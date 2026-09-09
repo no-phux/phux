@@ -179,7 +179,7 @@ can be launched with `--origin-to-force-quic-on` +
 
 ## Agent sessions
 
-<!-- impl-status: spec-only; probe: RESOURCE_KINDS -->
+<!-- impl-status: partial; probe: RESOURCE_KINDS -->
 > **Status: landing on the resource-model branch.** A released phux-web
 > predates resource kinds; it attaches to Terminal ids only and shows no
 > badge.

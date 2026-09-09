@@ -40,6 +40,20 @@ pub const MAX_INPUT_TERMINAL_REPLY_BYTES: usize = 64 * 1024;
 pub const MAX_FILE_UPLOAD_CHUNK: usize = 8 * 1024 * 1024;
 /// Maximum completed file size accepted by [`Command::PutFile`].
 pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
+/// Maximum payload bytes in one [`Command::AppendResourceOutput`] call.
+///
+/// Matches the 64 KiB input-command and terminal-reply bounds: one append is
+/// one or more complete records, never a bulk upload, so a producer with more
+/// to say sends more appends.
+pub const MAX_APPEND_BYTES: usize = 64 * 1024;
+/// Maximum bytes in a `SPAWN_TERMINAL.provider` string (field 13): the
+/// `integration_id` bound of the `phux.agent-session/v1` record
+/// (`docs/spec/L3.md` §3.7.1).
+pub const MAX_RESOURCE_PROVIDER_BYTES: usize = 120;
+/// Maximum bytes in a `SPAWN_TERMINAL.native_id` string (field 14): the
+/// `native_id` bound of the `phux.agent-session/v1` record
+/// (`docs/spec/L3.md` §3.7.1).
+pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 
 // -----------------------------------------------------------------------------
 // Message discriminants from SPEC §7. Only the variants implemented in this
@@ -327,42 +341,12 @@ pub const TYPE_SPAWN_TERMINAL: u8 = 0x22;
 pub const TYPE_TERMINAL_RESIZE: u8 = 0x23;
 
 // ---------------------------------------------------------------------------
-// L0 Process execution frame discriminants — reserved for v0.3 (phux-l0).
-//
-// Raw process execution without PTY allocation: lighter-weight than
-// SPAWN_TERMINAL for non-interactive automation. Allocated from the
-// 0x24..=0x27 C→S block and 0xA3..=0xA6 S→C block, contiguous with the
-// terminal lifecycle range above.
+// `0x24..=0x29` C→S and `0xA3..=0xA7` S→C stay unallocated. The PTY-less
+// process family and the port-forward family once pencilled into them are
+// subsumed by `ResourceKind` (`docs/spec/appendix-reserved.md` §1): a served
+// thing that is not a Terminal is a kind spoken through the existing spawn /
+// output / close frames, not a parallel frame family.
 // ---------------------------------------------------------------------------
-
-/// Discriminant for `SPAWN_PROCESS` (client to server).
-///
-/// Spawns a process without a PTY, capturing raw stdout/stderr.
-/// The reply rides on [`TYPE_PROCESS_SPAWNED`].
-pub const TYPE_SPAWN_PROCESS: u8 = 0x24;
-/// Discriminant for `KILL_PROCESS` (client to server).
-pub const TYPE_KILL_PROCESS: u8 = 0x25;
-/// Discriminant for `PROCESS_SPAWNED` (server to client).
-pub const TYPE_PROCESS_SPAWNED: u8 = 0xA3;
-/// Discriminant for `PROCESS_CLOSED` (server to client).
-pub const TYPE_PROCESS_CLOSED: u8 = 0xA4;
-/// Discriminant for `PROCESS_OUTPUT` (server to client).
-pub const TYPE_PROCESS_OUTPUT: u8 = 0xA5;
-
-// ---------------------------------------------------------------------------
-// Port-forwarding frame discriminants — reserved for v0.3 (phux-tun).
-//
-// TCP port forwarding through the phux wire: satellite-side local
-// forwards and hub-side reverse forwards. Allocated from 0x28..=0x29
-// C→S and 0xA6..=0xA7 S→C.
-// ---------------------------------------------------------------------------
-
-/// Discriminant for `FORWARD_PORT` (client to server).
-pub const TYPE_FORWARD_PORT: u8 = 0x28;
-/// Discriminant for `CLOSE_PORT_FORWARD` (client to server).
-pub const TYPE_CLOSE_PORT_FORWARD: u8 = 0x29;
-/// Discriminant for `PORT_FORWARD_STATUS` (server to client).
-pub const TYPE_PORT_FORWARD_STATUS: u8 = 0xA6;
 
 /// Discriminant for `MOVE_TERMINAL` (client to server, `docs/spec/L1.md`
 /// §1 / §10.1; ADR-0056).
@@ -373,16 +357,15 @@ pub const TYPE_PORT_FORWARD_STATUS: u8 = 0xA6;
 /// exactly as `SPAWN_TERMINAL.owner_terminal`: no split direction, ratio,
 /// or focus. The reply rides on [`TYPE_TERMINAL_MOVED`] correlated by
 /// `request_id`. Gated on the `MOVE_TERMINAL` server feature bit
-/// (`crate::caps::MOVE_TERMINAL`); allocated at `0x2A`, past the process
-/// (`0x24..=0x27`) and port-forward (`0x28..=0x29`) spec reservations.
+/// (`crate::caps::MOVE_TERMINAL`); allocated at `0x2A`, past the
+/// unallocated `0x24..=0x29` block.
 pub const TYPE_MOVE_TERMINAL: u8 = 0x2A;
 /// Discriminant for `TERMINAL_MOVED` (server to client, `docs/spec/L1.md`
 /// §1 / §10.1; ADR-0056).
 ///
 /// Reply frame for `MOVE_TERMINAL`; correlated by `request_id`. Carries a
 /// `Result<TerminalId, MoveError>` tagged union — see [`MoveResult`].
-/// Allocated at `0xA8`, past the process (`0xA3..=0xA5`) and port-forward
-/// (`0xA6..=0xA7`) spec reservations.
+/// Allocated at `0xA8`, past the unallocated `0xA3..=0xA7` block.
 pub const TYPE_TERMINAL_MOVED: u8 = 0xA8;
 
 /// Discriminant for `TERMINAL_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
@@ -417,6 +400,12 @@ pub(crate) const SPAWN_ERROR_TAG_SPAWN_FAILED: u8 = 1;
 pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 2;
 /// Wire tag for [`SpawnError::SatelliteUnreachable`] (phux-v45.6).
 pub(crate) const SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE: u8 = 3;
+/// Wire tag for [`SpawnError::UnsupportedKind`].
+pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_KIND: u8 = 4;
+/// Wire tag for [`SpawnError::ParentNotFound`].
+pub(crate) const SPAWN_ERROR_TAG_PARENT_NOT_FOUND: u8 = 5;
+/// Wire tag for [`SpawnError::ParentKindMismatch`].
+pub(crate) const SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH: u8 = 6;
 
 // Wire tags for the `MoveResult` / `MoveError` tagged unions (ADR-0056),
 // following the `SpawnResult` convention above (`Ok = 0x00`, `Err = 0x01`).
@@ -626,6 +615,10 @@ pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = 0x17;
 pub(crate) const COMMAND_TAG_GET_PERF: u8 = 0x18;
 /// Wire tag for [`Command::Transcribe`]. Appended after `GET_PERF`.
 pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = 0x19;
+/// Wire tag for [`Command::AppendResourceOutput`]. Appended after
+/// `TRANSCRIBE`; the producer verb of a producer-fed resource, gated on
+/// `ServerFeature::ResourceKinds`.
+pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = 0x1a;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -688,11 +681,12 @@ pub use command::{
 };
 pub use kind::FrameKind;
 pub use payload::{
-    AttachTarget, MoveError, MoveResult, Scope, SpawnError, SpawnResult, ViewportInfo,
+    AttachTarget, MoveError, MoveResult, Scope, SpawnError, SpawnResource, SpawnResult,
+    ViewportInfo,
 };
 pub use status::{
-    DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason, HistoryTombstoneReason,
-    TombstoneReason,
+    CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
+    HistoryTombstoneReason, TombstoneReason,
 };
 
 pub(in crate::wire) use codec::{

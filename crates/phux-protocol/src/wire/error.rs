@@ -111,6 +111,32 @@ pub enum DecodeError {
     #[error("invalid bootstrap profile")]
     InvalidBootstrapProfile,
 
+    /// An `APPEND_RESOURCE_OUTPUT` payload was empty or exceeded
+    /// [`MAX_APPEND_BYTES`](crate::wire::frame::MAX_APPEND_BYTES).
+    #[error("APPEND_RESOURCE_OUTPUT payload exceeds protocol limits")]
+    AppendResourceOutputLimitExceeded,
+
+    /// A `SPAWN_TERMINAL` body carried a field its `kind` forbids, or omitted
+    /// one its `kind` requires (`docs/spec/L1.md` §3.1). `field` is the
+    /// offending field id; `required` says which of the two rules fired.
+    #[error(
+        "SPAWN_TERMINAL field {field} violates the field rules for kind {kind} (required: {required})"
+    )]
+    InvalidSpawnForKind {
+        /// Wire tag of the spawn's `kind`.
+        kind: u8,
+        /// The field id that was missing (`required`) or present (forbidden).
+        field: u32,
+        /// `true` when the field was required and absent; `false` when it
+        /// was present but forbidden for the kind.
+        required: bool,
+    },
+
+    /// A `SPAWN_TERMINAL` `provider` or `native_id` string was empty or
+    /// exceeded its byte bound.
+    #[error("SPAWN_TERMINAL agent facet string exceeds protocol limits")]
+    AgentFacetLimitExceeded,
+
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see
     /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).

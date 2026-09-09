@@ -1,7 +1,85 @@
 //! Shared sub-record payload types: attach targets (SPEC §13), viewport
 //! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
 
-use crate::ids::{GroupId, SessionId, TerminalId};
+use crate::ids::{GroupId, ResourceKind, SessionId, TerminalId};
+
+// -----------------------------------------------------------------------------
+// SpawnResource — the kind-bearing half of SPAWN_TERMINAL (L1.md §1.2).
+// -----------------------------------------------------------------------------
+
+/// What kind of resource a `SPAWN_TERMINAL` creates and, for a child kind,
+/// its binding and facet: fields 11-14 (`docs/spec/L1.md` §1.2).
+///
+/// Carried on [`FrameKind::SpawnTerminal`](super::FrameKind::SpawnTerminal)
+/// as `Option<Box<SpawnResource>>`. `None` is the plain Terminal spawn every
+/// pre-kind body decodes as; a `Some` whose every field is at its default is
+/// the same spawn and encodes to the same bytes, and the decoder yields
+/// `None` for it, so callers that want the identity round trip use `None`.
+/// The box keeps the frame enum at its Terminal-era size: the four fields
+/// are set on one spawn in a session, and read on none of the hot paths.
+///
+/// The decoder validates the pair with the rest of the body per kind: an
+/// [`AgentSession`](ResourceKind::AgentSession) spawn requires `parent` and
+/// `provider` and carries none of `command`, `cwd`, `env`, `term`,
+/// `owner_terminal`, or `initial_size`; a [`Terminal`](ResourceKind::Terminal)
+/// spawn carries none of `parent`, `provider`, or `native_id`; an
+/// [`Unknown`](ResourceKind::Unknown) kind is not validated, so the server
+/// can answer [`SpawnError::UnsupportedKind`] instead of the connection
+/// failing on a malformed frame. Gated on
+/// [`ServerFeature::ResourceKinds`](crate::caps::ServerFeature::ResourceKinds):
+/// a server without the bit skips the fields by length and spawns a
+/// Terminal, so a client MUST see the bit before asking for another kind.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnResource {
+    /// What kind of resource to spawn (field 11; absent on the wire means
+    /// `Terminal`, and the encoder writes the field only for another kind).
+    pub kind: ResourceKind,
+    /// The resource the new one is bound to (field 12). Required for
+    /// `AgentSession`, whose parent is always a Terminal; set at spawn,
+    /// immutable, and the server closes the child with
+    /// `CloseReason::ParentClosed` when the parent closes.
+    pub parent: Option<TerminalId>,
+    /// Agent provider name, e.g. `claude` (field 13; at most
+    /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
+    /// bytes, non-empty). Required for `AgentSession`.
+    pub provider: Option<String>,
+    /// Opaque provider-native session id (field 14; at most
+    /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
+    /// bytes, non-empty). The same value ADR-0068's
+    /// `phux.agent-session/v1` record carries as `native_id`.
+    pub native_id: Option<String>,
+}
+
+impl SpawnResource {
+    /// The fields of an `AgentSession` spawn bound to `parent`: the two the
+    /// decoder requires, with `native_id` left to [`Self::with_native_id`].
+    #[must_use]
+    pub fn agent_session(parent: TerminalId, provider: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::AgentSession,
+            parent: Some(parent),
+            provider: Some(provider.into()),
+            native_id: None,
+        }
+    }
+
+    /// Builder setter for [`Self::native_id`].
+    #[must_use]
+    pub fn with_native_id(mut self, native_id: Option<String>) -> Self {
+        self.native_id = native_id;
+        self
+    }
+
+    /// `true` iff every field is at its default: a plain Terminal spawn,
+    /// which the encoder writes as no fields at all.
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        self.kind.is_terminal()
+            && self.parent.is_none()
+            && self.provider.is_none()
+            && self.native_id.is_none()
+    }
+}
 
 // -----------------------------------------------------------------------------
 // AttachTarget tagged union — SPEC §13.
@@ -159,6 +237,19 @@ pub enum SpawnError {
     /// `ErrorCode::SatelliteUnreachable`; carries the same human-readable
     /// diagnostic. Retryable — the hub redials with backoff.
     SatelliteUnreachable(String),
+    /// The spawn named a `kind` this server does not serve: either a tag it
+    /// does not recognise (`ResourceKind::Unknown`) or one it knows but has
+    /// no engine for. A server that does not advertise
+    /// `ServerFeature::ResourceKinds` answers every non-Terminal kind this
+    /// way. Wire tag `0x04`.
+    UnsupportedKind,
+    /// The spawn's `parent` names a resource that does not exist on this
+    /// server. Wire tag `0x05`.
+    ParentNotFound,
+    /// The spawn's `parent` exists but is not a kind that may own the
+    /// requested child: an `AgentSession` requires a Terminal parent, and a
+    /// resource that is itself a child cannot be a parent. Wire tag `0x06`.
+    ParentKindMismatch,
 }
 
 /// Tagged union carried by [`FrameKind::TerminalSpawned`](super::FrameKind::TerminalSpawned), SPEC §7.2 / §10.1.

@@ -1675,7 +1675,7 @@ asked flag or branch/cwd — those need a live per-pane subscription, so the
 record's declared state is the honest maximum until you attach there. The
 `phux agent list` CLI remains the exhaustive cross-session projection.
 
-<!-- impl-status: spec-only; probe: CloseReason -->
+<!-- impl-status: partial; probe: CloseReason -->
 > **Status: landing on the resource-model branch.** On a server that
 > advertises `RESOURCE_KINDS`, a pane's fleet row and sidebar row take their
 > state from the pane's live **agent session** when one exists

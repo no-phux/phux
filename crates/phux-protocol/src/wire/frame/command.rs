@@ -1,7 +1,7 @@
 //! Control-plane command, result, and agent-event types — SPEC §5
 //! (phux-k61 / ADR-0021) and SPEC §7.5 (phux-y2t / ADR-0022).
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, TerminalId};
+use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind, TerminalId};
 use crate::input::InputEvent;
 use crate::wire::info::SessionSnapshot;
 
@@ -568,6 +568,27 @@ pub enum Command {
         /// The Terminal to paste the transcript into.
         terminal_id: TerminalId,
     },
+    /// Append `bytes` to the output stream of a producer-fed resource
+    /// (`docs/spec/L1.md` §5.1, tag `0x1a`). The producer verb: an
+    /// `AgentSession` has no PTY, so its output is whatever its producer
+    /// appends, and the server stamps, retains, and fans it out exactly as
+    /// it would PTY bytes. `bytes` MUST be one or more complete records
+    /// under the resource's codec (`AgentEventsJsonlV1`: newline-delimited
+    /// JSON objects) and at most [`MAX_APPEND_BYTES`](super::MAX_APPEND_BYTES).
+    ///
+    /// Reply: `COMMAND_RESULT { Ok }`, or `Error` with
+    /// [`ErrorCode::WrongResourceKind`] (the resource is a Terminal, which
+    /// is fed by its PTY), [`ErrorCode::NotProducer`] (the caller did not
+    /// open the resource), [`ErrorCode::RecordInvalid`] (a record failed
+    /// codec validation; nothing was appended), or [`ErrorCode::Overflow`]
+    /// (the retained ring or rate budget is exhausted; retry after backoff).
+    /// Gated on `ServerFeature::ResourceKinds`.
+    AppendResourceOutput {
+        /// The producer-fed resource to append to.
+        terminal_id: TerminalId,
+        /// One or more complete records under the resource's codec.
+        bytes: Vec<u8>,
+    },
 }
 
 /// Acknowledgement for one [`Command::PutFile`] chunk.
@@ -669,10 +690,21 @@ pub enum AgentEvent {
     /// counterpart to the `BELL` frame (`0xB0`), delivered on the event
     /// stream so a subscriber need not also attach.
     Bell,
-    /// A new Terminal (pane) was spawned. The carried `terminal_id` is on
-    /// the [`FrameKind::Event`](super::FrameKind::Event) envelope's `terminal_id` field; this
-    /// variant body is empty (the id is the scope).
-    PaneSpawned,
+    /// A new resource was spawned. The carried `terminal_id` is on the
+    /// [`FrameKind::Event`](super::FrameKind::Event) envelope's `terminal_id`
+    /// field; the body is field-tagged TLV carrying what a subscriber cannot
+    /// learn from the envelope alone: the resource's kind and, for a child,
+    /// its parent. Both are additive — the encoder writes `kind` only for a
+    /// non-Terminal kind and `parent` only when bound, so a Terminal's
+    /// `pane_spawned` body stays empty, and a decoder reads an absent field
+    /// as `Terminal` / `None`.
+    PaneSpawned {
+        /// What backs the new resource; `Terminal` when absent on the wire.
+        kind: ResourceKind,
+        /// The resource it is bound to, when it is a child (`docs/spec/L1.md`
+        /// §1.2); `None` for a root.
+        parent: Option<TerminalId>,
+    },
     /// A Terminal (pane) closed. Mirrors the L1 `TERMINAL_CLOSED` frame
     /// (`0xA1`); the closed Terminal is the envelope's `terminal_id` and
     /// `exit_status` carries the process exit code (or `None` for signal /

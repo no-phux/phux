@@ -1,0 +1,7 @@
+---
+source: crates/phux-protocol/tests/frame_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 25 c2 01 04 04  00 00 00 12 02 04 1a 02 |...%............
+00000010 | 00 d2 00 00 00 13 75 6e  6b 6e 6f 77 6e 20 72 65 |......unknown re
+00000020 | 63 6f 72 64 20 74 79 70  65                      |cord type

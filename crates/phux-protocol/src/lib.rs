@@ -52,19 +52,21 @@ pub use caps::{
     CodecUnavailable, ColorSupport, DEFAULT_BOOTSTRAP_CHUNK_BYTES, DEFAULT_HISTORY_PAGE_BYTES,
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
-    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_TERMINAL, OutputMode, ServerFeature,
-    ServerFeatureSet, TERMINAL_REPLY, TerminalColor, TerminalDefaultColors,
+    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_TERMINAL, OutputMode, RESOURCE_KINDS,
+    ServerFeature, ServerFeatureSet, TERMINAL_REPLY, TerminalColor, TerminalDefaultColors,
     select_bootstrap_profile,
 };
 pub use ids::{
-    BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, SatelliteHost,
-    SessionId, StreamId, TerminalId, WindowId,
+    BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, ResourceId,
+    ResourceKind, SatelliteHost, SessionId, StreamId, TerminalId, WindowId,
 };
 pub use wire::frame::{
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
-    MAX_INPUT_TERMINAL_REPLY_BYTES,
+    CloseReason, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
+    MAX_INPUT_TERMINAL_REPLY_BYTES, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
+    SpawnResource,
 };
+pub use wire::info::AgentFacet;
 
 /// Protocol version this crate implements.
 ///

@@ -97,6 +97,27 @@ pub enum ErrorCode {
     /// been attempted, so resubmitting the batch — under the same operation
     /// id or a fresh one — cannot type it twice.
     InputNotWritten = 207,
+    /// The command's subject is a resource of a kind that does not support
+    /// the operation: a Terminal-facet verb (input, resize, screen, history,
+    /// lease, signal, upload, transcription) aimed at an `AgentSession`, or
+    /// `APPEND_RESOURCE_OUTPUT` aimed at a Terminal. The resource exists;
+    /// the verb does not apply to it. Terminal-scoped like
+    /// [`Self::TerminalNotFound`]: the consumer keeps every other resource
+    /// and its attach.
+    WrongResourceKind = 208,
+    /// `APPEND_RESOURCE_OUTPUT` was sent by a client that is not the
+    /// resource's producer. Only the producer that opened a producer-fed
+    /// resource may append to its output.
+    NotProducer = 209,
+    /// `APPEND_RESOURCE_OUTPUT` carried bytes that are not one or more
+    /// complete, well-formed records under the resource's codec (for
+    /// `AgentEventsJsonlV1`: not UTF-8 JSON lines, an unknown record `type`,
+    /// or a record over its per-record bound). Nothing was appended.
+    RecordInvalid = 210,
+    /// `APPEND_RESOURCE_OUTPUT` was refused because the resource's retained
+    /// output ring or rate budget is exhausted. Nothing was appended; the
+    /// producer may retry after backing off.
+    Overflow = 211,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -165,8 +186,12 @@ impl ErrorCode {
             | Self::InputLeaseHeld
             | Self::InputDeliveryUnknown
             | Self::CanonicalLimitExceeded
-            | Self::InputNotWritten => ErrorScope::Request,
+            | Self::InputNotWritten
+            | Self::NotProducer
+            | Self::RecordInvalid
+            | Self::Overflow => ErrorScope::Request,
             Self::TerminalNotFound
+            | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
             | Self::SatelliteUnreachable
             | Self::ResourceExhausted
@@ -203,6 +228,10 @@ impl ErrorCode {
             205 => Self::InputDeliveryUnknown,
             206 => Self::CanonicalLimitExceeded,
             207 => Self::InputNotWritten,
+            208 => Self::WrongResourceKind,
+            209 => Self::NotProducer,
+            210 => Self::RecordInvalid,
+            211 => Self::Overflow,
             65535 => Self::InternalError,
             _ => return None,
         })
@@ -324,6 +353,78 @@ impl DetachReason {
     }
 }
 
+/// Why a resource ceased to exist (`TERMINAL_CLOSED.reason`,
+/// `docs/spec/L1.md` §3.1).
+///
+/// Carried as an optional trailing field, so a body that predates the field
+/// decodes as [`Unknown`](Self::Unknown) and a body carrying `Unknown` is
+/// encoded with the field absent. Like [`DetachReason`], an unrecognised
+/// wire value is not a decode error: `TERMINAL_CLOSED` is a lifecycle fact
+/// and failing it would hide the ending, so a future reason decodes as
+/// `Unknown` on an older peer.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum CloseReason {
+    /// The backing process exited on its own (PTY EOF, `_exit`, or a signal
+    /// the process received from something other than phux), or a
+    /// producer-fed resource was closed by its producer.
+    Exited = 0,
+    /// A `KILL_TERMINAL` / `KILL_TERMINALS` command removed the resource.
+    Killed = 1,
+    /// The resource's parent closed, and the server cascaded the close under
+    /// its single state lock.
+    ParentClosed = 2,
+    /// The server process is stopping and reaped the resource on the way
+    /// out.
+    ServerShutdown = 3,
+    /// The server stated no reason, or stated one this build does not
+    /// recognise. Encoded as an absent field.
+    #[default]
+    Unknown = 255,
+}
+
+impl CloseReason {
+    /// Stable wire discriminant. `Unknown` has none: an encoder omits the
+    /// field instead, so callers check [`Self::is_unknown`] first.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a wire value. An unrecognised value is [`Self::Unknown`], never
+    /// an error, for the reason given on the type.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Self {
+        match value {
+            0 => Self::Exited,
+            1 => Self::Killed,
+            2 => Self::ParentClosed,
+            3 => Self::ServerShutdown,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// `true` iff the reason is unstated, which the encoder expresses as an
+    /// absent field.
+    #[must_use]
+    pub const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    /// One-line human-readable summary.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Exited => "the process exited",
+            Self::Killed => "the resource was killed",
+            Self::ParentClosed => "the parent resource closed",
+            Self::ServerShutdown => "the server is shutting down",
+            Self::Unknown => "no reason was stated",
+        }
+    }
+}
+
 /// Why one progressive history cursor can no longer be consumed.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -405,7 +506,24 @@ impl HistoryRejectionReason {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorCode, ErrorScope};
+    use super::{CloseReason, ErrorCode, ErrorScope};
+
+    #[test]
+    fn close_reason_tags_are_stable_and_unknown_is_forgiving() {
+        for (reason, tag) in [
+            (CloseReason::Exited, 0),
+            (CloseReason::Killed, 1),
+            (CloseReason::ParentClosed, 2),
+            (CloseReason::ServerShutdown, 3),
+        ] {
+            assert_eq!(reason.as_wire(), tag);
+            assert_eq!(CloseReason::from_wire(tag), reason);
+            assert!(!reason.is_unknown());
+        }
+        assert_eq!(CloseReason::from_wire(4), CloseReason::Unknown);
+        assert_eq!(CloseReason::from_wire(255), CloseReason::Unknown);
+        assert!(CloseReason::default().is_unknown());
+    }
 
     /// Every code this protocol version defines, in wire order.
     ///
@@ -435,6 +553,10 @@ mod tests {
         ErrorCode::InputDeliveryUnknown,
         ErrorCode::CanonicalLimitExceeded,
         ErrorCode::InputNotWritten,
+        ErrorCode::WrongResourceKind,
+        ErrorCode::NotProducer,
+        ErrorCode::RecordInvalid,
+        ErrorCode::Overflow,
         ErrorCode::InternalError,
     ];
 
@@ -482,5 +604,9 @@ mod tests {
             ErrorScope::Terminal
         );
         assert_eq!(ErrorCode::InternalError.scope(), ErrorScope::Terminal);
+        assert_eq!(ErrorCode::WrongResourceKind.scope(), ErrorScope::Terminal);
+        assert_eq!(ErrorCode::NotProducer.scope(), ErrorScope::Request);
+        assert_eq!(ErrorCode::RecordInvalid.scope(), ErrorScope::Request);
+        assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
     }
 }

@@ -10,15 +10,19 @@
 #![allow(clippy::unwrap_used)]
 
 use bytes::BytesMut;
-use phux_protocol::ids::{GroupId, TerminalId};
+use phux_protocol::caps::BootstrapStreamProfile;
+use phux_protocol::ids::{
+    BootstrapId, ClientId, GroupId, ResourceKind, SessionId, StreamId, TerminalId, WindowId,
+};
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    DetachReason, ErrorCode, FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResult,
-    ViewportInfo,
+    AgentEvent, CloseReason, Command, CommandResult, DetachReason, ErrorCode, FrameKind, MoveError,
+    MoveResult, Scope, SpawnError, SpawnResource, SpawnResult, ViewportInfo,
 };
+use phux_protocol::wire::info::{AgentFacet, SessionSnapshot, TerminalInfo};
 
 /// Render `bytes` as an `xxd`-style hex dump: 16 cols per row,
 /// `OFFSET | HEX HEX HEX ... | ASCII`.
@@ -325,6 +329,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         ),
         (
@@ -347,6 +352,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                     br#"{"plugin_id":"com.phux.agents","native_id":"session-42"}"#.to_vec(),
                 ),
                 initial_size: Some((132, 43)),
+                resource: None,
             },
         ),
         (
@@ -365,6 +371,71 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
+            },
+        ),
+        (
+            // An AgentSession spawn: fields 11 (kind), 12 (parent), 13
+            // (provider), 14 (native_id) and none of the PTY-shape fields.
+            "snap_spawn_terminal_agent_session",
+            FrameKind::SpawnTerminal {
+                request_id: 0x0000_0004,
+                group: GroupId::new(1),
+                command: None,
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: None,
+                owner_terminal: None,
+                agent_session: None,
+                initial_size: None,
+                resource: Some(Box::new(
+                    SpawnResource::agent_session(TerminalId::local(0x0000_002A), "claude")
+                        .with_native_id(Some("session-42".to_owned())),
+                )),
+            },
+        ),
+        // pane_spawned events: a root Terminal keeps the empty body; an
+        // AgentSession child carries its kind and parent as TLV fields.
+        (
+            "snap_event_pane_spawned_terminal",
+            FrameKind::Event {
+                terminal: Some(TerminalId::local(0x0000_002A)),
+                event: AgentEvent::PaneSpawned {
+                    kind: ResourceKind::Terminal,
+                    parent: None,
+                },
+            },
+        ),
+        (
+            "snap_event_pane_spawned_agent_session",
+            FrameKind::Event {
+                terminal: Some(TerminalId::local(0x0000_002B)),
+                event: AgentEvent::PaneSpawned {
+                    kind: ResourceKind::AgentSession,
+                    parent: Some(TerminalId::local(0x0000_002A)),
+                },
+            },
+        ),
+        (
+            "snap_terminal_spawned_err_unsupported_kind",
+            FrameKind::TerminalSpawned {
+                request_id: 0x0000_000C,
+                result: SpawnResult::Err(SpawnError::UnsupportedKind),
+            },
+        ),
+        (
+            "snap_terminal_spawned_err_parent_not_found",
+            FrameKind::TerminalSpawned {
+                request_id: 0x0000_000D,
+                result: SpawnResult::Err(SpawnError::ParentNotFound),
+            },
+        ),
+        (
+            "snap_terminal_spawned_err_parent_kind_mismatch",
+            FrameKind::TerminalSpawned {
+                request_id: 0x0000_000E,
+                result: SpawnResult::Err(SpawnError::ParentKindMismatch),
             },
         ),
         (
@@ -422,6 +493,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
             FrameKind::TerminalClosed {
                 terminal_id: TerminalId::local(0x0000_002A),
                 exit_status: Some(0),
+                reason: CloseReason::Unknown,
             },
         ),
         (
@@ -430,6 +502,115 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
             FrameKind::TerminalClosed {
                 terminal_id: TerminalId::local(0x0000_002A),
                 exit_status: None,
+                reason: CloseReason::Unknown,
+            },
+        ),
+        (
+            // A stated reason rides as additive field 3; `Unknown` above is
+            // the absent-field shape the two goldens before it pin.
+            "snap_terminal_closed_parent_closed",
+            FrameKind::TerminalClosed {
+                terminal_id: TerminalId::local(0x0000_002B),
+                exit_status: None,
+                reason: CloseReason::ParentClosed,
+            },
+        ),
+        (
+            "snap_terminal_closed_killed_with_exit_code",
+            FrameKind::TerminalClosed {
+                terminal_id: TerminalId::local(0x0000_002A),
+                exit_status: Some(-9),
+                reason: CloseReason::Killed,
+            },
+        ),
+        // APPEND_RESOURCE_OUTPUT (tag 0x1a): the producer verb, one complete
+        // AgentEventsJsonlV1 record.
+        (
+            "snap_command_append_resource_output",
+            FrameKind::Command {
+                request_id: 0x0000_0010,
+                command: Command::AppendResourceOutput {
+                    terminal_id: TerminalId::local(0x0000_002B),
+                    bytes: b"{\"type\":\"prompt\",\"data\":{\"len\":12}}\n".to_vec(),
+                },
+            },
+        ),
+        // COMMAND_RESULT error codes minted for producer-fed resources.
+        (
+            "snap_command_result_error_wrong_resource_kind",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0010,
+                result: CommandResult::Error {
+                    code: ErrorCode::WrongResourceKind,
+                    message: "terminals are fed by their pty".to_owned(),
+                },
+            },
+        ),
+        (
+            "snap_command_result_error_not_producer",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0011,
+                result: CommandResult::Error {
+                    code: ErrorCode::NotProducer,
+                    message: String::new(),
+                },
+            },
+        ),
+        (
+            "snap_command_result_error_record_invalid",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0012,
+                result: CommandResult::Error {
+                    code: ErrorCode::RecordInvalid,
+                    message: "unknown record type".to_owned(),
+                },
+            },
+        ),
+        (
+            "snap_command_result_error_overflow",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0013,
+                result: CommandResult::Error {
+                    code: ErrorCode::Overflow,
+                    message: String::new(),
+                },
+            },
+        ),
+        // ATTACHED carrying the trailing resource-facet list: one Terminal
+        // and one AgentSession child bound to it.
+        (
+            "snap_attached_with_agent_session_facets",
+            FrameKind::Attached {
+                attach_id: 1,
+                initial_client_id: ClientId::new(7),
+                snapshot: SessionSnapshot::new(
+                    SessionId::new(1),
+                    WindowId::new(10),
+                    TerminalId::local(0x2A),
+                )
+                .with_panes(vec![
+                    TerminalInfo::new(TerminalId::local(0x2A), WindowId::new(10), 80, 24),
+                    TerminalInfo::resource(TerminalId::local(0x2B), ResourceKind::AgentSession)
+                        .with_parent(Some(TerminalId::local(0x2A)))
+                        .with_agent(Some(
+                            AgentFacet::new("claude", "working")
+                                .with_native_id(Some("session-42".to_owned())),
+                        )),
+                ]),
+            },
+        ),
+        // BOOTSTRAP_BEGIN for an AgentSession stream: codec tag 3, raw
+        // output mode, no grid.
+        (
+            "snap_bootstrap_begin_agent_events_jsonl_v1",
+            FrameKind::BootstrapBegin {
+                terminal_id: TerminalId::local(0x2B),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                profile: BootstrapStreamProfile::AgentEventsJsonlV1,
+                cols: 0,
+                rows: 0,
+                base_seq: 0,
             },
         ),
         (
