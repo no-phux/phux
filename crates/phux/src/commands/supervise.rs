@@ -15,7 +15,7 @@ use phux_protocol::wire::frame::{
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
-    SignalArg, parse_selector, report_no_server, request_command, resolve_target,
+    SignalArg, parse_selector, report_no_server, request_command, resolve_target_for_input,
 };
 
 /// `phux take TARGET` — seize the input lease over the resolved pane so only
@@ -43,7 +43,8 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, verb, false).await {
+        let terminal_id = match resolve_target_for_input(&socket_path, &selector, verb, false).await
+        {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -95,10 +96,11 @@ pub(crate) fn run_signal(target: &str, signal: SignalArg, socket: Option<PathBuf
     };
     let wire_signal = TerminalSignal::from(signal);
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "signal", false).await {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
+        let terminal_id =
+            match resolve_target_for_input(&socket_path, &selector, "signal", false).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
         match request_command(
             &socket_path,
             WireCommand::SignalTerminal {

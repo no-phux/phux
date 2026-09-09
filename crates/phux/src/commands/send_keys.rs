@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target_for_input};
 
 /// `phux send-keys TARGET KEYS...` — send input to a pane via the
 /// side-effect-free `ROUTE_INPUT` route.
@@ -26,7 +26,8 @@ pub(crate) fn run_send_keys(target: &str, keys: &[String], socket: Option<PathBu
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "send-keys", false).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, "send-keys", false).await
+        {
             Ok(id) => id,
             Err(code) => return code,
         };

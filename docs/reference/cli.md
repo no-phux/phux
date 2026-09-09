@@ -82,7 +82,7 @@ FEDERATION
   relay      Run a standalone relay, or enroll a route with it
 
 TARGET is a session name, `name:window`, `name:window.pane`, `@id`,
-`#tag`, or `.` (focused). `=` is reserved for the
+`#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the
 attached view's focus history. The same selectors work across
 kill/snapshot/send-keys/run/wait/ask.
 
@@ -196,6 +196,9 @@ Commands:
   answer            Answer a pane's pending agent question by validated choice
   start             Start an agent INSIDE an existing shell pane, and return when it is ready for input
   clear             Clear a pane's declared agent identity
+  session           Open or close a pane's agent session (an `AgentSession` resource)
+  emit              Append one record to a pane's agent session
+  log               Read a pane's agent session stream
   install-claude    Make plain `claude` launch inside phux and declare its identity
   uninstall-claude  Remove the claude-in-phux shim and shell activation
   help              Print this message or the help of the given subcommand(s)
@@ -265,6 +268,38 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux agent emit`
+
+```text
+Append one record to a pane's agent session.
+
+The record is one `AgentEventsJsonlV1` line: `--type` from the closed set (`session_start`, `prompt`, `tool_start`, `tool_end`, `notification`, `ask`, `stop`, `session_end`, `state`, `provider_raw`) and `--data`, a JSON object. The server stamps `seq` and `ts_ms` and derives the agent's lifecycle state from the stream (`prompt` / `tool_start` -> working, `ask` -> blocked, `stop` -> done, `session_end` -> retract). Only the client that opened the session may append; nothing is written on a refusal. Prints nothing on success.
+
+Usage: phux agent emit [OPTIONS] --type <T> <TARGET>
+
+Arguments:
+  <TARGET>
+          The session: its resource id, the pane hosting it, or `%name`
+
+Options:
+      --type <T>
+          Record type, one of the closed `AgentEventsJsonlV1` set
+
+          [possible values: session_start, prompt, tool_start, tool_end, notification, ask, stop, session_end, state, provider_raw]
+
+      --data <JSON>
+          Record payload: a JSON object inline, or `-` to read it from stdin. `{}` when omitted
+
+      --json
+          Emit the stamped record header as JSON instead of staying quiet
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux agent explain`
@@ -346,6 +381,36 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux agent log`
+
+```text
+Read a pane's agent session stream.
+
+Attaches to the session as an observer, the way `phux rec` attaches to a pane: the retained records arrive first and, with `--follow`, live records after them until Ctrl-C or the session closes. There is no `--timeout`; run a following log under a child-process deadline exactly as you would `phux watch`.
+
+Usage: phux agent log [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          The session: its resource id, the pane hosting it, or `%name`
+
+Options:
+      --follow
+          Keep streaming live records after the retained ones
+
+      --tail <N>
+          Return only the last N retained records
+
+      --json
+          Emit JSON: one envelope document, or under `--follow` one record per line with no envelope (the `watch --json` rule)
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux agent prompt`
@@ -451,6 +516,81 @@ Options:
 
       --json
           Emit machine-readable JSON instead of staying quiet on success
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux agent session`
+
+```text
+Open or close a pane's agent session (an `AgentSession` resource).
+
+An agent session is the server-side, producer-fed event log an agent harness appends to with `phux agent emit` and anyone reads with `phux agent log`. It is bound to the pane the agent runs in: closing the pane closes it, closing it never touches the pane. Needs a server that advertises `RESOURCE_KINDS` (`phux status --json`).
+
+Usage: phux agent session [OPTIONS] <COMMAND>
+
+Commands:
+  open   Open an agent session bound to a pane
+  close  Close a pane's agent session; the pane is untouched
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux agent session close`
+
+```text
+Close a pane's agent session; the pane is untouched.
+
+TARGET is the session (`@N`), the pane hosting it, or `%name`. Prints `@N<TAB>closed`.
+
+Usage: phux agent session close [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          The session: its resource id, the pane hosting it, or `%name`
+
+Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux agent session open`
+
+```text
+Open an agent session bound to a pane.
+
+Spawns an `AgentSession` resource whose parent is the Terminal TARGET resolves to: the server-side, producer-fed event log the agent's harness appends to with `phux agent emit`, and the thing `%name`, `phux agent log`, and the sidebar read. Closing the pane closes the session; closing the session never touches the pane. The caller becomes the session's producer — only the client that opened a session may append to it. The server does not deduplicate: a pane that already has a live session gets a second one.
+
+Refused with `unsupported_server` on a server that does not advertise `RESOURCE_KINDS` (see `phux status --json`'s `features`).
+
+Usage: phux agent session open [OPTIONS] --provider <P> <TARGET>
+
+Arguments:
+  <TARGET>
+          The parent pane: a selector resolving to one Terminal (`@N`, `%name`, `session:window.pane`)
+
+Options:
+      --provider <P>
+          Agent provider slug, e.g. `claude`
+
+      --native-id <ID>
+          The provider's own opaque session id, when it has one
+
+      --json
+          Emit the machine-readable result document instead of the bare resource id
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)

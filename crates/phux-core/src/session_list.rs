@@ -55,6 +55,29 @@ pub struct SessionJson {
     pub attached_clients: u16,
 }
 
+/// One resource's row in [`SessionListJson::resources`]: the canonical
+/// selector, its kind, and its parent when the kind has one.
+///
+/// **Additive** to the contract (no [`LS_SCHEMA_VERSION`] bump): `terminals`
+/// keeps listing every addressable resource as a bare selector, and this
+/// array carries the kind facts beside it. Consumers that predate resource
+/// kinds keep reading `terminals`; consumers that need to skip non-terminal
+/// kinds branch on `kind` here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceJson {
+    /// Canonical selector for the resource (`@N` / `host/@N`), the same
+    /// string the `terminals` inventory carries.
+    pub id: String,
+    /// Resource kind, lower-case: `terminal`, `agent_session`, or `unknown`
+    /// for a kind this binary does not know.
+    pub kind: String,
+    /// Canonical selector of the parent resource, or `None` for a root
+    /// (every Terminal-kind resource). Emitted as `null` rather than
+    /// omitted, so a consumer reads "root" positively.
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
 /// The `phux ls --json` payload: a versioned list of sessions.
 ///
 /// Sessions are emitted in the same name-sorted order as the human
@@ -84,6 +107,12 @@ pub struct SessionListJson {
     /// emptiness, not on their text.
     #[serde(default)]
     pub unreachable: Vec<String>,
+    /// Every addressable resource with its kind and parent, in the same
+    /// snapshot order as `terminals` — see [`ResourceJson`]. Additive: a
+    /// payload from a pre-resource-kinds `phux` lacks the key and reads as
+    /// empty.
+    #[serde(default)]
+    pub resources: Vec<ResourceJson>,
 }
 
 impl SessionListJson {
@@ -99,7 +128,15 @@ impl SessionListJson {
             sessions,
             terminals: Vec::new(),
             unreachable: Vec::new(),
+            resources: Vec::new(),
         }
+    }
+
+    /// Add the per-resource kind/parent rows, in snapshot order.
+    #[must_use]
+    pub fn with_resources(mut self, resources: Vec<ResourceJson>) -> Self {
+        self.resources = resources;
+        self
     }
 
     /// Add the aggregate Terminal inventory in server snapshot order.
@@ -120,7 +157,7 @@ impl SessionListJson {
 
 #[cfg(test)]
 mod tests {
-    use super::{LS_SCHEMA_VERSION, SessionJson, SessionListJson};
+    use super::{LS_SCHEMA_VERSION, ResourceJson, SessionJson, SessionListJson};
 
     #[test]
     fn new_stamps_schema_version_and_keeps_order() {
@@ -179,6 +216,37 @@ mod tests {
         .expect("v1 payloads remain deserializable for compatibility");
         assert!(old_shape.terminals.is_empty());
         assert!(old_shape.unreachable.is_empty());
+        assert!(old_shape.resources.is_empty());
+    }
+
+    #[test]
+    fn resources_carry_kind_and_parent_without_a_version_bump() {
+        let list = SessionListJson::new(Vec::new())
+            .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
+            .with_resources(vec![
+                ResourceJson {
+                    id: "@7".to_owned(),
+                    kind: "terminal".to_owned(),
+                    parent: None,
+                },
+                ResourceJson {
+                    id: "@9".to_owned(),
+                    kind: "agent_session".to_owned(),
+                    parent: Some("@7".to_owned()),
+                },
+            ]);
+        let json = serde_json::to_value(&list).expect("serialize");
+        assert_eq!(
+            json["schema_version"], 3,
+            "an added key does not move the version"
+        );
+        assert_eq!(json["resources"][0]["kind"], "terminal");
+        assert!(
+            json["resources"][0]["parent"].is_null(),
+            "a root resource carries `parent: null` rather than omitting the key"
+        );
+        assert_eq!(json["resources"][1]["kind"], "agent_session");
+        assert_eq!(json["resources"][1]["parent"], "@7");
     }
 
     #[test]

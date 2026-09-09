@@ -703,7 +703,15 @@ fn agent_event_json(ev: &phux_client::watch::WatchEvent) -> Value {
         }
         AgentEvent::TitleChanged { title } => ("title_changed", json!({ "title": title })),
         AgentEvent::Bell => ("bell", json!({})),
-        AgentEvent::PaneSpawned { .. } => ("pane_spawned", json!({})),
+        // Additive (ADR-0102): the spawned resource's kind and parent, so a
+        // consumer can tell a new pane from a new agent session.
+        AgentEvent::PaneSpawned { kind, parent } => (
+            "pane_spawned",
+            json!({
+                "kind": kind.as_str(),
+                "parent": parent.as_ref().map(selector::format_terminal_id),
+            }),
+        ),
         AgentEvent::PaneClosed { exit_status } => {
             ("pane_closed", json!({ "exit_status": exit_status }))
         }
@@ -818,6 +826,14 @@ async fn resolve_one(
     view: &StateView,
 ) -> Result<TerminalId, ToolError> {
     let snapshot = view.snapshot();
+    // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
+    // resolves to exactly one agent or refuses with the reason.
+    if let Selector::Agent(name) = selector {
+        return state::resolve_agent_target(socket, name, snapshot, false)
+            .await
+            .map(|target| target.terminal)
+            .map_err(|err| ToolError::new(err.to_string()));
+    }
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
     selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
         if view.is_complete() {
@@ -965,6 +981,10 @@ mod tests {
                 "phux_agent_prompt",
                 "phux_agent_answer",
                 "phux_agent_start",
+                "phux_agent_session_open",
+                "phux_agent_session_close",
+                "phux_agent_emit",
+                "phux_agent_log",
                 "phux_status",
                 "phux_doctor",
             ]

@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use phux_client::resource;
 use phux_client::state::Degradation;
-use phux_core::session_list::{SessionJson, SessionListJson};
+use phux_core::session_list::{ResourceJson, SessionJson, SessionListJson};
 
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
@@ -67,20 +68,63 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
     }
 }
 
-/// The human `phux ls` body as pure data: name-sorted session lines, then
-/// satellite Terminals. Empty exactly when the server has nothing to list —
-/// the trigger for [`EMPTY_STATE`]. Split from [`print_sessions`] so the
-/// rendering is unit-testable without capturing stdout.
+/// The human `phux ls` body as pure data: name-sorted session lines, each
+/// followed by the panes of that session that carry agent sessions (the
+/// sessions nested under their pane), then satellite Terminals. Empty
+/// exactly when the server has nothing to list — the trigger for
+/// [`EMPTY_STATE`]. Split from [`print_sessions`] so the rendering is
+/// unit-testable without capturing stdout.
+///
+/// A pane with no agent session prints nothing under its session line, so a
+/// server that serves only Terminals renders exactly the pre-resource-model
+/// listing.
 fn session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut lines: Vec<String> = sessions.into_iter().map(format_session_line).collect();
-    for pane in &snapshot.panes {
+    let mut lines: Vec<String> = Vec::new();
+    for session in sessions {
+        lines.push(format_session_line(session));
+        lines.extend(agent_session_lines(snapshot, session));
+    }
+    for pane in resource::terminals(snapshot) {
         if pane.id.host().is_some() {
             lines.push(format!(
                 "{}: satellite terminal",
                 crate::selector::format_terminal_id(&pane.id)
             ));
+        }
+    }
+    lines
+}
+
+/// The nested lines under one session: `  @7` for each of its panes that
+/// hosts an agent session, then `    @9: agent session <provider> (<state>)`
+/// per session child.
+fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec<String> {
+    let mut lines = Vec::new();
+    for window in snapshot
+        .windows
+        .iter()
+        .filter(|window| window.session_id == session.id)
+    {
+        for pane in resource::terminals(snapshot).filter(|pane| pane.window_id == window.id) {
+            let children: Vec<_> = resource::children_of(snapshot, &pane.id).collect();
+            if children.is_empty() {
+                continue;
+            }
+            lines.push(format!(
+                "  {}",
+                crate::selector::format_terminal_id(&pane.id)
+            ));
+            for child in children {
+                let facet = child.agent.as_ref();
+                let provider = facet.map_or("agent session", |facet| facet.provider.as_str());
+                let state = facet.map_or("unknown", |facet| facet.state.as_str());
+                lines.push(format!(
+                    "    {}: agent session {provider} ({state})",
+                    crate::selector::format_terminal_id(&child.id)
+                ));
+            }
         }
     }
     lines
@@ -128,13 +172,28 @@ pub(crate) fn print_sessions_json(
             attached_clients: s.attached_client_count,
         })
         .collect();
-    let terminals = snapshot
+    // `terminals` stays the Terminal-kind inventory — the ids a Terminal-facet
+    // verb accepts — so a consumer that iterates it and calls `snapshot` on
+    // each keeps working; every resource, with its kind and parent, is the
+    // additive `resources` array.
+    let terminals = resource::terminals(snapshot)
+        .map(|pane| crate::selector::format_terminal_id(&pane.id))
+        .collect();
+    let resources = snapshot
         .panes
         .iter()
-        .map(|pane| crate::selector::format_terminal_id(&pane.id))
+        .map(|pane| ResourceJson {
+            id: crate::selector::format_terminal_id(&pane.id),
+            kind: resource::kind_name(pane.kind).to_owned(),
+            parent: pane
+                .parent
+                .as_ref()
+                .map(crate::selector::format_terminal_id),
+        })
         .collect();
     let list = SessionListJson::new(entries)
         .with_terminals(terminals)
+        .with_resources(resources)
         .with_unreachable(degradation.notices().to_vec());
     match serde_json::to_string_pretty(&list) {
         Ok(s) => {
@@ -196,6 +255,81 @@ mod tests {
         assert_eq!(
             format_session_line(&session("work", 2, 2)),
             "work: 2 windows (2 clients attached)"
+        );
+    }
+
+    /// An agent session nests under its pane, under its session; panes with
+    /// no session child print nothing, so the plain listing is unchanged.
+    #[test]
+    fn agent_sessions_nest_under_their_pane() {
+        use phux_protocol::ids::ResourceKind;
+        use phux_protocol::wire::info::{AgentFacet, TerminalInfo, WindowInfo};
+
+        let work = SessionId::new(1);
+        let window = WindowId::new(10);
+        let snapshot = SessionSnapshot::new(work, window, TerminalId::local(7))
+            .with_sessions(vec![SessionInfo::new(work, "work").with_window_count(1)])
+            .with_windows(vec![WindowInfo::new(window, work, "shell").with_index(0)])
+            .with_panes(vec![
+                TerminalInfo::new(TerminalId::local(7), window, 80, 24),
+                TerminalInfo::new(TerminalId::local(8), window, 80, 24),
+                TerminalInfo::new(TerminalId::local(9), window, 0, 0)
+                    .with_kind(ResourceKind::AgentSession)
+                    .with_parent(Some(TerminalId::local(7)))
+                    .with_agent(Some(AgentFacet::new("claude", "working"))),
+            ]);
+        assert_eq!(
+            session_lines(&snapshot),
+            vec![
+                "work: 1 window",
+                "  @7",
+                "    @9: agent session claude (working)",
+            ]
+        );
+    }
+
+    /// `--json`: `terminals` lists Terminal-kind ids only; `resources` lists
+    /// every resource with its kind and parent.
+    #[test]
+    fn json_splits_terminals_from_resources() {
+        use phux_protocol::ids::ResourceKind;
+        use phux_protocol::wire::info::TerminalInfo;
+
+        let window = WindowId::new(10);
+        let snapshot = SessionSnapshot::new(SessionId::new(1), window, TerminalId::local(7))
+            .with_panes(vec![
+                TerminalInfo::new(TerminalId::local(7), window, 80, 24),
+                TerminalInfo::new(TerminalId::local(9), window, 0, 0)
+                    .with_kind(ResourceKind::AgentSession)
+                    .with_parent(Some(TerminalId::local(7))),
+            ]);
+        let terminals: Vec<String> = phux_client::resource::terminals(&snapshot)
+            .map(|pane| crate::selector::format_terminal_id(&pane.id))
+            .collect();
+        assert_eq!(terminals, ["@7"]);
+        let resources: Vec<(String, String, Option<String>)> = snapshot
+            .panes
+            .iter()
+            .map(|pane| {
+                (
+                    crate::selector::format_terminal_id(&pane.id),
+                    phux_client::resource::kind_name(pane.kind).to_owned(),
+                    pane.parent
+                        .as_ref()
+                        .map(crate::selector::format_terminal_id),
+                )
+            })
+            .collect();
+        assert_eq!(
+            resources,
+            [
+                ("@7".to_owned(), "terminal".to_owned(), None),
+                (
+                    "@9".to_owned(),
+                    "agent_session".to_owned(),
+                    Some("@7".to_owned())
+                ),
+            ]
         );
     }
 

@@ -65,7 +65,7 @@ use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 /// Version of the `agent prompt` result document (ADR-0076 point 7).
 const RESULT_SCHEMA_VERSION: u8 = 1;
@@ -197,10 +197,11 @@ pub(super) fn run_agent_prompt(
     let text = text.to_owned();
 
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "agent prompt", json).await {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
+        let pane =
+            match resolve_target_for_input(&socket_path, &selector, "agent prompt", json).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
         let label = crate::selector::format_terminal_id(&pane);
         // ADR-0076 point 4: the ownership check is an *identity comparison*
         // and nothing more, and it is the one `phux agent send-keys` already

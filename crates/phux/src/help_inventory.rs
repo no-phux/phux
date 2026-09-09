@@ -96,13 +96,18 @@ phux
 phux agent
 phux agent answer
 phux agent clear
+phux agent emit
 phux agent explain
 phux agent hook-payload
 phux agent install-claude
 phux agent list
+phux agent log
 phux agent prompt
 phux agent report-state
 phux agent send-keys
+phux agent session
+phux agent session close
+phux agent session open
 phux agent set
 phux agent show
 phux agent start
@@ -512,18 +517,25 @@ fn root_help_documents_exit_status() {
 }
 
 #[test]
-fn parser_reserved_agent_selector_is_not_advertised_as_live() {
+fn the_agent_selector_is_advertised_as_live() {
+    // `%name` has its production caller (ADR-0075 via ADR-0103): the shared
+    // target resolver and the agent-session verbs branch on it, so the root
+    // help and the compiled skill teach it as a live form.
     let mut root = Cli::command();
     let help = root.render_long_help().to_string();
     assert!(
-        !help.contains("%agent-name"),
-        "root --help advertises the parser-reserved `%name` form as live"
+        help.contains("%agent-name"),
+        "root --help must advertise the `%name` form now that verbs resolve it"
     );
 
     let skill = crate::skill::render(crate::skill::SkillScope::Full);
     assert!(
-        skill.contains("no shipped verb resolves it"),
-        "the compiled skill must explain that `%name` is parser-reserved"
+        !skill.contains("no shipped verb resolves it"),
+        "the compiled skill must not call `%name` parser-reserved any more"
+    );
+    assert!(
+        skill.contains("agent session open") && skill.contains("agent emit"),
+        "the compiled skill must teach the agent session verbs"
     );
 }
 

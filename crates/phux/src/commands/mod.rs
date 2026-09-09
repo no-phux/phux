@@ -2269,10 +2269,45 @@ pub(crate) async fn resolve_target(
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
+    resolve_target_with(socket_path, selector, verb, json, false).await
+}
+
+/// [`resolve_target`] for the verbs that deliver input into the pane
+/// (`send-keys`, `paste`, `run`, `signal`, and the acknowledged agent
+/// writes): identical, except that a `%name` whose record has the withdrawn
+/// shape is refused (ADR-0075 point 5) rather than resolved.
+pub(crate) async fn resolve_target_for_input(
+    socket_path: &Path,
+    selector: &crate::selector::Selector,
+    verb: &str,
+    json: bool,
+) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
+    resolve_target_with(socket_path, selector, verb, json, true).await
+}
+
+async fn resolve_target_with(
+    socket_path: &Path,
+    selector: &crate::selector::Selector,
+    verb: &str,
+    json: bool,
+    for_input: bool,
+) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
     let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?
         .into_parts();
+    // `%name` is singular: it resolves to exactly one agent or refuses, and
+    // never travels the set-valued path below where `pick_target_pane` would
+    // narrow it (ADR-0075 point 3). A Terminal-facet verb acts on the named
+    // agent's pane; the session verbs resolve their own side.
+    if let crate::selector::Selector::Agent(name) = selector {
+        let target =
+            phux_client::state::resolve_agent_target(socket_path, name, &snapshot, for_input)
+                .await
+                .map_err(|err| report_agent_resolve_error(json, &err, true))?;
+        partial::warn_partial_view(verb, &degradation);
+        return Ok(target.terminal);
+    }
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
     let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
         .ok_or_else(|| partial::report_target_miss_keeping_status_for(json, None, &degradation))?;
@@ -2280,6 +2315,61 @@ pub(crate) async fn resolve_target(
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);
     Ok(picked)
+}
+
+/// Report a `%name` refusal on the shared error contract and return its
+/// exit status.
+///
+/// Every variant is a refusal to guess (ADR-0075 point 3), so each lands on
+/// a distinct code: a miss is `no_such_target` (1); two records or two
+/// sessions sharing the name are `selector_not_single` (2); a kind constant
+/// is `invalid_agent_name` (2); a withdrawn record on an input verb is
+/// `agent_withdrawn` (2); an index that did not finish is `partial_view` —
+/// exit 3, or 1 when `keep_status` for the verbs whose status is already
+/// spoken for.
+pub(crate) fn report_agent_resolve_error(
+    json: bool,
+    err: &phux_client::selector::AgentResolveError,
+    keep_status: bool,
+) -> ExitCode {
+    use phux_client::selector::AgentResolveError;
+    let (code, exit_code, remedy) = match err {
+        AgentResolveError::Unknown { .. } => (
+            json_err::codes::NO_SUCH_TARGET,
+            crate::exit_codes::EXIT_FAILURE,
+            "`phux agent list` shows every declared name; set one with `phux agent set \
+             TARGET --name <name>`",
+        ),
+        AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => (
+            json_err::codes::SELECTOR_NOT_SINGLE,
+            crate::exit_codes::EXIT_USAGE,
+            "address one candidate directly by @N",
+        ),
+        AgentResolveError::KindConstant { .. } => (
+            json_err::codes::INVALID_AGENT_NAME,
+            crate::exit_codes::EXIT_USAGE,
+            "name one pane with `phux agent set @N --name <name>` and address that",
+        ),
+        AgentResolveError::Withdrawn { .. } => (
+            json_err::codes::AGENT_WITHDRAWN,
+            crate::exit_codes::EXIT_USAGE,
+            "inspect the pane with `phux agent explain`; address it by @N to write anyway",
+        ),
+        AgentResolveError::PartialIndex { .. } => (
+            json_err::codes::PARTIAL_VIEW,
+            if keep_status {
+                crate::exit_codes::EXIT_FAILURE
+            } else {
+                crate::exit_codes::EXIT_PARTIAL_VIEW
+            },
+            "retry once the fleet is whole, or address the pane by @N",
+        ),
+    };
+    json_err::emit(
+        json,
+        &json_err::CliError::new(code, err.to_string(), remedy),
+        exit_code,
+    )
 }
 
 /// Resolve `selector` to its `TerminalId`s, fetching L3 tag metadata first

@@ -175,8 +175,15 @@ pub(crate) mod codes {
     pub(crate) const INPUT_BUSY: &str = "input_busy";
     /// The pane's occupant changed while acknowledged input was in flight.
     pub(crate) const UNKNOWN_OCCUPANT: &str = "unknown_occupant";
-    /// An addressable agent name does not match the `%name` grammar.
+    /// An agent name is not addressable: it does not match the `%name`
+    /// grammar, or it is a per-kind manifest constant (`claude` on every
+    /// Claude pane) rather than a name someone chose (ADR-0075 point 4).
     pub(crate) const INVALID_AGENT_NAME: &str = "invalid_agent_name";
+    /// A `%name` handed to an input verb resolved to a record with the
+    /// withdrawn shape (a `kind` and `state: unknown`): its producer gave the
+    /// claim up, so who is in the pane is unknown (ADR-0075 point 5). Exit 2;
+    /// read-only verbs skip the gate.
+    pub(crate) const AGENT_WITHDRAWN: &str = "agent_withdrawn";
     /// The requested agent kind has no loaded detection manifest.
     pub(crate) const UNSUPPORTED_AGENT_KIND: &str = "unsupported_agent_kind";
     /// No detection manifests are available, so readiness is unenforceable.
@@ -224,6 +231,40 @@ pub(crate) mod codes {
     pub(crate) const ANSWER_DELIVERY_UNKNOWN: &str = "answer_delivery_unknown";
     /// The server refused an answer batch for another typed reason.
     pub(crate) const ANSWER_REFUSED: &str = "answer_refused";
+    /// The server did not advertise the feature a verb needs
+    /// (`ServerFeature::ResourceKinds` for the agent session verbs), so the
+    /// request was refused before any frame that server would drop. Exit 2.
+    pub(crate) const UNSUPPORTED_SERVER: &str = "unsupported_server";
+    /// The target Terminal has no live `AgentSession` child, so there is no
+    /// session to log, emit into, or close. Exit 2.
+    pub(crate) const NO_AGENT_SESSION: &str = "no_agent_session";
+    /// The target Terminal has more than one live `AgentSession` child;
+    /// address the session resource directly by `@N`. Exit 2.
+    pub(crate) const AGENT_SESSION_AMBIGUOUS: &str = "agent_session_ambiguous";
+    /// The resource is not of the kind the operation requires (a Terminal
+    /// facet command sent to an `AgentSession`, or an append sent to a
+    /// Terminal). Exit 2.
+    pub(crate) const WRONG_RESOURCE_KIND: &str = "wrong_resource_kind";
+    /// The caller is not the producer of a producer-fed resource's output
+    /// stream. Exit 2.
+    pub(crate) const NOT_PRODUCER: &str = "not_producer";
+    /// An emitted record is not a valid `AgentEventsJsonlV1` record: an
+    /// unknown `type`, a `data` that is not a JSON object, or a record over
+    /// the per-record byte ceiling. Refused before any byte is sent when the
+    /// client can tell. Exit 2.
+    pub(crate) const RECORD_INVALID: &str = "record_invalid";
+    /// An append exceeded the per-call ceiling or the resource's retained
+    /// output ring. Exit 2.
+    pub(crate) const OVERFLOW: &str = "overflow";
+    /// `agent session open` named a parent Terminal the server does not hold.
+    /// Exit 1.
+    pub(crate) const PARENT_NOT_FOUND: &str = "parent_not_found";
+    /// `agent session open` named a parent that is not a Terminal-kind
+    /// resource (an `AgentSession` cannot parent another). Exit 2.
+    pub(crate) const PARENT_KIND_MISMATCH: &str = "parent_kind_mismatch";
+    /// The server refused to spawn the `AgentSession` for another reason.
+    /// Exit 1.
+    pub(crate) const AGENT_SESSION_REFUSED: &str = "agent_session_refused";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A client-side invariant this binary should never break.
@@ -416,5 +457,23 @@ mod tests {
         // needs carving into that enumeration in the PR that ships it.
         assert_eq!(codes::INPUT_NOT_WRITTEN, "input_not_written");
         assert_eq!(codes::DELIVERY_UNKNOWN, "delivery_unknown");
+    }
+
+    /// The agent session family (`agent session open|close`, `agent emit`,
+    /// `agent log`) spells its codes here, `snake_case`, so the Claude shim and
+    /// the MCP adapter branch on one vocabulary.
+    #[test]
+    fn the_agent_session_codes_live_in_the_single_closed_vocabulary() {
+        assert_eq!(codes::UNSUPPORTED_SERVER, "unsupported_server");
+        assert_eq!(codes::NO_AGENT_SESSION, "no_agent_session");
+        assert_eq!(codes::AGENT_SESSION_AMBIGUOUS, "agent_session_ambiguous");
+        assert_eq!(codes::WRONG_RESOURCE_KIND, "wrong_resource_kind");
+        assert_eq!(codes::NOT_PRODUCER, "not_producer");
+        assert_eq!(codes::RECORD_INVALID, "record_invalid");
+        assert_eq!(codes::OVERFLOW, "overflow");
+        assert_eq!(codes::PARENT_NOT_FOUND, "parent_not_found");
+        assert_eq!(codes::PARENT_KIND_MISMATCH, "parent_kind_mismatch");
+        assert_eq!(codes::AGENT_SESSION_REFUSED, "agent_session_refused");
+        assert_eq!(codes::AGENT_WITHDRAWN, "agent_withdrawn");
     }
 }

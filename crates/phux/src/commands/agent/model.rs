@@ -16,6 +16,21 @@ pub(super) struct AgentStateReport {
     pub(super) cwd: Option<String>,
     pub(super) sources: Vec<AgentSource>,
     pub(super) explanation: String,
+    /// The pane's live `AgentSession` child (ADR-0103), or `null` when it
+    /// has none. Additive; `schema_version` stays 1. Named `agent_session`
+    /// because `session` in this document is already the phux session name.
+    pub(super) agent_session: Option<AgentSessionJson>,
+}
+
+/// The `agent_session` object of `AgentStateJson`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct AgentSessionJson {
+    /// The session's canonical selector (`@N`).
+    pub(super) resource: String,
+    /// The harness slug the session was opened with.
+    pub(super) provider: String,
+    /// The provider's own session id, when it has one.
+    pub(super) native_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -140,8 +155,31 @@ pub(super) struct PaneEvidence {
     /// ADR-0040: the pane's decoded `phux.agent/v1` record, when declared.
     /// Outranks every heuristic source below.
     pub(super) record: Option<AgentRecord>,
+    /// ADR-0103: the pane's live `AgentSession` child and the state its
+    /// stream derived, when the server serves one.
+    pub(super) agent_session: Option<SessionEvidence>,
     pub(super) lines: Vec<String>,
     pub(super) semantic_input: bool,
+}
+
+/// The `AgentSession` facet a snapshot carries for a pane's child.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SessionEvidence {
+    pub(super) resource: String,
+    pub(super) provider: String,
+    pub(super) native_id: Option<String>,
+    /// The stream-derived state word (open vocabulary on the wire).
+    pub(super) state: AgentMetaState,
+}
+
+impl SessionEvidence {
+    pub(super) fn to_json(&self) -> AgentSessionJson {
+        AgentSessionJson {
+            resource: self.resource.clone(),
+            provider: self.provider.clone(),
+            native_id: self.native_id.clone(),
+        }
+    }
 }
 
 impl PaneEvidence {
@@ -154,6 +192,7 @@ impl PaneEvidence {
             title: title.map(str::to_owned),
             cwd: None,
             record: None,
+            agent_session: None,
             lines: lines.iter().map(|line| (*line).to_owned()).collect(),
             semantic_input: false,
         }
