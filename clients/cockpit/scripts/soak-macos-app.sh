@@ -291,16 +291,28 @@ adopt_coordinator() {
     [[ -n "${COORDINATOR_IDENTITY}" ]] || fail_cycle "could not establish identity for coordinator ${pid}"
 }
 
+# The app's `server --ensure` helper is a zombie for the moment between its
+# exit and the socket worker's next reap poll, so one observation proves
+# nothing. A child that stays a zombie across several polls is a leak.
 app_children_are_healthy() {
     local pid
+    local zombie=''
 
     while IFS= read -r pid; do
         pid="${pid//[[:space:]]/}"
         [[ -n "${pid}" ]] || continue
-        is_zombie "${pid}" && fail_cycle "app left child ${pid} as a zombie during startup"
         [[ "$(process_comm "${pid}" || true)" != 'zsh' ]] ||
             fail_cycle "app spawned a direct shell ${pid} on a coordinator-configured launch"
+        is_zombie "${pid}" && zombie="${pid}"
     done < <(/usr/bin/pgrep -P "${CURRENT_APP_PID}" 2>/dev/null || true)
+    if [[ -z "${zombie}" || "${zombie}" != "${APP_ZOMBIE_CHILD}" ]]; then
+        APP_ZOMBIE_CHILD="${zombie}"
+        APP_ZOMBIE_POLLS=0
+        return 0
+    fi
+    APP_ZOMBIE_POLLS=$((APP_ZOMBIE_POLLS + 1))
+    [[ "${APP_ZOMBIE_POLLS}" -lt "${ANOMALY_POLLS}" ]] ||
+        fail_cycle "app left child ${zombie} as a zombie during startup"
 }
 
 recorded_shells_are_ready() {
@@ -329,6 +341,8 @@ startup_status() {
 await_startup() {
     local deadline=$((SECONDS + STARTUP_TIMEOUT))
 
+    APP_ZOMBIE_CHILD=''
+    APP_ZOMBIE_POLLS=0
     while true; do
         if ! app_identity_matches; then
             wait "${CURRENT_APP_PID}" 2>/dev/null || true
