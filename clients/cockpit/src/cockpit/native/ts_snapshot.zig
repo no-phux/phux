@@ -22,6 +22,20 @@ pub const max_bytes: usize = 4096;
 
 pub const Error = error{BufferTooSmall};
 
+/// Extension records close the snapshot, after every fixed section: a kind
+/// byte, a `u16` length, then that many payload bytes. A decoder that does
+/// not know a kind steps over it by its length instead of reading what
+/// follows as something it is not, so a later kind costs the seam nothing.
+pub const ExtensionKind = enum(u8) { agent_rows = 1 };
+
+/// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
+/// what keeps the record inside `max_bytes` beside a full workspace; the
+/// comptime assert below is the proof, not this comment.
+pub const max_provider_bytes: usize = 12;
+pub const max_agent_rows: usize = 24;
+const agent_row_bytes: usize = 5 + max_provider_bytes;
+const agent_record_bytes: usize = 4 + max_agent_rows * agent_row_bytes;
+
 pub const TabRun = struct {
     first: u8 = 0,
     count: u8 = 0,
@@ -41,7 +55,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -80,7 +94,54 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     if (written + model_module.max_windows > out.len) return error.BufferTooSmall;
     for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
     written += model_module.max_windows;
+    written = try encodeAgentRows(model, out, written);
     return out[0..written];
+}
+
+/// The agent sessions running under each window's tabs, as one extension
+/// record: `[window][tab][state][flags][provider len][provider]` per row.
+/// The row is addressed by the tab it hangs under, never by the session's own
+/// identity -- an agent session addresses no surface (ADR-0103), and the core
+/// draws it as a child of a terminal it already has.
+///
+/// A workspace with no agent sessions writes NO record at all, so a snapshot
+/// that carries none is byte-identical to one from before this kind existed.
+fn encodeAgentRows(model: *const Model, out: []u8, start: usize) Error!usize {
+    var written = start;
+    var emitted: usize = 0;
+    for (0..model_module.max_windows) |window| {
+        const workspace = model.wsAtConst(window) orelse continue;
+        for (0..workspace.tab_count) |index| {
+            const room = max_agent_rows - emitted;
+            if (room == 0) break;
+            var rows: [max_agent_rows]projection.AgentRow = undefined;
+            const count = projection.tabAgentRows(model, workspace, index, rows[0..room]);
+            for (rows[0..count]) |row| {
+                var provider_display: [max_provider_bytes]u8 = undefined;
+                const provider = navigation.displayText(row.provider_name, &provider_display);
+                // The record's own header is claimed by the first row, so a
+                // quiet workspace pays nothing -- not even four bytes.
+                if (emitted == 0) {
+                    if (start + 4 > out.len) return error.BufferTooSmall;
+                    out[start] = @intFromEnum(ExtensionKind.agent_rows);
+                    written = start + 4;
+                }
+                if (written + 5 + provider.len > out.len) return error.BufferTooSmall;
+                out[written] = @intCast(window);
+                out[written + 1] = @intCast(index);
+                out[written + 2] = @intFromEnum(row.state);
+                out[written + 3] = if (row.needsAttention()) 1 else 0;
+                out[written + 4] = @intCast(provider.len);
+                @memcpy(out[written + 5 ..][0..provider.len], provider);
+                written += 5 + provider.len;
+                emitted += 1;
+            }
+        }
+    }
+    if (emitted == 0) return start;
+    out[start + 3] = @intCast(emitted);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], @intCast(written - (start + 3)), .little);
+    return written;
 }
 
 /// The open secondary windows, each as its own section: index, tab count,

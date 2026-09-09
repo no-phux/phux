@@ -13,6 +13,7 @@ const native_sdk = @import("native_sdk");
 const engine_module = @import("../cockpit/native/ts_engine.zig");
 const model_module = @import("../cockpit/model.zig");
 const projection = @import("../cockpit/native/workspace_projection.zig");
+const ts_snapshot = @import("../cockpit/native/ts_snapshot.zig");
 const support = @import("../cockpit/phux_support.zig");
 
 const testing = std.testing;
@@ -147,4 +148,44 @@ test "an agent session is never a terminal surface" {
     // The parent stays an ordinary terminal alongside it.
     try testing.expect(model.containsTerminal(parent.ref));
     try testing.expect(!model.isAgentSession(parent.ref));
+}
+
+test "the snapshot carries agent rows as an extension record the TS core decodes" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    const tab: u8 = @intCast(model.wsConst().tabOfTerminal(parent.ref).?);
+
+    // A workspace with no agent sessions writes no record at all, so this
+    // length is the whole snapshot the core parsed before the kind existed.
+    var quiet_buffer: [ts_snapshot.max_bytes]u8 = undefined;
+    const quiet = try engine.snapshot(&quiet_buffer);
+    const quiet_len = quiet.len;
+
+    try fixture.adoptAgentSessions(model.phux().?.host, &.{
+        .{ .id = 9001, .parent = parent.id, .provider_name = "claude", .native_id = "sess-1", .state = "working" },
+        .{ .id = 9002, .parent = parent.id, .provider_name = "codex", .native_id = "sess-2", .state = "blocked" },
+    });
+
+    var buffer: [ts_snapshot.max_bytes]u8 = undefined;
+    const bytes = try engine.snapshot(&buffer);
+
+    // The payload the TS decoder reads: a row count, then window, tab, state
+    // ordinal, attention flag, and the provider slug per row. The ordinals are
+    // `agent_sessions.State`, which `AGENT_STATE_WORDS` in core.ts indexes.
+    const payload = [_]u8{ 2, 0, tab, 1, 0, 6 } ++ "claude".* ++ [_]u8{ 0, tab, 2, 1, 5 } ++ "codex".*;
+    const record = [_]u8{ @intFromEnum(ts_snapshot.ExtensionKind.agent_rows), payload.len, 0 } ++ payload;
+    try testing.expect(std.mem.endsWith(u8, bytes, &record));
+    try testing.expectEqual(quiet_len + record.len, bytes.len);
+
+    // The parent terminal asks for attention because one of its rows does.
+    try testing.expect(projection.terminalNeedsAttention(model, parent.ref));
+
+    // The row goes away with the session, and so does the whole record.
+    try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9002, .closed, ""));
+    try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9001, .closed, ""));
+    const closed = try engine.snapshot(&buffer);
+    try testing.expectEqual(quiet_len, closed.len);
 }

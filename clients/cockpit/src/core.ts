@@ -1,4 +1,4 @@
-import { Cmd, asciiBytes, windowDescriptor } from "@native-sdk/core";
+import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
 import {
@@ -12,7 +12,31 @@ import {
   navigationPage,
   navigationIntent,
   sameBytes,
+  type SnapshotAgentRow,
 } from "./protocol.ts";
+
+/// One agent session drawn under the terminal tab it runs in. It is not a
+/// tab: it carries no slot, takes no selection, and owns no pane. `id` is its
+/// order under that tab, which is all a sibling-scoped `key` needs.
+export interface AgentRow {
+  readonly id: number;
+  readonly provider: Uint8Array;
+  readonly state: Uint8Array;
+  readonly attention: boolean;
+}
+
+/// One drawn row of the side rail: a terminal tab, or an agent session
+/// indented under the tab above it. `agent` picks the shape; `index` is the
+/// tab a press selects, which for an agent row is the terminal it runs in.
+export interface RailRow {
+  readonly id: number;
+  readonly index: number;
+  readonly label: Uint8Array;
+  readonly state: Uint8Array;
+  readonly mark: Uint8Array;
+  readonly selected: boolean;
+  readonly agent: boolean;
+}
 
 export interface Tab {
   readonly id: number;
@@ -22,6 +46,9 @@ export interface Tab {
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
+  /// Live, never persisted: the rows come from the snapshot the engine just
+  /// sent, so a session that closed is simply absent from the next one.
+  readonly agents: readonly AgentRow[];
 }
 
 /// One row of the terminal switcher: the tab's position as the person reads
@@ -71,6 +98,11 @@ export interface Model {
   readonly overflowLabel: Uint8Array;
   readonly selectedTab: number;
   readonly tabPlacement: TabPlacement;
+  /// The side rail, flattened: each visible tab followed by the agent rows
+  /// running inside it. The compiled markup iterates model slices, not a
+  /// field of a `for` item, so the nesting is expressed here as order and
+  /// depth rather than as a loop inside a loop.
+  readonly railRows: readonly RailRow[];
   /// Native projection slot for the platform window that owns modal chrome.
   /// Platform ids never cross the seam; the snapshot carries only 0..4.
   readonly activeWindow: number;
@@ -258,6 +290,11 @@ function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Ar
 }
 
 const NO_BYTES = new Uint8Array(0);
+
+/// U+25CF BLACK CIRCLE. Deliberately the same quiet dot the tab strip uses
+/// for a terminal asking for attention: an agent waiting on an answer is the
+/// same claim on a person, not a louder one.
+const ATTENTION_MARK = utf8Bytes("\u25cf");
 // Typed empties: a bare `[]` in a record literal is inferred as number[] and
 // the record then fails to be a Model at the union boundary, at runtime.
 const NO_ROWS: readonly SwitcherRow[] = [];
@@ -454,7 +491,44 @@ function configNotice(enabled: boolean, probed: boolean, exists: boolean, writab
   return joinBytes(asciiBytes("Active configuration file: "), path, NO_BYTES);
 }
 
-function stampSlots(tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[], window: number): readonly Tab[] {
+/// The display word for each `agent_sessions.State`, in wire order. The
+/// engine sends the ordinal and the core says the word: the vocabulary is
+/// closed, so shipping the text per row would be bytes for nothing.
+const AGENT_STATE_WORDS: readonly Uint8Array[] = [
+  asciiBytes("unknown"),
+  asciiBytes("working"),
+  asciiBytes("blocked"),
+  asciiBytes("done"),
+  asciiBytes("gone"),
+];
+
+const NO_AGENT_ROWS: readonly AgentRow[] = [];
+const NO_RAIL_ROWS: readonly RailRow[] = [];
+
+/// The agent rows this window's tab owns, in the order the snapshot listed
+/// them. A row whose state ordinal is outside the closed vocabulary is
+/// dropped rather than shown as a word the engine never said.
+function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number): readonly AgentRow[] {
+  const out: AgentRow[] = [];
+  let ordinal = 0;
+  for (let i = 0; i < agents.length; i += 1) {
+    const row = agents[i];
+    if (row.window !== window || row.tab !== tab) continue;
+    const state = row.state;
+    if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) continue;
+    if (!(ordinal >= 0 && ordinal <= 255)) continue;
+    out.push({
+      id: Math.trunc(ordinal),
+      provider: row.provider,
+      state: AGENT_STATE_WORDS[Math.trunc(state)],
+      attention: row.attention,
+    });
+    ordinal += 1;
+  }
+  return out.length === 0 ? NO_AGENT_ROWS : out;
+}
+
+function stampSlots(tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[], window: number, agents: readonly SnapshotAgentRow[]): readonly Tab[] {
   const out: Tab[] = [];
   const w = window >= 0 && window <= 4 ? Math.trunc(window) : 0;
   for (let i = 0; i < tabs.length; i += 1) {
@@ -464,7 +538,29 @@ function stampSlots(tabs: readonly { readonly id: number; readonly index: number
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, agents: agentRowsFor(agents, w, index) });
+  }
+  return out;
+}
+
+/// The rail: each visible tab, then its agent rows in catalog order. A row
+/// that is no longer in the snapshot is simply not built, which is the whole
+/// of "the row goes away when the session closes".
+function railRows(tabs: readonly Tab[]): readonly RailRow[] {
+  const out: RailRow[] = [];
+  let ordinal = 0;
+  for (let i = 0; i < tabs.length; i += 1) {
+    const tab = tabs[i];
+    if (!(ordinal >= 0 && ordinal <= 65535)) break;
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: NO_BYTES, selected: tab.selected, agent: false });
+    ordinal += 1;
+    const rows = tab.agents;
+    for (let j = 0; j < rows.length; j += 1) {
+      const row = rows[j];
+      if (!(ordinal >= 0 && ordinal <= 65535)) break;
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label: row.provider, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true });
+      ordinal += 1;
+    }
   }
   return out;
 }
@@ -485,10 +581,10 @@ function closedWindow(index: number): WindowState {
   return { ...CLOSED_WINDOW, index: at };
 }
 
-function windowState(index: number, section: { readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] } | null): WindowState {
+function windowState(index: number, section: { readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] } | null, agents: readonly SnapshotAgentRow[]): WindowState {
   if (section === null) return closedWindow(index);
   const at = index >= 0 && index <= 4 ? Math.trunc(index) : 0;
-  const tabs = stampSlots(section.tabs, at);
+  const tabs = stampSlots(section.tabs, at, agents);
   const hidden = tabs.length - section.runCount;
   const selected = section.selectedTab >= 0 && section.selectedTab <= 255 ? Math.trunc(section.selectedTab) : 0;
   const width = section.tabWidth >= 0 && section.tabWidth <= 65535 ? Math.trunc(section.tabWidth) : 168;
@@ -660,13 +756,14 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
       selectedTab: 0,
       tabPlacement: "top",
+      railRows: NO_RAIL_ROWS,
       activeWindow: 0,
       paletteOpen: false,
       mainPaletteOpen: false,
@@ -891,11 +988,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const active = projected.activeTheme;
       const cursor = model.settingsOpen ? model.settingsCursor : active >= 0 && active <= 32 && active < projected.themes.length ? Math.trunc(active) : 0;
       const refused = (projected.flags & 8) !== 0;
-      const mainTabs = stampSlots(projected.tabs, 0);
-      const w1 = windowState(1, findSection(projected.secondary, 1));
-      const w2 = windowState(2, findSection(projected.secondary, 2));
-      const w3 = windowState(3, findSection(projected.secondary, 3));
-      const w4 = windowState(4, findSection(projected.secondary, 4));
+      const mainTabs = stampSlots(projected.tabs, 0, projected.agents);
+      const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
+      const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents);
+      const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents);
+      const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents);
+      const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents);
       // The width crosses a record into an integer slot; the proof is
       // restated at the boundary, once per slot.
       const width1 = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
@@ -930,7 +1028,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         configExists: projected.configExists,
         configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
         tabs: mainTabs,
-        visibleTabs: sliceRun(mainTabs, projected.runStart, projected.runCount),
+        visibleTabs: mainVisible,
+        railRows: railRows(mainVisible),
         tabWidth,
         hasOverflow: hidden > 0,
         overflowLabel: hidden > 0 ? overflowLabel(hidden) : new Uint8Array(0),

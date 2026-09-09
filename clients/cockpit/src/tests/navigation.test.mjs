@@ -169,3 +169,90 @@ test('bounded navigation packets reject truncation and overflow', () => {
   assert.equal(navigationPage(new Uint8Array(4097)), null);
   assert.equal(snapshot(snapshotBytes(3)).connection, 3);
 });
+
+// One tab record: id 1, no attention, the given title, no cwd. The main
+// section starts at 28 and the trailer that follows it is themes/settings.
+function tabbedSnapshotBytes(title = 'Terminal 1', extension = []) {
+  const label = bytes(title);
+  const head = new Uint8Array(28);
+  head[0] = 1; head[1] = 2; head[10] = 7;
+  head[20] = 1; head[21] = 0; head[23] = 2; head[24] = 0; head[25] = 1; head[26] = 168;
+  const tab = [1, 0, 0, 0, 0, label.length, 0, ...label];
+  // No themes, active theme 255, no config flags, no path, no secondary
+  // windows, then the five per-window terminal states.
+  const trailer = [0, 255, 0, 0, 0, 0, 0, 0, 0, 0];
+  return new Uint8Array([...head, ...tab, ...trailer, ...extension]);
+}
+
+// `[kind][u16 length][payload]`, the framing ts_snapshot.zig writes.
+function extensionRecord(kind, payload) {
+  return [kind, payload.length % 256, Math.floor(payload.length / 256), ...payload];
+}
+
+// `[window][tab][state][flags][provider length][provider]`.
+function agentRow(window, tab, state, attention, provider) {
+  const slug = bytes(provider);
+  return [window, tab, state, attention ? 1 : 0, slug.length, ...slug];
+}
+
+test('agent rows decode from the extension record and hang under their tab', () => {
+  const payload = [2, ...agentRow(0, 0, 1, false, 'claude'), ...agentRow(0, 0, 2, true, 'codex')];
+  const body = tabbedSnapshotBytes('Terminal 1', extensionRecord(1, payload));
+  const decoded = snapshot(body);
+  assert.equal(decoded.agents.length, 2);
+  assert.deepEqual(decoded.agents[0], { window: 0, tab: 0, state: 1, attention: false, provider: decoded.agents[0].provider });
+  assert.equal(text(decoded.agents[0].provider), 'claude');
+
+  const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  const rows = model.visibleTabs[0].agents;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => text(row.provider)), ['claude', 'codex']);
+  assert.deepEqual(rows.map(row => text(row.state)), ['working', 'blocked']);
+  assert.deepEqual(rows.map(row => row.attention), [false, true]);
+
+  // The rail draws the tab, then its agents indented under it. The blocked
+  // one carries the quiet marker; nothing else on the rail does.
+  assert.deepEqual(model.railRows.map(row => row.agent), [false, true, true]);
+  assert.deepEqual(model.railRows.map(row => text(row.label)), ['Terminal 1', 'claude', 'codex']);
+  assert.deepEqual(model.railRows.map(row => text(row.state)), ['', 'working', 'blocked']);
+  assert.deepEqual(model.railRows.map(row => text(row.mark)), ['', '', '\u25cf']);
+  // Every agent row names the tab a press would select, and takes none itself.
+  assert.deepEqual(model.railRows.map(row => row.index), [0, 0, 0]);
+  assert.deepEqual(model.railRows.map(row => row.selected), [true, false, false]);
+});
+
+test('an agent row is gone from the view the moment the next snapshot omits it', () => {
+  const withRow = tabbedSnapshotBytes('Terminal 1', extensionRecord(1, [1, ...agentRow(0, 0, 2, true, 'claude')]));
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: withRow });
+  assert.equal(model.visibleTabs[0].agents.length, 1);
+  assert.equal(model.railRows.length, 2);
+  [model] = step(model, { kind: 'snapshot_loaded', body: tabbedSnapshotBytes() });
+  assert.equal(model.visibleTabs[0].agents.length, 0);
+  assert.deepEqual(model.railRows.map(row => row.agent), [false]);
+  assert.equal(text(model.status), 'READY');
+});
+
+test('an unknown extension kind is stepped over, and a malformed known one is refused', () => {
+  const unknown = tabbedSnapshotBytes('Terminal 1', [
+    ...extensionRecord(200, [9, 9, 9]),
+    ...extensionRecord(1, [1, ...agentRow(0, 0, 3, false, 'claude')]),
+    ...extensionRecord(201, []),
+  ]);
+  const decoded = snapshot(unknown);
+  assert.equal(decoded.agents.length, 1);
+  assert.equal(decoded.agents[0].state, 3);
+
+  // A row count that outruns its own record, a length that outruns the
+  // snapshot, a state outside the closed vocabulary, and a truncated header.
+  assert.equal(snapshot(tabbedSnapshotBytes('Terminal 1', extensionRecord(1, [2, ...agentRow(0, 0, 1, false, 'claude')]))), null);
+  assert.equal(snapshot(tabbedSnapshotBytes('Terminal 1', [1, 40, 0, 0])), null);
+  assert.equal(snapshot(tabbedSnapshotBytes('Terminal 1', extensionRecord(1, [1, ...agentRow(0, 0, 5, false, 'claude')]))), null);
+  assert.equal(snapshot(tabbedSnapshotBytes('Terminal 1', [1, 0])), null);
+});
+
+test('a snapshot with no agent rows is byte-identical to one from before the kind existed', () => {
+  const body = tabbedSnapshotBytes();
+  const decoded = snapshot(body);
+  assert.equal(decoded.agents.length, 0);
+  assert.equal(decoded.tabs.length, 1);
+});
