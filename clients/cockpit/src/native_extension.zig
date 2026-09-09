@@ -157,6 +157,11 @@ const Bridge = struct {
     navigation_ok: bool = false,
     navigation_len: usize = 0,
     navigation_buffer: [cockpit.engine.navigation.max_bytes]u8 = undefined,
+    /// The core serializes commands until this exact receipt is consumed.
+    /// Snapshot/navigation requests have their own independently polled slots.
+    command_pending: bool = false,
+    command_key: u64 = 0,
+    command_buffer: [cockpit.engine.tab_commands.receipt_len]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -240,6 +245,10 @@ const Bridge = struct {
     }
 
     fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
+        if (std.mem.eql(u8, name, cockpit.engine.tab_commands.request_name)) {
+            const command_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return command_bridge.requestTabCommand(key, payload);
+        }
         if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
             const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
             return navigation_bridge.requestNavigation(key, payload);
@@ -282,6 +291,25 @@ const Bridge = struct {
         self.navigation_len = bytes.len;
     }
 
+    fn requestTabCommand(self: *Bridge, key: u64, payload: []const u8) void {
+        // A broken caller cannot overwrite an unconsumed result or apply a
+        // second command. The shipping core keeps exactly one request in flight.
+        if (self.command_pending) return;
+        self.command_pending = true;
+        self.command_key = key;
+        const engine = self.engine orelse {
+            const parsed = cockpit.engine.tab_commands.decode(payload);
+            self.command_buffer = (cockpit.engine.tab_commands.Receipt{
+                .id = if (parsed) |command| command.id else 0,
+                .reason = .unavailable,
+            }).encode();
+            return;
+        };
+        self.command_buffer = engine.applyTabCommand(payload).encode();
+        if (engineFx()) |fx| engine.noteTopologyChange(fx, topologyTimer);
+        self.announce(engine);
+    }
+
     fn copyInto(buffer: []u8, text: []const u8) usize {
         @memcpy(buffer[0..text.len], text);
         return text.len;
@@ -291,10 +319,15 @@ const Bridge = struct {
         const self: *Bridge = @ptrCast(@alignCast(context));
         if (self.pending and self.pending_key == key) self.pending = false;
         if (self.navigation_pending and self.navigation_key == key) self.navigation_pending = false;
+        if (self.command_pending and self.command_key == key) self.command_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *Bridge = @ptrCast(@alignCast(context));
+        if (self.command_pending) {
+            self.command_pending = false;
+            return .{ .key = self.command_key, .ok = true, .bytes = &self.command_buffer };
+        }
         if (!self.pending) return self.pollNavigation();
         self.pending = false;
         return .{ .key = self.pending_key, .ok = self.pending_ok, .bytes = self.buffer[0..self.pending_len] };
@@ -308,7 +341,7 @@ const Bridge = struct {
 
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending;
+        return self.pending or self.navigation_pending or self.command_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -1345,6 +1378,139 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try rig.app_state.drainEffects(&rig.harness.runtime);
     try std.testing.expect(!engine.model.state.inflight);
     try std.testing.expect(!engine.model.state.pending);
+}
+
+fn firstPaintedTabMessage(node: Adapter.Ui.Node) ?core.Msg {
+    if (node.widget.semantics.role == .tab) {
+        if (node.on_toggle) |msg| return msg;
+        if (node.on_press) |msg| return msg;
+    }
+    for (node.nodes) |child| {
+        if (firstPaintedTabMessage(child)) |msg| return msg;
+    }
+    return null;
+}
+
+test "held painted tab action follows identity after metadata and reorder" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const first = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(.new_terminal);
+    try rig.settle(1, "READY");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tree = mainView(&ui, &rig.app_state.model);
+    var held = firstPaintedTabMessage(tree).?;
+    // Like the runtime's held-message storage, own the captured byte payload
+    // across replacement of the model that produced the painted tree.
+    if (held == .select_target) held.select_target = try arena.allocator().dupe(u8, held.select_target);
+    _ = shellEvent(.{ .key = engine.model.provider.terminal(first).?.pty_key, .kind = .output, .bytes = "\x1b]2;renamed\x07" });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(core.commandMsg("tab.move-left").?);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
+    try rig.dispatch(held);
+    try std.testing.expect(first.eql(engine.model.focusedTerminalRef().?));
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.tabCommands.lastId.lo);
+}
+
+test "tab command receipt survives snapshot and navigation requests and rejects reused windows" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    const commands = cockpit.engine.tab_commands;
+    const target = commands.capture(engine.model, 1, 0).?.encode();
+    var request: [commands.request_len]u8 = undefined;
+    request[0] = 1;
+    request[1] = 1;
+    const id: u64 = 0xfedc_ba98_ffff_ffff;
+    std.mem.writeInt(u64, request[2..10], id, .little);
+    @memcpy(request[10..], &target);
+    const host = bridge.binding();
+    host.request_fn(host.context, commands.request_name, 9001, &request);
+    host.request_fn(host.context, protocol.snapshot_request, 9002, "");
+    host.request_fn(host.context, cockpit.engine.navigation.request_name, 9003, "bad request");
+    const result = host.poll_fn.?(host.context).?;
+    try std.testing.expectEqual(@as(u64, 9001), result.key);
+    try std.testing.expectEqual(@as(u8, 1), result.bytes[1]);
+    try std.testing.expectEqual(id, std.mem.readInt(u64, result.bytes[3..11], .little));
+    try std.testing.expectEqual(@as(u64, 9002), host.poll_fn.?(host.context).?.key);
+    try std.testing.expectEqual(@as(u64, 9003), host.poll_fn.?(host.context).?.key);
+
+    engine.model.closeWindow(1);
+    const reopened = engine.model.openWindow(1).?;
+    const pane = try engine.model.provider.createTerminal();
+    try std.testing.expect(reopened.admitTab(pane.id));
+    try std.testing.expectEqual(@as(u32, 1), reopened.tabId(0).?);
+    engine.model.active_window = 0;
+    const before = engine.model.focusedTerminalRef().?;
+    const refused = engine.applyTabCommand(&request);
+    try std.testing.expectEqual(.stale_target, refused.reason);
+    try std.testing.expectEqual(id, refused.id);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expect(before.eql(engine.model.focusedTerminalRef().?));
+}
+
+test "retired tab targets cannot alias reused IDs after allocation rollover" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const commands = cockpit.engine.tab_commands;
+    const original = commands.capture(engine.model, 0, 0).?;
+    const workspace = engine.model.ws();
+    workspace.dropTab(0);
+    workspace.next_tab_id = std.math.maxInt(u32);
+    const first = try engine.model.provider.createTerminal();
+    try std.testing.expect(workspace.admitTab(first.id));
+    const reused = try engine.model.provider.createTerminal();
+    try std.testing.expect(workspace.admitTab(reused.id));
+    try std.testing.expectEqual(original.tab_id, workspace.tabId(1).?);
+    try std.testing.expect(original.resolve(engine.model) == null);
+    try std.testing.expectEqual(@as(u8, 1), commands.capture(engine.model, 0, 1).?.resolve(engine.model).?);
+    workspace.tab_generation = std.math.maxInt(u64);
+    try std.testing.expect(commands.capture(engine.model, 0, 1).?.resolve(engine.model) == null);
+    engine.model.window_epochs[0] = std.math.maxInt(u64);
+    engine.model.closeWindow(0);
+    try std.testing.expectEqual(std.math.maxInt(u64), engine.model.window_epochs[0]);
+}
+
+test "compiled core serializes captured window selections across independent projection traffic" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const main = firstPaintedTabMessage(mainView(&ui, &rig.app_state.model)).?;
+    const other = firstPaintedTabMessage(compiledWindow(&ui, &rig.app_state.model, 1)).?;
+    const first = try arena.allocator().dupe(u8, main.select_target);
+    const second = try arena.allocator().dupe(u8, other.select_target);
+    try rig.dispatch(.{ .select_target = first });
+    try std.testing.expectEqual(@as(usize, 0), bridge.engine.?.model.active_window);
+    try rig.dispatch(.{ .select_target = second });
+    try std.testing.expectEqual(@as(usize, 2), rig.app_state.model.tabCommands.queue.len);
+    // The queued second click has not executed. Its receipt owns that step.
+    try std.testing.expectEqual(@as(usize, 0), bridge.engine.?.model.active_window);
+    try rig.dispatch(.palette_open);
+    for (0..8) |_| {
+        if (rig.app_state.model.tabCommands.queue.len == 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.lastId.lo);
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
 }
 
 test "persistence failure and recovery publish without a later command" {
@@ -2559,17 +2725,18 @@ test "shipping snapshot exposes focused terminal history and fenced recovery" {
     const remote = engine.model.phux().?;
     var storage: [4096]u8 = undefined;
     var snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    const signals_at = snapshot.len - 3 - cockpit.engine.tab_commands.context_len - 5;
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
     remote.host.terminals.items[0].history_loading = true;
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 6, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    try std.testing.expectEqualSlices(u8, &.{ 6, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
     remote.host.freezePublished();
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
     engine.model.rejectAttachmentContext();
     remote.host.terminals.items[0].phase = .live;
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
+    try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
 }
 
 test "a bell while the app is deactivated notifies once, on its rising edge" {

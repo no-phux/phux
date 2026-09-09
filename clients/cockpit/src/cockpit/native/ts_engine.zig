@@ -40,6 +40,7 @@ const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
 const session_state = @import("../session_state.zig");
 const publication = @import("publication.zig");
+pub const tab_commands = @import("tab_commands.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -656,6 +657,23 @@ pub const Engine = struct {
             .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
             .session => |id| self.selectSessionNavigation(id, fx),
         };
+    }
+
+    pub fn applyTabCommand(self: *Engine, bytes: []const u8) tab_commands.Receipt {
+        defer self.syncRemoteFocus();
+        self.sequence +%= 1;
+        const request = tab_commands.decode(bytes) orelse return self.tabReceipt(0, .invalid_command);
+        const index = request.target.resolve(self.model) orelse return self.tabReceipt(request.id, .stale_target);
+        // Resolve every identity component BEFORE adopting the native window.
+        self.model.active_window = request.target.window;
+        _ = self.selectTab(index);
+        self.revision +%= 1;
+        return self.tabReceipt(request.id, .none);
+    }
+
+    fn tabReceipt(self: *Engine, id: u64, reason: tab_commands.Reason) tab_commands.Receipt {
+        self.intent_refused = reason != .none;
+        return .{ .id = id, .reason = reason, .sequence = self.sequence, .revision = self.revision };
     }
 
     fn selectTab(self: *Engine, index: u8) bool {

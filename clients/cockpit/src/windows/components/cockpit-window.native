@@ -1,4 +1,4 @@
-<template name="cockpit-window" args="tabs width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect">
+<template name="cockpit-window" args="tabs width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect commandnotice">
   <stack>
     <column>
       <row height="50" padding="4" gap="4" cross="center" background="surface">
@@ -11,7 +11,7 @@
               width="{width}"
               role="tab"
               selected="{tab.selected}"
-              on-toggle="select_slot:{tab.slot}"
+              on-toggle="select_target:{tab.target}"
             >{tab.title}</toggle-button>
           </for>
           <if test="{more}">
@@ -25,7 +25,8 @@
         <if test="{reconnect}"><button size="sm" variant="ghost" icon="refresh-cw" label="Reconnect to Phux" on-press="reconnect" /></if>
       </row>
       <spacer grow="1" label="phux-terminal-space" />
-      <status-bar>{status}</status-bar>
+      <if test="{commandnotice}"><status-bar>{commandnotice}</status-bar></if>
+      <else><status-bar>{status}</status-bar></else>
     </column>
     <if test="{paletteopen}">
       <row main="center" cross="start" padding="24">
