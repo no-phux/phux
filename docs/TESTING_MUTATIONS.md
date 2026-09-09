@@ -144,9 +144,15 @@ has no native count cap, so the adapter selects generated IDs and invokes
 this cost is why the pilot starts small. `summary.json` records the source
 hashes, tool pin, scope, budgets and outcomes. `candidates.json` and unchanged
 `mutant-NNN.json` reports plus command logs retain the underlying evidence.
+Acceptance checks retain reports, logs and configs under unique
+`target/mutation/zig-check-*` directories even when an assertion or class setup
+fails; disposable compiler caches and binaries are removed.
 
 Killed, survived, compile-error and timeout outcomes stay distinct. Survivors
 do not fail a score gate; a failed baseline or tool invocation fails the run.
+Missing, mismatched, skipped, invalid, compiler-crash or inconsistent mutant
+reports also fail the scan, even when Zentinel itself exits zero. Raw reports
+are retained before validation.
 Process cleanup covers the launch group and observed descendants, including
 separate groups. It is not kernel isolation: immediate unobserved daemonization
 or SIGKILL of the controller can escape cleanup.
