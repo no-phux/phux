@@ -237,7 +237,11 @@ Result: the canonical versioned `phux ls --json` document:
 parses that CLI surface, so one parser works for both — including
 `unreachable`, which is empty exactly when the listing covers the whole fleet
 ([`agents.md`](./agents.md) §4.1). A non-empty `unreachable` makes `sessions`
-and `terminals` a lower bound, not an inventory.
+and `terminals` a lower bound, not an inventory. On a resource-model server
+the document also carries the additive `resources` array — one
+`{ id, kind, parent }` per resource, `kind` being `terminal` or
+`agent_session` — passed through unchanged; `terminals` stays the
+Terminal-kind inventory.
 
 ### 3.2 `phux_snapshot`
 
@@ -626,6 +630,28 @@ anything.
 
 ---
 
+### 3.35 Agent session tools
+
+<!-- impl-status: spec-only; probe: phux_agent_log,phux_agent_emit -->
+> **Status: landing on the resource-model branch.** Four tools over the
+> agent-session verbs of [`agents.md`](./agents.md) §2. A released `phux-mcp`
+> lists none of them; against a server without `RESOURCE_KINDS` each returns
+> the CLI's `unsupported_server` error document.
+
+Each is a strict-schema CLI-subprocess tool on the §3.14–3.32 terms (argv,
+never a shell; `additionalProperties: false`; canonical CLI JSON back).
+
+| Tool | CLI mapping | Arguments and shape |
+|---|---|---|
+| `phux_agent_session_open` | `phux agent session open --json` | `target` (a Terminal selector, required), `provider` (required), `native_id`, `socket`. Returns the §4.19 open document; the caller becomes the session's producer. |
+| `phux_agent_session_close` | `phux agent session close` | `target` (an agent-session selector, required), `socket`. Returns `{ "resource": "@N", "closed": true }`, a small projection of the CLI's tab-separated line. The parent pane is untouched. |
+| `phux_agent_emit` | `phux agent emit --json` | `target` (required), `type` (one of the closed v1 set), `data` (a JSON object; default `{}`), `socket`. Returns the stamped header. `not_producer`, `record_invalid`, `overflow`, and `wrong_resource_kind` come back as error documents with nothing written. |
+| `phux_agent_log` | `phux agent log --json` | `target` (required), `tail` (last N records), `socket`. Returns the §4.19 log envelope. There is no `follow` argument: a following read is a stream, and this adapter has no streaming result shape (the `phux_watch` bound of `timeout_secs` / `max_events` is the closest analogue and is not offered here). |
+
+The adapter adds no producer of its own: an MCP host that wants a session
+log of its agent opens the session and emits into it through these tools,
+exactly as the Claude shim does through the CLI.
+
 ## 4. A worked `tools/call` example
 
 A `phux_run` against an explicit pane, target `work:1.0`:
@@ -673,7 +699,9 @@ launch/spawn/signal/tag/rename/agent/layout/workspace name-for-name, and
 `phux_status` / `phux_doctor` (§3.33–3.34) map to `phux status --json` and
 `phux doctor --json`.
 `phux_plugin_action` maps to `phux config run`; `phux_plugin_workspace` reads
-the same plugin manifest workspace profile. CLI-subprocess tools consume the
+the same plugin manifest workspace profile. The four agent-session tools of
+§3.35 map to `phux agent session open` / `close`, `agent emit`, and `agent
+log`. CLI-subprocess tools consume the
 canonical JSON directly; in-process tools reuse the same `phux-client` or
 `phux-plugin` implementation as the CLI. `phux_detach` (§3.8) is one of the
 in-process tools, but with no CLI counterpart it reuses: `phux detach` has no

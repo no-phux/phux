@@ -53,6 +53,60 @@ want plain `claude` to create or enter a phux session automatically. The plugin
 does not replace that launch behavior; it provides native tools and lifecycle
 integration for Claude sessions regardless of how they were started.
 
+## What the hook shim emits
+
+<!-- impl-status: spec-only; probe: PHUX_AGENT_EMIT_RAW -->
+> **Status: landing on the resource-model branch.** The arms below are the
+> resource-model contract for the shim `phux agent install-claude` writes
+> (ADR-0103). The shim a released binary installs (schema 4) registers every
+> arm below except `PreToolUse` and `PostToolUse`, feeds the detector with
+> `phux agent report-state`, and emits no records.
+
+On a server that advertises `RESOURCE_KINDS`, the shim gives every Claude run
+inside a phux pane an **agent session**: a second resource, parented to the
+pane, whose stream is one JSON record per hook event
+([`agents.md`](./agents.md) §0.1, §4.19). Every `--phux-hook` arm reads the
+hook's stdin JSON and acts only when `PHUX_TERMINAL_ID` names Claude's own
+pane. What each arm does:
+
+| Hook | Emits | On every server | Fallback only (no `RESOURCE_KINDS`) |
+|---|---|---|---|
+| `SessionStart` | `phux agent session open @$PHUX_TERMINAL_ID --provider claude --native-id <session_id>`, then `session_start` | `phux agent set --name claude --kind claude` | |
+| `UserPromptSubmit` | `prompt` with `{"chars": N}`; the text is not forwarded | | `phux agent report-state working` |
+| `PreToolUse` | `tool_start` with `{"tool_name": "..."}`; `tool_input` is never sent | | (new registration; nothing) |
+| `PostToolUse` | `tool_end` with `{"tool_name": "..."}` | | (new registration; nothing) |
+| `PermissionRequest` | `ask` | `phux ask`, so the TUI and fleet chrome keep their exact timing | `phux agent report-state blocked` |
+| `Notification` (the permission, idle-prompt, and elicitation matchers) | `notification` with the hook's `kind` | `phux ask` | `phux agent report-state blocked` |
+| `Stop` | `stop` | | `phux agent report-state done` |
+| `SessionEnd` | `session_end`, then `phux agent session close` | `phux agent clear` | |
+
+The server derives the pane's lifecycle state from that stream ahead of every
+other source (working on `prompt` / `tool_start`, blocked on `ask` and a
+permission or elicitation `notification`, done on `stop`, retracted on
+`session_end`), so `phux agent wait --until done` and the sidebar's state
+glyph read the harness's own account of the turn rather than a screen rule.
+
+**Fallback.** Against a server without `RESOURCE_KINDS` — an older server, or
+a hub relaying a pane it does not own — `session open` refuses with
+`unsupported_server`, the shim notes that once, and the per-turn arms do what
+the schema-4 shim does: `phux agent report-state` with `working`, `blocked`,
+or `done`, feeding the detector directly. Identity at `SessionStart`,
+`phux ask` on the blocking arms, and `clear` at `SessionEnd` run on every
+server either way. Nothing is lost that was available before; the event log
+is what is missing.
+
+**Privacy.** Prompts are not forwarded: `prompt` carries a character count
+and nothing else. Tool records carry the tool's name and never its input or
+output. The hook's raw stdin JSON is emitted as `provider_raw` only when
+`PHUX_AGENT_EMIT_RAW=1` is set in Claude's environment; it is off by
+default and the shim never sets it. The retained stream lives in server
+memory under `defaults.agent-log-bytes` (4 MiB per session by default), is
+readable by any client on the socket through `phux agent log`, and is not
+recorded by `phux rec` ([`recording.md`](./recording.md) §2).
+
+The marketplace plugin's own hooks keep the identity-and-ask contract
+described under Runtime contract until they are moved onto the same arms.
+
 ## Validation and versioning
 
 `integrations/claude/package.json`, the plugin manifest, and the repository

@@ -40,7 +40,10 @@ emulator living inside the server, and anything can attach to it -- the
 bundled TUI, a shell script, an AI agent. They all hold the same live
 terminal at the same time, with the same authority. No screen-scraping, no
 "agent mode": to a program, a phux terminal is just an object it can type
-into, read from, and wait on.
+into, read from, and wait on. The terminal is the first kind of thing the
+server holds; a coding agent's session inside one of those terminals, with
+its own event log, is the second, and that one is landing now rather than
+shipped.
 
 ## Quick start
 
@@ -160,9 +163,10 @@ never have to.
 
 The TUI multiplexer and modern-protocol passthrough are stable enough to
 try. The headless verbs, the MCP server, workspace save/restore, and
-satellite federation are real and tested, still pre-1.0. A native GUI is
-designed but not wired. Anything else you've heard is a direction, not a
-feature.
+satellite federation are real and tested, still pre-1.0. Agent sessions as
+a second resource kind, with `phux agent log` over them, are on a branch
+and not in a release. A native GUI is designed but not wired. Anything else
+you've heard is a direction, not a feature.
 
 phux also deliberately has no scripting language, no in-process plugin
 host, and no homegrown crypto. The reasoning is in

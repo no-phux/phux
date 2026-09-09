@@ -77,6 +77,21 @@ either surface, with no opt-in flag — passwords do not belong in a recording),
 and kitty-graphics images do not survive a re-render, because the replayer
 draws cells and an image is not one.
 
+<!-- impl-status: spec-only; probe: AgentEventsJsonlV1 -->
+> **Status: landing on the resource-model branch.** The decision below is
+> made in ADR-0103 and applies once a server serves agent sessions; a
+> released server has no agent-session stream to record or to skip.
+
+**Agent-session streams are not recorded**, by decision. A pane's agent
+session ([`agents.md`](./agents.md) §0.1) has its own output stream — JSON
+records, not VT bytes — and neither surface captures it: `phux rec` records
+the Terminal it was pointed at, and `phux --rec` records the glass. A cast is
+a terminal artifact, and folding a second stream into it would give asciinema
+a file it cannot play; the record stream is also where a prompt's length and
+a tool's name live, which a recording made to share should not carry by
+accident. Read or keep the log with `phux agent log`, which is the surface
+built for it. ADR-0103 owns the decision.
+
 ## 3. Formats
 
 The output extension picks the format, case-insensitively:

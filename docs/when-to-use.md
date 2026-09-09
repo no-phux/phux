@@ -24,6 +24,7 @@ do not need it yet. Find your row below.
 | A tmux user who wants a modern, protocol-honest multiplexer | **Yes, with eyes open** | Attach/detach, splits, status bar, keybindings, visible help hints, and copy/navigation affordances work. Expect pre-1.0 edges. |
 | Someone on one SSH session who just wants splits and persistence | **Probably not yet** | tmux already does this well and phux adds no wire advantage for a single local user. Revisit when you want remoting or agents. |
 | A fleet operator who wants to drive terminals across machines | **Yes, with a hub-and-spoke limit** | A configured hub aggregates and routes satellite Terminals addressed as `host/@N`; it does not merge remote session/window models or chain satellite routes. |
+| Someone who wants their agent's own event log held next to its terminal, readable by the same tools | **Soon, not yet** | Agent sessions as a second resource kind (`phux agent log`) are on a branch; until they land, the terminal, `phux agent show`, and `phux watch` are what there is. |
 
 ## The honest gaps
 

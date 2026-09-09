@@ -177,6 +177,24 @@ can be launched with `--origin-to-force-quic-on` +
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
 
+## Agent sessions
+
+<!-- impl-status: spec-only; probe: RESOURCE_KINDS -->
+> **Status: landing on the resource-model branch.** A released phux-web
+> predates resource kinds; it attaches to Terminal ids only and shows no
+> badge.
+
+phux-web mirrors Terminals and nothing else: a non-Terminal resource in the
+session snapshot is skipped, never attached, never given an engine. What it
+takes from the resource model is one bit of chrome, the **agent badge**: when
+the mirrored Terminal has a live agent-session child
+([`agents.md`](./agents.md) §0.1), the client draws the session's `provider`
+and stream-derived state beside the terminal heading, and clears it when the
+session closes. The badge is read from `ResourceInfo`'s additive agent facet
+in the snapshot and the lifecycle frames that follow; it adds nothing to the
+wire and reads no stream — the session log is `phux agent log`'s job, not a
+browser's.
+
 ## Verification
 
 - `phux-vt-web` — `wasm-pack test --node`: drives the real engine, reads the
