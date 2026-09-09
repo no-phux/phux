@@ -59,8 +59,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local, send_frame,
-    spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_command_result,
+    recv_typed, run_local, send_frame, spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
 /// How long a watcher waits for its `pane_spawned` before declaring the
@@ -82,21 +82,6 @@ const EVENT_WAIT_DEADLINE: Duration = Duration::from_secs(10);
 /// than with anything about `pane_spawned`.
 fn blocking_seed_command() -> Vec<String> {
     vec!["/bin/sh".to_owned(), "-c".to_owned(), "read _".to_owned()]
-}
-
-/// Drain frames until the `COMMAND_RESULT` for `request_id` arrives.
-async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
 }
 
 /// `SUBSCRIBE_EVENTS { terminal: None }` plus the barrier proving the
@@ -251,12 +236,7 @@ fn headless_session_create_announces_its_seed_pane() {
 
         drop(watcher);
         drop(creator);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -318,11 +298,6 @@ fn attach_create_if_missing_announces_its_seed_pane() {
 
         drop(watcher);
         drop(joiner);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

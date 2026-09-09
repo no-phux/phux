@@ -42,8 +42,8 @@ use phux_protocol::ids::GroupId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, RESOURCE_AGENT_SESSION_KEY, Scope, SpawnError,
-    SpawnResult, StateScope, TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_METADATA_VALUE,
-    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
+    SpawnResult, StateScope, TYPE_BOOTSTRAP_BEGIN, TYPE_METADATA_VALUE, TYPE_RESOURCE_CLOSED,
+    TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
@@ -52,8 +52,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_server, spawn_server_seed_pty_no_cmd, spawn_server_with_seed_cmd,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, await_command_result,
+    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
+    spawn_server_seed_pty_no_cmd, spawn_server_with_seed_cmd,
     spawn_server_with_seed_cmd_and_cwd_mode, wait_for_socket,
 };
 
@@ -331,12 +332,7 @@ fn spawn_terminal_in_default_group_round_trips_input() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -377,12 +373,7 @@ fn spawn_terminal_rejects_invalid_agent_session_provenance() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -438,12 +429,7 @@ fn failed_actor_build_reaps_atomic_agent_session_provenance() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -525,36 +511,8 @@ fn explicit_owner_terminal_selects_exact_session_window() {
         );
 
         drop((first, second, headless));
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
-}
-
-/// Drain frames until a `COMMAND_RESULT` matching `request_id` arrives.
-async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-    panic!("no COMMAND_RESULT for request_id {request_id} within deadline");
 }
 
 /// phux-i9zl: a split (`SPAWN_RESOURCE` from an attached client) must land
@@ -625,12 +583,7 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -687,12 +640,7 @@ fn spawn_terminal_env_term_overrides_default() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -747,12 +695,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -804,12 +747,7 @@ fn spawn_terminal_term_field_overrides_default() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -860,12 +798,7 @@ fn spawn_terminal_env_term_beats_term_field() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -908,12 +841,7 @@ fn spawn_terminal_unknown_group_returns_group_not_found() {
         // unknown SpawnError variants nested inside Err.
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -965,12 +893,7 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1093,12 +1016,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
 
         drop(stream_a);
         drop(stream_b);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1231,12 +1149,7 @@ fn spawn_initial_size_builds_the_first_bootstrap_at_the_requested_grid() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1283,12 +1196,7 @@ fn spawn_without_initial_size_and_with_a_zero_axis_keep_the_default_grid() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1414,12 +1322,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1483,12 +1386,7 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1543,12 +1441,7 @@ fn spawn_terminal_injects_server_socket_env() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1604,12 +1497,7 @@ fn attach_create_seed_pane_injects_server_socket_env() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1707,12 +1595,7 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1786,12 +1669,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1881,12 +1759,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1972,11 +1845,6 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

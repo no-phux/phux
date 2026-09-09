@@ -44,8 +44,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, try_recv_typed, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, join_after_shutdown,
+    recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, try_recv_typed, wait_for_socket,
 };
 
 const fn ctrl_c_key() -> KeyEvent {
@@ -183,12 +183,7 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 

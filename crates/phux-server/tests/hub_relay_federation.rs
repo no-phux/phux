@@ -74,7 +74,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
+    encode_frame, free_port, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -91,21 +91,6 @@ mod detach_fence;
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);
-
-/// Draw a loopback port that is free *right now*.
-///
-/// The listener is dropped immediately, so this is a lease and not a
-/// reservation: it is only sound for a port this test is about to bind
-/// itself, where losing the race fails loudly with a bind error. A registry
-/// entry that is supposed to stay dead must use [`DeadEndpoint`] instead —
-/// see the type's comment for the flake that taught us the difference.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 /// A satellite endpoint that is dead and *stays* dead for the whole test.
 ///

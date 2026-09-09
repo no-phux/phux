@@ -38,8 +38,8 @@ use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame, run_local,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame,
+    join_after_shutdown, run_local, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// The consumer bearer the STUB connector verifies and strips before
@@ -373,11 +373,6 @@ fn hello_attach_echo_through_relay_to_real_server() {
         // Clean teardown: consumer close, then server shutdown. The relay
         // and connector tasks drop with the runtime.
         consumer.conn.close(0u32.into(), b"done");
-        shutdown.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown, server).await;
     });
 }

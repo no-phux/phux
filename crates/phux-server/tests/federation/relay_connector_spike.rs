@@ -78,8 +78,8 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame, run_local,
-    spawn_server, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame,
+    join_after_shutdown, run_local, spawn_server, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// The connector leg's dedicated ALPN (ADR-0051 Decision 2). Reserved
@@ -839,12 +839,7 @@ fn consumers_attach_through_relay_to_dialed_out_server() {
         // dropped when run_local returns.
         consumer_a.conn.close(0u32.into(), b"done");
         consumer_b.conn.close(0u32.into(), b"done");
-        shutdown.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown, server).await;
     });
 }
 
@@ -993,11 +988,6 @@ fn relay_admission_is_not_authorization_for_consumers() {
         assert_eq!(connector_state.borrow().rejected_consumers, 1);
 
         good.conn.close(0u32.into(), b"done");
-        shutdown.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown, server).await;
     });
 }

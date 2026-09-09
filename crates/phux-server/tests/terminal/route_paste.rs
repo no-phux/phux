@@ -28,16 +28,13 @@ use std::time::Duration;
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, StateScope, TYPE_COMMAND_RESULT,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind, StateScope};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, await_command_result, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
@@ -46,29 +43,6 @@ fn sh_seed(script: &str) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.args(["-c", script]);
     cmd
-}
-
-/// Drain frames until a `COMMAND_RESULT` with `request_id` arrives.
-async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
 }
 
 /// `GET_STATE { Server }` → the focused pane id of the seeded session.

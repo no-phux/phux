@@ -53,7 +53,8 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AttachTarget, DetachReason, FrameKind, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    AttachTarget, CommandResult, DetachReason, FrameKind, TYPE_COMMAND_RESULT, TYPE_DETACHED,
+    TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -426,6 +427,106 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf
+}
+
+/// Read frames until the `COMMAND_RESULT` for `request_id` arrives, bounded by
+/// [`WIRE_RECV_TIMEOUT`] overall. Unrelated frames in between are skipped.
+///
+/// Six test files carried their own copy, four byte-identical and two
+/// differing only in the panic wording.
+///
+/// The unbounded sibling is [`recv_command_result`]: use this one when a
+/// missing reply should fail the test rather than hang it.
+pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
+            break;
+        };
+        if type_byte != TYPE_COMMAND_RESULT {
+            continue;
+        }
+        if let FrameKind::CommandResult {
+            request_id: got,
+            result,
+        } = frame
+            && got == request_id
+        {
+            return result;
+        }
+    }
+    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
+}
+
+/// Read frames until the `COMMAND_RESULT` for `request_id` arrives, skipping
+/// anything else, with no overall deadline of its own.
+///
+/// Four test files carried a byte-identical copy. Prefer
+/// [`await_command_result`] in new tests; this exists because these call sites
+/// deliberately lean on the per-read timeout inside [`recv_typed`] instead of
+/// bounding the whole wait.
+pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
+    loop {
+        let (_type_byte, frame) = recv_typed(stream).await;
+        if let FrameKind::CommandResult {
+            request_id: got,
+            result,
+        } = frame
+            && got == request_id
+        {
+            return result;
+        }
+    }
+}
+
+/// Bind an ephemeral loopback port, read it back, and drop the listener.
+///
+/// Inherently racy — the port is free when returned, not reserved — which is
+/// why it belongs in one place with the caveat written down rather than in
+/// each transport test that wants a port.
+#[must_use]
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// [`encode_frame`] as an owned `Vec<u8>`, for the socket helpers that want
+/// bytes rather than a `BytesMut`.
+///
+/// `wt_attach.rs` keeps a private copy on purpose: it documents that it takes
+/// no testkit dependency at all, so that its handshake deadline is visibly its
+/// own rather than borrowed. Do not "finish the job" by wiring it up here.
+#[must_use]
+pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
+    encode_frame(frame).to_vec()
+}
+
+/// Signal shutdown and assert the server task joined cleanly.
+///
+/// Pairs with every `spawn_server*` in this module, which hand back exactly
+/// this `(Sender, JoinHandle)`. Forty-nine call sites across nineteen test
+/// files each spelled this block out by hand before it was promoted here.
+///
+/// Deliberately does NOT assert the socket was unlinked: most of those call
+/// sites had no socket path in scope, and the ones that care about unlinking
+/// say so themselves. `end_to_end.rs` wraps this with that extra assertion.
+///
+/// Drop your own client stream before calling this — the call sites that need
+/// it keep their `drop(stream)` because the variable is theirs, not ours.
+pub async fn join_after_shutdown(
+    shutdown: oneshot::Sender<()>,
+    server: JoinHandle<Result<(), ServerError>>,
+) {
+    shutdown.send(()).ok();
+    timeout(SERVER_JOIN_DEADLINE, server)
+        .await
+        .expect("server did not shut down after the shutdown signal")
+        .expect("server join")
+        .expect("server run_async ok");
 }
 
 /// Build a `KeyEvent` for an ASCII printable, matching what a real client

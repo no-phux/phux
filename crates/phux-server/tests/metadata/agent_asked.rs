@@ -47,8 +47,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
+    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_raw_socket,
 };
 async fn negotiate(stream: &mut UnixStream) {
     send_frame(
@@ -142,20 +143,6 @@ async fn collect_until_asked(stream: &mut UnixStream, deadline: Duration) -> Opt
             && matches!(event, AgentEvent::Asked { .. })
         {
             return Some(event);
-        }
-    }
-}
-
-async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
         }
     }
 }
@@ -290,12 +277,7 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -357,12 +339,7 @@ fn report_asked_command_emits_asked_event() {
         assert_eq!(elapsed_seconds, Some(12));
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -493,12 +470,7 @@ fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -545,11 +517,6 @@ fn report_asked_rejects_empty_question() {
         assert!(message.contains("question"));
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

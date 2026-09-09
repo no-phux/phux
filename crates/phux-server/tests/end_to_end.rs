@@ -4,8 +4,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::time::Duration;
-
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
@@ -21,18 +19,12 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, expect_protocol_error_close,
-    recv_typed, recv_until_detached, run_local, send_frame, spawn_server, wait_for_raw_socket,
+    join_after_shutdown, recv_typed, recv_until_detached, run_local, send_frame, spawn_server,
+    wait_for_raw_socket,
 };
-
-/// Bounded join: every server task must terminate within this window
-/// once the shutdown signal has been sent. Aliases the shared constant so
-/// this file cannot drift back to a hand-picked number (phux-br1f) — see
-/// `phux_server_testkit::SERVER_JOIN_DEADLINE` for why the value is not load-bearing.
-const SERVER_JOIN_DEADLINE: Duration = phux_server_testkit::SERVER_JOIN_DEADLINE;
 
 /// Build the canonical HELLO payload for these tests. Mirrors the
 /// `phux-client::attach::driver::handshake` shape: `TrueColor` + all
@@ -85,12 +77,7 @@ async fn shutdown_and_join(
     server_handle: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
     socket_path: &std::path::Path,
 ) {
-    shutdown_tx.send(()).ok();
-    timeout(SERVER_JOIN_DEADLINE, server_handle)
-        .await
-        .expect("server did not shut down within deadline")
-        .expect("server join")
-        .expect("server run_async ok");
+    join_after_shutdown(shutdown_tx, server_handle).await;
     assert!(
         !socket_path.exists(),
         "socket {} should be unlinked after shutdown",

@@ -31,8 +31,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, join_after_shutdown,
+    recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Enter — cooked-mode `cat` is line-buffered, so this flushes the echo.
@@ -140,12 +140,7 @@ fn screen_helper_observes_pty_echo_through_wire() {
 
         // Teardown.
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server didn't shut down")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 

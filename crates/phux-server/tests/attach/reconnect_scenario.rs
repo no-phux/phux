@@ -44,8 +44,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, join_after_shutdown,
+    recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Enter — cooked-mode `cat` is line-buffered, so this flushes the echo.
@@ -309,12 +309,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         // exits) and no leaked PTY (server join MUST complete cleanly).
         // ============================================================
         drop(client_b);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server didn't shut down")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
 
         // FD-leak guard: the socket file must be unlinked on clean
         // shutdown. If the server leaked the listener FD or skipped

@@ -40,8 +40,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
+    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server_with,
+    spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// A shell that never exits on its own — every parent Terminal these tests
@@ -185,25 +186,6 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
         }
     }
     panic!("timed out waiting for RESOURCE_SPAWNED request_id={request_id}");
-}
-
-async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-    panic!("timed out waiting for COMMAND_RESULT request_id={request_id}");
 }
 
 /// Spawn an immortal-shell Terminal (`resource: None`), the parent every
@@ -553,12 +535,7 @@ async fn shutdown(
     server_handle: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 ) {
     drop(stream);
-    shutdown_tx.send(()).ok();
-    timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-        .await
-        .expect("server did not shut down after the shutdown signal")
-        .expect("server join")
-        .expect("server run_async ok");
+    join_after_shutdown(shutdown_tx, server_handle).await;
 }
 
 // ---------------------------------------------------------------------------

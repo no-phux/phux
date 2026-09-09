@@ -58,10 +58,9 @@ use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -480,12 +479,7 @@ async fn shutdown(
     server_handle: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 ) {
     drop(stream);
-    shutdown_tx.send(()).ok();
-    timeout(SERVER_JOIN_DEADLINE, server_handle)
-        .await
-        .expect("server did not shut down after the shutdown signal")
-        .expect("server join")
-        .expect("server run_async ok");
+    join_after_shutdown(shutdown_tx, server_handle).await;
 }
 
 /// phux-rv52: attach, split, resize the split leaf, then quote the cursor the

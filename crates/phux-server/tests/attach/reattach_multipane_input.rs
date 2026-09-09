@@ -49,7 +49,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnResult, StateScope, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_RESOURCE_SPAWNED,
+    TYPE_RESOURCE_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
@@ -58,8 +58,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, await_command_result,
+    recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Enter — no `text`; libghostty's encoder synthesizes the CR.
@@ -73,29 +73,6 @@ const fn enter_key() -> KeyEvent {
         text: None,
         unshifted_codepoint: None,
     }
-}
-
-/// Drain frames until a `COMMAND_RESULT` with `request_id` arrives.
-async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
 }
 
 /// Drain frames until a `RESOURCE_SPAWNED` with `request_id` arrives.

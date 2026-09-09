@@ -83,8 +83,9 @@ use tokio::time::timeout;
 
 use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
+    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
 /// A `/bin/sh -c` seed that blocks until `release` exists and then runs
@@ -103,21 +104,6 @@ fn gated_seed(release: &Path, script: &str) -> CommandBuilder {
         release.display(),
     ));
     cmd
-}
-
-/// Drain frames until the `COMMAND_RESULT` for `request_id` arrives.
-async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
 }
 
 /// `SUBSCRIBE_EVENTS { terminal: None }` plus the barrier that proves the
@@ -256,12 +242,7 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -309,12 +290,7 @@ fn unattached_subscriber_receives_events() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -404,11 +380,6 @@ fn subscribed_client_receives_command_and_cwd_events() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

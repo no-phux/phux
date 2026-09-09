@@ -42,7 +42,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -50,32 +50,10 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server, spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
+    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
+    spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
 };
-
-/// Drain frames until a `COMMAND_RESULT` with `request_id` arrives.
-async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
-}
 
 async fn read_metadata_value(
     stream: &mut UnixStream,
@@ -1031,12 +1009,7 @@ fn session_create_honors_valid_wire_cwd() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1103,12 +1076,7 @@ fn session_create_invalid_wire_cwd_falls_back_without_failing() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -1168,12 +1136,7 @@ fn session_create_unenterable_wire_cwd_falls_back_without_failing() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 

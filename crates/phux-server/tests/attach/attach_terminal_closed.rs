@@ -49,8 +49,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
+    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
 /// A shell that never exits on its own.
@@ -67,23 +68,6 @@ fn immortal_shell() -> CommandBuilder {
     cmd.arg("-c");
     cmd.arg("while :; do sleep 3600; done");
     cmd
-}
-
-/// Drain until the `CommandResult` for `request_id` arrives, ignoring every
-/// other frame. Only safe before the pane dies, when no `RESOURCE_CLOSED`
-/// can be among the frames it discards; use [`count_extra_closed`] after.
-async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
 }
 
 /// Drain frames until a `RESOURCE_CLOSED` naming `victim` arrives, or
@@ -338,11 +322,6 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
 
         drop(watcher);
         drop(owner);
-        shutdown_tx.send(()).ok();
-        timeout(SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

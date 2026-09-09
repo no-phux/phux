@@ -45,8 +45,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Drain `RESOURCE_OUTPUT` frames until `needle` appears in the
@@ -155,11 +155,6 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         // Clean teardown — the seed command is an infinite loop, so the
         // shutdown_tx + JoinHandle cancellation cascade is what kills it.
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
