@@ -14,22 +14,8 @@ and commits via the existing `SET_METADATA` layout path. Cells inside a
 pane still forward to that pane unchanged. A global `mouse` config gate
 and the per-pane `set-pane mouse off` escape hatch protect inner TUIs.
 
-> **Amendment (2026-07-09, phux-npb3):** decision 3's follow-up shipped.
-> A `set-pane` action (`mouse = "on" | "off" | "toggle"`, focused pane)
-> maintains a client-local per-pane opt-out set; capture follows focus —
-> the driver reconciles the outer DECSET each loop iteration, dropping
-> `?1002/?1006` while an opted-out pane is focused and restoring it when
-> focus returns to an opted-in pane. The dispatcher never synthesizes
-> `INPUT_MOUSE` (or the local wheel scroll) for an opted-out pane;
-> click-to-focus still applies. No wire change. The PR #142 review
-> hardening also landed: while a divider drag is active, only motion
-> re-tunes and only release ends it — any other mouse event (a second
-> press, a wheel tick) is consumed instead of falling through to normal
-> routing mid-drag.
-
 Status: Accepted
 Date: 2026-06-17
-Amended: 2026-07-09 (per-pane `set-pane mouse off` shipped, phux-npb3)
 
 ## Context
 
@@ -121,8 +107,7 @@ floor, same `SET_METADATA` envelope, same multi-consumer broadcast.
   Shift-bypass lose easy selection until `mouse = false`.
 - **No per-pane granularity yet.** Until `set-pane mouse off` lands, the
   only opt-out is global. A single raw-bytes-hungry pane forces the
-  whole session into `mouse = false`. *(Resolved by the 2026-07-09
-  amendment above.)*
+  whole session into `mouse = false`.
 - **Wider `PaneLayout`.** Carrying node paths grows the struct and the
   tiling proptests must assert the hit map stays consistent with the
   rasterized cells.

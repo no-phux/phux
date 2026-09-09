@@ -8,31 +8,10 @@ last-reviewed: 2026-05-28
 
 **TL;DR.** Per-pane terminal state on the server is a `libghostty_vt::Terminal`, not a hand-written grid. We get the most standards-compliant emulator available, upstream bug fixes flow in for free, and phux's scope shrinks: we do not ship a VT parser. The coupling to libghostty's release cadence is managed via pinned commits.
 
-> **Post-ADR-0013 note (2026-05-25):** ADR-0013 supersedes ADR-0002
-> (bytes-on-wire replaces structured cell diffs). This ADR is
-> unaffected in substance — libghostty-vt is still the canonical
-> server-side grid — but the *use* the server makes of it changed:
-> the server now forwards PTY bytes directly on `PANE_OUTPUT` and
-> only consults the libghostty `Terminal` to synthesize `PANE_SNAPSHOT`
-> VT replay bytes on attach (mosh-style: walk `grid_ref()`, emit
-> SGR runs + cells). It no longer "emits diffs from there." Inline
-> wording below has been touched up; the decision itself is intact.
-
 Status: Accepted
 Date: 2026-05-24
-
-> **Update 2026-05-26:** [ADR-0013](./0013-libghostty-bytes-on-wire.md)
-> supersedes the diff-based wire; libghostty-vt is now the grid
-> representation on BOTH ends (server and client). The "diff" wording
-> in passages below and in the post-ADR-0013 note above refers to the
-> deleted architecture. [ADR-0016](./0016-terminal-id-as-wire-primary.md)
-> renamed `PaneId → TerminalId` and `PANE_* → TERMINAL_*` at the wire
-> level (commit `9f4bb2e`); references to `PANE_OUTPUT` /
-> `PANE_SNAPSHOT` below should be read as `TERMINAL_OUTPUT` /
-> `TERMINAL_SNAPSHOT`. The "every pane has a terminal screen state"
-> framing remains correct in spirit — under ADR-0015's L1/L2/L3
-> layering, "pane" is a TUI-consumer concept and the wire entity is a
-> Terminal.
+See [ADR-0013](./0013-libghostty-bytes-on-wire.md) for the use the server now makes of the grid: PTY bytes are forwarded as-is and the grid backs only the attach snapshot.
+See [ADR-0016](./0016-terminal-id-as-wire-primary.md) for the rename: PANE_OUTPUT and PANE_SNAPSHOT below are TERMINAL_OUTPUT and TERMINAL_SNAPSHOT on the wire.
 
 ## Context
 

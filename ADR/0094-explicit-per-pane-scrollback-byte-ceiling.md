@@ -19,8 +19,6 @@ with one number and deserves to see both.
 
 Status: Accepted
 Date: 2026-09-02
-Amended: 2026-09-02 — the ceiling became `defaults.history-bytes` rather than a
-private constant. See "Decision", item 2.
 
 ## Context
 

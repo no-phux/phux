@@ -15,19 +15,9 @@ session or window concept enters the wire — [ADR-0017](./0017-tui-not-protocol
 holds. The L2 Collection that will eventually own the durable "session"
 identity is named as the forward path; its command surface is deferred.
 
-> **Amendment (2026-06-17):** the forward path below rests on an **L2
-> Collection tier that was dissolved** by
-> [ADR-0030](./0030-engine-delegated-wire-and-projection-consumers.md).
-> There is no L2 tier and no durable "session" wire identity; the durable
-> session is L3 metadata (membership + names) plus client logic, and the one
-> atomic group operation is the L1 verb `KILL_TERMINALS`. The core decision
-> here — CLI verbs ride the generic `COMMAND` envelope and selectors resolve
-> **client-side** against a `GET_STATE` snapshot — stands unchanged; only the
-> "L2 will own the session" framing is superseded by ADR-0030.
-
 Status: Accepted
 Date: 2026-05-28
-Amended: 2026-06-17 (L2 forward path superseded by ADR-0030)
+Superseded in part by [ADR-0030](./0030-engine-delegated-wire-and-projection-consumers.md): the L2 Collection forward path; the durable session is L3 metadata plus client logic, and the atomic group operation is KILL_TERMINALS.
 
 ## Context
 

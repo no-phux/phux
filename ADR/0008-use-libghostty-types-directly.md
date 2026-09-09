@@ -15,41 +15,9 @@ This ADR supersedes parts of ADR-0002 (the
 and supersedes the discriminant-equality claim and the post-hoc
 divergence amendment in ADR-0006.
 
-> **Post-ADR-0013 note (2026-05-25):** ADR-0013 supersedes ADR-0002 in
-> full (pane content moves from structured cell diffs to VT bytes on
-> the wire). This ADR is *reinforced* on the input side and *partially
-> obsoleted* on the output/style side:
->
-> - **Input atoms (`PhysicalKey`, `KeyAction`, `ModSet`, `MouseAction`,
->   `MouseButton`, `FocusEvent`) are still re-exported and still
->   load-bearing.** Structured input is exactly what ADR-0013 keeps on
->   the wire client→server, because only the server knows pane mode.
-> - **Style atoms (`Color`, `RgbColor`, `PaletteIndex`, `Underline`)
->   are no longer on the wire** — they were re-exported for use inside
->   the now-superseded `Cell` wire type. They remain useful as
->   libghostty re-exports for any non-wire purpose (e.g. a renderer
->   reading `grid_ref()` on the client side), but they no longer
->   participate in the wire format.
-> - **Phux-defined `Cell`, `Grid`, `DiffOp`, `CursorState`,
->   `CursorShape`, `CellFlags` are dead as wire types.** They are
->   listed in ADR-0013's "no longer needed in the implementation"
->   section. The §"What stays phux-defined" table below has been
->   amended inline to reflect that the wire shrinks to envelopes +
->   `PANE_OUTPUT` bytes + `PANE_SNAPSHOT` VT replay bytes.
->
-> The core argument of this ADR — "where libghostty already models a
-> plain type, re-export it instead of mirroring" — is unaffected. If
-> anything, ADR-0013 takes the same insight one layer up (re-use
-> libghostty's `Terminal` on both ends of the wire instead of
-> mirroring its grid model).
-
 Date: 2026-05-25
-
-> **Update 2026-05-26:** [ADR-0016](./0016-terminal-id-as-wire-primary.md)
-> renamed `PaneId → TerminalId` at the wire level (commit `9f4bb2e`).
-> Any code examples or prose below that mention `pane_id` should be
-> read with that substitution; the "what stays phux-defined" reasoning
-> about envelope frames is unaffected — only the field name changed.
+Superseded in part by [ADR-0013](./0013-libghostty-bytes-on-wire.md): the style atoms and the phux-defined Cell, Grid, DiffOp, and cursor types left the wire with the cell-diff format; the input-atom re-export stands.
+See [ADR-0016](./0016-terminal-id-as-wire-primary.md) for the rename: pane_id below is terminal_id on the wire.
 
 ## Context
 

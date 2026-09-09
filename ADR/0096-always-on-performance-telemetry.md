@@ -80,7 +80,7 @@ work. Under a full-CPU hog the keystroke echo p99 was 14.8 ms; promoting the
 hot threads to `QOS_CLASS_USER_INTERACTIVE` (`phux_perf::promote_current_thread`,
 reported as `proc.sched_interactive`) brought it to 2.1 ms with the server
 still using 0.3% of a core, and exposed that the launchd unit had been
-declaring `ProcessType Background` (ADR-0055 amendment). `pty.read.size`
+declaring `ProcessType Background` (the ADR-0055 unit). `pty.read.size`
 makes the macOS 1024-byte PTY read cap visible as a distribution rather than
 folklore. A regression in echo p99 is a number in a log line after every
 session, not a bench re-run.

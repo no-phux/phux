@@ -16,22 +16,6 @@ SSH-derived identity is deferred, not rejected.
 Status: Accepted
 Date: 2026-07-09
 
-> **Addendum (2026-07-10, phux-v45.9):** the `ssh://` dial path is built,
-> and it resolves the "redundant machinery" tradeoff and the deferred
-> SSH-derived-identity alternative below as a **transport-specific
-> carve-out**: over an `ssh://` link the hub sends **no bearer token and
-> pins no certificate**. The hub spawns `ssh HOST phux stdio-bridge`
-> (`BatchMode=yes`, argv from charset-validated endpoint parts); SSH
-> authenticates and encrypts the channel with the operator's key
-> material, and the remote bridge process connects to the satellite's
-> Unix socket as an ordinary local client — inheriting the UDS's
-> owner-only local trust, exactly like a local `phux attach` by the same
-> user. A `token-file` / `cert-fingerprint` configured on an `ssh://`
-> registry entry is therefore ignored (there is no TLS channel to pin
-> and no preamble on this transport). QUIC and `wss://` links are
-> unchanged: the ADR-0031 token + pin model above remains the rule for
-> every TLS transport, and remains fail-closed.
-
 ## Context
 
 The satellite registry (`[[satellites]]` in `config.toml`,

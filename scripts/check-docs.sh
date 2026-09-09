@@ -20,6 +20,10 @@
 #   - adr-index-sync      : every ADR/NNNN-*.md has exactly one row in
 #                           ADR/README.md's index, every row resolves to
 #                           its file, and rows ascend numerically
+#   - adr-length          : every ADR/NNNN-*.md is at most 150 lines
+#                           unless listed in ADR/.length-baseline, and a
+#                           listed ADR that fits the cap is removed from
+#                           the baseline (entries may only be removed)
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
 #                           with phux-protocol's PROTOCOL_VERSION
 #                           (skipped while the SPEC split is in flight)
@@ -50,6 +54,7 @@ ALL_GATES=(
     adr-status
     adr-number-unique
     adr-index-sync
+    adr-length
     spec-version-sync
     impl-status
 )
@@ -669,6 +674,78 @@ gate_adr_index_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 5d: adr-length
+# ---------------------------------------------------------------------------
+
+# docs/CONVENTIONS.md caps an ADR at 150 lines: past that, the file has grown
+# a design document, and that body belongs in docs/architecture/ with the
+# ADR pointing at it. The cap applies to every ADR except those listed in
+# ADR/.length-baseline — the violators that predate the gate, one NNNN per
+# line, `#` comments allowed. The baseline only shrinks: a listed ADR that
+# fits the cap fails until its entry is removed, so the allowlist cannot
+# quietly become a permanent exemption, and an entry naming an ADR that no
+# longer exists fails for the same reason. Lines are counted the way an
+# editor shows them (a final line without a newline still counts).
+
+ADR_LENGTH_CAP=150
+
+gate_adr_length() {
+    if [[ ! -d "$ROOT/ADR" ]]; then
+        return
+    fi
+    local baseline="$ROOT/ADR/.length-baseline"
+
+    # Baseline entries, indexed by ADR number (Bash 3.2: no associative
+    # arrays; `10#` so 0008 is not read as octal).
+    local -a baselined=()
+    local raw entry index
+    if [[ -f "$baseline" ]]; then
+        while IFS= read -r raw || [[ -n "$raw" ]]; do
+            raw="${raw%$'\r'}"
+            entry="$(trim "${raw%%#*}")"
+            [[ -z "$entry" ]] && continue
+            if ! [[ "$entry" =~ ^[0-9]{4}$ ]]; then
+                violate adr-length "$baseline" \
+                    "entry '$entry' is not a four-digit ADR number"
+                continue
+            fi
+            index=$((10#$entry))
+            baselined[$index]="$entry"
+        done < "$baseline"
+    fi
+
+    local file base num lines
+    local -a seen=()
+    while IFS= read -r file; do
+        base="$(basename "$file")"
+        # `adr_files` decides membership; this only reads the number out.
+        [[ "$base" =~ ^([0-9]{4})- ]] || continue
+        num="${BASH_REMATCH[1]}"
+        index=$((10#$num))
+        seen[$index]=1
+        lines="$(awk 'END { print NR }' "$file")"
+        if [[ -n "${baselined[$index]:-}" ]]; then
+            if (( lines <= ADR_LENGTH_CAP )); then
+                violate adr-length "$file" \
+                    "$lines lines fits the $ADR_LENGTH_CAP-line cap; remove $num from ADR/.length-baseline in the same commit (entries may only be removed)"
+            fi
+        elif (( lines > ADR_LENGTH_CAP )); then
+            violate adr-length "$file" \
+                "$lines lines exceeds the $ADR_LENGTH_CAP-line cap (docs/CONVENTIONS.md, ADR template) — move the body to docs/architecture/ and have the ADR point at it; the baseline is closed to new entries"
+        fi
+    done < <(adr_files)
+
+    if (( ${#baselined[@]} > 0 )); then
+        for index in "${!baselined[@]}"; do
+            if [[ -z "${seen[$index]:-}" ]]; then
+                violate adr-length "$baseline" \
+                    "entry ${baselined[$index]} names no ADR/${baselined[$index]}-*.md — remove it"
+            fi
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Gate 6: spec-version-sync
 # ---------------------------------------------------------------------------
 
@@ -1000,6 +1077,7 @@ run_gate() {
         adr-status)          gate_adr_status          ;;
         adr-number-unique)   gate_adr_number_unique   ;;
         adr-index-sync)      gate_adr_index_sync      ;;
+        adr-length)          gate_adr_length          ;;
         spec-version-sync)   gate_spec_version_sync   ;;
         impl-status)         gate_impl_status         ;;
         *) echo "internal error: unknown gate '$gate'" >&2; exit 2 ;;

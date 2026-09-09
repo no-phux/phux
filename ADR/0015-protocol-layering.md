@@ -8,20 +8,9 @@ last-reviewed: 2026-05-28
 
 **TL;DR.** The phux wire is three tiers. L1 carries Terminals (PTY plus libghostty `Terminal` plus identity, with bytes-out and structured input-in). L2 is optional Collections — named lifecycle bundles of Terminals. L3 is an optional opaque key-value metadata store. Sessions, windows, panes, layouts, focus are TUI-consumer conventions implemented via L3, not wire concepts. Federation and automation are cross-cuts, not layers.
 
-> **Amendment (2026-06-17):** the **L2 Collection tier below is dissolved**
-> by [ADR-0030](./0030-engine-delegated-wire-and-projection-consumers.md).
-> The wire is now **L1 (+ optional L3)** only; there is no collection
-> lifecycle tier and no `L2` message is allocated (its bit and discriminant
-> range stay reserved — see [proto.md §11.4](../docs/spec/proto.md)). Grouping
-> (membership + names) is L3 metadata plus client logic; the one atomic need,
-> multi-terminal teardown, is the single L1 operation `KILL_TERMINALS`. Read
-> the "L2 — Collection" section and the L2 conformance shapes below as
-> historical context, superseded by ADR-0030. The L1/L3 layering and the
-> cross-cut framing for federation and automation stand.
-
 Status: Accepted
 Date: 2026-05-26
-Amended: 2026-06-17 (L2 dissolved by ADR-0030)
+Superseded in part by [ADR-0030](./0030-engine-delegated-wire-and-projection-consumers.md): the L2 Collection tier is dissolved; the wire is L1 plus optional L3, grouping is L3 metadata plus client logic, and the one atomic group operation is the L1 verb KILL_TERMINALS.
 
 ## Context
 
