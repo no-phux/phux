@@ -30,6 +30,9 @@ pub const PersistedTopologySnapshot = topology.PersistedTopologySnapshot;
 pub const max_terminals = local.max_terminals;
 pub const max_tabs = topology.max_tabs;
 pub const max_remote_terminals = support.max_remote_terminals;
+pub const AgentSession = support.AgentSession;
+pub const AgentState = support.AgentState;
+pub const max_agent_sessions = support.max_agent_sessions;
 
 pub const max_held_terminal_keys: usize = 16;
 
@@ -1061,6 +1064,36 @@ pub const Model = struct {
             .local => model.provider.ownerIsCurrent(owner_value),
             .phux => if (model.phuxConst()) |remote| remote.ownerIsCurrent(owner_value) else false,
         };
+    }
+
+    /// The agent sessions running under one terminal, in catalog order.
+    ///
+    /// A ROW, never a surface: an AgentSession publishes no replica, so there
+    /// is deliberately no path from one of these to a `Presentation`. The
+    /// answer borrows the provider's roster and is stable until the next
+    /// drain, like every other provider projection here.
+    pub fn agentSessionsUnder(model: *const Model, terminal_ref: TerminalRef, out: []*const AgentSession) usize {
+        if (comptime !support.phux_enabled) return 0;
+        if (support.providerKind(terminal_ref) != .phux) return 0;
+        const remote = model.phuxConst() orelse return 0;
+        return remote.agentSessionsUnder(terminal_ref, out);
+    }
+
+    /// Whether an agent under this terminal is waiting on a person. One SOURCE
+    /// for the quiet attention path, read the same way the bell latch is.
+    pub fn agentAttention(model: *const Model, terminal_ref: TerminalRef) bool {
+        if (comptime !support.phux_enabled) return false;
+        if (support.providerKind(terminal_ref) != .phux) return false;
+        const remote = model.phuxConst() orelse return false;
+        return remote.agentAttention(terminal_ref);
+    }
+
+    /// Whether this identity names an agent session rather than a terminal.
+    pub fn isAgentSession(model: *const Model, terminal_ref: TerminalRef) bool {
+        if (comptime !support.phux_enabled) return false;
+        if (support.providerKind(terminal_ref) != .phux) return false;
+        const remote = model.phuxConst() orelse return false;
+        return remote.isAgentSession(terminal_ref);
     }
 
     pub fn remotePresentation(model: *const Model, terminal_ref: TerminalRef) ?Presentation {

@@ -25,6 +25,7 @@ pub const SessionSummary = host_mod.SessionSummary;
 pub const Error = host_mod.Error;
 pub const OperationResult = host_mod.OperationResult;
 pub const ColorPolicy = host_mod.ColorPolicy;
+pub const max_agent_sessions = host_mod.max_agent_sessions;
 
 const OwnedEndpoint = union(enum) {
     tcp: struct { host: []u8, port: u16 },
@@ -54,6 +55,8 @@ pub const PhuxProvider = struct {
     pub const test_support = host_mod.test_support;
     pub const SessionSummary = host_mod.SessionSummary;
     pub const OperationResult = host_mod.OperationResult;
+    pub const AgentSession = host_mod.AgentSession;
+    pub const AgentState = host_mod.AgentState;
     gpa: std.mem.Allocator,
     io: std.Io,
     bridge: *transport.Bridge,
@@ -230,6 +233,27 @@ pub const PhuxProvider = struct {
     pub fn terminalRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
         return self.host.terminalRefs(out);
     }
+    /// Agent sessions from the resource catalog, in catalog order.
+    pub fn agentSessions(self: *const PhuxProvider) []const AgentSession {
+        return self.host.agentSessions();
+    }
+
+    /// The agent sessions running under one terminal.
+    pub fn agentSessionsUnder(self: *const PhuxProvider, terminal_ref: provider.TerminalRef, out: []*const AgentSession) usize {
+        return self.host.agentSessionsUnder(terminal_ref, out);
+    }
+
+    /// Stream-derived attention for one terminal.
+    pub fn agentAttention(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) bool {
+        return self.host.agentAttention(terminal_ref);
+    }
+
+    /// Whether this identity names an agent session. Nothing that renders a
+    /// terminal surface may be reached through one.
+    pub fn isAgentSession(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) bool {
+        return self.host.isAgentSession(terminal_ref);
+    }
+
     pub fn sessionCatalog(self: *const PhuxProvider) []const host_mod.SessionSummary {
         return self.host.sessionCatalog();
     }

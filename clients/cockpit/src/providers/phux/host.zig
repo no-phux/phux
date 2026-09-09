@@ -12,9 +12,20 @@ const presentation_module = @import("presentation.zig");
 const c = @import("abi.zig").c;
 const operations = @import("operations.zig");
 const workspace_bridge = @import("workspace_bridge.zig");
+const agent_sessions = @import("agent_sessions.zig");
+
+test {
+    // Zig runs the tests of an imported file only where it is referenced
+    // from a test block. The derivation lives there; without this its
+    // suite sits in the graph and never runs.
+    _ = agent_sessions;
+}
 const workspace = provider.workspace;
 pub const OperationResult = operations.types.Result;
 pub const test_support = @import("operation_test_support.zig");
+pub const AgentSession = agent_sessions.Session;
+pub const AgentState = agent_sessions.State;
+pub const AgentRecordsKind = agent_sessions.RecordsKind;
 
 pub const enabled = true;
 pub const max_terminals: usize = workspace.max_replicas;
@@ -26,6 +37,10 @@ pub const max_sessions: usize = 256;
 pub const max_title_bytes: usize = 4096;
 pub const max_session_name_bytes: usize = 4096;
 pub const max_notice_bytes: usize = 64 * 1024;
+/// One AGENT_RECORDS payload, matching the client's MAX_APPEND_BYTES: the
+/// server refuses a larger append, so a larger effect is a codec disagreement.
+pub const max_agent_records_bytes: usize = 64 * 1024;
+pub const max_agent_sessions: usize = agent_sessions.max_sessions;
 /// Admission is bounded independently from one frame's text budget. The
 /// painter degrades rows atomically; the provider retains the complete valid
 /// viewport instead of disconnecting on ordinary dense Unicode content.
@@ -178,6 +193,9 @@ pub const Host = struct {
     metadata_changed: bool = false,
     workspace_changed: bool = false,
     workspace_store: workspace_bridge.Store = .{},
+    /// Agent sessions from the resource catalog, with the state their record
+    /// streams declare. Never a replica: see agent_sessions.zig.
+    agents: agent_sessions.Registry = .{},
     attached_session_id: ?u32 = null,
 
     /// Presentation-only update: no input, render query or replica mutation.
@@ -195,6 +213,7 @@ pub const Host = struct {
     }
 
     pub fn destroy(host: *Host) void {
+        host.agents.deinit(host.gpa);
         host.workspace_store.deinit(host.gpa);
         host.clearSearchResults(null);
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
@@ -506,6 +525,7 @@ pub const Host = struct {
         host.clearSearchResults(null);
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
         host.terminals.items.len = 0;
+        host.agents.clear(host.gpa);
         host.workspace_store.deinit(host.gpa);
         host.workspace_changed = true;
     }
@@ -528,6 +548,10 @@ pub const Host = struct {
         }
         host.captureWorkspace();
         delta.removed_count += try host.prepareAttachAdmission();
+        // Catalog first, effects second, in one drain: the catalog is the
+        // roster the attach snapshot published, and an AGENT_RECORDS CLOSED
+        // arriving in the same batch must retire a row the catalog still lists.
+        try host.refreshResources();
         try host.captureEffects();
         delta.detached = host.state() == .detached;
         if (host.state() == .attached and !host.attach_barrier_seen) {
@@ -566,6 +590,33 @@ pub const Host = struct {
 
     pub fn sessionCatalog(host: *const Host) []const SessionSummary {
         return host.sessions.items;
+    }
+
+    /// Every agent session the roster holds, in catalog order. Owned by the
+    /// host and stable until the next drain.
+    pub fn agentSessions(host: *const Host) []const AgentSession {
+        return host.agents.all();
+    }
+
+    /// The agent sessions running under one terminal. `out` bounds the answer.
+    pub fn agentSessionsUnder(host: *const Host, ref: provider.TerminalRef, out: []*const AgentSession) usize {
+        const parent = remoteFromRef(ref) orelse return 0;
+        return host.agents.childrenOf(parent, out);
+    }
+
+    /// Stream-derived attention for one terminal: an agent under it is waiting
+    /// on a person. A signal SOURCE for the quiet attention path, beside the
+    /// bell and the phase latches — never a second attention mechanism.
+    pub fn agentAttention(host: *const Host, ref: provider.TerminalRef) bool {
+        const parent = remoteFromRef(ref) orelse return false;
+        return host.agents.parentNeedsAttention(parent);
+    }
+
+    /// Whether this identity is an agent session rather than a terminal.
+    /// Nothing that renders a surface may be reached through one.
+    pub fn isAgentSession(host: *const Host, ref: provider.TerminalRef) bool {
+        const id = remoteFromRef(ref) orelse return false;
+        return host.agents.findConst(id) != null;
     }
 
     pub fn contains(host: *const Host, terminal_ref: provider.TerminalRef) bool {
@@ -1054,13 +1105,62 @@ pub const Host = struct {
                     try host.appendNotice(.status, &effect, generation);
                 },
                 c.PHUX_CLIENT_EFFECT_JOB => try host.appendNotice(.job, &effect, generation),
-                // AgentSession records are accepted and dropped; their projection lands in phux-am9y.25.
-                c.PHUX_CLIENT_EFFECT_AGENT_RECORDS => {},
+                c.PHUX_CLIENT_EFFECT_AGENT_RECORDS => try host.captureAgentRecords(&effect),
                 else => return error.Protocol,
             }
         }
         try resultError(c.phux_client_effect_clear(host.client));
         try host.captureOperations();
+    }
+
+    /// Fold one AgentSession record batch into the roster.
+    ///
+    /// An unrecognized records kind is DROPPED, not refused: the header
+    /// declares new kinds additive, and a host that disconnected on one would
+    /// make an additive change breaking. An unrecognized effect kind is still
+    /// a protocol error, because the effect union is not additive that way.
+    fn captureAgentRecords(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const kind: agent_sessions.RecordsKind = switch (effect.detail) {
+            c.PHUX_CLIENT_AGENT_RECORDS_RETAINED => .retained,
+            c.PHUX_CLIENT_AGENT_RECORDS_LIVE => .live,
+            c.PHUX_CLIENT_AGENT_RECORDS_CLOSED => .closed,
+            else => return,
+        };
+        const id = try remoteFromC(effect.terminal_id);
+        const payload = try effectSlice(effect.bytes);
+        if (payload.len > max_agent_records_bytes) return error.Protocol;
+        if (try host.agents.applyRecords(host.gpa, id, kind, payload)) host.metadata_changed = true;
+    }
+
+    /// Adopt the resource catalog the latest ATTACHED snapshot published.
+    ///
+    /// Only while attached. Before the first attach the catalog is empty by
+    /// definition, and during a reconnect an empty read is the absence of an
+    /// answer rather than the answer "no agents" — adopting it would blank
+    /// every row for the length of the outage. The last good roster stands
+    /// until a replacement snapshot exists, exactly as the canvases do.
+    ///
+    /// Spans are borrowed until the next mutable client call; `adopt` copies
+    /// everything it keeps before this function returns.
+    fn refreshResources(host: *Host) !void {
+        if (host.state() != .attached) return;
+        const count = c.phux_client_resource_count(host.client);
+        if (count > max_catalog_terminals) return error.Protocol;
+        var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
+        defer entries.deinit(host.gpa);
+        try entries.ensureTotalCapacity(host.gpa, count);
+        for (0..count) |index| {
+            var raw = workspace_bridge.record(c.PhuxResourceInfo);
+            try resultError(c.phux_client_resource_get(host.client, index, &raw));
+            if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
+            entries.appendAssumeCapacity(try agentEntryFromC(raw));
+        }
+        const before = host.agents.all().len;
+        host.agents.adopt(host.gpa, entries.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Protocol => return error.Protocol,
+        };
+        if (before != host.agents.all().len) host.metadata_changed = true;
     }
 
     fn captureDamage(host: *Host, effect: *const c.PhuxClientEffect) !void {
@@ -1225,6 +1325,10 @@ pub const Host = struct {
     fn ensureTerminal(host: *Host, raw: c.PhuxResourceId) !*Terminal {
         const id = try remoteFromC(raw);
         for (host.terminals.items) |*terminal| if (terminal.id.eql(id)) return terminal;
+        // An AgentSession publishes no replica and refuses every terminal
+        // facet call. Minting a slot for one would put an empty surface in a
+        // pane and route keystrokes at a resource that cannot take them.
+        if (host.agents.findConst(id) != null) return error.Protocol;
         if (host.terminals.items.len == max_terminals) return error.OutOfMemory;
         try host.terminals.append(host.gpa, .{ .id = id });
         return &host.terminals.items[host.terminals.items.len - 1];
@@ -1370,6 +1474,19 @@ fn bytes(slice: []const u8) c.PhuxBytes {
     return .{ .data = if (slice.len == 0) null else slice.ptr, .len = slice.len };
 }
 
+/// One catalog row, still borrowing the ABI's spans. `parent` is NULL when the
+/// resource has none; it is not an error, and it is not a self-parent.
+fn agentEntryFromC(raw: c.PhuxResourceInfo) !agent_sessions.Entry {
+    const parent: ?RemoteId = if (raw.parent == null) null else try remoteFromC(raw.parent.*);
+    return .{
+        .id = try remoteFromC(raw.terminal_id),
+        .parent = parent,
+        .provider_name = try effectSlice(raw.provider),
+        .native_id = try effectSlice(raw.native_id),
+        .state = try effectSlice(raw.state),
+    };
+}
+
 fn effectSlice(raw: c.PhuxBytes) ![]const u8 {
     if (raw.len != 0 and raw.data == null) return error.Protocol;
     return if (raw.len == 0) &.{} else raw.data[0..raw.len];
@@ -1422,6 +1539,191 @@ fn copySessionSummary(gpa: std.mem.Allocator, raw: c.PhuxSessionInfo) !SessionSu
         .attached_client_count = raw.attached_client_count,
         .focused = raw.focused,
     };
+}
+
+/// One resource-catalog row, built by hand. The shape the ABI publishes, with
+/// the size/version stamp `phux_client_resource_get` requires, so the decode
+/// under test is the same one a live catalog read goes through.
+fn resourceInfoFixture(
+    id: u32,
+    kind: u32,
+    parent: [*c]const c.PhuxResourceId,
+    provider_name: []const u8,
+    native_id: []const u8,
+    state: []const u8,
+) c.PhuxResourceInfo {
+    var raw = workspace_bridge.record(c.PhuxResourceInfo);
+    raw.terminal_id = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = id, .host = bytes("") };
+    raw.kind = kind;
+    raw.parent = parent;
+    raw.provider = bytes(provider_name);
+    raw.native_id = bytes(native_id);
+    raw.state = bytes(state);
+    return raw;
+}
+
+fn agentRecordsEffect(id: u32, detail: u32, payload: []const u8) c.PhuxClientEffect {
+    return .{
+        .kind = c.PHUX_CLIENT_EFFECT_AGENT_RECORDS,
+        .detail = detail,
+        .status_code = 0,
+        .terminal_id = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = id, .host = bytes("") },
+        .stream_id = 4,
+        .bootstrap_id = 5,
+        .seq = 21,
+        .first_row = 0,
+        .last_row = 0,
+        .bytes = bytes(payload),
+    };
+}
+
+fn adoptCatalogFixture(host: *Host, catalog: []const c.PhuxResourceInfo) !void {
+    var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
+    defer entries.deinit(host.gpa);
+    for (catalog) |raw| {
+        if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
+        try entries.append(host.gpa, try agentEntryFromC(raw));
+    }
+    try host.agents.adopt(host.gpa, entries.items);
+}
+
+test "the resource catalog projects agent rows under a parent and never a replica" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+
+    const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
+    const catalog = [_]c.PhuxResourceInfo{
+        resourceInfoFixture(7, c.PHUX_RESOURCE_TERMINAL, null, "", "", ""),
+        resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "sess-1", "working"),
+        resourceInfoFixture(11, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "codex", "sess-2", "done"),
+        // A kind this header does not name is opaque and is never a terminal.
+        resourceInfoFixture(13, 99, &parent_raw, "", "", ""),
+    };
+    try adoptCatalogFixture(host, &catalog);
+
+    const parent_ref = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, ""));
+    var rows: [max_agent_sessions]*const AgentSession = undefined;
+    try std.testing.expectEqual(@as(usize, 2), host.agentSessionsUnder(parent_ref, &rows));
+    try std.testing.expectEqualStrings("claude", rows[0].provider_name);
+    try std.testing.expectEqualStrings("sess-1", rows[0].native_id);
+    try std.testing.expectEqual(AgentState.working, rows[0].state());
+    try std.testing.expect(rows[0].parentRef().?.eql(parent_ref));
+    try std.testing.expectEqual(AgentState.done, rows[1].state());
+    try std.testing.expect(!host.agentAttention(parent_ref));
+
+    // A row is not a surface: no replica was minted, the terminal roster is
+    // untouched, and the identity is refused if anything tries to mint one.
+    try std.testing.expectEqual(@as(usize, 0), host.terminals.items.len);
+    try std.testing.expect(host.isAgentSession(rows[0].ref()));
+    try std.testing.expect(!host.contains(rows[0].ref()));
+    try std.testing.expectEqual(@as(?provider.ReplicaOwner, null), host.owner(rows[0].ref()));
+    try std.testing.expectError(error.Protocol, host.ensureTerminal(catalog[1].terminal_id));
+    // The parent terminal is admitted the ordinary way, side by side with it.
+    _ = try host.ensureTerminal(parent_raw);
+    try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
+}
+
+test "hand-built AGENT_RECORDS batches move one row and close it" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+
+    const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
+    try adoptCatalogFixture(host, &[_]c.PhuxResourceInfo{
+        resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "sess-1", "unknown"),
+    });
+    const parent_ref = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, ""));
+    const agent_id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 9, "");
+
+    const retained =
+        "{\"seq\":1,\"ts_ms\":10,\"type\":\"session_start\",\"data\":{\"provider\":\"claude\"}}\n" ++
+        "{\"seq\":2,\"ts_ms\":20,\"type\":\"prompt\",\"data\":{\"chars\":4}}\n";
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, retained);
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.working, host.agents.findConst(agent_id).?.state());
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expect(!host.agentAttention(parent_ref));
+
+    host.metadata_changed = false;
+    effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_LIVE, "{\"seq\":3,\"ts_ms\":30,\"type\":\"notification\",\"data\":{\"kind\":\"permission\"}}\n");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agents.findConst(agent_id).?.state());
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expect(host.agentAttention(parent_ref));
+
+    // Narration is quiet: no state edge, so nothing is republished.
+    host.metadata_changed = false;
+    effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_LIVE, "{\"seq\":4,\"ts_ms\":40,\"type\":\"tool_end\",\"data\":{}}\n");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expect(!host.metadata_changed);
+
+    // An additive records kind is dropped rather than guessed at or refused.
+    effect = agentRecordsEffect(9, 99, "{\"type\":\"stop\",\"data\":{}}\n");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agents.findConst(agent_id).?.state());
+
+    // CLOSED retires the row, and with it the attention it was raising.
+    effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_CLOSED, "");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(@as(usize, 0), host.agentSessions().len);
+    try std.testing.expect(!host.agentAttention(parent_ref));
+    try std.testing.expect(host.metadata_changed);
+}
+
+test "a records payload past the append ceiling is a protocol failure" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+
+    const oversized = try std.testing.allocator.alloc(u8, max_agent_records_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'x');
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_LIVE, oversized);
+    try std.testing.expectError(error.Protocol, host.captureAgentRecords(&effect));
+}
+
+test "an attach refresh drops the rows the new snapshot omits" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+
+    const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
+    try adoptCatalogFixture(host, &[_]c.PhuxResourceInfo{
+        resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "sess-1", "working"),
+        resourceInfoFixture(11, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "codex", "sess-2", "working"),
+    });
+    var effect = agentRecordsEffect(11, c.PHUX_CLIENT_AGENT_RECORDS_LIVE, "{\"type\":\"ask\",\"data\":{\"question\":\"go?\"}}\n");
+    try host.captureAgentRecords(&effect);
+
+    // ParentClosed reaches this projection as an ordinary absence of the child.
+    try adoptCatalogFixture(host, &[_]c.PhuxResourceInfo{
+        resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "sess-1", "working"),
+    });
+    const parent_ref = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, ""));
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    try std.testing.expect(!host.agentAttention(parent_ref));
+}
+
+test "a parentless catalog row is carried but projected under nothing" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+
+    try adoptCatalogFixture(host, &[_]c.PhuxResourceInfo{
+        resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "sess-1", "blocked"),
+    });
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    try std.testing.expectEqual(@as(?provider.TerminalRef, null), host.agentSessions()[0].parentRef());
+    const parent_ref = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, ""));
+    var rows: [max_agent_sessions]*const AgentSession = undefined;
+    try std.testing.expectEqual(@as(usize, 0), host.agentSessionsUnder(parent_ref, &rows));
+    try std.testing.expect(!host.agentAttention(parent_ref));
 }
 
 test "contains hides terminals until their canvas is published" {

@@ -26,7 +26,48 @@ pub const Phase = provider_contract.Phase;
 
 pub const phux_enabled = phux_options.enabled;
 
+/// The derived lifecycle vocabulary, restated for the build with no Phux in
+/// it. Same words, no derivation: without a provider there is no resource
+/// catalog and no record stream to derive from. Named apart from the exported
+/// alias below so a reference inside either is never ambiguous.
+const DisabledAgentState = enum(u8) {
+    unknown,
+    working,
+    blocked,
+    done,
+    gone,
+
+    pub fn word(_: DisabledAgentState) []const u8 {
+        return "unknown";
+    }
+
+    pub fn needsAttention(_: DisabledAgentState) bool {
+        return false;
+    }
+};
+
+const DisabledAgentSession = struct {
+    id: RemoteResourceId = .{ .kind = 0, .id = 0 },
+    parent: ?RemoteResourceId = null,
+    provider_name: []const u8 = "",
+    native_id: []const u8 = "",
+
+    pub fn state(_: *const DisabledAgentSession) DisabledAgentState {
+        return .unknown;
+    }
+
+    pub fn ref(_: *const DisabledAgentSession) TerminalRef {
+        return .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 0 } } };
+    }
+
+    pub fn parentRef(_: *const DisabledAgentSession) ?TerminalRef {
+        return null;
+    }
+};
+
 const DisabledPhuxProvider = struct {
+    pub const AgentState = DisabledAgentState;
+    pub const AgentSession = DisabledAgentSession;
     pub const OperationResult = struct {
         request_id: u32,
         connection_epoch: u64,
@@ -129,6 +170,18 @@ const DisabledPhuxProvider = struct {
     pub fn sessionCatalog(_: *const DisabledPhuxProvider) []const @This().SessionSummary {
         return &.{};
     }
+    pub fn agentSessions(_: *const DisabledPhuxProvider) []const @This().AgentSession {
+        return &.{};
+    }
+    pub fn agentSessionsUnder(_: *const DisabledPhuxProvider, _: TerminalRef, _: []*const @This().AgentSession) usize {
+        return 0;
+    }
+    pub fn agentAttention(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
+        return false;
+    }
+    pub fn isAgentSession(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
+        return false;
+    }
     pub fn selectedSessionId(_: *const DisabledPhuxProvider) ?u32 {
         return null;
     }
@@ -192,6 +245,10 @@ pub const SessionSummary = PhuxProvider.SessionSummary;
 pub const OperationResult = PhuxProvider.OperationResult;
 pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else DisabledPhuxProvider.SyncDelta;
 pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
+pub const AgentSession = PhuxProvider.AgentSession;
+pub const AgentState = PhuxProvider.AgentState;
+/// Roster ceiling, and the size of the row buffer every caller declares.
+pub const max_agent_sessions: usize = if (phux_enabled) @import("phux_provider").max_agent_sessions else 0;
 
 const DisabledPointerModule = struct {
     pub const EventQueue = struct {};
