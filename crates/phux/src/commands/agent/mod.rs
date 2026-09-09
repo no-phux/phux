@@ -1,6 +1,7 @@
 mod answer;
 mod config;
 mod detect;
+mod hook_payload;
 mod model;
 mod offline;
 mod prompt;
@@ -360,6 +361,12 @@ pub(crate) enum AgentAction {
     },
     /// Remove the claude-in-phux shim and shell activation.
     UninstallClaude,
+    /// Internal: read one Claude Code hook payload from stdin and print the
+    /// fields the generated shim splices into its `phux` calls, as one line
+    /// of shell-safe tokens. Hidden because it is the wrapper's JSON reader,
+    /// not a promise that phux ships a JSON tool.
+    #[command(name = "hook-payload", hide = true)]
+    HookPayload,
 }
 
 pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
@@ -462,6 +469,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             shim::run_install_claude(shell.as_deref(), real.as_deref())
         }
         AgentAction::UninstallClaude => shim::run_uninstall_claude(),
+        AgentAction::HookPayload => hook_payload::run(),
     }
 }
 
@@ -506,7 +514,8 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
         | AgentAction::SendKeys { .. }
         | AgentAction::InstallClaude { .. }
         | AgentAction::Start { .. }
-        | AgentAction::UninstallClaude => return ExitCode::FAILURE,
+        | AgentAction::UninstallClaude
+        | AgentAction::HookPayload => return ExitCode::FAILURE,
     };
     let selector = match parse_selector(target) {
         Ok(selector) => selector,

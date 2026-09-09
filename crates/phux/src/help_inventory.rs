@@ -97,6 +97,7 @@ phux agent
 phux agent answer
 phux agent clear
 phux agent explain
+phux agent hook-payload
 phux agent install-claude
 phux agent list
 phux agent prompt

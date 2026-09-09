@@ -770,6 +770,10 @@ const fn stale_shim_consequence(found: u32) -> &'static str {
             "schema 3 leaves lifecycle timing to screen detection and cannot publish the \
              Claude Stop hook's exact `done` edge"
         }
+        4 => {
+            "schema 4 never reads the hook payload, so it cannot open or feed the pane's \
+             agent session stream and `PreToolUse`/`PostToolUse` are not wired"
+        }
         _ => "the installed shim predates this binary's wrapper behavior",
     }
 }

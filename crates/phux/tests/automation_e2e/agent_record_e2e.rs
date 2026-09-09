@@ -582,3 +582,342 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
          and it is what phase 1 proves the generated wrapper no longer does"
     );
 }
+
+/// Write an executable fake Claude named `claude` that paints nothing and
+/// holds. The process NAME is what `agent_detect::identify` keys the kind on
+/// (see [`write_fake_claude`]); a blank screen keeps the screen rules out of
+/// the picture, so every lifecycle edge the assertions below read has to
+/// have come from the session stream.
+fn write_quiet_claude(dir: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = dir.join("claude");
+    std::fs::write(&path, "#!/bin/sh\nprintf '\\033[2J\\033[H'\nsleep 120\n")
+        .expect("write quiet claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod quiet claude");
+    path
+}
+
+/// As [`run_hook`], with Claude's JSON payload on the hook's stdin — the
+/// shape Claude Code actually hands a hook.
+fn run_hook_with_payload(
+    shim: &std::path::Path,
+    event: &str,
+    terminal_id: u32,
+    socket: &std::path::Path,
+    payload: &serde_json::Value,
+) {
+    use std::io::Write as _;
+
+    let mut child = Command::new(shim)
+        .args(["--phux-hook", event])
+        .env("PHUX_TERMINAL_ID", terminal_id.to_string())
+        .env("PHUX_SOCKET", socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("run the installed shim's {event} hook: {err}"));
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write the hook payload");
+    let out = child.wait_with_output().expect("wait for the hook");
+    assert!(
+        out.status.success(),
+        "the {event} hook exited {:?}; stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+impl ServerGuard {
+    /// Whether this server advertises `resource_kinds` — the same probe the
+    /// generated wrapper runs, through the same verb.
+    fn serves_resource_kinds(&self) -> bool {
+        let status = self.run(&["status", "--json"], &[]);
+        let json: serde_json::Value = serde_json::from_str(&status).expect("status JSON");
+        json["features"]
+            .as_array()
+            .is_some_and(|features| features.iter().any(|f| f == "resource_kinds"))
+    }
+
+    /// `phux agent log TARGET --json`, decoded into its records. Accepts a
+    /// JSON array, an object carrying a `records` array, or one record per
+    /// line, so the assertion does not hinge on the verb's framing.
+    fn agent_log(&self, target: &str) -> Vec<serde_json::Value> {
+        let text = self.agent(&["log", target, "--json"]);
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(records) = value.as_array() {
+                return records.clone();
+            }
+            if let Some(records) = value["records"].as_array() {
+                return records.clone();
+            }
+        }
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|err| panic!("agent log record ({err}): {line}"))
+            })
+            .collect()
+    }
+
+    /// Poll the log until a record of `kind` appears and return the whole
+    /// log. Panics with the last reading on timeout.
+    fn await_record(&self, target: &str, kind: &str, deadline: Duration) -> Vec<serde_json::Value> {
+        let end = Instant::now() + deadline;
+        loop {
+            let records = self.agent_log(target);
+            if records.iter().any(|record| record["type"] == kind) {
+                return records;
+            }
+            assert!(
+                Instant::now() < end,
+                "{target} never logged a `{kind}` record within {deadline:?}; last: {records:?}"
+            );
+            std::thread::sleep(RECORD_POLL);
+        }
+    }
+}
+
+/// phux-am9y.13, joined end to end: the wrapper `phux agent install-claude`
+/// GENERATES, driven through its own `--phux-hook` entry point with the JSON
+/// payloads Claude Code hands a hook, against a live server that serves
+/// `AgentSession` resources, opens a session child under the pane and feeds
+/// its stream — and the pane's projected `phux.agent/v1` state follows the
+/// stream rather than the (blank) screen.
+///
+/// The claims, in order:
+///
+/// 1. `SessionStart` opens the session with Claude's own `session_id` as the
+///    native id, and `agent show` reports it.
+/// 2. `UserPromptSubmit` logs a `prompt` record carrying the character count
+///    and never the text; the pane derives `working`.
+/// 3. `PreToolUse`/`PostToolUse` log `tool_start`/`tool_end` with the tool
+///    name and never `tool_input` or `tool_response`.
+/// 4. `PermissionRequest` logs `ask`; the pane derives `blocked`.
+/// 5. `Stop` logs `stop`; the pane derives `done`.
+/// 6. `SessionEnd` logs `session_end` and closes the session; the record is
+///    cleared.
+///
+/// The privacy half is asserted on the whole serialized log after every
+/// step: none of the three markers planted in prompt text, tool input, and
+/// tool output may appear anywhere in it.
+///
+/// Until the session verbs land (phux-am9y.12) a server does not advertise
+/// `resource_kinds`; the test then reports that and returns without
+/// asserting, so `just e2e` (which runs ignored tests) stays honest instead
+/// of red. Once the bit is advertised, the guard is a no-op and the body
+/// runs in full.
+#[test]
+#[ignore = "needs phux agent session verbs (phux-am9y.12); spawns a real phux server. Run via `just e2e`."]
+#[allow(clippy::too_many_lines, reason = "one linear hook-by-hook scenario")]
+#[allow(
+    clippy::print_stderr,
+    reason = "the pre-verbs skip must say why it did nothing; a silent pass would be a lie"
+)]
+fn the_generated_claude_shim_feeds_the_agent_session_stream() {
+    const SESSION_ID: &str = "e2e-claude-session-0001";
+
+    let home = tempfile::tempdir().expect("create temp HOME");
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("create bin dir");
+    let fake_claude = write_quiet_claude(&bin);
+    let data = home.path().join("data");
+
+    let install = Command::new(PHUX)
+        .args(["agent", "install-claude", "--shell", "bash", "--real"])
+        .arg(&fake_claude)
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", &data)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run phux agent install-claude");
+    assert!(
+        install.status.success(),
+        "install-claude exited {:?}; stderr={}",
+        install.status.code(),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let shim = data.join("phux").join("shims").join("claude");
+
+    let server =
+        ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
+    if !server.serves_resource_kinds() {
+        eprintln!(
+            "skipping: this server does not advertise resource_kinds (phux-am9y.12 not landed)"
+        );
+        return;
+    }
+    let terminal_id = server.spawn_pane(&fake_claude);
+    let target = format!("@{terminal_id}");
+    let payload = |event: &str, extra: serde_json::Value| {
+        let mut base = serde_json::json!({
+            "session_id": SESSION_ID,
+            "hook_event_name": event,
+            "transcript_path": "/nonexistent/TRANSCRIPT-MARKER.jsonl",
+            "cwd": "/tmp",
+        });
+        base.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        base
+    };
+    let assert_private = |records: &[serde_json::Value]| {
+        let text = serde_json::to_string(records).expect("serialize log");
+        for marker in [
+            "PROMPT-MARKER",
+            "INPUT-MARKER",
+            "OUTPUT-MARKER",
+            "TRANSCRIPT-MARKER",
+        ] {
+            assert!(
+                !text.contains(marker),
+                "the stream must never carry `{marker}`: {text}"
+            );
+        }
+    };
+
+    // --- 1. SessionStart opens the session under the pane -----------------
+    run_hook_with_payload(
+        &shim,
+        "start",
+        terminal_id,
+        &server.socket,
+        &payload("SessionStart", serde_json::json!({ "source": "startup" })),
+    );
+    let records = server.await_record(&target, "session_start", DETECT_DEADLINE);
+    assert_eq!(records[0]["type"], "session_start", "{records:?}");
+    let shown = server.agent_show(&target);
+    let session = &shown["agents"][0]["session"];
+    assert_eq!(session["provider"], "claude", "{shown}");
+    assert_eq!(session["native_id"], SESSION_ID, "{shown}");
+
+    // --- 2. UserPromptSubmit: a count, never the text; working ------------
+    run_hook_with_payload(
+        &shim,
+        "working",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "UserPromptSubmit",
+            serde_json::json!({ "prompt": "hello PROMPT-MARKER world" }),
+        ),
+    );
+    let records = server.await_record(&target, "prompt", DETECT_DEADLINE);
+    let prompt = records
+        .iter()
+        .find(|r| r["type"] == "prompt")
+        .expect("prompt record");
+    assert_eq!(prompt["data"]["chars"], 25, "{prompt}");
+    assert_private(&records);
+    server.await_agent_state(&target, "working", DETECT_DEADLINE);
+
+    // --- 3. Tool records name the tool and nothing else -------------------
+    run_hook_with_payload(
+        &shim,
+        "tool-start",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "PreToolUse",
+            serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": "echo INPUT-MARKER" },
+                "tool_use_id": "toolu_e2e"
+            }),
+        ),
+    );
+    run_hook_with_payload(
+        &shim,
+        "tool-end",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "PostToolUse",
+            serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": "echo INPUT-MARKER" },
+                "tool_response": "OUTPUT-MARKER",
+                "tool_use_id": "toolu_e2e"
+            }),
+        ),
+    );
+    let records = server.await_record(&target, "tool_end", DETECT_DEADLINE);
+    for kind in ["tool_start", "tool_end"] {
+        let record = records
+            .iter()
+            .find(|r| r["type"] == kind)
+            .unwrap_or_else(|| panic!("{kind} record: {records:?}"));
+        assert_eq!(record["data"]["tool_name"], "Bash", "{record}");
+        assert!(record["data"].get("tool_input").is_none(), "{record}");
+    }
+    assert_private(&records);
+
+    // --- 4. PermissionRequest: ask, and blocked ---------------------------
+    run_hook_with_payload(
+        &shim,
+        "blocked",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "PermissionRequest",
+            serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": "rm INPUT-MARKER" },
+                "message": "Claude wants to run: rm INPUT-MARKER"
+            }),
+        ),
+    );
+    let records = server.await_record(&target, "ask", DETECT_DEADLINE);
+    assert_private(&records);
+    server.await_agent_state(&target, "blocked", DETECT_DEADLINE);
+
+    // --- 5. Stop: done ----------------------------------------------------
+    run_hook_with_payload(
+        &shim,
+        "done",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "Stop",
+            serde_json::json!({ "last_assistant_message": "OUTPUT-MARKER" }),
+        ),
+    );
+    let records = server.await_record(&target, "stop", DETECT_DEADLINE);
+    assert_private(&records);
+    server.await_agent_state(&target, "done", DETECT_DEADLINE);
+
+    // --- 6. SessionEnd: session_end, closed, cleared ----------------------
+    run_hook_with_payload(
+        &shim,
+        "clear",
+        terminal_id,
+        &server.socket,
+        &payload(
+            "SessionEnd",
+            serde_json::json!({ "reason": "prompt_input_exit" }),
+        ),
+    );
+    let end = Instant::now() + DETECT_DEADLINE;
+    loop {
+        let shown = server.agent_show(&target);
+        let session_gone = shown["agents"][0]["session"].is_null();
+        let record_gone = shown["agents"][0]["sources"]
+            .as_array()
+            .is_some_and(|sources| sources.iter().all(|s| s["kind"] != "agent_record"));
+        if session_gone && record_gone {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "SessionEnd must close the session and clear the record; last: {shown}"
+        );
+        std::thread::sleep(RECORD_POLL);
+    }
+}
