@@ -118,9 +118,65 @@ require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux
 require_fixed scripts/install.sh 'rollback_publish'
 require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'
 require_fixed scripts/install.sh 'echo "next: phux"'
-require_fixed scripts/install.sh 'PATH remedy: export PATH=%q:"$PATH"'
+require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
 require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
 require_fixed scripts/test-install.sh 'installer transaction tests passed'
+
+# --- The installer is POSIX sh, and phux.sh serves it -------------------------
+#
+# https://phux.sh/install returns scripts/install.sh byte for byte, and the
+# documented command pipes it to `sh`. On Debian and Ubuntu that is dash, so a
+# bashism is not a style question: it is an install that dies on a stranger's
+# machine. Two killed it before this was pinned — `set -o pipefail`, which dash
+# rejected before 0.5.12, and `printf %q`, which no dash has ever implemented.
+require_regex scripts/install.sh '^#!/bin/sh$'
+forbid_fixed scripts/install.sh '#!/usr/bin/env bash'
+# Matched against code only. The script's own header names both bashisms so the
+# next reader knows why they are banned; a guard that could not tell a comment
+# from a command would forbid saying so.
+forbid_regex scripts/install.sh '^[[:space:]]*[^#[:space:]].*pipefail'
+forbid_regex scripts/install.sh '^[[:space:]]*[^#[:space:]].*%q'
+# The POSIX stand-in for `printf %q` that replaced it.
+require_fixed scripts/install.sh 'shell_quote()'
+# The transaction tests must drive the installer through a POSIX shell, or the
+# bashism guards above are the only thing standing between dash and a user.
+require_fixed scripts/test-install.sh 'INSTALLER_SH="$(command -v dash || echo /bin/sh)"'
+forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install.sh"'
+
+# The site publishes the script from this repo instead of keeping a copy. Both
+# halves are load-bearing: sync-docs.ts does the copying, and site-deploy.yml's
+# path filter is what makes an installer change redeploy the site at all. Miss
+# the second and phux.sh keeps serving the old script with nothing to show for
+# it in any diff.
+require_fixed docs/site/scripts/sync-docs.ts 'const INSTALLER_SRC'
+require_fixed docs/site/scripts/sync-docs.ts '"public/install", "public/install.sh"'
+require_fixed docs/site/scripts/sync-docs.ts 'must start with #!/bin/sh'
+require_fixed .github/workflows/site-deploy.yml '- "scripts/install.sh"'
+# The route itself is unprovable before a deploy, so the deploy asserts it.
+require_fixed .github/workflows/site-deploy.yml 'Verify the installer is served'
+require_fixed .github/workflows/site-deploy.yml 'if [ "$shebang" != '"'"'#!/bin/sh'"'"' ]; then'
+# A committed copy is a second source of truth waiting to go stale.
+require_fixed docs/site/.gitignore 'public/install'
+require_fixed docs/site/.gitignore 'public/install.sh'
+
+require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
+require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
+require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'
+require_fixed docs/RELEASING.md 'Curl installer contract'
+
+# --- The repository is no-phux/phux -------------------------------------------
+#
+# It was renamed from phall1/phux. Every URL below kept working only because
+# GitHub still answers the old name with a redirect, which is somebody else's
+# decision to revoke. An installed phux resolves its own updates through these
+# constants, so a dropped redirect would strand every existing install.
+forbid_fixed scripts/install.sh 'phall1/phux'
+forbid_fixed docs/INSTALL.md 'phall1/phux'
+forbid_fixed docs/RELEASING.md 'phall1/phux'
+forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
+forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
+require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${version}'
+require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
 require_fixed justfile "release-preflight TAG:"
 require_fixed justfile "release-preflight-fast TAG:"

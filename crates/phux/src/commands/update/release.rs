@@ -19,7 +19,7 @@ use std::process::Command;
 use super::UpdateError;
 
 /// The repository releases are published from.
-pub(crate) const REPO: &str = "phall1/phux";
+pub(crate) const REPO: &str = "no-phux/phux";
 
 /// The redirect that names the current stable release.
 ///
@@ -27,7 +27,7 @@ pub(crate) const REPO: &str = "phall1/phux";
 /// `scripts/install.sh` already does: it is not rate-limited for anonymous
 /// callers and the answer is a URL, not a JSON document that has to be
 /// trusted and parsed.
-const LATEST_REDIRECT: &str = "https://github.com/phall1/phux/releases/latest";
+const LATEST_REDIRECT: &str = "https://github.com/no-phux/phux/releases/latest";
 
 /// A parsed `MAJOR.MINOR.PATCH`.
 ///
@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(artifact.archive, "phux-v0.13.0-aarch64-apple-darwin.tar.gz");
         assert_eq!(
             artifact.archive_url,
-            "https://github.com/phall1/phux/releases/download/v0.13.0/\
+            "https://github.com/no-phux/phux/releases/download/v0.13.0/\
              phux-v0.13.0-aarch64-apple-darwin.tar.gz"
         );
         assert_eq!(

@@ -139,7 +139,7 @@ impl UpdateError {
     fn remedy(&self) -> String {
         match self {
             Self::InvalidTag(_) => {
-                "pass a tag from https://github.com/phall1/phux/releases, like `--version v1.2.3`"
+                "pass a tag from https://github.com/no-phux/phux/releases, like `--version v1.2.3`"
                     .to_owned()
             }
             Self::UnsupportedPlatform(_) => {
@@ -151,7 +151,7 @@ impl UpdateError {
             Self::Checksum(_) | Self::ChecksumMismatch { .. } => {
                 "nothing was installed. Re-run to download again; if it \
                  mismatches a second time, do not install this artifact by \
-                 hand — report it at https://github.com/phall1/phux/issues"
+                 hand — report it at https://github.com/no-phux/phux/issues"
                     .to_owned()
             }
             Self::Archive(_) => "nothing was installed. Re-run to download again; a repeat \
@@ -810,7 +810,7 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
                             &CliError::new(
                                 codes::JSON_SERIALIZE,
                                 format!("could not render the update document: {err}"),
-                                "report this at https://github.com/phall1/phux/issues".to_owned(),
+                                "report this at https://github.com/no-phux/phux/issues".to_owned(),
                             ),
                             EXIT_FAILURE,
                         );

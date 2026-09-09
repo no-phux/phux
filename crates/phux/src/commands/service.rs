@@ -427,7 +427,7 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
 
     out.push_str("[Unit]\n");
     out.push_str("Description=phux terminal control plane server\n");
-    out.push_str("Documentation=https://github.com/phall1/phux\n");
+    out.push_str("Documentation=https://github.com/no-phux/phux\n");
     out.push_str("After=network-online.target\n\n");
 
     out.push_str("[Service]\n");
