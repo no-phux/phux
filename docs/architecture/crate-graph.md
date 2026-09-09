@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-09
 ---
 
 # Crate dependency graph
@@ -11,7 +11,7 @@ they enforce: `phux-core` and `phux-protocol` never depend on each other,
 `phux-protocol` re-exports libghostty atoms directly, and the ratatui
 chrome is fenced into `phux-tui` above a headless `phux-client`. Plus how
 each crate participates in
-the L1/L2/L3 wire layering from ADR-0015.
+the L1/L3 wire layering from ADR-0015 and ADR-0102.
 
 ---
 
@@ -41,11 +41,12 @@ Four crate boundaries carry weight:
 
 1. **`phux-core` and `phux-protocol` do not depend on each other.** Core
    holds the in-process domain (slotmap keys with generational tags,
-   layout tree, registry). Protocol holds the wire shape (`u32`-wide
-   IDs, length-prefixed TLV, libghostty-derived input/style atoms).
-   The two ID spaces meet in `phux-server::id_bridge::IdBridge` and
-   nowhere else; this isolates wire stability from in-process
-   refactors and vice versa. See ADR-0011 for the full rationale.
+   resource descriptors and their facets, layout tree, registry). Protocol
+   holds the wire shape (`u32`-wide IDs, length-prefixed TLV,
+   libghostty-derived input/style atoms). The two ID spaces meet in
+   `phux-server::id_bridge::IdBridge` and nowhere else; this isolates wire
+   stability from in-process refactors and vice versa. See ADR-0011 for the
+   full rationale.
 2. **`phux-protocol` depends on `libghostty-vt` directly** (ADR-0008,
    gated by the `server` cargo feature). The protocol crate re-exports
    libghostty's input and style atoms instead of mirroring them. The
@@ -71,24 +72,25 @@ Four crate boundaries carry weight:
    loopback skip-verify) certificate verifier plus the ADR-0031 bearer
    token. Both crates depend on `phux-dial` so that
    security-sensitive path exists once; the crate stops at the byte
-   stream — SPEC §5 framing and lifecycles stay with its consumers,
-   preserving ADR-0007's transport-trait shape. `phux-client` re-exports
+   stream — SPEC §5 framing and lifecycles stay with its consumers
+   ([`transport.md`](./transport.md)). `phux-client` re-exports
    the dial types under the established `phux_client::attach::{quic,ws}`
    paths.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
-canonical state for each pane and drives the structured-input encoders
-(ADR-0006, ADR-0008); the TUI's `Terminal` is a local replica fed by
-`PANE_OUTPUT` bytes for the panes that client has attached, with
-`RenderState` providing per-row dirty tracking for efficient redraw
-(`client` names only libghostty's error type, for the shared exit
-vocabulary).
+canonical state for each Terminal-kind resource and drives the
+structured-input encoders (ADR-0006, ADR-0008); the TUI's `Terminal` is a
+local replica fed by `TERMINAL_OUTPUT` bytes for the Terminals that client
+has attached, with `RenderState` providing per-row dirty tracking for
+efficient redraw. `client-core` links `libghostty-vt` only under its
+`native-engine` feature (the wasm client leaves it off); `client` names
+only libghostty's error type, for the shared exit vocabulary.
 See ADR-0013 and `../../research/2026-05-25-libghostty-renderstate.md`
 for the renderer-side contract on both ends.
 
 `phux-config` is a sibling of `core` and is consumed by the binary, the
-client, and the TUI.
+server, the client, and the TUI.
 
 `phux-client-ffi` sits above `phux-client-core` and below nothing in this
 workspace: it is a stable C ABI over the synchronous session kernel, for
@@ -134,34 +136,31 @@ client consumer doc](../consumers/web.md).
 
 ## Protocol layering and this implementation
 
-[ADR-0015](../../ADR/0015-protocol-layering.md) layers the wire into three
-tiers plus two orthogonal cross-cuts. Mapping each onto code currently
-in tree:
+[ADR-0015](../../ADR/0015-protocol-layering.md) layers the wire into tiers
+plus two orthogonal cross-cuts, and
+[ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) makes L1
+the resource substrate. Mapping each onto code currently in tree:
 
-| Layer | Concept | Implemented in tree as | Status |
-|---|---|---|---|
-| **L1** | Terminal: PTY + libghostty `Terminal` + identity + I/O + snapshot + event stream | `PaneActor` in `phux-server::pane_actor`; wire `PaneId` and the `PANE_OUTPUT` / `PANE_SNAPSHOT` / `INPUT_*` / `BELL` / `OSC_EVENT` (currently spec-only) messages | shipped under pre-layering vocabulary; rename to `TerminalId` is ADR-0016 |
-| **L2** | Reserved, unused — no collection tier | nothing on the wire | dissolved per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md); grouping is L3 metadata + client logic, atomic teardown is the L1 `KILL_TERMINALS` op. `GroupId` survives only as an opaque grouping key (removal tracked as future work). See [../spec/L2.md](../spec/L2.md). |
-| **L3** | Opaque metadata KV scoped to Terminal / group / global | not yet implemented — closest analog is the in-memory window/layout state on `ServerState` | spec-only |
+| Layer | Concept | Implemented in tree as |
+|---|---|---|
+| **L1** | Resource: identity + kind + lifecycle + opaque output stream + bootstrap + events; the Terminal facet adds PTY, libghostty `Terminal`, structured input, and snapshots | `ResourceCore` and the Terminal engine in `phux-server::resource`; wire `TerminalId` (the resource id) and the `SPAWN_TERMINAL` / `TERMINAL_SPAWNED` / `TERMINAL_CLOSED` / `BOOTSTRAP_*` / `TERMINAL_OUTPUT` / `INPUT_*` / `BELL` / `EVENT` messages (`OSC_EVENT` is spec-only) |
+| **L2** | Reserved, unused — no collection tier | nothing on the wire; dissolved per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md). Grouping is L3 metadata + client logic, atomic teardown is the L1 `KILL_TERMINALS` op. `GroupId` survives only as an opaque grouping key. See [../spec/L2.md](../spec/L2.md). |
+| **L3** | Opaque metadata KV scoped to Terminal / group / global | `MetadataStore` on `ServerState` (`phux-server::state::metadata`): three maps mirroring the three wire `Scope`s, values opaque `Vec<u8>`, with `GET` / `SET` / `LIST` / `DELETE` / `SUBSCRIBE` and `METADATA_CHANGED` fan-out |
 
 Cross-cuts:
 
-- **Federation** ([ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md)) — hub-and-spoke Terminal routing. Normal servers construct `LOCAL` ids; a hub retags aggregate inventory, spawn replies, and relayed frames as `SATELLITE { host, id }`. Satellite session/window models are not merged, and routes do not chain.
-- **Automation** — server-side rules subscribing to L1 events. Not yet implemented; an optional service when it lands.
+- **Federation** ([ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md)) — hub-and-spoke resource routing. Normal servers construct `LOCAL` ids; a hub retags aggregate inventory, spawn replies, and relayed frames as `SATELLITE { host, id }`. Satellite session/window models are not merged, and routes do not chain.
+- **Automation** — server-side event hooks (`phux-server::hooks`, `[[hooks.<name>]]` and plugin `[[events]]`) fire argv on L1 events; there is no in-process rule engine.
 
 A consumer's tier set is declared at HELLO time. Today's `phux-tui`
-is an L1+L3-equivalent TUI consumer. `phux-client`'s headless free
-functions use L1; a future native GUI consumer will be L1+L3 with
-its own metadata schema. The reference TUI is **not** protocol-privileged
+is an L1+L3 TUI consumer. `phux-client`'s headless free
+functions use L1 and the L3 keys they need. The reference TUI is **not**
+protocol-privileged
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)) — the wire
 carries nothing that exists for it alone.
 
-The cascades that align the in-tree implementation with this layering
-are queued, not landed: rename `PaneId` → `TerminalId` workspace-wide;
-split `phux-server` so L1 (terminal supervision) is mountable without
-the L3 service; reify L3 as a real KV store; demote `LayoutNode`,
-`WindowId`, `WINDOW_*`, `LAYOUT_CHANGED`, `FOCUS_CHANGED` from the
-wire into the TUI's L3 metadata conventions.
+Of the cascades ADR-0015 queued, the id rename to `TerminalId` and the L3
+store have landed; what remains is listed in the Status table.
 
 ## Wire bytes: implementation participation
 
@@ -169,10 +168,10 @@ Wire bytes are normative in [`../spec/L1.md`](../spec/L1.md). This
 document describes how phux's *implementation* participates.
 
 The protocol is asymmetric. Server-to-client *terminal content* is a
-stream of VT bytes (`PANE_OUTPUT { pane_id, seq, bytes }` today; under
-ADR-0016 the message will be `TERMINAL_OUTPUT { terminal_id, ... }`);
-the server forwards what the PTY emitted, after a per-client capability
-rewrite. Client-to-server *input* is structured (`INPUT_KEY`,
+stream of VT bytes (`TERMINAL_OUTPUT { terminal_id, seq, bytes }`); the
+server forwards what the PTY emitted, after a per-client capability
+rewrite on the synthesized profiles and untouched on the native profile.
+Client-to-server *input* is structured (`INPUT_KEY`,
 `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, `INPUT_RAW`), built from
 libghostty's input atoms per ADR-0006 / ADR-0008. Lifecycle and
 commands stay structured. See [`../spec/L1.md`](../spec/L1.md) for the
@@ -188,4 +187,12 @@ structure. Per-client capability downsampling moves from a per-cell
 operation to a server-side VT byte-stream rewriter (SGR rewriting for
 truecolor → 256-color → 16-color, OSC 8 stripping, image-protocol
 gating, kitty-keyboard gating) sitting between the canonical PTY
-stream and each subscribed client's send queue.
+stream and each subscribed compatibility client's send queue.
+
+## Status
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| Resource spelling on the wire (`ResourceId`, `RESOURCE_OUTPUT`, `SPAWN_RESOURCE`, `KILL_RESOURCES`, protocol 0.9.0) | The wire and every crate above `phux-core` use the Terminal spelling; `PROTOCOL_VERSION` is 0.8.0. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18, phux-am9y.20 |
+| A second kind on the wire (`SPAWN_TERMINAL` field 11, `APPEND_RESOURCE_OUTPUT`, `AgentEventsJsonlV1`, `RESOURCE_KINDS`) | `phux-protocol` decodes no kind field and has no append command. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6 |
+| L1 mountable without the L3 service; window vocabulary (`WINDOW_*`, `LAYOUT_CHANGED`, `FOCUS_CHANGED`) demoted from the wire to TUI L3 conventions | One `ServerRuntime` serves both tiers; the window frames stay on the wire. | [ADR-0015](../../ADR/0015-protocol-layering.md) | not scheduled |
