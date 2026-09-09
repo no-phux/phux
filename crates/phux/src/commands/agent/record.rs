@@ -136,15 +136,30 @@ where
             Ok(view) => view.into_parts(),
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
-        let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-        let Some(pane) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
-        else {
-            // `agent set` / `clear` address a Terminal, and `panes` is the
-            // list a federation hub merges. A miss against a hub that could
-            // not reach a satellite is unresolved, not absent — writing the
-            // record onto the "no such target" branch would tell the operator
-            // of a fleet-wide agent script that a live pane had vanished.
-            return partial::report_target_miss(target, &degradation);
+        // `%name` resolves to the named agent's pane or refuses (ADR-0075
+        // point 3); it never travels the set-valued path below.
+        let pane = if let crate::selector::Selector::Agent(name) = &selector {
+            match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
+                .await
+            {
+                Ok(resolved) => resolved.terminal,
+                Err(err) => {
+                    return crate::commands::report_agent_resolve_error(false, &err, false);
+                }
+            }
+        } else {
+            let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
+            let Some(pane) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+            else {
+                // `agent set` / `clear` address a Terminal, and `panes` is
+                // the list a federation hub merges. A miss against a hub that
+                // could not reach a satellite is unresolved, not absent —
+                // writing the record onto the "no such target" branch would
+                // tell the operator of a fleet-wide agent script that a live
+                // pane had vanished.
+                return partial::report_target_miss(target, &degradation);
+            };
+            pane
         };
         // Resolved, but from a narrower world than the user assumed.
         partial::warn_partial_view(verb, &degradation);

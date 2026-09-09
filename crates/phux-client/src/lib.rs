@@ -28,6 +28,11 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod agent_meta;
+// The AgentSession resource: open/close/emit/log over the wire verbs the
+// server already has (ADR-0103). Sits beside `agent_wait` and above
+// `attach::connection`; the selector's `%name` production caller lives in
+// `selector` and reaches sessions through `resource`.
+pub mod agent_session;
 // Acknowledged, idempotent input delivery to an agent (ADR-0053, ADR-0076
 // points 1-4/6/7). Sits above `attach::connection` and beside `agent_wait`,
 // whose `EdgeTracker` predicate it reuses rather than re-deriving: `prompt
@@ -46,7 +51,10 @@ pub mod explain;
 pub mod layout_ops;
 pub mod perf;
 pub mod record;
+// Resource kinds as a snapshot carries them: which entries are panes, which
+// are children of one, and the two directions of the parent binding.
 pub mod resize;
+pub mod resource;
 pub mod run;
 pub mod selector;
 pub mod send_keys;

@@ -106,7 +106,7 @@ flag placed after them is swallowed into the payload.
 | `name:W` | window `W` (index or window name) of that session |
 | `name:W.P` | pane `P` of window `W` |
 | `#tag` | every pane carrying L3 tag `tag` (see `phux tag`) |
-| `%name` | reserved; no shipped verb resolves it yet, so it fails closed |
+| `%name` | the one agent whose `phux.agent/v1` record carries the chosen name `name`; refuses rather than guesses |
 | `=` | refused: it means the attached TUI's focus history, which a headless caller does not have |
 
 Get ids from the JSON of the verb that created the pane (`phux new --json`,
@@ -118,10 +118,15 @@ every pane in the session, and `phux tag add #web ci` tags every match. Verbs
 that need exactly one pane pick a representative from a set, which is fine for
 a read and wrong for a write. Address writes with `@N`.
 
-`%name` is parser-reserved for a proposed agent-name addressing contract, but
-no shipped verb resolves it. It fails **closed** as a selector miss rather
-than landing on the wrong pane. Use `@N`, especially for writes and destructive
-operations.
+`%name` addresses an agent by the name someone chose for it (`phux agent set
+@7 --name reviewer`), never by a kind constant: `%claude` is refused on one
+Claude pane exactly as on twelve, because the detector writes `claude` on
+every one. It resolves to **exactly one** agent or refuses with the reason
+(exit 1 no such name, exit 2 two records or two live agent sessions share it,
+exit 3 the record index could not be read completely). Handed to a
+pane-facing verb it names the agent's pane; handed to `agent emit`, `agent
+log`, or `agent session close` it names the agent's session. It never travels
+the set-valued path, so it can never land on the wrong pane.
 
 **Sigil hygiene.** `%` is shell-safe unquoted in `sh`, `bash`, and `zsh`, which
 is why it was chosen. It is *not* safe everywhere else: `%` is a format
@@ -427,6 +432,34 @@ is refused up front rather than typing and then timing out.
 
 Compare: `phux launch` and `phux spawn` create a pane and promise nothing about
 readiness; `phux agent start` promises readiness about a pane you already had.
+
+### The agent session: the harness's own event log
+
+On a server that advertises `resource_kinds` (`phux status --json` lists
+`features`), a pane can carry an **agent session**: a server-side event log
+the agent's harness appends to, bound to the pane, and closed with it.
+
+```sh
+phux agent session open @7 --provider claude --native-id sess-01H --json
+phux agent emit @9 --type prompt --data '{"chars": 61}'     # @9 is the session
+phux agent emit %reviewer --type tool_start --data '{"tool_name": "Bash"}'
+phux agent log @7 --tail 20 --json     # the pane resolves to its one session
+phux agent log %reviewer --follow      # live records until Ctrl-C or close
+phux agent session close @9            # the pane is untouched
+```
+
+`--type` is a closed set: `session_start`, `prompt`, `tool_start`, `tool_end`,
+`notification`, `ask`, `stop`, `session_end`, `state`, `provider_raw`. The
+server stamps `seq` and `ts_ms` and derives lifecycle state from the stream
+(`prompt`/`tool_start` working, `ask` blocked, `stop` done, `session_end`
+retracts), which outranks a hook report and every screen rule. Only the
+client that opened a session may append to it; a Terminal handed to `emit`
+or `log` is `wrong_resource_kind`, a pane with no session `no_agent_session`,
+and a server without the feature `unsupported_server` — each refused before
+anything is written. `phux ls --json` lists sessions under `resources` with
+`kind: "agent_session"` and their `parent`; `phux agent show` reports one
+under `agent_session` and names `stream` as the source when the stream
+decided the state.
 
 ### Reading and writing the record
 

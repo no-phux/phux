@@ -7,6 +7,10 @@ mod offline;
 mod prompt;
 mod record;
 mod report_state;
+// The AgentSession resource verbs: `session open|close`, `emit`, `log`
+// (ADR-0103). `session.rs` beside it is the older provider-native resume
+// record, which is unrelated: that one is L3 metadata, this one a resource.
+mod resource_session;
 mod send_keys;
 mod session;
 pub(crate) mod shim;
@@ -350,6 +354,63 @@ pub(crate) enum AgentAction {
         /// pane.
         target: Option<String>,
     },
+    /// Open or close a pane's agent session (an `AgentSession` resource).
+    ///
+    /// An agent session is the server-side, producer-fed event log an agent
+    /// harness appends to with `phux agent emit` and anyone reads with
+    /// `phux agent log`. It is bound to the pane the agent runs in: closing
+    /// the pane closes it, closing it never touches the pane. Needs a server
+    /// that advertises `RESOURCE_KINDS` (`phux status --json`).
+    Session {
+        #[command(subcommand)]
+        action: resource_session::SessionAction,
+    },
+    /// Append one record to a pane's agent session.
+    ///
+    /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed
+    /// set (`session_start`, `prompt`, `tool_start`, `tool_end`,
+    /// `notification`, `ask`, `stop`, `session_end`, `state`, `provider_raw`)
+    /// and `--data`, a JSON object. The server stamps `seq` and `ts_ms` and
+    /// derives the agent's lifecycle state from the stream (`prompt` /
+    /// `tool_start` -> working, `ask` -> blocked, `stop` -> done,
+    /// `session_end` -> retract). Only the client that opened
+    /// the session may append; nothing is written on a refusal. Prints
+    /// nothing on success.
+    Emit {
+        /// The session: its resource id, the pane hosting it, or `%name`.
+        target: String,
+        /// Record type, one of the closed `AgentEventsJsonlV1` set.
+        #[arg(long = "type", value_name = "T", value_parser = phux_client::agent_session::EVENT_TYPES.to_vec())]
+        event_type: String,
+        /// Record payload: a JSON object inline, or `-` to read it from
+        /// stdin. `{}` when omitted.
+        #[arg(long, value_name = "JSON")]
+        data: Option<String>,
+        /// Emit the stamped record header as JSON instead of staying quiet.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a pane's agent session stream.
+    ///
+    /// Attaches to the session as an observer, the way `phux rec` attaches
+    /// to a pane: the retained records arrive first and, with `--follow`,
+    /// live records after them until Ctrl-C or the session closes. There is
+    /// no `--timeout`; run a following log under a child-process deadline
+    /// exactly as you would `phux watch`.
+    Log {
+        /// The session: its resource id, the pane hosting it, or `%name`.
+        target: String,
+        /// Keep streaming live records after the retained ones.
+        #[arg(long)]
+        follow: bool,
+        /// Return only the last N retained records.
+        #[arg(long, value_name = "N")]
+        tail: Option<usize>,
+        /// Emit JSON: one envelope document, or under `--follow` one record
+        /// per line with no envelope (the `watch --json` rule).
+        #[arg(long)]
+        json: bool,
+    },
     /// Make plain `claude` launch inside phux and declare its identity.
     InstallClaude {
         /// Shell rc file to activate (auto-detected from SHELL).
@@ -369,6 +430,10 @@ pub(crate) enum AgentAction {
     HookPayload,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch arm per agent verb; splitting the match hides the verb table"
+)]
 pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
         AgentAction::List { json } => run_agent_list(*json, socket),
@@ -425,6 +490,35 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         ),
         AgentAction::Start { .. } => start::run_agent_start(action, socket),
         AgentAction::Clear { target } => run_agent_clear(target.as_deref(), socket),
+        AgentAction::Session { action } => match action {
+            resource_session::SessionAction::Open {
+                target,
+                provider,
+                native_id,
+                json,
+            } => resource_session::run_session_open(
+                target,
+                provider,
+                native_id.as_deref(),
+                *json,
+                socket,
+            ),
+            resource_session::SessionAction::Close { target } => {
+                resource_session::run_session_close(target, socket)
+            }
+        },
+        AgentAction::Emit {
+            target,
+            event_type,
+            data,
+            json,
+        } => resource_session::run_emit(target, event_type, data.as_deref(), *json, socket),
+        AgentAction::Log {
+            target,
+            follow,
+            tail,
+            json,
+        } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Wait {
             target,
             until,
@@ -514,6 +608,9 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
         | AgentAction::SendKeys { .. }
         | AgentAction::InstallClaude { .. }
         | AgentAction::Start { .. }
+        | AgentAction::Session { .. }
+        | AgentAction::Emit { .. }
+        | AgentAction::Log { .. }
         | AgentAction::UninstallClaude
         | AgentAction::HookPayload => return ExitCode::FAILURE,
     };
@@ -531,14 +628,26 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
             Ok(pair) => pair,
             Err(code) => return code,
         };
-        let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-        // `show` / `explain` address one Terminal, and `panes` is the list a
-        // hub merges — so both misses below are the ambiguous kind whenever
-        // the fleet view is partial.
-        let Some(target_id) =
-            crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
-        else {
-            return partial::report_target_miss(target, &degradation);
+        // `%name` is singular (ADR-0075 point 3): the agent's pane, or a
+        // refusal that names why — never `pick_target_pane` over a set.
+        let target_id = if let crate::selector::Selector::Agent(name) = &selector {
+            match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
+                .await
+            {
+                Ok(resolved) => resolved.terminal,
+                Err(err) => return crate::commands::report_agent_resolve_error(json, &err, false),
+            }
+        } else {
+            let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
+            // `show` / `explain` address one Terminal, and `panes` is the list
+            // a hub merges — so both misses below are the ambiguous kind
+            // whenever the fleet view is partial.
+            let Some(target_id) =
+                crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+            else {
+                return partial::report_target_miss(target, &degradation);
+            };
+            target_id
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
@@ -578,7 +687,9 @@ async fn classify_snapshot(
     // source, so fetch them up front (one pipelined connection).
     let records = fetch_agent_index(socket_path, snapshot).await;
     let mut states = Vec::with_capacity(snapshot.panes.len());
-    for pane in &snapshot.panes {
+    // Terminal-kind resources only: an `AgentSession` is reported under its
+    // parent's `agent_session`, never as a row of its own.
+    for pane in phux_client::resource::terminals(snapshot) {
         let mut evidence = pane_evidence(socket_path, snapshot, pane).await;
         evidence.record = records.get(&pane.id).cloned();
         states.push(infer_agent_state(&evidence, plugins));
@@ -598,6 +709,21 @@ async fn pane_evidence(
             .ok();
     let window = snapshot.windows.iter().find(|w| w.id == pane.window_id);
     let session = window.and_then(|w| session_for_window(snapshot, w));
+    // ADR-0103: the pane's live agent session, when it has exactly one. Two
+    // children is a state this projection does not pick between — neither
+    // is "the" session — so it reports none and leaves the choice to `@N`.
+    let agent_session = {
+        let mut children = phux_client::resource::children_of(snapshot, &pane.id);
+        match (children.next(), children.next()) {
+            (Some(child), None) => child.agent.as_ref().map(|facet| model::SessionEvidence {
+                resource: format_terminal(&child.id),
+                provider: facet.provider.clone(),
+                native_id: facet.native_id.clone(),
+                state: phux_client::agent_meta::AgentMetaState::from(facet.state.clone()),
+            }),
+            _ => None,
+        }
+    };
     PaneEvidence {
         terminal: format_terminal(&pane.id),
         session: session.map_or_else(|| "unknown".to_owned(), |s| s.name.clone()),
@@ -605,6 +731,7 @@ async fn pane_evidence(
         title: pane.title.clone(),
         cwd: pane.cwd.clone(),
         record: None,
+        agent_session,
         lines: screen.as_ref().map_or_else(Vec::new, |s| s.lines.clone()),
         semantic_input: screen
             .as_ref()

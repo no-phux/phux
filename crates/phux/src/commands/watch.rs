@@ -467,6 +467,17 @@ pub(crate) fn watch_event_json(
                 exit_status.map_or(serde_json::Value::Null, serde_json::Value::from),
             );
         }
+        // Additive (ADR-0102): the spawned resource's kind and parent, so a
+        // consumer can tell a new pane from a new agent session bound to one.
+        AgentEvent::PaneSpawned { kind, parent } => {
+            obj.insert("kind".to_owned(), serde_json::Value::from(kind.as_str()));
+            obj.insert(
+                "parent".to_owned(),
+                parent.as_ref().map_or(serde_json::Value::Null, |parent| {
+                    serde_json::Value::from(crate::selector::format_terminal_id(parent))
+                }),
+            );
+        }
         AgentEvent::Asked {
             id,
             question,

@@ -45,7 +45,7 @@
 //! `phux agent wait`, which requires an observed transition. `agent list`
 //! showing `idle` is a listing, not a receipt.
 
-use phux_client::agent_meta::AgentRecord;
+use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_server::agent_explain::{self, Capture, EvaluatedRule, Explanation, PredicateEvidence};
 
 use super::model::{
@@ -93,6 +93,12 @@ fn report_from_record(
         1.0,
         String::from_utf8(record.encode()).unwrap_or_default(),
     )];
+    // ADR-0103: when the pane's agent session stream decided this state,
+    // that is the top rung of the precedence ladder and the consumer needs
+    // to see it named ahead of the record it flowed into.
+    if let Some(stream) = stream_source(evidence, state) {
+        sources.insert(0, stream);
+    }
     let explanation = match detector_trace(&slug, evidence, state) {
         Some(trace) => {
             sources.extend(trace.sources);
@@ -123,7 +129,32 @@ fn report_from_record(
         cwd: evidence.cwd.clone(),
         sources,
         explanation,
+        agent_session: evidence
+            .agent_session
+            .as_ref()
+            .map(super::model::SessionEvidence::to_json),
     }
+}
+
+/// The `stream` source: the pane's agent session derived `state` from its
+/// own event stream (ADR-0103), the top rung of the precedence ladder.
+/// `None` when the pane has no session, or the session's stream has said
+/// nothing yet (its facet state is `unknown`) or disagrees with the state
+/// being reported.
+fn stream_source(evidence: &PaneEvidence, state: AgentState) -> Option<AgentSource> {
+    let session = evidence.agent_session.as_ref()?;
+    if session.state == AgentMetaState::Unknown || record_state(session.state) != state {
+        return None;
+    }
+    Some(AgentSource::new(
+        "stream",
+        format!(
+            "agent session {} ({}) derived the state from its event stream",
+            session.resource, session.provider
+        ),
+        1.0,
+        session.state.as_str(),
+    ))
 }
 
 /// The evidence trail reconstructed from the ADR-0046 manifest.
@@ -275,7 +306,25 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
     let agent = infer_identity(evidence, plugins, &mut sources);
     let plugin = plugins.iter().find(|plugin| plugin.id == agent.id);
 
-    let mut state = declared_state(evidence, &mut sources);
+    let declared = declared_state(evidence, &mut sources);
+    // ADR-0103: a live agent session's stream outranks every heuristic
+    // below; with no record to carry it, the facet's derived state is the
+    // answer when it has one.
+    let stream_state = evidence
+        .agent_session
+        .as_ref()
+        .filter(|session| session.state != AgentMetaState::Unknown)
+        .map(|session| record_state(session.state));
+    let mut state = stream_state.map_or(declared, |derived| {
+        if let Some(stream) = stream_source(evidence, derived) {
+            sources.push(stream);
+        }
+        StateSignal::new(
+            derived,
+            1.0,
+            "the agent session's own event stream reported this state",
+        )
+    });
     if let Some(plugin) = plugin {
         sources.push(AgentSource::new(
             "plugin_report",
@@ -321,6 +370,10 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
         cwd: evidence.cwd.clone(),
         sources,
         explanation: state.explanation,
+        agent_session: evidence
+            .agent_session
+            .as_ref()
+            .map(super::model::SessionEvidence::to_json),
     }
 }
 

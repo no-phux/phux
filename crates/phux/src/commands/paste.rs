@@ -6,7 +6,7 @@ use phux_client::attach::AttachError;
 use phux_protocol::input::paste::PasteTrust;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target_for_input};
 
 /// `phux paste TARGET [TEXT]` — paste a payload into a pane via the
 /// side-effect-free `ROUTE_INPUT` route.
@@ -51,7 +51,7 @@ pub(crate) fn run_paste(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "paste", false).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, "paste", false).await {
             Ok(id) => id,
             Err(code) => return code,
         };

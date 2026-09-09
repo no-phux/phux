@@ -615,7 +615,7 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 34);
+        assert_eq!(tools.len(), 38);
         assert!(tools.iter().any(|t| t["name"] == json!("phux_ls")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_paste")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_new")));
@@ -638,6 +638,18 @@ mod tests {
                 .any(|t| t["name"] == json!("phux_agent_answer"))
         );
         assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_start")));
+        // The AgentSession resource verbs, one strict tool each.
+        for name in [
+            "phux_agent_session_open",
+            "phux_agent_session_close",
+            "phux_agent_emit",
+            "phux_agent_log",
+        ] {
+            assert!(
+                tools.iter().any(|t| t["name"] == json!(name)),
+                "tools/list lost {name}"
+            );
+        }
         assert!(
             tools
                 .iter()

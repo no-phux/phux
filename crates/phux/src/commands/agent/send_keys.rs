@@ -60,7 +60,7 @@ use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 use super::prompt::refusal_code;
 
@@ -234,7 +234,9 @@ pub(super) fn run_agent_send_keys(
     let key_count = keys.len();
 
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "agent send-keys", json).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, "agent send-keys", json)
+            .await
+        {
             Ok(id) => id,
             Err(code) => return code,
         };

@@ -40,6 +40,8 @@ fn schema_contracts() -> Value {
         { "invocation": "phux ask --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent list|show|explain --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent wait|prompt|send-keys|answer|start --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux agent session open|emit|log --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux agent log --follow --json", "schema_version": null, "kind": "ndjson", "note": "AgentEventsJsonlV1 records; the record shape is the compatibility contract" },
         { "invocation": "phux config agents --json", "schema_version": 2, "kind": "document" },
         { "invocation": "phux config check|plugins --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux plugin --json", "schema_version": 1, "kind": "document" },

@@ -86,7 +86,8 @@ use std::fmt;
 use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, select_bootstrap_profile,
+    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, ServerFeatureSet,
+    select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
@@ -158,6 +159,15 @@ pub struct ScriptSpec {
     /// (`crates/phux-server/src/runtime/commands.rs`) always answers
     /// `OkWith(Json(count))` and never refuses, so this needs no error twin.
     detach_result: Option<u64>,
+    /// The `COMMAND_RESULT` an `APPEND_RESOURCE_OUTPUT` is answered with.
+    /// `None` answers a bare `Ok`, the reply of a server that stamps nothing
+    /// back; a test that wants the stamped header or a typed refusal sets
+    /// it.
+    append_result: Option<CommandResult>,
+    /// The additive features the scripted server advertises in `HELLO_OK`.
+    /// Empty by default, so a client's feature gate is exercised by
+    /// omission: a verb that needs a bit must refuse against `new()`.
+    server_features: ServerFeatureSet,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
     /// phux-k0cw: frames released only when the client subscribes to that
@@ -181,6 +191,8 @@ impl fmt::Debug for ScriptSpec {
             .field("spawn", &self.spawn)
             .field("spawn_error", &self.spawn_error)
             .field("detach_result", &self.detach_result)
+            .field("append_result", &self.append_result)
+            .field("server_features", &self.server_features)
             .field("script", &self.script)
             .field("end", &self.end)
             .finish()
@@ -230,6 +242,67 @@ impl ScriptSpec {
                 history_cursor: None,
             },
         ];
+        self
+    }
+
+    /// The retained `AgentEventsJsonlV1` transcript pushed before the
+    /// `ATTACH_TERMINAL` acknowledgement of an `AgentSession` resource.
+    ///
+    /// The agent-session twin of [`Self::priming_snapshot`]: `BOOTSTRAP_BEGIN`
+    /// carries `cols = rows = 0` (a session has no grid) and the JSONL
+    /// profile; one `BOOTSTRAP_CHUNK` per retained line follows, so a test
+    /// exercises the reader's chunk boundary handling for free; `READY`
+    /// closes the transcript.
+    ///
+    /// # Panics
+    ///
+    /// On more than `u32::MAX` lines, which no fixture has.
+    #[must_use]
+    pub fn agent_log_bootstrap(mut self, session: &TerminalId, lines: &[&str]) -> Self {
+        let stream_id = FIXTURE_STREAM_ID;
+        let bootstrap_id = FIXTURE_BOOTSTRAP_ID;
+        self.priming = vec![FrameKind::BootstrapBegin {
+            terminal_id: session.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::AgentEventsJsonlV1,
+            cols: 0,
+            rows: 0,
+            base_seq: 0,
+        }];
+        for (index, line) in lines.iter().enumerate() {
+            let mut payload = line.as_bytes().to_vec();
+            payload.push(b'\n');
+            self.priming.push(FrameKind::BootstrapChunk {
+                terminal_id: session.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: u32::try_from(index).expect("fixture chunk count fits u32"),
+                payload: Bytes::from(payload),
+            });
+        }
+        self.priming.push(FrameKind::BootstrapReady {
+            terminal_id: session.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        });
+        self
+    }
+
+    /// The `COMMAND_RESULT` every `APPEND_RESOURCE_OUTPUT` is answered with:
+    /// `OkWith(Json({"seq", "ts_ms"}))` for the stamped header, or
+    /// `Error { code, .. }` for one of the typed refusals.
+    #[must_use]
+    pub fn append_result(mut self, result: CommandResult) -> Self {
+        self.append_result = Some(result);
+        self
+    }
+
+    /// The additive features `HELLO_OK` advertises.
+    #[must_use]
+    pub const fn server_features(mut self, features: ServerFeatureSet) -> Self {
+        self.server_features = features;
         self
     }
 
@@ -558,7 +631,7 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 protocol_major: PROTOCOL_VERSION.major,
                 protocol_minor: PROTOCOL_VERSION.minor,
                 protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new(),
+                server_caps: ServerCapabilities::new().with_features(spec.server_features),
                 server_id: Vec::new(),
                 selected_profile,
                 bootstrap_limits,
@@ -701,6 +774,15 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                 request_id,
                 result: CommandResult::OkWith(CommandValue::Json(count.to_string())),
             });
+        }
+        // `APPEND_RESOURCE_OUTPUT` is answered with a correlated
+        // `COMMAND_RESULT`: `Ok` (optionally carrying the stamped header as
+        // JSON), or `Error` with one of `WRONG_RESOURCE_KIND` /
+        // `NOT_PRODUCER` / `RECORD_INVALID` / `OVERFLOW`
+        // (`docs/spec/L1.md`, ADR-0103). The test supplies which.
+        Command::AppendResourceOutput { .. } => {
+            let result = spec.append_result.clone().unwrap_or(CommandResult::Ok);
+            out.push(FrameKind::CommandResult { request_id, result });
         }
         _ => out.push(FrameKind::CommandResult {
             request_id,

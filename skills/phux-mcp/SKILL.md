@@ -73,7 +73,9 @@ input lane is server-scoped. A paste inserts text; it does not submit it.
 Read exact arguments from `tools/list` or `phux mcp --schema`.
 
 **Read and observe:** `phux_ls`, `phux_snapshot`, `phux_wait`, `phux_watch`,
-`phux_agent_list`, `phux_agent_show`, `phux_agent_explain`, `phux_agent_wait`.
+`phux_agent_list`, `phux_agent_show`, `phux_agent_explain`, `phux_agent_wait`,
+`phux_agent_log` (the retained agent-session event stream, one bounded read;
+there is no follow argument).
 
 **Diagnose:** `phux_status` (one server: running, pid, uptime, protocol,
 sessions, log paths) and `phux_doctor` (the whole install: config, socket,
@@ -89,6 +91,13 @@ gap, not a stopped server. Relay a `hint`; do not run it.
 `phux_send_keys`, `phux_paste`, `phux_ask`, `phux_signal`, `phux_tag`,
 `phux_rename`, `phux_agent_set`, `phux_agent_clear`, `phux_agent_send_keys`,
 `phux_agent_prompt`, `phux_agent_answer`, `phux_agent_start`.
+
+**Agent sessions:** `phux_agent_session_open` binds an agent-session resource
+to a pane and makes the caller its producer; `phux_agent_emit` appends one
+typed record (the server stamps `seq` and `ts_ms`); `phux_agent_session_close`
+closes the session and leaves the pane alone. On a server without
+`resource_kinds` in `phux_status`'s `features`, each returns
+`unsupported_server`.
 
 **Shape and extend:** `phux_insert_pane`, `phux_move_pane`, `phux_swap_pane`,
 `phux_workspace`, `phux_plugin_action`, `phux_plugin_workspace`.

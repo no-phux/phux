@@ -6,7 +6,7 @@ use phux_client::attach::AttachError;
 use phux_client::run::RunOutcome;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 /// Default `run` timeout when `--timeout` is unset. Bounds the poll so an
 /// interactive or never-returning command does not hang forever; users opt
@@ -55,7 +55,7 @@ pub(crate) fn run_run(
     };
 
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "run", json).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, "run", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };

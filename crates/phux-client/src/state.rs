@@ -13,9 +13,10 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
+use crate::agent_meta::{TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
-use crate::attach::connection::Connection;
-use crate::selector::{self, Selector, TagIndex};
+use crate::attach::connection::{Answer, Connection};
+use crate::selector::{self, AgentIndex, AgentResolveError, AgentTarget, Selector, TagIndex};
 
 /// How much of the fleet a `GET_STATE` answer could not see.
 ///
@@ -385,7 +386,7 @@ pub fn report_degradation(interleaved: &[FrameKind]) {
 /// Best-effort: a transport failure returns the entries collected before it.
 pub async fn fetch_tag_index(conn: &mut Connection, snapshot: &SessionSnapshot) -> TagIndex {
     let mut index = TagIndex::new();
-    for (offset, pane) in snapshot.panes.iter().enumerate() {
+    for (offset, pane) in crate::resource::terminals(snapshot).enumerate() {
         let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
         let Ok(reply) = conn
             .request_metadata(
@@ -412,11 +413,83 @@ pub async fn fetch_tag_index(conn: &mut Connection, snapshot: &SessionSnapshot) 
     index
 }
 
+/// Fetch the `phux.agent/v1` index for every Terminal-kind resource in
+/// `snapshot` over `conn`, recording whether every one was read.
+///
+/// The `%name` resolver's input (ADR-0075 point 3). Unlike
+/// [`fetch_tag_index`], incompleteness is *reported*, not swallowed: a
+/// transport failure or a refused read mid-way returns
+/// [`AgentIndex::partial`], so [`selector::resolve_agent`] refuses rather
+/// than answering from a narrower world than the caller assumed. A pane with
+/// no record, or bytes that fail the L3 §3.7 validation, is a definite
+/// absence and keeps the index complete.
+///
+/// Request ids start at 1 for the same reason [`fetch_tag_index`]'s do.
+pub async fn fetch_agent_index(conn: &mut Connection, snapshot: &SessionSnapshot) -> AgentIndex {
+    let mut records = std::collections::HashMap::new();
+    for (offset, pane) in crate::resource::terminals(snapshot).enumerate() {
+        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
+        let Ok(reply) = conn
+            .request_metadata(
+                request_id,
+                Scope::Terminal(pane.id.clone()),
+                TERMINAL_AGENT_KEY.to_owned(),
+            )
+            .await
+        else {
+            return AgentIndex::partial(records);
+        };
+        let (answer, interleaved) = reply.into_parts();
+        report_degradation(&interleaved);
+        match answer {
+            Answer::Ok(Some(bytes)) => {
+                if let Some(record) = parse_agent_record(&bytes) {
+                    records.insert(pane.id.clone(), record);
+                }
+            }
+            Answer::Ok(None) => {}
+            // A refusal is not "no record": the pane was not looked at.
+            Answer::Err(_) => return AgentIndex::partial(records),
+        }
+    }
+    AgentIndex::complete(records)
+}
+
+/// Resolve `%name` against `snapshot` over a fresh connection to `socket`:
+/// build the record index, then apply [`selector::resolve_agent`] (or the
+/// input-verb guard when `for_input`).
+///
+/// A connection that cannot be opened leaves the index partial, so the
+/// answer is [`AgentResolveError::PartialIndex`] rather than a miss.
+///
+/// # Errors
+///
+/// [`AgentResolveError`] — see its variants.
+pub async fn resolve_agent_target(
+    socket: &Path,
+    name: &str,
+    snapshot: &SessionSnapshot,
+    for_input: bool,
+) -> Result<AgentTarget, AgentResolveError> {
+    let index = match Connection::connect(socket).await {
+        Ok(mut conn) => fetch_agent_index(&mut conn, snapshot).await,
+        Err(_) => AgentIndex::default(),
+    };
+    if for_input {
+        selector::resolve_agent_for_input(name, snapshot, &index)
+    } else {
+        selector::resolve_agent(name, snapshot, &index)
+    }
+}
+
 /// Resolve a selector against a snapshot, fetching L3 tags only for `#tag`.
 ///
 /// Non-tag selectors are resolved synchronously without an extra connection.
 /// A tag lookup failure degrades to an empty index, preserving the established
 /// CLI behavior that reports the result as a selector miss.
+///
+/// `%name` yields nothing here (the set-valued seam); callers branch to
+/// [`resolve_agent_target`] first.
 pub async fn resolve_targets(
     socket: &Path,
     selector: &Selector,
@@ -629,6 +702,50 @@ mod tests {
             conn.peer_pid(),
             Some(i32::try_from(std::process::id()).unwrap()),
             "a UDS connection's peer pid must be the listening process"
+        );
+        drop(conn);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_agent_index_is_complete_only_when_every_pane_answered() {
+        // Two panes, one record: a definite absence keeps the index complete.
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("index.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let spec = ScriptSpec::new().metadata(|scope, key| {
+            (key == crate::agent_meta::TERMINAL_AGENT_KEY
+                && matches!(
+                    scope,
+                    phux_protocol::wire::frame::Scope::Terminal(id) if *id == TerminalId::local(1)
+                ))
+            .then(|| br#"{"name":"reviewer","kind":"claude","state":"working"}"#.to_vec())
+        });
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
+                .with_panes(vec![
+                    TerminalInfo::new(TerminalId::local(1), WindowId::new(1), 80, 24),
+                    TerminalInfo::new(TerminalId::local(2), WindowId::new(1), 80, 24),
+                ]);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let index = super::fetch_agent_index(&mut conn, &snapshot).await;
+        assert!(index.is_complete());
+        assert_eq!(index.records().len(), 1);
+        assert_eq!(index.get(&TerminalId::local(1)).unwrap().name, "reviewer");
+        drop(conn);
+        server.await.unwrap();
+
+        // A refused read is not an absence: the index is partial.
+        let socket = dir.path().join("refused.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let spec = ScriptSpec::new().refuse_metadata(ErrorCode::PermissionDenied, "policy refused");
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let index = super::fetch_agent_index(&mut conn, &snapshot).await;
+        assert!(
+            !index.is_complete(),
+            "a refusal must not read as a complete absence"
         );
         drop(conn);
         server.await.unwrap();
