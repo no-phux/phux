@@ -133,6 +133,10 @@ fn channelBindingType() type {
 }
 
 const Bridge = struct {
+    const InteractionMode = enum { terminal, palette, settings };
+    /// Mirrors committed core modality, never the most recently painted view.
+    /// The core's modal is app-wide even when presented in a secondary window.
+    interaction_mode: InteractionMode = .terminal,
     engine: ?*Engine = null,
     channels: ?HostChannelBinding = null,
     /// The adapter's effects, known once the runner has built the app. Until
@@ -171,6 +175,10 @@ const Bridge = struct {
 
     fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
         const self: *Bridge = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, name, "cockpit.committed")) {
+            self.commitInteraction(Adapter.Host.model());
+            return;
+        }
         if (!std.mem.eql(u8, name, protocol.intent_command)) return;
         const engine = self.engine orelse return;
         if (engineFx()) |fx| {
@@ -181,6 +189,30 @@ const Bridge = struct {
             _ = engine.applyIntent(payload, &cockpit.NoShells{});
         }
         self.announce(engine);
+    }
+
+    /// The SDK commits Host.model before walking the returned command batch.
+    /// Core modality transitions place this marker before their other effects;
+    /// app_state.model is still the OLD mirror here and must never be read.
+    fn commitInteraction(self: *Bridge, model: *const core.Model) void {
+        self.interaction_mode = interactionMode(model);
+        const engine = self.engine orelse return;
+        const fx = engineFx() orelse return;
+        engine.setInputSuspended(fx, self.interaction_mode != .terminal);
+    }
+
+    fn interactionMode(model: *const core.Model) InteractionMode {
+        return if (model.paletteOpen) .palette else if (model.settingsOpen) .settings else .terminal;
+    }
+
+    /// Host sends are intentionally suppressed by the SDK during replay.
+    /// Read the committed mode for replayed fallback keys, but never call the
+    /// live engine's focus/capture/provider effects from this recovery path.
+    fn replayInteraction(self: *Bridge) bool {
+        const effects = self.effects orelse return false;
+        if (!effects.replayArmed()) return false;
+        self.interaction_mode = interactionMode(Adapter.Host.model());
+        return true;
     }
 
     fn spawnShells(self: *Bridge, engine: *Engine, fx: EngineFx) void {
@@ -349,6 +381,10 @@ fn pointerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
 /// The app's activation is the terminal's focus: a bell that rings while
 /// deactivated notifies, and deactivation strands every capture.
 fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
+    if (bridge.replayInteraction()) {
+        registerReplayChannels(event);
+        return null;
+    }
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     switch (event) {
@@ -364,9 +400,19 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
     return null;
 }
 
+/// Replay needs effect slots to consume recorded results, but must not start
+/// the provider transport which normally follows channel registration.
+fn registerReplayChannels(event: native_sdk.LifecycleEvent) void {
+    if (event != .start) return;
+    const engine = bridge.engine orelse return;
+    if (engine.model.phux() == null) return;
+    const fx = engineFx() orelse return;
+    _ = fx.openChannel(.{ .key = cockpit.phux_channel_key, .on_event = phuxChannel, .max_pending = 1 });
+}
+
 /// Keys no markup widget claimed. The palette and settings surfaces are the
 /// core's, so while either is open the shell must not see typing meant for
-/// them; the core's model says which, and the view fn below reads it.
+/// them; the bridge's committed interaction projection says which.
 /// Keys the overlays answer to that no widget of theirs claims: Escape
 /// dismisses, the arrows move the highlight, Enter commits the settings
 /// surface (the switcher's Enter is its input's own on-submit). Delivered
@@ -375,10 +421,11 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
 fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (event.phase == .key_up) return null;
     const key = event.key;
-    if (std.mem.eql(u8, key, "Escape")) return if (palette_open) .palette_close else .settings_close;
-    if (std.mem.eql(u8, key, "ArrowDown")) return if (palette_open) .{ .palette_move = 1 } else .{ .settings_move = 1 };
-    if (std.mem.eql(u8, key, "ArrowUp")) return if (palette_open) .{ .palette_move = -1 } else .{ .settings_move = -1 };
-    if (std.mem.eql(u8, key, "Enter") and !palette_open) return .settings_commit;
+    const palette = bridge.interaction_mode == .palette;
+    if (std.mem.eql(u8, key, "Escape")) return if (palette) .palette_close else .settings_close;
+    if (std.mem.eql(u8, key, "ArrowDown")) return if (palette) .{ .palette_move = 1 } else .{ .settings_move = 1 };
+    if (std.mem.eql(u8, key, "ArrowUp")) return if (palette) .{ .palette_move = -1 } else .{ .settings_move = -1 };
+    if (std.mem.eql(u8, key, "Enter") and !palette) return .settings_commit;
     return null;
 }
 
@@ -405,8 +452,10 @@ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 }
 
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
-    if (overlay_open) return overlayKey(event);
+    const replaying = bridge.replayInteraction();
+    if (bridge.interaction_mode != .terminal) return overlayKey(event);
     if (primaryChord(event)) |msg| return msg;
+    if (replaying) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     engine.onKey(fx, event);
@@ -414,7 +463,8 @@ fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 }
 
 fn onText(event: canvas.WidgetKeyboardEvent) ?core.Msg {
-    if (overlay_open) return null;
+    if (bridge.replayInteraction()) return null;
+    if (bridge.interaction_mode != .terminal) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     engine.onText(fx, event);
@@ -597,19 +647,14 @@ fn windowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) Adap
     return composeView(ui, model, WindowView4.build(ui, model), 4);
 }
 
-/// Set by the paint pass, which sees the committed core model: the only
-/// place the extension learns whether an overlay owns the keyboard.
-var overlay_open: bool = false;
-var palette_open: bool = false;
-
 fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.Msg {
     const engine = bridge.engine orelse return null;
     if (Engine.windowIndexForCanvas(frame.label)) |index| ensureTerminalSpace(model, index, frame.size, cockpit.projection.cockpitTokens(engine.model));
     const fx = engineFx() orelse return null;
-    overlay_open = model.paletteOpen or model.settingsOpen;
-    palette_open = model.paletteOpen;
-    engine.setInputSuspended(fx, overlay_open);
     bridge.spawnShells(engine, fx);
+    // The replay executor still needs PTY slots for recorded output. Only the
+    // live viewport/provider pump is omitted after those slots are registered.
+    if (fx.effects.replayArmed()) return null;
     // Every window's frame pumps its own workspace; the label says which.
     engine.pumpViewports(fx, frame);
     // A frame that moved the run (a resize, the first frame after a
@@ -620,10 +665,10 @@ fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.
 }
 
 fn paintChrome(model: *const core.Model, builder: *canvas.Builder, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) anyerror!void {
-    overlay_open = model.paletteOpen or model.settingsOpen;
-    palette_open = model.paletteOpen;
     const engine = bridge.engine orelse return;
-    engine.model.tab_placement = if (model.tabPlacement == .side) .side else .top;
+    // Chrome may be speculative while a fenced intent awaits its snapshot.
+    // Measurement consumes that presentation; canonical placement is changed
+    // only by the engine's intent/configuration paths.
     syncTerminalSpace(model, 0, size, tokens);
     return engine.paint(builder, size, tokens);
 }
@@ -723,11 +768,12 @@ const PointerHost = struct {
     }
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        defer _ = bridge.replayInteraction();
         defer self.syncSelectionAutoscrollTimer(runtime) catch {};
         const engine = bridge.engine;
         const before_window = if (engine) |current| current.model.active_window else 0;
         const before_sequence = if (engine) |current| current.sequence else 0;
-        if (value == .timer and value.timer.id == workspace_timer_id) {
+        if (value == .timer and value.timer.id == workspace_timer_id and !bridge.replayInteraction()) {
             if (engine) |current| current.refreshWorkspace();
         }
         routeNativeInput(value);
@@ -766,6 +812,7 @@ const PointerHost = struct {
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try self.inner.replayControl(control);
+        _ = bridge.replayInteraction();
     }
 
     fn syncSelectionAutoscrollTimer(self: *PointerHost, runtime: *native_sdk.Runtime) !void {
@@ -782,6 +829,7 @@ const PointerHost = struct {
 };
 
 fn routeNativeInput(value: native_sdk.Event) void {
+    if (bridge.replayInteraction()) return;
     const engine = bridge.engine orelse return;
     const fx = engineFx() orelse return;
     switch (value) {
@@ -799,7 +847,7 @@ fn routeNativeInput(value: native_sdk.Event) void {
                 else => return,
             }
             const index = Engine.windowIndexForCanvas(raw.label) orelse return;
-            if (index == 0 and overlay_open) return;
+            if (bridge.interaction_mode != .terminal) return;
             if (!engine.model.windowOpen(index)) return;
             // A press in any window's grid makes that window the active one
             // before the pane under it is resolved, as CockpitHost adopts
@@ -961,6 +1009,10 @@ const Rig = struct {
     }
 
     fn startWithPhux(want_phux: bool) !Rig {
+        return startWithReplay(want_phux, false);
+    }
+
+    fn startWithReplay(want_phux: bool, replaying: bool) !Rig {
         var core_options: Adapter.CoreOptions = .{};
         installEngine(&core_options, std.testing.allocator, std.testing.io);
         try std.testing.expect(bridge.engine != null);
@@ -977,7 +1029,7 @@ const Rig = struct {
             )) orelse return error.TestExpectedPhuxProvider;
             cockpit.attachPhuxProvider(bridge.engine.?.model, remote);
         }
-        bridge.shells = false;
+        bridge.shells = replaying;
         var options: Adapter.Options = .{
             .name = "phux-cockpit",
             .scene = test_scene,
@@ -992,6 +1044,7 @@ const Rig = struct {
         const app_state = try Adapter.create(std.heap.page_allocator, core_options, options);
         errdefer app_state.destroy();
         const decorated = app(app_state);
+        if (replaying) try decorated.replayControl(.arm);
         const harness = try native_sdk.TestHarness().create(std.testing.allocator, .{
             .size = native_sdk.geometry.SizeF.init(1100, 640),
         });
@@ -1430,21 +1483,35 @@ test "shipping Control F is terminal input rather than a fullscreen shortcut" {
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
 }
 
-test "shipping overlay frame suspends remote focus and input until dismissal" {
+test "shipping overlay commit suspends remote focus and input before a frame" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
     _ = try rig.attachFixture();
     const remote = bridge.engine.?.model.phux().?;
-    rig.app_state.model.paletteOpen = true;
-    const frame: native_sdk.platform.GpuFrame = .{ .label = canvas_label, .size = .{}, .scale_factor = 1, .frame_index = 1, .timestamp_ns = 1 };
-    _ = onFrame(&rig.app_state.model, frame);
+    // A real core transition must retire terminal input ownership immediately,
+    // even if no GPU frame is delivered between this message and the next key.
+    try rig.dispatch(.settings_open);
+    try std.testing.expect(bridge.engine.?.input_suspended);
     try expectOutgoingTag(remote, 0x14);
     bridge.engine.?.onText(engineFx().?, .{ .phase = .text_input, .key = "a", .text = "a" });
+    _ = onKey(.{ .phase = .key_up, .key = "a" });
+    try std.testing.expectEqual(.ignored, bridge.engine.?.onPointer(engineFx().?, .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .x = 400,
+        .y = 300,
+    }));
+    try std.testing.expect(!bridge.engine.?.onDrop(engineFx().?, .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .paths = &.{"/blocked"},
+    }));
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
-    rig.app_state.model.paletteOpen = false;
-    _ = onFrame(&rig.app_state.model, frame);
+    try rig.dispatch(.settings_close);
+    try std.testing.expect(!bridge.engine.?.input_suspended);
     try expectOutgoingTag(remote, 0x14);
 }
 
@@ -1476,6 +1543,102 @@ test "shipping Phux macOS editing gestures target word and line bindings" {
     try expectOutgoingKey(remote, 76, 0);
     _ = onKey(.{ .phase = .key_up, .key = "arrowleft" });
     try expectOutgoingKey(remote, 76, 0);
+}
+
+test "committed palette owns input even when an older model is painted" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const stale = rig.app_state.model;
+    try rig.dispatch(.palette_open);
+    try std.testing.expect(engine.input_suspended);
+
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try paintChrome(&stale, &builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
+    try std.testing.expect(engine.input_suspended);
+    const escape = onKey(.{ .phase = .key_down, .key = "Escape" }) orelse return error.TestExpectedOverlayKey;
+    try std.testing.expectEqual(core.Msg.palette_close, escape);
+    try rig.dispatch(escape);
+    try std.testing.expect(!engine.input_suspended);
+}
+
+test "replayed modality routes fallback keys without live terminal effects" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try rig.decorated.replayControl(.arm);
+    try rig.dispatch(.settings_open);
+    // The marker is suppressed. A replayed event recovers the committed mode
+    // without invoking the live provider's focus or capture cleanup.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try std.testing.expectEqual(.settings, bridge.interaction_mode);
+    try std.testing.expectEqual(core.Msg.settings_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
+    try rig.dispatch(.palette_open);
+    try std.testing.expectEqual(core.Msg.palette_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
+    _ = onText(.{ .phase = .text_input, .key = "a", .text = "a" });
+    routeNativeInput(.{ .files_dropped = .{ .window_id = 1, .view_label = canvas_label, .paths = &.{"/blocked"} } });
+    const before = engine.model.active_window;
+    routeNativeInput(.{ .gpu_surface_input = .{ .window_id = 1, .label = canvas_label, .kind = .pointer_down, .x = 400, .y = 300 } });
+    try std.testing.expectEqual(before, engine.model.active_window);
+    try rig.dispatch(.palette_close);
+    _ = onKey(.{ .phase = .key_down, .key = "Enter" });
+    try std.testing.expectEqual(.terminal, bridge.interaction_mode);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+test "committed app modal blocks raw pointers across native windows" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.settings_open);
+    const active = engine.model.active_window;
+    const focus = engine.model.focusedTerminalRef().?;
+    for ([_][]const u8{ canvas_label, "phux-cockpit-canvas-1" }) |label| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = label,
+            .kind = .pointer_down,
+            .x = 400,
+            .y = 300,
+        } });
+        try std.testing.expectEqual(active, engine.model.active_window);
+        try std.testing.expect(focus.eql(engine.model.focusedTerminalRef().?));
+        try std.testing.expect(engine.input_suspended);
+    }
+}
+
+test "cold replay registers provider and PTY results without live startup" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.startWithReplay(true, true);
+    defer rig.stop();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const key = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?.pty_key;
+    // Rig's installing frame precedes the first widget-tree commit. The next
+    // presented frame is the normal native surface pump entry.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .label = canvas_label,
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.app_state.effects.feedPtyOutput(key, "replayed output");
+    try rig.app_state.effects.feedChannelEvent(cockpit.phux_channel_key, .data, &.{1}, 0, 0);
+    try std.testing.expectEqual(.new, remote.state());
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .timer = .{ .id = PointerHost.workspace_timer_id } });
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
 test "shipping search text cannot leak a key release after search closes" {
@@ -1618,6 +1781,33 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
         .x = divider.rect.x,
         .y = y,
     } });
+}
+
+test "painting speculative placement cannot bypass a refused intent" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_terminal);
+    try rig.settle(1, "READY");
+
+    const stale = protocol.encodeIntent(.{ .kind = .set_tab_placement, .expected_revision = 1, .argument = 1 });
+    const host = bridge.binding();
+    host.send_fn(host.context, protocol.intent_command, &stale);
+    try std.testing.expect(engine.intent_refused);
+    try std.testing.expectEqual(.top, engine.model.tab_placement);
+    const revision = engine.revision;
+    const sequence = engine.sequence;
+
+    var speculative = rig.app_state.model;
+    speculative.tabPlacement = .side;
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try paintChrome(&speculative, &builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
+    try std.testing.expectEqual(.top, engine.model.tab_placement);
+    try std.testing.expectEqual(revision, engine.revision);
+    try std.testing.expectEqual(sequence, engine.sequence);
 }
 
 test "a stale intent is refused, announced, and surfaced instead of applied" {
@@ -1775,8 +1965,7 @@ test "unclaimed keys and text reach the focused pane's outbound ring and never t
     try std.testing.expectEqual(@as(usize, 3), pane.outbound_len);
 
     // With an overlay open the same input is the core's, not the shell's.
-    overlay_open = true;
-    defer overlay_open = false;
+    try rig.dispatch(.palette_open);
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = canvas_label,

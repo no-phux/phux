@@ -727,6 +727,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       status: asciiBytes("Starting Cockpit..."),
     },
     Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
       Cmd.channelOpen(ENGINE_CHANNEL_KEY, { event: "engine_event" }),
       Cmd.request("cockpit.snapshot", new Uint8Array(0), {
         key: "cockpit-snapshot",
@@ -796,18 +797,24 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "palette_retry": {
       const next = changeNavigation(model, msg);
       if (next === model || !next.paletteLoading) return next;
-      return [next, Cmd.request("cockpit.navigation", navigationRequest(next.engineRevision, next.paletteOffset, next.paletteQuery), {
-        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-      })];
+      return [next, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request("cockpit.navigation", navigationRequest(next.engineRevision, next.paletteOffset, next.paletteQuery), {
+          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+        }),
+      ])];
     }
     case "palette_close":
-      return closePalette(model);
+      return [closePalette(model), Cmd.host("cockpit.committed", NO_BYTES)];
     case "palette_submit":
     case "palette_pick": {
       if (model.paletteRows.length === 0) return model;
       const index = msg.kind === "palette_pick" ? msg.index : model.paletteRows[model.paletteCursor].index;
       if (!validNavigationPick(model, index)) return model;
-      return [closePalette(model), Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index))];
+      return [closePalette(model), Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index)),
+      ])];
     }
     case "navigation_loaded":
       return loadedNavigation(model, msg.body);
@@ -822,11 +829,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // app asks the disk once when the panel opens and never per frame.
       return [
         scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false }),
-        Cmd.host("cockpit.intent", intent(7, model.engineRevision, 0, 0)),
+        Cmd.batch([
+          Cmd.host("cockpit.committed", NO_BYTES),
+          Cmd.host("cockpit.intent", intent(7, model.engineRevision, 0, 0)),
+        ]),
       ];
     }
     case "settings_close":
-      return scopeOverlays({ ...model, settingsOpen: false });
+      return [scopeOverlays({ ...model, settingsOpen: false }), Cmd.host("cockpit.committed", NO_BYTES)];
     case "settings_move": {
       if (!model.settingsOpen || model.themes.length === 0) return model;
       const step = msg.delta >= 0 ? 1 : -1;
@@ -846,7 +856,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.settingsOpen) return model;
       return [
         scopeOverlays({ ...model, settingsOpen: false }),
-        Cmd.host("cockpit.intent", intent(5, model.engineRevision, model.settingsCursor, 0)),
+        Cmd.batch([
+          Cmd.host("cockpit.committed", NO_BYTES),
+          Cmd.host("cockpit.intent", intent(5, model.engineRevision, model.settingsCursor, 0)),
+        ]),
       ];
     }
     case "settings_reveal":

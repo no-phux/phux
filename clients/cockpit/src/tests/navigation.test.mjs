@@ -10,6 +10,12 @@ const step = (model, msg) => {
   const result = update(model, msg);
   return Array.isArray(result) ? result : [result, null];
 };
+function committedCommand(cmd) {
+  assert.equal(cmd.op, 'batch');
+  assert.equal(cmd.cmds.length, 2);
+  assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
+  return cmd.cmds[1];
+}
 function page(query = '', offset = 0, indices = [0, 1, 2, 3], total = 10, rev = revision) {
   const head = navigationRequest(rev, offset, bytes(query));
   const rows = indices.map(index => {
@@ -71,18 +77,46 @@ test('whole catalog is paged and selection carries unfiltered identity under its
   assert.equal(model.palettePrevious, false);
   const [closed, cmd] = step(model, { kind: 'palette_pick', index: 400 });
   assert.equal(closed.paletteOpen, false);
-  assert.deepEqual(cmd.payload, navigationIntent(revision, 400));
+  assert.deepEqual(committedCommand(cmd).payload, navigationIntent(revision, 400));
   const [loading, request] = step(model, { kind: 'palette_next' });
   assert.equal(loading.paletteRows.length, 0);
   assert.equal(loading.paletteOffset, 4);
-  assert.equal(request.op, 'request');
+  assert.equal(committedCommand(request).op, 'request');
+  assert.deepEqual(committedCommand(request).payload, navigationRequest(revision, 4, bytes('')));
   [model] = step(loading, { kind: 'navigation_loaded', body: page('', 4, [800, 900, 1000, 1100]) });
   assert.equal(model.palettePrevious, true);
   assert.equal(model.paletteNext, true);
   [model] = step(model, { kind: 'palette_next' });
   [model] = step(model, { kind: 'navigation_loaded', body: page('', 8, [2000, 3000]) });
   assert.equal(model.paletteNext, false);
-  assert.deepEqual(step(model, { kind: 'palette_pick', index: 3000 })[1].payload, navigationIntent(revision, 3000));
+  assert.deepEqual(committedCommand(step(model, { kind: 'palette_pick', index: 3000 })[1]).payload, navigationIntent(revision, 3000));
+});
+
+test('boot and every modality transition deliver committed context before effects', () => {
+  const [initial, boot] = initialModel();
+  const marker = { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() };
+  assert.deepEqual(boot.cmds[0], marker);
+  let palette = open();
+  [palette] = step(palette, { kind: 'navigation_loaded', body: page() });
+  const settings = step(initial, { kind: 'settings_open' })[0];
+  const transitions = [
+    [initial, { kind: 'palette_open' }, true, false],
+    [settings, { kind: 'palette_open' }, true, false],
+    [palette, { kind: 'settings_open' }, false, true],
+    [palette, { kind: 'palette_close' }, false, false],
+    [palette, { kind: 'palette_submit' }, false, false],
+    [palette, { kind: 'palette_pick', index: 0 }, false, false],
+    [settings, { kind: 'settings_close' }, false, false],
+    [settings, { kind: 'settings_commit' }, false, false],
+  ];
+  for (const [before, msg, paletteOpen, settingsOpen] of transitions) {
+    const [after, command] = step(before, msg);
+    assert.equal(after.paletteOpen, paletteOpen, msg.kind);
+    assert.equal(after.settingsOpen, settingsOpen, msg.kind);
+    assert.deepEqual(command.op === 'batch' ? command.cmds[0] : command, marker, msg.kind);
+  }
+  assert.equal(step(settings, { kind: 'settings_open' })[1], null);
+  assert.equal(step(palette, { kind: 'palette_pick', index: 999 })[1], null);
 });
 
 test('stale revision, query, and page replies cannot replace current rows', () => {

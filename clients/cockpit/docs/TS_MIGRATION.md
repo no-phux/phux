@@ -1,5 +1,8 @@
 # Migrating Cockpit's authoring to TypeScript + `.native` markup
 
+The [committed interaction seam](INTERACTION_SEAM.md) defines current modality
+delivery and the distinction between speculative chrome and canonical state.
+
 Status (2026-09-04): **shipped.** Root `src/core.ts` and `src/app.native` are
 Cockpit's only app coordinator and visible-chrome authoring path. Beneath them,
 `src/cockpit/native/terminal_painter.zig` draws real local or Phux-backed
