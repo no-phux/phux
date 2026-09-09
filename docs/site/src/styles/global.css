@@ -535,6 +535,31 @@ a:hover {
   color: #d2b36b;
   text-align: right;
 }
+.pterm-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 9px 13px;
+  border-top: 1px solid #24262d;
+  color: #9499a5;
+  background: #101116;
+  font-size: 10px;
+}
+.pterm-shortcuts b {
+  color: #b9ff65;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pterm-shortcuts kbd {
+  padding: 1px 4px;
+  border: 1px solid #363a44;
+  border-bottom-color: #555b69;
+  color: #e5e7ec;
+  background: #171920;
+  font: inherit;
+}
 .pterm-canvas {
   display: block;
   /* Crisp cell rendering; the client sizes the canvas to the live grid. */
@@ -619,6 +644,9 @@ a:hover {
   .pterm-facts p {
     grid-column: 1 / -1;
     text-align: left;
+  }
+  .pterm-shortcuts b {
+    flex-basis: 100%;
   }
 }
 

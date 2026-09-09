@@ -155,12 +155,19 @@ export default function PhuxTerminal({
     signal("loading");
     const controller = new AbortController();
     readinessAbort.current = controller;
+    let probeFailed = false;
     try {
-      await probe(wsUrl);
       const canvas = document.getElementById(canvasId);
       if (!(canvas instanceof HTMLCanvasElement)) {
         throw new Error("Terminal canvas unavailable");
       }
+      // Probe health concurrently with the mount so the two round-trips
+      // overlap; a failed probe still aborts the launch and lands in error.
+      const probed = probe(wsUrl).catch((error: unknown) => {
+        probeFailed = true;
+        controller.abort();
+        throw error;
+      });
       const [mounted] = await Promise.all([
         mountPhuxTerminal({
           wsUrl,
@@ -169,19 +176,27 @@ export default function PhuxTerminal({
           rows,
           mode,
           onEvent: handleEvent,
+        }).then((mountedClient) => {
+          // The probe or a release may have aborted us mid-mount; close the
+          // freshly opened socket instead of leaking it.
+          if (controller.signal.aborted) mountedClient.close();
+          else client.current = mountedClient;
+          return mountedClient;
         }),
         waitForMeaningfulCanvasPaint(canvas, { signal: controller.signal }),
+        probed,
       ]);
+      if (controller.signal.aborted) return;
       client.current = mounted;
-      if (controller.signal.aborted) {
-        mounted.close();
-        return;
-      }
       setPhase("live");
       signal("live");
       if (!autoStart) canvas.focus();
     } catch {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted && !probeFailed) return;
+      // A probe failure can surface after the mount resolved; the socket is
+      // tracked on client.current, so close it before landing in error.
+      client.current?.close();
+      client.current = null;
       controller.abort();
       started.current = false;
       setPhase("error");
@@ -393,6 +408,15 @@ export default function PhuxTerminal({
             <span><b>storage</b> none</span>
             {fallback && <p>{fallbackCopy[fallback]}</p>}
           </aside>
+          {session?.backend === "native" && phase === "live" && (
+            <aside className="pterm-shortcuts" aria-label="Phux TUI shortcuts">
+              <b>run phux, then</b>
+              <span><kbd>C-a</kbd> <kbd>%</kbd> split left/right</span>
+              <span><kbd>C-a</kbd> <kbd>&quot;</kbd> split top/bottom</span>
+              <span><kbd>C-a</kbd> <kbd>c</kbd> new window</span>
+              <span><kbd>C-a</kbd> <kbd>?</kbd> all keys</span>
+            </aside>
+          )}
         </>
       )}
     </div>
