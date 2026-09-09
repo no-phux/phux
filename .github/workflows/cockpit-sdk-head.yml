@@ -105,9 +105,7 @@ jobs:
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
           ./scripts/host-raster-check.sh --min-solid 4000
       - name: Build the same-checkout Phux FFI and coordinator CLI
-        run: |
-          cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
-          cargo build --locked --profile ffi-release -p phux
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh
       - name: Test with the null platform
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null --summary all
@@ -127,7 +125,4 @@ jobs:
         run: ./scripts/zig-build.sh --summary all
       - name: Build the macOS executable, production Phux graph
         working-directory: clients/cockpit
-        run: |
-          ./scripts/zig-build.sh \
-            -Dphux-enabled=true \
-            --summary all
+        run: bash ./scripts/build-shipping-app.sh --summary all

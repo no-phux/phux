@@ -3,41 +3,8 @@ name: cockpit-ci
 on:
   push:
     branches: [main]
-    paths:
-      - "clients/cockpit/**"
-      # The bundle now carries the same-checkout CLI and its native dependencies.
-      - "crates/**"
-      - ".cargo/config.toml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "scripts/doctor.sh"
-      - "scripts/setup-rust.sh"
-      - "scripts/install-zig.sh"
-      - "scripts/lib/dev-toolchain.sh"
-      - ".github/workflows/release.yml"
-      - "justfile"
-      - ".github/workflows/cockpit-ci.yml"
-      - ".github/workflows/cockpit-release.yml"
-      - "release-please-config.json"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "clients/cockpit/**"
-      - "crates/**"
-      - ".cargo/config.toml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "scripts/doctor.sh"
-      - "scripts/setup-rust.sh"
-      - "scripts/install-zig.sh"
-      - "scripts/lib/dev-toolchain.sh"
-      - ".github/workflows/release.yml"
-      - "justfile"
-      - ".github/workflows/cockpit-ci.yml"
-      - ".github/workflows/cockpit-release.yml"
-      - "release-please-config.json"
   workflow_dispatch:
 
 permissions:
@@ -45,18 +12,11 @@ permissions:
 
 concurrency:
   group: cockpit-ci-${{ github.ref }}
-  # Supersede a PR's stale runs, but never cancel a main run: on main every
-  # commit is a distinct integration point, and cancelling the previous one
-  # would let a broken commit hide behind its successor's green.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Latest-wins validation; publication has its own release-identity group.
+  cancel-in-progress: true
 
 jobs:
-  # Cheap gate before the 45-minute macOS job. The trigger `paths` above stop
-  # unrelated PRs from starting this workflow at all; this classifier refines
-  # that: a run whose cockpit-relevant changes are ONLY workflow files
-  # (Dependabot's grouped action bumps match several of these paths) skips
-  # the build — the root ci.yml workflow gate verifies those. Fail-closed:
-  # unknown/empty diffs request the build.
+  # One shared dependency map, including the bundled coordinator's inputs.
   changes:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -69,31 +29,7 @@ jobs:
         with:
           fetch-depth: 0
       - id: detect
-        run: |
-          set -euo pipefail
-          # A manual dispatch is an explicit request for the full job (it is
-          # the documented way to run the package-and-soak step off main),
-          # and it has no base ref to diff against.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo 'cockpit_needed=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Mirror ci.yml's push classification: a release merge commit has
-            # an exact tree; a vanished `before` (branch reset) falls back to
-            # the merge commit's own files.
-            before='${{ github.event.before }}'
-            if [[ "$before" =~ ^0+$ ]] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              files=$(git diff-tree --no-commit-id --name-only -r HEAD)
-            else
-              files=$(git diff --name-only "$before" HEAD)
-            fi
-          else
-            git fetch --quiet origin "${{ github.base_ref }}"
-            base=$(git merge-base HEAD "origin/${{ github.base_ref }}")
-            files=$(git diff --name-only "$base" HEAD)
-          fi
-          printf '%s\n' "$files" | bash scripts/ci/classify-changes.sh >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/classify-changes
 
   test:
     name: Zig 0.16 macOS
@@ -177,9 +113,7 @@ jobs:
           ./scripts/host-raster-check.sh --min-solid 4179
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
-        run: |
-          cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
-          cargo build --locked --profile ffi-release -p phux
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh
 
       - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit
@@ -188,8 +122,9 @@ jobs:
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.
       - name: Build the production macOS app
+        if: github.event_name == 'pull_request'
         working-directory: clients/cockpit
-        run: ./scripts/zig-build.sh -Dphux-enabled=true --summary all
+        run: bash ./scripts/build-shipping-app.sh --summary all
 
       - name: Package and verify the arm64 macOS app
         if: github.event_name != 'pull_request'

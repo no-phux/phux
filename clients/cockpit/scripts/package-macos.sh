@@ -39,6 +39,10 @@ if [[ "${TARGET}" != "aarch64-macos" ]]; then
     printf 'error: release target must be aarch64-macos (got %s)\n' "${TARGET}" >&2
     exit 1
 fi
+if [[ "${OPTIMIZE}" != "ReleaseSafe" ]]; then
+    printf 'error: release optimization must be ReleaseSafe (got %s)\n' "${OPTIMIZE}" >&2
+    exit 1
+fi
 if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     printf 'error: VERSION must be a semantic version (got %s)\n' "${VERSION}" >&2
     exit 1
@@ -90,13 +94,9 @@ mkdir -p -- "${OUT_DIR}"
 
 (
     cd "${ROOT}"
-    ./scripts/zig-build.sh package \
-        -Dtarget="${TARGET}" \
-        -Doptimize="${OPTIMIZE}" \
-        -Dphux-enabled=true \
-        -Dphux-client-ffi-include-dir="${PHUX_CLIENT_FFI_INCLUDE_DIR}" \
-        -Dphux-client-ffi-lib-dir="${PHUX_CLIENT_FFI_LIB_DIR}" \
-        --summary all
+    # Source verification above requires the enclosing checkout's default FFI
+    # paths. Let the shared build resolve them identically to the PR app build.
+    bash ./scripts/build-shipping-app.sh package --summary all
 )
 
 if [[ ! -d "${PACKAGE_APP}" ]]; then
