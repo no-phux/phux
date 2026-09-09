@@ -11,7 +11,7 @@
 mod shell;
 
 use bytes::BytesMut;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -42,7 +42,7 @@ enum CheckpointKind {
 /// needs (a terminal id, an output sequence counter, the viewport size).
 #[wasm_bindgen]
 pub struct EdgeSession {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     cols: u16,
     rows: u16,
     seq: u64,
@@ -57,7 +57,7 @@ impl EdgeSession {
     #[must_use]
     pub fn new(cols: u16, rows: u16, mode: &str, snapshot_json: &str) -> Self {
         Self {
-            terminal_id: TerminalId::new(1),
+            terminal_id: ResourceId::new(1),
             cols,
             rows,
             seq: 0,
@@ -130,7 +130,7 @@ impl EdgeSession {
         let mut shell = Shell::new(mode, snapshot_json);
         shell.restore(checkpoint.shell)?;
         Ok(Self {
-            terminal_id: TerminalId::new(1),
+            terminal_id: ResourceId::new(1),
             cols: checkpoint.cols,
             rows: checkpoint.rows,
             seq: checkpoint.seq,
@@ -160,7 +160,7 @@ impl EdgeSession {
                     Vec::new()
                 } else {
                     self.seq += 1;
-                    vec![encode(&FrameKind::TerminalOutput {
+                    vec![encode(&FrameKind::ResourceOutput {
                         terminal_id: self.terminal_id.clone(),
                         seq: self.seq,
                         bytes: bytes.into(),

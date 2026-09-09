@@ -1,9 +1,9 @@
 //! Demonstrates the `phux_server_testkit::screen::Screen` helper end-to-end.
 //!
 //! Companion to `input_dispatch.rs` (which counts `b'a'` bytes in the
-//! emitted `TERMINAL_OUTPUT` stream). This test does the same wire dance —
+//! emitted `RESOURCE_OUTPUT` stream). This test does the same wire dance —
 //! spin up a server with a real PTY backed by `cat`, attach, send a
-//! keystroke — but then feeds every `TERMINAL_OUTPUT` byte chunk into a
+//! keystroke — but then feeds every `RESOURCE_OUTPUT` byte chunk into a
 //! `Screen` and asserts on the *rendered text*, not raw byte counts.
 //!
 //! Why it matters: the parent agent spent half a day debugging a render
@@ -22,7 +22,7 @@
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -48,7 +48,7 @@ const fn enter_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` frames into the `Screen` until either `needle`
+/// Drain `RESOURCE_OUTPUT` frames into the `Screen` until either `needle`
 /// appears in the rendered grid or `WIRE_RECV_TIMEOUT` elapses. Returns
 /// the total bytes fed, for diagnostic reporting on failure.
 async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle: &str) -> usize {
@@ -59,10 +59,10 @@ async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle:
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             total += bytes.len();
             screen.write(&bytes);
             if screen.contains(needle) {
@@ -94,7 +94,7 @@ fn screen_helper_observes_pty_echo_through_wire() {
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
         let wire_pane_id = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+            FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
             other => panic!("expected ATTACHED, got {other:?}"),
         };
         let (type_byte, _snap) = recv_typed(&mut stream).await;
@@ -126,7 +126,7 @@ fn screen_helper_observes_pty_echo_through_wire() {
         .await;
 
         // The whole point of the harness: assert on the rendered text,
-        // not byte counts. If the dispatch is broken, no TERMINAL_OUTPUT
+        // not byte counts. If the dispatch is broken, no RESOURCE_OUTPUT
         // arrives and `screen.row(0)` stays "" — the assertion message
         // shows exactly what the user would see on attach.
         let bytes_fed = drain_into_screen(&mut stream, &mut screen, "a").await;

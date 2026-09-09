@@ -63,13 +63,13 @@ fn attach_create_if_missing(name: &str) -> FrameKind {
 async fn drain_successful_attach(
     stream: &mut tokio::net::UnixStream,
     expected_name: &str,
-) -> phux_protocol::ids::TerminalId {
+) -> phux_protocol::ids::ResourceId {
     let (type_byte, frame) = recv_typed(stream).await;
     assert_eq!(
         type_byte, TYPE_ATTACHED,
         "first server-to-client frame must be ATTACHED (got 0x{type_byte:02x})",
     );
-    let focused_pane = match frame {
+    let focused_resource = match frame {
         FrameKind::Attached { snapshot, .. } => {
             let focused = snapshot
                 .sessions
@@ -77,7 +77,7 @@ async fn drain_successful_attach(
                 .find(|session| session.id == snapshot.focused_session)
                 .expect("focused session must be listed in snapshot");
             assert_eq!(focused.name, expected_name, "focused session name");
-            snapshot.focused_pane
+            snapshot.focused_resource
         }
         other => panic!("expected FrameKind::Attached, got {other:?}"),
     };
@@ -86,7 +86,7 @@ async fn drain_successful_attach(
     // round-trip / dim assertions live in byc_6_1. Just consume it so
     // subsequent reads see a clean stream boundary.
     let (_type_byte, _snap_frame) = recv_typed(stream).await;
-    focused_pane
+    focused_resource
 }
 
 /// Poll `GET_STATE` until the server's most-recently-touched session — the

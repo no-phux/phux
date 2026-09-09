@@ -9,11 +9,11 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::connection::Connection;
@@ -202,7 +202,7 @@ fn run_without_spawn_size_support(
 fn run_with_last(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
-    last_focused: Option<TerminalId>,
+    last_focused: Option<ResourceId>,
 ) -> ActionEffects {
     run_with_last_and_spawn_size(action, workspace, last_focused, true)
 }
@@ -210,7 +210,7 @@ fn run_with_last(
 fn run_with_last_and_spawn_size(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
-    last_focused: Option<TerminalId>,
+    last_focused: Option<ResourceId>,
     spawn_initial_size_supported: bool,
 ) -> ActionEffects {
     let mut next_request_id = 100;
@@ -224,7 +224,7 @@ fn run_with_last_and_spawn_size(
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     let mut engine_kernel = test_engine_kernel();
@@ -299,7 +299,7 @@ fn new_window_parks_pending_and_emits_spawn() {
         .expect("new-window should park a PendingWindow + SPAWN");
     // Default name skips the in-use "1".
     assert_eq!(pending.name, "2");
-    assert!(matches!(frame, FrameKind::SpawnTerminal { .. }));
+    assert!(matches!(frame, FrameKind::SpawnResource { .. }));
     // No synchronous workspace mutation — the window opens on reply.
     assert_eq!(workspace.windows.len(), 1);
 }
@@ -333,7 +333,7 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
     // phux-i0e8.2.2: every targeted leaf is marked as an expected
     // close so the resulting TERMINAL_CLOSEDs stay notice-silent.
     assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
-    // No synchronous removal — TerminalClosed folds + prunes.
+    // No synchronous removal — ResourceClosed folds + prunes.
     assert_eq!(workspace.windows.len(), 1);
 }
 
@@ -403,8 +403,8 @@ fn last_pane_dispatch_jumps_across_windows_and_toggles() {
 // ---------------------------------------------------------------------
 
 fn spawn_initial_size_of(frame: &FrameKind) -> Option<(u16, u16)> {
-    let FrameKind::SpawnTerminal { initial_size, .. } = frame else {
-        panic!("expected SpawnTerminal, got {frame:?}");
+    let FrameKind::SpawnResource { initial_size, .. } = frame else {
+        panic!("expected SpawnResource, got {frame:?}");
     };
     *initial_size
 }
@@ -774,7 +774,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     let mut engine_kernel = test_engine_kernel();
@@ -832,16 +832,16 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     let mut out: Vec<u8> = Vec::new();
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
-    let mut focused_pane = None;
+    let mut focused_resource = None;
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
-    let panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     apply_action_effects(
         effects,
         &mut out,
         &mut conn,
         &mut ctx,
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &panes,
@@ -911,7 +911,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         &mut out,
         &mut conn,
         &mut ctx,
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &panes,
@@ -961,7 +961,7 @@ fn run_capturing_with_sessions(
     let mut zoomed = None;
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let effects = {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
@@ -1201,11 +1201,11 @@ struct SpawnParts {
 }
 
 fn spawn_frame_parts(frame: &FrameKind) -> SpawnParts {
-    let FrameKind::SpawnTerminal {
+    let FrameKind::SpawnResource {
         command, cwd, env, ..
     } = frame
     else {
-        panic!("expected SpawnTerminal, got {frame:?}");
+        panic!("expected SpawnResource, got {frame:?}");
     };
     SpawnParts {
         command: command.clone(),
@@ -1596,7 +1596,7 @@ fn window_picker_commit_routes_select_window_through_run_action() {
 fn run_attention(
     action: &str,
     workspace: &mut Workspace,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     navigation: &mut AttentionNavigation,
 ) -> ActionEffects {
     let mut next_request_id = 100;
@@ -1664,7 +1664,7 @@ fn run_attention(
     run_action(&bare_action(action), &mut ctx, focused.as_ref(), panes)
 }
 
-fn asking_panes(ids: &[u32]) -> HashMap<TerminalId, PaneSlot> {
+fn asking_panes(ids: &[u32]) -> HashMap<ResourceId, PaneSlot> {
     ids.iter()
         .map(|id| {
             let terminal = tid(*id);
@@ -2100,7 +2100,7 @@ fn detach_action_requests_detach_effect() {
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     let mut engine_kernel = test_engine_kernel();
@@ -2196,7 +2196,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
     let mut zoomed = None;
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let effects = {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();

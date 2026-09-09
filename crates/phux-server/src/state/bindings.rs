@@ -4,20 +4,20 @@
 //! is *lifecycle*, not metadata: when a parent leaves for any reason its
 //! children leave with it, and the cascade runs in the same acquisition of
 //! the state lock that removes the parent, so no client can observe a child
-//! whose parent is gone. That is the guarantee `KILL_TERMINALS` already
+//! whose parent is gone. That is the guarantee `KILL_RESOURCES` already
 //! gives a batch, extended down the one edge this program creates.
 //!
 //! The graph itself is the registry's — [`Registry::children`] reads the
 //! `parent` each descriptor already carries, so there is no second map to
 //! keep in step with it. What lives here is the part the registry cannot
 //! know: *why* each resource is closing, and which closer owns emitting its
-//! `TERMINAL_CLOSED`.
+//! `RESOURCE_CLOSED`.
 //!
 //! # The close ledger
 //!
 //! Every resource closes through one path: something cancels its engine
 //! token, the engine's run loop ends, its exit notification fires, and the
-//! per-resource exit watcher broadcasts `TERMINAL_CLOSED` and reaps. That
+//! per-resource exit watcher broadcasts `RESOURCE_CLOSED` and reaps. That
 //! path knows the resource died; it does not know whether a kill, a parent,
 //! or the shell's own `exit` did it. So a closer records the reason before
 //! it cancels, and the watcher claims it.
@@ -106,7 +106,7 @@ impl ServerState {
     }
 
     /// Record why `resource` is closing, for the watcher that will emit its
-    /// `TERMINAL_CLOSED`.
+    /// `RESOURCE_CLOSED`.
     ///
     /// First writer wins: a deliberate `Killed`, `ParentClosed`, or
     /// `ServerShutdown` set before the engine stops is not overwritten by a
@@ -146,7 +146,7 @@ impl ServerState {
     /// once. Returns how many distinct resources were closed.
     ///
     /// Only cancellation happens here. Each closed resource's own exit
-    /// watcher performs the reap and the `TERMINAL_CLOSED` fanout with the
+    /// watcher performs the reap and the `RESOURCE_CLOSED` fanout with the
     /// reason this recorded, which keeps one teardown path for kills,
     /// cascades, and a shell's own exit.
     pub fn close_resources(&mut self, targets: &[ResourceId], reason: CloseReason) -> u32 {

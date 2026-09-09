@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::layout::{LayoutNode, NodePath, NodeStep, Rect, SplitDir};
 
@@ -114,7 +114,7 @@ pub(super) fn walk_layout(
     node: &LayoutNode,
     bounds: Rect,
     segments: &mut Vec<DividerSegment>,
-    rects: &mut HashMap<TerminalId, Rect>,
+    rects: &mut HashMap<ResourceId, Rect>,
 ) {
     walk_layout_at(node, bounds, &mut NodePath::root(), segments, rects, true);
 }
@@ -133,7 +133,7 @@ pub(super) fn walk_layout_proportional(
     node: &LayoutNode,
     bounds: Rect,
     segments: &mut Vec<DividerSegment>,
-    rects: &mut HashMap<TerminalId, Rect>,
+    rects: &mut HashMap<ResourceId, Rect>,
 ) {
     walk_layout_at(node, bounds, &mut NodePath::root(), segments, rects, false);
 }
@@ -152,7 +152,7 @@ fn walk_layout_at(
     bounds: Rect,
     path: &mut NodePath,
     segments: &mut Vec<DividerSegment>,
-    rects: &mut HashMap<TerminalId, Rect>,
+    rects: &mut HashMap<ResourceId, Rect>,
     freeze: bool,
 ) {
     match node {

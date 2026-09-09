@@ -1,7 +1,7 @@
 //! `phux-8uly` — a new session's **seed pane** announces itself with
 //! `pane_spawned` (SPEC §7.1 event sourcing, ADR-0022 'events').
 //!
-//! Both `AgentEvent::PaneSpawned` broadcasts used to live inside
+//! Both `AgentEvent::ResourceSpawned` broadcasts used to live inside
 //! `handle_spawn_terminal`, which only ever runs for a pane *added to an
 //! existing session*. The **first** pane of a *new* session is seeded by
 //! `seed_session_with_*` and announced nothing, on either of the two paths
@@ -49,7 +49,7 @@
 
 use std::time::Duration;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, FrameKind, SESSION_CREATE_KEY,
     SESSION_CREATE_RESULT_KEY, Scope, StateScope, TYPE_ATTACHED, ViewportInfo,
@@ -141,7 +141,7 @@ async fn subscribe_server_wide(stream: &mut UnixStream, request_id: u32) {
 async fn await_pane_spawned(
     stream: &mut UnixStream,
     deadline: Duration,
-) -> Option<Option<TerminalId>> {
+) -> Option<Option<ResourceId>> {
     let end = tokio::time::Instant::now() + deadline;
     loop {
         let remaining = end.saturating_duration_since(tokio::time::Instant::now());
@@ -153,7 +153,7 @@ async fn await_pane_spawned(
         };
         if let FrameKind::Event {
             terminal,
-            event: AgentEvent::PaneSpawned { .. },
+            event: AgentEvent::ResourceSpawned { .. },
         } = frame
         {
             return Some(terminal);
@@ -241,7 +241,7 @@ fn headless_session_create_announces_its_seed_pane() {
             .get("terminal_id")
             .and_then(serde_json::Value::as_u64)
             .and_then(|id| u32::try_from(id).ok())
-            .map(TerminalId::local)
+            .map(ResourceId::local)
             .expect("the create result must carry a local terminal_id");
         assert_eq!(
             announced,
@@ -301,8 +301,8 @@ fn attach_create_if_missing_announces_its_seed_pane() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected Attached")
         };
-        assert_eq!(snapshot.panes.len(), 1, "exactly one seed pane");
-        let seed_pane = snapshot.panes[0].id.clone();
+        assert_eq!(snapshot.resources.len(), 1, "exactly one seed pane");
+        let seed_pane = snapshot.resources[0].id.clone();
 
         let announced = await_pane_spawned(&mut watcher, EVENT_WAIT_DEADLINE)
             .await

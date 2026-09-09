@@ -51,7 +51,7 @@ async fn resize_updates_terminal_dims() {
 /// winsize: `ws_xpixel`/`ws_ypixel` = cells x cell size. TIOCGWINSZ
 /// is the first thing pixel-aware programs (`kitten icat`, sixel
 /// sizers) consult; without the `cell_px` plumbing it reads 0x0.
-/// A later pixel-less resize (agent `TERMINAL_RESIZE`) must keep the
+/// A later pixel-less resize (agent `RESIZE_TERMINAL`) must keep the
 /// established cell size rather than zeroing the pixel fields.
 #[tokio::test(flavor = "current_thread")]
 async fn resize_with_cell_px_updates_pty_winsize_pixels() {
@@ -432,8 +432,8 @@ fn drain_resync_dims(out: &mut tokio::sync::broadcast::Receiver<PaneOutput>) -> 
 /// invalidation for a no-op, but the resync broadcast was scheduled
 /// unconditionally, and a resync is what rotates the bootstrap
 /// generation. That is the second half of the wasted-capture bug: once a
-/// spawn honors `SPAWN_TERMINAL.initial_size`, the client's reflow
-/// `TERMINAL_RESIZE` names the size the pane already has — and would
+/// spawn honors `SPAWN_RESOURCE.initial_size`, the client's reflow
+/// `RESIZE_TERMINAL` names the size the pane already has — and would
 /// still have tombstoned the checkpoint the server had just built. There
 /// is nothing to reconverge from when nothing reflowed.
 #[tokio::test(flavor = "current_thread", start_paused = true)]

@@ -15,7 +15,7 @@ mod tests;
 pub(super) use handler::handle_server_frame;
 // phux-l96p.3: the composited output frame, shared with the driver's frame
 // pacer so a paced settle paints through exactly the same path a live
-// `TERMINAL_OUTPUT` does.
+// `RESOURCE_OUTPUT` does.
 pub(super) use handler::{OutputFrame, paint_output_frame};
 pub(super) use index::AgentMetaIndex;
 pub(super) use outcome::FrameOutcome;

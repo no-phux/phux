@@ -1,4 +1,4 @@
-use phux_core::ids::TerminalId;
+use phux_core::ids::ResourceId;
 
 use super::ServerState;
 use crate::agent_asked::{AskedPayload, AskedSource, AskedTransition};
@@ -6,7 +6,7 @@ use crate::agent_asked::{AskedPayload, AskedSource, AskedTransition};
 impl ServerState {
     pub(crate) fn report_agent_asked(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
         payload: AskedPayload,
     ) -> AskedTransition {
@@ -29,7 +29,7 @@ impl ServerState {
     )]
     pub(crate) fn report_stream_ask(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         payload: AskedPayload,
     ) -> AskedTransition {
         self.agent
@@ -38,14 +38,14 @@ impl ServerState {
 
     pub(crate) fn retract_agent_asked(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
     ) -> Option<AskedPayload> {
         self.agent.retract_asked(terminal, source)
     }
 
     #[cfg(test)]
-    pub(crate) fn current_agent_asked(&self, terminal: TerminalId) -> Option<&AskedPayload> {
+    pub(crate) fn current_agent_asked(&self, terminal: ResourceId) -> Option<&AskedPayload> {
         self.agent.current_asked(terminal)
     }
 

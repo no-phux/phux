@@ -19,7 +19,7 @@
 //! Shape:
 //!
 //! 1. Seed a session whose pane runs `cat` (cooked-mode echo = crisp signal).
-//! 2. Client A attaches and `SPAWN_TERMINAL`s a second `cat` pane into the
+//! 2. Client A attaches and `SPAWN_RESOURCE`s a second `cat` pane into the
 //!    same session, then drops — leaving a persisted two-pane session.
 //! 3. Client B attaches fresh (the re-attach). With the fix it is subscribed
 //!    to BOTH panes.
@@ -45,11 +45,11 @@
 
 use std::time::Duration;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnResult, StateScope, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_TERMINAL_SPAWNED,
+    TYPE_COMMAND_RESULT, TYPE_RESOURCE_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
@@ -98,7 +98,7 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
     panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
 }
 
-/// Drain frames until a `TERMINAL_SPAWNED` with `request_id` arrives.
+/// Drain frames until a `RESOURCE_SPAWNED` with `request_id` arrives.
 async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> SpawnResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -106,10 +106,10 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_SPAWNED {
+        if type_byte != TYPE_RESOURCE_SPAWNED {
             continue;
         }
-        if let FrameKind::TerminalSpawned {
+        if let FrameKind::ResourceSpawned {
             request_id: got,
             result,
         } = frame
@@ -118,7 +118,7 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
             return result;
         }
     }
-    panic!("timed out waiting for TERMINAL_SPAWNED request_id={request_id}");
+    panic!("timed out waiting for RESOURCE_SPAWNED request_id={request_id}");
 }
 
 /// Send `ATTACH { ByName(name) }` and read the opening `ATTACHED` frame,
@@ -140,7 +140,7 @@ async fn attach_read_attached(stream: &mut UnixStream, name: &str) {
 async fn panes_and_focus(
     stream: &mut UnixStream,
     request_id: u32,
-) -> (Vec<TerminalId>, TerminalId) {
+) -> (Vec<ResourceId>, ResourceId) {
     send_frame(
         stream,
         &FrameKind::Command {
@@ -153,15 +153,15 @@ async fn panes_and_focus(
     .await;
     match await_command_result(stream, request_id).await {
         CommandResult::OkWith(CommandValue::State(snap)) => {
-            let panes = snap.panes.iter().map(|p| p.id.clone()).collect();
-            (panes, snap.focused_pane)
+            let panes = snap.resources.iter().map(|p| p.id.clone()).collect();
+            (panes, snap.focused_resource)
         }
         other => panic!("expected Ok_With(State(..)), got {other:?}"),
     }
 }
 
 /// `GET_SCREEN` for `pane` → its joined screen text.
-async fn screen_text(stream: &mut UnixStream, request_id: u32, pane: &TerminalId) -> String {
+async fn screen_text(stream: &mut UnixStream, request_id: u32, pane: &ResourceId) -> String {
     send_frame(
         stream,
         &FrameKind::Command {
@@ -187,7 +187,7 @@ async fn screen_text(stream: &mut UnixStream, request_id: u32, pane: &TerminalId
 /// Poll `GET_SCREEN` on `pane` until `needle` appears (or attempts run out).
 async fn poll_for_echo(
     stream: &mut UnixStream,
-    pane: &TerminalId,
+    pane: &ResourceId,
     needle: char,
     attempts: u32,
 ) -> String {
@@ -204,7 +204,7 @@ async fn poll_for_echo(
 
 /// Send an ASCII key + Enter to `pane` over `stream` as `INPUT_KEY` frames —
 /// the TUI client's input path (the one the subscription gate guards).
-async fn type_into(stream: &mut UnixStream, pane: &TerminalId, c: char, key: PhysicalKey) {
+async fn type_into(stream: &mut UnixStream, pane: &ResourceId, c: char, key: PhysicalKey) {
     send_frame(
         stream,
         &FrameKind::InputKey {
@@ -244,7 +244,7 @@ fn reattach_to_multipane_session_can_type_into_non_active_pane() {
         attach_read_attached(&mut a, "default").await;
         send_frame(
             &mut a,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 1,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["cat".to_owned()]),
@@ -261,7 +261,7 @@ fn reattach_to_multipane_session_can_type_into_non_active_pane() {
         .await;
         match await_terminal_spawned(&mut a, 1).await {
             SpawnResult::Ok(id) => assert!(id.is_local(), "spawned pane must be LOCAL"),
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         }
 
         // Confirm the session really has two panes before we drop A.

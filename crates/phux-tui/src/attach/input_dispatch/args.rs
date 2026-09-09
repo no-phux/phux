@@ -8,15 +8,15 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, TerminalSignal};
 
 use crate::layout::{Direction, SplitDir, Workspace};
 
 /// Flatten a workspace deterministically: window order, then DFS leaf order.
-pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, TerminalId)> {
+pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, ResourceId)> {
     workspace
         .windows
         .iter()
@@ -35,7 +35,7 @@ pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, Term
 }
 
 /// Apply a resolved local focus target without producing shared-layout state.
-pub(super) fn focus_terminal(workspace: &mut Workspace, window: usize, target: TerminalId) {
+pub(super) fn focus_terminal(workspace: &mut Workspace, window: usize, target: ResourceId) {
     workspace.select(window);
     if let Some(state) = workspace.active_window_mut() {
         state.focus = Some(target);
@@ -172,10 +172,10 @@ pub(super) fn signal_arg(
 
 /// phux-4li.12: build the `INPUT_KEY` frame sequence that types `exit\n`
 /// into the targeted Terminal. The shell processes those bytes, exits,
-/// the PTY closes, and the server emits `TERMINAL_CLOSED` which the
+/// the PTY closes, and the server emits `RESOURCE_CLOSED` which the
 /// driver folds out of the layout. See the `kill-pane` arm of
 /// [`run_action`] for the soft-kill caveat.
-pub(super) fn soft_kill_input_frames(target: &TerminalId) -> Vec<FrameKind> {
+pub(super) fn soft_kill_input_frames(target: &ResourceId) -> Vec<FrameKind> {
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
     fn ascii_letter(ch: char, key: PhysicalKey) -> KeyEvent {

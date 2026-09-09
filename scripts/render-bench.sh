@@ -152,7 +152,7 @@ echo "== render-bench [$LABEL] =="
 # command line itself never matches it — otherwise the wait returns the instant
 # the shell echoes the command and times nothing.
 # The flood is emitted in $FLOOD_CHUNKS bursts with a breath between them.
-# At full speed the SERVER's TerminalOutput pump outruns the client, drops
+# At full speed the SERVER's ResourceOutput pump outruns the client, drops
 # frames, and asks for an in-band resync that the client's session kernel
 # rejects outright ("live sequence gap at N; expected M") -- `phux attach`
 # then exits 1. That is a real defect on `main` and it is not in this lane's

@@ -106,7 +106,7 @@ fn byc_6_1_attach_returns_session_id_and_round_trip_snapshot() {
                 assert_eq!(snapshot.sessions.len(), 1, "exactly one session");
                 assert_eq!(snapshot.sessions[0].name, "default");
                 assert_eq!(snapshot.windows.len(), 1, "exactly one window");
-                assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
+                assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
 
                 // initial_client_id must be a real server-allocated id.
                 // ServerState::new_client_id is monotonic from 1.

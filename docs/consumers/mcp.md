@@ -160,7 +160,7 @@ takes a `target` selector string in the **same grammar as the CLI's
 Resolution is **client-side**, exactly as the CLI resolves it
 ([ADR-0021](../../ADR/0021-control-plane-commands.md)): the adapter
 fetches a state snapshot, expands the selector to candidate
-`TerminalId`s, then narrows to a single pane — the focused pane if it is
+`ResourceId`s, then narrows to a single pane — the focused pane if it is
 among the candidates, else the first in snapshot order. This is the same
 `pick_target_pane` tiebreak the CLI uses. The server never parses a
 selector. `=` is explicitly unsupported here because an MCP request has no
@@ -337,7 +337,7 @@ Result: the canonical `phux new --json` document verbatim — `{
 ### 3.7 `phux_kill`
 
 Tears down the Terminal(s) a selector resolves to — a whole session, a
-window, a pane, or `@id` — in one atomic `KILL_TERMINALS`.
+window, a pane, or `@id` — in one atomic `KILL_RESOURCES`.
 
 | Param | Type | Required | Meaning |
 |---|---|---|---|

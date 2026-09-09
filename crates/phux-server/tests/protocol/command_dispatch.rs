@@ -10,14 +10,14 @@
 //!    carrying a `ScreenState` whose pane id and dims match the target —
 //!    the side-effect-free agent read (ADR-0022 §5). Plus the unknown-id
 //!    `TerminalNotFound` path.
-//! 3. **KILL_TERMINAL on an unknown id** → `COMMAND_RESULT { Error(
+//! 3. **KILL_RESOURCE on an unknown id** → `COMMAND_RESULT { Error(
 //!    TerminalNotFound, …) }`.
-//! 4. **KILL_TERMINAL on a live pane** → `COMMAND_RESULT { Ok }` plus the
-//!    asynchronous `TERMINAL_CLOSED` the reap path emits. Because the
+//! 4. **KILL_RESOURCE on a live pane** → `COMMAND_RESULT { Ok }` plus the
+//!    asynchronous `RESOURCE_CLOSED` the reap path emits. Because the
 //!    seeded session is the server's only one, the kill also triggers the
 //!    tmux-model self-exit (phux-60s), so the test tolerates the
 //!    connection closing.
-//! 5. **KILL_TERMINALS** → `COMMAND_RESULT { Ok }` atomically tearing down a
+//! 5. **KILL_RESOURCES** → `COMMAND_RESULT { Ok }` atomically tearing down a
 //!    multi-terminal group in one round-trip (the v0.3.0 "Option B" re-tier
 //!    op that replaced KILL_COLLECTION; ADR-0019 / ADR-0027), plus the
 //!    unknown-id no-op (idempotent) path.
@@ -37,12 +37,12 @@
 
 use std::time::Duration;
 
-use phux_protocol::ids::{GroupId, InputOperationId, TerminalId};
+use phux_protocol::ids::{GroupId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -138,7 +138,7 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
         let terminal_id = loop {
             let (_, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -171,7 +171,7 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
                     assert_eq!(result, CommandResult::Ok);
                     acknowledged = true;
                 }
-                FrameKind::TerminalOutput { bytes, .. } => output.extend_from_slice(&bytes),
+                FrameKind::ResourceOutput { bytes, .. } => output.extend_from_slice(&bytes),
                 _ => {}
             }
             if acknowledged
@@ -232,7 +232,7 @@ fn get_screen_returns_structured_screen_for_live_pane() {
         let (pane_id, cols, rows) = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                let p = &snapshot.panes[0];
+                let p = &snapshot.resources[0];
                 break (p.id.clone(), p.cols, p.rows);
             }
         };
@@ -300,7 +300,7 @@ fn get_screen_with_cells_requests_cell_projection() {
         let pane_id = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -345,7 +345,7 @@ fn get_screen_unknown_id_returns_terminal_not_found() {
             &FrameKind::Command {
                 request_id: 8,
                 command: Command::GetScreen {
-                    terminal_id: TerminalId::local(99_999),
+                    terminal_id: ResourceId::local(99_999),
                     request_scrollback: None,
                     cells: false,
                 },
@@ -373,9 +373,9 @@ fn kill_terminal_unknown_id_returns_terminal_not_found() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 7,
-                command: Command::KillTerminal {
+                command: Command::KillResource {
                     // A wire id the server never allocated.
-                    terminal_id: TerminalId::local(99_999),
+                    terminal_id: ResourceId::local(99_999),
                 },
             },
         )
@@ -404,7 +404,7 @@ fn kill_terminal_live_pane_acks_and_closes() {
         let pane_id = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -412,14 +412,14 @@ fn kill_terminal_live_pane_acks_and_closes() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 3,
-                command: Command::KillTerminal {
+                command: Command::KillResource {
                     terminal_id: pane_id.clone(),
                 },
             },
         )
         .await;
 
-        // The Ok ack and an async TERMINAL_CLOSED may arrive in either
+        // The Ok ack and an async RESOURCE_CLOSED may arrive in either
         // order (SPEC §5). Collect both, tolerating the server's self-exit
         // close once its only session is reaped.
         let mut saw_ok = false;
@@ -443,7 +443,7 @@ fn kill_terminal_live_pane_acks_and_closes() {
                 ) => {
                     saw_ok = true;
                 }
-                (TYPE_TERMINAL_CLOSED, FrameKind::TerminalClosed { terminal_id, .. })
+                (TYPE_RESOURCE_CLOSED, FrameKind::ResourceClosed { terminal_id, .. })
                     if terminal_id == pane_id =>
                 {
                     saw_closed = true;
@@ -451,20 +451,20 @@ fn kill_terminal_live_pane_acks_and_closes() {
                 _ => {}
             }
         }
-        assert!(saw_ok, "KILL_TERMINAL must ack with COMMAND_RESULT::Ok");
+        assert!(saw_ok, "KILL_RESOURCE must ack with COMMAND_RESULT::Ok");
         assert!(
             saw_closed,
-            "KILL_TERMINAL must drive TERMINAL_CLOSED for the pane"
+            "KILL_RESOURCE must drive RESOURCE_CLOSED for the pane"
         );
     });
 }
 
-/// **KILL_TERMINALS** atomically tears down a multi-terminal group in ONE
+/// **KILL_RESOURCES** atomically tears down a multi-terminal group in ONE
 /// round-trip — the irreducible op the v0.3.0 "Option B" re-tier (ADR-0019 /
 /// ADR-0027) put in place of the dissolved KILL_COLLECTION verb. The test
-/// attaches to "work", adds a second pane via SPAWN_TERMINAL so the session
-/// owns two Terminals, then KILL_TERMINALS both ids and asserts the `Ok` ack
-/// plus a TERMINAL_CLOSED for *each* pane. The whole path rides
+/// attaches to "work", adds a second pane via SPAWN_RESOURCE so the session
+/// owns two Terminals, then KILL_RESOURCES both ids and asserts the `Ok` ack
+/// plus a RESOURCE_CLOSED for *each* pane. The whole path rides
 /// `handle_client` (the production read loop).
 #[test]
 fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
@@ -475,13 +475,13 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
             spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("work"));
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        // Attach to learn the seed pane id and to satisfy SPAWN_TERMINAL's
+        // Attach to learn the seed pane id and to satisfy SPAWN_RESOURCE's
         // "spawning client must be attached" precondition.
         send_frame(&mut stream, &attach_by_name("work")).await;
         let pane_a = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -499,7 +499,7 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
         let _ = await_command_result(&mut stream, 40).await;
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 41,
                 group: GroupId::new(1),
                 command: None,
@@ -516,14 +516,14 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
         .await;
         let pane_b = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::TerminalSpawned {
+            if let FrameKind::ResourceSpawned {
                 request_id: 41,
                 result,
             } = frame
             {
                 match result {
                     phux_protocol::wire::frame::SpawnResult::Ok(id) => break id,
-                    other => panic!("SPAWN_TERMINAL failed: {other:?}"),
+                    other => panic!("SPAWN_RESOURCE failed: {other:?}"),
                 }
             }
         };
@@ -534,14 +534,14 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 42,
-                command: Command::KillTerminals {
+                command: Command::KillResources {
                     ids: vec![pane_a.clone(), pane_b.clone()],
                 },
             },
         )
         .await;
 
-        // Expect the Ok ack plus a TERMINAL_CLOSED for each pane (any order;
+        // Expect the Ok ack plus a RESOURCE_CLOSED for each pane (any order;
         // tolerate the server's self-exit close once its only session reaps).
         let mut saw_ok = false;
         let mut closed_a = false;
@@ -563,7 +563,7 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
                         result: CommandResult::Ok,
                     },
                 ) => saw_ok = true,
-                (TYPE_TERMINAL_CLOSED, FrameKind::TerminalClosed { terminal_id, .. }) => {
+                (TYPE_RESOURCE_CLOSED, FrameKind::ResourceClosed { terminal_id, .. }) => {
                     if terminal_id == pane_a {
                         closed_a = true;
                     } else if terminal_id == pane_b {
@@ -573,13 +573,13 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
                 _ => {}
             }
         }
-        assert!(saw_ok, "KILL_TERMINALS must ack with COMMAND_RESULT::Ok");
-        assert!(closed_a, "KILL_TERMINALS must close the first pane");
-        assert!(closed_b, "KILL_TERMINALS must close the second pane");
+        assert!(saw_ok, "KILL_RESOURCES must ack with COMMAND_RESULT::Ok");
+        assert!(closed_a, "KILL_RESOURCES must close the first pane");
+        assert!(closed_b, "KILL_RESOURCES must close the second pane");
     });
 }
 
-/// **KILL_TERMINALS with an unknown / already-dead id is a no-op**, not an
+/// **KILL_RESOURCES with an unknown / already-dead id is a no-op**, not an
 /// error: the op is idempotent so a caller racing a natural exit still
 /// succeeds. A list mixing one live pane and one bogus id acks `Ok` and
 /// closes only the live pane.
@@ -595,7 +595,7 @@ fn kill_terminals_skips_unknown_ids() {
         let pane = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -604,8 +604,8 @@ fn kill_terminals_skips_unknown_ids() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 45,
-                command: Command::KillTerminals {
-                    ids: vec![pane.clone(), TerminalId::local(999_999)],
+                command: Command::KillResources {
+                    ids: vec![pane.clone(), ResourceId::local(999_999)],
                 },
             },
         )
@@ -631,7 +631,7 @@ fn kill_terminals_skips_unknown_ids() {
         }
         assert!(
             saw_ok,
-            "KILL_TERMINALS with an unknown id must still ack Ok (idempotent)"
+            "KILL_RESOURCES with an unknown id must still ack Ok (idempotent)"
         );
     });
 }
@@ -645,7 +645,7 @@ fn kill_terminals_skips_unknown_ids() {
 fn session_create_via_metadata_seeds_session_and_publishes_id() {
     run_local(async {
         use phux_protocol::wire::frame::{
-            SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, TERMINAL_AGENT_SESSION_KEY,
+            RESOURCE_AGENT_SESSION_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
         };
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -705,14 +705,14 @@ fn session_create_via_metadata_seeds_session_and_publishes_id() {
             .get("terminal_id")
             .and_then(serde_json::Value::as_u64)
             .and_then(|id| u32::try_from(id).ok())
-            .map(phux_protocol::ids::TerminalId::local)
+            .map(phux_protocol::ids::ResourceId::local)
             .expect("result must carry a local terminal_id");
 
         let restored_record = read_metadata_value(
             &mut stream,
             4,
-            Scope::Terminal(terminal_id),
-            TERMINAL_AGENT_SESSION_KEY,
+            Scope::Resource(terminal_id),
+            RESOURCE_AGENT_SESSION_KEY,
         )
         .await;
         assert_eq!(
@@ -948,12 +948,12 @@ fn headless_session_create_forwards_env_and_arms_last_session_exit() {
 
         let snapshot = get_server_snapshot(&mut stream, 12).await;
         assert_eq!(snapshot.sessions.len(), 2, "bootstrap + managed");
-        let ids = snapshot.panes.into_iter().map(|pane| pane.id).collect();
+        let ids = snapshot.resources.into_iter().map(|pane| pane.id).collect();
         send_frame(
             &mut stream,
             &FrameKind::Command {
                 request_id: 13,
-                command: Command::KillTerminals { ids },
+                command: Command::KillResources { ids },
             },
         )
         .await;
@@ -979,7 +979,7 @@ fn pane_cwd_by_local_id(
 ) -> Option<std::path::PathBuf> {
     let target = u32::try_from(local_id).ok()?;
     let pane = snapshot
-        .panes
+        .resources
         .iter()
         .find(|p| p.id.local_id() == Some(target))?;
     let raw = std::path::PathBuf::from(pane.cwd.as_ref()?);
@@ -1350,7 +1350,7 @@ fn get_terminal_state_returns_structured_snapshot_for_live_pane() {
         let pane_id = loop {
             let (_t, frame) = recv_typed(&mut stream).await;
             if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.panes[0].id.clone();
+                break snapshot.resources[0].id.clone();
             }
         };
 
@@ -1424,7 +1424,7 @@ fn get_terminal_state_unknown_terminal_returns_not_found_error() {
             &FrameKind::Command {
                 request_id: 11,
                 command: Command::GetTerminalState {
-                    terminal_id: TerminalId::local(9999),
+                    terminal_id: ResourceId::local(9999),
                     include_scrollback: false,
                     max_scrollback_lines: 0,
                 },
@@ -1508,7 +1508,7 @@ fn detach_clients_force_detaches_attached_client() {
 }
 
 /// DETACH_CLIENTS with an unknown session name is a no-op that reports zero
-/// clients detached — not an error (mirrors KILL_TERMINALS's skip-silently
+/// clients detached — not an error (mirrors KILL_RESOURCES's skip-silently
 /// shape for unknown ids).
 #[test]
 fn detach_clients_unknown_session_reports_zero() {

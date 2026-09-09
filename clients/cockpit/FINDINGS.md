@@ -360,7 +360,7 @@ symbols appear absent by name. All 13 are renames, not losses:
 | `sendPasteOwned` | `sendPaste` (`providers/phux/host.zig`, re-exported by `provider.zig`) |
 | `clearSelectionOwned` / `releaseAnchorOwned` | `clearSelection` / `releaseAnchor` — the `*Owned` suffix was dropped once `provider.ReplicaOwner` made ownership a parameter type |
 | `finishAttachBarrier` | the `attach_barrier_seen` state machine |
-| `explicitTerminalResize` | `viewportResize` → `phux_client_terminal_resize` |
+| `explicitResizeTerminal` | `viewportResize` → `phux_client_terminal_resize` |
 | `pruneRemovedPanes` | `pruneRemoved` |
 | `ensurePane` / `findPane` / `indexOfOwner` / `replicaOwner` | subsumed by `provider.ReplicaOwner` and `provider.TerminalRef` |
 | `asC` / `fromC` | per-type converters such as `toCAnchor` |

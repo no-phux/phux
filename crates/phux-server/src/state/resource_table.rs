@@ -53,20 +53,20 @@ pub(super) type LastValidAttachSequence = Arc<AtomicU64>;
 /// What a superseded pump generation leaves behind: its bootstrap id (to
 /// tombstone), a token that resolves once it has actually exited, and the
 /// sequence it reached.
-pub(super) type PriorAttachTerminalPump = (BootstrapId, CancellationToken, LastValidAttachSequence);
+pub(super) type PriorAttachResourcePump = (BootstrapId, CancellationToken, LastValidAttachSequence);
 
 /// The new generation's `(cancel, done, last_valid_seq)` plus whatever it
 /// displaced.
-pub(super) type AttachTerminalPumpReplacement = (
+pub(super) type AttachResourcePumpReplacement = (
     CancellationToken,
     CancellationToken,
     LastValidAttachSequence,
-    Option<PriorAttachTerminalPump>,
+    Option<PriorAttachResourcePump>,
 );
 
-/// One generation of an `ATTACH_TERMINAL` output pump.
+/// One generation of an `ATTACH_RESOURCE` output pump.
 ///
-/// `ATTACH_TERMINAL` used to be idempotent-or-nothing: a second attach for a
+/// `ATTACH_RESOURCE` used to be idempotent-or-nothing: a second attach for a
 /// live `(client, terminal)` was refused so the pane could not double-stream.
 /// Negotiated bootstrap makes re-attach meaningful — a client re-bootstraps to
 /// change profile or recover — so a generation now *replaces* its predecessor:
@@ -74,7 +74,7 @@ pub(super) type AttachTerminalPumpReplacement = (
 /// bootstrap id is tombstoned so late frames from the dead pump are dropped
 /// rather than attributed to the new one.
 #[derive(Debug)]
-pub(super) struct AttachTerminalGeneration {
+pub(super) struct AttachResourceGeneration {
     /// Fires to stop this pump.
     pub(super) cancel: CancellationToken,
     /// Resolves once the pump task has actually exited.
@@ -138,20 +138,20 @@ pub(super) struct ResourceTable {
     /// thread — no cross-thread poll of `!Send` futures occurs.
     tasks: JoinSet<()>,
     /// For each resource, the clients currently observing it (and thus
-    /// eligible to receive `TERMINAL_OUTPUT` frames for it).
+    /// eligible to receive `RESOURCE_OUTPUT` frames for it).
     ///
     /// Empty lists are garbage-collected rather than left behind, so the
     /// map stays bounded across attach/detach churn.
     subscribers: HashMap<ResourceId, Vec<ClientId>>,
-    /// Per-`(client, terminal)` cancellation for `ATTACH_TERMINAL` output
-    /// pumps (phux-v45.7). `DETACH_TERMINAL` cancels one entry; client
+    /// Per-`(client, terminal)` cancellation for `ATTACH_RESOURCE` output
+    /// pumps (phux-v45.7). `DETACH_RESOURCE` cancels one entry; client
     /// detach / disconnect cancels all of the client's entries; pane reap
     /// cancels the pane's entries. Without the token the pump task (which
     /// holds the client's outbound sender) would keep streaming until the
     /// connection died.
-    pumps: HashMap<(ClientId, ResourceId), AttachTerminalGeneration>,
+    pumps: HashMap<(ClientId, ResourceId), AttachResourceGeneration>,
     /// All raw-output tasks, including gated aggregate replacements and
-    /// `SPAWN_TERMINAL` pumps. A staged and a published pump may coexist until
+    /// `SPAWN_RESOURCE` pumps. A staged and a published pump may coexist until
     /// aggregate commit; terminal detach must retire both.
     output_pumps: HashMap<(ClientId, ResourceId), Vec<OutputPumpTask>>,
     /// Next connection-global bootstrap id for per-terminal attaches, keyed
@@ -258,7 +258,7 @@ impl ResourceTable {
 
     /// Subscribe `client` to `terminal`, deduplicating: a client already on
     /// the list is not pushed twice, so a re-attach cannot double-fan
-    /// `TERMINAL_OUTPUT` at it.
+    /// `RESOURCE_OUTPUT` at it.
     pub(super) fn subscribe(&mut self, client: ClientId, terminal: ResourceId) {
         let subs = self.subscribers.entry(terminal).or_default();
         if !subs.contains(&client) {
@@ -267,7 +267,7 @@ impl ResourceTable {
     }
 
     /// Remove `client` from `terminal`'s subscriber list (the
-    /// `DETACH_TERMINAL` counterpart of the attach-time registration).
+    /// `DETACH_RESOURCE` counterpart of the attach-time registration).
     /// Drops the entry when it empties.
     pub(super) fn unsubscribe(&mut self, client: ClientId, terminal: ResourceId) {
         if let Some(subs) = self.subscribers.get_mut(&terminal) {
@@ -312,7 +312,7 @@ impl ResourceTable {
         self.subscribers.is_empty()
     }
 
-    // -- output task lifetimes and ATTACH_TERMINAL generations --------
+    // -- output task lifetimes and ATTACH_RESOURCE generations --------
 
     pub(super) fn track_output_pump(
         &mut self,
@@ -341,7 +341,7 @@ impl ResourceTable {
             .collect()
     }
 
-    /// Install a new `ATTACH_TERMINAL` pump generation for `(client,
+    /// Install a new `ATTACH_RESOURCE` pump generation for `(client,
     /// terminal)`, displacing any live one.
     ///
     /// Returns the new generation's `(cancel, done, last_valid_seq)` plus, when
@@ -351,7 +351,7 @@ impl ResourceTable {
     /// never attributed to the new generation.
     ///
     /// This replaced a register-or-refuse form that returned `None` for a live
-    /// pair. Under negotiated bootstrap a second `ATTACH_TERMINAL` is a
+    /// pair. Under negotiated bootstrap a second `ATTACH_RESOURCE` is a
     /// meaningful request — re-bootstrap at a different profile, or recover —
     /// so refusing it would strand the client on the old stream.
     pub(super) fn replace_pump(
@@ -359,7 +359,7 @@ impl ResourceTable {
         client: ClientId,
         terminal: ResourceId,
         bootstrap_id: BootstrapId,
-    ) -> AttachTerminalPumpReplacement {
+    ) -> AttachResourcePumpReplacement {
         let cancel = CancellationToken::new();
         let done = CancellationToken::new();
         let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
@@ -367,7 +367,7 @@ impl ResourceTable {
             .pumps
             .insert(
                 (client, terminal),
-                AttachTerminalGeneration {
+                AttachResourceGeneration {
                     cancel: cancel.clone(),
                     done: done.clone(),
                     last_valid_seq: Arc::clone(&last_valid_seq),
@@ -393,7 +393,7 @@ impl ResourceTable {
         BootstrapId::new(raw)
     }
 
-    /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
+    /// Cancel and forget the `ATTACH_RESOURCE` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
     pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: ResourceId) {
         self.stop_output_pumps(client, terminal);
@@ -402,7 +402,7 @@ impl ResourceTable {
         }
     }
 
-    /// Cancel every `ATTACH_TERMINAL` output pump `client` owns
+    /// Cancel every `ATTACH_RESOURCE` output pump `client` owns
     /// (phux-v45.7) so no task keeps streaming into a dead mailbox.
     pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
         self.output_pumps.retain(|(owner, _), _| *owner != client);
@@ -423,7 +423,7 @@ impl ResourceTable {
     ///
     /// Cancels the actor token defensively (the actor has usually already
     /// exited by the time we reap, but a still-live token is cleanly
-    /// resolved by the cancel) and cancels the pane's `ATTACH_TERMINAL`
+    /// resolved by the cancel) and cancels the pane's `ATTACH_RESOURCE`
     /// pumps: the broadcast channel is closing anyway, but the cancel keeps
     /// the token map bounded and the teardown prompt.
     ///

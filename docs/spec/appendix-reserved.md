@@ -34,7 +34,7 @@ For implementers extending the protocol:
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1
   Terminal lifecycle / per-pane control frames (phux-4li.10 allocated
   `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges; ADR-0056
-  allocated `MOVE_TERMINAL = 0x2A` and `TERMINAL_MOVED = 0xA8`). The
+  allocated `MOVE_RESOURCE = 0x2A` and `RESOURCE_MOVED = 0xA8`). The
   `SPAWN_PROCESS` / `KILL_PROCESS` / `PROCESS_SPAWNED` / `PROCESS_CLOSED` /
   `PROCESS_OUTPUT` family once pencilled into `0x24..=0x25` /
   `0xA3..=0xA5`, and the `FORWARD_PORT` / `CLOSE_PORT_FORWARD` /
@@ -57,9 +57,9 @@ their own one-byte tag inside it. Allocated tags:
 |--------|-----------------------------|------------------|---------|
 | `0x07` | `GET_SCREEN`                | [L1.md](./L1.md) | shipped |
 | `0x08` | `ROUTE_INPUT`               | [L1.md](./L1.md) | shipped |
-| `0x09` | `KILL_TERMINALS`            | [L1.md](./L1.md) | shipped |
+| `0x09` | `KILL_RESOURCES`            | [L1.md](./L1.md) | shipped |
 | `0x0c` | `GET_TERMINAL_STATE`        | [L1.md](./L1.md) | shipped |
-| `0x0d` | `SUBSCRIBE_TERMINAL_EVENTS` | [L1.md](./L1.md) | shipped |
+| `0x0d` | `SUBSCRIBE_RESOURCE_EVENTS` | [L1.md](./L1.md) | shipped |
 | `0x0e` | `UPGRADE`                   | [L1.md](./L1.md) | shipped |
 | `0x0f` | `ACQUIRE_INPUT`             | [L1.md](./L1.md) | shipped |
 | `0x10` | `RELEASE_INPUT`             | [L1.md](./L1.md) | shipped |
@@ -74,18 +74,18 @@ their own one-byte tag inside it. Allocated tags:
 | `0x19` | `TRANSCRIBE`                | [L1.md](./L1.md) | shipped |
 | `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | shipped |
 
-`KILL_TERMINALS` at tag `0x09` reuses the slot freed by the removed
+`KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
 [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
 (option B), the leaked session/collection lifecycle verbs are withdrawn and
 their tags are freed:
 
-- `0x09` — formerly `CREATE_SESSION`; reallocated to `KILL_TERMINALS`.
+- `0x09` — formerly `CREATE_SESSION`; reallocated to `KILL_RESOURCES`.
 - `0x0a` — formerly `RENAME_SESSION`; freed, reserved, not reallocated.
   Rename is now an L3 metadata `SET` on `phux.session.name/v1`
   ([L3.md §3](./L3.md)).
 - `0x0b` — formerly `KILL_COLLECTION`; freed, reserved, not reallocated.
-  Group teardown is `KILL_TERMINALS`.
+  Group teardown is `KILL_RESOURCES`.
 
 A freed tag SHALL NOT be reallocated to an unrelated command without a
 `PROTOCOL_VERSION` bump, so that an old client speaking a withdrawn verb

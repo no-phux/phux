@@ -70,7 +70,7 @@ pub const Mutation = struct {
 test "plain workspace values share contract identity and preserve bounded text" {
     const std = @import("std");
     const ref: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
-        .phux = try contract.RemoteTerminalId.fromPhux(0, 7, ""),
+        .phux = try contract.RemoteResourceId.fromPhux(0, 7, ""),
     } };
     const node: Node = .{ .kind = .leaf, .terminal_ref = ref };
     const value: Mutation = .{ .expected_revision = 1, .session_id = 1, .kind = .add, .terminal_ref = ref };

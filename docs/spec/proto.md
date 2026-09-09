@@ -102,10 +102,10 @@ ADRs for the rationale that shapes this document.
 |------|------------|
 | **Server** | A long-lived process owning all multiplexer state for one operating-system user. |
 | **Client** | A process that attaches to a server, presenting Terminals to a user. |
-| **Terminal** | A managed terminal: one PTY, one `libghostty_vt::Terminal` parsing its bytes, one stable `TerminalId`. The L1 substrate primitive (ADR-0015, ADR-0016). |
-| **Group** | A named set of Terminals. Not a wire tier: membership and names are L3 metadata plus client logic, and atomic teardown is the L1 `KILL_TERMINALS` op (ADR-0030; see [L2.md](./L2.md)). `GroupId` survives only as an opaque grouping key. |
+| **Terminal** | A managed terminal: one PTY, one `libghostty_vt::Terminal` parsing its bytes, one stable `ResourceId`. The L1 substrate primitive (ADR-0015, ADR-0016). |
+| **Group** | A named set of Terminals. Not a wire tier: membership and names are L3 metadata plus client logic, and atomic teardown is the L1 `KILL_RESOURCES` op (ADR-0030; see [L2.md](./L2.md)). `GroupId` survives only as an opaque grouping key. |
 | **Metadata** | An L3 optional service: a typed key-value store the server hosts but does not interpret (ADR-0015 §"L3"). |
-| **Frame** | A server-emitted `TERMINAL_OUTPUT` carrying a contiguous batch of VT bytes for one Terminal, identified by a monotonically increasing per-Terminal `seq`. |
+| **Frame** | A server-emitted `RESOURCE_OUTPUT` carrying a contiguous batch of VT bytes for one Terminal, identified by a monotonically increasing per-Terminal `seq`. |
 | **Grid** | The two-dimensional cell matrix that is a Terminal's visible viewport. |
 | **Scrollback** | Lines that have scrolled out of the grid but are retained for review. |
 | **Cell** | One character position in a grid: a grapheme cluster plus rendering attributes. |
@@ -121,7 +121,7 @@ ADRs for the rationale that shapes this document.
 ┌────────────────────────────┐                  ┌─────────────────────────┐
 │        phux server         │ ◄─── transport ►│      phux client        │
 │                            │                  │                         │
-│  L1: Terminals             │ TERMINAL_OUTPUT  │  Renderer               │
+│  L1: Terminals             │ RESOURCE_OUTPUT  │  Renderer               │
 │  ├─ PTY                    │  (VT bytes, S→C) │  ├─ Terminal            │
 │  └─ libghostty Terminal    │  ───────────────►│  │   (libghostty-vt;    │
 │     (canonical)            │                  │  │    local parse for   │
@@ -256,7 +256,7 @@ receives the same treatment: `ERROR { code: FRAME_TOO_LARGE }`, then close.
 
 ## 6. Version and profile negotiation
 
-This document specifies protocol `0.8.0`. Major/minor identify the wire
+This document specifies protocol `0.9.0`. Major/minor identify the wire
 contract and MUST match exactly; patch differences are allowed and never change
 encoded bytes. Protocol `0.7.x` and `0.8.x` reject each other. Every stateful
 connection, including same-UID Unix sockets, performs HELLO. `PING` is the only
@@ -374,15 +374,15 @@ EngineCodecSet = bitset (u64) {
 ServerFeature = bitset (u32) {
     ACKNOWLEDGED_INPUT = 0x00000010, // APPLY_INPUT (L1.md §6.2.1; ADR-0053)
     FILE_UPLOAD        = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
-    MOVE_TERMINAL      = 0x00000040, // MOVE_TERMINAL (L1.md §3.1; ADR-0056)
+    MOVE_RESOURCE      = 0x00000040, // MOVE_RESOURCE (L1.md §3.1; ADR-0056)
     TERMINAL_REPLY     = 0x00000080, // INPUT_TERMINAL_REPLY (L1.md §3.4; ADR-0070)
     SHUTDOWN           = 0x00000100, // SHUTDOWN (L1.md §5.1)
-    SPAWN_INITIAL_SIZE = 0x00000200, // SPAWN_TERMINAL.initial_size (L1.md §3.1)
+    SPAWN_INITIAL_SIZE = 0x00000200, // SPAWN_RESOURCE.initial_size (L1.md §3.1)
     REPORT_AGENT_STATE = 0x00000400, // REPORT_AGENT_STATE (L1.md §5.1; ADR-0085)
     GET_PERF           = 0x00000800, // GET_PERF (L1.md §5.1; ADR-0096)
     WORKLOAD_AUTH      = 0x00001000, // phux-workload/v1 (§6.1.1; ADR-0098)
     TRANSCRIBE         = 0x00002000, // TRANSCRIBE (L1.md §5.1)
-    RESOURCE_KINDS     = 0x00004000, // ResourceKind spawns and facets, TERMINAL_CLOSED.reason,
+    RESOURCE_KINDS     = 0x00004000, // ResourceKind spawns and facets, RESOURCE_CLOSED.reason,
                                      //   APPEND_RESOURCE_OUTPUT, AgentEventsJsonlV1
                                      //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
 }
@@ -446,7 +446,7 @@ above the negotiated bound before allocating it; opaque cursors are at most
 `ServerCapabilities` remains a positional prefix: `layers: u8` followed by
 optional `features: u32`. A one-byte legacy value therefore decodes with an
 empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
-`MOVE_TERMINAL = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
+`MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
 `GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`, and
 `RESOURCE_KINDS = 0x4000`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
@@ -460,11 +460,11 @@ without it skips the unknown field id by length and spawns at its default,
 which is what happened before the field existed. A client SHOULD still
 require the bit, because it is what distinguishes "the pane already has the
 geometry I asked for" from "the pane is at some default and my follow-up
-`TERMINAL_RESIZE` is load-bearing."
+`RESIZE_TERMINAL` is load-bearing."
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
-`HISTORY_PAGE.payload`, cursors, and subsequent `TERMINAL_OUTPUT.bytes` are
+`HISTORY_PAGE.payload`, cursors, and subsequent `RESOURCE_OUTPUT.bytes` are
 engine-owned opaque bytes and MUST remain byte-identical across server,
 transport, recorder, and federation relay. phux never scans or rewrites native
 records or raw live bytes.
@@ -502,7 +502,7 @@ The practical consequence is that a design which "needs a wire change"
 should first be re-derived over the frames that already exist. Session
 recording is the worked example: a server-side recorder wanted a new
 command tag and a new feature bit, and was rejected in favor of a
-consumer-side projection over the existing `ATTACH_TERMINAL` observer
+consumer-side projection over the existing `ATTACH_RESOURCE` observer
 contract, precisely because the durability it bought did not justify a
 fleet-wide break. See
 [ADR-0061](../../ADR/0061-capabilities-add-versions-break.md) for the
@@ -620,7 +620,7 @@ The catalog is organized by **tier** per
   Required of every consumer that completes a HELLO. Not tier-
   specific. Defined here.
 - **L1** — Terminal substrate. Every conforming consumer speaks L1
-  (§11). Carries `TerminalId` per
+  (§11). Carries `ResourceId` per
   [ADR-0016](../../ADR/0016-terminal-id-as-wire-primary.md). See
   [L1.md](./L1.md).
 - **L2** — reserved, no messages. There is no collection tier. See
@@ -679,12 +679,12 @@ have no catalog row; the mechanism is defined in
 
 The `COMMAND` / `COMMAND_RESULT` envelope (§5, per
 [ADR-0021](../../ADR/0021-control-plane-commands.md)) round-trips
-through the codec. The wire carries `KILL_TERMINAL` (tag 0x03),
-`GET_STATE` (tag 0x05), `KILL_TERMINALS` (tag 0x09),
+through the codec. The wire carries `KILL_RESOURCE` (tag 0x03),
+`GET_STATE` (tag 0x05), `KILL_RESOURCES` (tag 0x09),
 `DETACH_CLIENTS` (tag 0x13), `APPLY_INPUT` (tag 0x14), and `PUT_FILE`
 (tag 0x15), plus the agent-convenience commands `GET_SCREEN` (tag 0x07),
 `ROUTE_INPUT` (tag 0x08), `GET_TERMINAL_STATE` (tag 0x0c), and
-`SUBSCRIBE_TERMINAL_EVENTS` (tag 0x0d); the remaining §5.1 catalog entries
+`SUBSCRIBE_RESOURCE_EVENTS` (tag 0x0d); the remaining §5.1 catalog entries
 are reserved and decode as `UnknownEnumValue` until allocated.
 
 `DETACH_CLIENTS { session: optional<str> }` force-detaches clients from
@@ -698,23 +698,23 @@ down server-side, so its TUI exits cleanly. This is distinct from the
 `COMMAND_RESULT { OkWith(Json(count)) }` where `count` is the number of
 clients detached; an unknown session name detaches nobody and reports
 `0` (not an error). Scope: only session-attached clients (`ATTACH`
-consumers) are targeted; terminal-level subscribers (`ATTACH_TERMINAL`)
-have their own detach verb (`DETACH_TERMINAL`) and are not swept.
+consumers) are targeted; terminal-level subscribers (`ATTACH_RESOURCE`)
+have their own detach verb (`DETACH_RESOURCE`) and are not swept.
 Authorization is not implied by socket reachability. Under local policy the
 owner UDS receives the explicit operator grant. Under paired policy,
 `DETACH_CLIENTS` requires `SIGNAL` on the resolved Group or Global selector
 before the command handler runs
 ([workload-auth.md §7](./workload-auth.md)).
 
-`KILL_TERMINALS { ids: Vec<TerminalId> }` is the one atomic
+`KILL_RESOURCES { ids: Vec<ResourceId> }` is the one atomic
 multi-terminal teardown operation
 ([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)):
-its body is a `u16` count followed by that many tagged `TerminalId`s,
+its body is a `u16` count followed by that many tagged `ResourceId`s,
 applied all-or-nothing under the server's single `Mutex<ServerState>`
 lock. The session-vocabulary verbs `CREATE_SESSION` and
 `KILL_COLLECTION` that earlier drafts placed on L1 are removed per
 ADR-0030: create decomposes into `SPAWN` plus an L3 metadata key, and
-group teardown is `KILL_TERMINALS`. Group lifecycle is L3 metadata plus
+group teardown is `KILL_RESOURCES`. Group lifecycle is L3 metadata plus
 client logic, not a wire tier; see [L3.md](./L3.md). The agent-surface
 commands are engine-convenience snapshots over the shared engine, not a
 normative structured wire contract (ADR-0030); the structured agent
@@ -747,7 +747,7 @@ DetachReason = enum {
     SERVER_SHUTDOWN   = 1,
     SESSION_KILLED    = 2,  // legacy name; retained for wire compat.
                             //   Means "the group the attach was rooted
-                            //   in was torn down" (now a KILL_TERMINALS
+                            //   in was torn down" (now a KILL_RESOURCES
                             //   over its members; see L2.md / ADR-0030).
     REPLACED          = 3,  // another client took over an exclusive attach
     PROTOCOL_ERROR    = 4,
@@ -806,7 +806,7 @@ version bump ([ADR-0061](../../ADR/0061-capabilities-add-versions-break.md)).
 <!-- impl-status: spec-only; probe: TYPE_SUBSCRIBE -->
 > **Status: spec-only.** Discriminant `0x40` is reserved and nothing decodes
 > it. Per-Terminal event opt-in exists separately as `SUBSCRIBE_EVENTS`
-> (`0x41`) and `SUBSCRIBE_TERMINAL_EVENTS` (command tag `0x0d`).
+> (`0x41`) and `SUBSCRIBE_RESOURCE_EVENTS` (command tag `0x0d`).
 
 Reserved for opting in/out of notification streams (e.g. only the focused
 client should receive `BELL` for inactive Terminals). Format not yet
@@ -831,7 +831,7 @@ interpreted as anything other than a transport failure.
 ### 8.1 Live sequence and pacing
 
 The Terminal actor stamps one checked, non-wrapping `u64` sequence before
-broadcast. `TERMINAL_OUTPUT` is scoped by
+broadcast. `RESOURCE_OUTPUT` is scoped by
 `(terminal_id, stream_id, bootstrap_id, seq)`. A bootstrap cut is inclusive:
 its checkpoint covers `seq <= base_seq`; subscribed duplicates at or below the
 cut are discarded; only contiguous `seq > base_seq` is queued and released.
@@ -855,7 +855,7 @@ immediately. This intentionally avoids one RTT per pane.
 
 ```
 FRAME_ACK {
-    terminal_id: TerminalId, // field 1
+    terminal_id: ResourceId, // field 1
     seq: u64,                // field 2, cumulative
     stream_id: StreamId,     // field 3
     bootstrap_id: BootstrapId, // field 4
@@ -1073,16 +1073,16 @@ Every conforming consumer:
 
 Every conforming consumer additionally implements:
 
-- **Terminal content:** generation-bound `TERMINAL_OUTPUT`,
+- **Terminal content:** generation-bound `RESOURCE_OUTPUT`,
   `BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`, `BOOTSTRAP_READY`,
   `BOOTSTRAP_TOMBSTONE`, NativeState-only `HISTORY_REQUEST`, `HISTORY_PAGE`,
   `HISTORY_TOMBSTONE`, `HISTORY_REJECTED`, and StateSync-only `FRAME_ACK`.
-- **Terminal lifecycle:** `TERMINAL_OPENED`, `TERMINAL_CLOSED`.
+- **Terminal lifecycle:** `TERMINAL_OPENED`, `RESOURCE_CLOSED`.
 - **Structured events:** `TERMINAL_EVENT`, `BELL`; `ALERT` is recommended.
 - **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`;
   `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, and `INPUT_RAW` are recommended.
-- **L1 commands:** `SPAWN`, `ATTACH_TERMINAL`, `DETACH_TERMINAL`,
-  `KILL_TERMINAL`, `RESIZE_TERMINAL`.
+- **L1 commands:** `SPAWN`, `ATTACH_RESOURCE`, `DETACH_RESOURCE`,
+  `KILL_RESOURCE`, `RESIZE_TERMINAL`.
 
 A pure L1 consumer (an agent, a recorder, a CI orchestrator) sets
 `HELLO.layers = { L1 }`. The server MUST omit all L2 and L3 messages
@@ -1102,25 +1102,25 @@ An L1 identity names a resource of some `ResourceKind`; a Terminal is the
 first kind and an `AGENT_SESSION` the second ([L1.md §1.1](./L1.md)). Every
 L1 consumer, whether or not it implements any kind beyond Terminal:
 
-1. MUST tolerate a `TerminalInfo` whose `kind` it does not implement,
+1. MUST tolerate a `ResourceInfo` whose `kind` it does not implement,
    including `Unknown { tag }`, in `GET_STATE` and `ATTACHED` snapshots:
    retain the entry, read the trailing fields it does not know at their
    documented defaults under the append-only nested rule of
    [appendix-encoding.md §2](./appendix-encoding.md), and never fail the
    snapshot on it.
 2. MUST NOT send a Terminal-facet frame or command — `INPUT_*`,
-   `TERMINAL_RESIZE`, `HISTORY_REQUEST`, `FRAME_ACK`, `MOVE_TERMINAL`,
+   `RESIZE_TERMINAL`, `HISTORY_REQUEST`, `FRAME_ACK`, `MOVE_RESOURCE`,
    `GET_SCREEN`, `ROUTE_INPUT`, `APPLY_INPUT`, `PUT_FILE`, `TRANSCRIBE`,
    `GET_TERMINAL_STATE`, `ACQUIRE_INPUT`, `RELEASE_INPUT`,
    `SIGNAL_TERMINAL`, `REPORT_ASKED`, `REPORT_AGENT_STATE` — to a resource
    whose `kind` is not `TERMINAL`, and MUST treat a `WRONG_RESOURCE_KIND`
    it receives anyway as Terminal-scoped in the sense of §9: one resource is
    affected, the attach is not.
-3. MUST NOT send `SPAWN_TERMINAL` field 11 with a non-zero value, fields 12
+3. MUST NOT send `SPAWN_RESOURCE` field 11 with a non-zero value, fields 12
    through 14, or `APPEND_RESOURCE_OUTPUT` unless `HELLO_OK` advertises
    `RESOURCE_KINDS` (§6.2). An unadvertised server skips the fields by
    length and spawns a Terminal.
-4. MUST accept a `TERMINAL_CLOSED` carrying a `CloseReason` it does not
+4. MUST accept a `RESOURCE_CLOSED` carrying a `CloseReason` it does not
    recognise, treating the reason as unstated (§7.2's `DetachReason` rule).
 5. MUST NOT render a non-terminal resource as a pane, and MUST NOT
    `FRAME_ACK` or `HISTORY_REQUEST` an `AgentEventsJsonlV1` stream
@@ -1151,7 +1151,7 @@ There is no L2 collection lifecycle tier. The `L2` bit and discriminant
 range stay reserved so the three-tier numbering is not reused, but no L2
 message is allocated and no consumer declares `L2`. Group membership and
 names are L3 metadata plus client logic; the one atomic need,
-multi-terminal teardown, is the single L1 operation `KILL_TERMINALS`
+multi-terminal teardown, is the single L1 operation `KILL_RESOURCES`
 (§7.1). See [L2.md](./L2.md) for the full statement and
 [L3.md](./L3.md) for the grouping conventions that replace it.
 

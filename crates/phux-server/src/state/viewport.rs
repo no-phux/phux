@@ -1,4 +1,4 @@
-use phux_core::ids::TerminalId;
+use phux_core::ids::ResourceId;
 
 use super::{ClientId, ServerState};
 
@@ -54,7 +54,7 @@ impl ServerState {
     #[must_use]
     pub fn resolve_terminal_geometry(
         &self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         latest: Option<phux_protocol::wire::frame::ViewportInfo>,
     ) -> Option<(u16, u16)> {
         use phux_config::WindowSize;
@@ -99,7 +99,7 @@ impl ServerState {
     /// screen. `None` until some subscriber announces a viewport with usable
     /// pixel metrics; callers then leave the Terminal's pixel state alone.
     #[must_use]
-    pub fn resolve_terminal_cell_px(&self, terminal: TerminalId) -> Option<(u16, u16)> {
+    pub fn resolve_terminal_cell_px(&self, terminal: ResourceId) -> Option<(u16, u16)> {
         self.subscribers_for_terminal(terminal)
             .iter()
             .filter_map(|cid| self.clients.attached.get(cid))

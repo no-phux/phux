@@ -173,7 +173,7 @@ pub(super) struct PaintPacer {
     /// Panes whose paint was withheld and still owe a settle. Small by
     /// construction (one entry per visible pane), so a linear dedup beats a
     /// hash set.
-    pending: Vec<phux_protocol::ids::TerminalId>,
+    pending: Vec<phux_protocol::ids::ResourceId>,
     /// The pane the user's last input was routed to, when it went out, and
     /// whether its reply has been timed yet.
     ///
@@ -194,7 +194,7 @@ pub(super) struct PaintPacer {
 struct InputMark {
     /// The pane the batch was routed to — the focused pane after dispatch, so
     /// a click that moves focus marks the pane the user just selected.
-    pane: phux_protocol::ids::TerminalId,
+    pane: phux_protocol::ids::ResourceId,
     /// When the batch went out.
     at: tokio::time::Instant,
     /// Whether this batch's reply has already contributed an RTT sample. One
@@ -285,7 +285,7 @@ impl PaintPacer {
     pub(super) fn observe_reply<'a>(
         &mut self,
         now: tokio::time::Instant,
-        panes: impl IntoIterator<Item = &'a phux_protocol::ids::TerminalId>,
+        panes: impl IntoIterator<Item = &'a phux_protocol::ids::ResourceId>,
     ) -> bool {
         let Some(mark) = self.last_input.as_ref() else {
             return false;
@@ -337,7 +337,7 @@ impl PaintPacer {
     /// carrying the glyph to wait out the window.
     pub(super) fn note_input(
         &mut self,
-        pane: Option<&phux_protocol::ids::TerminalId>,
+        pane: Option<&phux_protocol::ids::ResourceId>,
         now: tokio::time::Instant,
     ) {
         let Some(pane) = pane else {
@@ -398,7 +398,7 @@ impl PaintPacer {
     }
 
     /// Remember that `terminal_id` owes a settle paint.
-    pub(super) fn withhold(&mut self, terminal_id: &phux_protocol::ids::TerminalId) {
+    pub(super) fn withhold(&mut self, terminal_id: &phux_protocol::ids::ResourceId) {
         if !self.pending.iter().any(|id| id == terminal_id) {
             self.pending.push(terminal_id.clone());
         }
@@ -419,7 +419,7 @@ impl PaintPacer {
     }
 
     /// Take the panes owed a settle paint, clearing the debt.
-    pub(super) fn take_pending(&mut self) -> Vec<phux_protocol::ids::TerminalId> {
+    pub(super) fn take_pending(&mut self) -> Vec<phux_protocol::ids::ResourceId> {
         std::mem::take(&mut self.pending)
     }
 
@@ -434,10 +434,10 @@ impl PaintPacer {
 mod tests {
     use super::*;
 
-    use phux_protocol::ids::TerminalId;
+    use phux_protocol::ids::ResourceId;
 
-    fn pane(id: u32) -> TerminalId {
-        TerminalId::Local { id }
+    fn pane(id: u32) -> ResourceId {
+        ResourceId::Local { id }
     }
 
     /// The pacer's central promise: latency is never added to a quiet screen.

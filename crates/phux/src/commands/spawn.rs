@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{SplitDir, Workspace};
 use phux_client::layout_ops::{LayoutMutation, LayoutOps};
-use phux_protocol::ids::{GroupId, SatelliteHost, SessionId, TerminalId, WindowId};
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost, SessionId, WindowId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, SpawnError, SpawnResult, StateScope,
 };
@@ -15,7 +15,7 @@ use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
 
-/// `phux spawn` — create a Terminal without attaching (`SPAWN_TERMINAL`,
+/// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`,
 /// SPEC L1 §3.1). Does not auto-start a server.
 ///
 /// With explicit placement, the target Terminal addresses the exact owning
@@ -45,7 +45,7 @@ pub(crate) fn run_spawn(
 ) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id,
         // v0.1 servers expose the single default group (SPEC §3.1).
         group: GroupId::new(1),
@@ -91,7 +91,7 @@ pub(crate) fn run_spawn(
         Ok(_) => {
             eprintln!(
                 "phux: {}",
-                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+                phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
         }
@@ -99,7 +99,7 @@ pub(crate) fn run_spawn(
     }
 }
 
-/// Send a `SPAWN_TERMINAL` frame and return the matching `TERMINAL_SPAWNED`
+/// Send a `SPAWN_RESOURCE` frame and return the matching `RESOURCE_SPAWNED`
 /// result. Shared by `phux spawn` and `phux launch` (phux-ark7) so both
 /// ride the identical wire path — the server injects `PHUX_TERMINAL_ID`
 /// into the spawned pane regardless of which verb requested it.
@@ -129,7 +129,7 @@ pub(crate) fn dispatch_spawn(
 /// Open a connection, send `frame`, and return the correlated spawn outcome.
 ///
 /// The wait used to be a hand-rolled `loop { recv() }` that matched
-/// `TERMINAL_SPAWNED` and dropped every other frame, which meant a peer
+/// `RESOURCE_SPAWNED` and dropped every other frame, which meant a peer
 /// answering with a correlated `ERROR` — the way `relay.rs`'s own
 /// `handle_inbound` says a satellite MAY answer a relayed spawn — wedged
 /// `phux spawn --satellite` until the transport died. It now rides
@@ -153,7 +153,7 @@ async fn dispatch_spawn_async(
     });
     if let (Some(record), SpawnResult::Ok(terminal)) = (agent_session, &result) {
         let request_id = match frame {
-            FrameKind::SpawnTerminal { request_id, .. } => *request_id,
+            FrameKind::SpawnResource { request_id, .. } => *request_id,
             _ => 1,
         };
         if let Err(err) =
@@ -162,7 +162,7 @@ async fn dispatch_spawn_async(
             let cleanup = conn
                 .request(
                     request_id.wrapping_add(4),
-                    Command::KillTerminal {
+                    Command::KillResource {
                         terminal_id: terminal.clone(),
                     },
                 )
@@ -222,12 +222,12 @@ pub(crate) fn dispatch_spawn_placed(
             Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
-        let Some(owner) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+        let Some(owner) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         else {
             eprintln!("phux: no such target");
             return Err(ExitCode::FAILURE);
         };
-        if !matches!(owner, TerminalId::Local { .. }) {
+        if !matches!(owner, ResourceId::Local { .. }) {
             eprintln!("phux: explicit spawn placement is local-only");
             return Err(ExitCode::FAILURE);
         }
@@ -235,7 +235,7 @@ pub(crate) fn dispatch_spawn_placed(
             eprintln!("phux: target has no local session ownership");
             return Err(ExitCode::FAILURE);
         };
-        let FrameKind::SpawnTerminal { owner_terminal, .. } = &mut frame else {
+        let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame else {
             eprintln!("phux: internal spawn placement error");
             return Err(ExitCode::FAILURE);
         };
@@ -308,10 +308,10 @@ pub(crate) fn dispatch_spawn_placed(
     })
 }
 
-async fn rollback_spawned(socket_path: &Path, pane: &TerminalId, verb: &str, reason: &str) {
+async fn rollback_spawned(socket_path: &Path, pane: &ResourceId, verb: &str, reason: &str) {
     let cleanup = request_command(
         socket_path,
-        Command::KillTerminal {
+        Command::KillResource {
             terminal_id: pane.clone(),
         },
     )
@@ -334,10 +334,10 @@ async fn rollback_spawned(socket_path: &Path, pane: &TerminalId, verb: &str, rea
 
 fn ownership_for_terminal(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Option<(WindowId, SessionId)> {
     let window = snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| &pane.id == terminal)?
         .window_id;
@@ -352,10 +352,10 @@ fn ownership_for_terminal(
 /// Print the freshly spawned Terminal id — human line or the stable JSON
 /// document (`terminal_id` is the satellite-local id when `satellite` is
 /// non-null; address it through the hub as `satellite`+`terminal_id`).
-fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
+fn print_spawned(terminal_id: &ResourceId, json: bool) -> ExitCode {
     let (id, host) = match terminal_id {
-        TerminalId::Local { id } => (*id, None),
-        TerminalId::Satellite { host, id } => (*id, Some(host.as_str())),
+        ResourceId::Local { id } => (*id, None),
+        ResourceId::Satellite { host, id } => (*id, Some(host.as_str())),
     };
     if json {
         let payload = spawned_json(id, host);
@@ -411,7 +411,7 @@ pub(crate) fn report_spawn_error(err: &SpawnError) {
         // vocabulary this client does not have, i.e. version skew.
         _ => eprintln!(
             "phux: spawn failed: {}",
-            phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+            phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
         ),
     }
 }
@@ -427,7 +427,7 @@ mod tests {
         BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
     };
     use phux_protocol::wire::frame::{CommandValue, ErrorCode};
-    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn state(spawned_window: Option<WindowId>) -> SessionSnapshot {
@@ -436,13 +436,13 @@ mod tests {
         let window_one = WindowId::new(10);
         let window_two = WindowId::new(20);
         let mut panes = vec![
-            TerminalInfo::new(TerminalId::local(1), window_one, 80, 24),
-            TerminalInfo::new(TerminalId::local(2), window_two, 80, 24),
+            ResourceInfo::new(ResourceId::local(1), window_one, 80, 24),
+            ResourceInfo::new(ResourceId::local(2), window_two, 80, 24),
         ];
         if let Some(window) = spawned_window {
-            panes.push(TerminalInfo::new(TerminalId::local(3), window, 80, 24));
+            panes.push(ResourceInfo::new(ResourceId::local(3), window, 80, 24));
         }
-        SessionSnapshot::new(session_two, window_two, TerminalId::local(2))
+        SessionSnapshot::new(session_two, window_two, ResourceId::local(2))
             .with_sessions(vec![
                 SessionInfo::new(session_one, "one"),
                 SessionInfo::new(session_two, "two"),
@@ -451,7 +451,7 @@ mod tests {
                 WindowInfo::new(window_one, session_one, "one"),
                 WindowInfo::new(window_two, session_two, "two"),
             ])
-            .with_panes(panes)
+            .with_resources(panes)
     }
 
     struct MockConnection(tokio::net::UnixStream);
@@ -531,21 +531,21 @@ mod tests {
                 drop(pre);
 
                 let mut spawn = accept(&listener).await;
-                let FrameKind::SpawnTerminal {
+                let FrameKind::SpawnResource {
                     request_id,
                     command,
                     owner_terminal,
                     ..
                 } = spawn.recv().await
                 else {
-                    panic!("expected SPAWN_TERMINAL");
+                    panic!("expected SPAWN_RESOURCE");
                 };
-                assert_eq!(owner_terminal, Some(TerminalId::local(1)));
+                assert_eq!(owner_terminal, Some(ResourceId::local(1)));
                 assert_eq!(command, Some(vec!["agent".to_owned()]));
                 spawn
-                    .send(&FrameKind::TerminalSpawned {
+                    .send(&FrameKind::ResourceSpawned {
                         request_id,
-                        result: SpawnResult::Ok(TerminalId::local(3)),
+                        result: SpawnResult::Ok(ResourceId::local(3)),
                     })
                     .await;
                 drop(spawn);
@@ -563,12 +563,12 @@ mod tests {
                     let mut cleanup = accept(&listener).await;
                     let FrameKind::Command {
                         request_id,
-                        command: Command::KillTerminal { terminal_id },
+                        command: Command::KillResource { terminal_id },
                     } = cleanup.recv().await
                     else {
-                        panic!("expected KILL_TERMINAL rollback");
+                        panic!("expected KILL_RESOURCE rollback");
                     };
-                    assert_eq!(terminal_id, TerminalId::local(3));
+                    assert_eq!(terminal_id, ResourceId::local(3));
                     cleanup
                         .send(&FrameKind::CommandResult {
                             request_id,
@@ -594,11 +594,11 @@ mod tests {
                 let workspace = Workspace::decode_cbor(&value).expect("placed workspace");
                 assert_eq!(
                     workspace.active_window().unwrap().focus,
-                    Some(TerminalId::local(1))
+                    Some(ResourceId::local(1))
                 );
                 assert_eq!(
                     leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
-                    vec![TerminalId::local(1), TerminalId::local(3)]
+                    vec![ResourceId::local(1), ResourceId::local(3)]
                 );
                 let FrameKind::GetMetadata { request_id, .. } = layout.recv().await else {
                     panic!("expected confirming layout GET");
@@ -628,7 +628,7 @@ mod tests {
     }
 
     fn spawn_frame() -> FrameKind {
-        FrameKind::SpawnTerminal {
+        FrameKind::SpawnResource {
             request_id: 1,
             group: GroupId::new(1),
             command: Some(vec!["agent".to_owned()]),
@@ -659,7 +659,7 @@ mod tests {
             None,
             false,
         );
-        assert!(matches!(result, Ok(SpawnResult::Ok(id)) if id == TerminalId::local(3)));
+        assert!(matches!(result, Ok(SpawnResult::Ok(id)) if id == ResourceId::local(3)));
         mock.join().expect("mock server");
     }
 
@@ -691,8 +691,8 @@ mod tests {
     async fn satellite_refusal_ends_the_spawn_instead_of_wedging_it() {
         // phux-h5hj.12. `relay.rs`'s `handle_inbound` states the shape:
         // "a satellite MAY answer a relayed spawn with a generic correlated
-        // ERROR instead of TERMINAL_SPAWNED". `dispatch_spawn_async` used to
-        // wait on TERMINAL_SPAWNED alone, so `phux spawn --satellite build-box`
+        // ERROR instead of RESOURCE_SPAWNED". `dispatch_spawn_async` used to
+        // wait on RESOURCE_SPAWNED alone, so `phux spawn --satellite build-box`
         // against such a peer printed nothing and never exited — the user's
         // only way out was Ctrl-C, which looks identical to a hung server.
         //

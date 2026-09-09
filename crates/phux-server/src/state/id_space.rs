@@ -32,21 +32,21 @@
 //! * The terminal and window spaces panic where they used to saturate, and
 //!   their last mintable id moved from `u32::MAX` to `u32::MAX - 1`.
 //!
-//! # Still asymmetric: `TerminalId` is an enum
+//! # Still asymmetric: `ResourceId` is an enum
 //!
-//! `phux_protocol::ids::TerminalId` is a tagged union, not a `u32` newtype.
-//! Only `TerminalId::Local` is ever minted here — a satellite terminal
-//! (`TerminalId::Satellite { .. }`) is addressed directly off the wire id by
+//! `phux_protocol::ids::ResourceId` is a tagged union, not a `u32` newtype.
+//! Only `ResourceId::Local` is ever minted here — a satellite terminal
+//! (`ResourceId::Satellite { .. }`) is addressed directly off the wire id by
 //! federation routing and never enters these tables, so
 //! [`Self::terminal_from_wire`] returns `None` for one by design. Unifying
 //! the three spaces did not lose that property; it gave it a name. Minting
 //! shape is the [`WireId`](crate::id_bridge::WireId) trait, and
-//! `impl WireId for phux_protocol::ids::TerminalId` is now the single place
+//! `impl WireId for phux_protocol::ids::ResourceId` is now the single place
 //! the Local-only invariant is enforced.
 
-use phux_core::ids::{SessionId, TerminalId, WindowId};
+use phux_core::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::ids::{
-    SessionId as WireSessionId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+    ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
 
 use crate::id_bridge::IdBridge;
@@ -66,11 +66,11 @@ pub struct IdSpace {
     /// Bridge between core slotmap [`SessionId`]s and wire-level
     /// `phux_protocol::ids::SessionId` (u32).
     sessions: IdBridge<SessionId, WireSessionId>,
-    /// Bridge between core [`TerminalId`]s and wire-level
-    /// `phux_protocol::ids::TerminalId`. Its reverse direction is
+    /// Bridge between core [`ResourceId`]s and wire-level
+    /// `phux_protocol::ids::ResourceId`. Its reverse direction is
     /// load-bearing: it is the existence oracle every Terminal-scoped
     /// command validates against.
-    terminals: IdBridge<TerminalId, WireTerminalId>,
+    terminals: IdBridge<ResourceId, WireResourceId>,
     /// Bridge between core [`WindowId`]s and wire-level
     /// `phux_protocol::ids::WindowId`; used to populate
     /// [`phux_protocol::wire::info::WindowInfo::id`] in the `ATTACHED`
@@ -156,22 +156,22 @@ impl IdSpace {
     ///
     /// Panics if the terminal wire-id space is exhausted — see
     /// [`IdBridge::intern`].
-    pub(super) fn intern_terminal(&mut self, terminal: TerminalId) -> WireTerminalId {
+    pub(super) fn intern_terminal(&mut self, terminal: ResourceId) -> WireResourceId {
         self.terminals.intern(terminal)
     }
 
     /// Reverse lookup: which core pane id (if any) does `wire` resolve to?
     ///
-    /// `None` for a `TerminalId::Satellite` by design — see the module doc.
+    /// `None` for a `ResourceId::Satellite` by design — see the module doc.
     #[must_use]
-    pub(super) fn terminal_from_wire(&self, wire: &WireTerminalId) -> Option<TerminalId> {
+    pub(super) fn terminal_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
         self.terminals.resolve(wire)
     }
 
     /// Forward lookup without allocating. `None` if `terminal` was never
     /// interned.
     #[must_use]
-    pub(super) fn terminal_wire(&self, terminal: TerminalId) -> Option<&WireTerminalId> {
+    pub(super) fn terminal_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
         self.terminals.wire(terminal)
     }
 
@@ -179,7 +179,7 @@ impl IdSpace {
     /// state blob (ADR-0032). Pre-binding is what makes the subsequent
     /// [`Self::intern_terminal`] a no-op instead of minting a fresh id that
     /// would diverge from the blob.
-    pub(super) fn bind_terminal(&mut self, terminal: TerminalId, wire: WireTerminalId) {
+    pub(super) fn bind_terminal(&mut self, terminal: ResourceId, wire: WireResourceId) {
         self.terminals.bind(terminal, wire);
     }
 
@@ -190,7 +190,7 @@ impl IdSpace {
     /// agent-record arbiter are both keyed by wire id, and they are only
     /// reachable while this mapping still exists. Returns `None` if
     /// `terminal` was never interned. The wire id is not reused.
-    pub(super) fn retire_terminal(&mut self, terminal: TerminalId) -> Option<WireTerminalId> {
+    pub(super) fn retire_terminal(&mut self, terminal: ResourceId) -> Option<WireResourceId> {
         self.terminals.forget(terminal)
     }
 
@@ -255,7 +255,7 @@ mod tests {
     use phux_core::registry::Registry;
 
     /// Two distinct core ids in each space, from one registry.
-    fn two_of_each() -> (Registry, [SessionId; 2], [WindowId; 2], [TerminalId; 2]) {
+    fn two_of_each() -> (Registry, [SessionId; 2], [WindowId; 2], [ResourceId; 2]) {
         let mut reg = Registry::new();
         let s0 = reg.new_session("s0".to_owned());
         let s1 = reg.new_session("s1".to_owned());
@@ -301,7 +301,7 @@ mod tests {
         space.set_next_terminal_wire(u32::MAX - 1);
         assert_eq!(
             space.intern_terminal(terminals[0]),
-            WireTerminalId::local(u32::MAX - 1)
+            WireResourceId::local(u32::MAX - 1)
         );
     }
 
@@ -333,14 +333,14 @@ mod tests {
         let _ = space.intern_window(windows[1]);
     }
 
-    // -- the TerminalId-is-an-enum invariant --------------------------
+    // -- the ResourceId-is-an-enum invariant --------------------------
 
     #[test]
     fn intern_terminal_mints_a_local_id() {
         let (_reg, _, _, terminals) = two_of_each();
         let mut space = IdSpace::new();
         let wire = space.intern_terminal(terminals[0]);
-        assert_eq!(wire, WireTerminalId::local(1));
+        assert_eq!(wire, WireResourceId::local(1));
         assert!(wire.is_local(), "only Local ids are minted here");
     }
 
@@ -350,7 +350,7 @@ mod tests {
         let mut space = IdSpace::new();
         let wire = space.intern_terminal(terminals[0]);
         let raw = wire.local_id().expect("minted id is Local");
-        let satellite = WireTerminalId::satellite("peer", raw);
+        let satellite = WireResourceId::satellite("peer", raw);
         assert!(
             space.terminal_from_wire(&satellite).is_none(),
             "satellite terminals are routed by federation and never interned"
@@ -370,11 +370,11 @@ mod tests {
         assert_eq!(space.intern_window(windows[1]), WireWindowId(2));
         assert_eq!(
             space.intern_terminal(terminals[0]),
-            WireTerminalId::local(1)
+            WireResourceId::local(1)
         );
         assert_eq!(
             space.intern_terminal(terminals[1]),
-            WireTerminalId::local(2)
+            WireResourceId::local(2)
         );
     }
 
@@ -393,7 +393,7 @@ mod tests {
         assert!(space.terminal_from_wire(&t0).is_none());
         assert_eq!(
             space.intern_terminal(terminals[1]),
-            WireTerminalId::local(2)
+            WireResourceId::local(2)
         );
 
         let _ = space.intern_window(windows[0]);

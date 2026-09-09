@@ -95,7 +95,7 @@ pub fn fillLiveShells(state: *TerminalApp) !void {
 pub fn remoteTerminalRef(id: u32) !app.TerminalRef {
     return .{
         .provider_id = .phux,
-        .terminal_id = .{ .phux = try app.RemoteTerminalId.fromPhux(0, id, "local") },
+        .terminal_id = .{ .phux = try app.RemoteResourceId.fromPhux(0, id, "local") },
     };
 }
 

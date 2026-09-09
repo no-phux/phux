@@ -7,7 +7,7 @@
 //! now exists". This returns a *readiness assertion about a pane that already
 //! existed*, and it creates, splits, and moves nothing — that separation is
 //! the point of the verb. Two more divergences make a shared flag wrong rather
-//! than merely awkward: `launch` hands an argv vector to `SPAWN_TERMINAL`
+//! than merely awkward: `launch` hands an argv vector to `SPAWN_RESOURCE`
 //! (structured, no shell, deliberately so per ADR-0042), while the only way
 //! into a pane whose child is a live shell is to *type a command line*; and
 //! the failure families are disjoint (this verb has no spawn errors and adds
@@ -77,7 +77,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use phux_client::agent_meta::{
-    AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, TERMINAL_PANE_OCCUPANT_KEY,
+    AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_PANE_OCCUPANT_KEY,
     parse_agent_record, parse_pane_occupant,
 };
 use phux_client::agent_prompt::{ApplyVerdict, Refusal as ApplyRefusal, apply_input_once};
@@ -86,7 +86,7 @@ use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
 use phux_core::screen::{ScreenState, SemanticContent};
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{InputOperationId, TerminalId};
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use phux_server::agent_explain::{self, Explanation};
@@ -740,7 +740,7 @@ async fn drive(
     // APPLY_INPUT is local-only (ADR-0076 point 1) and `phux.agent/v1` does
     // not federate, so a satellite target would be a write phux cannot make
     // and a readiness claim phux cannot observe.
-    if !matches!(terminal, TerminalId::Local { .. }) {
+    if !matches!(terminal, ResourceId::Local { .. }) {
         return emit(
             req.json,
             &Refusal::new(
@@ -861,7 +861,7 @@ fn acknowledged_input_available(conn: &Connection) -> Result<(), Refusal> {
 /// reports them on different channels.
 async fn recheck_occupant(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Result<(), Result<Refusal, AttachError>> {
     match read_record(conn, terminal, 90).await {
         Ok(Answer::Ok(Some(occupant))) if occupant.state != AgentMetaState::Unknown => {
@@ -893,7 +893,7 @@ fn emit(json: bool, refusal: &Refusal) -> ExitCode {
 async fn check_preconditions(
     req: &StartRequest<'_>,
     plan: &Plan,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     socket_path: &Path,
 ) -> Result<(), Refusal> {
     // Fail CLOSED. A precondition that cannot be evaluated is not a
@@ -925,8 +925,8 @@ async fn check_preconditions(
 /// ADR-0075 point 4: uniqueness is advisory and checked at resolve, but a verb
 /// that BINDS a name should refuse to create the ambiguity in the first place.
 fn check_name_free(
-    index: &std::collections::HashMap<TerminalId, AgentRecord>,
-    terminal: &TerminalId,
+    index: &std::collections::HashMap<ResourceId, AgentRecord>,
+    terminal: &ResourceId,
     name: &str,
 ) -> Result<(), Refusal> {
     let holders: Vec<String> = index
@@ -953,8 +953,8 @@ fn check_name_free(
 
 /// `agent start` starts an agent; it does not adopt one.
 fn check_pane_free(
-    index: &std::collections::HashMap<TerminalId, AgentRecord>,
-    terminal: &TerminalId,
+    index: &std::collections::HashMap<ResourceId, AgentRecord>,
+    terminal: &ResourceId,
 ) -> Result<(), Refusal> {
     let Some(occupant) = index.get(terminal) else {
         return Ok(());
@@ -987,11 +987,11 @@ fn check_pane_free(
 /// plugin tree after the agent exits.
 fn check_cwd_agreement(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     plan: &Plan,
 ) -> Result<(), Refusal> {
     let Some(pane_cwd) = snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| pane.id == *terminal)
         .and_then(|pane| pane.cwd.as_deref())
@@ -1020,7 +1020,7 @@ fn check_cwd_agreement(
 ///
 /// Fails CLOSED when neither source answers. A missing screen cannot erase a
 /// positive server observation, but it is never itself evidence of safety.
-async fn check_shell_available(socket_path: &Path, terminal: &TerminalId) -> Result<(), Refusal> {
+async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Result<(), Refusal> {
     let label = crate::selector::format_terminal_id(terminal);
     let occupant = read_pane_occupant(socket_path, terminal).await;
     let screen =
@@ -1067,7 +1067,7 @@ async fn check_shell_available(socket_path: &Path, terminal: &TerminalId) -> Res
 /// OSC-133 compatibility fallback can serve older or degraded servers.
 async fn read_pane_occupant(
     socket_path: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Option<phux_client::agent_meta::PaneOccupantRecord> {
     let mut conn = Connection::connect(socket_path).await.ok()?;
     let deadline = tokio::time::Instant::now() + PANE_OCCUPANT_WAIT;
@@ -1076,8 +1076,8 @@ async fn read_pane_occupant(
         let reply = conn
             .request_metadata(
                 request_id,
-                Scope::Terminal(terminal.clone()),
-                TERMINAL_PANE_OCCUPANT_KEY.to_owned(),
+                Scope::Resource(terminal.clone()),
+                RESOURCE_PANE_OCCUPANT_KEY.to_owned(),
             )
             .await
             .ok()?;
@@ -1103,7 +1103,7 @@ async fn read_pane_occupant(
 /// could submit input before the server had even read the write.
 async fn bind_name(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     value: &[u8],
 ) -> Result<(), Refusal> {
     let transport = |err: &AttachError| {
@@ -1116,8 +1116,8 @@ async fn bind_name(
     };
     conn.send(&FrameKind::SetMetadata {
         request_id: 100,
-        scope: Scope::Terminal(terminal.clone()),
-        key: TERMINAL_AGENT_KEY.to_owned(),
+        scope: Scope::Resource(terminal.clone()),
+        key: RESOURCE_AGENT_KEY.to_owned(),
         value: value.to_vec(),
     })
     .await
@@ -1150,14 +1150,14 @@ async fn bind_name(
 /// cases the right move is to leave them and say so. The race window is one
 /// round trip and cannot be closed without a wire change; reporting it beats
 /// pretending.
-async fn rollback_bind(conn: &mut Connection, terminal: &TerminalId, expected: &[u8]) {
+async fn rollback_bind(conn: &mut Connection, terminal: &ResourceId, expected: &[u8]) {
     match read_record(conn, terminal, 200).await {
         Ok(Answer::Ok(Some(record))) if record.encode() == expected => {
             if let Err(err) = conn
                 .send(&FrameKind::DeleteMetadata {
                     request_id: 201,
-                    scope: Scope::Terminal(terminal.clone()),
-                    key: TERMINAL_AGENT_KEY.to_owned(),
+                    scope: Scope::Resource(terminal.clone()),
+                    key: RESOURCE_AGENT_KEY.to_owned(),
                 })
                 .await
             {
@@ -1184,14 +1184,14 @@ async fn rollback_bind(conn: &mut Connection, terminal: &TerminalId, expected: &
 /// One `GET_METADATA` round trip for the pane's agent record.
 async fn read_record(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     request_id: u32,
 ) -> Result<Answer<Option<AgentRecord>>, AttachError> {
     let (answer, interleaved) = conn
         .request_metadata(
             request_id,
-            Scope::Terminal(terminal.clone()),
-            TERMINAL_AGENT_KEY.to_owned(),
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_KEY.to_owned(),
         )
         .await?
         .into_parts();
@@ -1237,7 +1237,7 @@ struct SubmitFailure {
 /// classifier and map its verdict onto this verb's diagnostics.
 async fn apply_input(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     operation_id: Option<InputOperationId>,
     events: Vec<InputEvent>,
 ) -> Result<(), SubmitFailure> {
@@ -1362,7 +1362,7 @@ fn submit_verdict(verdict: ApplyVerdict) -> SubmitFailure {
 }
 
 /// Turn a wait error into its refusal.
-fn wait_refusal(terminal: &TerminalId, err: AgentWaitError) -> Refusal {
+fn wait_refusal(terminal: &ResourceId, err: AgentWaitError) -> Refusal {
     let label = crate::selector::format_terminal_id(terminal);
     match err {
         // Unreachable in practice: this verb binds the record itself before
@@ -1394,7 +1394,7 @@ fn wait_refusal(terminal: &TerminalId, err: AgentWaitError) -> Refusal {
 }
 
 /// `--no-wait`: the honest escape hatch. Submitted, readiness unclaimed.
-fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &TerminalId) -> ExitCode {
+fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &ResourceId) -> ExitCode {
     let label = crate::selector::format_terminal_id(terminal);
     if req.json {
         let document = serde_json::json!({
@@ -1417,7 +1417,7 @@ fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &TerminalId) 
 async fn report_ready(
     req: &StartRequest<'_>,
     plan: &Plan,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     result: &AgentWaitResult,
     latency: Duration,
     socket_path: &Path,
@@ -1533,7 +1533,7 @@ fn readiness_document(
 ///
 /// Best effort: this runs *after* readiness has already been established, so a
 /// failure here costs one optional sub-document rather than the result.
-async fn provenance(socket_path: &Path, terminal: &TerminalId, kind: &str) -> Option<Explanation> {
+async fn provenance(socket_path: &Path, terminal: &ResourceId, kind: &str) -> Option<Explanation> {
     let screen =
         phux_client::snapshot::get_screen_scrollback(socket_path, terminal.clone(), None, false)
             .await
@@ -1543,7 +1543,7 @@ async fn provenance(socket_path: &Path, terminal: &TerminalId, kind: &str) -> Op
         .ok()
         .and_then(|(snapshot, _)| {
             snapshot
-                .panes
+                .resources
                 .iter()
                 .find(|pane| pane.id == *terminal)
                 .and_then(|pane| pane.title.clone())
@@ -1562,7 +1562,7 @@ async fn provenance(socket_path: &Path, terminal: &TerminalId, kind: &str) -> Op
 fn report_timeout(
     req: &StartRequest<'_>,
     plan: &Plan,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     result: &AgentWaitResult,
 ) -> ExitCode {
     let label = crate::selector::format_terminal_id(terminal);

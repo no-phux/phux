@@ -4,7 +4,7 @@ const layout = @import("layout.zig");
 const support = @import("phux_support.zig");
 pub const attachments = @import("attachment_state.zig");
 
-pub const LocalTerminalId = support.LocalTerminalId;
+pub const LocalResourceId = support.LocalResourceId;
 pub const TerminalRef = support.TerminalRef;
 pub const max_terminals = local.max_terminals;
 
@@ -115,7 +115,7 @@ pub const SnapshotSelection = union(enum) {
 pub const SnapshotNode = struct {
     kind: layout.Kind = .free,
     parent: layout.NodeId = layout.none,
-    terminal: LocalTerminalId = .terminal_1,
+    terminal: LocalResourceId = .terminal_1,
     has_terminal: bool = false,
     /// v5 remote reference table index. Local leaves keep their v2-v4 offset.
     remote_ref: ?u8 = null,
@@ -150,7 +150,7 @@ pub const SnapshotWindow = struct {
 /// The registry offset a terminal id occupies, or null when it is outside the
 /// registry entirely. The cwd side table is indexed by this, so it is the one
 /// place the id-to-slot arithmetic lives.
-pub fn terminalOffset(id: LocalTerminalId) ?usize {
+pub fn terminalOffset(id: LocalResourceId) ?usize {
     const raw = @intFromEnum(id);
     if (raw < local.first_terminal_raw) return null;
     const offset = raw - local.first_terminal_raw;
@@ -189,12 +189,12 @@ pub const TopologySnapshot = struct {
         return local.localRef(node.terminal);
     }
 
-    pub fn cwdFor(snapshot: *const TopologySnapshot, id: LocalTerminalId) []const u8 {
+    pub fn cwdFor(snapshot: *const TopologySnapshot, id: LocalResourceId) []const u8 {
         const offset = terminalOffset(id) orelse return "";
         return snapshot.cwds[offset].slice();
     }
 
-    pub fn setCwd(snapshot: *TopologySnapshot, id: LocalTerminalId, path: []const u8) void {
+    pub fn setCwd(snapshot: *TopologySnapshot, id: LocalResourceId, path: []const u8) void {
         const offset = terminalOffset(id) orelse return;
         snapshot.cwds[offset].set(path);
     }
@@ -349,12 +349,12 @@ pub const LegacyTopologySnapshotV0 = struct {
 
 pub const LegacyTopologySnapshotV1 = struct {
     terminal_count: u8 = 0,
-    terminal_order: [4]LocalTerminalId = [_]LocalTerminalId{.terminal_1} ** 4,
+    terminal_order: [4]LocalResourceId = [_]LocalResourceId{.terminal_1} ** 4,
     /// null selects the web surface, matching v1's `SnapshotSelection`.
-    selection: ?LocalTerminalId = null,
+    selection: ?LocalResourceId = null,
     split: bool = false,
     split_fraction: f32 = 0.5,
-    attachments: [2]?LocalTerminalId = .{ null, null },
+    attachments: [2]?LocalResourceId = .{ null, null },
     focused_attachment: u8 = 0,
     tab_placement: TabPlacement = .top,
 };
@@ -390,7 +390,7 @@ pub const PersistedTopologySnapshot = union(enum) {
 
 /// Build a one-leaf tab. Every migration path lands here: a legacy terminal
 /// had no pane structure of its own, so it becomes a tab holding one pane.
-pub fn singleLeafTab(id: LocalTerminalId) SnapshotTab {
+pub fn singleLeafTab(id: LocalResourceId) SnapshotTab {
     var tab: SnapshotTab = .{};
     tab.nodes[0] = .{ .kind = .leaf, .parent = layout.none, .terminal = id, .has_terminal = true };
     tab.root = 0;
@@ -399,7 +399,7 @@ pub fn singleLeafTab(id: LocalTerminalId) SnapshotTab {
 }
 
 /// Two leaves under one branch, for a migrated v1 split.
-fn splitTab(first: LocalTerminalId, second: LocalTerminalId, fraction: f32, focus_second: bool) SnapshotTab {
+fn splitTab(first: LocalResourceId, second: LocalResourceId, fraction: f32, focus_second: bool) SnapshotTab {
     var tab: SnapshotTab = .{};
     tab.nodes[0] = .{ .kind = .leaf, .parent = 2, .terminal = first, .has_terminal = true };
     tab.nodes[1] = .{ .kind = .leaf, .parent = 2, .terminal = second, .has_terminal = true };
@@ -497,7 +497,7 @@ fn migrateV1(legacy: LegacyTopologySnapshotV1) !TopologySnapshot {
         for (legacy.terminal_order[0..index]) |prior| if (prior == id) return error.InvalidTopology;
     }
 
-    const split_pair: ?[2]LocalTerminalId = if (legacy.split and legacy.attachments[0] != null and legacy.attachments[1] != null)
+    const split_pair: ?[2]LocalResourceId = if (legacy.split and legacy.attachments[0] != null and legacy.attachments[1] != null)
         .{ legacy.attachments[0].?, legacy.attachments[1].? }
     else
         null;

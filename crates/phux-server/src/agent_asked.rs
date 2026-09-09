@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use phux_core::ids::TerminalId;
+use phux_core::ids::ResourceId;
 use phux_protocol::wire::frame::AgentEvent;
 
 /// Where a pending-question report came from, ordered by authority
@@ -120,7 +120,7 @@ struct AskedState {
 
 #[derive(Debug, Default)]
 pub(crate) struct AskedDetector {
-    states: HashMap<TerminalId, AskedState>,
+    states: HashMap<ResourceId, AskedState>,
 }
 
 impl AskedDetector {
@@ -140,7 +140,7 @@ impl AskedDetector {
     ///    say so: it replaces the incumbent and is emitted.
     pub(crate) fn report(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
         payload: AskedPayload,
     ) -> AskedTransition {
@@ -179,7 +179,7 @@ impl AskedDetector {
     /// question asked again is a new ask rather than a coalesced no-op.
     pub(crate) fn retract(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
     ) -> Option<AskedPayload> {
         match self.states.entry(terminal) {
@@ -188,19 +188,19 @@ impl AskedDetector {
         }
     }
 
-    pub(crate) fn clear_terminal(&mut self, terminal: TerminalId) -> Option<AskedPayload> {
+    pub(crate) fn clear_terminal(&mut self, terminal: ResourceId) -> Option<AskedPayload> {
         self.states.remove(&terminal).map(|state| state.payload)
     }
 
     #[cfg(test)]
-    pub(crate) fn current(&self, terminal: TerminalId) -> Option<&AskedPayload> {
+    pub(crate) fn current(&self, terminal: ResourceId) -> Option<&AskedPayload> {
         self.states.get(&terminal).map(|state| &state.payload)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use phux_core::ids::TerminalId;
+    use phux_core::ids::ResourceId;
 
     use super::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
 
@@ -217,7 +217,7 @@ mod tests {
     /// none of them can be displaced from below (ADR-0036 §Decision).
     #[test]
     fn each_rung_outranks_the_one_below_it() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         assert!(matches!(
             detector.report(terminal, AskedSource::Scrape, payload("s", "Continue?")),
@@ -255,7 +255,7 @@ mod tests {
     /// that changes is a new ask and must.
     #[test]
     fn a_re_asserted_sentinel_is_silent_and_a_changed_one_is_not() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         assert!(matches!(
             detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
@@ -279,7 +279,7 @@ mod tests {
     /// it, because only the hook can retract it.
     #[test]
     fn the_same_ask_from_sentinel_then_hook_fires_once() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         assert!(matches!(
             detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
@@ -309,7 +309,7 @@ mod tests {
     /// wait on a human nobody was told about.
     #[test]
     fn a_sentinel_that_clears_and_returns_fires_again() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         assert!(matches!(
             detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
@@ -333,7 +333,7 @@ mod tests {
     /// silence a pane it does not own either.
     #[test]
     fn a_scrape_cannot_retract_a_sentinels_ask() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?"));
         assert_eq!(detector.retract(terminal, AskedSource::Scrape), None);
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn hook_wins_over_scrape() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         assert!(matches!(
             detector.report(
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn clear_terminal_drops_pending_ask() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
         detector.report(terminal, AskedSource::Hook, payload("hook", "Approve?"));
         assert!(detector.current(terminal).is_some());
@@ -384,7 +384,7 @@ mod tests {
     /// cannot clear one the stream is standing behind.
     #[test]
     fn a_stream_ask_outranks_a_hook_ask() {
-        let terminal = TerminalId::default();
+        let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
 
         assert!(matches!(

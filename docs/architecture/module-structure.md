@@ -26,7 +26,7 @@ special-purpose crates).
 ```
 src/
   lib.rs              — re-exports, top-level docs, PROTOCOL_VERSION
-  ids.rs              — SessionId, WindowId, TerminalId (the wire resource
+  ids.rs              — SessionId, WindowId, ResourceId (the wire resource
                         id: Local / Satellite), ClientId, StreamId,
                         BootstrapId
   caps.rs             — HELLO/HELLO_OK capability negotiation (features,
@@ -50,8 +50,8 @@ afterward ([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
 Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
 bytes and are never scanned or rewritten by phux; synthesized VT remains an
 explicit compatibility profile. The wire still spells the resource id and
-the substrate frames with the Terminal vocabulary (`TerminalId`,
-`TERMINAL_OUTPUT`, `SPAWN_TERMINAL`); the 0.9.0 rename is tracked in the
+the substrate frames with the Terminal vocabulary (`ResourceId`,
+`RESOURCE_OUTPUT`, `SPAWN_RESOURCE`); the 0.9.0 rename is tracked in the
 Status table below.
 
 The mutual references among `wire/frame/`, `wire/decode.rs`, and
@@ -67,7 +67,7 @@ layer boundary, so this sibling cycle is accepted (phux-4fbs.5).
 src/
   lib.rs              — re-exports
   ids.rs              — typed slotmap keys; `ResourceId` is the domain name
-                        for the `TerminalId` key
+                        for the `ResourceId` key
   registry.rs         — Registry: SlotMaps + cascading deletes (a parent
                         resource takes its children with it)
   session.rs          — Session
@@ -203,7 +203,7 @@ engine adds a variant and a constructor, not a sweep of the runtime.
 **`ResourceTable`.** `state/resource_table.rs` holds every map keyed on a
 live resource — `ResourceHandle`s, cancellation tokens, the `JoinSet` that
 owns the engine futures, per-resource client subscriptions, and the
-`ATTACH_TERMINAL` and session-attach output pumps — and never looks inside a
+`ATTACH_RESOURCE` and session-attach output pumps — and never looks inside a
 facet. `ServerState::spawn_resource_actor` mints the wire id, registers the
 handle, and spawns the engine future in one call under the state lock;
 `ServerState::reap_terminal` removes the domain entity (cascading to the
@@ -211,7 +211,7 @@ window and session when they empty) and calls `ResourceTable::
 forget_resource` in the same acquisition.
 
 **Satellite routing.** Each command handler in `runtime/commands.rs` that
-names a resource checks `TerminalId::is_local()` itself and, on a hub,
+names a resource checks `ResourceId::is_local()` itself and, on a hub,
 forwards a satellite-tagged frame through `hub::relay` with the id rewritten
 (ADR-0007). There are eight such sites; the single `resolve_resource` seam
 that replaces them is tracked in the Status table.
@@ -295,7 +295,7 @@ src/
                         client-local VCS / attention indices over them
     server_frame/     — decodes server frames into client-side effects
     render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
-                      — TerminalRenderer: feeds TERMINAL_OUTPUT bytes into
+                      — TerminalRenderer: feeds RESOURCE_OUTPUT bytes into
                         the local Terminal and paints dirty rows + chrome
     input_dispatch/, action_registry.rs, actions.rs
                       — the configurable keybinding-to-action pipeline
@@ -348,7 +348,7 @@ src/
   perf.rs             — the crate's ADR-0096 metric statics
 ```
 
-The session kernel is keyed by the wire `TerminalId` and treats every
+The session kernel is keyed by the wire `ResourceId` and treats every
 resource it is told about as a Terminal: one replica generation
 (`ReplicaKey`: terminal, stream, bootstrap, profile) per attached id, staged
 through `BootstrapBegin` / `BootstrapChunk` / `BootstrapReady` and published
@@ -492,5 +492,5 @@ rather than a layer with its own internal architecture worth diagramming:
 | `resource/agent_session/` engine (record ring, append validation, seq stamping, bootstrap from retained records, state derivation) | `ResourceFacetHandle` has one variant, `Terminal`; no engine accepts appended records and `Registry::new_agent_session` has no server caller. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |
 | One `resolve_resource(id) -> Local(&ResourceHandle) \| Remote(relay)` seam | Eight `is_local()` checks in `runtime/commands.rs`, each with its own relay branch. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.5 |
 | Detector precedence Stream > Hook > Process > Screen; `AskedSource::Stream` | `agent_detect` derives from process, title, and screen; `AskedSource` ranks Scrape < Sentinel < Hook. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.11 |
-| Kind-aware `phux-client-core` kernel, `phux-client` selectors (`%name`), and TUI projection of AgentSession children | The kernel keys replicas by `TerminalId` with no kind; `phux ls --json` carries no `kind` or `parent`. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.12, phux-am9y.14 |
-| Workspace rename `TerminalId` -> `ResourceId`, protocol 0.9.0 frame names | `ResourceId` is a `phux-core` alias only; the wire, `phux-client-core`, and the FFI keep the Terminal spelling. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |
+| Kind-aware `phux-client-core` kernel, `phux-client` selectors (`%name`), and TUI projection of AgentSession children | The kernel keys replicas by `ResourceId` with no kind; `phux ls --json` carries no `kind` or `parent`. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.12, phux-am9y.14 |
+| Workspace rename `ResourceId` -> `ResourceId`, protocol 0.9.0 frame names | `ResourceId` is a `phux-core` alias only; the wire, `phux-client-core`, and the FFI keep the Terminal spelling. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |

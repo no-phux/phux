@@ -7,7 +7,7 @@ _Static_assert(sizeof(((PhuxSelectionGestureEvent *)0)->size) == sizeof(size_t),
 _Static_assert(offsetof(PhuxSelectionGestureResult, start) == sizeof(uint64_t),
                "gesture results begin with an opaque stream handle");
 
-PhuxClientResult pointer_abi(PhuxClient *client, const PhuxTerminalId *id) {
+PhuxClientResult pointer_abi(PhuxClient *client, const PhuxResourceId *id) {
     PhuxSelectionGestureEvent event = {
         .size = sizeof(event), .version = 1, .phase = 0, .clicks = 2,
         .columns = 80, .cell_width = 10, .screen_height = 480,

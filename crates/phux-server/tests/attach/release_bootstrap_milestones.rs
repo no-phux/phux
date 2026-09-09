@@ -30,7 +30,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, ViewportInfo};
-use phux_protocol::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::{BootstrapId, ResourceId, StreamId};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -102,7 +102,7 @@ fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
 #[derive(Debug)]
 struct EstablishedClient {
     stream: UnixStream,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     live_bytes: Vec<u8>,
 }
 
@@ -125,10 +125,10 @@ async fn wait_for_fullscreen_marker(path: &Path) -> EstablishedClient {
             .expect("full-screen marker did not reach the terminal actor");
         match frame {
             FrameKind::Attached { snapshot, .. } => {
-                terminal_id = snapshot.panes.first().map(|pane| pane.id.clone());
+                terminal_id = snapshot.resources.first().map(|pane| pane.id.clone());
             }
             FrameKind::BootstrapChunk { payload, .. } => screen.write(&payload),
-            FrameKind::TerminalOutput { bytes, .. } => screen.write(&bytes),
+            FrameKind::ResourceOutput { bytes, .. } => screen.write(&bytes),
             FrameKind::AttachReady { attach_id } if attach_id == u32::MAX => {
                 attach_ready = true;
             }
@@ -168,7 +168,7 @@ async fn receive_established_until(client: &mut EstablishedClient, marker: &[u8]
         let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
             .await
             .expect("established client was delayed by a stalled bootstrap owner");
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             client.live_bytes.extend_from_slice(&bytes);
         }
     }
@@ -238,7 +238,7 @@ fn reconnect_succeeds_after_every_bootstrap_milestone() {
 struct BootstrappingClient {
     attach_id: u32,
     stream: UnixStream,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
 }
@@ -247,7 +247,7 @@ struct BootstrappingClient {
 struct AttachedClient {
     attach_id: u32,
     stream: UnixStream,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     cursor: Bytes,
@@ -302,7 +302,7 @@ async fn attach_through_begin(
         let (_, frame) = recv_typed(&mut stream).await;
         match frame {
             FrameKind::Attached { snapshot, .. } => {
-                terminal_id = snapshot.panes.first().map(|pane| pane.id.clone());
+                terminal_id = snapshot.resources.first().map(|pane| pane.id.clone());
             }
             FrameKind::BootstrapBegin {
                 terminal_id: begin_terminal,
@@ -332,7 +332,7 @@ async fn attach_through_begin(
 
 fn record_live_output(
     client: &mut AttachedClient,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     bytes: &Bytes,
@@ -423,7 +423,7 @@ async fn finish_attach(
                 assert!(ready, "client {attach_id}: ATTACH_READY preceded READY");
                 attach_ready = true;
             }
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -473,7 +473,7 @@ async fn request_page(client: &mut AttachedClient, cursor: Bytes) {
 
 fn accept_history_page(
     client: &mut AttachedClient,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     page_seq: u64,
@@ -538,7 +538,7 @@ async fn receive_page(client: &mut AttachedClient) -> (u32, Option<Bytes>) {
                     rows,
                 );
             }
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -594,7 +594,7 @@ async fn receive_until_live_marker(client: &mut AttachedClient, marker: &[u8]) {
                 )
             });
         match frame {
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,

@@ -18,7 +18,7 @@ use phux_client_core::session::{
     SessionKernel,
 };
 use phux_protocol::BootstrapLimits;
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::error::BridgeError;
@@ -27,7 +27,7 @@ use crate::types::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
     CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, OwnedEffect, PhuxBytes,
     PhuxClientCallbacks, PhuxClientEffect, PhuxClientState, PhuxDocumentAnchor, PhuxDocumentPoint,
-    PhuxSearchResult, PhuxTerminalCell, PhuxTerminalGridView, PhuxTerminalId, bytes_out,
+    PhuxResourceId, PhuxSearchResult, PhuxTerminalCell, PhuxTerminalGridView, bytes_out,
     terminal_id_out,
 };
 
@@ -53,29 +53,29 @@ pub(crate) struct SessionSummary {
     reason = "the private module's resource summaries are populated by the crate-root frame dispatcher"
 )]
 pub(crate) struct ResourceSummary {
-    pub id: TerminalId,
+    pub id: ResourceId,
     pub kind: u32,
-    pub parent: Option<TerminalId>,
+    pub parent: Option<ResourceId>,
     pub provider: Vec<u8>,
     pub native_id: Vec<u8>,
     pub state: Vec<u8>,
     /// C projection of `parent`; its host span borrows `parent_host`, which
     /// never moves once the summary is built.
-    parent_view: PhuxTerminalId,
+    parent_view: PhuxResourceId,
     parent_host: Vec<u8>,
 }
 
 impl ResourceSummary {
     pub(crate) fn new(
-        id: TerminalId,
+        id: ResourceId,
         kind: u32,
-        parent: Option<TerminalId>,
+        parent: Option<ResourceId>,
         provider: Vec<u8>,
         native_id: Vec<u8>,
         state: Vec<u8>,
     ) -> Self {
         let parent_host = match &parent {
-            Some(TerminalId::Satellite { host, .. }) => host.as_str().as_bytes().to_vec(),
+            Some(ResourceId::Satellite { host, .. }) => host.as_str().as_bytes().to_vec(),
             _ => Vec::new(),
         };
         let mut summary = Self {
@@ -85,27 +85,27 @@ impl ResourceSummary {
             provider,
             native_id,
             state,
-            parent_view: PhuxTerminalId::default(),
+            parent_view: PhuxResourceId::default(),
             parent_host,
         };
         summary.parent_view = match &summary.parent {
-            Some(TerminalId::Local { id }) => PhuxTerminalId {
+            Some(ResourceId::Local { id }) => PhuxResourceId {
                 kind: 0,
                 id: *id,
                 host: PhuxBytes::default(),
             },
-            Some(TerminalId::Satellite { id, .. }) => PhuxTerminalId {
+            Some(ResourceId::Satellite { id, .. }) => PhuxResourceId {
                 kind: 1,
                 id: *id,
                 host: bytes_out(&summary.parent_host),
             },
-            None => PhuxTerminalId::default(),
+            None => PhuxResourceId::default(),
         };
         summary
     }
 
     /// Null when the resource has no parent; otherwise borrows this summary.
-    pub(crate) const fn parent_ptr(&self) -> *const PhuxTerminalId {
+    pub(crate) const fn parent_ptr(&self) -> *const PhuxResourceId {
         if self.parent.is_some() {
             ptr::from_ref(&self.parent_view)
         } else {
@@ -255,13 +255,13 @@ pub(crate) struct Client {
     /// Published prefix of `owned_effects`. Failed processing leaves newly
     /// staged effects hidden until the next successful publication.
     pub effect_count: usize,
-    pub render: HashMap<TerminalId, RenderCache>,
+    pub render: HashMap<ResourceId, RenderCache>,
     pub selection_buf: Vec<u8>,
     /// Backing store for `phux_client_perf_json`; valid until the next call.
     pub perf_buf: Vec<u8>,
     /// When this client was created; the kernel report's uptime.
     pub created_at: std::time::Instant,
-    pub document_revisions: HashMap<TerminalId, u64>,
+    pub document_revisions: HashMap<ResourceId, u64>,
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
     pub sessions: Vec<SessionSummary>,
@@ -269,16 +269,16 @@ pub(crate) struct Client {
     pub resources: Vec<ResourceSummary>,
     /// `AgentSession` resources the active attach declared to the kernel,
     /// keyed by resource id.
-    pub agent_streams: HashMap<TerminalId, AgentStream>,
+    pub agent_streams: HashMap<ResourceId, AgentStream>,
     pub operations: crate::operations::Operations,
     pub workspace: crate::workspace::SharedWorkspace,
     pub server_id: Vec<u8>,
-    pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
+    pub anchors: HashMap<u64, (ResourceId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
-    pub selections: HashMap<TerminalId, EngineDocumentSelection>,
-    pub gestures: HashMap<TerminalId, crate::pointer::PointerGesture>,
+    pub selections: HashMap<ResourceId, EngineDocumentSelection>,
+    pub gestures: HashMap<ResourceId, crate::pointer::PointerGesture>,
     pub next_gesture: u64,
-    pub viewport_anchors: HashMap<TerminalId, DocumentAnchorId>,
+    pub viewport_anchors: HashMap<ResourceId, DocumentAnchorId>,
     pub last_error: Vec<u8>,
     pub limits: Limits,
     pub protocol_ready: bool,
@@ -435,7 +435,7 @@ impl Client {
         }
     }
 
-    pub(crate) fn ensure_participant(&self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn ensure_participant(&self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         if self.detached || (!self.attach_queued && !self.attached) {
             return Err(BridgeError::protocol(
                 "terminal state frame arrived outside an active ATTACH phase",
@@ -475,14 +475,14 @@ impl Client {
     /// True when `id` names an `AgentSession` resource declared to the kernel
     /// by the active attach; its stream has no replica and its records reach
     /// the host as `AGENT_RECORDS` effects.
-    pub(crate) fn is_agent_stream(&self, id: &TerminalId) -> bool {
+    pub(crate) fn is_agent_stream(&self, id: &ResourceId) -> bool {
         self.agent_streams.contains_key(id)
     }
 
     /// Records the generation a `BOOTSTRAP_BEGIN` opened for an agent stream.
     pub(crate) fn open_agent_generation(
         &mut self,
-        id: &TerminalId,
+        id: &ResourceId,
         stream_id: phux_protocol::StreamId,
         bootstrap_id: phux_protocol::BootstrapId,
     ) {
@@ -496,7 +496,7 @@ impl Client {
     /// re-encoded as one JSON object per line.
     fn process_agent_records(
         &mut self,
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         records: &[phux_client_core::session::agent_stream::AgentEventRecord],
     ) -> Result<(), BridgeError> {
         let (generation, retained) =
@@ -536,12 +536,12 @@ impl Client {
     }
 
     /// Drops a resource the server reported closed from the catalog.
-    pub(crate) fn forget_resource(&mut self, id: &TerminalId) {
+    pub(crate) fn forget_resource(&mut self, id: &ResourceId) {
         self.agent_streams.remove(id);
         self.resources.retain(|resource| &resource.id != id);
     }
 
-    pub(crate) fn terminal_key(&self, id: &TerminalId) -> Result<ReplicaKey, BridgeError> {
+    pub(crate) fn terminal_key(&self, id: &ResourceId) -> Result<ReplicaKey, BridgeError> {
         self.ensure_attached()?;
         self.session
             .published(id)
@@ -549,13 +549,13 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no published READY generation"))
     }
 
-    pub(crate) fn mouse_tracking(&self, id: &TerminalId) -> Result<bool, BridgeError> {
+    pub(crate) fn mouse_tracking(&self, id: &ResourceId) -> Result<bool, BridgeError> {
         Ok(terminal_wants_mouse_tracking(self.terminal(id)?))
     }
 
     pub(crate) fn bump_document_revision(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
     ) -> Result<(), BridgeError> {
         let revision = self.next_document_revision;
         self.next_document_revision = self
@@ -569,7 +569,7 @@ impl Client {
 
     fn register_anchor(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: DocumentAnchorId,
     ) -> Result<PhuxDocumentAnchor, BridgeError> {
         let handle = self.next_anchor_handle;
@@ -583,7 +583,7 @@ impl Client {
 
     fn resolve_anchor(
         &self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: PhuxDocumentAnchor,
     ) -> Result<DocumentAnchorId, BridgeError> {
         let Some((owner, engine_anchor)) = self.anchors.get(&anchor.opaque_id) else {
@@ -599,7 +599,7 @@ impl Client {
 
     pub(crate) fn track_anchor(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         point: PhuxDocumentPoint,
     ) -> Result<PhuxDocumentAnchor, BridgeError> {
         self.ensure_attached()?;
@@ -630,7 +630,7 @@ impl Client {
 
     pub(crate) fn release_anchor(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: PhuxDocumentAnchor,
     ) -> Result<(), BridgeError> {
         self.ensure_attached()?;
@@ -644,7 +644,7 @@ impl Client {
 
     pub(crate) fn clear_presentation(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: u64,
         bootstrap_id: u64,
     ) -> Result<(), BridgeError> {
@@ -664,7 +664,7 @@ impl Client {
 
     pub(crate) fn pin_viewport(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: PhuxDocumentAnchor,
     ) -> Result<(), BridgeError> {
         self.ensure_attached()?;
@@ -679,17 +679,17 @@ impl Client {
         self.scroll(terminal_id, 3, i64::from(point.y))
     }
 
-    pub(crate) fn follow_live(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn follow_live(&mut self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         self.scroll(terminal_id, 1, 0)
     }
 
-    pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
+    pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &ResourceId) {
         self.reset_gesture(terminal_id);
         self.anchors.retain(|_, (owner, _)| owner != terminal_id);
         self.selections.remove(terminal_id);
         self.viewport_anchors.remove(terminal_id);
     }
-    fn document_revision(&self, terminal_id: &TerminalId) -> Result<u64, BridgeError> {
+    fn document_revision(&self, terminal_id: &ResourceId) -> Result<u64, BridgeError> {
         self.document_revisions
             .get(terminal_id)
             .copied()
@@ -698,7 +698,7 @@ impl Client {
 
     pub(crate) fn terminal(
         &self,
-        id: &TerminalId,
+        id: &ResourceId,
     ) -> Result<&libghostty_vt::Terminal<'static, 'static>, BridgeError> {
         self.ensure_attached()?;
         self.session
@@ -922,7 +922,7 @@ impl Client {
 
     pub(crate) fn build_grid(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
         let inputs = self.grid_view_inputs(terminal_id)?;
         let top_anchor = self.track_anchor(
@@ -946,7 +946,7 @@ impl Client {
     /// These are read before the render cache is borrowed: the cache entry
     /// holds a mutable borrow of bridge state for as long as the snapshot
     /// lives, so session reads have to happen either side of it, never during.
-    fn grid_view_inputs(&self, terminal_id: &TerminalId) -> Result<GridViewInputs, BridgeError> {
+    fn grid_view_inputs(&self, terminal_id: &ResourceId) -> Result<GridViewInputs, BridgeError> {
         Ok(GridViewInputs {
             key: self.terminal_key(terminal_id)?,
             document_revision: self.document_revision(terminal_id)?,
@@ -970,7 +970,7 @@ impl Client {
     /// the same cache entry and stay borrowed together for the whole build.
     fn render_grid_view(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         inputs: &GridViewInputs,
         top_anchor: PhuxDocumentAnchor,
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
@@ -1022,7 +1022,7 @@ impl Client {
 
     pub(crate) fn scroll(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         kind: u32,
         value: i64,
     ) -> Result<(), BridgeError> {
@@ -1057,7 +1057,7 @@ impl Client {
 
     /// Follow the live history tail again, releasing whatever anchor had been
     /// pinning the viewport away from it.
-    fn follow_viewport_tail(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    fn follow_viewport_tail(&mut self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         self.session
             .follow_history_tail(terminal_id)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
@@ -1071,7 +1071,7 @@ impl Client {
 
     /// Pin the history viewport to a fresh anchor at its top-left cell,
     /// releasing the anchor the previous pin held.
-    fn pin_viewport_to_top(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    fn pin_viewport_to_top(&mut self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         let anchor = self
             .session
             .track_document_anchor(
@@ -1096,7 +1096,7 @@ impl Client {
 
     pub(crate) fn set_selection(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         start: PhuxDocumentAnchor,
         end: PhuxDocumentAnchor,
         rectangular: bool,
@@ -1141,7 +1141,7 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn clear_selection(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn clear_selection(&mut self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         self.reset_gesture(terminal_id);
         self.terminal(terminal_id)?
             .set_selection(None)
@@ -1157,7 +1157,7 @@ impl Client {
             .into_bytes();
     }
 
-    pub(crate) fn selection_text(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn selection_text(&mut self, terminal_id: &ResourceId) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         let selection = self
             .selections
@@ -1175,7 +1175,7 @@ impl Client {
 
     pub(crate) fn search(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         query: &[u8],
         case_sensitive: bool,
     ) -> Result<(), BridgeError> {
@@ -1563,16 +1563,16 @@ fn history_counters(status: Option<&HistoryStatus>) -> HistoryCounters {
 
 /// Project the bridge terminal id onto the C view, staging a satellite host
 /// name in the cache's own arena so the returned view can point at it.
-fn view_terminal_id(terminal_id: &TerminalId, host_arena: &mut Vec<u8>) -> PhuxTerminalId {
+fn view_terminal_id(terminal_id: &ResourceId, host_arena: &mut Vec<u8>) -> PhuxResourceId {
     match terminal_id {
-        TerminalId::Local { id } => PhuxTerminalId {
+        ResourceId::Local { id } => PhuxResourceId {
             kind: 0,
             id: *id,
             host: PhuxBytes::default(),
         },
-        TerminalId::Satellite { host, id } => {
+        ResourceId::Satellite { host, id } => {
             host_arena.extend_from_slice(host.as_str().as_bytes());
-            PhuxTerminalId {
+            PhuxResourceId {
                 kind: 1,
                 id: *id,
                 host: bytes_out(host_arena),
@@ -1643,7 +1643,7 @@ mod tests {
                 history_prefetch_rows: 64,
             }),
         };
-        let terminal_id = TerminalId::local(7);
+        let terminal_id = ResourceId::local(7);
         bridge
             .inner
             .owned_effects
@@ -1724,7 +1724,7 @@ mod tests {
         });
         let error = client
             .process_send(KernelSend::PtyWrite {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 bytes: b"\x1b[1;1R".to_vec(),
             })
             .expect_err("old protocol-0.7 peers must reject terminal replies");
@@ -1745,7 +1745,7 @@ mod tests {
         client.terminal_reply = true;
         client
             .process_send(KernelSend::PtyWrite {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 bytes: b"\x1b[1;1R".to_vec(),
             })
             .expect("explicit TERMINAL_REPLY feature");
@@ -1758,7 +1758,7 @@ mod tests {
             FrameKind::InputTerminalReply {
                 terminal_id,
                 bytes,
-            } if terminal_id == TerminalId::local(7) && bytes.as_ref() == b"\x1b[1;1R"
+            } if terminal_id == ResourceId::local(7) && bytes.as_ref() == b"\x1b[1;1R"
         ));
     }
 
@@ -1777,7 +1777,7 @@ mod tests {
         let cap = phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
         client
             .process_send(KernelSend::PtyWrite {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 bytes: vec![b'x'; cap],
             })
             .expect("exact-cap terminal reply");
@@ -1793,7 +1793,7 @@ mod tests {
         for bytes in [Vec::new(), vec![b'x'; cap + 1]] {
             let error = client
                 .process_send(KernelSend::PtyWrite {
-                    terminal_id: TerminalId::local(7),
+                    terminal_id: ResourceId::local(7),
                     bytes,
                 })
                 .expect_err("invalid terminal reply payload");

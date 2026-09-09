@@ -5,7 +5,7 @@
 //! child-process argv. This is the resolution half of the launch executor:
 //! it loads the config, finds the integration, expands the
 //! `${PHUX_PLUGIN_ROOT}` placeholder, and returns a [`ResolvedLaunch`] the
-//! CLI spawns through the ordinary `SPAWN_TERMINAL` path (so the server's
+//! CLI spawns through the ordinary `SPAWN_RESOURCE` path (so the server's
 //! `PHUX_TERMINAL_ID` injection and pane recording compose for free).
 //!
 //! There is no in-process host: the launched program is a child-process

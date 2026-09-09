@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    LayoutDecodeError, LayoutNode, SplitDir, TerminalId, unknown_layout_variant, unknown_split_dir,
+    LayoutDecodeError, LayoutNode, ResourceId, SplitDir, unknown_layout_variant, unknown_split_dir,
 };
 
 /// Minimal envelope shape used to peek the `version` byte before
@@ -33,7 +33,7 @@ pub(super) struct CborWindow {
     /// The window's binary split tree.
     pub root: CborLayoutNode,
     /// The focused leaf within this window.
-    pub focused_terminal: CborTerminalId,
+    pub focused_terminal: CborResourceId,
 }
 
 /// CBOR shadow of [`LayoutNode`] — the wire crate exposes no `serde`
@@ -44,7 +44,7 @@ pub(super) enum CborLayoutNode {
     /// A single pane (tree leaf).
     Leaf {
         /// The leaf's terminal id.
-        pane: CborTerminalId,
+        pane: CborResourceId,
     },
     /// An interior split of two child subtrees.
     Split {
@@ -69,10 +69,10 @@ pub(super) enum CborSplitDir {
     Vertical,
 }
 
-/// CBOR shadow of [`TerminalId`].
+/// CBOR shadow of [`ResourceId`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum CborTerminalId {
+pub(super) enum CborResourceId {
     /// A terminal local to this server.
     Local {
         /// The local numeric id.
@@ -109,11 +109,11 @@ impl From<CborSplitDir> for SplitDir {
     }
 }
 
-impl From<&TerminalId> for CborTerminalId {
-    fn from(value: &TerminalId) -> Self {
+impl From<&ResourceId> for CborResourceId {
+    fn from(value: &ResourceId) -> Self {
         match value {
-            TerminalId::Local { id } => Self::Local { id: *id },
-            TerminalId::Satellite { host, id } => Self::Satellite {
+            ResourceId::Local { id } => Self::Local { id: *id },
+            ResourceId::Satellite { host, id } => Self::Satellite {
                 host: host.as_str().to_owned(),
                 id: *id,
             },
@@ -121,11 +121,11 @@ impl From<&TerminalId> for CborTerminalId {
     }
 }
 
-impl From<CborTerminalId> for TerminalId {
-    fn from(value: CborTerminalId) -> Self {
+impl From<CborResourceId> for ResourceId {
+    fn from(value: CborResourceId) -> Self {
         match value {
-            CborTerminalId::Local { id } => Self::local(id),
-            CborTerminalId::Satellite { host, id } => Self::satellite(host.as_str(), id),
+            CborResourceId::Local { id } => Self::local(id),
+            CborResourceId::Satellite { host, id } => Self::satellite(host.as_str(), id),
         }
     }
 }

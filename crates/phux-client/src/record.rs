@@ -1,7 +1,7 @@
 //! Headless terminal capture — the observer half of session recording
 //! (ADR-0060).
 //!
-//! Subscribes to one Terminal's byte stream with `ATTACH_TERMINAL`
+//! Subscribes to one Terminal's byte stream with `ATTACH_RESOURCE`
 //! (`docs/spec/L1.md` §5.1) and projects the frames the server pushes back
 //! into asciicast events. Like [`crate::snapshot`] and [`crate::watch`],
 //! this path is *side-effect-free*: it neither attaches the session nor
@@ -17,10 +17,10 @@
 //! `send_attach` hardcodes `current_viewport()` — which reports 80x24 when
 //! there is no TTY, which is exactly the situation a headless recorder is
 //! in. A recorder that attached would therefore silently shrink the user's
-//! live session to 80x24. `ATTACH_TERMINAL` is specified (L1 §5.1) as a
+//! live session to 80x24. `ATTACH_RESOURCE` is specified (L1 §5.1) as a
 //! non-resizing observer subscription: it registers the caller as an output
 //! subscriber, primes it through negotiated `BOOTSTRAP_BEGIN/CHUNK/READY`,
-//! then streams `TERMINAL_OUTPUT` deltas.
+//! then streams `RESOURCE_OUTPUT` deltas.
 //! `NEVER_SENDS_ATTACH_OR_VIEWPORT_RESIZE` test below is the regression
 //! guard.
 //!
@@ -42,7 +42,7 @@
 //!    There is no per-byte timestamp on the wire and adding one would be a
 //!    wire change.
 //! 2. **A mid-session recording opens on the viewport, not the history.**
-//!    The server's `ATTACH_TERMINAL` handler requests a snapshot with
+//!    The server's `ATTACH_RESOURCE` handler requests a snapshot with
 //!    `scrollback: None`, so the first frame of the recording is the current
 //!    grid; whatever scrolled off above it is not in the capture.
 
@@ -50,7 +50,7 @@ use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use phux_protocol::caps::{BootstrapStreamProfile, ClientCapabilities, ColorSupport};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, FrameKind};
 use phux_protocol::{BootstrapId, StreamId};
 use phux_record::cast::{CastEvent, EventCode};
@@ -58,9 +58,9 @@ use phux_record::cast::{CastEvent, EventCode};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 
-/// Request id carried by the `ATTACH_TERMINAL` command.
+/// Request id carried by the `ATTACH_RESOURCE` command.
 const REQUEST_ATTACH: u32 = 1;
-/// Request id carried by the best-effort `DETACH_TERMINAL` teardown.
+/// Request id carried by the best-effort `DETACH_RESOURCE` teardown.
 const REQUEST_DETACH: u32 = 2;
 /// Floor on the interval between two `progress` callbacks. A recorder can
 /// receive thousands of output frames a second; the CLI's spinner does not
@@ -91,7 +91,7 @@ pub struct HeadlessRecording {
 /// Record `terminal_id` as a pure observer until the pane exits, the server
 /// goes away, `max_duration` elapses, or the caller hits Ctrl-C.
 ///
-/// Opens its own connection, handshakes, subscribes with `ATTACH_TERMINAL` +
+/// Opens its own connection, handshakes, subscribes with `ATTACH_RESOURCE` +
 /// `SUBSCRIBE_EVENTS`, and drains the resulting stream. Every stop condition
 /// except a transport or protocol failure is a *success*: Ctrl-C, the
 /// duration cap, a clean server EOF, and the pane closing all return what
@@ -109,7 +109,7 @@ pub struct HeadlessRecording {
 /// EOF.
 pub async fn record_terminal(
     socket: &Path,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     max_duration: Option<Duration>,
     progress: impl FnMut(Duration, usize),
 ) -> Result<HeadlessRecording, AttachError> {
@@ -125,23 +125,23 @@ pub async fn record_terminal(
 /// can drive the whole sequence over a `UnixStream::pair`.
 async fn record_on_connection(
     conn: &mut Connection,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     max_duration: Option<Duration>,
     progress: impl FnMut(Duration, usize),
 ) -> Result<HeadlessRecording, AttachError> {
     // A failure before the subscription exists has nothing to tear down, so
     // `?` here (rather than after the pump) is deliberate: it keeps the
-    // best-effort DETACH_TERMINAL below paired with an actual subscription.
+    // best-effort DETACH_RESOURCE below paired with an actual subscription.
     let primed = subscribe(conn, &terminal_id).await?;
     let outcome = pump(conn, primed, max_duration, progress).await;
-    // Best-effort teardown. DETACH_TERMINAL is idempotent and a no-op when
+    // Best-effort teardown. DETACH_RESOURCE is idempotent and a no-op when
     // the Terminal is already gone (L1 §5.1), so it can never turn a
     // successful capture into a failure — and a send onto a socket the
     // server already closed is exactly as uninteresting.
     let _ = conn
         .send(&FrameKind::Command {
             request_id: REQUEST_DETACH,
-            command: Command::DetachTerminal { terminal_id },
+            command: Command::DetachResource { terminal_id },
         })
         .await;
     outcome
@@ -151,7 +151,7 @@ async fn record_on_connection(
 ///
 /// The connection has already negotiated the recorder's custom profile. The
 /// stateful frame order asserted by the tests is therefore `HELLO` ->
-/// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`.
+/// `COMMAND { AttachResource }` -> `SUBSCRIBE_EVENTS`.
 ///
 /// Returns frames that arrived interleaved with the `COMMAND_RESULT` -- in
 /// practice the priming bootstrap transcript. They are already consumed off
@@ -159,7 +159,7 @@ async fn record_on_connection(
 /// them.
 async fn subscribe(
     conn: &mut Connection,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
 ) -> Result<Vec<FrameKind>, AttachError> {
     // SPEC §5 permits priming bootstrap frames to arrive before the
     // COMMAND_RESULT, and the reference server sends them that way.
@@ -172,7 +172,7 @@ async fn subscribe(
     let (result, primed) = conn
         .request(
             REQUEST_ATTACH,
-            Command::AttachTerminal {
+            Command::AttachResource {
                 terminal_id: terminal_id.clone(),
             },
         )
@@ -290,7 +290,7 @@ struct Capture {
     /// Bytes held back because they are an incomplete UTF-8 sequence.
     tail: Vec<u8>,
     /// Active synthesized bootstrap and next required chunk sequence.
-    bootstrap: Option<(TerminalId, StreamId, BootstrapId, u32)>,
+    bootstrap: Option<(ResourceId, StreamId, BootstrapId, u32)>,
 }
 
 impl Capture {
@@ -378,12 +378,12 @@ impl Capture {
             }
             // `seq` is the pump's per-consumer sequence id, not a timebase;
             // arrival order is the only ordering this projection needs.
-            FrameKind::TerminalOutput { bytes, .. } => {
+            FrameKind::ResourceOutput { bytes, .. } => {
                 self.output(&bytes, elapsed);
                 Ok(false)
             }
             FrameKind::Event {
-                event: AgentEvent::PaneClosed { exit_status },
+                event: AgentEvent::ResourceClosed { exit_status },
                 ..
             } => {
                 self.flush_tail(elapsed);
@@ -467,7 +467,7 @@ impl Capture {
     /// trailing sequence for the next frame.
     ///
     /// PTY output is a raw byte stream and a multi-byte character routinely
-    /// straddles two `TERMINAL_OUTPUT` frames. `String::from_utf8_lossy` per
+    /// straddles two `RESOURCE_OUTPUT` frames. `String::from_utf8_lossy` per
     /// frame would splice a U+FFFD into every box-drawing and emoji
     /// recording at the frame boundaries. This mirrors `CastWriter::output`'s
     /// carry in `phux-record`; the two must agree, because the same bytes may
@@ -537,8 +537,8 @@ mod tests {
     use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
     use tokio::net::UnixStream;
 
-    fn terminal() -> TerminalId {
-        TerminalId::local(7)
+    fn terminal() -> ResourceId {
+        ResourceId::local(7)
     }
 
     fn snapshot(cols: u16, rows: u16, replay: &[u8]) -> Vec<FrameKind> {
@@ -571,7 +571,7 @@ mod tests {
     }
 
     fn output(seq: u64, bytes: &[u8]) -> FrameKind {
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: terminal(),
             stream_id: StreamId::new(1).expect("stream"),
             bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
@@ -583,14 +583,14 @@ mod tests {
     fn pane_closed(exit_status: Option<i32>) -> FrameKind {
         FrameKind::Event {
             terminal: Some(terminal()),
-            event: AgentEvent::PaneClosed { exit_status },
+            event: AgentEvent::ResourceClosed { exit_status },
         }
     }
 
     /// A session whose client will attach a Terminal.
     ///
     /// The priming bootstrap transcript is not optional and is not a "script"
-    /// frame: [`crate::testkit`] sends it *before* the `ATTACH_TERMINAL` ack,
+    /// frame: [`crate::testkit`] sends it *before* the `ATTACH_RESOURCE` ack,
     /// because that is what `handle_attach_terminal` does. Every test below
     /// therefore exercises the interleave, not just the one guard that was
     /// written after the bug escaped.
@@ -677,17 +677,17 @@ mod tests {
             matches!(
                 seen.get(1),
                 Some(FrameKind::Command {
-                    command: Command::AttachTerminal { .. },
+                    command: Command::AttachResource { .. },
                     ..
                 })
             ),
-            "ATTACH_TERMINAL must follow HELLO, got {:?}",
+            "ATTACH_RESOURCE must follow HELLO, got {:?}",
             seen.get(1)
         );
         assert!(
             matches!(seen.get(2), Some(FrameKind::SubscribeEvents { .. })),
-            "SUBSCRIBE_EVENTS must follow ATTACH_TERMINAL — it is the only \
-             way an ATTACH_TERMINAL-only observer learns the pane exited; \
+            "SUBSCRIBE_EVENTS must follow ATTACH_RESOURCE — it is the only \
+             way an ATTACH_RESOURCE-only observer learns the pane exited; \
              got {:?}",
             seen.get(2)
         );
@@ -754,7 +754,7 @@ mod tests {
                  and a headless caller's current_viewport() reports 80x24 \
                  with no TTY. The consequence of this regression is that \
                  running `phux rec` SHRINKS THE LIVE SESSION A HUMAN IS \
-                 USING to 80x24. Use Command::AttachTerminal, which L1 §5.1 \
+                 USING to 80x24. Use Command::AttachResource, which L1 §5.1 \
                  specifies as a non-resizing observer subscription."
             );
         }
@@ -854,7 +854,7 @@ mod tests {
         let (recorded, _seen) = block_on(run(
             attached(80, 24, b"")
                 .push(pane_closed(Some(42)))
-                // Never delivered: the client stops on PaneClosed.
+                // Never delivered: the client stops on ResourceClosed.
                 .push(output(1, b"after the end")),
             None,
         ));
@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(last.data, "42");
         assert!(
             !recorded.events.iter().any(|ev| ev.data == "after the end"),
-            "the loop must stop at PaneClosed"
+            "the loop must stop at ResourceClosed"
         );
     }
 
@@ -923,7 +923,7 @@ mod tests {
             seen.iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::DetachTerminal { .. },
+                    command: Command::DetachResource { .. },
                     ..
                 }
             )),
@@ -941,11 +941,11 @@ mod tests {
             matches!(
                 last,
                 FrameKind::Command {
-                    command: Command::DetachTerminal { .. },
+                    command: Command::DetachResource { .. },
                     ..
                 }
             ),
-            "DETACH_TERMINAL closes the subscription cleanly, got {last:?}"
+            "DETACH_RESOURCE closes the subscription cleanly, got {last:?}"
         );
     }
 

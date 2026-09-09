@@ -162,7 +162,7 @@ pub struct ServerState {
     clients: ClientTable,
     /// Everything keyed on a live pane's identity: actor handles, shutdown
     /// tokens, the pane-actor `JoinSet`, per-pane client subscriptions, and
-    /// the `ATTACH_TERMINAL` output pumps.
+    /// the `ATTACH_RESOURCE` output pumps.
     ///
     /// Accessors stay on this type (see `state::terminals`); the table is
     /// an internal grouping, so nothing outside `state` names it. See
@@ -243,9 +243,9 @@ pub struct ServerState {
     lifecycle: Lifecycle,
     /// Why each closing resource is closing (ADR-0104 §4).
     ///
-    /// Written by whoever decides a resource must go — a `KILL_TERMINAL`, a
+    /// Written by whoever decides a resource must go — a `KILL_RESOURCE`, a
     /// parent cascade, a shutdown — and read once by that resource's exit
-    /// watcher, which stamps it on the `TERMINAL_CLOSED` frame. An entry
+    /// watcher, which stamps it on the `RESOURCE_CLOSED` frame. An entry
     /// exists only between the decision and the frame, and the reap drops
     /// any that outlived it, so the map is bounded by the resources
     /// currently in the act of closing. See [`bindings`] for the claim rule
@@ -334,7 +334,7 @@ mod tests {
     use super::*;
     use crate::resource::ResourceHandle;
     use crate::terminal_actor::TerminalHandle;
-    use phux_core::ids::TerminalId;
+    use phux_core::ids::ResourceId;
     use phux_protocol::caps::{
         BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
     };
@@ -486,11 +486,11 @@ mod tests {
 
     #[test]
     fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
-        // phux-w7z2.56: L1 §3.1 requires TERMINAL_CLOSED for "every client
-        // subscribed to the Terminal", and L1 §5.1 says ATTACH_TERMINAL
+        // phux-w7z2.56: L1 §3.1 requires RESOURCE_CLOSED for "every client
+        // subscribed to the Terminal", and L1 §5.1 says ATTACH_RESOURCE
         // needs no session-scoped ATTACH. The fanout used to resolve
         // mailboxes through `attached()` alone, so a consumer that only
-        // sent ATTACH_TERMINAL was in the subscriber list and filtered out
+        // sent ATTACH_RESOURCE was in the subscriber list and filtered out
         // of the fanout — it stopped receiving output and never learned
         // why. Both kinds must resolve, and each to exactly one mailbox.
         let mut s = ServerState::new();
@@ -508,12 +508,12 @@ mod tests {
         assert_eq!(
             s.terminal_fanout_targets(pid).len(),
             2,
-            "both the session-attached client and the ATTACH_TERMINAL-only \
+            "both the session-attached client and the ATTACH_RESOURCE-only \
              watcher must resolve to a mailbox",
         );
 
         // The session-attached client is ALSO reachable per-Terminal on the
-        // upgrade path (it re-issues ATTACH_TERMINAL on a pane it already
+        // upgrade path (it re-issues ATTACH_RESOURCE on a pane it already
         // observes). It must still resolve to one mailbox, not two.
         let (upgrade_tx, _upgrade_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         s.subscribe_terminal(attached, pid, Some(upgrade_tx));
@@ -1019,7 +1019,7 @@ mod tests {
         // pid_b intentionally has no handle and must be excluded.
 
         let panes = s.attach_snapshot_panes(sid);
-        let ids: HashSet<TerminalId> = panes.iter().map(|p| p.terminal_id).collect();
+        let ids: HashSet<ResourceId> = panes.iter().map(|p| p.terminal_id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&pid_a));
         assert!(ids.contains(&pid_c));
@@ -1155,8 +1155,8 @@ mod tests {
     fn metadata_broadcast_reaches_a_subscriber_that_never_attached() {
         let mut s = ServerState::new();
         let (cid, tx, mut rx) = unattached_l3_client(&mut s);
-        let scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
-        let key = phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+        let scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
+        let key = phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
 
         s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
         let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
@@ -1190,8 +1190,8 @@ mod tests {
     fn metadata_tombstone_reaches_a_subscriber_that_never_attached() {
         let mut s = ServerState::new();
         let (cid, tx, mut rx) = unattached_l3_client(&mut s);
-        let scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
-        let key = phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+        let scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
+        let key = phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
 
         s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
         s.metadata_set(&scope, key, br#"{"name":"claude"}"#.to_vec());
@@ -1242,7 +1242,7 @@ mod tests {
         let mut s = ServerState::new();
         let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let key = "phux.same/v1";
-        let t_scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
+        let t_scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
         let c_scope = Scope::Group(DEFAULT_GROUP_ID);
         let g_scope = Scope::Global;
 

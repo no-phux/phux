@@ -407,7 +407,7 @@ pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
             AgentEvent::CommandFinished { exit_code } => {
                 exit_code.map_or_else(String::new, |c| format!(" exit={c}"))
             }
-            AgentEvent::PaneClosed { exit_status } => {
+            AgentEvent::ResourceClosed { exit_status } => {
                 exit_status.map_or_else(String::new, |c| format!(" exit={c}"))
             }
             AgentEvent::Asked { question, .. } => format!(" {question:?}"),
@@ -424,8 +424,8 @@ const fn watch_event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::CommandFinished { .. } => "command_finished",
         AgentEvent::TitleChanged { .. } => "title_changed",
         AgentEvent::Bell => "bell",
-        AgentEvent::PaneSpawned { .. } => "pane_spawned",
-        AgentEvent::PaneClosed { .. } => "pane_closed",
+        AgentEvent::ResourceSpawned { .. } => "pane_spawned",
+        AgentEvent::ResourceClosed { .. } => "pane_closed",
         AgentEvent::Dirty => "dirty",
         AgentEvent::Idle => "idle",
         AgentEvent::Asked { .. } => "asked",
@@ -461,7 +461,7 @@ pub(crate) fn watch_event_json(
                 exit_code.map_or(serde_json::Value::Null, serde_json::Value::from),
             );
         }
-        AgentEvent::PaneClosed { exit_status } => {
+        AgentEvent::ResourceClosed { exit_status } => {
             obj.insert(
                 "exit_status".to_owned(),
                 exit_status.map_or(serde_json::Value::Null, serde_json::Value::from),
@@ -469,7 +469,7 @@ pub(crate) fn watch_event_json(
         }
         // Additive (ADR-0102): the spawned resource's kind and parent, so a
         // consumer can tell a new pane from a new agent session bound to one.
-        AgentEvent::PaneSpawned { kind, parent } => {
+        AgentEvent::ResourceSpawned { kind, parent } => {
             obj.insert("kind".to_owned(), serde_json::Value::from(kind.as_str()));
             obj.insert(
                 "parent".to_owned(),
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn watch_json_pane_closed_carries_exit_status() {
         let v = json_of(
-            AgentEvent::PaneClosed {
+            AgentEvent::ResourceClosed {
                 exit_status: Some(0),
             },
             Some("@1"),
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(v["exit_status"], 0);
 
         // A signal-killed pane reports null exit_status (present, not absent).
-        let v = json_of(AgentEvent::PaneClosed { exit_status: None }, Some("@1"));
+        let v = json_of(AgentEvent::ResourceClosed { exit_status: None }, Some("@1"));
         assert!(v["exit_status"].is_null());
     }
 
@@ -737,11 +737,11 @@ mod tests {
                 title: "build".to_owned(),
             },
             AgentEvent::Bell,
-            AgentEvent::PaneSpawned {
+            AgentEvent::ResourceSpawned {
                 kind: phux_protocol::ids::ResourceKind::Terminal,
                 parent: None,
             },
-            AgentEvent::PaneClosed {
+            AgentEvent::ResourceClosed {
                 exit_status: Some(0),
             },
             AgentEvent::Dirty,

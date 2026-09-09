@@ -12,7 +12,7 @@ use phux_protocol::caps::{
     BootstrapProfileSet, ClientCapabilities, ColorSupport, EngineCodecSet, EngineFeatureSet,
     LayerSet, ServerFeature,
 };
-use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, FileUploadId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind, TYPE_ATTACHED,
     TYPE_BOOTSTRAP_BEGIN, TYPE_ERROR, TYPE_HELLO_OK,
@@ -386,7 +386,7 @@ fn negotiated_chunk_limit_rejects_oversized_payload_at_runtime_decode() {
         send_frame(
             &mut stream,
             &FrameKind::BootstrapChunk {
-                terminal_id: TerminalId::local(1),
+                terminal_id: ResourceId::local(1),
                 stream_id: StreamId::new(1).unwrap(),
                 bootstrap_id: BootstrapId::new(1).unwrap(),
                 chunk_seq: 0,
@@ -571,7 +571,7 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
         send_frame(&mut stream, &attach_by_name("default")).await;
         let (_, attached) = recv_typed(&mut stream).await;
         let terminal_id = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+            FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
             other => panic!("expected ATTACHED, got {other:?}"),
         };
         let _ = recv_typed(&mut stream).await; // authoritative terminal snapshot

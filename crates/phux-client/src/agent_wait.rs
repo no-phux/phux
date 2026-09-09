@@ -58,10 +58,10 @@ use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
-use crate::agent_meta::{AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
+use crate::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::watch::{WatchItem, stream_items, subscribe};
@@ -323,14 +323,14 @@ impl AgentWaitResult {
 /// read as a record with a non-empty `name` (L3 §3.7) — never an error.
 async fn read_record(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     request_id: u32,
 ) -> Result<(Option<AgentRecord>, Vec<FrameKind>), AttachError> {
     let (answer, interleaved) = conn
         .request_metadata(
             request_id,
-            Scope::Terminal(terminal.clone()),
-            TERMINAL_AGENT_KEY.to_owned(),
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_KEY.to_owned(),
         )
         .await?
         .into_parts();
@@ -349,7 +349,7 @@ async fn read_record(
 /// Propagates [`AttachError`] from connect, transport, or a server refusal.
 pub async fn fetch_agent_record(
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Result<Option<AgentRecord>, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     let (record, _interleaved) = read_record(&mut conn, terminal, BASELINE_REQUEST_ID).await?;
@@ -369,14 +369,14 @@ pub async fn fetch_agent_record(
               'record or tombstone'; collapsing them would erase the \
               tombstone, which is the one observation the wait must not miss"
 )]
-fn record_from_frame(frame: &FrameKind, terminal: &TerminalId) -> Option<Option<AgentRecord>> {
+fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
     let FrameKind::MetadataChanged { scope, key, value } = frame else {
         return None;
     };
-    if key != TERMINAL_AGENT_KEY {
+    if key != RESOURCE_AGENT_KEY {
         return None;
     }
-    let Scope::Terminal(id) = scope else {
+    let Scope::Resource(id) = scope else {
         return None;
     };
     if id != terminal {
@@ -464,7 +464,7 @@ enum Replay {
 fn window_observations(
     interleaved: &[FrameKind],
     answered: Option<AgentRecord>,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Vec<Option<AgentRecord>> {
     let mut observations: Vec<Option<AgentRecord>> = interleaved
         .iter()
@@ -569,7 +569,7 @@ async fn watch_pushes(
 )]
 async fn poll_floor(
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     poll_interval: Duration,
     shared: &WaitShared,
 ) -> Result<Decision, AgentWaitError> {
@@ -668,7 +668,7 @@ fn finish(
 )]
 pub async fn wait_for_agent_state(
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     targets: &[AgentMetaState],
     timeout: Option<Duration>,
     poll_interval: Duration,
@@ -718,10 +718,10 @@ mod tests {
         format!(r#"{{"name":"reviewer","kind":"claude","state":"{state}"}}"#).into_bytes()
     }
 
-    fn changed(pane: &TerminalId, value: Option<Vec<u8>>) -> FrameKind {
+    fn changed(pane: &ResourceId, value: Option<Vec<u8>>) -> FrameKind {
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(pane.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(pane.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value,
         }
     }
@@ -749,7 +749,7 @@ mod tests {
         targets: &[AgentMetaState],
         timeout: Duration,
     ) -> Result<AgentWaitResult, AgentWaitError> {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("phux.sock");
         let listener = UnixListener::bind(&socket).expect("bind scripted server");
@@ -759,7 +759,7 @@ mod tests {
                 let (stream, _) = listener.accept().await.expect("accept scripted client");
                 let level = level.clone();
                 let mut spec = ScriptSpec::new().metadata(move |_scope, key| {
-                    if key == TERMINAL_AGENT_KEY {
+                    if key == RESOURCE_AGENT_KEY {
                         level.clone()
                     } else {
                         None
@@ -929,14 +929,14 @@ mod tests {
     /// another Terminal is not one of ours.
     #[test]
     fn interleaved_frames_are_filtered_to_this_terminals_agent_key() {
-        let pane = TerminalId::local(7);
-        let other = TerminalId::local(8);
+        let pane = ResourceId::local(7);
+        let other = ResourceId::local(8);
         assert!(record_from_frame(&changed(&pane, Some(record("idle"))), &pane).is_some());
         assert!(record_from_frame(&changed(&other, Some(record("idle"))), &pane).is_none());
         assert!(
             record_from_frame(
                 &FrameKind::MetadataChanged {
-                    scope: Scope::Terminal(pane.clone()),
+                    scope: Scope::Resource(pane.clone()),
                     key: "phux.tags/v1".to_owned(),
                     value: Some(record("idle")),
                 },
@@ -975,7 +975,7 @@ mod tests {
     /// record carried.
     #[tokio::test]
     async fn an_observed_transition_satisfies_the_wait_end_to_end() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let outcome = drive(
             Some(record("blocked")),
             vec![
@@ -1008,7 +1008,7 @@ mod tests {
     /// distinct error, not a hang to the deadline and not a success.
     #[tokio::test]
     async fn a_tombstone_mid_wait_is_a_typed_departure_end_to_end() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let outcome = drive(
             Some(record("working")),
             vec![

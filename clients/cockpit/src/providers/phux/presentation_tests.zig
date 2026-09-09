@@ -45,8 +45,8 @@ pub fn fixtureClient() !*c.PhuxClient {
 }
 
 pub fn fixtureGrid(client: *c.PhuxClient) !c.PhuxTerminalGridView {
-    var id = std.mem.zeroes(c.PhuxTerminalId);
-    id.kind = c.PHUX_TERMINAL_LOCAL;
+    var id = std.mem.zeroes(c.PhuxResourceId);
+    id.kind = c.PHUX_RESOURCE_ID_LOCAL;
     id.id = 7;
     var view = std.mem.zeroes(c.PhuxTerminalGridView);
     try testing.expectEqual(c.PHUX_CLIENT_OK, c.phux_client_terminal_grid(client, &id, &view));

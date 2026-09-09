@@ -78,7 +78,7 @@ pub static CONSUMER_ACK_RTT: Histogram = Histogram::new();
 
 // --- pump: raw broadcast fanout -------------------------------------------
 
-/// `TERMINAL_OUTPUT` frames forwarded by broadcast pumps.
+/// `RESOURCE_OUTPUT` frames forwarded by broadcast pumps.
 pub static PUMP_FRAMES: Counter = Counter::new();
 /// Payload bytes those frames carried.
 pub static PUMP_BYTES: Counter = Counter::new();

@@ -63,8 +63,8 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         );
         let wire_pane_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected ATTACHED, got {other:?}"),
         };
@@ -126,7 +126,7 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
                 break;
             };
             match frame {
-                FrameKind::TerminalOutput { bytes, .. } => acc.extend_from_slice(&bytes),
+                FrameKind::ResourceOutput { bytes, .. } => acc.extend_from_slice(&bytes),
                 FrameKind::CommandResult {
                     request_id: 7,
                     result,

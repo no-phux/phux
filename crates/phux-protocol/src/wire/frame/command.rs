@@ -1,7 +1,7 @@
 //! Control-plane command, result, and agent-event types — SPEC §5
 //! (phux-k61 / ADR-0021) and SPEC §7.5 (phux-y2t / ADR-0022).
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind, TerminalId};
+use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use crate::input::InputEvent;
 use crate::wire::info::SessionSnapshot;
 
@@ -11,11 +11,11 @@ use super::ErrorCode;
 // Control-plane command types — SPEC §5 (phux-k61 / ADR-0021).
 // -----------------------------------------------------------------------------
 
-/// Semantic event type discriminant for filtering in `SubscribeTerminalEvents`.
+/// Semantic event type discriminant for filtering in `SubscribeResourceEvents`.
 /// Enables clients to subscribe only to event classes they care about
 /// (e.g., command lifecycle without grid chatter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TerminalEventType {
+pub enum ResourceEventType {
     /// Shell state transition (awaiting input → running → idle).
     ShellStateChanged = 0,
     /// Command started (OSC-133 B marker or equivalent).
@@ -32,7 +32,7 @@ pub enum TerminalEventType {
     CwdChanged = 6,
 }
 
-impl TerminalEventType {
+impl ResourceEventType {
     /// Convert to wire byte representation.
     #[must_use]
     pub const fn to_u8(self) -> u8 {
@@ -104,7 +104,7 @@ impl InputMode {
 /// A POSIX signal to deliver to a Terminal's process group via
 /// [`Command::SignalTerminal`] (ADR-0033).
 ///
-/// Distinct from `KILL_TERMINAL` (which removes the pane): these signal the
+/// Distinct from `KILL_RESOURCE` (which removes the pane): these signal the
 /// *process* and leave the pane addressable for the post-mortem.
 /// `Freeze`/`Resume` is the reversible brake — SIGSTOP halts the agent
 /// mid-step, SIGCONT lets it run again.
@@ -177,10 +177,10 @@ impl ReportedAgentState {
 /// [`AgentEvent::TerminalControl`] (ADR-0033).
 ///
 /// `Exited`'s process exit status rides alongside in the event body as an
-/// `Option<i32>` (the same shape `TERMINAL_CLOSED.exit_status` uses), so this
+/// `Option<i32>` (the same shape `RESOURCE_CLOSED.exit_status` uses), so this
 /// enum stays a flat discriminant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TerminalLifecycle {
+pub enum ResourceLifecycle {
     /// The process group is running normally.
     Running = 0,
     /// The process group is stopped (SIGSTOP); resumable.
@@ -189,7 +189,7 @@ pub enum TerminalLifecycle {
     Exited = 2,
 }
 
-impl TerminalLifecycle {
+impl ResourceLifecycle {
     /// Wire byte for this lifecycle state.
     #[must_use]
     pub const fn to_u8(self) -> u8 {
@@ -263,9 +263,9 @@ impl ControlAction {
 /// A typed control-plane command carried by [`FrameKind::Command`](super::FrameKind::Command) (SPEC §5.1).
 ///
 /// `#[non_exhaustive]`: the spec catalog has seven L1 commands; v0.1 wires
-/// the ones the CLI needs — `KILL_TERMINAL`, `GET_STATE`, the
+/// the ones the CLI needs — `KILL_RESOURCE`, `GET_STATE`, the
 /// side-effect-free `GET_SCREEN` (ADR-0021 §3, ADR-0022 §5), the appended
-/// `ROUTE_INPUT` write counterpart, and `KILL_TERMINALS`, the atomic
+/// `ROUTE_INPUT` write counterpart, and `KILL_RESOURCES`, the atomic
 /// multi-terminal teardown the v0.3.0 "Option B" re-tier left in place of
 /// the dissolved L2 lifecycle verbs (ADR-0019 / ADR-0027). Unknown wire
 /// tags surface as [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue) rather than coercing
@@ -277,41 +277,41 @@ impl ControlAction {
 #[non_exhaustive]
 pub enum Command {
     /// Subscribe the calling client to one Terminal's content stream
-    /// (SPEC §5.1 `ATTACH_TERMINAL`, phux-v45.7): the server registers the
+    /// (SPEC §5.1 `ATTACH_RESOURCE`, phux-v45.7): the server registers the
     /// caller as an output subscriber, primes it with a fresh profile-selected
-    /// bootstrap generation, and streams generation-bound `TERMINAL_OUTPUT`
+    /// bootstrap generation, and streams generation-bound `RESOURCE_OUTPUT`
     /// from then on — the per-Terminal interactive attach without a
     /// session-scoped `ATTACH` handshake.
     /// Re-attaching replaces the generation without duplicating the stream.
     /// It does NOT resize the Terminal (no viewport rides the command);
     /// callers that want their geometry applied follow with
-    /// `TERMINAL_RESIZE`. The catalog's `role_policy` field is not yet
+    /// `RESIZE_TERMINAL`. The catalog's `role_policy` field is not yet
     /// encoded; absence means `{ PRIMARY, takeover: NEVER }` (SPEC §8.1).
     /// Reply: `COMMAND_RESULT { Ok }` (the snapshot MAY precede it, per
     /// SPEC §5 command/stream interleaving), or
     /// `Error { TerminalNotFound }`. This is the verb a federation hub
     /// relays for two-hop attach (ADR-0007 §4, L1 §9.1).
-    AttachTerminal {
+    AttachResource {
         /// The Terminal whose content stream to subscribe to.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
     /// Drop the caller's per-Terminal subscriptions on `terminal_id`
-    /// (SPEC §5.1 `DETACH_TERMINAL`, phux-v45.7): the output stream wired
-    /// by [`Command::AttachTerminal`] and any per-Terminal event-stream
+    /// (SPEC §5.1 `DETACH_RESOURCE`, phux-v45.7): the output stream wired
+    /// by [`Command::AttachResource`] and any per-Terminal event-stream
     /// subscription. The Terminal itself is unaffected. Idempotent — a
     /// no-op (still `Ok`) when the caller holds no subscription or the
     /// Terminal is already gone, so detach can never race a natural close
     /// into an error.
-    DetachTerminal {
+    DetachResource {
         /// The Terminal whose subscriptions to drop.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
     /// Terminate the underlying PTY of `terminal_id`. Asynchronously emits
-    /// `TERMINAL_CLOSED`. Backs `phux kill` (one command per resolved
+    /// `RESOURCE_CLOSED`. Backs `phux kill` (one command per resolved
     /// Terminal — see ADR-0021).
-    KillTerminal {
+    KillResource {
         /// The Terminal to terminate.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
     /// Request a snapshot of server state in `scope`. The reply rides on
     /// `COMMAND_RESULT { Ok_With(State(..)) }`. Backs `phux ls` and the
@@ -329,7 +329,7 @@ pub enum Command {
     /// under `phux wait`/`run`.
     GetScreen {
         /// The Terminal whose screen to project.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Requested scrollback history (`phux-o1v`):
         /// - `None` — viewport only (the original v0.2.0-draft.6 shape).
         /// - `Some(0)` — all retained history rows (bare `--scrollback`).
@@ -356,7 +356,7 @@ pub enum Command {
     /// Terminal is unknown). Backs `phux send-keys`/`run`.
     RouteInput {
         /// The Terminal to deliver the input to.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// The structured input event (key/mouse/focus/paste).
         event: InputEvent,
     },
@@ -366,7 +366,7 @@ pub enum Command {
         /// Non-zero client-generated operation identifier.
         operation_id: InputOperationId,
         /// The Terminal to receive the complete batch.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Ordered structured input events.
         events: Vec<InputEvent>,
     },
@@ -384,13 +384,13 @@ pub enum Command {
     /// out of scope (it would be under any tiering). Killing an already-dead
     /// or unknown id is a no-op (not an error) — the op is idempotent so a
     /// caller racing a natural pane exit still succeeds. The reply rides
-    /// `COMMAND_RESULT { Ok }`; the per-pane `TERMINAL_CLOSED` frames follow
+    /// `COMMAND_RESULT { Ok }`; the per-pane `RESOURCE_CLOSED` frames follow
     /// asynchronously as the panes reap. Backs `phux kill SESSION`.
-    KillTerminals {
+    KillResources {
         /// The Terminals to terminate. Unknown / already-dead ids are
         /// skipped silently; the op succeeds as long as it is structurally
         /// valid.
-        ids: Vec<TerminalId>,
+        ids: Vec<ResourceId>,
     },
     /// Force-detach clients from *outside* the attach UI — backs `phux detach`.
     /// `session = Some(name)` detaches every client attached to that session;
@@ -410,7 +410,7 @@ pub enum Command {
     /// agent polling and state inspection (ADR-0015 L2, `phux-y2t`).
     GetTerminalState {
         /// The Terminal whose state to snapshot.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Whether to include scrollback lines above the viewport.
         /// When `false`, only the viewport is returned.
         include_scrollback: bool,
@@ -425,13 +425,13 @@ pub enum Command {
     /// that pane flow to the subscriber. Idempotent: re-subscribing updates
     /// the `event_types` filter (empty = all types). Unsubscription is implicit
     /// on detach. Reply: `COMMAND_RESULT { Ok }`; events flow asynchronously as
-    /// `Event` frames (SPEC §7.1). Backs agent-protocol `SubscribeTerminalEvents`.
-    SubscribeTerminalEvents {
+    /// `Event` frames (SPEC §7.1). Backs agent-protocol `SubscribeResourceEvents`.
+    SubscribeResourceEvents {
         /// The Terminal (pane) whose events the client subscribes to.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Event type filter: which semantic events to forward.
         /// Empty vector = all event types.
-        event_types: Vec<TerminalEventType>,
+        event_types: Vec<ResourceEventType>,
     },
     /// Ask the server to graceful-upgrade itself in place (ADR-0032): snapshot
     /// every pane, re-exec the on-disk binary, and re-adopt the live PTYs so
@@ -476,7 +476,7 @@ pub enum Command {
     /// existing holder.
     AcquireInput {
         /// The Terminal whose input authority to seize.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Cooperative (grant only if free) or Seize (preempt).
         mode: InputMode,
         /// Advisory lease lifetime in milliseconds (0 = server default).
@@ -487,16 +487,16 @@ pub enum Command {
     /// `COMMAND_RESULT { Ok }`.
     ReleaseInput {
         /// The Terminal whose lease to release.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
     /// Deliver `signal` to the process group inside `terminal_id` (ADR-0033).
-    /// Orthogonal to `KILL_TERMINAL`: this signals the process and leaves the
+    /// Orthogonal to `KILL_RESOURCE`: this signals the process and leaves the
     /// pane addressable (read its final screen / exit status). `Freeze`
     /// (SIGSTOP) / `Resume` (SIGCONT) is the reversible brake. Reply:
     /// `COMMAND_RESULT { Ok }`, or `Error { TerminalNotFound, .. }`.
     SignalTerminal {
         /// The Terminal whose process group to signal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// The signal to deliver.
         signal: TerminalSignal,
     },
@@ -509,7 +509,7 @@ pub enum Command {
         /// Non-zero client-generated identifier stable across chunk retries.
         upload_id: FileUploadId,
         /// A Terminal on the host that must be able to read the completed file.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Filename extension without a leading dot.
         extension: String,
         /// Byte offset at which this chunk begins.
@@ -528,7 +528,7 @@ pub enum Command {
     /// mutate terminal grid state.
     ReportAsked {
         /// The Terminal/pane that owns the blocked agent.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Stable question id for answer correlation.
         id: String,
         /// Human-facing question text.
@@ -542,7 +542,7 @@ pub enum Command {
     /// writing `phux.agent/v1` or disabling subsequent screen derivation.
     ReportAgentState {
         /// Pane whose detected occupant produced the hook.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Immediate lifecycle evidence.
         state: ReportedAgentState,
     },
@@ -566,7 +566,7 @@ pub enum Command {
         /// The finished upload (its final `PUT_FILE` chunk was acknowledged).
         upload_id: FileUploadId,
         /// The Terminal to paste the transcript into.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
     /// Append `bytes` to the output stream of a producer-fed resource
     /// (`docs/spec/L1.md` §5.1, tag `0x1a`). The producer verb: an
@@ -585,7 +585,7 @@ pub enum Command {
     /// Gated on `ServerFeature::ResourceKinds`.
     AppendResourceOutput {
         /// The producer-fed resource to append to.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// One or more complete records under the resource's codec.
         bytes: Vec<u8>,
     },
@@ -607,7 +607,7 @@ pub struct FileUploadAck {
 #[non_exhaustive]
 pub enum CommandValue {
     /// A Terminal identifier (e.g. the result of a spawn).
-    TerminalId(TerminalId),
+    ResourceId(ResourceId),
     /// A Group identifier (opaque grouping key).
     GroupId(GroupId),
     /// A server-state snapshot (reply to `GET_STATE`). Reuses the
@@ -698,18 +698,18 @@ pub enum AgentEvent {
     /// non-Terminal kind and `parent` only when bound, so a Terminal's
     /// `pane_spawned` body stays empty, and a decoder reads an absent field
     /// as `Terminal` / `None`.
-    PaneSpawned {
+    ResourceSpawned {
         /// What backs the new resource; `Terminal` when absent on the wire.
         kind: ResourceKind,
         /// The resource it is bound to, when it is a child (`docs/spec/L1.md`
         /// §1.2); `None` for a root.
-        parent: Option<TerminalId>,
+        parent: Option<ResourceId>,
     },
-    /// A Terminal (pane) closed. Mirrors the L1 `TERMINAL_CLOSED` frame
+    /// A Terminal (pane) closed. Mirrors the L1 `RESOURCE_CLOSED` frame
     /// (`0xA1`); the closed Terminal is the envelope's `terminal_id` and
     /// `exit_status` carries the process exit code (or `None` for signal /
-    /// unknown), matching `TERMINAL_CLOSED.exit_status`.
-    PaneClosed {
+    /// unknown), matching `RESOURCE_CLOSED.exit_status`.
+    ResourceClosed {
         /// Process exit code (`_exit(n)`), or `None` for signals / unknown.
         exit_status: Option<i32>,
     },
@@ -730,7 +730,7 @@ pub enum AgentEvent {
     /// (`actor`) — the seed of the audit trail.
     TerminalControl {
         /// Current process lifecycle of the Terminal.
-        lifecycle: TerminalLifecycle,
+        lifecycle: ResourceLifecycle,
         /// Process exit status when `lifecycle == Exited`; `None` otherwise
         /// (or for signal-terminated / unknown exits).
         exit_status: Option<i32>,
@@ -772,7 +772,7 @@ pub enum AgentEvent {
     /// on output-idle, and coalesced: emitted only when the directory
     /// actually differs from the last observation. Best-effort like every
     /// event — a consumer seeds from the `ATTACHED` snapshot's
-    /// `TerminalInfo::cwd` (the spawn cwd) and refines from this stream.
+    /// `ResourceInfo::cwd` (the spawn cwd) and refines from this stream.
     CwdChanged {
         /// The Terminal's new working directory (absolute, lossy UTF-8).
         cwd: String,

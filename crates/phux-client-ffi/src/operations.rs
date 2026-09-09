@@ -9,12 +9,12 @@ use std::collections::{HashMap, HashSet};
 use std::{mem, ptr};
 
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnError, SpawnResult};
-use phux_protocol::{GroupId, SatelliteHost, TerminalId};
+use phux_protocol::{GroupId, ResourceId, SatelliteHost};
 
 use crate::client::Client;
 use crate::error::{BridgeError, bytes_in, check_struct, terminal_id_in};
 use crate::{
-    ABI_VERSION, PhuxBytes, PhuxClient, PhuxClientResult, PhuxTerminalId, bytes_out,
+    ABI_VERSION, PhuxBytes, PhuxClient, PhuxClientResult, PhuxResourceId, bytes_out,
     terminal_id_out, with_client_mut, with_client_ref,
 };
 use phux_client_core::session::KernelSend;
@@ -32,7 +32,7 @@ pub struct PhuxSpawnOptions {
     pub size: usize,
     pub version: u32,
     pub request_id: u32,
-    pub owner_terminal: *const PhuxTerminalId,
+    pub owner_terminal: *const PhuxResourceId,
     pub satellite: PhuxBytes,
     pub argv: *const PhuxBytes,
     pub argc: usize,
@@ -61,26 +61,26 @@ impl Default for PhuxSpawnOptions {
 /// Explicit subscription request; admission is installed before its queued frame is observable.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct PhuxAttachTerminalOptions {
+pub struct PhuxAttachResourceOptions {
     pub size: usize,
     pub version: u32,
     pub request_id: u32,
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
 }
 
-impl Default for PhuxAttachTerminalOptions {
+impl Default for PhuxAttachResourceOptions {
     fn default() -> Self {
         Self {
             size: mem::size_of::<Self>(),
             version: ABI_VERSION,
             request_id: 0,
-            terminal_id: PhuxTerminalId::default(),
+            terminal_id: PhuxResourceId::default(),
         }
     }
 }
 
 /// Per-terminal subscription withdrawal, with the same sized identity record as attach.
-pub type PhuxDetachTerminalOptions = PhuxAttachTerminalOptions;
+pub type PhuxDetachResourceOptions = PhuxAttachResourceOptions;
 
 /// One completion, distinct from stream READY. Borrowed spans live until the next mutation.
 #[repr(C)]
@@ -97,7 +97,7 @@ pub struct PhuxOperationResult {
     pub error_domain: u32,
     pub error_code: u32,
     /// id == 0 means no returned terminal. Attach results always retain the requested ID.
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub message: PhuxBytes,
 }
 
@@ -111,7 +111,7 @@ impl Default for PhuxOperationResult {
             status: 0,
             error_domain: 0,
             error_code: 0,
-            terminal_id: PhuxTerminalId::default(),
+            terminal_id: PhuxResourceId::default(),
             message: PhuxBytes::default(),
         }
     }
@@ -120,8 +120,8 @@ impl Default for PhuxOperationResult {
 #[derive(Clone, Debug)]
 enum Pending {
     Spawn { satellite: Option<SatelliteHost> },
-    Attach(TerminalId),
-    Detach(TerminalId),
+    Attach(ResourceId),
+    Detach(ResourceId),
 }
 
 impl Pending {
@@ -133,7 +133,7 @@ impl Pending {
         }
     }
 
-    fn terminal(&self) -> Option<TerminalId> {
+    fn terminal(&self) -> Option<ResourceId> {
         match self {
             Self::Spawn { .. } => None,
             Self::Attach(id) | Self::Detach(id) => Some(id.clone()),
@@ -148,7 +148,7 @@ struct Completion {
     status: u32,
     error_domain: u32,
     error_code: u32,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
     message: Vec<u8>,
 }
 
@@ -162,24 +162,24 @@ struct DeferredSends {
 pub(crate) struct Operations {
     pending: HashMap<u32, Pending>,
     completed: Vec<Completion>,
-    dynamic: HashSet<TerminalId>,
+    dynamic: HashSet<ResourceId>,
     // At most one never-transmitted page request and latest cumulative ACK per
     // pending detach, preserving cursor/flow control if withdrawal is refused.
-    deferred_sends: HashMap<TerminalId, DeferredSends>,
+    deferred_sends: HashMap<ResourceId, DeferredSends>,
     last_request_id: u32,
 }
 
 impl Operations {
-    pub(crate) fn admitted(&self, id: &TerminalId) -> bool {
+    pub(crate) fn admitted(&self, id: &ResourceId) -> bool {
         self.dynamic.contains(id)
     }
 
-    pub(crate) fn retire(&mut self, id: &TerminalId) {
+    pub(crate) fn retire(&mut self, id: &ResourceId) {
         self.dynamic.remove(id);
         self.deferred_sends.remove(id);
     }
 
-    pub(crate) fn detaching(&self, id: &TerminalId) -> bool {
+    pub(crate) fn detaching(&self, id: &ResourceId) -> bool {
         self.pending
             .values()
             .any(|pending| matches!(pending, Pending::Detach(target) if target == id))
@@ -207,7 +207,7 @@ impl Operations {
         true
     }
 
-    fn subscription_pending(&self, id: &TerminalId) -> bool {
+    fn subscription_pending(&self, id: &ResourceId) -> bool {
         self.pending
             .values()
             .any(|pending| matches!(pending, Pending::Attach(target) | Pending::Detach(target) if target == id))
@@ -265,7 +265,7 @@ impl Operations {
         &mut self,
         request_id: u32,
         status: u32,
-        terminal: Option<TerminalId>,
+        terminal: Option<ResourceId>,
         error_domain: u32,
         error_code: u32,
         message: &str,
@@ -310,10 +310,10 @@ fn bounded_message(message: &str) -> Vec<u8> {
     message.as_bytes()[..end].to_vec()
 }
 
-fn valid_terminal(id: &TerminalId) -> Result<(), BridgeError> {
+fn valid_terminal(id: &ResourceId) -> Result<(), BridgeError> {
     match id {
-        TerminalId::Local { id } if *id > 0 => Ok(()),
-        TerminalId::Satellite { host, id }
+        ResourceId::Local { id } if *id > 0 => Ok(()),
+        ResourceId::Satellite { host, id }
             if *id > 0
                 && !host.as_str().is_empty()
                 && host.as_str().len() <= MAX_SPAWN_BYTES
@@ -386,7 +386,7 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
     let command = unsafe { command_in(options, &mut budget) }?;
     // SAFETY: caller's options contract covers the optional owner pointer.
     let owner_terminal = unsafe { owner_in(options.owner_terminal, &satellite, &mut budget) }?;
-    Ok(FrameKind::SpawnTerminal {
+    Ok(FrameKind::SpawnResource {
         request_id: options.request_id,
         group: GroupId::new(1),
         command,
@@ -402,10 +402,10 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
 }
 
 unsafe fn owner_in(
-    owner: *const PhuxTerminalId,
+    owner: *const PhuxResourceId,
     satellite: &str,
     budget: &mut usize,
-) -> Result<Option<TerminalId>, BridgeError> {
+) -> Result<Option<ResourceId>, BridgeError> {
     if owner.is_null() {
         return Ok(None);
     }
@@ -413,8 +413,8 @@ unsafe fn owner_in(
     let owner = unsafe { terminal_id_in(owner) }?;
     valid_terminal(&owner)?;
     let expected_route = match &owner {
-        TerminalId::Local { .. } => "",
-        TerminalId::Satellite { host, .. } => {
+        ResourceId::Local { .. } => "",
+        ResourceId::Satellite { host, .. } => {
             *budget = budget
                 .checked_sub(host.as_str().len())
                 .ok_or_else(|| BridgeError::invalid("spawn text exceeds 64 KiB aggregate bound"))?;
@@ -448,7 +448,7 @@ pub unsafe extern "C" fn phux_client_queue_spawn(
         let frame = unsafe { spawn_frame(options) }?;
         ensure_queue_capacity(client, options.request_id)?;
         client.operations.check_admission_capacity()?;
-        let FrameKind::SpawnTerminal { satellite, .. } = &frame else {
+        let FrameKind::SpawnResource { satellite, .. } = &frame else {
             unreachable!()
         };
         let pending = Pending::Spawn {
@@ -466,9 +466,9 @@ pub unsafe extern "C" fn phux_client_queue_spawn(
 /// Client must be live and exclusively accessed on its owning thread. Options and
 /// any nonempty terminal host span must be readable for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_queue_attach_terminal(
+pub unsafe extern "C" fn phux_client_queue_attach_resource(
     client: *mut PhuxClient,
-    options: *const PhuxAttachTerminalOptions,
+    options: *const PhuxAttachResourceOptions,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         client.ensure_attached()?;
@@ -477,7 +477,7 @@ pub unsafe extern "C" fn phux_client_queue_attach_terminal(
             unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
         check_struct(
             options.size,
-            mem::size_of::<PhuxAttachTerminalOptions>(),
+            mem::size_of::<PhuxAttachResourceOptions>(),
             options.version,
         )?;
         // SAFETY: options includes the readable ID and its host span.
@@ -490,7 +490,7 @@ pub unsafe extern "C" fn phux_client_queue_attach_terminal(
 fn queue_terminal_attach(
     client: &mut Client,
     request_id: u32,
-    id: TerminalId,
+    id: ResourceId,
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
     client.operations.check_admission_capacity()?;
@@ -513,7 +513,7 @@ fn queue_terminal_attach(
     }
     client.queue_frame(&FrameKind::Command {
         request_id,
-        command: Command::AttachTerminal {
+        command: Command::AttachResource {
             terminal_id: id.clone(),
         },
     })?;
@@ -528,9 +528,9 @@ fn queue_terminal_attach(
 /// # Safety
 /// Client is live and exclusively accessed. Options and terminal host are readable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_queue_detach_terminal(
+pub unsafe extern "C" fn phux_client_queue_detach_resource(
     client: *mut PhuxClient,
-    options: *const PhuxDetachTerminalOptions,
+    options: *const PhuxDetachResourceOptions,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         client.ensure_attached()?;
@@ -539,7 +539,7 @@ pub unsafe extern "C" fn phux_client_queue_detach_terminal(
             unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
         check_struct(
             options.size,
-            mem::size_of::<PhuxDetachTerminalOptions>(),
+            mem::size_of::<PhuxDetachResourceOptions>(),
             options.version,
         )?;
         // SAFETY: options includes the readable ID and host span.
@@ -552,7 +552,7 @@ pub unsafe extern "C" fn phux_client_queue_detach_terminal(
 fn queue_terminal_detach(
     client: &mut Client,
     request_id: u32,
-    id: TerminalId,
+    id: ResourceId,
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
     if client.operations.subscription_pending(&id) {
@@ -565,7 +565,7 @@ fn queue_terminal_detach(
     }
     client.queue_frame(&FrameKind::Command {
         request_id,
-        command: Command::DetachTerminal {
+        command: Command::DetachResource {
             terminal_id: id.clone(),
         },
     })?;
@@ -588,7 +588,7 @@ pub(crate) fn dispatch(
     frame: FrameKind,
 ) -> Result<Option<FrameKind>, BridgeError> {
     match frame {
-        FrameKind::TerminalSpawned { request_id, result } => {
+        FrameKind::ResourceSpawned { request_id, result } => {
             complete_spawn(client, request_id, result)?;
         }
         FrameKind::CommandResult { request_id, result } => {
@@ -614,13 +614,13 @@ fn complete_spawn(
 ) -> Result<(), BridgeError> {
     let Pending::Spawn { satellite } = client.operations.pending(request_id)? else {
         return Err(BridgeError::protocol(
-            "TERMINAL_SPAWNED does not answer a spawn",
+            "RESOURCE_SPAWNED does not answer a spawn",
         ));
     };
     match result {
         SpawnResult::Ok(id) => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
-            if matches!(id, TerminalId::Local { .. }) {
+            if matches!(id, ResourceId::Local { .. }) {
                 client.operations.dynamic.insert(id.clone());
             }
             client
@@ -640,13 +640,13 @@ fn complete_spawn(
 
 fn validate_spawn_reply(
     client: &Client,
-    id: &TerminalId,
+    id: &ResourceId,
     satellite: Option<&SatelliteHost>,
 ) -> Result<(), BridgeError> {
     valid_terminal(id).map_err(|error| BridgeError::protocol(error.message))?;
     let host = match id {
-        TerminalId::Local { .. } => None,
-        TerminalId::Satellite { host, .. } => Some(host),
+        ResourceId::Local { .. } => None,
+        ResourceId::Satellite { host, .. } => Some(host),
     };
     if host != satellite {
         return Err(BridgeError::protocol(
@@ -703,7 +703,7 @@ fn complete_subscription(
     Ok(())
 }
 
-fn complete_detach(client: &mut Client, id: &TerminalId) -> Result<(), BridgeError> {
+fn complete_detach(client: &mut Client, id: &ResourceId) -> Result<(), BridgeError> {
     client.operations.retire(id);
     if !client.session.detach_terminal(id) {
         return Err(BridgeError::state("cannot detach before ATTACH barrier"));
@@ -764,7 +764,7 @@ fn resume_deferred(
 
 /// The explicit admission gate replaces permanent kernel death records for
 /// dynamic subscriptions. Initial ATTACH participants retain the kernel barrier.
-pub(crate) fn release_terminal(client: &mut Client, id: &TerminalId) -> Result<(), BridgeError> {
+pub(crate) fn release_terminal(client: &mut Client, id: &ResourceId) -> Result<(), BridgeError> {
     client.operations.deferred_sends.remove(id);
     if !client.operations.admitted(id) {
         return Ok(());
@@ -866,7 +866,7 @@ pub unsafe extern "C" fn phux_client_operation_get(
             terminal_id: result
                 .terminal
                 .as_ref()
-                .map_or_else(PhuxTerminalId::default, terminal_id_out),
+                .map_or_else(PhuxResourceId::default, terminal_id_out),
             message: bytes_out(&result.message),
             ..PhuxOperationResult::default()
         };

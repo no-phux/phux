@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define PHUX_CLIENT_ABI_VERSION 1u
+#define PHUX_CLIENT_ABI_VERSION 2u
 #define PHUX_CLIENT_MAX_OUTBOUND_BYTES (64u * 1024u)
 #define PHUX_CLIENT_RELEASE_CARGO_PROFILE "ffi-release"
 #define PHUX_CLIENT_CELL_BOLD (1u << 0)
@@ -308,17 +308,17 @@ typedef struct PhuxBytes {
     size_t len;
 } PhuxBytes;
 
-typedef enum PhuxTerminalIdKind {
-    PHUX_TERMINAL_LOCAL = 0,
-    PHUX_TERMINAL_SATELLITE = 1
-} PhuxTerminalIdKind;
+typedef enum PhuxResourceIdKind {
+    PHUX_RESOURCE_ID_LOCAL = 0,
+    PHUX_RESOURCE_ID_SATELLITE = 1
+} PhuxResourceIdKind;
 
 /** For satellite IDs, host is UTF-8 and borrowed for the duration of the call. */
-typedef struct PhuxTerminalId {
+typedef struct PhuxResourceId {
     uint32_t kind;
     uint32_t id;
     PhuxBytes host;
-} PhuxTerminalId;
+} PhuxResourceId;
 
 /** Borrowed server-owned session summary from the latest ATTACHED snapshot. */
 typedef struct PhuxSessionInfo {
@@ -355,9 +355,9 @@ typedef enum PhuxResourceKind {
 typedef struct PhuxResourceInfo {
     size_t size;
     uint32_t version;
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     uint32_t kind;
-    const PhuxTerminalId *parent;
+    const PhuxResourceId *parent;
     PhuxBytes provider;
     PhuxBytes native_id;
     PhuxBytes state;
@@ -457,7 +457,7 @@ typedef struct PhuxSpawnOptions {
     size_t size;
     uint32_t version;
     uint32_t request_id;
-    const PhuxTerminalId *owner_terminal;
+    const PhuxResourceId *owner_terminal;
     PhuxBytes satellite;
     const PhuxBytes *argv;
     size_t argc;
@@ -470,19 +470,19 @@ typedef struct PhuxSpawnOptions {
  * COMMAND_RESULT acknowledgment. Already admitted or pending IDs are rejected. A successful
  * local spawn is automatically admitted; a satellite spawn needs this call.
  */
-typedef struct PhuxAttachTerminalOptions {
+typedef struct PhuxAttachResourceOptions {
     size_t size;
     uint32_t version;
     uint32_t request_id;
-    PhuxTerminalId terminal_id;
-} PhuxAttachTerminalOptions;
+    PhuxResourceId terminal_id;
+} PhuxAttachResourceOptions;
 
-typedef PhuxAttachTerminalOptions PhuxDetachTerminalOptions;
+typedef PhuxAttachResourceOptions PhuxDetachResourceOptions;
 
 typedef enum PhuxOperationKind {
     PHUX_OPERATION_SPAWN = 1,
-    PHUX_OPERATION_ATTACH_TERMINAL = 2,
-    PHUX_OPERATION_DETACH_TERMINAL = 3
+    PHUX_OPERATION_ATTACH_RESOURCE = 2,
+    PHUX_OPERATION_DETACH_RESOURCE = 3
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -515,7 +515,7 @@ typedef struct PhuxOperationResult {
     uint32_t status;
     uint32_t error_domain;
     uint32_t error_code;
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     PhuxBytes message;
 } PhuxOperationResult;
 
@@ -617,7 +617,7 @@ typedef struct PhuxClientEffect {
     uint32_t kind;
     uint32_t detail;
     uint32_t status_code;
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     uint64_t stream_id;
     uint64_t bootstrap_id;
     uint64_t seq;
@@ -673,7 +673,7 @@ typedef struct PhuxTerminalCell {
  * identity; release it when the frontend no longer needs it.
  */
 typedef struct PhuxTerminalGridView {
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     uint64_t stream_id;
     uint64_t bootstrap_id;
     uint64_t last_seq;
@@ -792,7 +792,7 @@ PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
 PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
-PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const PhuxAttachTerminalOptions *options);
+PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const PhuxAttachResourceOptions *options);
 
 /* Withdraw a subscription, never kill durable work. Requires completed session
  * ATTACH and an admitted terminal without a pending attach/detach. Correlated
@@ -805,7 +805,7 @@ PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const Phu
  * are retained per detach, resumed only on refusal with a still-live exact
  * generation/cursor. Success/closure/disconnect discard them; input is never
  * retained or replayed. */
-PhuxClientResult phux_client_queue_detach_terminal(PhuxClient *client, const PhuxDetachTerminalOptions *options);
+PhuxClientResult phux_client_queue_detach_resource(PhuxClient *client, const PhuxDetachResourceOptions *options);
 size_t phux_client_operation_count(const PhuxClient *client);
 PhuxClientResult phux_client_operation_get(const PhuxClient *client, size_t index, PhuxOperationResult *out_result);
 /** Clears completions only, preserving pending correlation and stream admission. */
@@ -857,14 +857,14 @@ typedef struct PhuxWorkspaceNode {
     uint32_t version;
     /* leaf=1, side-by-side=2, stacked=3; child indices are snapshot-global. */
     uint32_t kind;
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     uint32_t first, second;
     float ratio;
 } PhuxWorkspaceNode;
 typedef struct PhuxCatalogTerminal {
     size_t size;
     uint32_t version;
-    PhuxTerminalId terminal_id;
+    PhuxResourceId terminal_id;
     /* 0 means unknown ownership (e.g. satellite); never inferred from numeric ID. */
     uint32_t session_id;
     PhuxBytes title, cwd;
@@ -880,7 +880,7 @@ typedef struct PhuxWorkspaceMutation {
     uint8_t window_id[16];
     /* add: terminal_id seeds a Rust-minted ID (window_id ignored).
      * split: terminal_id is target, new_terminal_id is the new sibling. */
-    PhuxTerminalId terminal_id, new_terminal_id;
+    PhuxResourceId terminal_id, new_terminal_id;
     PhuxBytes name;
     /* split direction: side-by-side=2, stacked=3; resize uses ratio only.
      * Both require a finite ratio strictly between 0 and 1. */
@@ -909,7 +909,7 @@ PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);
 size_t phux_client_effect_count(const PhuxClient *client);
 PhuxClientResult phux_client_effect_get(const PhuxClient *client, size_t index, PhuxClientEffect *out_effect);
 PhuxClientResult phux_client_effect_clear(PhuxClient *client);
-PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridView *out_view);
+PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxTerminalGridView *out_view);
 
 /* Read-only companion to terminal_grid. Call immediately after that query,
  * before ANY mutable client call; both borrows remain valid. Returns
@@ -917,7 +917,7 @@ PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTermina
  * Defaults/palette entries come from the same libghostty render pass. Missing
  * default colors use the renderer's configured fallback (also swapped under
  * reverse_colors); missing cursor color uses its configured cursor fallback. */
-PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
+PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxResourceId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
 /**
  * Reports whether the published Ghostty terminal's effective mouse-tracking
  * state is active (X10, normal, button, or any-event). Returns
@@ -925,24 +925,24 @@ PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, co
  * PHUX_CLIENT_INVALID_ARGUMENT for null or
  * malformed arguments. This read-only query preserves borrowed bridge views.
  */
-PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxTerminalId *terminal_id, bool *out_enabled);
-PhuxClientResult phux_client_send_key(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxKeyEvent *event);
-PhuxClientResult phux_client_send_mouse(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxMouseEvent *event);
-PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxTerminalId *terminal_id, bool focused);
-PhuxClientResult phux_client_send_paste(PhuxClient *client, const PhuxTerminalId *terminal_id, const uint8_t *data, size_t len, bool trusted);
-PhuxClientResult phux_client_terminal_resize(PhuxClient *client, const PhuxTerminalId *terminal_id, uint16_t cols, uint16_t rows);
+PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxResourceId *terminal_id, bool *out_enabled);
+PhuxClientResult phux_client_send_key(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxKeyEvent *event);
+PhuxClientResult phux_client_send_mouse(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxMouseEvent *event);
+PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxResourceId *terminal_id, bool focused);
+PhuxClientResult phux_client_send_paste(PhuxClient *client, const PhuxResourceId *terminal_id, const uint8_t *data, size_t len, bool trusted);
+PhuxClientResult phux_client_terminal_resize(PhuxClient *client, const PhuxResourceId *terminal_id, uint16_t cols, uint16_t rows);
 PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, uint16_t rows, bool has_pixel_size, uint16_t pixel_width, uint16_t pixel_height);
-PhuxClientResult phux_client_scroll_viewport(PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t kind, int64_t value);
-PhuxClientResult phux_client_anchor_create(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentPoint point, PhuxDocumentAnchor *out_anchor);
-PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
+PhuxClientResult phux_client_scroll_viewport(PhuxClient *client, const PhuxResourceId *terminal_id, uint32_t kind, int64_t value);
+PhuxClientResult phux_client_anchor_create(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentPoint point, PhuxDocumentAnchor *out_anchor);
+PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentAnchor anchor);
 /** Client-only Clear: home the cursor, erase the active display and scrollback,
  * clear selection/document anchors, and cancel older history for this replica.
  * Preserves modes, dimensions, durable work and live sequence; sends no input.
  * Rejects an absent/disconnected terminal or mismatched stream/bootstrap IDs. */
-PhuxClientResult phux_client_clear_presentation(PhuxClient *client, const PhuxTerminalId *terminal_id, uint64_t stream_id, uint64_t bootstrap_id);
-PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
-PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxTerminalId *terminal_id);
-PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
+PhuxClientResult phux_client_clear_presentation(PhuxClient *client, const PhuxResourceId *terminal_id, uint64_t stream_id, uint64_t bootstrap_id);
+PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentAnchor anchor);
+PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxResourceId *terminal_id);
+PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
 
 /* Native Ghostty gestures, version 1. phase: press=0, drag=1, release=2.
  * Positions and geometry share surface units; press clicks=1..3. A release
@@ -963,13 +963,13 @@ typedef struct PhuxSelectionGestureResult {
     uint64_t handle;
     PhuxDocumentAnchor start, end;
 } PhuxSelectionGestureResult;
-PhuxClientResult phux_client_selection_gesture(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxSelectionGestureEvent *event, PhuxSelectionGestureResult *out_result);
+PhuxClientResult phux_client_selection_gesture(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxSelectionGestureEvent *event, PhuxSelectionGestureResult *out_result);
 
 /* Read-only effective Ghostty mode: off=0, X10=1, normal=2, button=3, any=4.
  * Uses the resolved encoder state, including DECSET/DECRST ordering. */
-PhuxClientResult phux_client_terminal_mouse_mode(const PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t *out_mode);
-PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxTerminalId *terminal_id);
-PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes *out_text);
+PhuxClientResult phux_client_terminal_mouse_mode(const PhuxClient *client, const PhuxResourceId *terminal_id, uint32_t *out_mode);
+PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxResourceId *terminal_id);
+PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxBytes *out_text);
 /**
  * Snapshots the kernel's always-on performance telemetry as a JSON
  * PerfReport (ADR-0096): frames applied and their bytes, engine apply time,
@@ -987,7 +987,7 @@ PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
  * either copy the handles for later individual release or call
  * phux_client_search_results_release to release the entire set atomically.
  */
-PhuxClientResult phux_client_search(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes query_utf8, bool case_sensitive, const PhuxSearchResult **out_results, size_t *out_count);
+PhuxClientResult phux_client_search(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxBytes query_utf8, bool case_sensitive, const PhuxSearchResult **out_results, size_t *out_count);
 PhuxClientResult phux_client_search_results_release(PhuxClient *client);
 
 #ifdef __cplusplus

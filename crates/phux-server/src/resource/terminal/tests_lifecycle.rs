@@ -404,7 +404,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         clippy::future_not_send,
         reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
     )]
-    async fn next_control(rx: &mut mpsc::Receiver<Outbound>) -> (ControlAction, TerminalLifecycle) {
+    async fn next_control(rx: &mut mpsc::Receiver<Outbound>) -> (ControlAction, ResourceLifecycle) {
         // Scan past any incidental grid events (Dirty/Idle) for the next
         // supervisory TerminalControl broadcast.
         let scan = async {
@@ -476,7 +476,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             handle
                 .subscribe_to_events
                 .send(SubscribeToEventsRequest {
-                    subscriber: TerminalEventSubscriber {
+                    subscriber: ResourceEventSubscriber {
                         outbound: evt_tx,
                         event_types: Vec::new(),
                     },
@@ -502,7 +502,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             ack.await.expect("freeze ack").expect("freeze delivered");
             let (action, lifecycle) = next_control(&mut evt_rx).await;
             assert_eq!(action, ControlAction::Frozen);
-            assert_eq!(lifecycle, TerminalLifecycle::Frozen);
+            assert_eq!(lifecycle, ResourceLifecycle::Frozen);
 
             // Resume → Running.
             let (reply, ack) = oneshot::channel();
@@ -519,7 +519,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             ack.await.expect("resume ack").expect("resume delivered");
             let (action, lifecycle) = next_control(&mut evt_rx).await;
             assert_eq!(action, ControlAction::Resumed);
-            assert_eq!(lifecycle, TerminalLifecycle::Running);
+            assert_eq!(lifecycle, ResourceLifecycle::Running);
 
             // Kill → the child actually dies; its EOF fires the exit notify.
             let (reply, ack) = oneshot::channel();
@@ -1285,7 +1285,7 @@ async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
                 .native_bootstrap
                 .send(NativeBootstrapRequest {
                     owner: 3,
-                    terminal_id: phux_protocol::ids::TerminalId::local(1),
+                    terminal_id: phux_protocol::ids::ResourceId::local(1),
                     stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
                     limits: phux_protocol::caps::BootstrapLimits::new(
@@ -1361,7 +1361,7 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
                 .native_bootstrap
                 .send(NativeBootstrapRequest {
                     owner: 7,
-                    terminal_id: phux_protocol::ids::TerminalId::local(1),
+                    terminal_id: phux_protocol::ids::ResourceId::local(1),
                     stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
                     limits: phux_protocol::caps::BootstrapLimits::new(
@@ -1494,7 +1494,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
     let mut actor = bundle.actor;
     let mut output = bundle.handle.output.subscribe();
-    let terminal_id = phux_protocol::ids::TerminalId::local(1);
+    let terminal_id = phux_protocol::ids::ResourceId::local(1);
     let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
     let cursor: crate::native_state::OpaqueHistoryCursor =
@@ -1557,7 +1557,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
 async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
     let mut actor = bundle.actor;
-    let terminal_id = phux_protocol::ids::TerminalId::local(1);
+    let terminal_id = phux_protocol::ids::ResourceId::local(1);
     let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
     let cursor: crate::native_state::OpaqueHistoryCursor =
@@ -1658,7 +1658,7 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                     .native_bootstrap
                     .send(NativeBootstrapRequest {
                         owner: 11,
-                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        terminal_id: phux_protocol::ids::ResourceId::local(2),
                         stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
                             .expect("bootstrap id"),
@@ -1715,7 +1715,7 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                 .send(NativeHistoryRequest {
                     permit: retry_permit,
                     owner: 11,
-                    terminal_id: phux_protocol::ids::TerminalId::local(2),
+                    terminal_id: phux_protocol::ids::ResourceId::local(2),
                     stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(4).expect("bootstrap id"),
                     cursor: cursor.clone(),
@@ -1763,7 +1763,7 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                     .send(NativeHistoryRequest {
                         permit,
                         owner: 11,
-                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        terminal_id: phux_protocol::ids::ResourceId::local(2),
                         stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
                             .expect("bootstrap id"),

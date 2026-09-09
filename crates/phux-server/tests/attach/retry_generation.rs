@@ -21,7 +21,7 @@ use phux_client_ffi::{
     phux_client_terminal_resize, terminal_id_out,
 };
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{FrameKind, TombstoneReason};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -109,7 +109,7 @@ async fn flush_outgoing(frames: Vec<FrameKind>, stream: &mut UnixStream) {
     }
 }
 
-fn focused_terminal(frame: &FrameKind) -> Option<TerminalId> {
+fn focused_terminal(frame: &FrameKind) -> Option<ResourceId> {
     let FrameKind::Attached { snapshot, .. } = frame else {
         return None;
     };
@@ -120,7 +120,7 @@ fn focused_terminal(frame: &FrameKind) -> Option<TerminalId> {
         .map(|window| window.id)
         .collect();
     snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| focused_windows.contains(&pane.window_id))
         .map(|pane| pane.id.clone())
@@ -128,7 +128,7 @@ fn focused_terminal(frame: &FrameKind) -> Option<TerminalId> {
 
 fn current_grid_contains(
     client: *mut PhuxClient,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     marker: &[u8],
 ) -> Option<PhuxTerminalGridView> {
     let terminal = terminal_id_out(terminal_id);
@@ -258,8 +258,8 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
         let terminal_id = terminal_id.expect("ATTACHED names the configured seed pane");
         assert_eq!(
             terminal_id,
-            TerminalId::local(1),
-            "fresh configured seed must be TerminalId(1)",
+            ResourceId::local(1),
+            "fresh configured seed must be ResourceId(1)",
         );
         let terminal = terminal_id_out(&terminal_id);
         assert_eq!(
@@ -328,7 +328,7 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
         );
 
         let (stream_id, bootstrap_id) = initial_generation;
-        let stale = FrameKind::TerminalOutput {
+        let stale = FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id,
             bootstrap_id,
@@ -338,7 +338,7 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
         assert_eq!(feed(client, &stale), PhuxClientResult::InvalidState);
         assert_eq!(
             last_error(client),
-            "generation (StreamId(2), BootstrapId(1)) is retired for TerminalId(1)",
+            "generation (StreamId(2), BootstrapId(1)) is retired for ResourceId(1)",
             "strict stale-frame rejection must remain visible",
         );
         assert_eq!(

@@ -20,7 +20,7 @@ use phux_client::agent_wait::{
     AgentWaitError, AgentWaitResult, DEFAULT_UNTIL, parse_until, wait_for_agent_state,
 };
 use phux_client::attach::AttachError;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -83,7 +83,7 @@ pub(super) fn resolve_until(until: &[String]) -> Result<Vec<AgentMetaState>, jso
 /// satellite target at the same point: nothing was observed and nothing was
 /// written, so the caller loses no work by learning early. `agent wait` was
 /// the last of the three to still try.
-fn satellite_refusal(terminal: &TerminalId) -> Option<json_err::CliError> {
+fn satellite_refusal(terminal: &ResourceId) -> Option<json_err::CliError> {
     if terminal.is_local() {
         return None;
     }
@@ -204,7 +204,7 @@ pub(super) fn run_agent_wait(
 
 /// Render the outcome and pick the exit code.
 fn report(
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     result: &AgentWaitResult,
     provenance: Option<&AgentStateReport>,
     json: bool,
@@ -300,13 +300,16 @@ fn report(
 /// rather than failing a wait that was satisfied.
 async fn provenance(
     socket_path: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     record: Option<AgentRecord>,
 ) -> Option<AgentStateReport> {
     let (snapshot, _degradation) = super::fetch_snapshot(socket_path, "agent wait")
         .await
         .ok()?;
-    let pane = snapshot.panes.iter().find(|pane| pane.id == *terminal)?;
+    let pane = snapshot
+        .resources
+        .iter()
+        .find(|pane| pane.id == *terminal)?;
     let mut evidence = super::pane_evidence(socket_path, &snapshot, pane).await;
     evidence.record = record;
     Some(super::detect::infer_agent_state(
@@ -376,9 +379,9 @@ mod tests {
     /// about a pane whose agent is alive on another machine.
     #[test]
     fn a_satellite_target_is_refused_and_a_local_one_is_not() {
-        assert!(satellite_refusal(&TerminalId::local(3)).is_none());
+        assert!(satellite_refusal(&ResourceId::local(3)).is_none());
 
-        let err = satellite_refusal(&TerminalId::Satellite {
+        let err = satellite_refusal(&ResourceId::Satellite {
             host: phux_protocol::ids::SatelliteHost::new("gpubox"),
             id: 7,
         })

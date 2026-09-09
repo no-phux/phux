@@ -40,7 +40,7 @@ unicode-segmentation = { workspace = true }
 # envelope encode/decode for the `{version, root, focus}` layout shape.
 ciborium = "0.2"
 # phux-4li.3: serde-derive shims for the CBOR envelope; the wire-side
-# `LayoutNode`/`TerminalId` don't derive serde (phux-protocol stays a
+# `LayoutNode`/`ResourceId` don't derive serde (phux-protocol stays a
 # near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
 serde = { workspace = true }
 # AgentSession resources stream `AgentEventsJsonlV1` records (one JSON object

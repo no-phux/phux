@@ -8,11 +8,11 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
 
 use crate::attach::actions::{self, PendingSplit, PendingWindow};
@@ -53,19 +53,19 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     out: &mut W,
     conn: &mut Connection,
     ctx: &mut DispatchCtx<'_>,
-    focused_pane: &mut Option<TerminalId>,
+    focused_resource: &mut Option<ResourceId>,
     detach_pending: &mut bool,
     predict: &mut PredictionState,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
 ) -> Result<bool, AttachError> {
     let layout_changed = effects.layout_mutated;
-    apply_zoom_toggle(effects.toggle_zoom, ctx.zoomed, focused_pane.as_ref());
+    apply_zoom_toggle(effects.toggle_zoom, ctx.zoomed, focused_resource.as_ref());
     apply_sidebar_toggle(effects.toggle_sidebar, ctx.sidebar_enabled);
     apply_focus_effect(
         effects.set_focus,
         effects.clear_predict,
         &mut ctx.focus_history,
-        focused_pane,
+        focused_resource,
         predict,
         panes,
     );
@@ -123,8 +123,8 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
 /// focused pane. `run_action` already gated single-pane windows.
 fn apply_zoom_toggle(
     toggle: bool,
-    zoomed: &mut Option<TerminalId>,
-    focused_pane: Option<&TerminalId>,
+    zoomed: &mut Option<ResourceId>,
+    focused_resource: Option<&ResourceId>,
 ) {
     if !toggle {
         return;
@@ -132,7 +132,7 @@ fn apply_zoom_toggle(
     *zoomed = if zoomed.is_some() {
         None
     } else {
-        focused_pane.cloned()
+        focused_resource.cloned()
     };
 }
 
@@ -154,12 +154,12 @@ const fn apply_sidebar_toggle(toggle: bool, sidebar_enabled: &mut bool) {
 /// right place rather than the old pane's (mid-screen) coordinates
 /// (phux-7ry0). Subsumes the plain `clear_predict` drop.
 fn apply_focus_effect(
-    set_focus: Option<TerminalId>,
+    set_focus: Option<ResourceId>,
     clear_predict: bool,
     focus_history: &mut FocusHistory,
-    focused_pane: &mut Option<TerminalId>,
+    focused_resource: &mut Option<ResourceId>,
     predict: &mut PredictionState,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
 ) {
     let Some(target) = set_focus else {
         if clear_predict {
@@ -167,8 +167,8 @@ fn apply_focus_effect(
         }
         return;
     };
-    apply_focus_transition(focus_history, focused_pane, target);
-    if let Some(fid) = focused_pane.as_ref() {
+    apply_focus_transition(focus_history, focused_resource, target);
+    if let Some(fid) = focused_resource.as_ref() {
         reanchor_predict_to_pane(predict, panes, fid);
     }
 }
@@ -222,9 +222,9 @@ async fn send_detach(
     Ok(())
 }
 
-/// Send the parked `SPAWN_TERMINAL` requests and remember their intent.
+/// Send the parked `SPAWN_RESOURCE` requests and remember their intent.
 ///
-/// Parked split — send the `SPAWN_TERMINAL` and remember the intent.
+/// Parked split — send the `SPAWN_RESOURCE` and remember the intent.
 /// Parked new-window — same SPAWN flow; the reply opens a window.
 async fn send_parked_spawns(
     spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
@@ -244,16 +244,16 @@ async fn send_parked_spawns(
     Ok(())
 }
 
-/// kill-pane / kill-window keystroke sequences; the `TERMINAL_CLOSED`
+/// kill-pane / kill-window keystroke sequences; the `RESOURCE_CLOSED`
 /// fold-out happens when each shell exits. Park the targets FIRST
 /// (phux-i0e8.2.2): once the frames are on the wire the close can
 /// race back, and an unmarked close would notice-spam the user about
 /// a death they ordered.
 async fn send_kill_frames(
     kill_frames: Vec<FrameKind>,
-    targets: Vec<TerminalId>,
+    targets: Vec<ResourceId>,
     conn: &mut Connection,
-    expected_closes: &mut HashSet<TerminalId>,
+    expected_closes: &mut HashSet<ResourceId>,
 ) -> Result<(), AttachError> {
     expected_closes.extend(targets);
     for frame in kill_frames {
@@ -435,11 +435,11 @@ pub(super) struct ActionEffects {
     /// the driver; it also sets `layout_mutated` so the panes reflow into (or
     /// out of) the sidebar's reserved columns on the same-iteration repaint.
     pub(super) toggle_sidebar: bool,
-    /// `Some(new_focus)` ⇒ swap the driver's `focused_pane` (input
+    /// `Some(new_focus)` ⇒ swap the driver's `focused_resource` (input
     /// routing follows). The action helper already updated the active
     /// window's focus; this carries the new id so the driver
     /// doesn't have to re-read it.
-    pub(super) set_focus: Option<TerminalId>,
+    pub(super) set_focus: Option<ResourceId>,
     /// `true` ⇒ emit `SET_METADATA` carrying the new layout envelope.
     pub(super) set_metadata: bool,
     /// `true` ⇒ emit a terminal bell (BEL `\x07`).
@@ -447,16 +447,16 @@ pub(super) struct ActionEffects {
     /// phux-4li.16: `true` ⇒ the active window changed; the driver must
     /// drop the prediction queue (anchored to the old window's focused
     /// pane) so a stale ghost echo doesn't paint into the new window
-    /// before the next `TERMINAL_OUTPUT` reconciles.
+    /// before the next `RESOURCE_OUTPUT` reconciles.
     pub(super) clear_predict: bool,
     /// `true` ⇒ emit `DETACH` and wait for `DETACHED`.
     pub(super) detach: bool,
-    /// phux-4li.12: a `split-pane` action emitted a `SPAWN_TERMINAL`
+    /// phux-4li.12: a `split-pane` action emitted a `SPAWN_RESOURCE`
     /// and parked a [`PendingSplit`] keyed by `request_id`. The async
     /// caller sends the frame, then inserts the parked entry into the
     /// driver-wide `pending_splits` map.
     pub(super) spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
-    /// phux-4li.15: a `new-window` action emitted a `SPAWN_TERMINAL` and
+    /// phux-4li.15: a `new-window` action emitted a `SPAWN_RESOURCE` and
     /// parked a [`PendingWindow`] keyed by `request_id`. The async caller
     /// sends the frame and inserts the parked entry into the driver-wide
     /// `pending_windows` map; the reply opens a new window on the
@@ -465,14 +465,14 @@ pub(super) struct ActionEffects {
     /// phux-4li.12: a `kill-pane` action ships a sequence of frames to
     /// the focused Terminal (the "soft-kill via shell-exit" — see
     /// `run_action`). The async caller sends them in order; the
-    /// resulting `TERMINAL_CLOSED` from the server folds the pane out
+    /// resulting `RESOURCE_CLOSED` from the server folds the pane out
     /// of the layout in [`crate::attach::server_frame::handle_server_frame`].
     pub(super) kill_frames: Vec<FrameKind>,
     /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
     /// caller parks them in `DispatchCtx::expected_closes` so the
-    /// eventual `TERMINAL_CLOSED` is recognized as client-initiated and
+    /// eventual `RESOURCE_CLOSED` is recognized as client-initiated and
     /// its pane-exit notice suppressed.
-    pub(super) expected_closes: Vec<TerminalId>,
+    pub(super) expected_closes: Vec<ResourceId>,
     /// ADR-0033: supervisory commands (`ACQUIRE_INPUT` / `RELEASE_INPUT` /
     /// `SIGNAL_TERMINAL`) the `take-input` / `give-input` / `signal-terminal`
     /// actions built for the focused pane. The async caller sends each as a

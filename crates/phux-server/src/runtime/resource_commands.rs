@@ -42,7 +42,7 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 
 // ---- spawn ------------------------------------------------------------------
 
-/// Handle a `SPAWN_TERMINAL` whose kind is `AgentSession` (ADR-0103 §1).
+/// Handle a `SPAWN_RESOURCE` whose kind is `AgentSession` (ADR-0103 §1).
 ///
 /// The parent is validated before anything is created: it must resolve on
 /// this server, still be live, and be a Terminal. A session may not parent
@@ -95,7 +95,7 @@ pub(crate) async fn spawn_agent_session(
             .flatten()
             .map(|core| (core, parent.clone()))
     }) else {
-        debug!(?client_id, request_id, %parent, "SPAWN_TERMINAL: agent session parent not found");
+        debug!(?client_id, request_id, %parent, "SPAWN_RESOURCE: agent session parent not found");
         refuse(out_tx, request_id, SpawnError::ParentNotFound).await;
         return;
     };
@@ -161,7 +161,7 @@ pub(crate) async fn spawn_agent_session(
     }
 
     let _ = out_tx
-        .send(Outbound::Frame(FrameKind::TerminalSpawned {
+        .send(Outbound::Frame(FrameKind::ResourceSpawned {
             request_id,
             result: SpawnResult::Ok(wire_session.clone()),
         }))
@@ -179,7 +179,7 @@ pub(crate) async fn spawn_agent_session(
         state,
         &wire_session,
         Some(&wire_parent),
-        &AgentEvent::PaneSpawned {
+        &AgentEvent::ResourceSpawned {
             kind: ResourceKind::AgentSession,
             parent: Some(wire_parent.clone()),
         },
@@ -188,7 +188,7 @@ pub(crate) async fn spawn_agent_session(
     // pump wired in the same stroke (`attach::spawn_terminal_output_pump`),
     // so `s.subscribe_terminal` above put this client on the subscriber
     // *list* but nothing yet forwards `PaneOutput::Live` into its mailbox.
-    // Running the same bootstrap-then-pump the ATTACH_TERMINAL path runs —
+    // Running the same bootstrap-then-pump the ATTACH_RESOURCE path runs —
     // trivially empty, since nothing has been appended yet — closes that
     // gap without a second delivery mechanism to keep in step with the
     // first.
@@ -208,7 +208,7 @@ pub(crate) async fn spawn_agent_session(
         request_id,
         session = %wire_session,
         provider,
-        "SPAWN_TERMINAL: agent session bound to its parent"
+        "SPAWN_RESOURCE: agent session bound to its parent"
     );
 }
 
@@ -219,10 +219,10 @@ async fn relay_agent_session_spawn(
     request_id: u32,
     resource: &SpawnResource,
     host: &phux_protocol::ids::SatelliteHost,
-    parent: &phux_protocol::ids::TerminalId,
+    parent: &phux_protocol::ids::ResourceId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
-    let phux_protocol::ids::TerminalId::Satellite {
+    let phux_protocol::ids::ResourceId::Satellite {
         host: parent_host,
         id,
     } = parent
@@ -249,7 +249,7 @@ async fn relay_agent_session_spawn(
         return;
     }
     let mut forwarded = resource.clone();
-    forwarded.parent = Some(phux_protocol::ids::TerminalId::local(*id));
+    forwarded.parent = Some(phux_protocol::ids::ResourceId::local(*id));
     let spawn = crate::hub::relay::SatelliteSpawn {
         group: crate::state::DEFAULT_GROUP_ID,
         command: None,
@@ -264,10 +264,10 @@ async fn relay_agent_session_spawn(
         .await;
 }
 
-/// Queue a typed `TERMINAL_SPAWNED` refusal.
+/// Queue a typed `RESOURCE_SPAWNED` refusal.
 async fn refuse(out_tx: &tokio::sync::mpsc::Sender<Outbound>, request_id: u32, error: SpawnError) {
     let _ = out_tx
-        .send(Outbound::Frame(FrameKind::TerminalSpawned {
+        .send(Outbound::Frame(FrameKind::ResourceSpawned {
             request_id,
             result: SpawnResult::Err(error),
         }))
@@ -290,7 +290,7 @@ async fn refuse(out_tx: &tokio::sync::mpsc::Sender<Outbound>, request_id: u32, e
 pub(crate) async fn handle_append_resource_output(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
 ) -> CommandResult {
     let Some((core, handle)) = state.with(|s| {
@@ -463,7 +463,7 @@ async fn publish_stream_evidence(
 /// The ADR-0070 shape with a different payload: `BOOTSTRAP_BEGIN` naming
 /// the `AgentEventsJsonlV1` profile and the cut, chunks carrying the
 /// retained records, then `READY`. The grid fields are `0 x 0` — a session
-/// has no grid, and the sentinel is what `TerminalInfo` reports for it too.
+/// has no grid, and the sentinel is what `ResourceInfo` reports for it too.
 /// `READY` carries no history cursor: the ring *is* the history, replayed
 /// whole, so there is no older page to page back through and
 /// `HISTORY_REQUEST` on this stream is refused.
@@ -475,7 +475,7 @@ async fn publish_stream_evidence(
 pub(crate) async fn attach_agent_session(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     core: phux_core::ids::ResourceId,
     handle: &crate::resource::ResourceHandle,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -492,7 +492,7 @@ pub(crate) async fn attach_agent_session(
     else {
         return CommandResult::Error {
             code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_TERMINAL bootstrap id space exhausted".to_owned(),
+            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
         };
     };
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
@@ -520,7 +520,7 @@ pub(crate) async fn attach_agent_session(
         debug!(
             session = %terminal_id,
             dropped = cut.dropped,
-            "ATTACH_TERMINAL: the replay starts after evicted records"
+            "ATTACH_RESOURCE: the replay starts after evicted records"
         );
     }
 
@@ -558,7 +558,7 @@ pub(crate) async fn attach_agent_session(
 /// The bootstrap frame run for one cut: BEGIN, the retained records in
 /// chunks, then READY.
 fn bootstrap_frames(
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     cut: &AgentSessionBootstrap,
@@ -615,7 +615,7 @@ fn bootstrap_frames(
 async fn live_pump(
     mut live: tokio::sync::broadcast::Receiver<PaneOutput>,
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     base_seq: u64,
@@ -632,7 +632,7 @@ async fn live_pump(
                     continue;
                 }
                 if out_tx
-                    .send(Outbound::Frame(FrameKind::TerminalOutput {
+                    .send(Outbound::Frame(FrameKind::ResourceOutput {
                         terminal_id: terminal_id.clone(),
                         stream_id,
                         bootstrap_id,

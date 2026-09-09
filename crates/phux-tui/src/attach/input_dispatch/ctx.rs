@@ -8,11 +8,11 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
 use crate::attach::focus::FocusHistory;
@@ -82,20 +82,20 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// frame byte-identical to what that server has always decoded.
     pub spawn_initial_size_supported: bool,
     /// phux-4li.12: parked split actions awaiting their
-    /// `TERMINAL_SPAWNED` reply. `run_action` inserts;
+    /// `RESOURCE_SPAWNED` reply. `run_action` inserts;
     /// `handle_server_frame` removes.
     pub pending_splits: &'a mut HashMap<u32, PendingSplit>,
     /// phux-4li.15: parked `new-window` actions awaiting their
-    /// `TERMINAL_SPAWNED` reply. Same lifecycle as `pending_splits`,
+    /// `RESOURCE_SPAWNED` reply. Same lifecycle as `pending_splits`,
     /// keyed in the same request-id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
     /// phux-i0e8.2.2: Terminals whose close THIS client requested
     /// (kill-pane / kill-window soft-kill). [`apply_action_effects`]
     /// parks the target ids here at the kill-dispatch seam; the
-    /// `TerminalClosed` arm of `handle_server_frame` drains a matching
+    /// `ResourceClosed` arm of `handle_server_frame` drains a matching
     /// id and suppresses the pane-exit notice — the user ordered that
     /// death, so reporting it would be noise.
-    pub expected_closes: &'a mut HashSet<TerminalId>,
+    pub expected_closes: &'a mut HashSet<ResourceId>,
     /// phux-5ke.4: overlay stack. When non-empty the dispatcher routes
     /// key events to the active overlay (no resolver, no predict, no
     /// pane forwarding) and discovery actions push onto it.
@@ -125,14 +125,14 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// select degrades to a logged no-op if the index went stale).
     pub foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
     /// phux-jpqd: the `phux.agent/v1` records the driver fetched for
-    /// **foreign** panes — one one-shot `GET_METADATA` per `TerminalId` in a
+    /// **foreign** panes — one one-shot `GET_METADATA` per `ResourceId` in a
     /// peer session's cached [`Self::foreign_layouts`] workspace, keyed by
     /// that terminal id. The `agent-fleet` dashboard reads this so a foreign
     /// session's pane rows show agent glyph/state without attaching there.
     /// Empty until a peer's layout lands and its per-pane replies arrive; a
     /// pane with no entry renders `?`/"no agent" (no live subscription, so
     /// no asked flag or cwd/branch).
-    pub foreign_agents: &'a HashMap<TerminalId, phux_client::agent_meta::AgentRecord>,
+    pub foreign_agents: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     /// phux-4li.20: id of the session this client is attached to. The
     /// picker places this row first and marks it `current`; selecting it
     /// dismisses the picker without reattaching. `None` before the first
@@ -160,7 +160,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// is zoomed to fill the window. `apply_action_effects` flips this for a
     /// `toggle-zoom` action; the driver reads it (via `Workspace::render_window`)
     /// to render/reflow the zoomed pane.
-    pub zoomed: &'a mut Option<TerminalId>,
+    pub zoomed: &'a mut Option<ResourceId>,
     /// phux-4h5a: the active sidebar reservation, or `None` when the sidebar is
     /// disabled. The `resize-pane` min-cell gate tiles into the inset content
     /// rect so the underflow check matches the width panes actually paint into
@@ -220,7 +220,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// outer-terminal mouse-tracking DECSET whenever the focused pane is in
     /// this set — so the host terminal's raw mouse handling returns for that
     /// pane without forcing the whole session to `mouse = false`.
-    pub mouse_optout: &'a mut std::collections::HashSet<TerminalId>,
+    pub mouse_optout: &'a mut std::collections::HashSet<ResourceId>,
     /// phux-oih5.16: driver-owned, client-local attention excursion state.
     /// The first `next-attention` saves an origin; later cycles preserve it,
     /// and `return-from-attention` consumes it. Never serialized or shared.
@@ -253,7 +253,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// (`AgentMetaIndex::records`), kept live by the per-pane metadata
     /// subscriptions. The `agent-fleet` action projects them into the
     /// dashboard rows.
-    pub agent_meta: &'a HashMap<TerminalId, phux_client::agent_meta::AgentRecord>,
+    pub agent_meta: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     /// phux-foz.7 / phux-p4vp: the driver's pane-cwd index + memoized
     /// branch cache. The fleet rows resolve each pane's branch through it
     /// (mut only for the memo).

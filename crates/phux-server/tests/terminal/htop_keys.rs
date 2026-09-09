@@ -14,7 +14,7 @@
 //! encoder's behavior at the libghostty boundary. This test pins the
 //! end-to-end wire path: a `INPUT_KEY` frame for plain `q` (no mods) sent
 //! through `handle_client` → `TerminalActor::encode_input` → PTY writer →
-//! `cat` echo → `TERMINAL_OUTPUT` MUST contain the byte 0x71 (`q`) and MUST
+//! `cat` echo → `RESOURCE_OUTPUT` MUST contain the byte 0x71 (`q`) and MUST
 //! NOT contain a CSI-u escape, **provided** the pane's libghostty
 //! Terminal is in its default (legacy) keyboard mode.
 //!
@@ -34,7 +34,7 @@ use std::time::Duration;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use phux_server::input::key::PerTerminalKeyEncoder;
 use phux_server::terminal_actor::default_shell_command;
@@ -72,7 +72,7 @@ const fn arrow_up_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` frames into a `Vec<u8>` until `needle` appears or
+/// Drain `RESOURCE_OUTPUT` frames into a `Vec<u8>` until `needle` appears or
 /// the deadline elapses. Returns whatever has accumulated either way.
 async fn collect_pane_output_until(stream: &mut UnixStream, needle: u8) -> Vec<u8> {
     let mut acc: Vec<u8> = Vec::new();
@@ -82,10 +82,10 @@ async fn collect_pane_output_until(stream: &mut UnixStream, needle: u8) -> Vec<u
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             acc.extend_from_slice(&bytes);
             if acc.contains(&needle) {
                 return acc;
@@ -126,8 +126,8 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
         assert_eq!(type_byte, TYPE_ATTACHED);
         let wire_pane_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1);
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1);
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected ATTACHED, got {other:?}"),
         };
@@ -166,7 +166,7 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
         // that's the legacy plain-ASCII shape htop expects.
         assert!(
             acc.contains(&b'q'),
-            "expected plain `q` byte in TERMINAL_OUTPUT echo, got {acc:?}",
+            "expected plain `q` byte in RESOURCE_OUTPUT echo, got {acc:?}",
         );
 
         // And the bytes must NOT contain a CSI-u quit-key encoding. The
@@ -177,7 +177,7 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
         for pat in bad_patterns {
             assert!(
                 !acc.windows(pat.len()).any(|w| w == *pat),
-                "TERMINAL_OUTPUT contained kitty CSI-u encoding {pat:?}; \
+                "RESOURCE_OUTPUT contained kitty CSI-u encoding {pat:?}; \
                  raw bytes={acc:?}",
             );
         }
@@ -222,7 +222,7 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
         let wire_pane_id = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+            FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
             other => panic!("expected ATTACHED, got {other:?}"),
         };
         let (type_byte, _snap) = recv_typed(&mut stream).await;
@@ -237,7 +237,7 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
         )
         .await;
 
-        // We allow either: no TERMINAL_OUTPUT at all (cat killed before it
+        // We allow either: no RESOURCE_OUTPUT at all (cat killed before it
         // could echo) or some bytes that DON'T contain a CSI-u
         // encoding of Ctrl-C. The bug-shape we're guarding against is
         // CSI-u showing up here.
@@ -256,8 +256,8 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
             let Some((type_byte, frame)) = maybe else {
                 break; // server self-exited and closed the connection
             };
-            if type_byte == TYPE_TERMINAL_OUTPUT
-                && let FrameKind::TerminalOutput { bytes, .. } = frame
+            if type_byte == TYPE_RESOURCE_OUTPUT
+                && let FrameKind::ResourceOutput { bytes, .. } = frame
             {
                 acc.extend_from_slice(&bytes);
             }

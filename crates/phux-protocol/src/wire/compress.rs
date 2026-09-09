@@ -13,7 +13,7 @@
 //! each addition is a new pair of optional fields plus a new decoder branch
 //! whose absence is indistinguishable from "not compressed". The wrapper is
 //! one frame type that composes with the whole catalog, so `BOOTSTRAP_CHUNK`,
-//! `HISTORY_PAGE`, and a bulk `TERMINAL_OUTPUT` burst are all covered by one
+//! `HISTORY_PAGE`, and a bulk `RESOURCE_OUTPUT` burst are all covered by one
 //! negotiation and one pair of functions.
 //!
 //! **Why DEFLATE and not zstd.** `flate2`'s `miniz_oxide` backend is already
@@ -43,7 +43,7 @@ const LEVEL: u32 = 1;
 ///
 /// Below this the deflate header plus the wrapper's own TLV fields cost more
 /// than the transform saves, and a keystroke echo must never pay a compressor
-/// at all. Sized above a full-width styled `TERMINAL_OUTPUT` line so ordinary
+/// at all. Sized above a full-width styled `RESOURCE_OUTPUT` line so ordinary
 /// interactive output stays on the uncompressed path.
 pub const MIN_COMPRESS_BYTES: usize = 4 * 1024;
 

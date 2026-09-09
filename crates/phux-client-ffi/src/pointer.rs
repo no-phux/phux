@@ -5,11 +5,11 @@ use libghostty_vt::selection::gesture::{
 };
 use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
 use phux_client_core::session::ReplicaKey;
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::error::{BridgeError, check_struct, terminal_id_in};
 use crate::{
-    Client, PhuxClient, PhuxClientResult, PhuxDocumentAnchor, PhuxDocumentPoint, PhuxTerminalId,
+    Client, PhuxClient, PhuxClientResult, PhuxDocumentAnchor, PhuxDocumentPoint, PhuxResourceId,
 };
 
 #[allow(
@@ -55,7 +55,7 @@ pub struct PhuxSelectionGestureResult {
 }
 
 impl Client {
-    pub(crate) fn reset_gesture(&mut self, id: &TerminalId) {
+    pub(crate) fn reset_gesture(&mut self, id: &ResourceId) {
         let Some(mut state) = self.gestures.remove(id) else {
             return;
         };
@@ -76,7 +76,7 @@ impl Client {
 
     fn gesture_state(
         &mut self,
-        id: &TerminalId,
+        id: &ResourceId,
         event: &PhuxSelectionGestureEvent,
     ) -> Result<PointerGesture, BridgeError> {
         let key = self.terminal_key(id)?;
@@ -106,7 +106,7 @@ impl Client {
 
     fn gesture_event(
         &mut self,
-        id: &TerminalId,
+        id: &ResourceId,
         event: &PhuxSelectionGestureEvent,
     ) -> Result<PhuxSelectionGestureResult, BridgeError> {
         validate_event(event)?;
@@ -124,7 +124,7 @@ impl Client {
 
     fn gesture_snapshot(
         &mut self,
-        id: &TerminalId,
+        id: &ResourceId,
         event: &PhuxSelectionGestureEvent,
         state: &mut PointerGesture,
     ) -> Result<PhuxSelectionGestureResult, BridgeError> {
@@ -225,7 +225,7 @@ const fn history_point(point: PointCoordinate) -> PhuxDocumentPoint {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_mouse_mode(
     client: *const PhuxClient,
-    id: *const PhuxTerminalId,
+    id: *const PhuxResourceId,
     out: *mut u32,
 ) -> PhuxClientResult {
     use libghostty_vt::mouse::{EncoderOptions, TrackingMode};
@@ -276,7 +276,7 @@ fn validate_event(event: &PhuxSelectionGestureEvent) -> Result<(), BridgeError> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_gesture(
     client: *mut PhuxClient,
-    id: *const PhuxTerminalId,
+    id: *const PhuxResourceId,
     event: *const PhuxSelectionGestureEvent,
     out: *mut PhuxSelectionGestureResult,
 ) -> PhuxClientResult {

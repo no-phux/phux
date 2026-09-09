@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::TombstoneReason;
-use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
+use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::{
     EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputEligibility, KernelAction,
@@ -463,13 +463,13 @@ pub(super) struct ResumeCheckpoint {
 pub(super) struct KernelRig {
     kernel: SessionKernel<RigAdapter>,
     effects: EffectBuffer,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     anchors: Vec<DocumentAnchorId>,
 }
 
 impl KernelRig {
     pub(super) fn new(state_sync: bool) -> Self {
-        let terminal_id = TerminalId::local(55);
+        let terminal_id = ResourceId::local(55);
         Self {
             kernel: Self::new_kernel(state_sync),
             effects: EffectBuffer::with_capacity(8),
@@ -577,7 +577,7 @@ impl KernelRig {
                 text,
             } => {
                 let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::TerminalOutput {
+                self.update(KernelInput::ResourceOutput {
                     terminal_id: &terminal_id,
                     stream_id: stream_id(*stream),
                     bootstrap_id: bootstrap_id(*generation),
@@ -736,7 +736,7 @@ impl KernelRig {
             }
             RigEvent::Close => {
                 let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::TerminalClosed {
+                self.update(KernelInput::ResourceClosed {
                     terminal_id: &terminal_id,
                 })
             }

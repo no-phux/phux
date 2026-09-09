@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use phux_protocol::caps::BootstrapStreamProfile;
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     FrameKind, HistoryRejectionReason, HistoryTombstoneReason, TombstoneReason,
 };
@@ -22,8 +22,8 @@ use phux_server_testkit::fault::{
 const FIRST_POST_FENCE: u64 = 7;
 const FINAL_RECORD: u64 = 15;
 
-const fn terminal() -> TerminalId {
-    TerminalId::local(1)
+const fn terminal() -> ResourceId {
+    ResourceId::local(1)
 }
 
 const fn stream() -> StreamId {
@@ -79,7 +79,7 @@ fn ready(id: BootstrapId, with_history: bool) -> FrameKind {
 }
 
 fn output(id: BootstrapId, seq: u64) -> FrameKind {
-    FrameKind::TerminalOutput {
+    FrameKind::ResourceOutput {
         terminal_id: terminal(),
         stream_id: stream(),
         bootstrap_id: id,
@@ -106,7 +106,7 @@ const fn milestone(frame: &FrameKind) -> Milestone {
         FrameKind::BootstrapBegin { .. } => Milestone::BootstrapBegin,
         FrameKind::BootstrapChunk { chunk_seq, .. } => Milestone::CaptureRecord(*chunk_seq),
         FrameKind::BootstrapReady { .. } => Milestone::BootstrapReady,
-        FrameKind::TerminalOutput { seq, .. } => Milestone::LiveOutput(*seq),
+        FrameKind::ResourceOutput { seq, .. } => Milestone::LiveOutput(*seq),
         FrameKind::HistoryPage { page_seq, .. } => Milestone::HistoryPage(*page_seq),
         FrameKind::BootstrapTombstone { .. } => Milestone::BootstrapTombstone,
         FrameKind::HistoryTombstone { .. } => Milestone::HistoryTombstone,
@@ -221,7 +221,7 @@ impl Replica {
                     Ok(())
                 }
             }
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 bootstrap_id,
                 seq,
                 bytes,
@@ -229,7 +229,7 @@ impl Replica {
             } => {
                 if self.active != Some(bootstrap_id) || self.tombstoned.contains(&bootstrap_id) {
                     transcript.note(format!(
-                        "ignored stale TERMINAL_OUTPUT generation={bootstrap_id} seq={seq}"
+                        "ignored stale RESOURCE_OUTPUT generation={bootstrap_id} seq={seq}"
                     ));
                     Ok(())
                 } else if seq != self.last_seq + 1 {

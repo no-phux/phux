@@ -1,18 +1,18 @@
 use super::*;
 use crate::*;
 use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState};
-use phux_protocol::wire::info::{SessionInfo, TerminalInfo, WindowInfo};
-use phux_protocol::{SessionId, TerminalId, WindowId};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+use phux_protocol::{ResourceId, SessionId, WindowId};
 
 fn registry(selected: u32, extra: bool) -> SessionSnapshot {
     let mut panes = vec![
-        TerminalInfo::new(TerminalId::local(1), WindowId::new(10), 80, 24),
-        TerminalInfo::new(TerminalId::local(2), WindowId::new(10), 80, 24),
-        TerminalInfo::new(TerminalId::local(9), WindowId::new(20), 80, 24),
+        ResourceInfo::new(ResourceId::local(1), WindowId::new(10), 80, 24),
+        ResourceInfo::new(ResourceId::local(2), WindowId::new(10), 80, 24),
+        ResourceInfo::new(ResourceId::local(9), WindowId::new(20), 80, 24),
     ];
     if extra {
-        panes.push(TerminalInfo::new(
-            TerminalId::local(3),
+        panes.push(ResourceInfo::new(
+            ResourceId::local(3),
             WindowId::new(10),
             80,
             24,
@@ -21,7 +21,7 @@ fn registry(selected: u32, extra: bool) -> SessionSnapshot {
     SessionSnapshot::new(
         SessionId::new(selected),
         WindowId::new(10),
-        TerminalId::local(1),
+        ResourceId::local(1),
     )
     .with_sessions(vec![
         SessionInfo::new(SessionId::new(1), "one"),
@@ -31,15 +31,15 @@ fn registry(selected: u32, extra: bool) -> SessionSnapshot {
         WindowInfo::new(WindowId::new(10), SessionId::new(1), "registry-one"),
         WindowInfo::new(WindowId::new(20), SessionId::new(2), "registry-two"),
     ])
-    .with_panes(panes)
+    .with_resources(panes)
 }
 
 #[test]
 fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resources() {
     let mut snapshot = registry(1, false);
     for id in 100..400 {
-        snapshot.panes.push(
-            TerminalInfo::new(TerminalId::local(id), WindowId::new(0), 0, 0)
+        snapshot.resources.push(
+            ResourceInfo::new(ResourceId::local(id), WindowId::new(0), 0, 0)
                 .with_kind(phux_protocol::ResourceKind::AgentSession),
         );
     }
@@ -52,7 +52,7 @@ fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resourc
             .inner
             .workspace
             .catalog
-            .allows(&TerminalId::local(100), 1)
+            .allows(&ResourceId::local(100), 1)
     );
 }
 
@@ -138,11 +138,11 @@ fn finish(client: &mut PhuxClient, registry: SessionSnapshot, metadata: Option<V
 }
 
 fn split_workspace() -> Workspace {
-    let a = TerminalId::local(1);
+    let a = ResourceId::local(1);
     let tree = layout::split_at(
         &LayoutNode::Leaf(a.clone()),
         &a,
-        &TerminalId::local(2),
+        &ResourceId::local(2),
         layout::SplitDir::Vertical,
         0.3,
     )
@@ -152,7 +152,7 @@ fn split_workspace() -> Workspace {
             "editor".into(),
             LayoutState {
                 tree: Some(tree),
-                focus: Some(TerminalId::local(2)),
+                focus: Some(ResourceId::local(2)),
             },
         )],
         active: 0,
@@ -263,10 +263,10 @@ fn removed_seed_can_be_placed_in_a_new_window() {
     );
     let retained = client.inner.workspace.topology.windows[0].id;
     let mut remove = edit(&client, 2, 3);
-    remove.terminal_id = terminal_id_out(&TerminalId::local(1));
+    remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
     let mut add = edit(&client, 3, 1);
-    add.terminal_id = terminal_id_out(&TerminalId::local(1));
+    add.terminal_id = terminal_id_out(&ResourceId::local(1));
     add.name = bytes_out(b"reused seed");
     mutate(&mut client, &add);
     assert_eq!(client.inner.workspace.topology.windows.len(), 2);
@@ -281,7 +281,7 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
     let before = client.inner.workspace.revision;
     let mut snapshot = registry(2, true);
     snapshot.sessions[0].name = "renamed externally".into();
-    snapshot.panes.retain(|p| p.id != TerminalId::local(2));
+    snapshot.resources.retain(|p| p.id != ResourceId::local(2));
     refresh(&mut client, 1, snapshot, None);
     let ws = &client.inner.workspace;
     assert_eq!(ws.selected, 1);
@@ -290,7 +290,7 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
     assert_eq!(ws.topology.windows.len(), 2);
     assert_eq!(
         ws.topology.windows[1].state.focus,
-        Some(TerminalId::local(3))
+        Some(ResourceId::local(3))
     );
     assert!(ws.revision > before);
     assert_eq!(client.inner.sessions[0].name, b"renamed externally");
@@ -299,7 +299,7 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
         client
             .inner
             .session
-            .published(&TerminalId::local(3))
+            .published(&ResourceId::local(3))
             .is_none()
     );
 }
@@ -311,7 +311,7 @@ fn topology_ignores_remote_focus_and_client_count_noise() {
     refresh(&mut client, 1, registry(2, false), Some(bytes.clone()));
     assert_eq!(
         client.inner.workspace.topology.windows[0].state.focus,
-        Some(TerminalId::local(1))
+        Some(ResourceId::local(1))
     );
     let revision = client.inner.workspace.revision;
     let mut noisy = registry(2, false);
@@ -489,9 +489,9 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
         .unwrap();
     feed(
         &mut client,
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 11,
-            result: phux_protocol::wire::frame::SpawnResult::Ok(TerminalId::local(4)),
+            result: phux_protocol::wire::frame::SpawnResult::Ok(ResourceId::local(4)),
         },
     );
     finish(&mut client, registry(2, false), None);
@@ -565,8 +565,8 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
     );
     let original = client.inner.workspace.topology.windows[0].id;
     let mut split = edit(&client, 2, 2);
-    split.terminal_id = terminal_id_out(&TerminalId::local(2));
-    split.new_terminal_id = terminal_id_out(&TerminalId::local(3));
+    split.terminal_id = terminal_id_out(&ResourceId::local(2));
+    split.new_terminal_id = terminal_id_out(&ResourceId::local(3));
     split.direction = 2;
     split.ratio = 0.4;
     mutate(&mut client, &split);
@@ -579,13 +579,13 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
     rename.name = bytes_out(b"renamed");
     mutate(&mut client, &rename);
     let mut remove = edit(&client, 5, 3);
-    remove.terminal_id = terminal_id_out(&TerminalId::local(1));
+    remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
     assert_eq!(client.inner.workspace.topology.windows[0].id, original);
     assert_eq!(client.inner.workspace.topology.windows[0].name, "renamed");
     assert_eq!(
         client.inner.workspace.topology.windows[0].state.focus,
-        Some(TerminalId::local(2))
+        Some(ResourceId::local(2))
     );
     assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
     assert!(
@@ -595,7 +595,7 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
             .catalog
             .terminals
             .iter()
-            .any(|t| t.id == TerminalId::local(1))
+            .any(|t| t.id == ResourceId::local(1))
     );
 }
 
@@ -632,8 +632,8 @@ fn stale_and_competing_writes_never_optimistically_publish() {
 #[test]
 fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() {
     let mut snapshot = registry(1, false);
-    snapshot.panes.push(TerminalInfo::new(
-        TerminalId::satellite("peer", 1),
+    snapshot.resources.push(ResourceInfo::new(
+        ResourceId::satellite("peer", 1),
         WindowId::new(10),
         80,
         24,
@@ -652,14 +652,14 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
         2
     );
     let mut snapshot = registry(1, false);
-    snapshot.panes.retain(|t| t.id != TerminalId::local(1));
+    snapshot.resources.retain(|t| t.id != ResourceId::local(1));
     let catalog = Catalog::from_snapshot(snapshot, 1).unwrap();
     let pruned =
         model::adopt(Some(&adopted.encode_cbor().unwrap()), &adopted, &catalog, 1).unwrap();
     assert_eq!(pruned.windows[0].id, adopted.windows[0].id);
     assert_eq!(
         pruned.windows[0].state.tree,
-        Some(LayoutNode::Leaf(TerminalId::local(2)))
+        Some(LayoutNode::Leaf(ResourceId::local(2)))
     );
 }
 
@@ -723,15 +723,15 @@ fn abi_null_version_size_and_disconnect() {
 fn add_reorder_remove_last_and_fallback_split_roundtrip() {
     let mut client = harness();
     let mut split = edit(&client, 1, 2);
-    split.terminal_id = terminal_id_out(&TerminalId::local(1));
-    split.new_terminal_id = terminal_id_out(&TerminalId::local(2));
+    split.terminal_id = terminal_id_out(&ResourceId::local(1));
+    split.new_terminal_id = terminal_id_out(&ResourceId::local(2));
     split.direction = 2;
     split.ratio = 0.5;
     mutate(&mut client, &split);
     assert_eq!(client.inner.workspace.topology.windows.len(), 1);
     let original = client.inner.workspace.topology.windows[0].id;
     let mut add = edit(&client, 2, 1);
-    add.terminal_id = terminal_id_out(&TerminalId::local(3));
+    add.terminal_id = terminal_id_out(&ResourceId::local(3));
     add.name = bytes_out(b"new window");
     mutate(&mut client, &add);
     let mut reorder = edit(&client, 3, 4);
@@ -741,7 +741,7 @@ fn add_reorder_remove_last_and_fallback_split_roundtrip() {
     assert_eq!(client.inner.workspace.topology.active, 1);
     for (request, id) in [(4, 3), (5, 1), (6, 2)] {
         let mut remove = edit(&client, request, 3);
-        remove.terminal_id = terminal_id_out(&TerminalId::local(id));
+        remove.terminal_id = terminal_id_out(&ResourceId::local(id));
         mutate(&mut client, &remove);
     }
     assert!(client.inner.workspace.topology.windows.is_empty());
@@ -775,7 +775,7 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
         }
     ));
     let mut topology = split_workspace();
-    topology.add_window("new external".into(), TerminalId::local(3));
+    topology.add_window("new external".into(), ResourceId::local(3));
     let revision = client.inner.workspace.revision;
     let pending = client.inner.workspace.pending.as_ref().unwrap();
     let (metadata_id, state_id) = (pending.metadata_id, pending.state_id.unwrap());
@@ -823,19 +823,19 @@ fn workspace_limits_refuse_instead_of_truncating() {
     }
     let mut many = Workspace::new();
     for i in 1..=33 {
-        many.add_window(i.to_string(), TerminalId::local(i));
+        many.add_window(i.to_string(), ResourceId::local(i));
     }
     assert!(model::flatten(&many).is_err());
-    let mut long_name = Workspace::single(TerminalId::local(1));
+    let mut long_name = Workspace::single(ResourceId::local(1));
     long_name.windows[0].name = "é".repeat(2049);
     assert!(model::flatten(&long_name).is_err());
-    let mut deep = LayoutNode::Leaf(TerminalId::local(1));
+    let mut deep = LayoutNode::Leaf(ResourceId::local(1));
     for id in 2..=67 {
         deep = LayoutNode::Split {
             dir: layout::SplitDir::Vertical,
             ratio: 0.5,
             left: Box::new(deep),
-            right: Box::new(LayoutNode::Leaf(TerminalId::local(id))),
+            right: Box::new(LayoutNode::Leaf(ResourceId::local(id))),
         };
     }
     let deep = Workspace {
@@ -843,21 +843,21 @@ fn workspace_limits_refuse_instead_of_truncating() {
             "deep".into(),
             LayoutState {
                 tree: Some(deep),
-                focus: Some(TerminalId::local(1)),
+                focus: Some(ResourceId::local(1)),
             },
         )],
         active: 0,
     };
     assert!(model::flatten(&deep).is_err());
     let mut duplicate = split_workspace();
-    duplicate.add_window("duplicate".into(), TerminalId::local(1));
+    duplicate.add_window("duplicate".into(), ResourceId::local(1));
     assert!(model::flatten(&duplicate).is_err());
     let over_nodes = Workspace {
         windows: vec![WindowState::new(
             "wide".into(),
             LayoutState {
                 tree: Some(balanced_tree(1, 257)),
-                focus: Some(TerminalId::local(1)),
+                focus: Some(ResourceId::local(1)),
             },
         )],
         active: 0,
@@ -870,7 +870,7 @@ fn workspace_limits_refuse_instead_of_truncating() {
 
 fn balanced_tree(first: u32, leaves: u32) -> LayoutNode {
     if leaves == 1 {
-        return LayoutNode::Leaf(TerminalId::local(first));
+        return LayoutNode::Leaf(ResourceId::local(first));
     }
     let half = leaves / 2;
     LayoutNode::Split {
@@ -909,14 +909,14 @@ fn atomic_window_removal_is_presentation_only_and_wrong_kind_isolated() {
         .unwrap();
     feed(
         &mut client,
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: id,
-            result: phux_protocol::wire::frame::SpawnResult::Ok(TerminalId::local(99)),
+            result: phux_protocol::wire::frame::SpawnResult::Ok(ResourceId::local(99)),
         },
     );
     assert_eq!(client.inner.workspace.status, 3);
     assert!(client.inner.attached);
-    assert!(!client.inner.operations.admitted(&TerminalId::local(99)));
+    assert!(!client.inner.operations.admitted(&ResourceId::local(99)));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Layout-tree unit tests for [`Window`].
 //!
-//! Uses [`Registry`] to bootstrap real `TerminalId`s, then exercises the
+//! Uses [`Registry`] to bootstrap real `ResourceId`s, then exercises the
 //! tree operations on the `Window` directly. The layout invariants live in
 //! `tests/layout_proptest.rs`.
 
@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use phux_core::{Direction, LayoutNode, Registry, SplitDir, TerminalId};
+use phux_core::{Direction, LayoutNode, Registry, ResourceId, SplitDir};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,7 +21,7 @@ use phux_core::{Direction, LayoutNode, Registry, SplitDir, TerminalId};
 
 /// Build a Registry seeded with one session, one window, and one initial
 /// pane. Returns the (window_id, pane_id) plus the Registry.
-fn seeded() -> (Registry, phux_core::WindowId, TerminalId) {
+fn seeded() -> (Registry, phux_core::WindowId, ResourceId) {
     let mut reg = Registry::new();
     let s = reg.new_session("test".to_owned());
     let w = reg.new_window(s).expect("session exists");
@@ -174,7 +174,7 @@ fn kill_pane_collapses_parent_split() {
 #[test]
 fn kill_pane_not_in_layout_errors() {
     let (mut reg, w, p1) = seeded();
-    let bogus = TerminalId::default();
+    let bogus = ResourceId::default();
     assert_ne!(bogus, p1);
     let win = reg.window_mut(w).expect("window exists");
     win.layout = Some(LayoutNode::Leaf(p1));
@@ -255,7 +255,7 @@ fn leaves_match_panes_after_a_sequence_of_splits() {
     }
 
     let win = reg.window(w).expect("window exists");
-    let leaves: HashSet<TerminalId> = win.layout.as_ref().unwrap().leaves().into_iter().collect();
-    let expected: HashSet<TerminalId> = [p1, p2, p3, p4].iter().copied().collect();
+    let leaves: HashSet<ResourceId> = win.layout.as_ref().unwrap().leaves().into_iter().collect();
+    let expected: HashSet<ResourceId> = [p1, p2, p3, p4].iter().copied().collect();
     assert_eq!(leaves, expected);
 }

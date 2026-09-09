@@ -7,16 +7,16 @@
 //! `phux agent` verbs the CLI and MCP adapter expose over it, and it speaks
 //! only wire verbs the server already has:
 //!
-//! - [`open`] is `SPAWN_TERMINAL` with the additive kind/parent/provider/
+//! - [`open`] is `SPAWN_RESOURCE` with the additive kind/parent/provider/
 //!   native-id fields;
-//! - [`close`] is `KILL_TERMINAL` on the session resource (closing a child
+//! - [`close`] is `KILL_RESOURCE` on the session resource (closing a child
 //!   never touches the parent);
 //! - [`emit`] is `APPEND_RESOURCE_OUTPUT`, one or more complete JSONL records
 //!   per call under the per-record and per-call byte ceilings;
-//! - [`log`] attaches to the session resource with `ATTACH_TERMINAL` the way
+//! - [`log`] attaches to the session resource with `ATTACH_RESOURCE` the way
 //!   `phux rec` attaches to a Terminal: the retained records arrive as the
 //!   bootstrap transcript and, under `--follow`, live records as
-//!   `TERMINAL_OUTPUT` frames until the session closes.
+//!   `RESOURCE_OUTPUT` frames until the session closes.
 //!
 //! Every entry point is gated on [`ServerFeature::ResourceKinds`]: a server
 //! that does not advertise the bit has no agent sessions, and the refusal
@@ -26,7 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{GroupId, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError,
     SpawnResource, SpawnResult,
@@ -149,9 +149,9 @@ impl EmitRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     /// The new `AgentSession` resource.
-    pub resource: TerminalId,
+    pub resource: ResourceId,
     /// Its parent Terminal, echoed from the request.
-    pub parent: TerminalId,
+    pub parent: ResourceId,
 }
 
 /// What [`emit`] returns: the header the server stamped on the last record
@@ -217,22 +217,22 @@ pub enum AgentSessionError {
     #[error("{terminal} has no live agent session")]
     NoSession {
         /// The Terminal that was addressed.
-        terminal: TerminalId,
+        terminal: ResourceId,
     },
     /// The Terminal has more than one live `AgentSession` child; address one
     /// directly.
     #[error("{terminal} has {} live agent sessions: {}", candidates.len(), render_ids(candidates))]
     AmbiguousSession {
         /// The Terminal that was addressed.
-        terminal: TerminalId,
+        terminal: ResourceId,
         /// Every live child, in snapshot order.
-        candidates: Vec<TerminalId>,
+        candidates: Vec<ResourceId>,
     },
     /// The resource exists but is not the kind the operation needs.
     #[error("{resource} is a {actual} resource, not {expected}")]
     WrongKind {
         /// The resource that was addressed.
-        resource: TerminalId,
+        resource: ResourceId,
         /// The kind the operation needed (`terminal` / `agent_session`).
         expected: &'static str,
         /// The kind it is.
@@ -242,13 +242,13 @@ pub enum AgentSessionError {
     #[error("parent {parent} not found on the server")]
     ParentNotFound {
         /// The parent that was named.
-        parent: TerminalId,
+        parent: ResourceId,
     },
     /// `open` named a parent that is not a Terminal-kind resource.
     #[error("parent {parent} is not a Terminal, so it cannot host an agent session")]
     ParentKindMismatch {
         /// The parent that was named.
-        parent: TerminalId,
+        parent: ResourceId,
     },
     /// A record is not a valid `AgentEventsJsonlV1` record. Nothing written.
     #[error("record invalid: {0}")]
@@ -259,7 +259,7 @@ pub enum AgentSessionError {
     )]
     NotProducer {
         /// The session that was addressed.
-        resource: TerminalId,
+        resource: ResourceId,
     },
     /// The append exceeded a ceiling: the per-call bound, or the session's
     /// retained ring. Nothing written.
@@ -273,7 +273,7 @@ pub enum AgentSessionError {
     Transport(#[from] AttachError),
 }
 
-fn render_ids(ids: &[TerminalId]) -> String {
+fn render_ids(ids: &[ResourceId]) -> String {
     ids.iter()
         .map(crate::selector::format_terminal_id)
         .collect::<Vec<_>>()
@@ -316,12 +316,12 @@ pub fn require_support(conn: &Connection) -> Result<(), AgentSessionError> {
 /// [`AgentSessionError::Refused`]), or transport failure.
 pub async fn open(
     conn: &mut Connection,
-    parent: &TerminalId,
+    parent: &ResourceId,
     provider: &str,
     native_id: Option<&str>,
 ) -> Result<Opened, AgentSessionError> {
     require_support(conn)?;
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id: REQUEST_SPAWN,
         group: GroupId::new(1),
         command: None,
@@ -361,7 +361,7 @@ pub async fn open(
         SpawnResult::Err(SpawnError::UnsupportedKind) => Err(AgentSessionError::Unsupported),
         SpawnResult::Err(other) => Err(AgentSessionError::Refused(format!("{other:?}"))),
         other => Err(AttachError::Protocol(format!(
-            "SPAWN_TERMINAL answered with an unrecognised spawn result: {other:?}"
+            "SPAWN_RESOURCE answered with an unrecognised spawn result: {other:?}"
         ))
         .into()),
     }
@@ -373,12 +373,12 @@ pub async fn open(
 ///
 /// [`AgentSessionError::Unsupported`], a server refusal, or transport
 /// failure.
-pub async fn close(conn: &mut Connection, resource: &TerminalId) -> Result<(), AgentSessionError> {
+pub async fn close(conn: &mut Connection, resource: &ResourceId) -> Result<(), AgentSessionError> {
     require_support(conn)?;
     let (result, interleaved) = conn
         .request(
             REQUEST_KILL,
-            Command::KillTerminal {
+            Command::KillResource {
                 terminal_id: resource.clone(),
             },
         )
@@ -389,7 +389,7 @@ pub async fn close(conn: &mut Connection, resource: &TerminalId) -> Result<(), A
         CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
         CommandResult::Error { code, message } => Err(map_refusal(resource, code, message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
-            "KILL_TERMINAL",
+            "KILL_RESOURCE",
             &other,
         ))
         .into()),
@@ -409,7 +409,7 @@ pub async fn close(conn: &mut Connection, resource: &TerminalId) -> Result<(), A
 /// `RECORD_INVALID` / `OVERFLOW` refusals, or transport failure.
 pub async fn emit(
     conn: &mut Connection,
-    resource: &TerminalId,
+    resource: &ResourceId,
     records: &[EmitRecord],
 ) -> Result<Emitted, AgentSessionError> {
     require_support(conn)?;
@@ -461,7 +461,7 @@ fn parse_emitted(json: &str) -> Emitted {
 }
 
 /// Map a correlated server refusal onto the typed error.
-fn map_refusal(resource: &TerminalId, code: ErrorCode, message: String) -> AgentSessionError {
+fn map_refusal(resource: &ResourceId, code: ErrorCode, message: String) -> AgentSessionError {
     match code {
         ErrorCode::WrongResourceKind => AgentSessionError::WrongKind {
             resource: resource.clone(),
@@ -496,7 +496,7 @@ fn map_refusal(resource: &TerminalId, code: ErrorCode, message: String) -> Agent
 /// stream, or transport failure.
 pub async fn log(
     conn: &mut Connection,
-    resource: &TerminalId,
+    resource: &ResourceId,
     options: LogOptions,
     mut sink: impl FnMut(AgentEventRecord) -> bool,
 ) -> Result<LogOutcome, AgentSessionError> {
@@ -504,7 +504,7 @@ pub async fn log(
     let (result, primed) = conn
         .request(
             REQUEST_ATTACH,
-            Command::AttachTerminal {
+            Command::AttachResource {
                 terminal_id: resource.clone(),
             },
         )
@@ -608,14 +608,14 @@ pub async fn log(
     })
 }
 
-/// Best-effort `DETACH_TERMINAL`: idempotent and a no-op on a resource that
+/// Best-effort `DETACH_RESOURCE`: idempotent and a no-op on a resource that
 /// is already gone (L1 §5.1), so it can never turn a completed read into a
 /// failure.
-async fn detach(conn: &mut Connection, resource: &TerminalId) {
+async fn detach(conn: &mut Connection, resource: &ResourceId) {
     let _ = conn
         .send(&FrameKind::Command {
             request_id: REQUEST_DETACH,
-            command: Command::DetachTerminal {
+            command: Command::DetachResource {
                 terminal_id: resource.clone(),
             },
         })
@@ -637,12 +637,12 @@ enum Absorbed {
 /// The frame-to-record projection, with the line buffer that lets a record
 /// straddle two bootstrap chunks.
 struct Reader {
-    resource: TerminalId,
+    resource: ResourceId,
     buffer: Vec<u8>,
 }
 
 impl Reader {
-    const fn new(resource: TerminalId) -> Self {
+    const fn new(resource: ResourceId) -> Self {
         Self {
             resource,
             buffer: Vec::new(),
@@ -665,12 +665,12 @@ impl Reader {
             FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.resource => {
                 Ok(Absorbed::Ready)
             }
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
             } if terminal_id == self.resource => self.decode(&bytes).map(Absorbed::Records),
             FrameKind::Event {
                 terminal: Some(terminal),
-                event: AgentEvent::PaneClosed { .. },
+                event: AgentEvent::ResourceClosed { .. },
             } if terminal == self.resource => Ok(Absorbed::Closed),
             FrameKind::Error {
                 request_id: None,
@@ -725,12 +725,12 @@ mod tests {
     use phux_protocol::ids::ResourceKind;
     use tokio::net::UnixListener;
 
-    fn session() -> TerminalId {
-        TerminalId::local(9)
+    fn session() -> ResourceId {
+        ResourceId::local(9)
     }
 
-    fn parent() -> TerminalId {
-        TerminalId::local(7)
+    fn parent() -> ResourceId {
+        ResourceId::local(7)
     }
 
     fn kinds() -> ServerFeatureSet {
@@ -824,13 +824,13 @@ mod tests {
         assert_eq!(opened.parent, parent());
         drop(conn);
         let seen = server.await.unwrap();
-        let Some(FrameKind::SpawnTerminal {
+        let Some(FrameKind::SpawnResource {
             resource: Some(resource),
             command,
             ..
         }) = seen.get(1)
         else {
-            panic!("SPAWN_TERMINAL with a resource body must follow HELLO, got {seen:?}");
+            panic!("SPAWN_RESOURCE with a resource body must follow HELLO, got {seen:?}");
         };
         assert_eq!(resource.kind, ResourceKind::AgentSession);
         assert_eq!(resource.parent, Some(parent()));
@@ -972,7 +972,7 @@ mod tests {
             matches!(
                 seen.get(1),
                 Some(FrameKind::Command {
-                    command: Command::AttachTerminal { terminal_id },
+                    command: Command::AttachResource { terminal_id },
                     ..
                 }) if *terminal_id == session()
             ),
@@ -982,7 +982,7 @@ mod tests {
             seen.iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::DetachTerminal { .. },
+                    command: Command::DetachResource { .. },
                     ..
                 }
             )),
@@ -1004,7 +1004,7 @@ mod tests {
                 &session(),
                 &[r#"{"seq":1,"ts_ms":10,"type":"session_start","data":{}}"#],
             )
-            .push(FrameKind::TerminalOutput {
+            .push(FrameKind::ResourceOutput {
                 terminal_id: session(),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("stream"),
                 bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
@@ -1015,7 +1015,7 @@ mod tests {
             })
             .push(FrameKind::Event {
                 terminal: Some(session()),
-                event: AgentEvent::PaneClosed { exit_status: None },
+                event: AgentEvent::ResourceClosed { exit_status: None },
             });
         let (_dir, socket, server) = serve(spec);
         let mut conn = Connection::connect(&socket).await.unwrap();

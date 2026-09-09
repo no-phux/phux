@@ -304,7 +304,7 @@ const Parser = struct {
         const kind = try number(u32, fields);
         const id = try number(u32, fields);
         var host: [255]u8 = undefined;
-        const remote = contract.RemoteTerminalId.fromPhux(kind, id, try hex(fields, &host)) catch return error.InvalidState;
+        const remote = contract.RemoteResourceId.fromPhux(kind, id, try hex(fields, &host)) catch return error.InvalidState;
         const context = try parseContext(fields);
         _ = table.append(.{ .terminal_ref = .{ .provider_id = @enumFromInt(provider_id), .terminal_id = .{ .phux = remote } }, .context = context }) catch return error.InvalidState;
         try finish(fields);

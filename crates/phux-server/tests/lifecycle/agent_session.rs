@@ -12,7 +12,7 @@
 //! subscribers; bootstrap replay of retained records; ring overflow and its
 //! tombstone; every Terminal-facet wrong-kind refusal an `AgentSession`
 //! earns; parent-close cascade (explicit kill and PTY exit) with
-//! `CloseReason`; a mixed `KILL_TERMINALS` batch; the two `SpawnError`s a
+//! `CloseReason`; a mixed `KILL_RESOURCES` batch; the two `SpawnError`s a
 //! malformed parent earns; the `phux.agent/v1` projection derived from the
 //! stream; and `REPORT_AGENT_STATE` landing as a stream record once a child
 //! is live.
@@ -28,7 +28,7 @@
 use std::time::Duration;
 
 use phux_protocol::ids::{
-    BootstrapId, GroupId, ResourceKind as WireResourceKind, StreamId, TerminalId,
+    BootstrapId, GroupId, ResourceId, ResourceKind as WireResourceKind, StreamId,
 };
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, ReportedAgentState, Scope,
@@ -161,7 +161,7 @@ async fn connect_and_attach_with(
 }
 
 /// Connect a second, otherwise-unattached client (HELLO only, no session
-/// `ATTACH`) — the `ATTACH_TERMINAL`-only shape `docs/spec/L1.md §5.1`
+/// `ATTACH`) — the `ATTACH_RESOURCE`-only shape `docs/spec/L1.md §5.1`
 /// guarantees a subscriber over.
 async fn connect_bare(tmp: &TempDir) -> UnixStream {
     let socket_path = tmp.path().join("phux.sock");
@@ -175,7 +175,7 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
         let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if let FrameKind::TerminalSpawned {
+        if let FrameKind::ResourceSpawned {
             request_id: got,
             result,
         } = frame
@@ -184,7 +184,7 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
             return result;
         }
     }
-    panic!("timed out waiting for TERMINAL_SPAWNED request_id={request_id}");
+    panic!("timed out waiting for RESOURCE_SPAWNED request_id={request_id}");
 }
 
 async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
@@ -208,10 +208,10 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
 
 /// Spawn an immortal-shell Terminal (`resource: None`), the parent every
 /// `AgentSession` test binds a child under.
-async fn spawn_parent_terminal(stream: &mut UnixStream, request_id: u32) -> TerminalId {
+async fn spawn_parent_terminal(stream: &mut UnixStream, request_id: u32) -> ResourceId {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: Some(vec![
@@ -232,7 +232,7 @@ async fn spawn_parent_terminal(stream: &mut UnixStream, request_id: u32) -> Term
     .await;
     match await_terminal_spawned(stream, request_id).await {
         SpawnResult::Ok(id) => id,
-        other => panic!("SPAWN_TERMINAL (parent) failed: {other:?}"),
+        other => panic!("SPAWN_RESOURCE (parent) failed: {other:?}"),
     }
 }
 
@@ -243,10 +243,10 @@ async fn spawn_parent_terminal_with(
     stream: &mut UnixStream,
     request_id: u32,
     argv: Vec<String>,
-) -> TerminalId {
+) -> ResourceId {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: Some(argv),
@@ -263,20 +263,20 @@ async fn spawn_parent_terminal_with(
     .await;
     match await_terminal_spawned(stream, request_id).await {
         SpawnResult::Ok(id) => id,
-        other => panic!("SPAWN_TERMINAL (parent) failed: {other:?}"),
+        other => panic!("SPAWN_RESOURCE (parent) failed: {other:?}"),
     }
 }
 
-/// `SPAWN_TERMINAL { resource: Some(AgentSession { parent, provider }) }`.
+/// `SPAWN_RESOURCE { resource: Some(AgentSession { parent, provider }) }`.
 async fn spawn_session(
     stream: &mut UnixStream,
     request_id: u32,
-    parent: TerminalId,
+    parent: ResourceId,
     provider: &str,
 ) -> SpawnResult {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: None,
@@ -297,7 +297,7 @@ async fn spawn_session(
 async fn append(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     payload: &str,
 ) -> CommandResult {
     send_frame(
@@ -314,7 +314,7 @@ async fn append(
     await_command_result(stream, request_id).await
 }
 
-/// As [`append`], but also returns any `TerminalOutput` bytes for `session`
+/// As [`append`], but also returns any `ResourceOutput` bytes for `session`
 /// seen while waiting for the reply.
 ///
 /// The appending client is auto-subscribed to its own session's live output
@@ -326,7 +326,7 @@ async fn append(
 async fn append_and_collect(
     stream: &mut UnixStream,
     request_id: u32,
-    session: TerminalId,
+    session: ResourceId,
     payload: &str,
 ) -> (CommandResult, Vec<u8>) {
     send_frame(
@@ -350,7 +350,7 @@ async fn append_and_collect(
         );
         let (_type_byte, frame) = timeout(remaining, recv_typed(stream)).await.unwrap();
         match frame {
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
             } if terminal_id == session => {
                 acc.extend_from_slice(&bytes);
@@ -366,19 +366,19 @@ async fn append_and_collect(
     }
 }
 
-async fn attach_terminal(stream: &mut UnixStream, request_id: u32, terminal_id: TerminalId) {
+async fn attach_terminal(stream: &mut UnixStream, request_id: u32, terminal_id: ResourceId) {
     send_frame(
         stream,
         &FrameKind::Command {
             request_id,
-            command: Command::AttachTerminal { terminal_id },
+            command: Command::AttachResource { terminal_id },
         },
     )
     .await;
     let result = await_command_result(stream, request_id).await;
     assert!(
         matches!(result, CommandResult::Ok),
-        "ATTACH_TERMINAL must succeed, got {result:?}"
+        "ATTACH_RESOURCE must succeed, got {result:?}"
     );
 }
 
@@ -391,11 +391,11 @@ const fn state_barrier(request_id: u32) -> FrameKind {
     }
 }
 
-/// Collect every `TERMINAL_OUTPUT` for `session` up to (and including) the
+/// Collect every `RESOURCE_OUTPUT` for `session` up to (and including) the
 /// `COMMAND_RESULT` for `barrier_request_id`, concatenating their bytes.
 async fn drain_live_records_until(
     stream: &mut UnixStream,
-    session: &TerminalId,
+    session: &ResourceId,
     barrier_request_id: u32,
 ) -> Vec<u8> {
     let mut acc = Vec::new();
@@ -410,7 +410,7 @@ async fn drain_live_records_until(
             panic!("timed out draining live records for {session:?}");
         };
         match frame {
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
             } if terminal_id == *session => {
                 acc.extend_from_slice(&bytes);
@@ -423,22 +423,22 @@ async fn drain_live_records_until(
     }
 }
 
-/// Await `TERMINAL_CLOSED` for `victim`, returning its `CloseReason`.
+/// Await `RESOURCE_CLOSED` for `victim`, returning its `CloseReason`.
 async fn await_terminal_closed_reason(
     stream: &mut UnixStream,
-    victim: &TerminalId,
+    victim: &ResourceId,
 ) -> phux_protocol::wire::frame::CloseReason {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(
             !remaining.is_zero(),
-            "timed out waiting for TERMINAL_CLOSED({victim:?})"
+            "timed out waiting for RESOURCE_CLOSED({victim:?})"
         );
         let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            panic!("timed out waiting for TERMINAL_CLOSED({victim:?})");
+            panic!("timed out waiting for RESOURCE_CLOSED({victim:?})");
         };
-        if let FrameKind::TerminalClosed {
+        if let FrameKind::ResourceClosed {
             terminal_id,
             reason,
             ..
@@ -456,18 +456,18 @@ async fn await_terminal_closed_reason(
 /// (and lose) a different target's frame that happened to arrive first.
 async fn collect_closed_reasons(
     stream: &mut UnixStream,
-    targets: &[TerminalId],
-) -> std::collections::HashMap<TerminalId, phux_protocol::wire::frame::CloseReason> {
+    targets: &[ResourceId],
+) -> std::collections::HashMap<ResourceId, phux_protocol::wire::frame::CloseReason> {
     let mut seen = std::collections::HashMap::new();
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while seen.len() < targets.len() {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(
             !remaining.is_zero(),
-            "timed out collecting TERMINAL_CLOSED for {targets:?}, got {seen:?}"
+            "timed out collecting RESOURCE_CLOSED for {targets:?}, got {seen:?}"
         );
         let (_type_byte, frame) = timeout(remaining, recv_typed(stream)).await.unwrap();
-        if let FrameKind::TerminalClosed {
+        if let FrameKind::ResourceClosed {
             terminal_id,
             reason,
             ..
@@ -483,14 +483,14 @@ async fn collect_closed_reasons(
 async fn get_metadata(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
 ) -> Option<Vec<u8>> {
     send_frame(
         stream,
         &FrameKind::GetMetadata {
             request_id,
-            scope: Scope::Terminal(terminal_id),
-            key: phux_protocol::wire::frame::TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(terminal_id),
+            key: phux_protocol::wire::frame::RESOURCE_AGENT_KEY.to_owned(),
         },
     )
     .await;
@@ -526,7 +526,7 @@ async fn get_metadata(
 async fn poll_metadata_until(
     stream: &mut UnixStream,
     request_id_base: u32,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     needle: &str,
 ) -> Vec<u8> {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
@@ -574,7 +574,7 @@ fn spawn_registers_child_with_kind_parent_and_agent_facet() {
         let parent = spawn_parent_terminal(&mut stream, 1).await;
         let session = match spawn_session(&mut stream, 2, parent.clone(), "claude").await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL (session) failed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE (session) failed: {other:?}"),
         };
 
         send_frame(
@@ -593,7 +593,7 @@ fn spawn_registers_child_with_kind_parent_and_agent_facet() {
             panic!("GET_STATE did not return a State snapshot");
         };
         let entry = snapshot
-            .panes
+            .resources
             .iter()
             .find(|p| p.id == session)
             .expect("the session must appear in GET_STATE's pane list");
@@ -644,7 +644,7 @@ fn append_delivers_live_records_to_two_subscribers() {
         let watcher_bytes = drain_live_records_until(&mut watcher, &session, 101).await;
         assert!(
             String::from_utf8_lossy(&watcher_bytes).contains("\"type\":\"prompt\""),
-            "the ATTACH_TERMINAL-only watcher must see the live record: {watcher_bytes:?}"
+            "the ATTACH_RESOURCE-only watcher must see the live record: {watcher_bytes:?}"
         );
 
         shutdown(owner, shutdown_tx, server_handle).await;
@@ -680,7 +680,7 @@ fn bootstrap_replays_retained_records_on_attach() {
             &mut late,
             &FrameKind::Command {
                 request_id: 200,
-                command: Command::AttachTerminal {
+                command: Command::AttachResource {
                     terminal_id: session.clone(),
                 },
             },
@@ -773,7 +773,7 @@ fn ring_overflow_evicts_oldest_and_reports_the_toll() {
             &mut late,
             &FrameKind::Command {
                 request_id: 200,
-                command: Command::AttachTerminal {
+                command: Command::AttachResource {
                     terminal_id: session.clone(),
                 },
             },
@@ -991,7 +991,7 @@ fn wrong_kind_refusals() {
 /// a fact rather than a race. The per-connection frame loop handles frames in
 /// order, so a `COMMAND_RESULT` for a request sent after the subscribes is
 /// proof they already ran.
-async fn subscribe_events(stream: &mut UnixStream, request_id: u32, scopes: &[Option<TerminalId>]) {
+async fn subscribe_events(stream: &mut UnixStream, request_id: u32, scopes: &[Option<ResourceId>]) {
     for terminal in scopes {
         send_frame(
             stream,
@@ -1020,7 +1020,7 @@ async fn subscribe_events(stream: &mut UnixStream, request_id: u32, scopes: &[Op
 /// would never see the second.
 async fn count_child_events(
     stream: &mut UnixStream,
-    wanted: &TerminalId,
+    wanted: &ResourceId,
     barrier_request_id: u32,
 ) -> (usize, usize) {
     let mut spawned = 0_usize;
@@ -1032,7 +1032,7 @@ async fn count_child_events(
                 terminal: Some(id),
                 event,
             } if &id == wanted => match event {
-                phux_protocol::wire::frame::AgentEvent::PaneSpawned { kind, parent } => {
+                phux_protocol::wire::frame::AgentEvent::ResourceSpawned { kind, parent } => {
                     assert_eq!(
                         kind,
                         WireResourceKind::AgentSession,
@@ -1041,7 +1041,7 @@ async fn count_child_events(
                     assert!(parent.is_some(), "and the pane it lives in");
                     spawned = spawned.saturating_add(1);
                 }
-                phux_protocol::wire::frame::AgentEvent::PaneClosed { .. } => {
+                phux_protocol::wire::frame::AgentEvent::ResourceClosed { .. } => {
                     closed = closed.saturating_add(1);
                 }
                 _ => {}
@@ -1089,7 +1089,7 @@ fn a_childs_spawn_and_close_reach_the_parents_event_watchers() {
             &mut owner,
             &FrameKind::Command {
                 request_id: 3,
-                command: Command::KillTerminal {
+                command: Command::KillResource {
                     terminal_id: session.clone(),
                 },
             },
@@ -1137,7 +1137,7 @@ fn kill_parent_cascades_child_with_parent_closed() {
             &mut owner,
             &FrameKind::Command {
                 request_id: 3,
-                command: Command::KillTerminal {
+                command: Command::KillResource {
                     terminal_id: parent.clone(),
                 },
             },
@@ -1152,7 +1152,7 @@ fn kill_parent_cascades_child_with_parent_closed() {
         assert_eq!(
             watcher_reason,
             phux_protocol::wire::frame::CloseReason::ParentClosed,
-            "the cascaded child's TERMINAL_CLOSED must carry ParentClosed"
+            "the cascaded child's RESOURCE_CLOSED must carry ParentClosed"
         );
         let owner_reasons =
             collect_closed_reasons(&mut owner, &[parent.clone(), session.clone()]).await;
@@ -1163,7 +1163,7 @@ fn kill_parent_cascades_child_with_parent_closed() {
         assert_eq!(
             owner_reasons[&parent],
             phux_protocol::wire::frame::CloseReason::Killed,
-            "the killed parent's own TERMINAL_CLOSED must carry Killed"
+            "the killed parent's own RESOURCE_CLOSED must carry Killed"
         );
 
         shutdown(owner, shutdown_tx, server_handle).await;
@@ -1222,7 +1222,7 @@ fn pty_exit_cascades_to_the_child() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. KILL_TERMINALS over a mixed set.
+// 8. KILL_RESOURCES over a mixed set.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1243,7 +1243,7 @@ fn kill_terminals_mixed_set_closes_once_each() {
             &mut owner,
             &FrameKind::Command {
                 request_id: 4,
-                command: Command::KillTerminals {
+                command: Command::KillResources {
                     ids: vec![parent.clone(), session.clone(), unrelated.clone()],
                 },
             },
@@ -1254,25 +1254,25 @@ fn kill_terminals_mixed_set_closes_once_each() {
             CommandResult::Ok
         ));
 
-        // Phase 1: wait (on the KILL_TERMINALS command's own timeout, no
+        // Phase 1: wait (on the KILL_RESOURCES command's own timeout, no
         // premature ordering barrier — the exit watchers that emit these
         // frames are separate tasks that have not necessarily run yet the
-        // instant KILL_TERMINALS's COMMAND_RESULT arrives) until every
+        // instant KILL_RESOURCES's COMMAND_RESULT arrives) until every
         // target has closed at least once. Counted, not just observed: the
         // three closes race each other on the wire, so this is one pass
         // rather than three sequential waits that could silently consume
         // (and lose) a different target's frame arriving out of order.
         let targets = [parent.clone(), session.clone(), unrelated.clone()];
-        let mut seen: std::collections::HashMap<TerminalId, u32> = std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<ResourceId, u32> = std::collections::HashMap::new();
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
         while !targets.iter().all(|t| seen.contains_key(t)) {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "timed out collecting KILL_TERMINALS closes: {seen:?}"
+                "timed out collecting KILL_RESOURCES closes: {seen:?}"
             );
             let (_type_byte, frame) = timeout(remaining, recv_typed(&mut owner)).await.unwrap();
-            if let FrameKind::TerminalClosed { terminal_id, .. } = frame {
+            if let FrameKind::ResourceClosed { terminal_id, .. } = frame {
                 *seen.entry(terminal_id).or_insert(0) += 1;
             }
         }
@@ -1286,7 +1286,7 @@ fn kill_terminals_mixed_set_closes_once_each() {
                 .await
                 .unwrap();
             match frame {
-                FrameKind::TerminalClosed { terminal_id, .. } => {
+                FrameKind::ResourceClosed { terminal_id, .. } => {
                     *seen.entry(terminal_id).or_insert(0) += 1;
                 }
                 FrameKind::CommandResult { request_id: 5, .. } => break,
@@ -1320,7 +1320,7 @@ fn spawn_with_unknown_or_session_parent_earns_typed_refusals() {
         let tmp = TempDir::new().unwrap();
         let (mut owner, shutdown_tx, server_handle) = connect_and_attach(&tmp).await;
 
-        let unknown_parent = TerminalId::local(999_999);
+        let unknown_parent = ResourceId::local(999_999);
         let result = spawn_session(&mut owner, 1, unknown_parent, "claude").await;
         assert!(
             matches!(result, SpawnResult::Err(SpawnError::ParentNotFound)),

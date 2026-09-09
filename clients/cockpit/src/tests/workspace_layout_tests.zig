@@ -112,7 +112,7 @@ test "the painter, the hit targets, and the PTY pump agree on one set of rects" 
     try testing.expectEqual(@as(usize, 3), count);
 
     for (panes[0..count]) |pane| {
-        const local = app.LocalTerminalId;
+        const local = app.LocalResourceId;
         _ = local;
         const widget_id = native_sdk.canvas.globalWidgetId(.terminal, .{
             .index = @intCast(@intFromEnum(app.localId(pane.terminal).?)),

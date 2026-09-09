@@ -224,10 +224,10 @@ because the thing they check does not exist on a runner.
   [`ADR/0011`](./ADR/0011-protocol-core-independence.md) keeps the two crates
   independent of each other. Where both are in scope, or where the importing
   crate defines its own, import the protocol one under a `Wire` prefix:
-  `use phux_protocol::ids::TerminalId as WireTerminalId;`. That puts the seam
+  `use phux_protocol::ids::ResourceId as WireResourceId;`. That puts the seam
   at the use site instead of leaving a reader to infer it from context.
   Twenty files already do this — it is the rule, not a local habit. It
-  currently matters for `ClientId`, `TerminalId`, `SessionId`, `WindowId`,
+  currently matters for `ClientId`, `ResourceId`, `SessionId`, `WindowId`,
   `LayoutNode`, `SplitDir`, `WindowInfo`, and `HistoryRejectionReason`. The
   pair that motivates the rule: `phux_protocol::ids::ClientId` is a `u32`
   wire identity, `phux_server::state::client::ClientId` is a `u64` routing

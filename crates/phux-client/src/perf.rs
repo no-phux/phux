@@ -2,7 +2,7 @@
 //! own responsiveness.
 //!
 //! The one number a user feels is `echo.rtt`: the time from a keystroke
-//! leaving this process until the first `TERMINAL_OUTPUT` for the pane it
+//! leaving this process until the first `RESOURCE_OUTPUT` for the pane it
 //! went to arrives back. It is sampled where the paint pacer already
 //! observes replies, so it costs nothing new. Around it sit the paint-side
 //! costs (`vt_apply`, `paint.*`, `stdout.*`) and the pacer's own decisions
@@ -22,13 +22,13 @@ use phux_perf::{Counter, Histogram, Metric, PerfReport, Unit};
 /// Microseconds from sending input for a pane to the first output frame
 /// from that pane.
 pub static ECHO_RTT: Histogram = Histogram::new();
-/// Microseconds libghostty took to apply one `TERMINAL_OUTPUT` frame.
+/// Microseconds libghostty took to apply one `RESOURCE_OUTPUT` frame.
 pub static VT_APPLY: Histogram = Histogram::new();
 /// Microseconds per full-frame paint (every pane, chrome, flush).
 pub static PAINT_FULL: Histogram = Histogram::new();
 /// Microseconds per chrome-only paint.
 pub static PAINT_CHROME: Histogram = Histogram::new();
-/// `TERMINAL_OUTPUT` frames received.
+/// `RESOURCE_OUTPUT` frames received.
 pub static FRAMES: Counter = Counter::new();
 /// Frames that led to a paint.
 pub static PAINTS: Counter = Counter::new();

@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, content_rect, paint_full_frame};
 use crate::attach::pane_state::{AttachKernel, PaneSlot, VcsIndex};
@@ -31,14 +31,14 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     out: &mut W,
     overlays: &OverlayState,
     workspace: &Workspace,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     // phux-x2hm: the driver's pane-zoom state. The base-frame repaints below
     // render through `Workspace::render_window` so the zoomed pane fills the
     // window; the copy-mode branch keeps using the REAL active window because
     // copy mode operates on the focused pane regardless of zoom.
-    zoomed: Option<&TerminalId>,
+    zoomed: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
     // phux-4h5a: the sidebar reservation, so base-frame repaints under an
@@ -209,10 +209,10 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
     out: &mut W,
     overlays: &mut OverlayState,
     workspace: &Workspace,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
-    focused_pane: Option<&TerminalId>,
-    zoomed: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
+    zoomed: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -221,10 +221,10 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
     theme: &crate::render::Theme,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused_session: Option<phux_protocol::ids::SessionId>,
-    agent_meta: &HashMap<TerminalId, AgentRecord>,
+    agent_meta: &HashMap<ResourceId, AgentRecord>,
     vcs: &mut VcsIndex,
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
-    foreign_agents: &HashMap<TerminalId, AgentRecord>,
+    foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> StatusBarPaint {
     if !overlays.is_active() {
         return StatusBarPaint::NotPublished;
@@ -250,7 +250,7 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
             workspace,
             panes,
             engine_kernel,
-            focused_pane,
+            focused_resource,
             zoomed,
             viewport_dims,
             status_bar,

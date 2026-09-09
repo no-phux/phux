@@ -744,13 +744,13 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             }
         },
         .copy_selection => {
-            const id = model.selectedTerminalId() orelse return;
+            const id = model.selectedResourceId() orelse return;
             copySelection(model, fx, id);
         },
         .copy_terminal => |id| copySelection(model, fx, id),
         .paste_terminal => |id| requestPaste(model, fx, id),
         .paste_focused => {
-            const id = model.selectedTerminalId() orelse return;
+            const id = model.selectedResourceId() orelse return;
             requestPaste(model, fx, id);
         },
         .clipboard => |result| {
@@ -977,7 +977,7 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             closePaneForTerminal(model, fx, id, providerKind(id) == .local);
         },
         .move_terminal => |delta| {
-            const id = model.selectedTerminalId() orelse return;
+            const id = model.selectedResourceId() orelse return;
             _ = model.moveTerminal(id, delta);
         },
         .toggle_tab_placement => {
@@ -2110,7 +2110,7 @@ fn handleKey(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent) void {
     }
     // cmd+opt+arrows move focus GEOMETRICALLY, the way Ghostty does — the
     // pane that actually lies that way, not the next index in a list.
-    if (model.selectedTerminalId() != null and primary and mods.alt and !mods.shift and !mods.control) {
+    if (model.selectedResourceId() != null and primary and mods.alt and !mods.shift and !mods.control) {
         const direction: ?layout.Direction =
             if (keyIs(event.key, "arrowleft")) .left else if (keyIs(event.key, "arrowright")) .right else if (keyIs(event.key, "arrowup")) .up else if (keyIs(event.key, "arrowdown")) .down else null;
         if (direction) |value| {
@@ -2122,7 +2122,7 @@ fn handleKey(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent) void {
 
     // A webview is a real native input surface. Unclaimed canvas events
     // must never leak into whichever terminal happened to be focused last.
-    if (model.selectedTerminalId() == null) return;
+    if (model.selectedResourceId() == null) return;
 
     const terminal_ref = model.focusedTerminalRef() orelse return;
     if (providerKind(terminal_ref) == .phux) {

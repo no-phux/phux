@@ -4,12 +4,12 @@
 //! The herdr-style sidebar shows each window's workspace branch under its
 //! label. The branch is derived **client-side** from the pane's working
 //! directory (which already flows on the wire in the `ATTACHED` snapshot's
-//! `TerminalInfo::cwd`): walk up from the cwd to the enclosing `.git`,
+//! `ResourceInfo::cwd`): walk up from the cwd to the enclosing `.git`,
 //! resolve worktree gitfiles, and read `HEAD`. This deliberately avoids a
 //! wire change — the field is display-only, derivable from data the client
 //! already has, and the TUI client shares a host with the server today
 //! (ADR-0003 / ADR-0007). If a remote-consumer future needs the server to
-//! own the derivation, an additive `TerminalInfo` field can carry it
+//! own the derivation, an additive `ResourceInfo` field can carry it
 //! without breaking this path.
 //!
 //! Inference is a **cheap cached file read** — never a `git` subprocess

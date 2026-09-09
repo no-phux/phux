@@ -12,8 +12,8 @@ use libghostty_vt::terminal::{Mode, Terminal};
 
 use crate::error::{BridgeError, check_struct, terminal_id_in};
 use crate::{
-    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxTerminalCell, PhuxTerminalGridView,
-    PhuxTerminalId, with_client_ref,
+    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, PhuxTerminalCell,
+    PhuxTerminalGridView, with_client_ref,
 };
 
 pub const GRID_COLOR_DEFAULT: u8 = 0;
@@ -233,7 +233,7 @@ impl DefaultColors {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_grid_metadata(
     client: *const PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     out_metadata: *mut PhuxTerminalGridMetadata,
 ) -> PhuxClientResult {
     with_client_ref(client, |client| {

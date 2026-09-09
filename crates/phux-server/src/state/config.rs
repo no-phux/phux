@@ -31,7 +31,7 @@ pub(super) struct ServerConfig {
     /// `defaults.history-bytes`).
     /// Mirrors [`crate::runtime::ServerConfig::scrollback`] so the
     /// attach-time creation path (`AttachTarget::CreateIfMissing`) and
-    /// `SPAWN_TERMINAL` build their `TerminalActor`s with the configured
+    /// `SPAWN_RESOURCE` build their `TerminalActor`s with the configured
     /// cap without an extra channel to the runtime. Set by the runtime
     /// via [`super::ServerState::set_scrollback_limits`] right after
     /// `SharedState::new`.
@@ -53,7 +53,7 @@ pub(super) struct ServerConfig {
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`). Mirrors
     /// [`crate::runtime::ServerConfig::cwd_inheritance`] so the
-    /// `SPAWN_TERMINAL` handler resolves the new pane's CWD without an
+    /// `SPAWN_RESOURCE` handler resolves the new pane's CWD without an
     /// extra channel to the runtime. Set by the runtime via
     /// [`super::ServerState::set_cwd_inheritance`] right after
     /// `SharedState::new`.
@@ -65,9 +65,9 @@ pub(super) struct ServerConfig {
     /// `TERM` advertised to the inner program of every server-spawned pane
     /// (`defaults.term`, phux-ign). Mirrors
     /// [`crate::runtime::ServerConfig::term`] so the attach-time creation
-    /// path and `SPAWN_TERMINAL` apply it as the PTY's `TERM` baseline
+    /// path and `SPAWN_RESOURCE` apply it as the PTY's `TERM` baseline
     /// without an extra channel to the runtime. A per-spawn
-    /// `SPAWN_TERMINAL.env` entry for `TERM` overrides it. Set by the
+    /// `SPAWN_RESOURCE.env` entry for `TERM` overrides it. Set by the
     /// runtime via [`super::ServerState::set_term`] right after
     /// `SharedState::new`.
     ///
@@ -79,7 +79,7 @@ pub(super) struct ServerConfig {
     /// binary from its single config load. Mirrors
     /// [`crate::runtime::ServerConfig::shell`] so the attach-time
     /// creation path, `SESSION_CREATE_KEY`, and a command-less
-    /// `SPAWN_TERMINAL` spawn the configured shell without an extra
+    /// `SPAWN_RESOURCE` spawn the configured shell without an extra
     /// channel to the runtime. A wire `command` always wins over this
     /// default. Set by the runtime via [`super::ServerState::set_shell`]
     /// right after `SharedState::new`.

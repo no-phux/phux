@@ -69,7 +69,7 @@
 
 use std::io::{self, Write};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect as RataRect;
 use ratatui::style::{Color, Modifier, Style};
@@ -325,13 +325,13 @@ pub fn render_dividers<'p, W, F>(
     layout: &PaneLayout,
     content: Rect,
     rail: Option<u16>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     theme: &Theme,
     label_of: F,
 ) -> io::Result<()>
 where
     W: Write,
-    F: Fn(&TerminalId) -> Option<PaneLabel<'p>>,
+    F: Fn(&ResourceId) -> Option<PaneLabel<'p>>,
 {
     let (cols, rows) = layout.viewport;
     if cols == 0 || rows == 0 {
@@ -364,12 +364,12 @@ pub(crate) fn compose_buffer<'p, F>(
     layout: &PaneLayout,
     content: Rect,
     rail: Option<u16>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     theme: &Theme,
     label_of: F,
 ) -> Buffer
 where
-    F: Fn(&TerminalId) -> Option<PaneLabel<'p>>,
+    F: Fn(&ResourceId) -> Option<PaneLabel<'p>>,
 {
     let (cols, rows) = layout.viewport;
     let mut buf = Buffer::empty(RataRect::new(0, 0, cols, rows));
@@ -408,11 +408,11 @@ fn build_cells<'p, F>(
     layout: &PaneLayout,
     content: Rect,
     rail: Option<u16>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     theme: &Theme,
     label_of: F,
 ) where
-    F: Fn(&TerminalId) -> Option<PaneLabel<'p>>,
+    F: Fn(&ResourceId) -> Option<PaneLabel<'p>>,
 {
     // The focused pane's rect is the whole emphasis model: a rule is on
     // the focused frame exactly when it lies on that rect's perimeter.
@@ -514,11 +514,11 @@ fn draw_titles<'p, F>(
     cells: &mut ChromeCells,
     layout: &PaneLayout,
     rail: Option<u16>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     theme: &Theme,
     label_of: F,
 ) where
-    F: Fn(&TerminalId) -> Option<PaneLabel<'p>>,
+    F: Fn(&ResourceId) -> Option<PaneLabel<'p>>,
 {
     for (id, rect) in &layout.rects {
         // A zero-height leaf has no pane to label — and it shares its
@@ -777,8 +777,8 @@ mod tests {
     use crate::attach::multi_pane::{DividerCell, compute_layout, compute_layout_in};
     use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
 
-    fn t(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn t(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     fn leaf(id: u32) -> LayoutNode {
@@ -811,7 +811,7 @@ mod tests {
     }
 
     /// No labels at all — the pre-title behaviour.
-    fn unlabelled(_: &TerminalId) -> Option<PaneLabel<'static>> {
+    fn unlabelled(_: &ResourceId) -> Option<PaneLabel<'static>> {
         None
     }
 
@@ -830,7 +830,7 @@ mod tests {
     fn render_with_focus(
         layout: &PaneLayout,
         content: Rect,
-        focus: Option<&TerminalId>,
+        focus: Option<&ResourceId>,
         label: Option<&'static str>,
     ) -> String {
         render_full(layout, content, rail_row(content), focus, label)
@@ -841,7 +841,7 @@ mod tests {
         layout: &PaneLayout,
         content: Rect,
         rail: Option<u16>,
-        focus: Option<&TerminalId>,
+        focus: Option<&ResourceId>,
         label: Option<&'static str>,
     ) -> String {
         let mut bytes: Vec<u8> = Vec::new();
@@ -1659,7 +1659,7 @@ mod tests {
         compute_layout_in(&state, content, (content.w, content.y + content.h))
     }
 
-    fn cross_layout(content: Rect, focus: TerminalId) -> PaneLayout {
+    fn cross_layout(content: Rect, focus: ResourceId) -> PaneLayout {
         let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
         let t2 = split_at(&t1, &t(1), &t(3), SplitDir::Vertical, 0.5).unwrap();
         let state = LayoutState {

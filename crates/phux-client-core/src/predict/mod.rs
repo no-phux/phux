@@ -23,7 +23,7 @@
 //!   terminal as VT escapes (positioned writes with an
 //!   underline SGR attribute).
 //! - [`reconcile::reconcile_terminal_output_per_cell`] — the v1.1
-//!   match game (phux-9gw.1.1). On each `TerminalOutput`, walks the
+//!   match game (phux-9gw.1.1). On each `ResourceOutput`, walks the
 //!   prediction queue against the freshly painted authoritative cells
 //!   and the new cursor position; drops confirmed predictions, drops
 //!   the suffix from any contradiction, and keeps predictions still
@@ -156,7 +156,7 @@
 //! # Reconciliation policy
 //!
 //! `reconcile_terminal_output_per_cell` is the production path for
-//! `TERMINAL_OUTPUT`. It reads each prediction's target cell from the
+//! `RESOURCE_OUTPUT`. It reads each prediction's target cell from the
 //! freshly rendered authoritative grid and classifies it as
 //! **confirmed** (drop, the server already painted it), **pending**
 //! (keep, server hasn't caught up — overlay stays alive), or

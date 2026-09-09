@@ -14,7 +14,7 @@ const geometry = native_sdk.geometry;
 const Model = model_module.Model;
 const Msg = app_types.Msg;
 const TerminalApp = app_types.TerminalApp;
-const LocalTerminalId = support.LocalTerminalId;
+const LocalResourceId = support.LocalResourceId;
 const TerminalRef = support.TerminalRef;
 const canvas_label = scene_module.canvas_label;
 const webview_label = scene_module.webview_label;
@@ -417,7 +417,7 @@ pub const CockpitHost = struct {
             .hover, .down, .wheel => null,
         };
 
-        var terminal_id: LocalTerminalId = undefined;
+        var terminal_id: LocalResourceId = undefined;
         var generation: u64 = 0;
         var frame: geometry.RectF = .{};
         if (capture) |owned| {
@@ -491,13 +491,13 @@ pub const CockpitHost = struct {
     }
 };
 
-fn terminalInteractionWidgetId(id: LocalTerminalId) canvas.ObjectId {
+fn terminalInteractionWidgetId(id: LocalResourceId) canvas.ObjectId {
     return canvas.globalWidgetId(.terminal, .{ .index = @intCast(@intFromEnum(id)) });
 }
 
 /// Routed widget pointer input reaches LOCAL terminals only: the remote path
 /// runs through the NSEvent monitor, which carries its own hit testing.
-fn terminalIdForInteractionWidget(model: *const Model, widget_id: canvas.ObjectId) ?LocalTerminalId {
+fn terminalIdForInteractionWidget(model: *const Model, widget_id: canvas.ObjectId) ?LocalResourceId {
     // Every pane of every tab of every WINDOW, not just one tab's: a widget id
     // survives a tab switch and a window switch alike, and routing must
     // resolve it against the whole session.
@@ -520,7 +520,7 @@ fn terminalInteractionFrame(
     runtime: *native_sdk.Runtime,
     window_id: native_sdk.platform.WindowId,
     surface: []const u8,
-    id: LocalTerminalId,
+    id: LocalResourceId,
 ) ?geometry.RectF {
     const widget_id = terminalInteractionWidgetId(id);
     for (runtime.views[0..runtime.view_count]) |*runtime_view| {

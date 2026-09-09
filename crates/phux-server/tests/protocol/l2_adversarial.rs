@@ -37,7 +37,7 @@
 
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
     TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT,
@@ -81,7 +81,7 @@ async fn attach_client(socket_path: &std::path::Path, label: &str) -> (UnixStrea
 async fn issue_get_terminal_state(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     latency_measurements: &mut Vec<u128>,
 ) {
     let start = Instant::now();
@@ -131,7 +131,7 @@ async fn issue_get_terminal_state(
 }
 
 /// Helper: send a `SUBSCRIBE_EVENTS` frame to receive all agent events for a terminal.
-async fn subscribe_to_events(stream: &mut UnixStream, terminal_id: Option<&TerminalId>) {
+async fn subscribe_to_events(stream: &mut UnixStream, terminal_id: Option<&ResourceId>) {
     send_frame(
         stream,
         &FrameKind::SubscribeEvents {
@@ -211,7 +211,7 @@ fn test_concurrent_gets_no_lag() {
             let (_t, attached) = recv_typed(&mut dummy_stream).await;
             let (_t, _snap) = recv_typed(&mut dummy_stream).await;
             match attached {
-                FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+                FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
                 _ => panic!("expected Attached"),
             }
         };

@@ -25,27 +25,27 @@ pub fn text(raw: c.PhuxBytes) !ws.Text {
     return ws.Text.init(value);
 }
 
-pub fn terminalRef(raw: c.PhuxTerminalId) !contract.TerminalRef {
+pub fn terminalRef(raw: c.PhuxResourceId) !contract.TerminalRef {
     const host_name = try text(raw.host);
     switch (raw.kind) {
-        c.PHUX_TERMINAL_LOCAL => if (host_name.len != 0) return error.InvalidIdentity,
-        c.PHUX_TERMINAL_SATELLITE => if (host_name.len == 0) return error.InvalidIdentity,
+        c.PHUX_RESOURCE_ID_LOCAL => if (host_name.len != 0) return error.InvalidIdentity,
+        c.PHUX_RESOURCE_ID_SATELLITE => if (host_name.len == 0) return error.InvalidIdentity,
         else => return error.InvalidIdentity,
     }
     if (raw.id == 0) return error.InvalidIdentity;
     return .{ .provider_id = .phux, .terminal_id = .{
-        .phux = try contract.RemoteTerminalId.fromPhux(raw.kind, raw.id, host_name.slice()),
+        .phux = try contract.RemoteResourceId.fromPhux(raw.kind, raw.id, host_name.slice()),
     } };
 }
 
-pub fn rawTerminal(ref: *const ?contract.TerminalRef) !c.PhuxTerminalId {
-    const value = if (ref.*) |*value| value else return std.mem.zeroes(c.PhuxTerminalId);
+pub fn rawTerminal(ref: *const ?contract.TerminalRef) !c.PhuxResourceId {
+    const value = if (ref.*) |*value| value else return std.mem.zeroes(c.PhuxResourceId);
     if (value.provider_id != .phux) return error.InvalidIdentity;
     const remote = switch (value.terminal_id) {
         .phux => |*id| id,
         else => return error.InvalidIdentity,
     };
-    const raw: c.PhuxTerminalId = .{ .kind = remote.kind, .id = remote.id, .host = bytes(remote.host()) };
+    const raw: c.PhuxResourceId = .{ .kind = remote.kind, .id = remote.id, .host = bytes(remote.host()) };
     _ = try terminalRef(raw);
     return raw;
 }
@@ -206,7 +206,7 @@ fn validateSplit(raw: c.PhuxWorkspaceNode, count: u32) !void {
 
 test "workspace mutation maps every field and borrows the owning satellite IDs" {
     const ref: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
-        .phux = try contract.RemoteTerminalId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 91, "remote-builder"),
+        .phux = try contract.RemoteResourceId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 91, "remote-builder"),
     } };
     const value: ws.Mutation = .{
         .expected_revision = 44,
@@ -248,10 +248,10 @@ test "workspace text and identity copies reject overflow without truncation" {
     source[0] = 'y';
     try std.testing.expectEqual(@as(u8, 'x'), good.slice()[0]);
     try std.testing.expectError(error.TextTooLong, text(bytes(&source)));
-    try std.testing.expectError(error.HostTooLong, terminalRef(.{ .kind = c.PHUX_TERMINAL_SATELLITE, .id = 1, .host = bytes(source[0..256]) }));
+    try std.testing.expectError(error.HostTooLong, terminalRef(.{ .kind = c.PHUX_RESOURCE_ID_SATELLITE, .id = 1, .host = bytes(source[0..256]) }));
     try std.testing.expectError(error.InvalidIdentity, text(.{ .data = null, .len = 1 }));
     var host_name = "build".*;
-    const ref = try terminalRef(.{ .kind = c.PHUX_TERMINAL_SATELLITE, .id = 1, .host = bytes(&host_name) });
+    const ref = try terminalRef(.{ .kind = c.PHUX_RESOURCE_ID_SATELLITE, .id = 1, .host = bytes(&host_name) });
     host_name[0] = 'x';
     try std.testing.expectEqualStrings("build", ref.terminal_id.phux.host());
 }

@@ -459,7 +459,7 @@ impl WsReader {
     ///
     /// This is the WebSocket half of the burst coalescing the UDS and QUIC
     /// lanes already had (phux-jhv8): without it the attach loop runs a full
-    /// render pass per 4 KiB `TERMINAL_OUTPUT`, which on a `seq 1 300000`
+    /// render pass per 4 KiB `RESOURCE_OUTPUT`, which on a `seq 1 300000`
     /// burst is tens of thousands of paints and is the client half of why
     /// this lane could not keep up (phux-l96p.10).
     ///

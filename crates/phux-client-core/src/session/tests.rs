@@ -5,7 +5,7 @@ use phux_protocol::caps::{
 use phux_protocol::input::{InputEvent, focus::FocusEvent};
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{
-    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceKind, StreamId, TerminalId,
+    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, ResourceKind, StreamId,
 };
 
 use super::agent_stream::AgentSessionStatus;
@@ -272,8 +272,8 @@ impl EngineAdapter for RecordingNativeAdapter {
     }
 }
 
-fn terminal(raw: u32) -> TerminalId {
-    TerminalId::local(raw)
+fn terminal(raw: u32) -> ResourceId {
+    ResourceId::local(raw)
 }
 
 fn stream(raw: u64) -> StreamId {
@@ -323,7 +323,7 @@ fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
     assert!(kernel.active_attach_contains(&id));
     kernel
         .update(
-            KernelInput::TerminalClosed { terminal_id: &id },
+            KernelInput::ResourceClosed { terminal_id: &id },
             &mut effects,
         )
         .unwrap();
@@ -399,7 +399,7 @@ fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement(
         begin(&mut kernel, &id, stream(2), bootstrap(1), 0, &mut effects);
         kernel
             .update(
-                KernelInput::TerminalClosed { terminal_id: &id },
+                KernelInput::ResourceClosed { terminal_id: &id },
                 &mut effects,
             )
             .unwrap();
@@ -413,7 +413,7 @@ fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement(
 
 fn begin(
     kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     base_seq: u64,
@@ -436,7 +436,7 @@ fn begin(
 
 fn push_ready_transcript(
     kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     effects: &mut EffectBuffer,
@@ -465,7 +465,7 @@ fn push_ready_transcript(
 
 fn protocol_ready(
     kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     effects: &mut EffectBuffer,
@@ -485,7 +485,7 @@ fn protocol_ready(
 
 fn publish_direct(
     kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     base_seq: u64,
@@ -505,7 +505,7 @@ fn publish_direct(
 
 fn publish_direct_with_history(
     kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     base_seq: u64,
@@ -697,7 +697,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -716,7 +716,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         .clone();
 
     let duplicate = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
@@ -733,7 +733,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         })
     ));
     let gap = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
@@ -750,7 +750,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         })
     ));
     let wrong_stream = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id: stream(999),
             bootstrap_id,
@@ -764,7 +764,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         Err(KernelError::GenerationMismatch { .. })
     ));
     let wrong_bootstrap = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id: bootstrap(999),
@@ -779,7 +779,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
     ));
     let wrong_terminal_id = terminal(999);
     let wrong_terminal = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &wrong_terminal_id,
             stream_id,
             bootstrap_id,
@@ -825,7 +825,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
     );
     let stale = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
@@ -918,7 +918,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1192,7 +1192,7 @@ fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
     effects.clear();
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1264,7 +1264,7 @@ fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1328,7 +1328,7 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id: old_bootstrap,
@@ -1377,7 +1377,7 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
     );
 
     let stale = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id: old_bootstrap,
@@ -1417,7 +1417,7 @@ fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
     assert!(effects.is_empty());
     kernel
         .update(
-            KernelInput::TerminalClosed {
+            KernelInput::ResourceClosed {
                 terminal_id: &closed_terminal,
             },
             &mut effects,
@@ -1529,7 +1529,7 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
     assert!(staging_before.engine().transcript.is_empty());
     assert!(effects.is_empty());
     let live_before_ready = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
@@ -1660,7 +1660,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let live_b: &[u8] = b"\xfdlive-b\0";
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1693,7 +1693,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     )));
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1718,7 +1718,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     );
 }
 fn published_recording_native(
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
 ) -> SessionKernel<RecordingNativeAdapter> {
@@ -1855,7 +1855,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1889,7 +1889,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -2012,7 +2012,7 @@ fn effect_buffer_reuses_high_water_capacity() {
     );
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -2032,7 +2032,7 @@ fn effect_buffer_reuses_high_water_capacity() {
 
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -2088,7 +2088,7 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
 
     state_sync_kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -2128,7 +2128,7 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
     );
     raw_kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &raw_terminal,
                 stream_id: raw_stream,
                 bootstrap_id: raw_bootstrap,
@@ -2275,7 +2275,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         &mut effects,
     );
     let live_error = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &live_terminal,
             stream_id: live_stream,
             bootstrap_id: live_bootstrap,
@@ -2310,7 +2310,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         ]
     );
     let live_retry = kernel.update(
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: &live_terminal,
             stream_id: live_stream,
             bootstrap_id: live_bootstrap,
@@ -2442,7 +2442,7 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
     assert!(kernel.published(&terminal_id).is_some());
     kernel
         .update(
-            KernelInput::TerminalClosed {
+            KernelInput::ResourceClosed {
                 terminal_id: &terminal_id,
             },
             &mut effects,
@@ -2602,7 +2602,7 @@ fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
 #[test]
 fn generation_token_is_lossless_and_changes_per_generation() {
     let key = |stream: u64, bootstrap: u64| super::ReplicaKey {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: StreamId::new(stream).expect("stream"),
         bootstrap_id: BootstrapId::new(bootstrap).expect("bootstrap"),
         profile: BootstrapStreamProfile::SynthesizedVtRaw,
@@ -2647,7 +2647,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
         publish_direct(&mut kernel, &terminal_id, stream_id, old, 41, &mut effects);
         kernel
             .update(
-                KernelInput::TerminalOutput {
+                KernelInput::ResourceOutput {
                     terminal_id: &terminal_id,
                     stream_id,
                     bootstrap_id: old,
@@ -2696,7 +2696,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
 
         kernel
             .update(
-                KernelInput::TerminalOutput {
+                KernelInput::ResourceOutput {
                     terminal_id: &terminal_id,
                     stream_id,
                     bootstrap_id: replacement,
@@ -2717,7 +2717,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
         // ignorable, not fatal: `engine_route` folds `RetiredGeneration` into
         // "ignored", and any other error would detach the client.
         let stale = kernel.update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id: old,
@@ -2748,8 +2748,8 @@ fn agent_line(seq: u64, kind: &str, data: &str) -> String {
 
 fn declare_agent(
     kernel: &mut SessionKernel<FakeAdapter>,
-    agent: &TerminalId,
-    parent: &TerminalId,
+    agent: &ResourceId,
+    parent: &ResourceId,
     effects: &mut EffectBuffer,
 ) {
     kernel
@@ -2768,7 +2768,7 @@ fn declare_agent(
 
 fn agent_begin(
     kernel: &mut SessionKernel<FakeAdapter>,
-    agent: &TerminalId,
+    agent: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     base_seq: u64,
@@ -2788,7 +2788,7 @@ fn agent_begin(
     )
 }
 
-fn agent_records_effect(effects: &EffectBuffer) -> Option<(TerminalId, Vec<u64>)> {
+fn agent_records_effect(effects: &EffectBuffer) -> Option<(ResourceId, Vec<u64>)> {
     effects.as_slice().iter().find_map(|effect| match effect {
         KernelEffect::AgentRecords {
             terminal_id,
@@ -2925,7 +2925,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     let live = agent_line(3, "stop", "{}");
     kernel
         .update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &agent,
                 stream_id,
                 bootstrap_id,
@@ -2946,7 +2946,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     // Sequencing stays exact.
     assert!(matches!(
         kernel.update(
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &agent,
                 stream_id,
                 bootstrap_id,
@@ -2964,7 +2964,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     // Closing the session drops the view; its kind is still known.
     kernel
         .update(
-            KernelInput::TerminalClosed {
+            KernelInput::ResourceClosed {
                 terminal_id: &agent,
             },
             &mut effects,
@@ -3225,7 +3225,7 @@ fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
         kernel.tombstone(&agent, stream_id, bootstrap(1)).is_none()
             && kernel
                 .update(
-                    KernelInput::TerminalOutput {
+                    KernelInput::ResourceOutput {
                         terminal_id: &agent,
                         stream_id,
                         bootstrap_id: bootstrap(1),

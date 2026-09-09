@@ -78,7 +78,7 @@ pub(crate) struct RecArgs<'a> {
 /// Run `phux rec`.
 ///
 /// Capture is a *pure observer*: the pane is subscribed to with
-/// `ATTACH_TERMINAL`, never attached to and never resized, so it is safe
+/// `ATTACH_RESOURCE`, never attached to and never resized, so it is safe
 /// against a live session a human is using. See `phux_client::record` for the
 /// prohibition that makes that true and the regression guard that keeps it.
 ///

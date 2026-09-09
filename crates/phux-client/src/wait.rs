@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use phux_core::screen::{ROW_WINDOW_ALL, ScreenState, SemanticContent, row_window};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use regex::Regex;
 use tokio::time::Instant;
 
@@ -411,7 +411,7 @@ pub struct WaitResult {
 /// transport failure, unknown terminal).
 pub async fn poll_until(
     socket: &Path,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     condition: &Condition,
     timeout: Option<Duration>,
     interval: Duration,
@@ -439,7 +439,7 @@ pub async fn poll_until(
 /// See [`poll_until`].
 pub async fn poll_until_scoped(
     socket: &Path,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     condition: &Condition,
     timeout: Option<Duration>,
     interval: Duration,

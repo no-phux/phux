@@ -329,7 +329,7 @@ pub const CATALOG: &[SettingSpec] = &[
         kind: SettingKind::OptionalText,
         summary: "Shell for server-spawned panes; unset honors $SHELL",
         detail: "The program server-spawned panes run when nothing names a command: the \
-                 seed session, attach-time session creation, and a SPAWN_TERMINAL whose \
+                 seed session, attach-time session creation, and a SPAWN_RESOURCE whose \
                  wire frame carries no command. Unset resolves $SHELL at server startup, \
                  falling back to /bin/sh. A wire command always wins over this default.",
         applies: Applies::NextSpawn,
@@ -408,7 +408,7 @@ pub const CATALOG: &[SettingSpec] = &[
         section: SettingSection::Defaults,
         kind: SettingKind::Choice(CWD_INHERITANCE),
         summary: "How a new pane picks its working directory",
-        detail: "Applies when a SPAWN_TERMINAL leaves cwd unset; an explicit cwd always \
+        detail: "Applies when a SPAWN_RESOURCE leaves cwd unset; an explicit cwd always \
                  wins. inherit-focused reads the focused pane's live PTY working directory \
                  (tmux behavior); home uses $HOME. session-root and last-cwd-per-window are \
                  accepted but not yet resolved server-side.",

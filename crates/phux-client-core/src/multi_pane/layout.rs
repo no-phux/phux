@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::layout::{LayoutNode, LayoutState, Rect};
 
@@ -21,7 +21,7 @@ pub struct PaneLayout {
     /// The outer viewport this layout was computed against.
     pub viewport: (u16, u16),
     /// Per-pane bounding rectangle, in outer-viewport cell coordinates.
-    pub rects: HashMap<TerminalId, Rect>,
+    pub rects: HashMap<ResourceId, Rect>,
     /// Divider cells with their pre-resolved box-drawing character.
     ///
     /// Each entry positions exactly one cell. The character carries the
@@ -104,7 +104,7 @@ pub fn compute_layout_in(
     // same divider-budget math: each Horizontal split eats one column
     // from its bounds, each Vertical split eats one row.
     let mut segments: Vec<DividerSegment> = Vec::new();
-    let mut rects: HashMap<TerminalId, Rect> = HashMap::new();
+    let mut rects: HashMap<ResourceId, Rect> = HashMap::new();
     walk_layout(tree, content, &mut segments, &mut rects);
 
     // Rasterize the segments into per-cell divider entries, resolving
@@ -133,7 +133,7 @@ pub fn compute_layout_in(
 /// with, minus the divider rasterization. Reflow-emit
 /// (`phux_tui::attach::reflow`) and the min-cell gate
 /// (`phux_tui::attach::actions`) both call it so the size a pane's
-/// PTY is told to be (via `TERMINAL_RESIZE`) equals the rect it is
+/// PTY is told to be (via `RESIZE_TERMINAL`) equals the rect it is
 /// painted into, by construction — closing the gap/overlap class of bug
 /// that arose when reflow and paint used divergent algorithms.
 ///
@@ -143,7 +143,7 @@ pub fn compute_layout_in(
 /// divider accounting happens *inside* the walk, so callers pass the
 /// full pane viewport, never a pre-deducted content rectangle.
 #[must_use]
-pub fn pane_rects(tree: &LayoutNode, viewport_dims: (u16, u16)) -> HashMap<TerminalId, Rect> {
+pub fn pane_rects(tree: &LayoutNode, viewport_dims: (u16, u16)) -> HashMap<ResourceId, Rect> {
     pane_rects_in(
         tree,
         Rect {
@@ -260,9 +260,9 @@ pub fn split_content_span_at(
 /// [`pane_rects`]), so an inset chrome like a sidebar sizes each pane's PTY to
 /// the same rect it is painted into.
 #[must_use]
-pub fn pane_rects_in(tree: &LayoutNode, content: Rect) -> HashMap<TerminalId, Rect> {
+pub fn pane_rects_in(tree: &LayoutNode, content: Rect) -> HashMap<ResourceId, Rect> {
     let mut segments: Vec<DividerSegment> = Vec::new();
-    let mut rects: HashMap<TerminalId, Rect> = HashMap::new();
+    let mut rects: HashMap<ResourceId, Rect> = HashMap::new();
     walk_layout(tree, content, &mut segments, &mut rects);
     rects
 }
@@ -279,9 +279,9 @@ pub fn pane_rects_in(tree: &LayoutNode, content: Rect) -> HashMap<TerminalId, Re
 /// snap to on the next viewport grow. Paint and reflow must keep using
 /// the frozen [`pane_rects_in`].
 #[must_use]
-pub fn pane_rects_proportional_in(tree: &LayoutNode, content: Rect) -> HashMap<TerminalId, Rect> {
+pub fn pane_rects_proportional_in(tree: &LayoutNode, content: Rect) -> HashMap<ResourceId, Rect> {
     let mut segments: Vec<DividerSegment> = Vec::new();
-    let mut rects: HashMap<TerminalId, Rect> = HashMap::new();
+    let mut rects: HashMap<ResourceId, Rect> = HashMap::new();
     walk_layout_proportional(tree, content, &mut segments, &mut rects);
     rects
 }

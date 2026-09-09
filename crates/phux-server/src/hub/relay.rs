@@ -2,7 +2,7 @@
 //!
 //! The routing layer that replaces the blanket `UnsupportedSatelliteRoute`
 //! rejections on a `phux server --hub`: a frame targeting
-//! `TerminalId::Satellite { host, id }` is resolved to the live outbound
+//! `ResourceId::Satellite { host, id }` is resolved to the live outbound
 //! link the dialer (phux-v45.3) maintains for `host`, its terminal id is
 //! rewritten to `Local { id }`, and the frame is forwarded **verbatim** —
 //! the hub never re-encodes VT bytes (ADR-0007: opaque relay). Responses
@@ -48,7 +48,7 @@
 //! The one exception is the attach ordering anchor (phux-v45.12, L1 §9.1):
 //! a return-leg `TERMINAL_SNAPSHOT` a briefly-full consumer refuses is
 //! *retained* per subscriber and that consumer's later deltas are
-//! suppressed until it lands, so a `TERMINAL_OUTPUT` can never overtake the
+//! suppressed until it lands, so a `RESOURCE_OUTPUT` can never overtake the
 //! snapshot across the two-hop attach — the non-blocking mirror of the
 //! local attach's snapshot gate (`RelaySession::fan_out` /
 //! `flush_pending_snapshots`). Still no head-of-line stall: the retry is
@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
-use phux_protocol::ids::{BootstrapId, GroupId, SatelliteHost, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
@@ -122,13 +122,13 @@ pub(crate) struct ProxySubscription {
     pub(crate) seq: u64,
     /// Whether this registration establishes a *content* stream that opens
     /// with a return-leg `TERMINAL_SNAPSHOT` — i.e. it rode a relayed
-    /// `ATTACH_TERMINAL` (phux-v45.14). When `true`, the freshly-registered
+    /// `ATTACH_RESOURCE` (phux-v45.14). When `true`, the freshly-registered
     /// subscriber starts gated: its content deltas are suppressed until its
     /// own snapshot lands (L1 §9.1 snapshot-precedes-delta), because a
     /// second consumer attaching to a terminal already streaming to another
     /// consumer would otherwise observe that ongoing stream's
-    /// `TERMINAL_OUTPUT` before its own snapshot arrives ~1 RTT later.
-    /// `false` for event-only subscriptions (`SUBSCRIBE_TERMINAL_EVENTS`,
+    /// `RESOURCE_OUTPUT` before its own snapshot arrives ~1 RTT later.
+    /// `false` for event-only subscriptions (`SUBSCRIBE_RESOURCE_EVENTS`,
     /// `SUBSCRIBE_EVENTS`): those carry no snapshot, so their `EVENT` deltas
     /// must flow immediately and gating them would strand the subscriber.
     pub(crate) awaits_snapshot: bool,
@@ -153,7 +153,7 @@ pub(crate) enum Unsubscribe {
     /// (consumer detach / disconnect).
     Client(ClientId),
     /// Drop one client's subscription to one satellite-local terminal
-    /// (the relayed `DETACH_TERMINAL` path, phux-v45.7).
+    /// (the relayed `DETACH_RESOURCE` path, phux-v45.7).
     Terminal {
         /// The unsubscribing hub-side client.
         client: ClientId,
@@ -263,17 +263,17 @@ pub(crate) enum RelayRequest {
         subscribe: Option<ProxySubscription>,
     },
     /// Relay a fire-and-forget frame (`INPUT_*`, `FRAME_ACK`,
-    /// `TERMINAL_RESIZE`), terminal ids already rewritten satellite-local.
+    /// `RESIZE_TERMINAL`), terminal ids already rewritten satellite-local.
     /// No reply; a dead link drops it (with the teardown notification
     /// covering the observable side).
     Forward {
         /// The frame to forward verbatim.
         frame: FrameKind,
     },
-    /// Relay a `SPAWN_TERMINAL` to this satellite (phux-v45.6, L1 §3.1 /
+    /// Relay a `SPAWN_RESOURCE` to this satellite (phux-v45.6, L1 §3.1 /
     /// §9.1). Like [`Self::Command`] the session allocates the link-side
     /// `request_id` (the spawn shares the pending id space) and resolves
-    /// `reply` with the correlated `TERMINAL_SPAWNED.result`, the freshly
+    /// `reply` with the correlated `RESOURCE_SPAWNED.result`, the freshly
     /// allocated id re-tagged `Local -> Satellite { host, id }`. The
     /// frame put on the wire carries `satellite: None` — the satellite
     /// spawns locally; hub-and-spoke never chains.
@@ -381,7 +381,7 @@ impl RelayHandle {
     /// link registers nothing, and the session rolls the registration
     /// back if the satellite answers with an error (finding 3). This is
     /// the path for commands that establish a return-leg stream —
-    /// `SUBSCRIBE_TERMINAL_EVENTS` and `ATTACH_TERMINAL` (phux-v45.7).
+    /// `SUBSCRIBE_RESOURCE_EVENTS` and `ATTACH_RESOURCE` (phux-v45.7).
     pub(crate) async fn command_subscribing(
         &self,
         command: Command,
@@ -438,7 +438,7 @@ impl RelayHandle {
         }
     }
 
-    /// Relay a `SPAWN_TERMINAL` and await the correlated re-tagged
+    /// Relay a `SPAWN_RESOURCE` and await the correlated re-tagged
     /// `SpawnResult` (phux-v45.6). The same fail-fast / bounded contract
     /// as [`Self::command`], expressed in the spawn reply's own typed
     /// error vocabulary: a saturated mailbox is `SpawnFailed` (retryable,
@@ -477,7 +477,7 @@ impl RelayHandle {
     }
 
     /// Relay `command` without awaiting the result (the idempotent batch
-    /// path — `KILL_TERMINALS` semantics tolerate a silent skip).
+    /// path — `KILL_RESOURCES` semantics tolerate a silent skip).
     pub(crate) fn command_detached(&self, command: Command) {
         let (reply, _rx) = oneshot::channel();
         if self
@@ -553,7 +553,7 @@ impl RelayHandle {
     }
 
     /// Drop `client`'s subscription to one satellite-local terminal
-    /// (the relayed `DETACH_TERMINAL` path, phux-v45.7). Same undroppable
+    /// (the relayed `DETACH_RESOURCE` path, phux-v45.7). Same undroppable
     /// channel as [`Self::unsubscribe_client`]. Waits for proxy withdrawal
     /// before success; a stalled link returns a bounded error instead.
     pub(crate) async fn unsubscribe_terminal(
@@ -686,7 +686,7 @@ const fn frame_label(frame: &FrameKind) -> &'static str {
         FrameKind::InputFocus { .. } => "INPUT_FOCUS",
         FrameKind::InputPaste { .. } => "INPUT_PASTE",
         FrameKind::FrameAck { .. } => "FRAME_ACK",
-        FrameKind::TerminalResize { .. } => "TERMINAL_RESIZE",
+        FrameKind::ResizeTerminal { .. } => "RESIZE_TERMINAL",
         FrameKind::SubscribeEvents { .. } => "SUBSCRIBE_EVENTS",
         _ => "other",
     }
@@ -703,7 +703,7 @@ struct ProxySubscriber {
     /// tear down a newer re-attach.
     seq: u64,
     /// This subscriber's L1 §9.1 snapshot-ordering gate (phux-v45.12 /
-    /// phux-v45.14). Content deltas (`TERMINAL_OUTPUT`) are held back until
+    /// phux-v45.14). Content deltas (`RESOURCE_OUTPUT`) are held back until
     /// the subscriber's own `TERMINAL_SNAPSHOT` has been delivered, so a
     /// delta can never overtake the snapshot across the two-hop attach. See
     /// [`SnapshotGate`].
@@ -718,11 +718,11 @@ struct ProxySubscriber {
 /// for one slow consumer.
 #[derive(Debug)]
 enum SnapshotGate {
-    /// The subscriber attached (a relayed `ATTACH_TERMINAL`) but its own
+    /// The subscriber attached (a relayed `ATTACH_RESOURCE`) but its own
     /// return-leg snapshot has not been delivered yet (phux-v45.14). Deltas
     /// are suppressed: a second consumer attaching to a terminal already
     /// streaming to another consumer must not observe that ongoing stream's
-    /// `TERMINAL_OUTPUT` before its own snapshot arrives ~1 RTT later. The
+    /// `RESOURCE_OUTPUT` before its own snapshot arrives ~1 RTT later. The
     /// first snapshot to fan out (its attach snapshot) clears this to
     /// [`Self::Open`], or, if the mailbox refuses it, to [`Self::Retained`].
     AwaitingFirst,
@@ -855,10 +855,10 @@ fn charge_bytes(
 }
 
 /// The terminal scope a return-leg stream frame carries, if it has one.
-const fn stream_frame_scope(frame: &FrameKind) -> Option<&TerminalId> {
+const fn stream_frame_scope(frame: &FrameKind) -> Option<&ResourceId> {
     match frame {
         FrameKind::Event { terminal, .. } => terminal.as_ref(),
-        FrameKind::TerminalOutput { terminal_id, .. }
+        FrameKind::ResourceOutput { terminal_id, .. }
         | FrameKind::BootstrapBegin { terminal_id, .. }
         | FrameKind::BootstrapChunk { terminal_id, .. }
         | FrameKind::BootstrapReady { terminal_id, .. }
@@ -883,7 +883,7 @@ pub(crate) struct RelaySession {
     next_request_id: u32,
     pending: HashMap<u32, PendingCommand>,
     enforce_bootstrap_flow: bool,
-    /// Relayed `SPAWN_TERMINAL`s awaiting their `TERMINAL_SPAWNED`
+    /// Relayed `SPAWN_RESOURCE`s awaiting their `RESOURCE_SPAWNED`
     /// (phux-v45.6). Shares the link-side `request_id` space with
     /// [`Self::pending`] so one allocator covers both reply frames.
     pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
@@ -896,8 +896,8 @@ pub(crate) struct RelaySession {
     /// refused attach cannot resurrect the automatic SPAWN generation that
     /// its preflight barrier retired.
     explicit_content: HashSet<u32>,
-    /// Legacy `SUBSCRIBE_EVENTS` is removed by upstream `DETACH_TERMINAL`, unlike
-    /// actor-level `SUBSCRIBE_TERMINAL_EVENTS`. Restore it after internal cuts.
+    /// Legacy `SUBSCRIBE_EVENTS` is removed by upstream `DETACH_RESOURCE`, unlike
+    /// actor-level `SUBSCRIBE_RESOURCE_EVENTS`. Restore it after internal cuts.
     legacy_events: HashSet<u32>,
     bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
     retained_bytes: usize,
@@ -950,7 +950,7 @@ impl RelaySession {
     /// already share a subscription must keep their stream throughout.
     pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Vec<Vec<u8>> {
         let RelayRequest::Command {
-            command: Command::AttachTerminal { .. },
+            command: Command::AttachResource { .. },
             subscribe: Some(sub),
             ..
         } = request
@@ -975,7 +975,7 @@ impl RelaySession {
         if restore_events {
             self.legacy_events.insert(terminal);
             frames.push(self.encode(&FrameKind::SubscribeEvents {
-                terminal: Some(TerminalId::local(terminal)),
+                terminal: Some(ResourceId::local(terminal)),
             }));
         }
         frames
@@ -1024,7 +1024,7 @@ impl RelaySession {
             RelayRequest::Spawn { spawn, reply } => {
                 let request_id = self.allocate_request_id();
                 self.pending_spawns.insert(request_id, reply);
-                Some(self.encode(&FrameKind::SpawnTerminal {
+                Some(self.encode(&FrameKind::SpawnResource {
                     request_id,
                     group: spawn.group,
                     command: spawn.command,
@@ -1034,7 +1034,7 @@ impl RelaySession {
                     // The satellite spawns locally: the addressing field
                     // never crosses the link (hub-and-spoke, no chaining).
                     satellite: None,
-                    owner_terminal: spawn.owner_terminal.map(TerminalId::local),
+                    owner_terminal: spawn.owner_terminal.map(ResourceId::local),
                     agent_session: None,
                     initial_size: spawn.initial_size,
                     // The kind and its already-retagged parent cross the
@@ -1068,7 +1068,7 @@ impl RelaySession {
             return None;
         }
         if let FrameKind::SubscribeEvents {
-            terminal: Some(TerminalId::Local { id }),
+            terminal: Some(ResourceId::Local { id }),
         } = forward
         {
             self.legacy_events.insert(*id);
@@ -1169,7 +1169,7 @@ impl RelaySession {
 
     /// Withdraw proxy subscriptions (the undroppable unsubscribe channel,
     /// phux-v45.11 findings 1 and 4). Returns the encoded wire frames to
-    /// send to the satellite: one `COMMAND { DETACH_TERMINAL }` per
+    /// send to the satellite: one `COMMAND { DETACH_RESOURCE }` per
     /// terminal whose **last** proxy subscriber just went away (or whose
     /// explicit withdrawal found no proxy after an automatic spawn), so the
     /// satellite stops streaming output for terminals nobody on this hub
@@ -1277,8 +1277,8 @@ impl RelaySession {
         );
         self.encode(&FrameKind::Command {
             request_id,
-            command: Command::DetachTerminal {
-                terminal_id: TerminalId::local(terminal),
+            command: Command::DetachResource {
+                terminal_id: ResourceId::local(terminal),
             },
         })
     }
@@ -1296,7 +1296,7 @@ impl RelaySession {
             FrameKind::CommandResult { request_id, result } => {
                 self.resolve_pending(request_id, result);
             }
-            FrameKind::TerminalSpawned { request_id, result } => {
+            FrameKind::ResourceSpawned { request_id, result } => {
                 self.resolve_pending_spawn(request_id, result);
             }
             FrameKind::Error {
@@ -1305,7 +1305,7 @@ impl RelaySession {
                 message,
             } => self.resolve_correlated_error(request_id, code, message),
             FrameKind::Event { .. }
-            | FrameKind::TerminalOutput { .. }
+            | FrameKind::ResourceOutput { .. }
             | FrameKind::BootstrapBegin { .. }
             | FrameKind::BootstrapChunk { .. }
             | FrameKind::BootstrapReady { .. }
@@ -1313,7 +1313,7 @@ impl RelaySession {
             | FrameKind::BootstrapTombstone { .. }
             | FrameKind::HistoryTombstone { .. }
             | FrameKind::HistoryRejected { .. } => self.relay_stream_frame(frame)?,
-            FrameKind::TerminalClosed {
+            FrameKind::ResourceClosed {
                 terminal_id,
                 exit_status,
                 reason,
@@ -1359,7 +1359,7 @@ impl RelaySession {
     /// Resolve a correlated `ERROR` against whichever request kind holds the
     /// id — commands own it in the common case, but a satellite MAY answer a
     /// relayed spawn with a generic correlated ERROR instead of
-    /// `TERMINAL_SPAWNED`.
+    /// `RESOURCE_SPAWNED`.
     fn resolve_correlated_error(&mut self, request_id: u32, code: ErrorCode, message: String) {
         if self.pending_spawns.contains_key(&request_id) {
             self.resolve_pending_spawn(
@@ -1402,11 +1402,11 @@ impl RelaySession {
     /// forwarded. `EVENT` carries no flow state and clears trivially.
     fn enforce_stream_frame_flow(&mut self, id: u32, frame: &FrameKind) -> Result<(), String> {
         match frame {
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 stream_id,
                 bootstrap_id,
                 ..
-            } => self.validate_ready_identity(id, *stream_id, *bootstrap_id, "TERMINAL_OUTPUT"),
+            } => self.validate_ready_identity(id, *stream_id, *bootstrap_id, "RESOURCE_OUTPUT"),
             FrameKind::BootstrapBegin {
                 stream_id,
                 bootstrap_id,
@@ -1464,10 +1464,10 @@ impl RelaySession {
     /// (ADR-0007: opaque relay), so the scope is rewritten in place rather
     /// than the frame rebuilt field by field.
     fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
-        let scope = TerminalId::satellite(self.host.clone(), id);
+        let scope = ResourceId::satellite(self.host.clone(), id);
         match &mut frame {
             FrameKind::Event { terminal, .. } => *terminal = Some(scope),
-            FrameKind::TerminalOutput { terminal_id, .. }
+            FrameKind::ResourceOutput { terminal_id, .. }
             | FrameKind::BootstrapBegin { terminal_id, .. }
             | FrameKind::BootstrapChunk { terminal_id, .. }
             | FrameKind::BootstrapReady { terminal_id, .. }
@@ -1480,7 +1480,7 @@ impl RelaySession {
         frame
     }
 
-    /// Deliver `TERMINAL_CLOSED`, then reap everything the satellite terminal
+    /// Deliver `RESOURCE_CLOSED`, then reap everything the satellite terminal
     /// owned on this link.
     ///
     /// `reason` is the satellite's (ADR-0104 §4): the hub retags the id and
@@ -1488,7 +1488,7 @@ impl RelaySession {
     /// would tell a consumer a satellite-side cascade was a plain exit.
     fn relay_terminal_closed(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         exit_status: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
     ) {
@@ -1502,8 +1502,8 @@ impl RelaySession {
         // rather than be silently dropped.
         self.fan_out_ungated(
             id,
-            &FrameKind::TerminalClosed {
-                terminal_id: TerminalId::satellite(self.host.clone(), id),
+            &FrameKind::ResourceClosed {
+                terminal_id: ResourceId::satellite(self.host.clone(), id),
                 exit_status,
                 reason,
             },
@@ -1518,7 +1518,7 @@ impl RelaySession {
     }
 
     /// Deliver one `BELL` side-channel notification.
-    fn relay_bell(&mut self, terminal_id: &TerminalId) {
+    fn relay_bell(&mut self, terminal_id: &ResourceId) {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
         };
@@ -1526,15 +1526,15 @@ impl RelaySession {
         // (phux-v45.15): a BELL is an ephemeral notification the
         // `TERMINAL_SNAPSHOT` does not capture, so gating it behind
         // an `AwaitingFirst` subscriber's snapshot would drop it
-        // permanently — unlike a `TERMINAL_OUTPUT` delta, which the
+        // permanently — unlike a `RESOURCE_OUTPUT` delta, which the
         // snapshot supersedes (freshest full grid wins), so gating
         // content is safe but gating a bell loses it. Ordering
         // against the snapshot does not matter for a side-channel
-        // notification, the same rationale as `TERMINAL_CLOSED`.
+        // notification, the same rationale as `RESOURCE_CLOSED`.
         self.fan_out_ungated(
             id,
             &FrameKind::Bell {
-                terminal_id: TerminalId::satellite(self.host.clone(), id),
+                terminal_id: ResourceId::satellite(self.host.clone(), id),
             },
         );
     }
@@ -1729,10 +1729,10 @@ impl RelaySession {
             return;
         };
         let retagged = match result {
-            SpawnResult::Ok(TerminalId::Local { id }) => {
-                SpawnResult::Ok(TerminalId::satellite(self.host.clone(), id))
+            SpawnResult::Ok(ResourceId::Local { id }) => {
+                SpawnResult::Ok(ResourceId::satellite(self.host.clone(), id))
             }
-            SpawnResult::Ok(TerminalId::Satellite { .. }) => {
+            SpawnResult::Ok(ResourceId::Satellite { .. }) => {
                 warn!(
                     satellite = %self.host,
                     "satellite answered a spawn with a Satellite-tagged id; hub-and-spoke does not chain"
@@ -1754,10 +1754,10 @@ impl RelaySession {
     /// The satellite-local id of an inbound frame's terminal scope, or
     /// `None` when the frame is unscoped or (out of ADR-0007 topology)
     /// already satellite-tagged — satellites do not chain.
-    fn retag_inbound(&self, terminal: Option<&TerminalId>) -> Option<u32> {
+    fn retag_inbound(&self, terminal: Option<&ResourceId>) -> Option<u32> {
         match terminal {
-            Some(TerminalId::Local { id }) => Some(*id),
-            Some(TerminalId::Satellite { .. }) => {
+            Some(ResourceId::Local { id }) => Some(*id),
+            Some(ResourceId::Satellite { .. }) => {
                 warn!(
                     satellite = %self.host,
                     "satellite forwarded a Satellite-tagged id; hub-and-spoke does not chain — dropping"
@@ -1976,7 +1976,7 @@ impl RelaySession {
     /// by [`SnapshotGate`]. Two cases hold the guarantee across the two-hop
     /// attach. First, a second consumer attaching to a terminal already
     /// streaming to another consumer starts [`SnapshotGate::AwaitingFirst`]
-    /// (phux-v45.14): the ongoing stream's `TERMINAL_OUTPUT` is suppressed
+    /// (phux-v45.14): the ongoing stream's `RESOURCE_OUTPUT` is suppressed
     /// for it until its own attach snapshot fans out. Second, if a
     /// consumer's briefly-full mailbox refuses that snapshot it is
     /// **retained** (phux-v45.12, [`SnapshotGate::Retained`]) and retried —
@@ -1985,7 +1985,7 @@ impl RelaySession {
     /// This mirrors the local attach's snapshot gate without blocking the
     /// link: a sustained-saturation consumer may still lag on *content* (the
     /// pre-existing slow-consumer condition) but never sees a delta before a
-    /// snapshot. `TERMINAL_CLOSED` and `BELL` are the exceptions
+    /// snapshot. `RESOURCE_CLOSED` and `BELL` are the exceptions
     /// ([`Self::fan_out_ungated`]): snapshot-independent lifecycle / notice
     /// frames the snapshot does not capture, best-effort delivered past the
     /// gate rather than dropped.
@@ -2125,12 +2125,12 @@ impl RelaySession {
 
     /// Best-effort deliver a snapshot-independent frame to every proxy
     /// subscriber, **bypassing** the snapshot gate. Two return-leg frames take
-    /// this path: `TERMINAL_CLOSED` (phux-v45.14 sub-finding a) and `BELL`
+    /// this path: `RESOURCE_CLOSED` (phux-v45.14 sub-finding a) and `BELL`
     /// (phux-v45.15). Neither is content the `TERMINAL_SNAPSHOT` captures, so
     /// gating them behind an `AwaitingFirst` subscriber's not-yet-delivered
     /// snapshot would drop them permanently — a close would tear the consumer
     /// down before it learned its terminal is gone, and a bell notification
-    /// would simply vanish. A content `TERMINAL_OUTPUT` delta, by contrast,
+    /// would simply vanish. A content `RESOURCE_OUTPUT` delta, by contrast,
     /// the snapshot supersedes (freshest full grid wins), so gating it is
     /// safe; these are not. Ordering against the snapshot is irrelevant for a
     /// lifecycle signal or a side-channel notification. `try_send`,
@@ -2254,10 +2254,10 @@ impl RelaySession {
 }
 
 /// Split a satellite-tagged wire id into its host and satellite-local id.
-pub(crate) fn satellite_route(terminal_id: &TerminalId) -> Option<(SatelliteHost, u32)> {
+pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost, u32)> {
     match terminal_id {
-        TerminalId::Satellite { host, id } => Some((host.clone(), *id)),
-        TerminalId::Local { .. } => None,
+        ResourceId::Satellite { host, id } => Some((host.clone(), *id)),
+        ResourceId::Local { .. } => None,
     }
 }
 
@@ -2265,37 +2265,37 @@ pub(crate) fn satellite_route(terminal_id: &TerminalId) -> Option<(SatelliteHost
 /// owning host and the command rewritten to the satellite's `Local` id
 /// space (ADR-0007 outbound leg). `None` for local targets, unscoped
 /// commands (`GET_STATE`, `UPGRADE` — hub-local by design), and
-/// `KILL_TERMINALS` (a mixed batch, partitioned by its own handler).
+/// `KILL_RESOURCES` (a mixed batch, partitioned by its own handler).
 #[allow(
     clippy::too_many_lines,
     reason = "one mechanical rewrite arm per per-terminal Command variant; splitting hides the catalog"
 )]
 pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::AttachTerminal { terminal_id } => {
+        Command::AttachResource { terminal_id } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
-                Command::AttachTerminal {
-                    terminal_id: TerminalId::local(id),
+                Command::AttachResource {
+                    terminal_id: ResourceId::local(id),
                 },
             ))
         }
-        Command::DetachTerminal { terminal_id } => {
+        Command::DetachResource { terminal_id } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
-                Command::DetachTerminal {
-                    terminal_id: TerminalId::local(id),
+                Command::DetachResource {
+                    terminal_id: ResourceId::local(id),
                 },
             ))
         }
-        Command::KillTerminal { terminal_id } => {
+        Command::KillResource { terminal_id } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
-                Command::KillTerminal {
-                    terminal_id: TerminalId::local(id),
+                Command::KillResource {
+                    terminal_id: ResourceId::local(id),
                 },
             ))
         }
@@ -2308,7 +2308,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::GetScreen {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     request_scrollback: *request_scrollback,
                     cells: *cells,
                 },
@@ -2319,7 +2319,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::RouteInput {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     event: event.clone(),
                 },
             ))
@@ -2333,21 +2333,21 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::GetTerminalState {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     include_scrollback: *include_scrollback,
                     max_scrollback_lines: *max_scrollback_lines,
                 },
             ))
         }
-        Command::SubscribeTerminalEvents {
+        Command::SubscribeResourceEvents {
             terminal_id,
             event_types,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
-                Command::SubscribeTerminalEvents {
-                    terminal_id: TerminalId::local(id),
+                Command::SubscribeResourceEvents {
+                    terminal_id: ResourceId::local(id),
                     event_types: event_types.clone(),
                 },
             ))
@@ -2361,7 +2361,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::AcquireInput {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     mode: *mode,
                     ttl_ms: *ttl_ms,
                 },
@@ -2372,7 +2372,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::ReleaseInput {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                 },
             ))
         }
@@ -2384,7 +2384,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::SignalTerminal {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     signal: *signal,
                 },
             ))
@@ -2403,7 +2403,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 host,
                 Command::PutFile {
                     upload_id: *upload_id,
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     extension: extension.clone(),
                     offset: *offset,
                     data: data.clone(),
@@ -2423,7 +2423,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::ReportAsked {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     id: asked_id.clone(),
                     question: question.clone(),
                     suggestions: suggestions.clone(),
@@ -2436,12 +2436,12 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             Some((
                 host,
                 Command::ReportAgentState {
-                    terminal_id: TerminalId::local(id),
+                    terminal_id: ResourceId::local(id),
                     state: *state,
                 },
             ))
         }
-        // GET_STATE / UPGRADE are hub-local; KILL_TERMINALS partitions its
+        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES partitions its
         // mixed batch in `handle_kill_terminals`; forward-compat commands
         // this hub does not know cannot be routed (their terminal scope is
         // unreadable) and fall through to the local INVALID_COMMAND path.
@@ -2505,7 +2505,7 @@ mod tests {
                 bootstrap_limits: None,
             },
             forward: FrameKind::SubscribeEvents {
-                terminal: Some(TerminalId::local(terminal)),
+                terminal: Some(ResourceId::local(terminal)),
             },
         });
         assert!(
@@ -2514,7 +2514,7 @@ mod tests {
         );
     }
 
-    /// Register an `ATTACH_TERMINAL` proxy subscription (the snapshot-bearing
+    /// Register an `ATTACH_RESOURCE` proxy subscription (the snapshot-bearing
     /// content-stream shape, phux-v45.14): the subscriber starts gated and
     /// its deltas are suppressed until its own return-leg `TERMINAL_SNAPSHOT`
     /// lands. The command reply receiver is dropped — the registration is
@@ -2530,8 +2530,8 @@ mod tests {
         let selected_limits = session.bootstrap_limits;
         let (reply, _rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(terminal),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(terminal),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -2552,7 +2552,7 @@ mod tests {
     #[test]
     fn route_to_satellite_rewrites_terminal_ids_to_local() {
         let command = Command::GetScreen {
-            terminal_id: TerminalId::satellite("devbox", 7),
+            terminal_id: ResourceId::satellite("devbox", 7),
             request_scrollback: Some(10),
             cells: true,
         };
@@ -2561,7 +2561,7 @@ mod tests {
         assert_eq!(
             rewritten,
             Command::GetScreen {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 request_scrollback: Some(10),
                 cells: true,
             }
@@ -2572,7 +2572,7 @@ mod tests {
     fn route_to_satellite_ignores_local_and_unscoped_commands() {
         assert!(
             route_to_satellite(&Command::GetScreen {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 request_scrollback: None,
                 cells: false,
             })
@@ -2588,7 +2588,7 @@ mod tests {
         assert!(
             route_to_satellite(&Command::ApplyInput {
                 operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
-                terminal_id: TerminalId::satellite("devbox", 7),
+                terminal_id: ResourceId::satellite("devbox", 7),
                 events: vec![],
             })
             .is_none(),
@@ -2596,8 +2596,8 @@ mod tests {
         );
         // Mixed batches partition in handle_kill_terminals, not here.
         assert!(
-            route_to_satellite(&Command::KillTerminals {
-                ids: vec![TerminalId::satellite("devbox", 1)],
+            route_to_satellite(&Command::KillResources {
+                ids: vec![ResourceId::satellite("devbox", 1)],
             })
             .is_none()
         );
@@ -2605,15 +2605,15 @@ mod tests {
 
     #[test]
     fn route_to_satellite_covers_every_per_terminal_command() {
-        let sat = TerminalId::satellite("devbox", 3);
+        let sat = ResourceId::satellite("devbox", 3);
         let commands = [
-            Command::AttachTerminal {
+            Command::AttachResource {
                 terminal_id: sat.clone(),
             },
-            Command::DetachTerminal {
+            Command::DetachResource {
                 terminal_id: sat.clone(),
             },
-            Command::KillTerminal {
+            Command::KillResource {
                 terminal_id: sat.clone(),
             },
             Command::GetTerminalState {
@@ -2621,7 +2621,7 @@ mod tests {
                 include_scrollback: false,
                 max_scrollback_lines: 0,
             },
-            Command::SubscribeTerminalEvents {
+            Command::SubscribeResourceEvents {
                 terminal_id: sat.clone(),
                 event_types: vec![],
             },
@@ -2699,7 +2699,7 @@ mod tests {
         attach(&mut session, 7, ClientId(1), out_tx);
         let error = session
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id: StreamId::new(1).expect("stream"),
                 bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
                 profile: BootstrapStreamProfile::SynthesizedVtRaw,
@@ -2722,7 +2722,7 @@ mod tests {
             RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
         gapped
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 profile: native_stream_profile(),
@@ -2733,7 +2733,7 @@ mod tests {
             .expect("valid BEGIN");
         let error = gapped
             .handle_inbound(&encode(&FrameKind::BootstrapChunk {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 1,
@@ -2746,7 +2746,7 @@ mod tests {
             RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
         early_live
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 profile: native_stream_profile(),
@@ -2756,8 +2756,8 @@ mod tests {
             }))
             .expect("valid BEGIN");
         let error = early_live
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(7),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 seq: 11,
@@ -2777,7 +2777,7 @@ mod tests {
         let bootstrap_id = BootstrapId::new(5).expect("bootstrap");
         for frame in [
             FrameKind::BootstrapBegin {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 profile: native_stream_profile(),
@@ -2786,20 +2786,20 @@ mod tests {
                 base_seq: 20,
             },
             FrameKind::BootstrapChunk {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 0,
                 payload: bytes::Bytes::from_static(b"opaque"),
             },
             FrameKind::BootstrapReady {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 history_cursor: None,
             },
-            FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(7),
+            FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 seq: 21,
@@ -2824,7 +2824,7 @@ mod tests {
         ));
         assert!(matches!(
             out_rx.try_recv().expect("live"),
-            Outbound::Frame(FrameKind::TerminalOutput { seq: 21, .. })
+            Outbound::Frame(FrameKind::ResourceOutput { seq: 21, .. })
         ));
         let flow = session.bootstrap_flows.get(&7).expect("active generation");
         assert!(flow.ready);
@@ -2840,8 +2840,8 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request_checked(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(7),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(7),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -2875,8 +2875,8 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request_checked(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(8),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(8),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -2909,7 +2909,7 @@ mod tests {
         let bootstrap_id = BootstrapId::new(5).expect("bootstrap");
         for frame in [
             FrameKind::BootstrapBegin {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 profile: native_stream_profile(),
@@ -2918,7 +2918,7 @@ mod tests {
                 base_seq: 20,
             },
             FrameKind::BootstrapReady {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id,
                 history_cursor: None,
@@ -2932,8 +2932,8 @@ mod tests {
         let _ = out_rx.try_recv().expect("READY");
         let before = session.bootstrap_flows[&7];
         let error = session
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(7),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(7),
                 stream_id,
                 bootstrap_id: BootstrapId::new(6).expect("different bootstrap"),
                 seq: 21,
@@ -2976,7 +2976,7 @@ mod tests {
         open.fan_out(
             9,
             &FrameKind::Event {
-                terminal: Some(TerminalId::satellite("devbox", 9)),
+                terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
             },
         );
@@ -2990,7 +2990,7 @@ mod tests {
         closed.fan_out(
             9,
             &FrameKind::Event {
-                terminal: Some(TerminalId::satellite("devbox", 9)),
+                terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
             },
         );
@@ -3006,7 +3006,7 @@ mod tests {
             retained.fan_out(
                 9,
                 &FrameKind::BootstrapChunk {
-                    terminal_id: TerminalId::satellite("devbox", 9),
+                    terminal_id: ResourceId::satellite("devbox", 9),
                     stream_id: StreamId::new(1).expect("stream"),
                     bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
                     chunk_seq: u32::try_from(chunk_seq).expect("small sequence"),
@@ -3034,7 +3034,7 @@ mod tests {
         session.fan_out(
             9,
             &FrameKind::BootstrapChunk {
-                terminal_id: TerminalId::satellite("devbox", 9),
+                terminal_id: ResourceId::satellite("devbox", 9),
                 stream_id: StreamId::new(1).expect("stream"),
                 bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
                 chunk_seq: 0,
@@ -3152,13 +3152,13 @@ mod tests {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(spawn_request(reply));
-        let FrameKind::SpawnTerminal {
+        let FrameKind::SpawnResource {
             request_id,
             satellite,
             ..
         } = decode(&wire)
         else {
-            panic!("expected SPAWN_TERMINAL on the wire");
+            panic!("expected SPAWN_RESOURCE on the wire");
         };
         assert_eq!(
             satellite, None,
@@ -3167,14 +3167,14 @@ mod tests {
         // The satellite answers with its Local id; the consumer sees it
         // re-tagged with this link's host.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
                 request_id,
-                result: SpawnResult::Ok(TerminalId::local(42)),
+                result: SpawnResult::Ok(ResourceId::local(42)),
             }))
             .expect("valid satellite frame");
         assert_eq!(
             rx.try_recv().expect("spawn resolved"),
-            SpawnResult::Ok(TerminalId::satellite("devbox", 42))
+            SpawnResult::Ok(ResourceId::satellite("devbox", 42))
         );
     }
 
@@ -3184,13 +3184,13 @@ mod tests {
         // A Satellite-tagged id in the satellite's own reply never chains.
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(spawn_request(reply));
-        let FrameKind::SpawnTerminal { request_id, .. } = decode(&wire) else {
-            panic!("expected SPAWN_TERMINAL");
+        let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
+            panic!("expected SPAWN_RESOURCE");
         };
         session
-            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
                 request_id,
-                result: SpawnResult::Ok(TerminalId::satellite("nested", 7)),
+                result: SpawnResult::Ok(ResourceId::satellite("nested", 7)),
             }))
             .expect("valid satellite frame");
         assert!(matches!(
@@ -3200,11 +3200,11 @@ mod tests {
         // A typed satellite-side error relays verbatim.
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(spawn_request(reply));
-        let FrameKind::SpawnTerminal { request_id, .. } = decode(&wire) else {
-            panic!("expected SPAWN_TERMINAL");
+        let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
+            panic!("expected SPAWN_RESOURCE");
         };
         session
-            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
                 request_id,
                 result: SpawnResult::Err(SpawnError::GroupNotFound),
             }))
@@ -3228,7 +3228,7 @@ mod tests {
             initial_size: Some((132, 43)),
             resource: None,
         };
-        let expected = FrameKind::SpawnTerminal {
+        let expected = FrameKind::SpawnResource {
             request_id: 0,
             group: spawn.group,
             command: spawn.command.clone(),
@@ -3236,7 +3236,7 @@ mod tests {
             env: spawn.env.clone(),
             term: spawn.term.clone(),
             satellite: None,
-            owner_terminal: Some(TerminalId::local(91)),
+            owner_terminal: Some(ResourceId::local(91)),
             agent_session: None,
             initial_size: Some((132, 43)),
             resource: None,
@@ -3246,21 +3246,21 @@ mod tests {
             let request = mailbox.requests.recv().await.expect("spawn enqueued");
             let mut session = RelaySession::new(host(), BootstrapLimits::default());
             let mut frame = decode(&session.handle_request(request));
-            let FrameKind::SpawnTerminal { request_id, .. } = &mut frame else {
+            let FrameKind::SpawnResource { request_id, .. } = &mut frame else {
                 panic!("spawn frame");
             };
             let link_request_id = *request_id;
             *request_id = 0;
             assert_eq!(frame, expected);
             session
-                .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+                .handle_inbound(&encode(&FrameKind::ResourceSpawned {
                     request_id: link_request_id,
-                    result: SpawnResult::Ok(TerminalId::local(92)),
+                    result: SpawnResult::Ok(ResourceId::local(92)),
                 }))
                 .expect("spawn reply");
         };
         let (result, ()) = tokio::join!(consumer, satellite);
-        assert_eq!(result, SpawnResult::Ok(TerminalId::satellite("devbox", 92)));
+        assert_eq!(result, SpawnResult::Ok(ResourceId::satellite("devbox", 92)));
     }
 
     #[test]
@@ -3302,13 +3302,13 @@ mod tests {
 
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
         session
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
                 bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 42,
@@ -3318,7 +3318,7 @@ mod tests {
         // A different terminal: nothing must reach the subscriber.
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(10)),
+                terminal: Some(ResourceId::local(10)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3329,7 +3329,7 @@ mod tests {
         assert_eq!(
             first,
             FrameKind::Event {
-                terminal: Some(TerminalId::satellite("devbox", 9)),
+                terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
             }
         );
@@ -3338,8 +3338,8 @@ mod tests {
         };
         assert!(matches!(
             second,
-            FrameKind::TerminalOutput { terminal_id, seq: 42, .. }
-                if terminal_id == TerminalId::satellite("devbox", 9)
+            FrameKind::ResourceOutput { terminal_id, seq: 42, .. }
+                if terminal_id == ResourceId::satellite("devbox", 9)
         ));
         assert!(out_rx.try_recv().is_err(), "unsubscribed terminal leaked");
     }
@@ -3353,7 +3353,7 @@ mod tests {
         // Satellite tag must never be re-relayed.
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::satellite("nested", 9)),
+                terminal: Some(ResourceId::satellite("nested", 9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3366,8 +3366,8 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         session
-            .handle_inbound(&encode(&FrameKind::TerminalClosed {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }))
@@ -3377,8 +3377,8 @@ mod tests {
         };
         assert_eq!(
             frame,
-            FrameKind::TerminalClosed {
-                terminal_id: TerminalId::satellite("devbox", 9),
+            FrameKind::ResourceClosed {
+                terminal_id: ResourceId::satellite("devbox", 9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }
@@ -3386,7 +3386,7 @@ mod tests {
         // Subscription is gone: further frames for id 9 do not fan out.
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3397,7 +3397,7 @@ mod tests {
 
     fn snapshot_frame(id: u32) -> FrameKind {
         FrameKind::BootstrapReady {
-            terminal_id: TerminalId::local(id),
+            terminal_id: ResourceId::local(id),
             stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
             bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             history_cursor: None,
@@ -3406,7 +3406,7 @@ mod tests {
 
     fn begin_frame(id: u32, generation: u64) -> FrameKind {
         FrameKind::BootstrapBegin {
-            terminal_id: TerminalId::local(id),
+            terminal_id: ResourceId::local(id),
             stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
             bootstrap_id: phux_protocol::ids::BootstrapId::new(generation)
                 .expect("test bootstrap id"),
@@ -3418,8 +3418,8 @@ mod tests {
     }
 
     fn output_frame(id: u32, seq: u64, bytes: &'static [u8]) -> FrameKind {
-        FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(id),
+        FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(id),
             stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
             bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             seq,
@@ -3432,7 +3432,7 @@ mod tests {
         // L1 §9.1: the snapshot MUST precede the first delta. When the
         // consumer's mailbox is briefly full at attach the return-leg
         // snapshot cannot be delivered; it must be retained (not dropped)
-        // so a later TERMINAL_OUTPUT does not reach the consumer first.
+        // so a later RESOURCE_OUTPUT does not reach the consumer first.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         // Capacity two so both the retried snapshot and the delta can land
         // in order once the fillers drain.
@@ -3479,8 +3479,8 @@ mod tests {
         assert!(
             matches!(
                 second,
-                FrameKind::TerminalOutput { ref terminal_id, seq: 1, .. }
-                    if *terminal_id == TerminalId::satellite("devbox", 9)
+                FrameKind::ResourceOutput { ref terminal_id, seq: 1, .. }
+                    if *terminal_id == ResourceId::satellite("devbox", 9)
             ),
             "the delta must ride after the snapshot, re-tagged, got {second:?}"
         );
@@ -3576,7 +3576,7 @@ mod tests {
         // The core phux-v45.14 fix. Consumer A is already attached and
         // streaming; consumer B attaches to the same satellite terminal. B's
         // registration lands immediately, but its own return-leg
-        // TERMINAL_SNAPSHOT arrives ~1 RTT after A's ongoing TERMINAL_OUTPUT.
+        // TERMINAL_SNAPSHOT arrives ~1 RTT after A's ongoing RESOURCE_OUTPUT.
         // B must NOT observe that delta before its snapshot (L1 §9.1).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_a, mut rx_a) = mpsc::channel(8);
@@ -3605,7 +3605,7 @@ mod tests {
         let Outbound::Frame(a_delta) = rx_a.try_recv().expect("A sees the delta") else {
             panic!("unexpected terminal outbound sentinel")
         };
-        assert!(matches!(a_delta, FrameKind::TerminalOutput { seq: 1, .. }));
+        assert!(matches!(a_delta, FrameKind::ResourceOutput { seq: 1, .. }));
         assert!(
             rx_b.try_recv().is_err(),
             "B must not see a delta before its own snapshot (L1 §9.1)"
@@ -3634,8 +3634,8 @@ mod tests {
         assert!(
             matches!(
                 b_delta,
-                FrameKind::TerminalOutput { ref terminal_id, seq: 2, .. }
-                    if *terminal_id == TerminalId::satellite("devbox", 9)
+                FrameKind::ResourceOutput { ref terminal_id, seq: 2, .. }
+                    if *terminal_id == ResourceId::satellite("devbox", 9)
             ),
             "B's delta must follow its snapshot, re-tagged, got {b_delta:?}"
         );
@@ -3644,7 +3644,7 @@ mod tests {
     #[test]
     fn a_gated_attach_still_receives_terminal_closed_before_being_reaped() {
         // phux-v45.14 sub-finding (a): a subscriber still awaiting its first
-        // snapshot is reaped when the terminal closes. TERMINAL_CLOSED must
+        // snapshot is reaped when the terminal closes. RESOURCE_CLOSED must
         // be delivered best-effort past the gate, or the consumer is torn
         // down without ever learning its terminal is gone.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -3663,8 +3663,8 @@ mod tests {
 
         // ...but the terminal closing must reach B before it is reaped.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalClosed {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }))
@@ -3674,12 +3674,12 @@ mod tests {
         };
         assert_eq!(
             frame,
-            FrameKind::TerminalClosed {
-                terminal_id: TerminalId::satellite("devbox", 9),
+            FrameKind::ResourceClosed {
+                terminal_id: ResourceId::satellite("devbox", 9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
             },
-            "a gated subscriber must still see TERMINAL_CLOSED"
+            "a gated subscriber must still see RESOURCE_CLOSED"
         );
         // And the subscription is reaped: no further fan-out for the id.
         session
@@ -3693,7 +3693,7 @@ mod tests {
 
     #[test]
     fn an_event_only_subscription_is_not_gated_by_the_snapshot() {
-        // A SUBSCRIBE_EVENTS / SUBSCRIBE_TERMINAL_EVENTS registration carries
+        // A SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS registration carries
         // no snapshot: its EVENT deltas must flow immediately (gating them
         // would strand the subscriber forever, since no snapshot ever comes).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -3701,7 +3701,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx);
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3712,7 +3712,7 @@ mod tests {
         assert_eq!(
             frame,
             FrameKind::Event {
-                terminal: Some(TerminalId::satellite("devbox", 9)),
+                terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
             }
         );
@@ -3735,7 +3735,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3779,8 +3779,8 @@ mod tests {
         assert!(
             matches!(
                 delta,
-                FrameKind::TerminalOutput { ref terminal_id, seq: 2, .. }
-                    if *terminal_id == TerminalId::satellite("devbox", 9)
+                FrameKind::ResourceOutput { ref terminal_id, seq: 2, .. }
+                    if *terminal_id == ResourceId::satellite("devbox", 9)
             ),
             "the delta must follow the snapshot, re-tagged, got {delta:?}"
         );
@@ -3799,7 +3799,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx);
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3814,7 +3814,7 @@ mod tests {
         // phux-v45.15 edge (2). A BELL is an ephemeral notification the
         // snapshot does not capture, so gating it behind an AwaitingFirst
         // subscriber's not-yet-delivered snapshot would drop it permanently.
-        // It routes past the gate best-effort, like TERMINAL_CLOSED.
+        // It routes past the gate best-effort, like RESOURCE_CLOSED.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx, mut rx) = mpsc::channel(8);
         // Attach: gate is AwaitingFirst, no snapshot delivered yet.
@@ -3832,7 +3832,7 @@ mod tests {
         // ...but a bell rings through, re-tagged, past the gate.
         session
             .handle_inbound(&encode(&FrameKind::Bell {
-                terminal_id: TerminalId::local(9),
+                terminal_id: ResourceId::local(9),
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = rx.try_recv().expect("bell delivered past the gate") else {
@@ -3841,7 +3841,7 @@ mod tests {
         assert_eq!(
             frame,
             FrameKind::Bell {
-                terminal_id: TerminalId::satellite("devbox", 9),
+                terminal_id: ResourceId::satellite("devbox", 9),
             },
             "a gated subscriber must still see a BELL"
         );
@@ -3907,7 +3907,7 @@ mod tests {
         let frames = session.handle_unsubscribe(Unsubscribe::Client(ClientId(1)));
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3920,8 +3920,8 @@ mod tests {
         };
         assert_eq!(
             command,
-            Command::DetachTerminal {
-                terminal_id: TerminalId::local(9),
+            Command::DetachResource {
+                terminal_id: ResourceId::local(9),
             }
         );
     }
@@ -3936,7 +3936,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), tx_a);
         subscribe(&mut session, 9, ClientId(2), tx_b);
         // Client 1 detaches its terminal: client 2 still observes it, so
-        // no satellite-side DETACH_TERMINAL may be emitted (it would tear
+        // no satellite-side DETACH_RESOURCE may be emitted (it would tear
         // down the link's single shared stream under client 2).
         let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
             client: ClientId(1),
@@ -3950,7 +3950,7 @@ mod tests {
         );
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -3969,7 +3969,7 @@ mod tests {
 
     #[test]
     fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
-        // phux-v45.7 reorder guard. A consumer's DETACH_TERMINAL rides the
+        // phux-v45.7 reorder guard. A consumer's DETACH_RESOURCE rides the
         // unbounded unsubscribe channel; its immediate same-terminal
         // re-ATTACH rides the bounded request mailbox. The link session's
         // `select!` can drain the re-attach first, so by the time the
@@ -3977,7 +3977,7 @@ mod tests {
         // The detach carries the token it was issued with (2); the live
         // registration carries the re-attach token (3), so the withdrawal
         // is dropped: no subscriber removed, no satellite-side
-        // DETACH_TERMINAL emitted, and the re-attached stream keeps
+        // DETACH_RESOURCE emitted, and the re-attached stream keeps
         // flowing.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
@@ -3999,8 +3999,8 @@ mod tests {
 
         // The re-attached stream is intact.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
                 bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 7,
@@ -4013,8 +4013,8 @@ mod tests {
         };
         assert!(matches!(
             frame,
-            FrameKind::TerminalOutput { terminal_id, seq: 7, .. }
-                if terminal_id == TerminalId::satellite("devbox", 9)
+            FrameKind::ResourceOutput { terminal_id, seq: 7, .. }
+                if terminal_id == ResourceId::satellite("devbox", 9)
         ));
 
         // A genuine later detach (token newer than the registration) still
@@ -4205,7 +4205,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             out_rx.try_recv(),
-            Ok(Outbound::Frame(FrameKind::TerminalOutput { .. }))
+            Ok(Outbound::Frame(FrameKind::ResourceOutput { .. }))
         ));
         assert!(
             session.pending_detaches.is_empty(),
@@ -4227,8 +4227,8 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, _received) = oneshot::channel();
         let request = RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(9),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(9),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -4248,24 +4248,24 @@ mod tests {
         assert!(matches!(
             decode(restore_events),
             FrameKind::SubscribeEvents {
-                terminal: Some(TerminalId::Local { id: 9 })
+                terminal: Some(ResourceId::Local { id: 9 })
             }
         ));
         let FrameKind::Command {
             request_id,
-            command: Command::DetachTerminal { terminal_id },
+            command: Command::DetachResource { terminal_id },
         } = decode(barrier)
         else {
             panic!("detach barrier");
         };
-        assert_eq!(terminal_id, TerminalId::local(9));
+        assert_eq!(terminal_id, ResourceId::local(9));
         assert!(
             session.prepare_request(&request).is_empty(),
             "reuse an in-flight barrier"
         );
         session.handle_request_checked(request).unwrap();
         let event = FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
+            terminal: Some(ResourceId::local(9)),
             event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
         };
         session.handle_inbound(&encode(&event)).unwrap();
@@ -4410,7 +4410,7 @@ mod tests {
                 bootstrap_limits: None,
             },
             FrameKind::SubscribeEvents {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
             },
         );
         let Outbound::Frame(frame) = out_rx.try_recv().expect("typed error pushed") else {
@@ -4434,8 +4434,8 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(9),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(9),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -4445,7 +4445,7 @@ mod tests {
                 seq: 1,
                 // Ungated on purpose: this exercises the phux-v45.11 rollback
                 // path in isolation. If rollback regressed, the trailing
-                // TERMINAL_OUTPUT must actually leak — a gated subscriber
+                // RESOURCE_OUTPUT must actually leak — a gated subscriber
                 // would suppress it and mask the regression.
                 awaits_snapshot: false,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
@@ -4470,8 +4470,8 @@ mod tests {
         ));
         // The rolled-back registration must not fan anything out.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
                 bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 1,
@@ -4500,7 +4500,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(2), tx_b.clone());
         session
             .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(TerminalId::local(9)),
+                terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
@@ -4510,8 +4510,8 @@ mod tests {
         // after C's attach snapshot.
         let (reply_b, mut reply_rx_b) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(9),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(9),
             },
             reply: reply_b,
             subscribe: Some(ProxySubscription {
@@ -4577,7 +4577,7 @@ mod tests {
         ));
         assert!(matches!(
             rx_b.try_recv().expect("B's delta follows the snapshot"),
-            Outbound::Frame(FrameKind::TerminalOutput { seq: 1, .. })
+            Outbound::Frame(FrameKind::ResourceOutput { seq: 1, .. })
         ));
     }
 
@@ -4595,8 +4595,8 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         let (reply, _reply_rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(9),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(9),
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -4622,8 +4622,8 @@ mod tests {
             }))
             .expect("valid satellite frame");
         session
-            .handle_inbound(&encode(&FrameKind::TerminalOutput {
-                terminal_id: TerminalId::local(9),
+            .handle_inbound(&encode(&FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
                 bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 1,

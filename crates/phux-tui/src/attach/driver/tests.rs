@@ -11,7 +11,7 @@ use std::time::Duration;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::Layer;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope, ViewportInfo};
 
 use crate::attach::connection::{Connection, Dial};
@@ -53,7 +53,7 @@ use phux_client::testkit::{ScriptSpec, ScriptedServer};
 use phux_protocol::PROTOCOL_VERSION;
 
 fn published_test_kernel(
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     cols: u16,
     rows: u16,
     bytes: &[u8],
@@ -317,7 +317,7 @@ fn truncated_return_notice_retries_until_the_full_notice_is_published() {
 
 #[test]
 fn sidebar_reservation_changes_view_rects_for_pty_reflow() {
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
     let viewport = (100, 30);
     let full = view_rects(
@@ -630,8 +630,8 @@ fn apply_foreign_layout_reply_caches_clears_and_survives_garbage() {
     let mut cache: HashMap<SessionId, Workspace> = HashMap::new();
 
     // A decodable envelope lands in the cache with its windows intact.
-    let mut ws = Workspace::single(TerminalId::local(1));
-    ws.add_window("logs".to_owned(), TerminalId::local(2));
+    let mut ws = Workspace::single(ResourceId::local(1));
+    ws.add_window("logs".to_owned(), ResourceId::local(2));
     let bytes = ws.encode_cbor().expect("encode");
     apply_foreign_layout_reply(&mut cache, sid, Some(&bytes));
     assert_eq!(cache.get(&sid).map(|w| w.windows.len()), Some(2));
@@ -652,8 +652,8 @@ fn apply_foreign_layout_reply_caches_clears_and_survives_garbage() {
 /// clears the entry so the fleet row falls back to `?`/"no agent".
 #[test]
 fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
-    let id = TerminalId::local(3);
-    let mut cache: HashMap<TerminalId, AgentRecord> = HashMap::new();
+    let id = ResourceId::local(3);
+    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
 
     // A well-formed record lands with its identity intact.
     let record = AgentRecord {
@@ -779,8 +779,8 @@ async fn satellite_panes_are_never_subscribed() {
     let mut client = Connection::from_stream(client_stream);
     let mut server = Connection::from_stream(server_stream);
 
-    let local = TerminalId::local(1);
-    let satellite = TerminalId::satellite("prod-3", 2);
+    let local = ResourceId::local(1);
+    let satellite = ResourceId::satellite("prod-3", 2);
     let mut ws = Workspace::single(local.clone());
     ws.add_window("remote".to_owned(), satellite.clone());
 
@@ -812,7 +812,7 @@ async fn satellite_panes_are_never_subscribed() {
     assert!(
         frames.iter().any(|f| matches!(
             f,
-            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Terminal(local.clone())
+            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Resource(local.clone())
         )),
         "the local pane is subscribed: {frames:?}"
     );
@@ -821,7 +821,7 @@ async fn satellite_panes_are_never_subscribed() {
             f,
             FrameKind::SubscribeMetadata { scope, .. }
                 | FrameKind::GetMetadata { scope, .. }
-                if *scope == Scope::Terminal(satellite.clone())
+                if *scope == Scope::Resource(satellite.clone())
         )),
         "a satellite pane is never asked for or subscribed: {frames:?}"
     );
@@ -836,12 +836,12 @@ async fn satellite_panes_are_never_subscribed() {
 #[test]
 fn prune_foreign_agents_retains_only_live_foreign_panes() {
     use phux_protocol::ids::SessionId;
-    let live = TerminalId::local(1);
-    let stale = TerminalId::local(2);
-    let mut cache: HashMap<TerminalId, AgentRecord> = HashMap::new();
+    let live = ResourceId::local(1);
+    let stale = ResourceId::local(2);
+    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
     cache.insert(live.clone(), AgentRecord::default());
     cache.insert(stale.clone(), AgentRecord::default());
-    let mut subscribed: std::collections::HashSet<TerminalId> =
+    let mut subscribed: std::collections::HashSet<ResourceId> =
         [live.clone(), stale.clone()].into_iter().collect();
 
     // One foreign layout holds only `live`.
@@ -875,7 +875,7 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
 #[test]
 fn raw_consumer_does_not_emit_frame_ack() {
     let ack = Some((
-        TerminalId::local(7),
+        ResourceId::local(7),
         phux_protocol::StreamId::new(1).expect("stream"),
         phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         42u64,
@@ -886,7 +886,7 @@ fn raw_consumer_does_not_emit_frame_ack() {
 #[test]
 fn state_sync_consumer_emits_frame_ack() {
     let ack = Some((
-        TerminalId::local(7),
+        ResourceId::local(7),
         phux_protocol::StreamId::new(1).expect("stream"),
         phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         42u64,
@@ -897,7 +897,7 @@ fn state_sync_consumer_emits_frame_ack() {
 
 #[test]
 fn terminal_replies_require_negotiated_server_feature() {
-    let reply = (TerminalId::local(7), b"\x1b[0n".to_vec());
+    let reply = (ResourceId::local(7), b"\x1b[0n".to_vec());
     let mut supported = FrameOutcome {
         pty_writes: vec![reply.clone()],
         ..FrameOutcome::default()
@@ -931,7 +931,7 @@ fn terminal_replies_require_negotiated_server_feature() {
 #[test]
 fn an_exiting_outcome_sends_no_terminal_reply() {
     let mut exiting = FrameOutcome {
-        pty_writes: vec![(TerminalId::local(7), b"\x1b[0n".to_vec())],
+        pty_writes: vec![(ResourceId::local(7), b"\x1b[0n".to_vec())],
         exit: true,
         exit_reason: Some(AttachEnd::LastPaneClosed {
             exit_status: Some(7),
@@ -958,11 +958,11 @@ fn an_exiting_outcome_sends_no_terminal_reply() {
 /// phux-501l, the actual defect: a write that fails because the peer is
 /// already gone must not become the reason the attach loop ended.
 ///
-/// The last pane's shell exits, so the server emits `TERMINAL_OUTPUT` then
-/// `TERMINAL_CLOSED` back to back and exits, closing the socket. One client
+/// The last pane's shell exits, so the server emits `RESOURCE_OUTPUT` then
+/// `RESOURCE_CLOSED` back to back and exits, closing the socket. One client
 /// read pulls both frames. Acking the output writes into the dead socket
 /// and, before this, killed the loop with `Io(BrokenPipe)` — so the
-/// `TERMINAL_CLOSED` sitting in the *same batch* was never processed and
+/// `RESOURCE_CLOSED` sitting in the *same batch* was never processed and
 /// "the last pane exited 7" was replaced by "attach loop io error".
 ///
 /// The classifier is what lets the loop keep going and end for the reason
@@ -1002,7 +1002,7 @@ fn a_write_to_a_departed_peer_is_not_a_loop_ending_error() {
 
 #[test]
 fn headless_completion_drains_history_and_metadata_after_attach_ready() {
-    let terminal_id = TerminalId::local(7);
+    let terminal_id = ResourceId::local(7);
     let stream_id = phux_protocol::StreamId::new(1).expect("stream");
     let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
     let mut completion = HeadlessCompletion::new(Some(1));
@@ -1060,7 +1060,7 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
 
 #[test]
 fn headless_history_control_responses_clear_outstanding_request() {
-    let terminal_id = TerminalId::local(8);
+    let terminal_id = ResourceId::local(8);
     let stream_id = phux_protocol::StreamId::new(1).expect("stream");
     let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
     let terminal_frames = [
@@ -1300,7 +1300,7 @@ const PROBE_PANE_TEXT: &str = "PANE-BASE";
 /// together rather than one layer at a time.
 fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
     let (cols, rows) = view;
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
 
     let cfg = phux_config::parse_with_defaults("", std::path::Path::new("/nonexistent/c.toml"))
@@ -1312,7 +1312,7 @@ fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
 
     // One row of the viewport belongs to the bar.
     let pane_rows = rows.saturating_sub(1);
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     panes.insert(
         id.clone(),
         PaneSlot::new_with_size(cols, pane_rows).expect("pane slot"),
@@ -1473,14 +1473,14 @@ fn strip_columns(rows: &[String]) -> Vec<String> {
 /// `with_painter`. Returns the emitted VT bytes.
 fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> Vec<u8> {
     let theme = crate::render::Theme::default();
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
     let sidebar = Some(SidebarReservation {
         edge: SidebarEdge::Left,
         width: PROBE_SIDEBAR_W,
     });
     // Pane renderer metadata is separate from the published engine replica.
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     panes.insert(
         id.clone(),
         PaneSlot::new_with_size(PROBE_VIEW.0 - PROBE_SIDEBAR_W, PROBE_VIEW.1).expect("pane slot"),
@@ -1553,7 +1553,7 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
 /// keep the sidebar visible on every refresh frame too.
 fn fleet_overlay() -> Box<dyn RenderOverlay> {
     let theme = crate::render::Theme::default();
-    let workspace = Workspace::single(TerminalId::local(1));
+    let workspace = Workspace::single(ResourceId::local(1));
     let items = crate::attach::fleet::fleet_items(
         &workspace,
         &[],

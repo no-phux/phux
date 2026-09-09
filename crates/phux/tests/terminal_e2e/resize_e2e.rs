@@ -228,7 +228,7 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
     // two at attach, so the pane's bottom line lived on a row the client
     // never painted and the bar appeared to have eaten it. It "fixed itself"
     // on the next resize/split/sidebar toggle purely because those paths do
-    // emit `TERMINAL_RESIZE`.
+    // emit `RESIZE_TERMINAL`.
     let server = ServerGuard::start();
     assert_eq!(
         server.pane_size(),
@@ -272,7 +272,7 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
          columns for the window sidebar, so \
          the pane's real grid must settle at {want:?}. Seeing the full {rows} \
          rows or {cols} columns means the client never sent the post-attach \
-         TERMINAL_RESIZE: the PTY is larger than the rect the client paints \
+         RESIZE_TERMINAL: the PTY is larger than the rect the client paints \
          into, so the shell renders into cells that are clipped away and the \
          chrome looks like it overwrote them."
     );

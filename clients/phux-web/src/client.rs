@@ -722,10 +722,10 @@ mod tests {
     };
     use phux_protocol::PROTOCOL_VERSION;
     use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
-    use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId};
+    use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, ResourceId, WindowId};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
     use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
-    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+    use phux_protocol::wire::info::{SessionSnapshot, ResourceInfo};
     use phux_vt_web::Vt;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -759,7 +759,7 @@ mod tests {
         assert_eq!(exits[1], WebTransportExit::PartialEof);
 
         for exit in exits {
-            let terminal_id = TerminalId::local(1);
+            let terminal_id = ResourceId::local(1);
             let mut session = crate::Session::new(&vt, 80, 24);
             let hello = session.on_frame(FrameKind::HelloOk {
                 protocol_major: PROTOCOL_VERSION.major,
@@ -780,7 +780,7 @@ mod tests {
                             WindowId::new(1),
                             terminal_id.clone(),
                         )
-                        .with_panes(vec![TerminalInfo::new(
+                        .with_resources(vec![ResourceInfo::new(
                             terminal_id.clone(),
                             WindowId::new(1),
                             80,
@@ -857,7 +857,7 @@ mod tests {
             assert!(session.is_failed());
             assert!(session.key_frame(key).is_none());
 
-            let after_exit = session.on_frame(FrameKind::TerminalOutput {
+            let after_exit = session.on_frame(FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,

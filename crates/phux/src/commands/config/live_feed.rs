@@ -22,7 +22,7 @@ use std::path::Path;
 
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use phux_config::plugin::{PluginAgentAttention, PluginAgentState, PluginManifestAgent};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use serde::Serialize;
 
 use crate::commands::agent::{fetch_agent_index, format_terminal};
@@ -31,9 +31,9 @@ use crate::commands::agent::{fetch_agent_index, format_terminal};
 #[derive(Debug, Default)]
 pub(super) struct LiveAgentFeed {
     /// Decoded `phux.agent/v1` records by pane.
-    pub(super) records: HashMap<TerminalId, AgentRecord>,
+    pub(super) records: HashMap<ResourceId, AgentRecord>,
     /// Panes whose title carries an active ADR-0035 `phux-ask` sentinel.
-    pub(super) asked: HashSet<TerminalId>,
+    pub(super) asked: HashSet<ResourceId>,
 }
 
 /// Best-effort fetch of the live feed from the server at `socket_path`.
@@ -56,7 +56,7 @@ pub(super) async fn fetch_live_feed(socket_path: &Path) -> Option<LiveAgentFeed>
     let snapshot = view.into_snapshot_ignoring_degradation();
     let records = fetch_agent_index(socket_path, &snapshot).await;
     let asked = snapshot
-        .panes
+        .resources
         .iter()
         .filter(|pane| pane.title.as_deref().is_some_and(is_ask_sentinel))
         .map(|pane| pane.id.clone())
@@ -216,7 +216,7 @@ fn record_slug(record: &AgentRecord) -> String {
         .unwrap_or_else(|| record.name.to_lowercase())
 }
 
-fn binding_for(pane: &TerminalId, record: &AgentRecord, asked: bool) -> RuntimeBinding {
+fn binding_for(pane: &ResourceId, record: &AgentRecord, asked: bool) -> RuntimeBinding {
     // ADR-0040: the record outranks the ask-title sentinel, so an active
     // ask elevates to blocked only when the record declares no state.
     let state = if asked && record.state == AgentMetaState::Unknown {
@@ -302,8 +302,8 @@ mod tests {
         }
     }
 
-    fn pane(id: u32) -> TerminalId {
-        TerminalId::Local { id }
+    fn pane(id: u32) -> ResourceId {
+        ResourceId::Local { id }
     }
 
     fn record(name: &str, kind: Option<&str>, state: AgentMetaState) -> AgentRecord {
@@ -316,7 +316,7 @@ mod tests {
         }
     }
 
-    fn feed_with(entries: Vec<(TerminalId, AgentRecord)>, asked: Vec<TerminalId>) -> LiveAgentFeed {
+    fn feed_with(entries: Vec<(ResourceId, AgentRecord)>, asked: Vec<ResourceId>) -> LiveAgentFeed {
         LiveAgentFeed {
             records: entries.into_iter().collect(),
             asked: asked.into_iter().collect(),

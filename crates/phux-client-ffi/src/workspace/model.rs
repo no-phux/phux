@@ -2,8 +2,8 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState, Workspace};
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo};
-use phux_protocol::{ResourceKind, SessionId, TerminalId, WindowId};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+use phux_protocol::{ResourceId, ResourceKind, SessionId, WindowId};
 
 use crate::client::SessionSummary;
 use crate::error::BridgeError;
@@ -14,7 +14,7 @@ pub(super) const MAX_NODES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CatalogTerminal {
-    pub id: TerminalId,
+    pub id: ResourceId,
     pub session: u32,
     pub title: String,
     pub cwd: String,
@@ -23,7 +23,7 @@ pub(super) struct CatalogTerminal {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Node {
     pub kind: u32,
-    pub terminal: Option<TerminalId>,
+    pub terminal: Option<ResourceId>,
     pub first: u32,
     pub second: u32,
     pub ratio: f32,
@@ -42,7 +42,7 @@ impl Catalog {
     ) -> Result<Self, BridgeError> {
         if snapshot.sessions.len() > 256
             || snapshot
-                .panes
+                .resources
                 .iter()
                 .filter(|p| p.kind == ResourceKind::Terminal)
                 .count()
@@ -66,7 +66,7 @@ impl Catalog {
             .map(|s| session_summary(s, selected))
             .collect::<Result<Vec<_>, BridgeError>>()?;
         let mut terminals = snapshot
-            .panes
+            .resources
             .into_iter()
             .filter(|p| p.kind == ResourceKind::Terminal)
             .map(|p| catalog_terminal(p, &owners))
@@ -87,9 +87,9 @@ impl Catalog {
         })
     }
 
-    pub(super) fn allows(&self, id: &TerminalId, selected: u32) -> bool {
+    pub(super) fn allows(&self, id: &ResourceId, selected: u32) -> bool {
         self.terminals.iter().any(|t| {
-            &t.id == id && (t.session == selected || matches!(id, TerminalId::Satellite { .. }))
+            &t.id == id && (t.session == selected || matches!(id, ResourceId::Satellite { .. }))
         })
     }
 
@@ -128,7 +128,7 @@ fn session_summary(session: SessionInfo, selected: u32) -> Result<SessionSummary
 }
 
 fn catalog_terminal(
-    pane: TerminalInfo,
+    pane: ResourceInfo,
     owners: &HashMap<WindowId, u32>,
 ) -> Result<CatalogTerminal, BridgeError> {
     terminal(&pane.id)?;
@@ -138,8 +138,8 @@ fn catalog_terminal(
     text(&cwd)?;
     // Satellite numeric window IDs are not keys in this server's registry.
     let session = match pane.id {
-        TerminalId::Local { .. } => owners.get(&pane.window_id).copied().unwrap_or(0),
-        TerminalId::Satellite { .. } => 0,
+        ResourceId::Local { .. } => owners.get(&pane.window_id).copied().unwrap_or(0),
+        ResourceId::Satellite { .. } => 0,
     };
     Ok(CatalogTerminal {
         id: pane.id,
@@ -158,10 +158,10 @@ pub(super) fn text(value: &str) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn terminal(id: &TerminalId) -> Result<(), BridgeError> {
+fn terminal(id: &ResourceId) -> Result<(), BridgeError> {
     match id {
-        TerminalId::Local { id } if *id != 0 => Ok(()),
-        TerminalId::Satellite { host, id } if *id != 0 && !host.as_str().is_empty() => {
+        ResourceId::Local { id } if *id != 0 => Ok(()),
+        ResourceId::Satellite { host, id } if *id != 0 && !host.as_str().is_empty() => {
             text(host.as_str())
         }
         _ => Err(BridgeError::invalid("invalid workspace terminal identity")),

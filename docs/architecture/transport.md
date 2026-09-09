@@ -147,7 +147,7 @@ wait 60s with exponential backoff from 500ms to 8s.
 
 While a satellite link is up, the hub routes frames over it
 (`phux-server::hub::relay`, ADR-0007 §4): a frame targeting
-`TerminalId::Satellite { host, id }` is rewritten to the satellite's
+`ResourceId::Satellite { host, id }` is rewritten to the satellite's
 `Local { id }` space and forwarded verbatim — the hub never re-encodes VT
 bytes — and return-leg responses and subscribed streams are re-tagged
 `Local -> Satellite { host, id }` before reaching the consumer. Each link

@@ -4,7 +4,7 @@
 //! Field IDs and message types match SPEC §7's catalog.
 //!
 //! Under ADR-0013 and ADR-0070, live terminal content is VT bytes in
-//! `TERMINAL_OUTPUT`; initial native state and history are opaque,
+//! `RESOURCE_OUTPUT`; initial native state and history are opaque,
 //! profile-negotiated bootstrap payloads. No cell-level diff or engine record
 //! parser exists in this crate.
 

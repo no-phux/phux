@@ -59,7 +59,7 @@ Every hosted socket begins with one deployment envelope, followed by the
   the exact codec native phux uses. The browser runs `phux-web` (real
   `phux-protocol` + libghostty-vt engine); the DO runs `phux-edge` (real
   `phux-protocol` + a curated shell that emits VT bytes). `TerminalSnapshot` /
-  `TerminalOutput` carry VT bytes; the client's engine renders them.
+  `ResourceOutput` carry VT bytes; the client's engine renders them.
 - After that envelope, the Worker/DO never reframes binary data. The edge DO _is_
   the server (decode frame → shell → encode frame); the native container DO
   relays binary frames byte-for-byte.

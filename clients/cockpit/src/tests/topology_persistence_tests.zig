@@ -13,7 +13,7 @@ const topology = @import("../cockpit/topology.zig");
 const contract = @import("provider_contract");
 
 fn remoteRef(id: u32) !contract.TerminalRef {
-    return .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteTerminalId.fromPhux(0, id, "") } };
+    return .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteResourceId.fromPhux(0, id, "") } };
 }
 
 test "v5 mixed attachments round trip without allocating remote shells" {
@@ -26,7 +26,7 @@ test "v5 mixed attachments round trip without allocating remote shells" {
     _ = try tree.split(tree.focus, .vertical, remote);
     tree.setFraction(tree.root, 0.63);
     const satellite: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
-        .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "h" ** 255),
+        .phux = try contract.RemoteResourceId.fromPhux(1, 72, "h" ** 255),
     } };
     try testing.expect(model.admitTab(satellite));
 
@@ -78,7 +78,7 @@ test "restored contexts fence reused IDs and never infer satellite incarnation" 
     try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
     try testing.expect(model.admitTab(remote));
     const satellite: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
-        .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "satellite"),
+        .phux = try contract.RemoteResourceId.fromPhux(1, 72, "satellite"),
     } };
     try testing.expect(model.admitTab(satellite));
     const snapshot = try model.topologySnapshot();
@@ -118,7 +118,7 @@ test "attachment fingerprint includes full provider host ID and context" {
     tree.nodes[leaf].terminal = remote;
     tree.nodes[leaf].terminal.?.provider_id = @enumFromInt(123);
     try testing.expect(original != model.topologyFingerprint());
-    tree.nodes[leaf].terminal = .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "a" ** 255) } };
+    tree.nodes[leaf].terminal = .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteResourceId.fromPhux(1, 72, "a" ** 255) } };
     const host_a = model.topologyFingerprint();
     tree.nodes[leaf].terminal.?.terminal_id.phux.host_storage[254] = 'b';
     try testing.expect(host_a != model.topologyFingerprint());
@@ -211,7 +211,7 @@ test "maximal remote reference state fits its byte ceiling and restores no shell
     const context = try topology.attachments.Context.init("e" ** 256, "s" ** 255, std.math.maxInt(u32));
     for (0..32) |index| {
         const ref: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
-            .phux = try contract.RemoteTerminalId.fromPhux(1, @intCast(index), "h" ** 255),
+            .phux = try contract.RemoteResourceId.fromPhux(1, @intCast(index), "h" ** 255),
         } };
         const slot = try snapshot.references.append(.{ .terminal_ref = ref, .context = context });
         snapshot.tabs[index] = topology.singleLeafTab(.terminal_1);
@@ -279,7 +279,7 @@ test "versioned snapshot restores the tab trees into fresh sessions without proc
     const branch = state.model.ws().tabs[state.model.ws().selected_tab].root;
     state.model.ws().tabs[state.model.ws().selected_tab].setFraction(branch, 0.63);
     state.model.tab_placement = .side;
-    const live_id = state.model.selectedTerminalId().?;
+    const live_id = state.model.selectedResourceId().?;
     const live_session = state.model.provider.terminal(live_id).?.session;
     live_session.feed("runtime state is intentionally not persisted");
 
@@ -455,7 +455,7 @@ test "the state file round trips a split workspace, its divider, and its working
 
     // The directory is the shell's own OSC 7 report, which is the only place
     // a cwd ever comes from.
-    const focused = state.model.selectedTerminalId().?;
+    const focused = state.model.selectedResourceId().?;
     state.model.provider.terminal(focused).?.session.feed("\x1b]7;file://host/Users/phall/my%20dir\x1b\\");
 
     const snapshot = try state.model.topologySnapshot();
@@ -909,7 +909,7 @@ test "restored panes reopen in their saved working directory" {
     const state = try startCockpit(harness);
     defer stopCockpit(state);
     app.update(&state.model, .split_right, &state.effects);
-    const focused = state.model.selectedTerminalId().?;
+    const focused = state.model.selectedResourceId().?;
     state.model.provider.terminal(focused).?.session.feed("\x1b]7;file:///Users/phall/project\x1b\\");
 
     const snapshot = try state.model.topologySnapshot();

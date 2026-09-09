@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use tokio::sync::mpsc;
 
 use super::ServerState;
@@ -20,7 +20,7 @@ pub enum EventScope {
     /// observe, plus server-scoped events (`terminal: None`).
     Server,
     /// Only events concerning this specific Terminal.
-    Terminal(WireTerminalId),
+    Terminal(WireResourceId),
 }
 
 /// One client's agent-event subscription (SPEC §7.5, phux-y2t): its
@@ -53,7 +53,7 @@ impl ServerState {
     pub fn subscribe_events(
         &mut self,
         client_id: ClientId,
-        terminal: Option<WireTerminalId>,
+        terminal: Option<WireResourceId>,
         tx: mpsc::Sender<Outbound>,
     ) {
         self.clients.subscribe_events(client_id, terminal, tx);
@@ -72,7 +72,7 @@ impl ServerState {
     /// [`Self::attached`], so a pure `watch` client (subscribed without an
     /// attach) is still reached.
     #[must_use]
-    pub fn event_targets(&self, terminal: Option<&WireTerminalId>) -> Vec<mpsc::Sender<Outbound>> {
+    pub fn event_targets(&self, terminal: Option<&WireResourceId>) -> Vec<mpsc::Sender<Outbound>> {
         self.clients.event_targets(terminal, None)
     }
 
@@ -93,17 +93,17 @@ impl ServerState {
     #[must_use]
     pub fn child_event_targets(
         &self,
-        terminal: &WireTerminalId,
-        parent: Option<&WireTerminalId>,
+        terminal: &WireResourceId,
+        parent: Option<&WireResourceId>,
     ) -> Vec<mpsc::Sender<Outbound>> {
         self.clients.event_targets(Some(terminal), parent)
     }
 
     /// Drop `client`'s per-terminal agent-event subscription for `wire`
-    /// (`DETACH_TERMINAL`, phux-v45.7). Server-wide subscriptions and
+    /// (`DETACH_RESOURCE`, phux-v45.7). Server-wide subscriptions and
     /// other terminals' scopes are untouched; an empty scope set drops
     /// the whole entry so the map stays bounded.
-    pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireTerminalId) {
+    pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
         self.clients.unsubscribe_terminal_events(client, wire);
     }
 }

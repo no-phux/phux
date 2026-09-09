@@ -1,7 +1,7 @@
 use super::{PhuxWorkspaceMutation, SharedWorkspace, model};
 use crate::error::{BridgeError, bytes_in, check_struct, terminal_id_in};
 use phux_client_core::layout::{self, LayoutNode, WindowState, Workspace};
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use std::{mem, ptr};
 
 pub(super) unsafe fn prepare(
@@ -151,8 +151,8 @@ unsafe fn name(input: &PhuxWorkspaceMutation) -> Result<String, BridgeError> {
 
 unsafe fn new_terminal(
     ws: &SharedWorkspace,
-    input: &crate::PhuxTerminalId,
-) -> Result<TerminalId, BridgeError> {
+    input: &crate::PhuxResourceId,
+) -> Result<ResourceId, BridgeError> {
     if input.host.len > model::MAX_TEXT {
         return Err(BridgeError::invalid("terminal host too long"));
     }

@@ -23,7 +23,7 @@ stream sequence (`BootstrapId`, ADR-0070). The Terminal kind has three
 profiles, selected once per connection at HELLO and repeated per stream in
 `BOOTSTRAP_BEGIN`:
 
-| Profile | Bootstrap codec | Live `TERMINAL_OUTPUT.bytes` | `FRAME_ACK` | Color rewrite |
+| Profile | Bootstrap codec | Live `RESOURCE_OUTPUT.bytes` | `FRAME_ACK` | Color rewrite |
 |---|---|---|---|---|
 | `NativeState` | libghostty checkpoint (`BootstrapCodec::Native`) | raw PTY bytes | forbidden | forbidden |
 | `SynthesizedVtRaw` | `SynthesizedVtV1` | raw compatibility VT | forbidden | per client caps |
@@ -52,7 +52,7 @@ Under `NativeState` the attach path is:
    consumes it (`phux-server::native_state`, `resource::terminal::native`).
 3. The client (`phux-client-core::session`) decodes into a staging replica
    and publishes atomically on `BOOTSTRAP_READY`; the next frame is raw
-   `TERMINAL_OUTPUT { seq: base_seq + 1 }`. There is no bootstrap ACK.
+   `RESOURCE_OUTPUT { seq: base_seq + 1 }`. There is no bootstrap ACK.
 4. Retained history is client-pull afterward (`HISTORY_REQUEST` /
    `HISTORY_PAGE`, newest to oldest, one outstanding request per stream)
    and never mutates the live screen.

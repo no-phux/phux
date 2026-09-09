@@ -6,20 +6,20 @@
 //! owns the broader focus model; this module is the implementation dependency
 //! for `phux-oih5.4`, not a duplicate decision record.
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::layout::{self, Workspace};
 
 /// One-entry, client-local pane focus history.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct FocusHistory {
-    previous: Option<TerminalId>,
+    previous: Option<ResourceId>,
 }
 
 impl FocusHistory {
     /// Seed history in focused dispatcher tests.
     #[cfg(test)]
-    pub(super) const fn with_previous(previous: TerminalId) -> Self {
+    pub(super) const fn with_previous(previous: ResourceId) -> Self {
         Self {
             previous: Some(previous),
         }
@@ -28,8 +28,8 @@ impl FocusHistory {
     /// Apply one focus transition and remember the pane being left.
     pub(super) fn transition(
         &mut self,
-        current: &mut Option<TerminalId>,
-        next: Option<TerminalId>,
+        current: &mut Option<ResourceId>,
+        next: Option<ResourceId>,
     ) {
         if *current != next {
             self.previous.clone_from(current);
@@ -39,7 +39,7 @@ impl FocusHistory {
 
     /// Record a transition performed by an async/reconcile helper that owns
     /// the focused pointer while it runs.
-    pub(super) fn observe(&mut self, before: Option<TerminalId>, after: Option<&TerminalId>) {
+    pub(super) fn observe(&mut self, before: Option<ResourceId>, after: Option<&ResourceId>) {
         if before.as_ref() != after {
             self.previous = before;
         }
@@ -48,15 +48,15 @@ impl FocusHistory {
     /// Return the live jump-back target, clearing stale/self references.
     pub(super) fn target(
         &mut self,
-        current: Option<&TerminalId>,
+        current: Option<&ResourceId>,
         workspace: &Workspace,
-    ) -> Option<TerminalId> {
+    ) -> Option<ResourceId> {
         self.repair(current, workspace);
         self.previous.clone()
     }
 
     /// Drop history when its pane closed/disappeared or equals current focus.
-    pub(super) fn repair(&mut self, current: Option<&TerminalId>, workspace: &Workspace) {
+    pub(super) fn repair(&mut self, current: Option<&ResourceId>, workspace: &Workspace) {
         let valid = self.previous.as_ref().is_some_and(|previous| {
             Some(previous) != current
                 && workspace.windows.iter().any(|window| {
@@ -73,7 +73,7 @@ impl FocusHistory {
     }
 
     #[cfg(test)]
-    pub(super) const fn previous(&self) -> Option<&TerminalId> {
+    pub(super) const fn previous(&self) -> Option<&ResourceId> {
         self.previous.as_ref()
     }
 }
@@ -82,8 +82,8 @@ impl FocusHistory {
 mod tests {
     use super::*;
 
-    fn tid(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn tid(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     #[test]

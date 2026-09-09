@@ -66,7 +66,7 @@
 //! be gambling exactly where we already lost once. Users who want
 //! ghostty's extended terminfo have two deliberate opt-ins: server-wide
 //! `defaults.term = "ghostty"` in config, or the per-spawn
-//! `SPAWN_TERMINAL.term` wire field. See `docs/consumers/tui.md` §4.2 and
+//! `SPAWN_RESOURCE.term` wire field. See `docs/consumers/tui.md` §4.2 and
 //! `crates/phux-config/src/default.toml`.
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -81,10 +81,10 @@
 
 use std::path::PathBuf;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -281,11 +281,11 @@ const fn named_key(key: PhysicalKey) -> KeyEvent {
 // ---------------------------------------------------------------------------
 
 /// A wire-attached probe around one TUI-in-a-pane. Accumulates every
-/// `TERMINAL_OUTPUT` chunk twice: rendered through the [`Screen`] oracle
+/// `RESOURCE_OUTPUT` chunk twice: rendered through the [`Screen`] oracle
 /// (for reaction assertions) and raw (for kitty-activity forensics).
 struct TuiProbe {
     stream: UnixStream,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     screen: Screen,
     raw: Vec<u8>,
     closed: bool,
@@ -298,7 +298,7 @@ impl TuiProbe {
     /// snapshot's `vt_replay_bytes` reproduce the grid state at emission,
     /// so any pane output that raced ahead of the attach (e.g. the seed
     /// command's first paint) arrives here and never again as
-    /// `TERMINAL_OUTPUT`. Dropping it would blind the `Screen` oracle to
+    /// `RESOURCE_OUTPUT`. Dropping it would blind the `Screen` oracle to
     /// the pane's first paint and make fast-printing scenarios flake.
     async fn attach(mut stream: UnixStream) -> Self {
         send_frame(&mut stream, &attach_by_name("default")).await;
@@ -306,8 +306,8 @@ impl TuiProbe {
         assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
         let terminal_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1);
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1);
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected ATTACHED, got {other:?}"),
         };
@@ -350,7 +350,7 @@ impl TuiProbe {
     }
 
     /// Pump one server frame into the accumulators. `false` on EOF /
-    /// `TERMINAL_CLOSED` / deadline.
+    /// `RESOURCE_CLOSED` / deadline.
     async fn pump_once(&mut self, deadline: tokio::time::Instant) -> bool {
         if self.closed {
             return false;
@@ -366,12 +366,12 @@ impl TuiProbe {
             self.closed = true; // server closed the connection
             return false;
         };
-        if type_byte == TYPE_TERMINAL_CLOSED {
+        if type_byte == TYPE_RESOURCE_CLOSED {
             self.closed = true;
             return false;
         }
-        if type_byte == TYPE_TERMINAL_OUTPUT
-            && let FrameKind::TerminalOutput { bytes, .. } = frame
+        if type_byte == TYPE_RESOURCE_OUTPUT
+            && let FrameKind::ResourceOutput { bytes, .. } = frame
         {
             self.raw.extend_from_slice(&bytes);
             self.screen.write(&bytes);
@@ -402,7 +402,7 @@ impl TuiProbe {
         );
     }
 
-    /// Drain until the pane closes (child exited → `TERMINAL_CLOSED`
+    /// Drain until the pane closes (child exited → `RESOURCE_CLOSED`
     /// and/or server self-exit → EOF). Panics if it never does.
     async fn expect_closed(&mut self, what: &str) {
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;

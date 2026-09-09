@@ -358,7 +358,7 @@ test "reconnect allocation failure after queue reset leaves old generation froze
     );
     defer self.destroy();
 
-    const id = try provider.RemoteTerminalId.fromPhux(0, 11, "");
+    const id = try provider.RemoteResourceId.fromPhux(0, 11, "");
     try self.host.terminals.append(self.gpa, .{
         .id = id,
         .phase = .live,
@@ -452,8 +452,8 @@ test "provider lookups keep remote identity across reordered enumeration" {
     );
     defer self.destroy();
 
-    const first_id = try provider.RemoteTerminalId.fromPhux(0, 51, "");
-    const second_id = try provider.RemoteTerminalId.fromPhux(1, 51, "satellite");
+    const first_id = try provider.RemoteResourceId.fromPhux(0, 51, "");
+    const second_id = try provider.RemoteResourceId.fromPhux(1, 51, "satellite");
     try self.host.terminals.append(self.gpa, .{
         .id = first_id,
         .generation = .{ .stream_id = 10, .bootstrap_id = 11 },
@@ -513,7 +513,7 @@ test "provider rejects a stale generation before forwarding host input" {
     );
     defer self.destroy();
 
-    const id = try provider.RemoteTerminalId.fromPhux(0, 52, "");
+    const id = try provider.RemoteResourceId.fromPhux(0, 52, "");
     try self.host.terminals.append(self.gpa, .{
         .id = id,
         .generation = .{ .stream_id = 20, .bootstrap_id = 21, .last_seq = 1 },
@@ -543,8 +543,8 @@ test "provider stop freezes every published canvas without dropping refs" {
     );
     defer self.destroy();
 
-    const first_id = try provider.RemoteTerminalId.fromPhux(0, 53, "");
-    const second_id = try provider.RemoteTerminalId.fromPhux(0, 54, "");
+    const first_id = try provider.RemoteResourceId.fromPhux(0, 53, "");
+    const second_id = try provider.RemoteResourceId.fromPhux(0, 54, "");
     try self.host.terminals.append(self.gpa, .{ .id = first_id, .phase = .live, .published = true });
     try self.host.terminals.append(self.gpa, .{ .id = second_id, .phase = .live, .published = true });
     var before: [2]provider.TerminalRef = undefined;

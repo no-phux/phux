@@ -63,9 +63,9 @@ client logic, not a wire-level lifecycle entity.
 
 | TUI vocabulary | Substrate mapping |
 |---|---|
-| Session | L3 metadata grouping a set of `TerminalId`s under a well-known key plus client logic; named via the `phux.session.name/v1` key. Not an L2 tier. Atomic teardown rides the single `KILL_TERMINALS` L1 op. |
+| Session | L3 metadata grouping a set of `ResourceId`s under a well-known key plus client logic; named via the `phux.session.name/v1` key. Not an L2 tier. Atomic teardown rides the single `KILL_RESOURCES` L1 op. |
 | Window | TUI convention. An entry in a layout-tree blob stored in L3 metadata, keyed by `phux.tui.layout/v1` for the session's terminals. |
-| Pane | L1 Terminal (`TerminalId`) referenced from a leaf of the TUI's layout tree. |
+| Pane | L1 Terminal (`ResourceId`) referenced from a leaf of the TUI's layout tree. |
 | Layout (split tree) | TUI convention. The shape stored in the L3 metadata blob above. ADR-0012's "binary split, not n-ary" still governs *this tree*; it is not a wire concept. |
 | Active pane / window focus | TUI convention. Per-client, persisted in TUI metadata if the client wants it to come back on reattach. |
 | Status bar / hooks / keybindings | TUI-local. Not on the wire. |
@@ -257,10 +257,10 @@ L1 verbs. Per
 [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
 they decompose onto the substrate, with no change to what the user types:
 
-- **`new`** is `SPAWN_TERMINAL` plus an L3 metadata write
+- **`new`** is `SPAWN_RESOURCE` plus an L3 metadata write
   (`phux.session.create/v1`, read back via `phux.session.created/v1`).
 - **`rename`** is an L3 metadata SET on `phux.session.name/v1`.
-- **`kill`** of a whole group is the atomic `KILL_TERMINALS { ids }` L1
+- **`kill`** of a whole group is the atomic `KILL_RESOURCES { ids }` L1
   op (tag `0x09`), applied all-or-nothing under the server's single lock
   so no observer sees a partial teardown.
 
@@ -694,7 +694,7 @@ or session comes into being:
 
 - **`shell`** (string, default unset) is the program server-spawned
   panes run when nothing names a command: the seed session, attach-time
-  session creation, and a `SPAWN_TERMINAL` whose wire frame carries no
+  session creation, and a `SPAWN_RESOURCE` whose wire frame carries no
   `command`; it is also the shell that wraps `spawn-on-attach` and
   `--seed-command` via `<shell> -c`. The server resolves it once at
   startup: `defaults.shell` when set, else `$SHELL`, else `/bin/sh`. A
@@ -702,8 +702,8 @@ or session comes into being:
 - **`term`** (string, default `"xterm-256color"`) is the `TERM` the
   server advertises to the inner program of every spawned pane. The
   resolution order for one spawn, lowest to highest: compiled-in
-  baseline → `defaults.term` → the `SPAWN_TERMINAL.term` wire field → a
-  `TERM` entry in `SPAWN_TERMINAL.env` (spec L1 §3.1). The default is
+  baseline → `defaults.term` → the `SPAWN_RESOURCE.term` wire field → a
+  `TERM` entry in `SPAWN_RESOURCE.env` (spec L1 §3.1). The default is
   deliberately the safe xterm baseline rather than `ghostty`: ghostty's
   terminfo advertises the `fullkbd` capability, which ncurses apps read
   as "kitty keyboard protocol available" and push `CSI > N u` — and at
@@ -723,15 +723,15 @@ or session comes into being:
   is created at the tile the TUI has already computed for it: the split (or
   new window) is applied to a provisional copy of the layout before the
   request goes out, and the resulting rect rides along as
-  `SPAWN_TERMINAL.initial_size` (spec L1 §3.1, gated on the server's
+  `SPAWN_RESOURCE.initial_size` (spec L1 §3.1, gated on the server's
   `SPAWN_INITIAL_SIZE` capability). Against a server without that
-  capability the pane starts at 80x24 and the reflow `TERMINAL_RESIZE`
+  capability the pane starts at 80x24 and the reflow `RESIZE_TERMINAL`
   that follows every spawn sizes it — visually identical, but it costs the
   pane the engine checkpoint the server had just captured, which is why
   the field exists (phux-a5xj).
 - **`cwd-inheritance`** (string enum, default `"inherit-focused"`)
   controls how a freshly-spawned pane picks its working directory when a
-  `SPAWN_TERMINAL` leaves `cwd` unset (an explicit `cwd` always wins).
+  `SPAWN_RESOURCE` leaves `cwd` unset (an explicit `cwd` always wins).
   Values: `"inherit-focused"` (match the focused pane's CWD — tmux's
   default), `"home"` (always `$HOME`), `"session-root"` (the directory
   the session was created in), `"last-cwd-per-window"` (remember per
@@ -1048,7 +1048,7 @@ agent-tools demo launches and drives an `agent-bench` profile through
 
 **Federation satellites** live under `[[satellites]]`. This is the
 hub-side registry for remote phux servers; the registry name is the host
-token that appears in `TerminalId::Satellite.host` — the address every
+token that appears in `ResourceId::Satellite.host` — the address every
 satellite-routed frame carries. `endpoint` is an opaque URI string in the
 registry CRUD so `ssh://devbox`, `quic://host:8788`, and `wss://host:8787`
 can share one control-plane shape; `enabled` defaults to `true`.
@@ -1591,7 +1591,7 @@ chord actually ended up bound.
 Manifest `[[panes]]` share the same **Plugin** header, one row per
 hostable pane (`plugin pane: <plugin-name>: <pane title>`). Committing
 one runs `plugin-pane { plugin, pane }`, which opens a real server-side
-Terminal running the pane's argv through the same `SPAWN_TERMINAL` verb
+Terminal running the pane's argv through the same `SPAWN_RESOURCE` verb
 `split-pane` / `new-window` use — no plugin-privileged wire surface
 (ADR-0017); any consumer could do the same. The spawn's working
 directory is the plugin root, and the child sees `PHUX_PLUGIN_ID`,
@@ -1940,7 +1940,7 @@ state must not read differently depending on where you look at it.
 > **Status:** Viewport-driven reflow ships. Automatic minimum-size freezing
 > now also ships (phux-foz.3): proportional re-flow and freezing are
 > implemented in the layout walk itself, so paint, reflow
-> (`TERMINAL_RESIZE` sizing), and mouse hit-testing all read the same frozen
+> (`RESIZE_TERMINAL` sizing), and mouse hit-testing all read the same frozen
 > tiling.
 
 When the client viewport (or server-aggregated viewport for multi-client
@@ -2596,7 +2596,7 @@ Current producers:
 - **Pane death** (phux-i0e8.2.2). When a pane's process dies and other
   panes survive the layout fold, a warn notice names the dead pane and
   its exit shape: `pane 3: exited 137`, or `pane 3: killed (signal or
-  unknown)` when `TERMINAL_CLOSED` carried no exit code (a signal kill).
+  unknown)` when `RESOURCE_CLOSED` carried no exit code (a signal kill).
   Two deaths are deliberately silent: a clean **exit 0** (the user typed
   `exit`; nothing is wrong) and a close **this client itself requested**
   via `kill-pane` / `kill-window` (the kill dispatch marks its targets
@@ -2854,7 +2854,7 @@ turns off.
 ## 10. Recording
 
 Two surfaces ship. `phux rec [TARGET] -o PATH` records one pane headlessly:
-it subscribes as a pure `ATTACH_TERMINAL` observer, so it neither attaches the
+it subscribes as a pure `ATTACH_RESOURCE` observer, so it neither attaches the
 session nor resizes the pane and is safe against a session someone is using.
 `phux --rec PATH` records the session you are attached to by teeing the
 client's own composited output, so the artifact carries the chrome — tiled

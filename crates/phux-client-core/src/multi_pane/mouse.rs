@@ -1,4 +1,4 @@
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::mouse::MouseEvent;
 
 use crate::layout::LayoutState;
@@ -16,7 +16,7 @@ use super::layout::compute_layout_in;
 ///
 /// The driver consumes this to decide three independent things:
 ///
-/// 1. Which `TerminalId` (if any) the resulting `INPUT_MOUSE` frame
+/// 1. Which `ResourceId` (if any) the resulting `INPUT_MOUSE` frame
 ///    targets — and what the pane-local coordinates are.
 /// 2. Whether `LayoutState.focus` needs to swap to a different pane
 ///    (click-to-focus, per ADR-0019 decision 6 + DESIGN §7).
@@ -38,7 +38,7 @@ pub enum RouteDecision {
     ///   (so the heavy-edge chrome follows focus).
     Pane {
         /// The pane the mouse event addresses.
-        target: TerminalId,
+        target: ResourceId,
         /// Pane-local 0-indexed cell x (treated as f64 pixels per
         /// SPEC §9.2.1 — the cell-quantising client contract).
         pane_x: f64,
@@ -132,7 +132,7 @@ pub fn route_mouse_event(
     let cell_x = clamp_cell(mouse.x).min(viewport.0.saturating_sub(1));
     let cell_y = clamp_cell(mouse.y).min(viewport.1.saturating_sub(1));
 
-    let mut hit: Option<(TerminalId, Rect)> = None;
+    let mut hit: Option<(ResourceId, Rect)> = None;
     for (id, rect) in &multi.rects {
         if rect_contains(*rect, cell_x, cell_y) {
             hit = Some((id.clone(), *rect));

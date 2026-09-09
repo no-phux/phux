@@ -1,4 +1,4 @@
-use phux_core::ids::TerminalId;
+use phux_core::ids::ResourceId;
 use tokio::sync::mpsc;
 
 use super::{ClientId, Outbound, SatelliteLease, ServerState};
@@ -7,7 +7,7 @@ impl ServerState {
     /// The client currently holding `pane`'s input lease (ADR-0033), or
     /// `None` if the pane is `Open`.
     #[must_use]
-    pub fn input_lease_holder(&self, terminal: TerminalId) -> Option<ClientId> {
+    pub fn input_lease_holder(&self, terminal: ResourceId) -> Option<ClientId> {
         self.leases.holder(terminal)
     }
 
@@ -15,20 +15,20 @@ impl ServerState {
     /// lease (ADR-0033). `false` when the pane is `Open` or `client` is the
     /// holder. The gate calls this before forwarding input to the actor.
     #[must_use]
-    pub fn input_blocked(&self, terminal: TerminalId, client: ClientId) -> bool {
+    pub fn input_blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.leases.blocked(terminal, client)
     }
 
     /// Grant `pane`'s input lease to `client` (ADR-0033), returning the prior
     /// holder if the lease was already held (a `Seize` preemption).
-    pub fn set_input_lease(&mut self, terminal: TerminalId, client: ClientId) -> Option<ClientId> {
+    pub fn set_input_lease(&mut self, terminal: ResourceId, client: ClientId) -> Option<ClientId> {
         self.leases.acquire(terminal, client)
     }
 
     /// Release `pane`'s input lease if `client` holds it (ADR-0033). Returns
     /// `true` if a lease was actually released. A no-op (returns `false`) if
     /// the pane is `Open` or held by someone else.
-    pub fn release_input_lease(&mut self, terminal: TerminalId, client: ClientId) -> bool {
+    pub fn release_input_lease(&mut self, terminal: ResourceId, client: ClientId) -> bool {
         self.leases.release(terminal, client)
     }
 
@@ -36,7 +36,7 @@ impl ServerState {
     /// runtime reads this at disconnect time to broadcast `Released` events
     /// before [`Self::detach`] clears the leases.
     #[must_use]
-    pub fn leases_held_by(&self, client: ClientId) -> Vec<TerminalId> {
+    pub fn leases_held_by(&self, client: ClientId) -> Vec<ResourceId> {
         self.leases.held_by(client)
     }
 
@@ -95,7 +95,7 @@ impl ServerState {
 
     // -- satellite proxy attach registrations -----------------------------
 
-    /// Whether `client` holds a proxied `ATTACH_TERMINAL` over `terminal` on
+    /// Whether `client` holds a proxied `ATTACH_RESOURCE` over `terminal` on
     /// `host`.
     ///
     /// The hub relays opaque reply and input frames on a consumer's behalf and

@@ -5,7 +5,7 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities}
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
-    FrameKind, InputMode, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
+    FrameKind, InputMode, ResourceLifecycle, StateScope, TerminalSignal, ViewportInfo,
 };
 use std::collections::HashSet;
 use tokio::sync::oneshot;
@@ -40,7 +40,7 @@ use crate::terminal_actor::{
 /// cheaper than the screen projection it gates.
 fn live_session_probe(
     state: &SharedState,
-    terminal: phux_core::ids::TerminalId,
+    terminal: phux_core::ids::ResourceId,
 ) -> crate::agent_detect::live_session::LiveSessionProbe {
     let state = state.clone();
     std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
@@ -60,7 +60,7 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
 /// Every path that reaches this constant is one where the eventual geometry
 /// arrives later — a seed pane whose attaching client applies its viewport
 /// through `apply_attach_viewport` before any bootstrap exists, or a spawn
-/// from a caller that did not supply `SPAWN_TERMINAL.initial_size`. A
+/// from a caller that did not supply `SPAWN_RESOURCE.initial_size`. A
 /// layout-owning consumer that DOES know the tile should send it (phux-a5xj)
 /// rather than let the pane bootstrap here and be reflowed afterwards.
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
@@ -89,11 +89,11 @@ pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
 /// path. Neither helper is reachable from `handle_spawn_terminal` (which
 /// seeds through `spawn_pane_with_pty_and_colors`), so no pane is announced
 /// twice.
-fn announce_seed_pane(state: &SharedState, wire_terminal_id: &phux_protocol::ids::TerminalId) {
+fn announce_seed_pane(state: &SharedState, wire_terminal_id: &phux_protocol::ids::ResourceId) {
     broadcast_event(
         state,
         Some(wire_terminal_id),
-        &AgentEvent::PaneSpawned {
+        &AgentEvent::ResourceSpawned {
             kind: phux_protocol::ids::ResourceKind::Terminal,
             parent: None,
         },
@@ -105,7 +105,7 @@ pub(crate) fn seed_session_with_actor(
     name: &str,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     seed_session_with_actor_and_metadata(state, name, scrollback, root_token, None)
 }
 
@@ -115,15 +115,15 @@ fn seed_session_with_actor_and_metadata(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     agent_session: Option<Vec<u8>>,
-) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::TerminalId;
-    let terminal: TerminalId = state.with_mut(|s| {
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    use phux_core::ids::ResourceId;
+    let terminal: ResourceId = state.with_mut(|s| {
         let terminal = s.seed_session(name).2;
         if let Some(value) = agent_session {
             let wire = s.intern_terminal_wire(terminal);
             s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Terminal(wire),
-                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                &phux_protocol::wire::frame::Scope::Resource(wire),
+                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
                 value,
             );
         }
@@ -186,7 +186,7 @@ pub fn seed_session_with_pty(
     cmd: portable_pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     seed_session_with_pty_and_colors(state, name, cmd, scrollback, root_token, None)
 }
 
@@ -198,7 +198,7 @@ pub fn seed_session_with_pty_and_colors(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     seed_session_with_pty_and_colors_and_metadata(
         state,
         name,
@@ -218,13 +218,13 @@ fn seed_session_with_pty_and_colors_and_metadata(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     agent_session: Option<Vec<u8>>,
-) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::TerminalId;
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    use phux_core::ids::ResourceId;
     // phux-p4vp: capture the spawn-time working directory before `cmd`
     // is moved into the actor build below, so it can be stamped onto the
     // pane's registry descriptor (see `stamp_spawn_cwd`).
     let spawn_cwd = spawn_cwd_of(&cmd);
-    let terminal: TerminalId = state.with_mut(|s| {
+    let terminal: ResourceId = state.with_mut(|s| {
         let terminal = s.seed_session(name).2;
         stamp_spawn_cwd(s, terminal, spawn_cwd);
         let wire = s.intern_terminal_wire(terminal);
@@ -232,8 +232,8 @@ fn seed_session_with_pty_and_colors_and_metadata(
         crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
         if let Some(value) = agent_session {
             s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Terminal(wire),
-                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                &phux_protocol::wire::frame::Scope::Resource(wire),
+                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
                 value,
             );
         }
@@ -263,13 +263,13 @@ fn seed_session_with_pty_and_colors_and_metadata(
     } = bundle;
     // phux-y2t: wire the actor's agent-event sink and spawn a drain task
     // that fans bell / title / dirty / idle events out to event-stream
-    // subscribers scoped to this pane. The wire `TerminalId` is interned
+    // subscribers scoped to this pane. The wire `ResourceId` is interned
     // up front (stable for the pane's lifetime) and captured by the drain.
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_SINK_CAPACITY);
     actor.set_event_sink(event_tx);
     // ADR-0046: same shape as the event sink, and for the same reason — the
     // sink MUST be installed before `actor.run()` moves the actor into the
-    // spawn, while the wire `TerminalId` the drain needs only exists after.
+    // spawn, while the wire `ResourceId` the drain needs only exists after.
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
     actor.set_live_session_probe(live_session_probe(state, terminal));
@@ -308,7 +308,7 @@ pub fn spawn_pane_with_pty(
     cmd: portable_pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<Option<phux_core::ids::TerminalId>, crate::terminal_actor::TerminalActorError> {
+) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
     spawn_pane_with_pty_and_colors(
         state,
         &SpawnOwnership::Session(session),
@@ -327,18 +327,18 @@ pub(crate) enum SpawnOwnership {
     /// Legacy session ownership (first window in v0.x).
     Session(phux_core::ids::SessionId),
     /// Exact window ownership derived from an existing wire Terminal id.
-    Terminal(phux_protocol::ids::TerminalId),
+    Terminal(phux_protocol::ids::ResourceId),
 }
 
 /// Palette-seeded split variant. The spawning client's advertised defaults
 /// are installed before the child PTY is parsed.
 ///
 /// `initial_size` is the `(cols, rows)` the caller already knows the new
-/// leaf will occupy (phux-a5xj, `SPAWN_TERMINAL.initial_size`). It sizes the
+/// leaf will occupy (phux-a5xj, `SPAWN_RESOURCE.initial_size`). It sizes the
 /// libghostty grid, the PTY winsize, and the registry `dims` in the same
 /// transaction that creates the pane, so the bootstrap generation the server
 /// then captures is already the client's real geometry and the reflow
-/// `TERMINAL_RESIZE` that follows is a no-op instead of a tombstone. `None`
+/// `RESIZE_TERMINAL` that follows is a no-op instead of a tombstone. `None`
 /// keeps [`DEFAULT_SPAWN_DIMS`].
 #[allow(
     clippy::too_many_arguments,
@@ -353,8 +353,8 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     agent_session: Option<Vec<u8>>,
     initial_size: Option<(u16, u16)>,
-) -> Result<Option<phux_core::ids::TerminalId>, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::TerminalId;
+) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
+    use phux_core::ids::ResourceId;
     // Clamp exactly as `TerminalActor::handle_resize` does: libghostty has no
     // zero-dimension grid. Callers upstream already drop an all-zero hint, so
     // this is belt-and-braces for the in-process call sites.
@@ -363,7 +363,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     });
     // phux-p4vp: same spawn-time cwd capture as `seed_session_with_pty`.
     let spawn_cwd = spawn_cwd_of(&cmd);
-    let Some(terminal): Option<TerminalId> = state.with_mut(|s| {
+    let Some(terminal): Option<ResourceId> = state.with_mut(|s| {
         let terminal = match ownership {
             SpawnOwnership::Session(session) => s.add_pane_to_session(*session)?,
             SpawnOwnership::Terminal(owner) => s.add_pane_to_terminal_owner(owner)?,
@@ -381,8 +381,8 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
         crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
         if let Some(value) = agent_session {
             s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Terminal(wire_terminal),
-                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                &phux_protocol::wire::frame::Scope::Resource(wire_terminal),
+                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
                 value,
             );
         }
@@ -417,7 +417,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     actor.set_event_sink(event_tx);
     // ADR-0046: same shape as the event sink, and for the same reason — the
     // sink MUST be installed before `actor.run()` moves the actor into the
-    // spawn, while the wire `TerminalId` the drain needs only exists after.
+    // spawn, while the wire `ResourceId` the drain needs only exists after.
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
     actor.set_live_session_probe(live_session_probe(state, terminal));
@@ -457,14 +457,14 @@ fn spawn_cwd_of(cmd: &portable_pty::CommandBuilder) -> Option<std::path::PathBuf
 /// `phux_core::Registry::new_terminal` initializes `TerminalDescriptor.cwd`
 /// to the empty path, and `build_session_snapshot` filters an empty path
 /// to a wire `cwd: None` — so without this stamp the ATTACHED
-/// `SessionSnapshot.panes[].cwd` never populates for normally spawned
+/// `SessionSnapshot.resources[].cwd` never populates for normally spawned
 /// panes and the TUI sidebar's per-window VCS branch line stays blank.
 /// The stamped value is the spawn-time directory; attach refreshes it
 /// from the live PTY child (see
 /// [`crate::runtime::attach::refresh_registry_cwds`]).
 fn stamp_spawn_cwd(
     s: &mut crate::state::ServerState,
-    terminal: phux_core::ids::TerminalId,
+    terminal: phux_core::ids::ResourceId,
     cwd: Option<std::path::PathBuf>,
 ) {
     if let Some(cwd) = cwd
@@ -491,7 +491,7 @@ pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 /// is re-published, not lost.
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 
-/// Handle a client's `TERMINAL_RESIZE` (L1 §3.1).
+/// Handle a client's `RESIZE_TERMINAL` (L1 §3.1).
 ///
 /// The explicit, per-Terminal counterpart to [`handle_viewport_resize`]: the
 /// caller names one Terminal and its exact cell dimensions, rather than
@@ -512,7 +512,7 @@ pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 pub(crate) fn handle_terminal_resize(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     cols: u16,
     rows: u16,
 ) {
@@ -526,8 +526,8 @@ pub(crate) fn handle_terminal_resize(
                     client_id,
                     wire_terminal_id,
                     &route,
-                    "TERMINAL_RESIZE",
-                    |id| FrameKind::TerminalResize {
+                    "RESIZE_TERMINAL",
+                    |id| FrameKind::ResizeTerminal {
                         terminal_id: id,
                         cols,
                         rows,
@@ -538,7 +538,7 @@ pub(crate) fn handle_terminal_resize(
                         ?wire_terminal_id,
                         cols,
                         rows,
-                        "TERMINAL_RESIZE: SATELLITE-routed pane id rejected on non-federation-hub server",
+                        "RESIZE_TERMINAL: SATELLITE-routed pane id rejected on non-federation-hub server",
                     );
                 }
                 return;
@@ -549,7 +549,7 @@ pub(crate) fn handle_terminal_resize(
                     ?wire_terminal_id,
                     cols,
                     rows,
-                    "TERMINAL_RESIZE: unknown pane; dropping (no-reply per wire frame design)",
+                    "RESIZE_TERMINAL: unknown pane; dropping (no-reply per wire frame design)",
                 );
                 return;
             }
@@ -576,9 +576,9 @@ pub(crate) fn handle_terminal_resize(
         let terminal = match local.handle.terminal() {
             Ok(terminal) => terminal,
             Err(error) => {
-                debug!(?client_id, ?terminal, %error, "TERMINAL_RESIZE: not a Terminal; dropping");
+                debug!(?client_id, ?terminal, %error, "RESIZE_TERMINAL: not a Terminal; dropping");
                 // docs/spec/L1.md §1.1's WRONG_RESOURCE_KIND rule: no reply
-                // frame exists for TERMINAL_RESIZE, so the refusal rides an
+                // frame exists for RESIZE_TERMINAL, so the refusal rides an
                 // uncorrelated ERROR to the sender instead of a log line
                 // only the server ever sees.
                 if let Some(mailbox) = s.client_mailbox(client_id) {
@@ -591,7 +591,7 @@ pub(crate) fn handle_terminal_resize(
                 return;
             }
         };
-        // Live per-pane resize (TERMINAL_RESIZE): resync clients so their
+        // Live per-pane resize (RESIZE_TERMINAL): resync clients so their
         // mirrors reconverge after reflow (phux-8v1). An agent's explicit
         // resize carries cell counts only — no pixel truth — so the actor
         // keeps its last-known cell pixel size.
@@ -609,14 +609,14 @@ pub(crate) fn handle_terminal_resize(
                     ?terminal,
                     cols,
                     rows,
-                    "TERMINAL_RESIZE: pane resize mailbox full; dropping",
+                    "RESIZE_TERMINAL: pane resize mailbox full; dropping",
                 );
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 debug!(
                     ?client_id,
                     ?terminal,
-                    "TERMINAL_RESIZE: pane actor gone; dropping resize",
+                    "RESIZE_TERMINAL: pane actor gone; dropping resize",
                 );
             }
         }
@@ -632,7 +632,7 @@ pub(crate) fn handle_terminal_resize(
 /// participates in this attach generation. Within that session, a registry
 /// pane without an actor handle cannot produce `BOOTSTRAP_*`; returning it in
 /// the fourth tuple slot lets the publisher resolve the client's attach
-/// barrier with `TERMINAL_CLOSED` instead of silently stranding it.
+/// barrier with `RESOURCE_CLOSED` instead of silently stranding it.
 ///
 /// Pulled out so [`crate::runtime::attach::handle_attach`] stays under clippy's
 /// `too_many_lines` ceiling.
@@ -689,7 +689,7 @@ pub(crate) fn prepare_attach(
             .map(|window| window.id)
             .collect();
         let closed_before_ready = snapshot
-            .panes
+            .resources
             .iter()
             .filter(|pane| {
                 focused_windows.contains(&pane.window_id) && !bootstrapped.contains(&pane.id)
@@ -714,8 +714,8 @@ pub(crate) fn prepare_attach(
 /// Dispatch a `COMMAND` envelope and reply with `COMMAND_RESULT`
 /// correlated by `request_id`. The control plane for the CLI's `ls` /
 /// `kill` verbs. Per SPEC §5 a command is asynchronous: the result MAY
-/// follow other frames the command triggered (e.g. `KILL_TERMINAL`'s
-/// `TERMINAL_CLOSED`).
+/// follow other frames the command triggered (e.g. `KILL_RESOURCE`'s
+/// `RESOURCE_CLOSED`).
 /// Stable, payload-free label for a [`Command`] variant — the `kind` field
 /// on the `handle_command` lifecycle span. A hand-written map (rather than
 /// `?command`) keeps the trace line small and free of user payloads
@@ -724,10 +724,10 @@ pub(crate) fn prepare_attach(
 /// variant logs as `"other"` until an arm is added here.
 pub(crate) const fn command_kind(command: &Command) -> &'static str {
     match command {
-        Command::AttachTerminal { .. } => "attach_terminal",
-        Command::DetachTerminal { .. } => "detach_terminal",
-        Command::KillTerminal { .. } => "kill_terminal",
-        Command::KillTerminals { .. } => "kill_terminals",
+        Command::AttachResource { .. } => "attach_terminal",
+        Command::DetachResource { .. } => "detach_terminal",
+        Command::KillResource { .. } => "kill_terminal",
+        Command::KillResources { .. } => "kill_terminals",
         Command::DetachClients { .. } => "detach_clients",
         Command::GetState { .. } => "get_state",
         Command::GetScreen { .. } => "get_screen",
@@ -791,7 +791,7 @@ pub(crate) async fn handle_command(
 
     // PUT_FILE chunks may carry 8 MiB. Route this variant by ownership before
     // the borrowed generic helper so a hub does not clone the payload merely
-    // to rewrite a satellite TerminalId.
+    // to rewrite a satellite ResourceId.
     let command = match command {
         Command::PutFile {
             upload_id,
@@ -810,7 +810,7 @@ pub(crate) async fn handle_command(
                     &sat_host,
                     Command::PutFile {
                         upload_id,
-                        terminal_id: phux_protocol::ids::TerminalId::local(local_id),
+                        terminal_id: phux_protocol::ids::ResourceId::local(local_id),
                         extension,
                         offset,
                         data,
@@ -856,7 +856,7 @@ pub(crate) async fn handle_command(
     }
 
     let result = match command {
-        Command::AttachTerminal { terminal_id } => {
+        Command::AttachResource { terminal_id } => {
             handle_attach_terminal(
                 state,
                 client_id,
@@ -869,7 +869,7 @@ pub(crate) async fn handle_command(
             )
             .await
         }
-        Command::DetachTerminal { terminal_id } => {
+        Command::DetachResource { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id).await
         }
         Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
@@ -904,9 +904,9 @@ pub(crate) async fn handle_command(
                 message: "acknowledged input lane unavailable".to_owned(),
             },
         },
-        Command::KillTerminals { ids } => handle_kill_terminals(state, &ids),
+        Command::KillResources { ids } => handle_kill_terminals(state, &ids),
         Command::DetachClients { session } => handle_detach_clients(state, session.as_deref()),
-        Command::KillTerminal { terminal_id } => handle_kill_terminal(state, &terminal_id),
+        Command::KillResource { terminal_id } => handle_kill_terminal(state, &terminal_id),
         Command::GetTerminalState {
             terminal_id,
             include_scrollback,
@@ -920,7 +920,7 @@ pub(crate) async fn handle_command(
             )
             .await
         }
-        Command::SubscribeTerminalEvents {
+        Command::SubscribeResourceEvents {
             terminal_id,
             event_types,
         } => handle_subscribe_terminal_events(state, client_id, &terminal_id, event_types, out_tx),
@@ -1007,17 +1007,17 @@ pub(crate) async fn handle_command(
         .await;
 }
 
-/// Build the reply for `KILL_TERMINAL`: resolve the wire id to the core
+/// Build the reply for `KILL_RESOURCE`: resolve the wire id to the core
 /// pane, then cancel its actor. Cancellation drops the actor's
 /// `exit_notify`, which the per-pane EOF watcher (phux-it8) treats
-/// identically to PTY EOF: it broadcasts `TERMINAL_CLOSED` and reaps the
+/// identically to PTY EOF: it broadcasts `RESOURCE_CLOSED` and reaps the
 /// pane (phux-60s), cascading to session removal + server self-exit when
-/// the last session empties. So `KILL_TERMINAL` reuses the exact teardown
+/// the last session empties. So `KILL_RESOURCE` reuses the exact teardown
 /// a natural shell exit takes — no separate kill plumbing, and the async
-/// `TERMINAL_CLOSED` still fires.
+/// `RESOURCE_CLOSED` still fires.
 fn handle_kill_terminal(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     state
         .with(|s| s.terminal_from_wire(terminal_id))
@@ -1038,14 +1038,14 @@ fn handle_kill_terminal(
         )
 }
 
-/// Handle `ATTACH_TERMINAL` (SPEC §5.1 tag 0x01, phux-v45.7): subscribe the
+/// Handle `ATTACH_RESOURCE` (SPEC §5.1 tag 0x01, phux-v45.7): subscribe the
 /// caller to one Terminal's content stream without a session-scoped
 /// `ATTACH`. Registers the caller as an output subscriber (which also opens
 /// the `INPUT_*` / `FRAME_ACK` gates for it — see `handle_terminal_input`),
 /// registers the per-consumer state-sync entry so `FRAME_ACK` eviction
 /// works (ADR-0018), spawns a cancellable output pump, and primes the
 /// caller with an authoritative `TERMINAL_SNAPSHOT` before any
-/// `TERMINAL_OUTPUT` delta (the same snapshot-first gate `handle_attach`
+/// `RESOURCE_OUTPUT` delta (the same snapshot-first gate `handle_attach`
 /// enforces — ADR-0007 §4's snapshot-on-attach invariant rides on it
 /// across the federation hop).
 ///
@@ -1055,7 +1055,7 @@ fn handle_kill_terminal(
 /// duplicate snapshot is a convergent repaint for existing observers.
 ///
 /// Deliberately does NOT resize the Terminal (no viewport rides the
-/// command); interactive callers follow with `TERMINAL_RESIZE`.
+/// command); interactive callers follow with `RESIZE_TERMINAL`.
 #[allow(
     clippy::too_many_arguments,
     reason = "the negotiated connection context (caps, bootstrap profile, bootstrap limits) is threaded verbatim from the dispatch surface; boxing it here would only rename the same list"
@@ -1063,7 +1063,7 @@ fn handle_kill_terminal(
 async fn handle_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
     bootstrap_profile: BootstrapProfile,
@@ -1074,7 +1074,7 @@ async fn handle_attach_terminal(
     else {
         return CommandResult::Error {
             code: ErrorCode::CodecUnavailable,
-            message: "ATTACH_TERMINAL selected an unsupported bootstrap profile".to_owned(),
+            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
         };
     };
 
@@ -1111,11 +1111,11 @@ async fn handle_attach_terminal(
     else {
         return CommandResult::Error {
             code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_TERMINAL bootstrap id space exhausted".to_owned(),
+            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
         };
     };
 
-    // ATTACH_TERMINAL bootstraps a grid, so the Terminal facet is resolved
+    // ATTACH_RESOURCE bootstraps a grid, so the Terminal facet is resolved
     // once here; every later stage reads it from the session.
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
@@ -1127,7 +1127,7 @@ async fn handle_attach_terminal(
             return wrong_resource_kind(error);
         }
     };
-    let session = AttachTerminalSession {
+    let session = AttachResourceSession {
         state,
         out_tx,
         connection_token,
@@ -1175,17 +1175,17 @@ async fn handle_attach_terminal(
 /// never re-probed or replaced with compatibility defaults here.
 ///
 /// The caller's mailbox is captured with the subscription (phux-w7z2.56):
-/// `ATTACH_TERMINAL` does not require a session-scoped `ATTACH` (L1 §5.1),
+/// `ATTACH_RESOURCE` does not require a session-scoped `ATTACH` (L1 §5.1),
 /// so this consumer may have no `attached` entry, and the server's
-/// out-of-band terminal-scoped fanout — `TERMINAL_CLOSED`, which L1 §3.1
+/// out-of-band terminal-scoped fanout — `RESOURCE_CLOSED`, which L1 §3.1
 /// requires for "every client subscribed to the Terminal" — has no other
 /// way to reach it. Content rides the pump; lifecycle does not.
 fn subscribe_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-) -> Option<(phux_core::ids::TerminalId, ResourceHandle)> {
+) -> Option<(phux_core::ids::ResourceId, ResourceHandle)> {
     state.with_mut(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
         let handle = s.resource_handle(core).cloned()?;
@@ -1206,19 +1206,19 @@ const fn native_checkpoint_profile(profile: phux_protocol::caps::BootstrapStream
     )
 }
 
-/// Why an `ATTACH_TERMINAL` stage failed.
+/// Why an `ATTACH_RESOURCE` stage failed.
 ///
-/// Carried back to [`AttachTerminalSession::failed`] so the partial attach is
+/// Carried back to [`AttachResourceSession::failed`] so the partial attach is
 /// rolled back exactly once on the way to the caller's `COMMAND_RESULT`.
 #[derive(Debug)]
-struct AttachTerminalFailure {
+struct AttachResourceFailure {
     /// Wire error code the caller receives.
     code: ErrorCode,
     /// Human-readable explanation attached to that code.
     message: String,
 }
 
-impl AttachTerminalFailure {
+impl AttachResourceFailure {
     /// An internal fault with a fixed explanation — the dominant shape.
     fn internal(message: &str) -> Self {
         Self {
@@ -1230,7 +1230,7 @@ impl AttachTerminalFailure {
 
 /// The pump generation an attach established, plus the handshake artifacts
 /// its bootstrap publication still has to consume.
-struct AttachTerminalGeneration {
+struct AttachResourceGeneration {
     /// Replica generation stamped on every frame this attach publishes.
     bootstrap_id: phux_protocol::ids::BootstrapId,
     /// Shared cursor the pump keeps current so a replacement generation can
@@ -1250,19 +1250,19 @@ struct AttachTerminalGeneration {
     native_publication_gate: Option<oneshot::Sender<crate::terminal_actor::NativePublicationReply>>,
 }
 
-/// One in-flight `ATTACH_TERMINAL`: the resolved terminal plus the negotiated
+/// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
 /// connection context every stage of the handshake needs.
 ///
 /// The stages run as methods so the `resolve -> subscribe -> register -> pump
 /// -> snapshot` ordering stays explicit without threading a dozen arguments
 /// through each one, and so every failure funnels through the single
 /// [`Self::failed`] rollback.
-struct AttachTerminalSession<'a> {
+struct AttachResourceSession<'a> {
     state: &'a SharedState,
     out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     connection_token: &'a CancellationToken,
-    terminal_id: &'a phux_protocol::ids::TerminalId,
-    core: phux_core::ids::TerminalId,
+    terminal_id: &'a phux_protocol::ids::ResourceId,
+    core: phux_core::ids::ResourceId,
     /// The resource's generic channels (output, consumers, control).
     handle: ResourceHandle,
     /// The Terminal facet of `handle`, resolved once at entry.
@@ -1274,7 +1274,7 @@ struct AttachTerminalSession<'a> {
     bootstrap_limits: BootstrapLimits,
 }
 
-impl AttachTerminalSession<'_> {
+impl AttachResourceSession<'_> {
     /// Whether this connection negotiated the actor-emitted state-sync stream
     /// at HELLO.
     const fn wants_state_sync(&self) -> bool {
@@ -1309,7 +1309,7 @@ impl AttachTerminalSession<'_> {
 
     /// Roll the partial attach back and shape the stage failure as the
     /// caller's `COMMAND_RESULT`.
-    fn failed(&self, failure: AttachTerminalFailure) -> CommandResult {
+    fn failed(&self, failure: AttachResourceFailure) -> CommandResult {
         self.roll_back();
         CommandResult::Error {
             code: failure.code,
@@ -1347,7 +1347,7 @@ impl AttachTerminalSession<'_> {
                 bootstrap_max_bytes: usize::MAX,
                 bootstrap_max_frames: usize::MAX,
                 bootstrap_chunk_bytes: 1,
-                // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
+                // phux-v45.8: `ATTACH_RESOURCE` over a reliable transport; the
                 // emit-once model is correct. Forwarded-leg loss-tolerance is
                 // the deferred activation (ADR-0042).
                 loss_tolerant: false,
@@ -1367,7 +1367,7 @@ impl AttachTerminalSession<'_> {
     async fn establish_generation(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
-    ) -> Result<AttachTerminalGeneration, AttachTerminalFailure> {
+    ) -> Result<AttachResourceGeneration, AttachResourceFailure> {
         // Subscribe before stopping the old pump so replacement never loses a
         // byte emitted in the handoff window. The new receiver remains gated
         // until this generation reaches READY.
@@ -1384,8 +1384,8 @@ impl AttachTerminalSession<'_> {
 
         let outcome = self.register_consumer(bootstrap_id, live_gate_rx).await;
         if self.wants_state_sync() && outcome.is_none() {
-            return Err(AttachTerminalFailure::internal(
-                "ATTACH_TERMINAL state-sync registration failed",
+            return Err(AttachResourceFailure::internal(
+                "ATTACH_RESOURCE state-sync registration failed",
             ));
         }
         let tick_managed = outcome.as_ref().is_some_and(|outcome| outcome.tick_managed);
@@ -1407,8 +1407,8 @@ impl AttachTerminalSession<'_> {
                 .await
                 .is_err()
         {
-            return Err(AttachTerminalFailure::internal(
-                "consumer went away during ATTACH_TERMINAL replacement",
+            return Err(AttachResourceFailure::internal(
+                "consumer went away during ATTACH_RESOURCE replacement",
             ));
         }
 
@@ -1419,11 +1419,11 @@ impl AttachTerminalSession<'_> {
             None
         } else {
             let Some(pump_done_guard) = pump_done_guard.take() else {
-                return Err(AttachTerminalFailure::internal(
-                    "ATTACH_TERMINAL pump generation lost its completion guard",
+                return Err(AttachResourceFailure::internal(
+                    "ATTACH_RESOURCE pump generation lost its completion guard",
                 ));
             };
-            Some(self.spawn_output_pump(AttachTerminalPumpSpawn {
+            Some(self.spawn_output_pump(AttachResourcePumpSpawn {
                 bootstrap_id,
                 generation_last_seq: std::sync::Arc::clone(&generation_last_seq),
                 token,
@@ -1434,7 +1434,7 @@ impl AttachTerminalSession<'_> {
             }))
         };
 
-        Ok(AttachTerminalGeneration {
+        Ok(AttachResourceGeneration {
             bootstrap_id,
             generation_last_seq,
             live_gate_tx,
@@ -1447,9 +1447,9 @@ impl AttachTerminalSession<'_> {
 
     /// Start the raw broadcast pump for one generation and hand back the gate
     /// that releases its first delta once the published cut is known.
-    fn spawn_output_pump(&self, spawn: AttachTerminalPumpSpawn) -> oneshot::Sender<u64> {
+    fn spawn_output_pump(&self, spawn: AttachResourcePumpSpawn) -> oneshot::Sender<u64> {
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
-        let ctx = AttachTerminalPumpCtx {
+        let ctx = AttachResourcePumpCtx {
             state: self.state.clone(),
             out_tx: self.out_tx.clone(),
             connection_token: self.connection_token.clone(),
@@ -1466,7 +1466,7 @@ impl AttachTerminalSession<'_> {
             bootstrap_limits: self.bootstrap_limits,
             generation_last_seq: spawn.generation_last_seq,
         };
-        let channels = AttachTerminalPumpChannels {
+        let channels = AttachResourcePumpChannels {
             token: spawn.token,
             output_rx: spawn.output_rx,
             snapshot_gate: gate_rx,
@@ -1486,9 +1486,9 @@ impl AttachTerminalSession<'_> {
     /// registration, then open the live gate.
     async fn finish_state_sync(
         &self,
-        generation: &AttachTerminalGeneration,
+        generation: &AttachResourceGeneration,
         state_sync: crate::terminal_actor::StateSyncBootstrap,
-    ) -> Result<(), AttachTerminalFailure> {
+    ) -> Result<(), AttachResourceFailure> {
         let snap = state_sync.snapshot;
         let replay = crate::runtime::attach::downsample_for_caps(
             &bytes::Bytes::from(snap.bytes),
@@ -1513,7 +1513,7 @@ impl AttachTerminalSession<'_> {
         )
         .await
         .map_err(|()| {
-            AttachTerminalFailure::internal("consumer went away during state-sync ATTACH_TERMINAL")
+            AttachResourceFailure::internal("consumer went away during state-sync ATTACH_RESOURCE")
         })?;
         generation
             .generation_last_seq
@@ -1527,7 +1527,7 @@ impl AttachTerminalSession<'_> {
     async fn capture_native_bootstrap(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
-    ) -> Result<crate::terminal_actor::NativeBootstrapReply, AttachTerminalFailure> {
+    ) -> Result<crate::terminal_actor::NativeBootstrapReply, AttachResourceFailure> {
         let (reply, reply_rx) = oneshot::channel();
         self.terminal
             .native_bootstrap
@@ -1543,16 +1543,16 @@ impl AttachTerminalSession<'_> {
             })
             .await
             .map_err(|_| {
-                AttachTerminalFailure::internal("pane actor unavailable for native ATTACH_TERMINAL")
+                AttachResourceFailure::internal("pane actor unavailable for native ATTACH_RESOURCE")
             })?;
         match reply_rx.await {
             Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(error)) => Err(AttachTerminalFailure {
+            Ok(Err(error)) => Err(AttachResourceFailure {
                 code: ErrorCode::CodecUnavailable,
-                message: format!("native ATTACH_TERMINAL failed: {error}"),
+                message: format!("native ATTACH_RESOURCE failed: {error}"),
             }),
-            Err(_) => Err(AttachTerminalFailure::internal(
-                "pane actor dropped native ATTACH_TERMINAL",
+            Err(_) => Err(AttachResourceFailure::internal(
+                "pane actor dropped native ATTACH_RESOURCE",
             )),
         }
     }
@@ -1562,15 +1562,15 @@ impl AttachTerminalSession<'_> {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn finish_native(
         &self,
-        generation: &mut AttachTerminalGeneration,
-    ) -> Result<(), AttachTerminalFailure> {
+        generation: &mut AttachResourceGeneration,
+    ) -> Result<(), AttachResourceFailure> {
         let reply = self
             .capture_native_bootstrap(generation.bootstrap_id)
             .await?;
         let (cut, cursor) = crate::runtime::attach::publish_native_bootstrap(self.out_tx, reply)
             .await
             .map_err(|()| {
-                AttachTerminalFailure::internal("consumer went away during native ATTACH_TERMINAL")
+                AttachResourceFailure::internal("consumer went away during native ATTACH_RESOURCE")
             })?;
         let publication = crate::runtime::attach::activate_native_publication(
             &self.terminal,
@@ -1582,16 +1582,16 @@ impl AttachTerminalSession<'_> {
         )
         .await
         .map_err(|()| {
-            AttachTerminalFailure::internal("pane actor unavailable at native publication fence")
+            AttachResourceFailure::internal("pane actor unavailable at native publication fence")
         })?;
         let Some(publication_gate) = generation.native_publication_gate.take() else {
-            return Err(AttachTerminalFailure::internal(
+            return Err(AttachResourceFailure::internal(
                 "native publication gate already consumed",
             ));
         };
         publication_gate.send(publication).map_err(|_| {
-            AttachTerminalFailure::internal(
-                "native ATTACH_TERMINAL pump went away before publication",
+            AttachResourceFailure::internal(
+                "native ATTACH_RESOURCE pump went away before publication",
             )
         })?;
         generation
@@ -1604,7 +1604,7 @@ impl AttachTerminalSession<'_> {
         debug!(
             client_id = ?self.client_id,
             terminal_id = ?self.terminal_id,
-            "native ATTACH_TERMINAL subscribed"
+            "native ATTACH_RESOURCE subscribed"
         );
         Ok(())
     }
@@ -1613,8 +1613,8 @@ impl AttachTerminalSession<'_> {
     /// (the gate below releases it) and before the Ok reply.
     async fn finish_snapshot(
         &self,
-        generation: &mut AttachTerminalGeneration,
-    ) -> Result<(), AttachTerminalFailure> {
+        generation: &mut AttachResourceGeneration,
+    ) -> Result<(), AttachResourceFailure> {
         use crate::terminal_actor::SnapshotRequest;
 
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
@@ -1629,11 +1629,11 @@ impl AttachTerminalSession<'_> {
             })
             .await
             .map_err(|_| {
-                AttachTerminalFailure::internal("pane actor unavailable for ATTACH_TERMINAL")
+                AttachResourceFailure::internal("pane actor unavailable for ATTACH_RESOURCE")
             })?;
         let Ok(Ok((snap, cut))) = snapshot_rx.await else {
-            return Err(AttachTerminalFailure::internal(
-                "pane actor dropped the ATTACH_TERMINAL snapshot",
+            return Err(AttachResourceFailure::internal(
+                "pane actor dropped the ATTACH_RESOURCE snapshot",
             ));
         };
         let replay = crate::runtime::attach::downsample_for_caps(
@@ -1654,7 +1654,7 @@ impl AttachTerminalSession<'_> {
         )
         .await
         .map_err(|()| {
-            AttachTerminalFailure::internal("consumer went away during ATTACH_TERMINAL")
+            AttachResourceFailure::internal("consumer went away during ATTACH_RESOURCE")
         })?;
         let _ = generation.live_gate_tx.send(true);
         generation
@@ -1666,15 +1666,15 @@ impl AttachTerminalSession<'_> {
         debug!(
             client_id = ?self.client_id,
             terminal_id = ?self.terminal_id,
-            "ATTACH_TERMINAL subscribed"
+            "ATTACH_RESOURCE subscribed"
         );
         Ok(())
     }
 }
 
-/// Everything [`AttachTerminalSession::spawn_output_pump`] needs to hand one
+/// Everything [`AttachResourceSession::spawn_output_pump`] needs to hand one
 /// pump generation to its task.
-struct AttachTerminalPumpSpawn {
+struct AttachResourcePumpSpawn {
     bootstrap_id: phux_protocol::ids::BootstrapId,
     generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     token: CancellationToken,
@@ -1686,7 +1686,7 @@ struct AttachTerminalPumpSpawn {
 
 /// The one-shot channels one pump generation consumes on its way to steady
 /// state.
-struct AttachTerminalPumpChannels {
+struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
     token: CancellationToken,
     /// The pane's broadcast output, subscribed before the prior pump stopped.
@@ -1698,8 +1698,8 @@ struct AttachTerminalPumpChannels {
     native_publication_gate: oneshot::Receiver<crate::terminal_actor::NativePublicationReply>,
 }
 
-/// Fixed per-generation context for the `ATTACH_TERMINAL` output pump.
-struct AttachTerminalPumpCtx {
+/// Fixed per-generation context for the `ATTACH_RESOURCE` output pump.
+struct AttachResourcePumpCtx {
     state: SharedState,
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
     connection_token: CancellationToken,
@@ -1709,7 +1709,7 @@ struct AttachTerminalPumpCtx {
     /// Terminal facet, for the native publication fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     terminal: TerminalHandle,
-    wire_terminal_id: phux_protocol::ids::TerminalId,
+    wire_terminal_id: phux_protocol::ids::ResourceId,
     client_id: ClientId,
     stream_id: phux_protocol::ids::StreamId,
     client_caps: ClientCapabilities,
@@ -1726,7 +1726,7 @@ struct AttachTerminalPumpCtx {
 /// the copy silently missed the gap fence (phux-l96p.10) — so this consumer
 /// kept detaching on a sequence gap after interactive attach was fixed. There
 /// is one copy of the rules now.
-struct AttachTerminalPumpStream {
+struct AttachResourcePumpStream {
     output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
     generation: PumpGeneration,
 }
@@ -1755,8 +1755,8 @@ struct PumpResync {
     bytes: Bytes,
 }
 
-impl AttachTerminalPumpCtx {
-    /// Forward this pane's output to one `ATTACH_TERMINAL` consumer until the
+impl AttachResourcePumpCtx {
+    /// Forward this pane's output to one `ATTACH_RESOURCE` consumer until the
     /// generation is cancelled, replaced, or the consumer goes away.
     ///
     /// `break` and `return` were interchangeable in the inline body this
@@ -1764,7 +1764,7 @@ impl AttachTerminalPumpCtx {
     /// as [`PumpStep::Stop`].
     async fn run(
         self,
-        channels: AttachTerminalPumpChannels,
+        channels: AttachResourcePumpChannels,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) {
         let token = channels.token;
@@ -1780,7 +1780,7 @@ impl AttachTerminalPumpCtx {
                 cut
             }
         };
-        let mut stream = AttachTerminalPumpStream {
+        let mut stream = AttachResourcePumpStream {
             output_rx,
             generation: PumpGeneration::opened_at(published_cut, bootstrap_id),
         };
@@ -1832,7 +1832,7 @@ impl AttachTerminalPumpCtx {
     /// Dispatch one broadcast message to the stage that owns it.
     async fn forward(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         msg: Result<crate::terminal_actor::PaneOutput, tokio::sync::broadcast::error::RecvError>,
     ) -> PumpStep {
         use crate::terminal_actor::PaneOutput;
@@ -1868,14 +1868,14 @@ impl AttachTerminalPumpCtx {
     /// Forward one post-bootstrap byte delta.
     async fn forward_live(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         seq: u64,
         bytes: &Bytes,
     ) -> PumpStep {
         if !stream.generation.forwards(seq) {
             return PumpStep::Continue;
         }
-        let frame = FrameKind::TerminalOutput {
+        let frame = FrameKind::ResourceOutput {
             terminal_id: self.wire_terminal_id.clone(),
             stream_id: self.stream_id,
             bootstrap_id: stream.generation.bootstrap_id(),
@@ -1928,7 +1928,7 @@ impl AttachTerminalPumpCtx {
     /// Forward one ordered native control frame addressed to this pump.
     async fn forward_control(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         owner: u64,
         frame: FrameKind,
     ) -> PumpStep {
@@ -1953,14 +1953,14 @@ impl AttachTerminalPumpCtx {
     /// broadcast ring dropped deltas out from under this pump.
     ///
     /// The fence is the whole point and is set *before* the request: resuming
-    /// live deltas across the dropped window puts a `TERMINAL_OUTPUT` whose
+    /// live deltas across the dropped window puts a `RESOURCE_OUTPUT` whose
     /// `seq` skips it on the wire, and the consumer's session kernel rejects
     /// that as a protocol error rather than tolerating it — so the consumer
     /// dies before the resync it just asked for can arrive. See
     /// [`PumpGeneration::forwards`].
     async fn resync_after_lag(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         dropped: u64,
     ) -> PumpStep {
         crate::perf::PUMP_LAGGED.incr();
@@ -1968,14 +1968,14 @@ impl AttachTerminalPumpCtx {
             debug!(
                 terminal_id = ?self.wire_terminal_id,
                 dropped,
-                "ATTACH_TERMINAL output pump lagged again while a resync was \
+                "ATTACH_RESOURCE output pump lagged again while a resync was \
                  already in flight; re-requesting",
             );
         } else {
             warn!(
                 terminal_id = ?self.wire_terminal_id,
                 dropped,
-                "ATTACH_TERMINAL output pump lagged; requesting in-band resync",
+                "ATTACH_RESOURCE output pump lagged; requesting in-band resync",
             );
         }
         stream.generation.note_resync_requested();
@@ -1991,11 +1991,11 @@ impl AttachTerminalPumpCtx {
     /// not have. `DEBUG`, not `WARN`: the first gap already warned, and a
     /// retry loop that warns every time turns one wedged actor into a log
     /// flood.
-    async fn retry_resync_after_lag(&self, stream: &mut AttachTerminalPumpStream) -> PumpStep {
+    async fn retry_resync_after_lag(&self, stream: &mut AttachResourcePumpStream) -> PumpStep {
         debug!(
             terminal_id = ?self.wire_terminal_id,
             attempt = stream.generation.gap_attempts(),
-            "ATTACH_TERMINAL output pump is still waiting on its in-band resync; re-requesting",
+            "ATTACH_RESOURCE output pump is still waiting on its in-band resync; re-requesting",
         );
         stream.generation.note_resync_requested();
         self.request_resync().await
@@ -2004,11 +2004,11 @@ impl AttachTerminalPumpCtx {
     /// The gap spent its whole request budget without the actor ever
     /// broadcasting a replacement generation. Tell the consumer and stop,
     /// rather than hold it on a screen that can never change.
-    async fn abandon_unanswered_gap(&self, stream: &AttachTerminalPumpStream) -> PumpStep {
+    async fn abandon_unanswered_gap(&self, stream: &AttachResourcePumpStream) -> PumpStep {
         warn!(
             terminal_id = ?self.wire_terminal_id,
             attempts = stream.generation.gap_attempts(),
-            "ATTACH_TERMINAL output pump never received the in-band resync it asked for; \
+            "ATTACH_RESOURCE output pump never received the in-band resync it asked for; \
              failing the generation",
         );
         self.fail_unrecoverable_gap().await
@@ -2049,7 +2049,7 @@ impl AttachTerminalPumpCtx {
     /// Replace the published generation from an actor-generated resync.
     async fn republish_generation(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         resync: &PumpResync,
     ) -> PumpStep {
         // Resync is control, so an unchanged cut still tombstones and
@@ -2073,7 +2073,7 @@ impl AttachTerminalPumpCtx {
     /// Republish the compatibility bootstrap synthesized by the actor.
     async fn republish_synthesized_generation(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         resync: &PumpResync,
     ) -> PumpStep {
         let payload = crate::runtime::attach::downsample_for_caps(&resync.bytes, self.client_caps);
@@ -2105,7 +2105,7 @@ impl AttachTerminalPumpCtx {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn republish_native_generation(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         prior_bootstrap_id: phux_protocol::ids::BootstrapId,
         resync: &PumpResync,
     ) -> PumpStep {
@@ -2190,7 +2190,7 @@ impl AttachTerminalPumpCtx {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn forward_native_replay(
         &self,
-        stream: &mut AttachTerminalPumpStream,
+        stream: &mut AttachResourcePumpStream,
         replay: Vec<(u64, Bytes)>,
     ) -> PumpStep {
         // Through the same gate as any other live delta, not around it. A
@@ -2203,7 +2203,7 @@ impl AttachTerminalPumpCtx {
             }
             if self
                 .out_tx
-                .send(Outbound::Frame(FrameKind::TerminalOutput {
+                .send(Outbound::Frame(FrameKind::ResourceOutput {
                     terminal_id: self.wire_terminal_id.clone(),
                     stream_id: self.stream_id,
                     bootstrap_id: stream.generation.bootstrap_id(),
@@ -2236,16 +2236,16 @@ const fn tombstone_reason(
     }
 }
 
-/// Handle `DETACH_TERMINAL` (SPEC §5.1 tag 0x02, phux-v45.7): drop the
+/// Handle `DETACH_RESOURCE` (SPEC §5.1 tag 0x02, phux-v45.7): drop the
 /// caller's per-terminal subscriptions — every output task, whether created
-/// by `ATTACH`, `SPAWN_TERMINAL`, or `ATTACH_TERMINAL` (pump joined, subscriber
+/// by `ATTACH`, `SPAWN_RESOURCE`, or `ATTACH_RESOURCE` (pump joined, subscriber
 /// entry removed, per-consumer state-sync entry released) and the per-terminal agent-event
 /// subscription. Idempotent: unknown terminals and never-attached callers
 /// reply `Ok`, so a detach can never race a natural close into an error.
 async fn handle_detach_terminal(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     use crate::terminal_actor::ConsumerDetachRequest;
 
@@ -2274,7 +2274,7 @@ async fn handle_detach_terminal(
             .await;
         let _ = reply_rx.await;
     }
-    debug!(?client_id, ?terminal_id, "DETACH_TERMINAL unsubscribed");
+    debug!(?client_id, ?terminal_id, "DETACH_RESOURCE unsubscribed");
     CommandResult::Ok
 }
 
@@ -2330,7 +2330,7 @@ async fn handle_shutdown(
 
     info!(?client_id, "SHUTDOWN requested; stopping the server");
     // ADR-0104 §4: every resource still live is leaving because the server
-    // is, so its `TERMINAL_CLOSED` says so rather than claiming the inner
+    // is, so its `RESOURCE_CLOSED` says so rather than claiming the inner
     // process exited. Recorded before the root token cancels, so whichever
     // exit watchers still reach a client find the reason waiting.
     state.with_mut(|s| {
@@ -2403,15 +2403,15 @@ async fn handle_upgrade(
 /// `UnsupportedSatelliteRoute` error, and an unreachable satellite fails
 /// fast with `SatelliteUnreachable` — never a hang.
 ///
-/// **Stream-establishing commands** (`SUBSCRIBE_TERMINAL_EVENTS`,
-/// `ATTACH_TERMINAL`) register the caller's outbound mailbox as a hub-side
+/// **Stream-establishing commands** (`SUBSCRIBE_RESOURCE_EVENTS`,
+/// `ATTACH_RESOURCE`) register the caller's outbound mailbox as a hub-side
 /// proxy subscriber *atomically with* the relayed command
 /// ([`crate::hub::relay::RelayHandle::command_subscribing`], phux-v45.11):
 /// the return-leg frames the satellite pushes on the link are re-tagged
 /// `Local -> Satellite { host, .. }` and fanned out to this consumer, and
-/// a satellite error rolls the registration back. `DETACH_TERMINAL` is
+/// a satellite error rolls the registration back. `DETACH_RESOURCE` is
 /// resolved hub-side: the consumer's proxy subscription is withdrawn and
-/// the link session itself relays a satellite-side `DETACH_TERMINAL` only
+/// the link session itself relays a satellite-side `DETACH_RESOURCE` only
 /// when the **last** proxy subscriber for that terminal is gone —
 /// relaying every consumer's detach verbatim would tear down the link's
 /// single shared stream under the other consumers still watching it.
@@ -2450,8 +2450,8 @@ async fn handle_satellite_command(
             ),
         },
         Some(relay) => match &command {
-            Command::SubscribeTerminalEvents { terminal_id, .. }
-            | Command::AttachTerminal { terminal_id } => {
+            Command::SubscribeResourceEvents { terminal_id, .. }
+            | Command::AttachResource { terminal_id } => {
                 relay_stream_establishing(
                     &relay,
                     &command,
@@ -2463,7 +2463,7 @@ async fn handle_satellite_command(
                 )
                 .await
             }
-            Command::DetachTerminal { terminal_id } => {
+            Command::DetachResource { terminal_id } => {
                 resolve_hub_detach_terminal(state, &relay, client_id, host, terminal_id).await
             }
             Command::AcquireInput {
@@ -2500,7 +2500,7 @@ async fn handle_satellite_command(
     reply_satellite_command(state, client_id, request_id, host, &command, out_tx, result).await;
 }
 
-/// Record the hub-side proxy attach a successful `ATTACH_TERMINAL` just
+/// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
 /// established, then correlate the relayed reply back to the caller
 /// (phux-v45.4, ADR-0007 §4).
 async fn reply_satellite_command(
@@ -2513,7 +2513,7 @@ async fn reply_satellite_command(
     result: CommandResult,
 ) {
     if !matches!(result, CommandResult::Error { .. })
-        && let Command::AttachTerminal { terminal_id } = command
+        && let Command::AttachResource { terminal_id } = command
         && let Some(id) = terminal_id.local_id()
     {
         state.with_mut(|s| {
@@ -2543,7 +2543,7 @@ async fn reply_satellite_command(
 async fn relay_stream_establishing(
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     client_id: ClientId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     bootstrap_profile: BootstrapProfile,
@@ -2562,24 +2562,24 @@ async fn relay_stream_establishing(
                 // Stamped with the issue-order token by
                 // `command_subscribing` at enqueue.
                 seq: 0,
-                // Only ATTACH_TERMINAL opens a content stream
+                // Only ATTACH_RESOURCE opens a content stream
                 // with a return-leg TERMINAL_SNAPSHOT, so only
                 // it gates deltas until that snapshot lands
-                // (phux-v45.14). SUBSCRIBE_TERMINAL_EVENTS
+                // (phux-v45.14). SUBSCRIBE_RESOURCE_EVENTS
                 // carries no snapshot; gating it would strand
                 // its EVENT stream.
-                awaits_snapshot: matches!(command, Command::AttachTerminal { .. }),
-                bootstrap_profile: matches!(command, Command::AttachTerminal { .. })
+                awaits_snapshot: matches!(command, Command::AttachResource { .. }),
+                bootstrap_profile: matches!(command, Command::AttachResource { .. })
                     .then_some(bootstrap_profile),
-                bootstrap_limits: matches!(command, Command::AttachTerminal { .. })
+                bootstrap_limits: matches!(command, Command::AttachResource { .. })
                     .then_some(bootstrap_limits),
             },
         )
         .await
 }
 
-/// Hub-side resolution of `DETACH_TERMINAL`: withdraw this consumer's proxy
-/// subscription; the link session emits the satellite-side `DETACH_TERMINAL`
+/// Hub-side resolution of `DETACH_RESOURCE`: withdraw this consumer's proxy
+/// subscription; the link session emits the satellite-side `DETACH_RESOURCE`
 /// iff nobody else still observes the terminal. Success waits for the link's
 /// removal receipt; no registry on a disconnected link is an idempotent Ok.
 async fn resolve_hub_detach_terminal(
@@ -2587,7 +2587,7 @@ async fn resolve_hub_detach_terminal(
     relay: &crate::hub::relay::RelayHandle,
     client_id: ClientId,
     host: &phux_protocol::ids::SatelliteHost,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     let Some(id) = terminal_id.local_id() else {
         return CommandResult::Ok;
@@ -2622,7 +2622,7 @@ impl<'a> SatelliteLeaseTarget<'a> {
         state: &'a SharedState,
         host: &'a phux_protocol::ids::SatelliteHost,
         client_id: ClientId,
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
     ) -> Self {
         Self {
             state,
@@ -2749,7 +2749,7 @@ fn notify_satellite_lease_seized(
     evicted: &crate::state::SatelliteLease,
 ) {
     let frame = FrameKind::Event {
-        terminal: Some(phux_protocol::ids::TerminalId::satellite(host.clone(), id)),
+        terminal: Some(phux_protocol::ids::ResourceId::satellite(host.clone(), id)),
         event: AgentEvent::TerminalControl {
             // phux-v45.14 sub-finding (b): a Frozen satellite pane would be
             // mis-reported as Running here. The hub keeps no cheaply-readable
@@ -2761,7 +2761,7 @@ fn notify_satellite_lease_seized(
             // the holder re-renders locked state either way, and a Frozen pane
             // reconciles on its next TERMINAL_CONTROL. Revisit if the hub
             // starts tracking satellite pane lifecycle locally.
-            lifecycle: TerminalLifecycle::Running,
+            lifecycle: ResourceLifecycle::Running,
             exit_status: None,
             input_holder: Some(wire_client_id(new_holder)),
             action: ControlAction::Seized,
@@ -2786,7 +2786,7 @@ fn notify_satellite_lease_seized(
     }
 }
 
-/// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`, `TERMINAL_RESIZE`)
+/// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`, `RESIZE_TERMINAL`)
 /// targeting a satellite terminal over the hub link (phux-v45.4): `build`
 /// receives the id rewritten to the satellite's `Local` space and produces
 /// the frame to relay verbatim.
@@ -2798,16 +2798,16 @@ fn notify_satellite_lease_seized(
 ///
 /// Scope honesty (phux-v45.7): the satellite applies its own attach /
 /// subscription / lease gates to what arrives on the link under the
-/// link's single client identity. `ATTACH_TERMINAL` relayed over the link
+/// link's single client identity. `ATTACH_RESOURCE` relayed over the link
 /// opens those gates for the link consumer, so `INPUT_*` / `FRAME_ACK` from a
 /// hub consumer that attached the terminal through the hub flow end to
 /// end; `ROUTE_INPUT` remains the attach-free input path.
 fn relay_satellite_frame(
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,
     frame_label: &'static str,
-    build: impl FnOnce(phux_protocol::ids::TerminalId) -> FrameKind,
+    build: impl FnOnce(phux_protocol::ids::ResourceId) -> FrameKind,
 ) -> bool {
     let Some(relay) = route.relay.as_ref() else {
         return false;
@@ -2823,7 +2823,7 @@ fn relay_satellite_frame(
     true
 }
 
-/// Build the `Ok` reply for `KILL_TERMINALS` — the atomic multi-terminal
+/// Build the `Ok` reply for `KILL_RESOURCES` — the atomic multi-terminal
 /// teardown the v0.3.0 "Option B" re-tier left in place of the dissolved
 /// L2 `KILL_COLLECTION` verb (ADR-0019 / ADR-0027).
 ///
@@ -2833,42 +2833,42 @@ fn relay_satellite_frame(
 /// out of scope, as it would be under any tiering.) Each removal cancels the
 /// pane actor via [`crate::state::ServerState::detach_resource_actor`];
 /// cancellation drops the actor's `exit_notify`, which the per-pane EOF
-/// watcher treats like PTY EOF — it broadcasts `TERMINAL_CLOSED` and reaps
+/// watcher treats like PTY EOF — it broadcasts `RESOURCE_CLOSED` and reaps
 /// the pane, cascading to session removal and (when the last session
 /// empties) server self-exit. So this reuses the exact teardown a per-pane
-/// `KILL_TERMINAL` (or a natural shell exit) takes, but resolves the whole
+/// `KILL_RESOURCE` (or a natural shell exit) takes, but resolves the whole
 /// group in one pass.
 ///
 /// Idempotent: an `id` that is unknown or already-dead is skipped silently
 /// rather than failing the batch, so a caller racing a natural pane exit
 /// still succeeds. Satellite-routed ids (phux-v45.4) are partitioned by
-/// host and forwarded as per-satellite `KILL_TERMINALS` batches over the
+/// host and forwarded as per-satellite `KILL_RESOURCES` batches over the
 /// hub links, detached — the satellite applies the same idempotent
 /// semantics, and a down link degrades to the silent skip the contract
 /// already allows. The reply is `Ok` the moment the local actors are
-/// cancelled and the relays are queued; the `TERMINAL_CLOSED` frames follow
+/// cancelled and the relays are queued; the `RESOURCE_CLOSED` frames follow
 /// asynchronously as the panes reap (SPEC §5). The op is structurally
 /// infallible — an empty `ids` list is a no-op that still acks `Ok`.
 pub(crate) fn handle_kill_terminals(
     state: &SharedState,
-    ids: &[phux_protocol::ids::TerminalId],
+    ids: &[phux_protocol::ids::ResourceId],
 ) -> CommandResult {
     // Satellite partition first (phux-v45.4): group `Satellite { host, id }`
     // entries per host and forward each group as one satellite-local
-    // KILL_TERMINALS over the hub link. Detached relay: the batch op is
+    // KILL_RESOURCES over the hub link. Detached relay: the batch op is
     // idempotent and tolerates skips, so the hub does not await or merge
     // per-satellite results. Non-hub servers (no relay) keep the silent
     // skip these ids always had here.
     let mut by_host: std::collections::BTreeMap<
         phux_protocol::ids::SatelliteHost,
-        Vec<phux_protocol::ids::TerminalId>,
+        Vec<phux_protocol::ids::ResourceId>,
     > = std::collections::BTreeMap::new();
     for wire_id in ids {
         if let Some((host, id)) = crate::hub::relay::satellite_route(wire_id) {
             by_host
                 .entry(host)
                 .or_default()
-                .push(phux_protocol::ids::TerminalId::local(id));
+                .push(phux_protocol::ids::ResourceId::local(id));
         }
     }
     for (host, local_ids) in by_host {
@@ -2877,14 +2877,14 @@ pub(crate) fn handle_kill_terminals(
                 debug!(
                     satellite = %host,
                     count = local_ids.len(),
-                    "KILL_TERMINALS: relaying satellite partition"
+                    "KILL_RESOURCES: relaying satellite partition"
                 );
-                relay.command_detached(Command::KillTerminals { ids: local_ids });
+                relay.command_detached(Command::KillResources { ids: local_ids });
             }
             None => {
                 debug!(
                     satellite = %host,
-                    "KILL_TERMINALS: no route to satellite; skipping its ids"
+                    "KILL_RESOURCES: no route to satellite; skipping its ids"
                 );
             }
         }
@@ -2903,7 +2903,7 @@ pub(crate) fn handle_kill_terminals(
             if let Some(core_id) = s.terminal_from_wire(wire_id) {
                 targets.push(core_id);
             } else {
-                debug!(?wire_id, "KILL_TERMINALS: unknown / dead id; skipping");
+                debug!(?wire_id, "KILL_RESOURCES: unknown / dead id; skipping");
             }
         }
         // The closure — targets plus everything bound to one of them — is
@@ -2913,7 +2913,7 @@ pub(crate) fn handle_kill_terminals(
     });
     debug!(
         requested = ids.len(),
-        killed, "KILL_TERMINALS: torn down group atomically"
+        killed, "KILL_RESOURCES: torn down group atomically"
     );
     CommandResult::Ok
 }
@@ -2926,13 +2926,13 @@ pub(crate) fn handle_kill_terminals(
 /// `DETACHED` frame to each so its TUI exits cleanly and runs the normal
 /// per-client detach teardown. Returns the count as a JSON number so the CLI
 /// can report how many clients it detached. An unknown session name detaches
-/// nobody and reports `0` — not an error, matching `KILL_TERMINALS`'s
+/// nobody and reports `0` — not an error, matching `KILL_RESOURCES`'s
 /// skip-silently shape.
 ///
 /// Scope: this targets *session-attached* clients (the `ATTACH` consumers the
 /// `C-a d` keybinding serves) only. Terminal-level subscribers riding
-/// `ATTACH_TERMINAL` are a different consumer surface with their own detach
-/// verb (`DETACH_TERMINAL`) and are deliberately not swept here.
+/// `ATTACH_RESOURCE` are a different consumer surface with their own detach
+/// verb (`DETACH_RESOURCE`) and are deliberately not swept here.
 pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) -> CommandResult {
     let targets = state.with(|s| s.attached_clients_to_detach(session));
     let count = targets.len();
@@ -2969,7 +2969,7 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
 /// Existence check and seed both run on the single-threaded runtime, so the
 /// lookup→create sequence is atomic with respect to other clients: two
 /// racing create requests for the same `name` cannot both succeed. Returns
-/// `Ok(wire_id)` on success (the seed pane's wire [`phux_core::ids::TerminalId`],
+/// `Ok(wire_id)` on success (the seed pane's wire [`phux_core::ids::ResourceId`],
 /// which the
 /// caller publishes under a result key for the client to read back), or
 /// `Err(message)` if `name` is already taken or the seed fails. Because
@@ -2982,7 +2982,7 @@ pub(crate) fn create_named_session(
     env: std::collections::BTreeMap<String, String>,
     agent_session: Option<Vec<u8>>,
     root_token: &CancellationToken,
-) -> Result<phux_protocol::ids::TerminalId, String> {
+) -> Result<phux_protocol::ids::ResourceId, String> {
     if state.with(|s| s.session_by_name(name).is_some()) {
         return Err(format!("session {name:?} already exists"));
     }
@@ -3129,7 +3129,7 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 ///
 /// **Result-shape honesty.** Only *terminals* aggregate. Session and
 /// window identities are not federation-routable (ADR-0016 makes
-/// `TerminalId` the wire primary), so the satellite's `sessions` /
+/// `ResourceId` the wire primary), so the satellite's `sessions` /
 /// `windows` lists and focus fields are discarded — their `u32` ids
 /// would collide with the hub's own. A satellite pane's `window_id` is
 /// passed through **verbatim**: it is satellite-local, resolvable only on
@@ -3146,7 +3146,7 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 ///
 /// Every id a satellite reports is retagged by
 /// [`retag_satellite_resource_id`] — the one hook parent ids will use when
-/// `TerminalInfo` gains the field.
+/// `ResourceInfo` gains the field.
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
     scope: &StateScope,
@@ -3178,7 +3178,7 @@ pub(crate) async fn handle_get_state_federated(
     for (host, result) in futures_util::future::join_all(queries).await {
         match result {
             CommandResult::OkWith(CommandValue::State(sat)) => {
-                for mut pane in sat.panes {
+                for mut pane in sat.resources {
                     let Some(id) = retag_satellite_resource_id(&host, Some(&pane.id)) else {
                         warn!(
                             satellite = %host,
@@ -3194,7 +3194,7 @@ pub(crate) async fn handle_get_state_federated(
                     // (chaining) drops the binding rather than pointing at
                     // an unrelated hub-local pane.
                     pane.parent = retag_satellite_resource_id(&host, pane.parent.as_ref());
-                    snapshot.panes.push(pane);
+                    snapshot.resources.push(pane);
                 }
             }
             CommandResult::Error { code, message } => {
@@ -3237,19 +3237,19 @@ pub(crate) async fn handle_get_state_federated(
 /// also yields `None`: hub-and-spoke does not chain (L1 §9.1), so an id a
 /// satellite already tagged has no hub-side form.
 ///
-/// `Option` in, `Option` out because every id a `TerminalInfo` carries
+/// `Option` in, `Option` out because every id a `ResourceInfo` carries
 /// retags by this one rule. `parent` (ADR-0104) is a resource id like any
 /// other and routes through here the moment the protocol lane adds the
 /// field.
 fn retag_satellite_resource_id(
     host: &phux_protocol::ids::SatelliteHost,
-    id: Option<&phux_protocol::ids::TerminalId>,
-) -> Option<phux_protocol::ids::TerminalId> {
+    id: Option<&phux_protocol::ids::ResourceId>,
+) -> Option<phux_protocol::ids::ResourceId> {
     match id? {
-        phux_protocol::ids::TerminalId::Local { id } => {
-            Some(phux_protocol::ids::TerminalId::satellite(host.clone(), *id))
+        phux_protocol::ids::ResourceId::Local { id } => {
+            Some(phux_protocol::ids::ResourceId::satellite(host.clone(), *id))
         }
-        phux_protocol::ids::TerminalId::Satellite { .. } => None,
+        phux_protocol::ids::ResourceId::Satellite { .. } => None,
     }
 }
 
@@ -3262,7 +3262,7 @@ fn retag_satellite_resource_id(
 /// it (the `phux wait`/`run` floor) never disturbs the live pane.
 pub(crate) async fn handle_get_screen(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     request_scrollback: Option<u32>,
     cells: bool,
 ) -> CommandResult {
@@ -3354,7 +3354,7 @@ pub(crate) async fn handle_get_screen(
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_get_terminal_state(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     include_scrollback: bool,
     max_scrollback_lines: u16,
 ) -> CommandResult {
@@ -3553,7 +3553,7 @@ pub(crate) async fn handle_get_terminal_state(
 /// unknown Terminal or a gone actor produces an `Error`.
 #[derive(Debug)]
 pub(crate) struct InputDestination {
-    pub(crate) pane: phux_core::ids::TerminalId,
+    pub(crate) pane: phux_core::ids::ResourceId,
     /// The Terminal facet: input atoms only ever go to a Terminal, so the
     /// resolver settles the kind before `action` runs.
     pub(crate) handle: TerminalHandle,
@@ -3564,7 +3564,7 @@ pub(crate) struct InputDestination {
 pub(crate) fn with_route_input_destination<R>(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
@@ -3620,7 +3620,7 @@ pub(crate) fn terminal_input_from_event(event: InputEvent) -> Result<TerminalInp
 pub(crate) fn handle_route_input(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     event: InputEvent,
 ) -> CommandResult {
     debug!(?client_id, ?terminal_id, "ROUTE_INPUT delivering input");
@@ -3688,7 +3688,7 @@ enum AcquireOutcome {
 pub(crate) async fn handle_acquire_input(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     mode: InputMode,
     _ttl_ms: u32,
 ) -> CommandResult {
@@ -3755,7 +3755,7 @@ pub(crate) async fn handle_acquire_input(
 pub(crate) async fn handle_release_input(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     // No satellite guard here (phux-v45.11 finding 5): same rationale as
     // `handle_acquire_input` — `route_to_satellite` owns that dispatch.
@@ -3799,13 +3799,13 @@ pub(crate) async fn handle_release_input(
 }
 
 /// Handle `SIGNAL_TERMINAL` (ADR-0033): deliver a POSIX signal to the pane's
-/// process group. Distinct from `KILL_TERMINAL` (which removes the pane) —
+/// process group. Distinct from `KILL_RESOURCE` (which removes the pane) —
 /// this signals the process and leaves the pane addressable. The actor owns
 /// the PTY child pid, so the work happens there; the broadcast follows.
 pub(crate) async fn handle_signal_terminal(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     signal: TerminalSignal,
 ) -> CommandResult {
     let resolved = state.with(|s| {
@@ -3876,7 +3876,7 @@ pub(crate) async fn handle_signal_terminal(
 /// detector exactly as it always has.
 pub(crate) async fn handle_report_agent_state(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
     // The handle and the live-child answer are read under ONE borrow of the
@@ -3946,7 +3946,7 @@ pub(crate) async fn handle_report_agent_state(
     }
 }
 
-/// Handle `SUBSCRIBE_TERMINAL_EVENTS` command.
+/// Handle `SUBSCRIBE_RESOURCE_EVENTS` command.
 ///
 /// Resolves the wire `terminal_id` to a pane actor and registers the caller
 /// as an event subscriber. The server will broadcast semantic events
@@ -3961,11 +3961,11 @@ pub(crate) async fn handle_report_agent_state(
 pub(crate) fn handle_subscribe_terminal_events(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
-    event_types: Vec<phux_protocol::wire::frame::TerminalEventType>,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    event_types: Vec<phux_protocol::wire::frame::ResourceEventType>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
-    use crate::terminal_actor::{SubscribeToEventsRequest, TerminalEventSubscriber};
+    use crate::terminal_actor::{ResourceEventSubscriber, SubscribeToEventsRequest};
 
     // Resolve the wire id to its pane actor (same pattern as handle_route_input).
     let handle = state.with(|s| {
@@ -3983,7 +3983,7 @@ pub(crate) fn handle_subscribe_terminal_events(
     debug!(
         ?client_id,
         ?terminal_id,
-        "SUBSCRIBE_TERMINAL_EVENTS registering"
+        "SUBSCRIBE_RESOURCE_EVENTS registering"
     );
 
     // Get the wire terminal id for use in Event frames.
@@ -3993,7 +3993,7 @@ pub(crate) fn handle_subscribe_terminal_events(
     // The subscriber receives the client's outbound mailbox directly,
     // so events are forwarded straight to the client without an intermediary.
     let req = SubscribeToEventsRequest {
-        subscriber: TerminalEventSubscriber {
+        subscriber: ResourceEventSubscriber {
             outbound: out_tx.clone(),
             event_types,
         },
@@ -4003,21 +4003,21 @@ pub(crate) fn handle_subscribe_terminal_events(
     if handle.subscribe_to_events.try_send(req).is_err() {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
-            message: "pane actor unavailable for SUBSCRIBE_TERMINAL_EVENTS".to_owned(),
+            message: "pane actor unavailable for SUBSCRIBE_RESOURCE_EVENTS".to_owned(),
         };
     }
 
     debug!(
         ?client_id,
         ?terminal_id,
-        "SUBSCRIBE_TERMINAL_EVENTS: subscriber registered"
+        "SUBSCRIBE_RESOURCE_EVENTS: subscriber registered"
     );
     CommandResult::Ok
 }
 
 pub(crate) fn handle_report_asked(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     id: String,
     question: String,
     suggestions: Vec<String>,
@@ -4101,11 +4101,11 @@ fn validate_asked_payload(id: &str, question: &str, suggestions: &[String]) -> O
 /// A `SessionSnapshot` describing a server with no sessions: empty lists,
 /// sentinel focus ids. Used by `GET_STATE` when the registry is empty.
 pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::SessionSnapshot {
-    use phux_protocol::ids::{SessionId, TerminalId, WindowId};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     phux_protocol::wire::info::SessionSnapshot::new(
         SessionId::new(0),
         WindowId::new(0),
-        TerminalId::local(0),
+        ResourceId::local(0),
     )
 }
 
@@ -4232,22 +4232,22 @@ pub(crate) fn handle_viewport_resize(
 /// Route an `INPUT_*` frame body to the target pane's [`TerminalActor`].
 ///
 /// SPEC §9: input frames are fire-and-forget — no `Outbound` reply.
-/// On the wire the pane is identified by its `WireTerminalId` (`u32`); we
-/// resolve it back to a core [`phux_core::ids::TerminalId`] via
+/// On the wire the pane is identified by its `WireResourceId` (`u32`); we
+/// resolve it back to a core [`phux_core::ids::ResourceId`] via
 /// [`crate::state::ServerState::terminal_from_wire`],
 /// then locate the [`TerminalHandle`] and `try_send` the encoded
 /// [`TerminalInput`] onto the actor's input mailbox.
 ///
 /// Validation: we drop with `warn!` (not `debug!`, this is observable
 /// misbehavior worth surfacing) on:
-///   * Unknown wire pane id (no [`phux_core::ids::TerminalId`] mapping).
+///   * Unknown wire pane id (no [`phux_core::ids::ResourceId`] mapping).
 ///   * Client not subscribed to this pane — prevents one client from
 ///     steering another's pane (SPEC §9 leaves multi-client subscription
 ///     rules to per-pane policy; subscription is the gate). Subscription
 ///     is established by the session-scoped `ATTACH` or the per-terminal
-///     `ATTACH_TERMINAL` (phux-v45.7) — a session attachment is NOT
+///     `ATTACH_RESOURCE` (phux-v45.7) — a session attachment is NOT
 ///     required, because the federation hub's link consumer drives
-///     satellite panes with `ATTACH_TERMINAL` alone.
+///     satellite panes with `ATTACH_RESOURCE` alone.
 ///   * Pane has no registered [`TerminalHandle`] (actor never spawned, or
 ///     spawned but evicted).
 ///
@@ -4263,7 +4263,7 @@ pub(crate) fn handle_viewport_resize(
 fn relay_satellite_input(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,
     input: TerminalInput,
     frame_label: &'static str,
@@ -4273,7 +4273,7 @@ fn relay_satellite_input(
             ?client_id,
             ?wire_terminal_id,
             frame_label,
-            "satellite-routed input requires this client's ATTACH_TERMINAL proxy; dropping",
+            "satellite-routed input requires this client's ATTACH_RESOURCE proxy; dropping",
         );
         return;
     }
@@ -4324,7 +4324,7 @@ fn relay_satellite_input(
             ?client_id,
             ?wire_terminal_id,
             frame_label,
-            "input frame carried a SATELLITE TerminalId on a non-federation-hub server; dropping",
+            "input frame carried a SATELLITE ResourceId on a non-federation-hub server; dropping",
         );
     }
 }
@@ -4340,7 +4340,7 @@ fn relay_satellite_input(
 pub(crate) fn with_attached_input_destination<R>(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     frame_label: &'static str,
     action: impl FnOnce(InputDestination) -> R,
 ) -> Option<R> {
@@ -4363,7 +4363,7 @@ pub(crate) fn with_attached_input_destination<R>(
                 ?client_id,
                 ?wire_terminal_id,
                 frame_label,
-                "client not subscribed to pane (no ATTACH or ATTACH_TERMINAL); dropping input"
+                "client not subscribed to pane (no ATTACH or ATTACH_RESOURCE); dropping input"
             );
             return None;
         }
@@ -4407,7 +4407,7 @@ pub(crate) fn with_attached_input_destination<R>(
 pub(crate) fn handle_terminal_input(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     input: TerminalInput,
     frame_label: &'static str,
 ) {
@@ -4496,7 +4496,7 @@ pub(crate) fn handle_terminal_input(
 pub(crate) fn handle_terminal_reply(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
 ) {
     const FRAME_LABEL: &str = "INPUT_TERMINAL_REPLY";
@@ -4533,12 +4533,12 @@ pub(crate) fn handle_terminal_reply(
 /// Relay a satellite-routed terminal reply over the hub link.
 ///
 /// The same subscription and input-lease authority gate as ordinary input
-/// applies: the caller needs its own `ATTACH_TERMINAL` proxy attach, and a
+/// applies: the caller needs its own `ATTACH_RESOURCE` proxy attach, and a
 /// non-holder cannot write while another hub consumer holds the lease.
 fn relay_terminal_reply(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,
     bytes: Bytes,
     frame_label: &'static str,
@@ -4547,7 +4547,7 @@ fn relay_terminal_reply(
         warn!(
             ?client_id,
             ?wire_terminal_id,
-            "satellite terminal reply requires this client's ATTACH_TERMINAL proxy; dropping",
+            "satellite terminal reply requires this client's ATTACH_RESOURCE proxy; dropping",
         );
         return;
     }
@@ -4581,7 +4581,7 @@ fn relay_terminal_reply(
 fn log_terminal_reply_dispatch(
     dispatched: &Result<(), tokio::sync::mpsc::error::TrySendError<EncodedInputRequest>>,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
 ) {
     match dispatched {
         Ok(()) => {
@@ -4618,7 +4618,7 @@ fn log_terminal_reply_dispatch(
 ///     misbehavior worth surfacing.
 ///   * Client not subscribed to this pane → drop (warn). Same gate as
 ///     `handle_terminal_input`: a client cannot ack a pane it does not
-///     observe. Subscription comes from `ATTACH` or `ATTACH_TERMINAL`
+///     observe. Subscription comes from `ATTACH` or `ATTACH_RESOURCE`
 ///     (phux-v45.7); no session attachment is required.
 ///   * No `TerminalHandle` (actor evicted) → drop (debug — race against
 ///     teardown).
@@ -4632,7 +4632,7 @@ fn log_terminal_reply_dispatch(
 pub(crate) fn handle_frame_ack(
     state: &SharedState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     seq: u64,
@@ -4688,7 +4688,7 @@ pub(crate) fn handle_frame_ack(
 /// on a server that is not a federation hub for that host.
 fn relay_frame_ack(
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
@@ -4707,7 +4707,7 @@ fn relay_frame_ack(
             ?client_id,
             ?wire_terminal_id,
             seq,
-            "FRAME_ACK carried a SATELLITE TerminalId on a non-federation-hub server; dropping",
+            "FRAME_ACK carried a SATELLITE ResourceId on a non-federation-hub server; dropping",
         );
     }
 }
@@ -4719,12 +4719,12 @@ fn relay_frame_ack(
 fn frame_ack_subscribed(
     s: &crate::state::ServerState,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
-    pane: phux_core::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    pane: phux_core::ids::ResourceId,
     seq: u64,
 ) -> bool {
     // Same gate as `handle_terminal_input` (phux-v45.7): subscription
-    // — established by ATTACH or ATTACH_TERMINAL — is the ack gate; a
+    // — established by ATTACH or ATTACH_RESOURCE — is the ack gate; a
     // session attachment is not required (the federation hub's link
     // consumer acks relayed frames without one).
     if s.subscribers_for_terminal(pane).contains(&client_id) {
@@ -4743,7 +4743,7 @@ fn frame_ack_subscribed(
 fn log_frame_ack_dispatch(
     dispatched: &Result<(), tokio::sync::mpsc::error::TrySendError<ConsumerAckRequest>>,
     client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     seq: u64,
 ) {
     match dispatched {
@@ -4782,7 +4782,7 @@ mod hub_detach_fence_tests {
     #[tokio::test(start_paused = true)]
     async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer() {
         use crate::hub::relay::{ProxySubscription, RELAY_COMMAND_TIMEOUT, RelayRequest};
-        use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+        use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
         let state = SharedState::new();
         let host = phux_protocol::ids::SatelliteHost::from("sat");
         let (handle, mut mailbox) = RelayHandle::new(host.clone());
@@ -4808,7 +4808,7 @@ mod hub_detach_fence_tests {
                         bootstrap_limits: None,
                     },
                     forward: FrameKind::SubscribeEvents {
-                        terminal: Some(TerminalId::local(7)),
+                        terminal: Some(ResourceId::local(7)),
                     },
                 })
                 .unwrap();
@@ -4818,8 +4818,8 @@ mod hub_detach_fence_tests {
             ClientId(1),
             42,
             &host,
-            Command::DetachTerminal {
-                terminal_id: TerminalId::local(7),
+            Command::DetachResource {
+                terminal_id: ResourceId::local(7),
             },
             &out_tx,
             BootstrapProfile::SynthesizedVtRaw,
@@ -4847,8 +4847,8 @@ mod hub_detach_fence_tests {
                 .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
                 .is_empty()
         );
-        let frame = FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(7),
+        let frame = FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(1).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
             seq: 12,
@@ -4859,12 +4859,12 @@ mod hub_detach_fence_tests {
         session.handle_inbound(&encoded).unwrap();
         assert!(matches!(
             observer_rx.try_recv(),
-            Ok(Outbound::Frame(FrameKind::TerminalOutput { seq: 12, .. }))
+            Ok(Outbound::Frame(FrameKind::ResourceOutput { seq: 12, .. }))
         ));
         assert!(
             matches!(
                 out_rx.try_recv(),
-                Ok(Outbound::Frame(FrameKind::TerminalOutput { seq: 12, .. }))
+                Ok(Outbound::Frame(FrameKind::ResourceOutput { seq: 12, .. }))
             ),
             "ordinary detach refusal must preserve the resumed client's output, not just its input entitlement"
         );
@@ -4884,8 +4884,8 @@ mod hub_detach_fence_tests {
             ClientId(1),
             42,
             &host,
-            Command::DetachTerminal {
-                terminal_id: phux_protocol::ids::TerminalId::local(7),
+            Command::DetachResource {
+                terminal_id: phux_protocol::ids::ResourceId::local(7),
             },
             &out_tx,
             BootstrapProfile::SynthesizedVtRaw,
@@ -4894,7 +4894,7 @@ mod hub_detach_fence_tests {
         tokio::pin!(detach);
         assert!(
             futures_util::poll!(&mut detach).is_pending(),
-            "DETACH_TERMINAL replied before the link applied its proxy withdrawal"
+            "DETACH_RESOURCE replied before the link applied its proxy withdrawal"
         );
         assert!(
             out_rx.try_recv().is_err(),
@@ -4922,7 +4922,7 @@ mod hub_detach_fence_tests {
         let host = phux_protocol::ids::SatelliteHost::from("sat");
         let (handle, mut mailbox) = RelayHandle::new(host.clone());
         state.with_mut(|s| s.register_satellite_proxy_attach(ClientId(1), host.clone(), 7));
-        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let terminal = phux_protocol::ids::ResourceId::local(7);
         let detach = resolve_hub_detach_terminal(&state, &handle, ClientId(1), &host, &terminal);
         tokio::pin!(detach);
         assert!(futures_util::poll!(&mut detach).is_pending());
@@ -4948,7 +4948,7 @@ mod hub_detach_fence_tests {
 
 #[cfg(test)]
 mod get_state_retag_tests {
-    use phux_protocol::ids::{SatelliteHost, TerminalId};
+    use phux_protocol::ids::{ResourceId, SatelliteHost};
 
     use super::retag_satellite_resource_id;
 
@@ -4959,8 +4959,8 @@ mod get_state_retag_tests {
         let host = SatelliteHost::from("edge");
 
         assert_eq!(
-            retag_satellite_resource_id(&host, Some(&TerminalId::local(7))),
-            Some(TerminalId::satellite(host.clone(), 7)),
+            retag_satellite_resource_id(&host, Some(&ResourceId::local(7))),
+            Some(ResourceId::satellite(host.clone(), 7)),
             "a satellite's own Local id is republished under its host",
         );
         assert_eq!(
@@ -4971,7 +4971,7 @@ mod get_state_retag_tests {
         assert_eq!(
             retag_satellite_resource_id(
                 &host,
-                Some(&TerminalId::satellite(SatelliteHost::from("other"), 7)),
+                Some(&ResourceId::satellite(SatelliteHost::from("other"), 7)),
             ),
             None,
             "hub-and-spoke does not chain (L1 §9.1)",

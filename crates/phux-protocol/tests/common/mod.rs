@@ -56,7 +56,7 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     win.extend_from_slice(&1u32.to_be_bytes()); // session id
     win.extend_from_slice(&0u16.to_be_bytes()); // index
     win.extend_from_slice(&0u32.to_be_bytes()); // name len 0
-    win.push(0); // active_pane None
+    win.push(0); // active_resource None
     win.push(1); // layout Some
     win.extend_from_slice(layout);
 
@@ -69,7 +69,7 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     snap.extend_from_slice(&0u32.to_be_bytes()); // panes 0
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
-    snap.push(0); // focused_pane tag local
+    snap.push(0); // focused_resource tag local
     snap.extend_from_slice(&1u32.to_be_bytes());
 
     // Field-tagged ATTACHED body: SNAPSHOT (id 1), INITIAL_CLIENT_ID (id 2),

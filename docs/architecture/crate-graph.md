@@ -81,7 +81,7 @@ Four crate boundaries carry weight:
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
 canonical state for each Terminal-kind resource and drives the
 structured-input encoders (ADR-0006, ADR-0008); the TUI's `Terminal` is a
-local replica fed by `TERMINAL_OUTPUT` bytes for the Terminals that client
+local replica fed by `RESOURCE_OUTPUT` bytes for the Terminals that client
 has attached, with `RenderState` providing per-row dirty tracking for
 efficient redraw. `client-core` links `libghostty-vt` only under its
 `native-engine` feature (the wasm client leaves it off); `client` names
@@ -143,8 +143,8 @@ the resource substrate. Mapping each onto code currently in tree:
 
 | Layer | Concept | Implemented in tree as |
 |---|---|---|
-| **L1** | Resource: identity + kind + lifecycle + opaque output stream + bootstrap + events; the Terminal facet adds PTY, libghostty `Terminal`, structured input, and snapshots | `ResourceCore` and the Terminal engine in `phux-server::resource`; wire `TerminalId` (the resource id) and the `SPAWN_TERMINAL` / `TERMINAL_SPAWNED` / `TERMINAL_CLOSED` / `BOOTSTRAP_*` / `TERMINAL_OUTPUT` / `INPUT_*` / `BELL` / `EVENT` messages (`OSC_EVENT` is spec-only) |
-| **L2** | Reserved, unused — no collection tier | nothing on the wire; dissolved per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md). Grouping is L3 metadata + client logic, atomic teardown is the L1 `KILL_TERMINALS` op. `GroupId` survives only as an opaque grouping key. See [../spec/L2.md](../spec/L2.md). |
+| **L1** | Resource: identity + kind + lifecycle + opaque output stream + bootstrap + events; the Terminal facet adds PTY, libghostty `Terminal`, structured input, and snapshots | `ResourceCore` and the Terminal engine in `phux-server::resource`; wire `ResourceId` (the resource id) and the `SPAWN_RESOURCE` / `RESOURCE_SPAWNED` / `RESOURCE_CLOSED` / `BOOTSTRAP_*` / `RESOURCE_OUTPUT` / `INPUT_*` / `BELL` / `EVENT` messages (`OSC_EVENT` is spec-only) |
+| **L2** | Reserved, unused — no collection tier | nothing on the wire; dissolved per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md). Grouping is L3 metadata + client logic, atomic teardown is the L1 `KILL_RESOURCES` op. `GroupId` survives only as an opaque grouping key. See [../spec/L2.md](../spec/L2.md). |
 | **L3** | Opaque metadata KV scoped to Terminal / group / global | `MetadataStore` on `ServerState` (`phux-server::state::metadata`): three maps mirroring the three wire `Scope`s, values opaque `Vec<u8>`, with `GET` / `SET` / `LIST` / `DELETE` / `SUBSCRIBE` and `METADATA_CHANGED` fan-out |
 
 Cross-cuts:
@@ -159,7 +159,7 @@ protocol-privileged
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)) — the wire
 carries nothing that exists for it alone.
 
-Of the cascades ADR-0015 queued, the id rename to `TerminalId` and the L3
+Of the cascades ADR-0015 queued, the id rename to `ResourceId` and the L3
 store have landed; what remains is listed in the Status table.
 
 ## Wire bytes: implementation participation
@@ -168,7 +168,7 @@ Wire bytes are normative in [`../spec/L1.md`](../spec/L1.md). This
 document describes how phux's *implementation* participates.
 
 The protocol is asymmetric. Server-to-client *terminal content* is a
-stream of VT bytes (`TERMINAL_OUTPUT { terminal_id, seq, bytes }`); the
+stream of VT bytes (`RESOURCE_OUTPUT { terminal_id, seq, bytes }`); the
 server forwards what the PTY emitted, after a per-client capability
 rewrite on the synthesized profiles and untouched on the native profile.
 Client-to-server *input* is structured (`INPUT_KEY`,
@@ -193,6 +193,5 @@ stream and each subscribed compatibility client's send queue.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Resource spelling on the wire (`ResourceId`, `RESOURCE_OUTPUT`, `SPAWN_RESOURCE`, `KILL_RESOURCES`, protocol 0.9.0) | The wire and every crate above `phux-core` use the Terminal spelling; `PROTOCOL_VERSION` is 0.8.0. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18, phux-am9y.20 |
-| A second kind on the wire (`SPAWN_TERMINAL` field 11, `APPEND_RESOURCE_OUTPUT`, `AgentEventsJsonlV1`, `RESOURCE_KINDS`) | `phux-protocol` decodes no kind field and has no append command. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6 |
+| A second kind on the wire (`SPAWN_RESOURCE` field 11, `APPEND_RESOURCE_OUTPUT`, `AgentEventsJsonlV1`, `RESOURCE_KINDS`) | `phux-protocol` decodes no kind field and has no append command. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6 |
 | L1 mountable without the L3 service; window vocabulary (`WINDOW_*`, `LAYOUT_CHANGED`, `FOCUS_CHANGED`) demoted from the wire to TUI L3 conventions | One `ServerRuntime` serves both tiers; the window frames stay on the wire. | [ADR-0015](../../ADR/0015-protocol-layering.md) | not scheduled |

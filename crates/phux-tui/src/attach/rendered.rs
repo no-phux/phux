@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use phux_core::screen::{CellColor, CellStyle, RenderedFrame};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use ratatui::buffer::{Buffer, Cell as RatatuiCell, CellDiffOption};
 use ratatui::style::{Color, Modifier};
 
@@ -52,9 +52,9 @@ use crate::render::chrome::status_bar::{StatusBarPainter, make_context};
 )]
 pub(super) fn compose_full_frame_cells(
     layout_state: &LayoutState,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &super::pane_state::AttachKernel,
-    focused_pane: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&StatusBarPainter>,
     // phux-4h5a: the window-sidebar reservation. `None` (disabled, the
@@ -96,7 +96,7 @@ pub(super) fn compose_full_frame_cells(
         else {
             continue;
         };
-        if Some(id) == focused_pane {
+        if Some(id) == focused_resource {
             frame_cursor = cursor;
         }
     }
@@ -106,7 +106,7 @@ pub(super) fn compose_full_frame_cells(
     // non-blank cells never clobbers pane content.
     let divider_buf = {
         let panes_ref = &*panes;
-        compose_divider_buffer(&multi, content, rail, focused_pane, theme, |id| {
+        compose_divider_buffer(&multi, content, rail, focused_resource, theme, |id| {
             super::pane_state::pane_label(panes_ref, id)
         })
     };
@@ -237,7 +237,7 @@ mod tests {
     use crate::render::chrome::status_bar::{Position, StatusBarPainter};
     use phux_protocol::wire::info::{LayoutNode, SplitDir};
     fn published_kernel(
-        entries: &[(&TerminalId, &[u8])],
+        entries: &[(&ResourceId, &[u8])],
     ) -> super::super::pane_state::AttachKernel {
         use phux_client_core::session::{
             EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel,
@@ -308,7 +308,7 @@ mod tests {
         kernel
     }
 
-    fn two_pane(left: &TerminalId, right: &TerminalId) -> Workspace {
+    fn two_pane(left: &ResourceId, right: &ResourceId) -> Workspace {
         Workspace {
             windows: vec![WindowState::new(
                 "1".to_owned(),
@@ -337,10 +337,10 @@ mod tests {
     /// frame cursor — the render-verify harness contract (phux-l5xa).
     #[test]
     fn compose_places_pane_content_divider_and_focused_cursor() {
-        let left = TerminalId::local(1);
-        let right = TerminalId::local(2);
+        let left = ResourceId::local(1);
+        let right = ResourceId::local(2);
         let workspace = two_pane(&left, &right);
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), pane_with(b"L"));
         panes.insert(right.clone(), pane_with(b"R"));
         let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
@@ -413,14 +413,14 @@ mod tests {
         use crate::render::Theme;
         use crate::render::chrome::sidebar::SidebarPainter;
         use phux_config::widget::WindowInfo;
-        use phux_protocol::ids::TerminalId;
+        use phux_protocol::ids::ResourceId;
 
-        let left = TerminalId::local(1);
-        let right = TerminalId::local(2);
+        let left = ResourceId::local(1);
+        let right = ResourceId::local(2);
         let workspace = two_pane(&left, &right);
         let ls = workspace.active_window().expect("active window");
 
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), pane_with(b"L"));
         panes.insert(right.clone(), pane_with(b"R"));
         let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
@@ -515,7 +515,7 @@ mod tests {
 
         // (c) The disabled (None) frame is unchanged: panes tile from col 0 and
         // no separator rule is painted in the strip columns.
-        let mut panes_off: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes_off: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes_off.insert(left.clone(), pane_with(b"L"));
         panes_off.insert(right, pane_with(b"R"));
         let disabled = compose_full_frame_cells(
@@ -560,9 +560,9 @@ mod tests {
     /// content (here the session name), composited over the panes (phux-l5xa).
     #[test]
     fn compose_overlays_status_bar_on_the_bottom_row() {
-        let pane = TerminalId::local(1);
+        let pane = ResourceId::local(1);
         let workspace = Workspace::single(pane.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(pane.clone(), pane_with(b"hi"));
         let kernel = published_kernel(&[(&pane, b"hi")]);
 
@@ -610,9 +610,9 @@ mod tests {
         use crate::render::Theme;
         use phux_config::widget::WindowInfo;
 
-        let pane = TerminalId::local(1);
+        let pane = ResourceId::local(1);
         let workspace = Workspace::single(pane.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(pane.clone(), pane_with(b"hi"));
         let kernel = published_kernel(&[(&pane, b"hi")]);
 

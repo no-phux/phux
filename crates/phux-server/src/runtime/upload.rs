@@ -11,7 +11,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use phux_protocol::ids::{FileUploadId, TerminalId};
+use phux_protocol::ids::{FileUploadId, ResourceId};
 use phux_protocol::wire::frame::{
     CommandResult, CommandValue, ErrorCode, FileUploadAck, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE,
@@ -28,7 +28,7 @@ const MAX_EXTENSION_LEN: usize = 16;
 
 pub(super) struct PutFileChunk {
     pub upload_id: FileUploadId,
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     pub extension: String,
     pub offset: u64,
     pub data: Vec<u8>,
@@ -507,7 +507,7 @@ mod tests {
     ) -> PutFileChunk {
         PutFileChunk {
             upload_id,
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
             extension: "png".to_owned(),
             offset,
             data: data.to_vec(),

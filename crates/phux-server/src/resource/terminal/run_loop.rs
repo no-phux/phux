@@ -59,7 +59,7 @@ enum TickOutcome {
     Skipped,
     /// The consumer's outbound mailbox is closed; reap the entry.
     Closed,
-    /// A `TerminalOutput` frame shipped, carrying this many payload bytes.
+    /// A `ResourceOutput` frame shipped, carrying this many payload bytes.
     Emitted(usize),
 }
 
@@ -440,7 +440,7 @@ impl TerminalActor {
 
     /// One state-sync tick (phux-q0e.3, phux-ia4, ADR-0018): iterate each
     /// attached consumer, diff the live terminal against that consumer's own
-    /// reference grid, and push a `TerminalOutput` frame onto its outbound
+    /// reference grid, and push a `ResourceOutput` frame onto its outbound
     /// mailbox whenever `synthesize_against_reference` returns non-empty
     /// bytes.
     pub(super) fn service_state_tick(&mut self) {
@@ -930,7 +930,7 @@ impl TerminalActor {
     /// 2. If the body is empty, skip — the viewport is byte-identical to
     ///    that consumer's reference (steady state between writes).
     /// 3. Stamp the per-consumer monotonic `seq` (starting at `1`,
-    ///    incrementing per emission) and ship a `TerminalOutput` frame
+    ///    incrementing per emission) and ship a `ResourceOutput` frame
     ///    via the per-consumer outbound mailbox.
     ///
     /// Emit-once (phux-ia4): `synthesize_against_reference` advances the
@@ -1174,8 +1174,8 @@ impl TerminalActor {
         // roll over at 33 Hz, but the existing `runtime.rs` pump
         // uses the same idiom and we match it.
         state.next_seq = state.next_seq.wrapping_add(1);
-        let frame = FrameKind::TerminalOutput {
-            terminal_id: phux_protocol::ids::TerminalId::local(state.wire_terminal_id),
+        let frame = FrameKind::ResourceOutput {
+            terminal_id: phux_protocol::ids::ResourceId::local(state.wire_terminal_id),
             stream_id: state.stream_id,
             bootstrap_id: state.bootstrap_id,
             seq,
@@ -1202,7 +1202,7 @@ impl TerminalActor {
             wire_terminal_id = state.wire_terminal_id,
             seq,
             out_bytes,
-            "state-sync tick: TERMINAL_OUTPUT emitted",
+            "state-sync tick: RESOURCE_OUTPUT emitted",
         );
         TickOutcome::Emitted(out_bytes)
     }

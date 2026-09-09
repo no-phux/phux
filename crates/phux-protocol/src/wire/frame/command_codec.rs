@@ -17,25 +17,25 @@ use super::codec::encode_optional_u32;
 use super::{
     AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
     COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
-    COMMAND_TAG_ATTACH_TERMINAL, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_TERMINAL,
+    COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
     COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
-    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_TERMINAL, COMMAND_TAG_KILL_TERMINALS,
+    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCES,
     COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
     COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
-    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
     COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
-    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_STATE,
-    COMMAND_VALUE_TAG_TERMINAL_ID, Command, CommandResult, CommandValue, ControlAction,
-    EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED,
-    EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_PANE_CLOSED,
-    EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
-    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY,
-    MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState,
-    STATE_SCOPE_TAG_SERVER, StateScope, TerminalEventType, TerminalLifecycle, TerminalSignal,
-    decode_focus_event, decode_key_event, decode_mouse_event, decode_optional_u32,
-    decode_paste_event, decode_terminal_id, encode_focus_event, encode_key_event,
-    encode_mouse_event, encode_paste_event, encode_terminal_id,
+    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID,
+    COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
+    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
+    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
+    InputMode, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
+    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
+    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
+    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_paste_event, encode_terminal_id,
 };
 
 // -----------------------------------------------------------------------------
@@ -44,10 +44,10 @@ use super::{
 // COMMAND body:        u32 request_id, then Command (tag + body).
 // COMMAND_RESULT body: u32 request_id, then CommandResult (tag + body).
 //
-// Command tags follow the SPEC §5.1 catalog order; KILL_TERMINAL (0x03)
+// Command tags follow the SPEC §5.1 catalog order; KILL_RESOURCE (0x03)
 // and GET_STATE (0x05) are wired in v0.1, plus the appended GET_SCREEN
 // (0x07, after RUN_HOOK's reserved 0x06), ROUTE_INPUT (0x08), and
-// KILL_TERMINALS (0x09, reusing the slot freed by the v0.3.0 dissolution
+// KILL_RESOURCES (0x09, reusing the slot freed by the v0.3.0 dissolution
 // of the L2 lifecycle verbs). CommandResult / CommandValue tags use the
 // same `Ok = 0x00` / sequential convention as the rest of the wire.
 // -----------------------------------------------------------------------------
@@ -58,16 +58,16 @@ use super::{
 )]
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
-        Command::AttachTerminal { terminal_id } => {
-            enc.write_u8(COMMAND_TAG_ATTACH_TERMINAL);
+        Command::AttachResource { terminal_id } => {
+            enc.write_u8(COMMAND_TAG_ATTACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
-        Command::DetachTerminal { terminal_id } => {
-            enc.write_u8(COMMAND_TAG_DETACH_TERMINAL);
+        Command::DetachResource { terminal_id } => {
+            enc.write_u8(COMMAND_TAG_DETACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
-        Command::KillTerminal { terminal_id } => {
-            enc.write_u8(COMMAND_TAG_KILL_TERMINAL);
+        Command::KillResource { terminal_id } => {
+            enc.write_u8(COMMAND_TAG_KILL_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
         Command::GetState { scope } => {
@@ -104,12 +104,12 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
                 encode_input_event(event, enc);
             }
         }
-        Command::KillTerminals { ids } => {
-            enc.write_u8(COMMAND_TAG_KILL_TERMINALS);
-            // Length-prefixed list: u16 count, then each tagged TerminalId.
+        Command::KillResources { ids } => {
+            enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
+            // Length-prefixed list: u16 count, then each tagged ResourceId.
             // u16 is ample — a single kill-group never approaches 65 535
             // panes — and matches the count-prefix width used elsewhere
-            // (e.g. `SubscribeTerminalEvents.event_types`).
+            // (e.g. `SubscribeResourceEvents.event_types`).
             enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
             for id in ids {
                 encode_terminal_id(id, enc);
@@ -138,11 +138,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u8(u8::from(*include_scrollback));
             enc.write_u16_be(*max_scrollback_lines);
         }
-        Command::SubscribeTerminalEvents {
+        Command::SubscribeResourceEvents {
             terminal_id,
             event_types,
         } => {
-            enc.write_u8(COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS);
+            enc.write_u8(COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS);
             encode_terminal_id(terminal_id, enc);
             enc.write_u16_be(u16::try_from(event_types.len()).unwrap_or(0));
             for et in event_types {
@@ -338,7 +338,7 @@ fn decode_append_resource_output_command(dec: &mut Decoder<'_>) -> Result<Comman
 }
 
 /// Decode the per-Terminal subscription and single-Terminal destroy verbs
-/// (SPEC §5.1): `ATTACH_TERMINAL`, `DETACH_TERMINAL`, `KILL_TERMINAL`.
+/// (SPEC §5.1): `ATTACH_RESOURCE`, `DETACH_RESOURCE`, `KILL_RESOURCE`.
 ///
 /// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
 /// another family.
@@ -347,13 +347,13 @@ fn decode_terminal_subscription_command(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<Command>, DecodeError> {
     let command = match tag {
-        COMMAND_TAG_ATTACH_TERMINAL => Command::AttachTerminal {
+        COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
         },
-        COMMAND_TAG_DETACH_TERMINAL => Command::DetachTerminal {
+        COMMAND_TAG_DETACH_RESOURCE => Command::DetachResource {
             terminal_id: decode_terminal_id(dec)?,
         },
-        COMMAND_TAG_KILL_TERMINAL => Command::KillTerminal {
+        COMMAND_TAG_KILL_RESOURCE => Command::KillResource {
             terminal_id: decode_terminal_id(dec)?,
         },
         _ => return Ok(None),
@@ -362,7 +362,7 @@ fn decode_terminal_subscription_command(
 }
 
 /// Decode the live agent affordances (SPEC §6): `GET_SCREEN`, `ROUTE_INPUT`,
-/// `APPLY_INPUT`, `GET_TERMINAL_STATE`, `SUBSCRIBE_TERMINAL_EVENTS`, and
+/// `APPLY_INPUT`, `GET_TERMINAL_STATE`, `SUBSCRIBE_RESOURCE_EVENTS`, and
 /// `PUT_FILE`.
 ///
 /// `command_body_len` is the Command body length measured *before* the tag
@@ -381,7 +381,7 @@ fn decode_live_affordance_command(
         },
         COMMAND_TAG_APPLY_INPUT => decode_apply_input_command(dec, command_body_len)?,
         COMMAND_TAG_GET_TERMINAL_STATE => decode_get_terminal_state_command(dec)?,
-        COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS => decode_subscribe_terminal_events_command(dec)?,
+        COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS => decode_subscribe_terminal_events_command(dec)?,
         COMMAND_TAG_PUT_FILE => decode_put_file_command(dec)?,
         COMMAND_TAG_TRANSCRIBE => Command::Transcribe {
             upload_id: decode_file_upload_id(dec)?,
@@ -430,7 +430,7 @@ fn decode_agent_report_command(
 }
 
 /// Decode the commands whose subject is the session or the server rather than
-/// one Terminal: `GET_STATE`, `KILL_TERMINALS` (§5.2), `DETACH_CLIENTS`,
+/// one Terminal: `GET_STATE`, `KILL_RESOURCES` (§5.2), `DETACH_CLIENTS`,
 /// `UPGRADE`, `SHUTDOWN`, `GET_PERF`.
 ///
 /// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
@@ -440,7 +440,7 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_GET_STATE => Command::GetState {
             scope: decode_state_scope(dec)?,
         },
-        COMMAND_TAG_KILL_TERMINALS => decode_kill_terminals_command(dec)?,
+        COMMAND_TAG_KILL_RESOURCES => decode_kill_terminals_command(dec)?,
         COMMAND_TAG_DETACH_CLIENTS => decode_detach_clients_command(dec)?,
         COMMAND_TAG_UPGRADE => Command::Upgrade,
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
@@ -510,7 +510,7 @@ fn decode_kill_terminals_command(dec: &mut Decoder<'_>) -> Result<Command, Decod
     for _ in 0..count {
         ids.push(decode_terminal_id(dec)?);
     }
-    Ok(Command::KillTerminals { ids })
+    Ok(Command::KillResources { ids })
 }
 
 fn decode_detach_clients_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
@@ -538,11 +538,11 @@ fn decode_subscribe_terminal_events_command(dec: &mut Decoder<'_>) -> Result<Com
     let count = dec.read_u16_be()? as usize;
     let mut event_types = Vec::with_capacity(count);
     for _ in 0..count {
-        if let Some(et) = TerminalEventType::from_u8(dec.read_u8()?) {
+        if let Some(et) = ResourceEventType::from_u8(dec.read_u8()?) {
             event_types.push(et);
         }
     }
-    Ok(Command::SubscribeTerminalEvents {
+    Ok(Command::SubscribeResourceEvents {
         terminal_id,
         event_types,
     })
@@ -754,8 +754,8 @@ pub(in crate::wire) fn decode_command_result(
 
 fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
     match value {
-        CommandValue::TerminalId(id) => {
-            enc.write_u8(COMMAND_VALUE_TAG_TERMINAL_ID);
+        CommandValue::ResourceId(id) => {
+            enc.write_u8(COMMAND_VALUE_TAG_RESOURCE_ID);
             encode_terminal_id(id, enc);
         }
         CommandValue::GroupId(id) => {
@@ -791,7 +791,7 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
 fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
-        COMMAND_VALUE_TAG_TERMINAL_ID => Ok(CommandValue::TerminalId(decode_terminal_id(dec)?)),
+        COMMAND_VALUE_TAG_RESOURCE_ID => Ok(CommandValue::ResourceId(decode_terminal_id(dec)?)),
         COMMAND_VALUE_TAG_GROUP_ID => Ok(CommandValue::GroupId(GroupId::new(dec.read_u32_be()?))),
         COMMAND_VALUE_TAG_STATE => Ok(CommandValue::State(decode_session_snapshot(dec)?)),
         COMMAND_VALUE_TAG_JSON => Ok(CommandValue::Json(dec.read_str()?.to_owned())),
@@ -816,7 +816,7 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
 }
 
 // -----------------------------------------------------------------------------
-// `Option<i32>` codec — used by `TERMINAL_CLOSED.exit_status` (SPEC §10.1).
+// `Option<i32>` codec — used by `RESOURCE_CLOSED.exit_status` (SPEC §10.1).
 //
 // Tag convention matches every other `Option` on the wire: `0 = None`,
 // `1 = Some(value)`. The body is the two's-complement bit pattern
@@ -858,7 +858,7 @@ pub(in crate::wire) fn decode_optional_i32(
     }
 }
 
-// `SPAWN_TERMINAL.env`'s optionality is now carried by TLV field presence (an
+// `SPAWN_RESOURCE.env`'s optionality is now carried by TLV field presence (an
 // absent `env` field = `None`; a present field holds a concrete, possibly
 // empty, list via [`encode_env`] / [`decode_env`]). The old
 // `encode_optional_env` / `decode_optional_env` presence-tag helpers were
@@ -882,7 +882,7 @@ pub(in crate::wire) fn decode_optional_i32(
 //   TITLE_CHANGED    (0x02) → str title
 //   BELL             (0x03) → empty
 //   PANE_SPAWNED     (0x04) → field-tagged TLV: optional u8 kind (absent =
-//                            Terminal), optional TerminalId parent; empty
+//                            Terminal), optional ResourceId parent; empty
 //                            for a root Terminal (the id rides the envelope)
 //   PANE_CLOSED      (0x05) → optional<i32> exit_status
 //   DIRTY            (0x06) → empty
@@ -910,7 +910,7 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 EVENT_TAG_TITLE_CHANGED
             }
             AgentEvent::Bell => EVENT_TAG_BELL,
-            AgentEvent::PaneSpawned { kind, parent } => {
+            AgentEvent::ResourceSpawned { kind, parent } => {
                 if !kind.is_terminal() {
                     body_enc.write_field(field::event_pane_spawned::KIND, &[kind.as_wire()]);
                 }
@@ -919,11 +919,11 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                         encode_terminal_id(parent, e);
                     });
                 }
-                EVENT_TAG_PANE_SPAWNED
+                EVENT_TAG_RESOURCE_SPAWNED
             }
-            AgentEvent::PaneClosed { exit_status } => {
+            AgentEvent::ResourceClosed { exit_status } => {
                 encode_optional_i32(*exit_status, &mut body_enc);
-                EVENT_TAG_PANE_CLOSED
+                EVENT_TAG_RESOURCE_CLOSED
             }
             AgentEvent::Dirty => EVENT_TAG_DIRTY,
             AgentEvent::Idle => EVENT_TAG_IDLE,
@@ -1012,8 +1012,8 @@ pub(in crate::wire) fn decode_agent_event(
             title: body_dec.read_str()?.to_owned(),
         },
         EVENT_TAG_BELL => AgentEvent::Bell,
-        EVENT_TAG_PANE_SPAWNED => decode_pane_spawned_event(&mut body_dec)?,
-        EVENT_TAG_PANE_CLOSED => AgentEvent::PaneClosed {
+        EVENT_TAG_RESOURCE_SPAWNED => decode_pane_spawned_event(&mut body_dec)?,
+        EVENT_TAG_RESOURCE_CLOSED => AgentEvent::ResourceClosed {
             exit_status: decode_optional_i32(&mut body_dec)?,
         },
         EVENT_TAG_DIRTY => AgentEvent::Dirty,
@@ -1039,8 +1039,8 @@ pub(in crate::wire) fn decode_agent_event(
 /// the optional actor that caused it.
 fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
     let lifecycle =
-        TerminalLifecycle::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
-            field: "TerminalLifecycle",
+        ResourceLifecycle::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
+            field: "ResourceLifecycle",
             value: 0,
         })?;
     let exit_status = decode_optional_i32(dec)?;
@@ -1059,7 +1059,7 @@ fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, De
     })
 }
 
-/// Decode an [`AgentEvent::PaneSpawned`] body (field-tagged TLV).
+/// Decode an [`AgentEvent::ResourceSpawned`] body (field-tagged TLV).
 ///
 /// An empty body, which is what every pre-kind encoder wrote and what a
 /// root Terminal still gets, decodes as `Terminal` with no parent; an
@@ -1078,7 +1078,7 @@ fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, Decode
             _ => {}
         }
     }
-    Ok(AgentEvent::PaneSpawned { kind, parent })
+    Ok(AgentEvent::ResourceSpawned { kind, parent })
 }
 
 /// Decode an [`AgentEvent::Asked`] body (field-tagged TLV).

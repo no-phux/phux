@@ -5,7 +5,7 @@
 //! on a **real pane's grid**, as read back through `phux snapshot --json` —
 //! i.e. through the server's own libghostty `Terminal`, not through anything
 //! this feature wrote. The chain under test is long and every link is real: a
-//! `SPAWN_TERMINAL` whose command is the phux binary in writer mode, a PTY,
+//! `SPAWN_RESOURCE` whose command is the phux binary in writer mode, a PTY,
 //! the line discipline, the pane actor's reader, and the emulator. A unit
 //! test can check the argv; only this can check that the argv produced a
 //! screen.

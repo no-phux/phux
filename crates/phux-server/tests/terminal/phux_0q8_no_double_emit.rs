@@ -7,7 +7,7 @@
 //! same content TWICE — once from the live broadcast pump and once from
 //! the tick-synthesized diff. This test stands up a real UDS server with a
 //! real PTY-backed pane that prints a unique marker EXACTLY ONCE, attaches
-//! a real wire client, drains `TERMINAL_OUTPUT` for many tick intervals
+//! a real wire client, drains `RESOURCE_OUTPUT` for many tick intervals
 //! (tick = 30ms), and asserts the marker is seen EXACTLY ONCE.
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_RESOURCE_OUTPUT};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -86,7 +86,7 @@ fn live_output_is_delivered_exactly_once() {
         let (_, ready) = recv_typed(&mut stream).await;
         assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
 
-        // Drain live TERMINAL_OUTPUT for well past many tick intervals
+        // Drain live RESOURCE_OUTPUT for well past many tick intervals
         // (tick = 30ms). A double-emitting tick would re-paint the dirty
         // grid every 30ms, so over a ~0.8s window (~25 ticks) a regression
         // yields dozens of extra marker copies. A correct (gated) build
@@ -98,8 +98,8 @@ fn live_output_is_delivered_exactly_once() {
             let remaining = drain_deadline - tokio::time::Instant::now();
             match timeout(remaining, recv_typed(&mut stream)).await {
                 Ok((tb, frame)) => {
-                    if tb == TYPE_TERMINAL_OUTPUT
-                        && let FrameKind::TerminalOutput { bytes, .. } = frame
+                    if tb == TYPE_RESOURCE_OUTPUT
+                        && let FrameKind::ResourceOutput { bytes, .. } = frame
                     {
                         output_acc.extend_from_slice(&bytes);
                     }
@@ -124,7 +124,7 @@ fn live_output_is_delivered_exactly_once() {
             String::from_utf8_lossy(&output_acc),
         );
 
-        // Defense in depth: no live TERMINAL_OUTPUT delta should EVER
+        // Defense in depth: no live RESOURCE_OUTPUT delta should EVER
         // re-carry the marker once the snapshot has it. If the snapshot
         // captured the marker, live deltas must contain zero copies.
         if snapshot_count == 1 {

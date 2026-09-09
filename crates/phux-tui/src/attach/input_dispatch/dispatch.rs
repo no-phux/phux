@@ -8,12 +8,12 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::HashMap;
 
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate, PointSpace, ScrollViewport};
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -111,17 +111,17 @@ struct EventChange {
 struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     out: &'a mut W,
     conn: &'a mut Connection,
-    focused_pane: &'a mut Option<TerminalId>,
+    focused_resource: &'a mut Option<ResourceId>,
     detach_pending: &'a mut bool,
     predict: &'a mut PredictionState,
-    panes: &'a mut HashMap<TerminalId, PaneSlot>,
+    panes: &'a mut HashMap<ResourceId, PaneSlot>,
     ctx: &'a mut DispatchCtx<'c>,
 }
 
 /// Translate a batch of parser events into wire frames and ship them.
 ///
 /// Detach actions short-circuit into a single `FrameKind::Detach` and
-/// flip `detach_pending`. Pre-attach events (no `focused_pane` yet) are
+/// flip `detach_pending`. Pre-attach events (no `focused_resource` yet) are
 /// dropped with a debug log — the wire spec has no "pre-attach buffer"
 /// notion.
 ///
@@ -146,17 +146,17 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     out: &mut W,
     conn: &mut Connection,
     events: &mut Vec<InputEvent>,
-    focused_pane: &mut Option<TerminalId>,
+    focused_resource: &mut Option<ResourceId>,
     detach_pending: &mut bool,
     predict: &mut PredictionState,
     overlay: &Overlay,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<bool, AttachError> {
     let mut env = EventEnv {
         out,
         conn,
-        focused_pane,
+        focused_resource,
         detach_pending,
         predict,
         panes,
@@ -258,7 +258,7 @@ struct PaneScrollModes {
 /// when the pane has no mirror yet.
 fn pane_scroll_modes(
     kernel: &crate::attach::pane_state::AttachKernel,
-    target: &TerminalId,
+    target: &ResourceId,
 ) -> Option<PaneScrollModes> {
     let terminal = published_terminal(kernel, target)?;
     Some(PaneScrollModes {
@@ -274,7 +274,7 @@ fn pane_scroll_modes(
 /// menu) keeps every button.
 fn pane_ignores_mouse(
     kernel: &crate::attach::pane_state::AttachKernel,
-    target: &TerminalId,
+    target: &ResourceId,
 ) -> bool {
     published_terminal(kernel, target)
         .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
@@ -348,13 +348,18 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!(action = %resolved.action, "waiting for initial shared layout read");
             return Ok(false);
         }
-        let effects = run_action(resolved, self.ctx, self.focused_pane.as_ref(), self.panes);
+        let effects = run_action(
+            resolved,
+            self.ctx,
+            self.focused_resource.as_ref(),
+            self.panes,
+        );
         apply_action_effects(
             effects,
             self.out,
             self.conn,
             self.ctx,
-            self.focused_pane,
+            self.focused_resource,
             self.detach_pending,
             self.predict,
             self.panes,
@@ -422,7 +427,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let ran = self.apply_overlay_outcome(outcome).await?;
         // On dismiss, repaint everything: the overlay scribbled
         // over pane cells and we need a coherent base for the
-        // next TERMINAL_OUTPUT.
+        // next RESOURCE_OUTPUT.
         let dismissed = was_active && !self.ctx.overlays.is_active();
         Ok(ran || dismissed)
     }
@@ -435,7 +440,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // the cells actually under the pointer. Modal overlays (the
         // only other mouse consumers) keep viewport coords.
         let routed = if self.ctx.overlays.copy_selection().is_some() {
-            let rect = focused_pane_rect(self.ctx, self.focused_pane.as_ref());
+            let rect = focused_pane_rect(self.ctx, self.focused_resource.as_ref());
             let mut m = *mouse;
             m.x = (m.x - f64::from(rect.x)).max(0.0);
             m.y = (m.y - f64::from(rect.y)).max(0.0);
@@ -471,7 +476,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 // focused pane's own engine and write it to the host
                 // clipboard via OSC 52. Client-local per ADR-0030 —
                 // no wire traffic.
-                if let Some(fid) = self.focused_pane.as_ref()
+                if let Some(fid) = self.focused_resource.as_ref()
                     && let Some(terminal) = published_terminal(self.ctx.engine_kernel, fid)
                 {
                     crate::attach::copy::copy_to_host_clipboard(self.out, terminal, req)?;
@@ -481,7 +486,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             OverlayOutcome::ScrollViewport(delta) => Ok(scroll_focused_pane_viewport(
                 self.ctx.engine_kernel,
                 self.panes,
-                self.focused_pane.as_ref(),
+                self.focused_resource.as_ref(),
                 delta,
             )),
             // ADR-0101: the settings page wrote the file. The driver owns
@@ -797,7 +802,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     async fn route_mouse_to_pane(
         &mut self,
         mouse: &MouseEvent,
-        target: TerminalId,
+        target: ResourceId,
         pane_xy: (f64, f64),
         focus_changed: bool,
     ) -> Result<StageOutcome, AttachError> {
@@ -844,13 +849,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     }
 
     /// Move client-local focus to the clicked pane.
-    fn focus_pane_from_click(&mut self, target: &TerminalId) {
+    fn focus_pane_from_click(&mut self, target: &ResourceId) {
         if let Some(ls) = self.ctx.workspace.active_window_mut() {
             ls.focus = Some(target.clone());
         }
         apply_focus_transition(
             &mut self.ctx.focus_history,
-            self.focused_pane,
+            self.focused_resource,
             target.clone(),
         );
         // Re-anchor predict to the clicked pane: drop the
@@ -866,7 +871,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// `Some(layout_changed)` when the client consumed it.
     async fn scroll_pane_wheel(
         &mut self,
-        target: &TerminalId,
+        target: &ResourceId,
         routed: &MouseEvent,
     ) -> Result<Option<bool>, AttachError> {
         let Some(delta) = wheel_scroll_delta(routed) else {
@@ -898,7 +903,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// translation.
     async fn send_wheel_as_arrows(
         &mut self,
-        target: &TerminalId,
+        target: &ResourceId,
         delta: isize,
     ) -> Result<(), AttachError> {
         let arrow = make_named_key(
@@ -922,7 +927,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Scroll `target`'s local mirror by `delta`, returning `true` iff the
     /// viewport actually moved (the caller repaints).
-    fn scroll_pane_viewport(&mut self, target: &TerminalId, delta: isize) -> bool {
+    fn scroll_pane_viewport(&mut self, target: &ResourceId, delta: isize) -> bool {
         let scrolled = self
             .ctx
             .engine_kernel
@@ -955,7 +960,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     ///
     /// The menu is anchored in viewport cells, so this takes the
     /// un-routed event.
-    fn open_pane_context_menu(&mut self, mouse: &MouseEvent, target: &TerminalId) -> bool {
+    fn open_pane_context_menu(&mut self, mouse: &MouseEvent, target: &ResourceId) -> bool {
         if !is_right_press(mouse) || !pane_ignores_mouse(self.ctx.engine_kernel, target) {
             return false;
         }
@@ -978,14 +983,14 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// release copies to the host clipboard (OSC 52) and dismisses; a click
     /// without drag just dismisses. Without Ctrl, apps that DO track the
     /// mouse (vim, htop, Codex) keep receiving their events untouched.
-    fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &TerminalId) -> bool {
+    fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &ResourceId) -> bool {
         let force_copy = routed.mods.contains(ModSet::CTRL);
         if !is_left_press(routed)
             || (!force_copy && !pane_ignores_mouse(self.ctx.engine_kernel, target))
         {
             return false;
         }
-        let rect = focused_pane_rect(self.ctx, self.focused_pane.as_ref());
+        let rect = focused_pane_rect(self.ctx, self.focused_resource.as_ref());
         let mouse_col = quantize_cell(routed.x).min(rect.w.saturating_sub(1));
         let mouse_row = quantize_cell(routed.y).min(rect.h.saturating_sub(1));
         let anchor = published_terminal(self.ctx.engine_kernel, target)
@@ -1053,8 +1058,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     ///
     /// phux-4li.6: peek the focused pane's grid via the active
     /// window's focus. The driver also mirrors that id into its
-    /// `focused_pane` local (server-frame handlers rely on it);
-    /// either reads the same `TerminalId` here.
+    /// `focused_resource` local (server-frame handlers rely on it);
+    /// either reads the same `ResourceId` here.
     ///
     /// ADR-0090: predictions queue on both screens; only *display* is
     /// policy. The predictor learns which screen the pane is on (a
@@ -1101,7 +1106,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// phux-4li.6: `INPUT_KEY` / `INPUT_FOCUS` / `INPUT_PASTE` all target
     /// the client's focused pane (per ADR-0019 decision 6). Focus
     /// is canonically the active window's focus; the driver-side
-    /// `focused_pane` mirror stays in sync for the render path.
+    /// `focused_resource` mirror stays in sync for the render path.
     /// When focus is unset (pre-ATTACHED), drop the event with a
     /// debug log instead of panicking — wave-A's "always Some
     /// post-ATTACHED" invariant is enforced by the seed in
@@ -1264,14 +1269,14 @@ pub(in crate::attach) fn terminal_in_alt_screen(
 }
 pub(super) fn scroll_focused_pane_viewport(
     kernel: &mut crate::attach::pane_state::AttachKernel,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
     delta: isize,
 ) -> bool {
     if delta == 0 {
         return false;
     }
-    let Some(fid) = focused_pane else {
+    let Some(fid) = focused_resource else {
         return false;
     };
     let Some(slot) = panes.get_mut(fid) else {
@@ -1292,14 +1297,15 @@ pub(super) fn scroll_focused_pane_viewport(
     true
 }
 
-/// Snap `focused_pane`'s viewport back to the live screen if a wheel /
+/// Snap `focused_resource`'s viewport back to the live screen if a wheel /
 /// copy-mode scroll left it pinned in scrollback. Returns `true` iff the
 pub(super) fn snap_scrolled_viewport(
     kernel: &mut crate::attach::pane_state::AttachKernel,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
 ) -> bool {
-    let Some((fid, slot)) = focused_pane.and_then(|fid| panes.get_mut(fid).map(|slot| (fid, slot)))
+    let Some((fid, slot)) =
+        focused_resource.and_then(|fid| panes.get_mut(fid).map(|slot| (fid, slot)))
     else {
         return false;
     };
@@ -1318,19 +1324,19 @@ pub(super) fn snap_scrolled_viewport(
 
 pub(super) fn focused_pane_rect(
     ctx: &DispatchCtx<'_>,
-    focused_pane: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
 ) -> crate::layout::Rect {
     focused_pane_rect_for(
         ctx.workspace,
         ctx.zoomed.as_ref(),
-        focused_pane,
+        focused_resource,
         ctx.viewport,
         ctx.bar,
         ctx.sidebar,
     )
 }
 
-/// Resolve `SPAWN_TERMINAL.initial_size` for a spawn this client is about to
+/// Resolve `SPAWN_RESOURCE.initial_size` for a spawn this client is about to
 /// issue (phux-a5xj), by asking `predict` for the tile the new leaf will
 /// occupy in the current content rect.
 ///
@@ -1363,25 +1369,25 @@ pub(super) fn predicted_split_size(
     })
 }
 
-/// Stamp `size` onto an already-built `SPAWN_TERMINAL` frame — the plugin-pane
+/// Stamp `size` onto an already-built `SPAWN_RESOURCE` frame — the plugin-pane
 /// path builds the frame from its manifest entry before it knows which
 /// placement (and therefore which tile) it is about to park.
 pub(super) const fn set_spawn_initial_size(frame: &mut FrameKind, size: Option<(u16, u16)>) {
-    if let FrameKind::SpawnTerminal { initial_size, .. } = frame {
+    if let FrameKind::SpawnResource { initial_size, .. } = frame {
         *initial_size = size;
     }
 }
 
 pub(in crate::attach) fn focused_pane_rect_for(
     workspace: &Workspace,
-    zoomed: Option<&TerminalId>,
-    focused_pane: Option<&TerminalId>,
+    zoomed: Option<&ResourceId>,
+    focused_resource: Option<&ResourceId>,
     viewport: (u16, u16),
     bar: Option<crate::render::chrome::status_bar::Position>,
     sidebar: Option<SidebarReservation>,
 ) -> crate::layout::Rect {
     let content = content_rect(viewport, bar, sidebar);
-    let Some(fid) = focused_pane else {
+    let Some(fid) = focused_resource else {
         return content;
     };
     workspace
@@ -1403,7 +1409,7 @@ pub(in crate::attach) fn focused_pane_rect_for(
 /// PR #331 (phux-d26y) added that fan-out only on the SIGWINCH edge, but a
 /// peer's layout broadcast (`FrameOutcome::layout_replaced` in
 /// `server_frame.rs`) moves the focused pane's rect too, with no SIGWINCH
-/// involved. The same flag also covers the TerminalSpawned/TerminalClosed
+/// involved. The same flag also covers the ResourceSpawned/ResourceClosed
 /// reflow path — every `reflow_panes: true` in `server_frame.rs` is emitted
 /// alongside `layout_replaced: true` — so routing through `layout_replaced`
 /// picks up both triggers via one call site instead of three. Toggling zoom
@@ -1420,8 +1426,8 @@ pub(in crate::attach) fn focused_pane_rect_for(
 pub(in crate::attach) fn sync_overlays_to_focused_pane(
     overlays: &mut OverlayState,
     workspace: &Workspace,
-    zoomed: Option<&TerminalId>,
-    focused_pane: Option<&TerminalId>,
+    zoomed: Option<&ResourceId>,
+    focused_resource: Option<&ResourceId>,
     viewport: (u16, u16),
     bar: Option<crate::render::chrome::status_bar::Position>,
     sidebar: Option<SidebarReservation>,
@@ -1429,7 +1435,7 @@ pub(in crate::attach) fn sync_overlays_to_focused_pane(
     if !overlays.is_active() {
         return;
     }
-    let pane = focused_pane_rect_for(workspace, zoomed, focused_pane, viewport, bar, sidebar);
+    let pane = focused_pane_rect_for(workspace, zoomed, focused_resource, viewport, bar, sidebar);
     overlays.on_viewport_resize(pane.w, pane.h);
 }
 
@@ -1652,8 +1658,8 @@ pub(super) fn quantize_cell(p: f64) -> u16 {
 /// Apply a client-local focus change through the single MRU transition path.
 pub(super) fn apply_focus_transition(
     history: &mut FocusHistory,
-    focused_pane: &mut Option<TerminalId>,
-    target: TerminalId,
+    focused_resource: &mut Option<ResourceId>,
+    target: ResourceId,
 ) {
-    history.transition(focused_pane, Some(target));
+    history.transition(focused_resource, Some(target));
 }

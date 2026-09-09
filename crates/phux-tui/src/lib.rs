@@ -2,7 +2,7 @@
 //!
 //! The interactive front end over the headless [`phux_client`] library:
 //! `phux attach` connects through `phux_client::attach::connection`, then
-//! this crate takes over the controlling terminal, feeds `TERMINAL_OUTPUT`
+//! this crate takes over the controlling terminal, feeds `RESOURCE_OUTPUT`
 //! bytes into a local `libghostty_vt::Terminal` per attached pane, and
 //! paints dirty rows plus the chrome back out to the outer terminal.
 //!

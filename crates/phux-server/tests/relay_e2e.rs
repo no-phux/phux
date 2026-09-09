@@ -273,13 +273,13 @@ const fn enter_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` frames until `needle` appears in the
+/// Drain `RESOURCE_OUTPUT` frames until `needle` appears in the
 /// accumulated VT bytes or the deadline elapses.
 async fn await_echo(consumer: &mut Consumer, needle: &[u8]) {
     let mut acc: Vec<u8> = Vec::new();
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        if let FrameKind::TerminalOutput { bytes, .. } = recv_wire(consumer).await {
+        if let FrameKind::ResourceOutput { bytes, .. } = recv_wire(consumer).await {
             acc.extend_from_slice(&bytes);
             if acc.windows(needle.len()).any(|w| w == needle) {
                 return;
@@ -288,7 +288,7 @@ async fn await_echo(consumer: &mut Consumer, needle: &[u8]) {
     }
     panic!(
         "input must round-trip through relay + tunnel to the PTY and echo back \
-         as TERMINAL_OUTPUT (got {} bytes: {acc:?})",
+         as RESOURCE_OUTPUT (got {} bytes: {acc:?})",
         acc.len()
     );
 }
@@ -336,8 +336,8 @@ fn hello_attach_echo_through_relay_to_real_server() {
         while pane_id.is_none() || !got_snapshot {
             match recv_wire(&mut consumer).await {
                 FrameKind::Attached { snapshot, .. } => {
-                    assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-                    pane_id = Some(snapshot.panes[0].id.clone());
+                    assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+                    pane_id = Some(snapshot.resources[0].id.clone());
                 }
                 FrameKind::BootstrapBegin { cols, rows, .. } => {
                     assert!(cols > 0 && rows > 0, "snapshot has a real grid");
@@ -349,7 +349,7 @@ fn hello_attach_echo_through_relay_to_real_server() {
         let pane_id = pane_id.unwrap();
 
         // Live PTY echo: type "hi" + Enter into the `cat` pane; the echo
-        // must come back as TERMINAL_OUTPUT frames through both hops.
+        // must come back as RESOURCE_OUTPUT frames through both hops.
         for (c, key) in [('h', PhysicalKey::H), ('i', PhysicalKey::I)] {
             send_wire(
                 &mut consumer,

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::state::Degradation;
-use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo, WindowInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, parse_selector, partial, report_no_server, resolve_targets};
@@ -651,7 +651,7 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
             // a hub merges — so both misses below are the ambiguous kind
             // whenever the fleet view is partial.
             let Some(target_id) =
-                crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
                 return partial::report_target_miss(target, &degradation);
             };
@@ -694,7 +694,7 @@ async fn classify_snapshot(
     // ADR-0040: structured `phux.agent/v1` records outrank every heuristic
     // source, so fetch them up front (one pipelined connection).
     let records = fetch_agent_index(socket_path, snapshot).await;
-    let mut states = Vec::with_capacity(snapshot.panes.len());
+    let mut states = Vec::with_capacity(snapshot.resources.len());
     // Terminal-kind resources only: an `AgentSession` is reported under its
     // parent's `agent_session`, never as a row of its own.
     for pane in phux_client::resource::terminals(snapshot) {
@@ -709,7 +709,7 @@ async fn classify_snapshot(
 async fn pane_evidence(
     socket_path: &Path,
     snapshot: &SessionSnapshot,
-    pane: &TerminalInfo,
+    pane: &ResourceInfo,
 ) -> PaneEvidence {
     let screen =
         phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true)

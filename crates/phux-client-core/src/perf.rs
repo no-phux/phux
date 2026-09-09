@@ -13,9 +13,9 @@
 //! stay empty and only the counters move; the report still serialises.
 
 use phux_perf::{Counter, Histogram, Metric, PerfReport, Unit};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 
-/// `TERMINAL_OUTPUT` frames applied to a replica.
+/// `RESOURCE_OUTPUT` frames applied to a replica.
 pub static OUTPUT_FRAMES: Counter = Counter::new();
 /// Payload bytes those frames carried.
 pub static OUTPUT_BYTES: Counter = Counter::new();
@@ -57,14 +57,14 @@ pub fn report(uptime: core::time::Duration) -> PerfReport {
 #[derive(Debug, Default)]
 pub struct EchoProbe {
     #[cfg(not(target_arch = "wasm32"))]
-    armed: core::cell::RefCell<std::collections::HashMap<TerminalId, std::time::Instant>>,
+    armed: core::cell::RefCell<std::collections::HashMap<ResourceId, std::time::Instant>>,
 }
 
 impl EchoProbe {
     /// Record that input which a program is expected to answer just left
     /// for `terminal_id`. A re-arm before the reply keeps the earlier mark,
     /// so a burst of typing measures from its first key.
-    pub fn arm(&self, terminal_id: &TerminalId) {
+    pub fn arm(&self, terminal_id: &ResourceId) {
         INPUT_SENT.incr();
         #[cfg(not(target_arch = "wasm32"))]
         self.armed
@@ -76,7 +76,7 @@ impl EchoProbe {
     }
 
     /// Output arrived for `terminal_id`: close any open sample.
-    pub fn observe(&self, terminal_id: &TerminalId) {
+    pub fn observe(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(at) = self.armed.borrow_mut().remove(terminal_id) {
             let elapsed = at.elapsed();
@@ -89,7 +89,7 @@ impl EchoProbe {
     }
 
     /// The terminal is gone; forget any open sample.
-    pub fn forget(&self, terminal_id: &TerminalId) {
+    pub fn forget(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
         self.armed.borrow_mut().remove(terminal_id);
         #[cfg(target_arch = "wasm32")]
@@ -132,8 +132,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn echo_probe_samples_once_per_arm_and_forgets_on_close() {
-        let id = TerminalId::Local { id: 7 };
-        let other = TerminalId::Local { id: 8 };
+        let id = ResourceId::Local { id: 7 };
+        let other = ResourceId::Local { id: 8 };
         let before = ECHO_RTT.count();
         let probe = EchoProbe::default();
         probe.observe(&id);

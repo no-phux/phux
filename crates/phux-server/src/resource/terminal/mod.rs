@@ -40,7 +40,7 @@ use libghostty_vt::terminal::SizeReportSize;
 use libghostty_vt::{RenderState, Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{
-    AgentEvent, ControlAction, FrameKind, TerminalLifecycle, TerminalSignal,
+    AgentEvent, ControlAction, FrameKind, ResourceLifecycle, TerminalSignal,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -421,7 +421,7 @@ struct NativeCursorOwner {
     record_index: usize,
     touched: tokio::time::Instant,
     next_page_seq: u64,
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
 }
@@ -750,7 +750,7 @@ pub struct TerminalActor {
     /// `LocalSet` thread (ADR-0014).
     consumer_states: HashMap<ClientId, ConsumerSyncState>,
     /// Whether the per-consumer state-sync tick (phux-q0e.3) is the live
-    /// emitter of `TerminalOutput` frames (ADR-0018).
+    /// emitter of `ResourceOutput` frames (ADR-0018).
     ///
     /// `false` in production for human TUI attach (phux-yeca). Raw PTY
     /// bytes are the byte-faithful, low-latency human path; synthesized
@@ -772,7 +772,7 @@ pub struct TerminalActor {
     ///    suppresses its raw PTY-byte broadcast pump for any consumer this
     ///    actor reports as tick-managed (via
     ///    [`ConsumerAttachOutcome::tick_managed`]). Without that a
-    ///    tick-emitted `TerminalOutput` and the broadcast pump's would both
+    ///    tick-emitted `ResourceOutput` and the broadcast pump's would both
     ///    land on the same consumer mailbox with independent `seq` —
     ///    double-paint, non-monotonic `seq` (proto.md §8.2).
     /// 2. **Client `FRAME_ACK` loop (phux-3uv).** The client drives
@@ -807,7 +807,7 @@ pub struct TerminalActor {
     /// `None` for actors that no one watches (most tests); set by the
     /// runtime's spawn path via [`Self::set_event_sink`]. The runtime
     /// drains this channel and fans each event out to event-stream
-    /// subscribers scoped to this pane (it owns the wire `TerminalId`,
+    /// subscribers scoped to this pane (it owns the wire `ResourceId`,
     /// which the actor does not know).
     ///
     /// `try_send` semantics: a full sink drops the event rather than
@@ -918,15 +918,15 @@ pub struct TerminalActor {
     /// Process lifecycle as the supervisory surface sees it (ADR-0033):
     /// `Running` until a `Freeze` (SIGSTOP) flips it to `Frozen`, back to
     /// `Running` on `Resume` (SIGCONT). Natural/terminal exits are reported
-    /// by the existing `TERMINAL_CLOSED` / `PaneClosed` path, not here.
-    lifecycle: TerminalLifecycle,
+    /// by the existing `RESOURCE_CLOSED` / `ResourceClosed` path, not here.
+    lifecycle: ResourceLifecycle,
     cols: u16,
     rows: u16,
     /// Per-cell pixel size `(width, height)` used to derive the PTY winsize
     /// pixel fields and XTWINOPS size reports. Seeded to [`DEFAULT_CELL_PX`]
     /// so the geometry is never zero, then overwritten by the most recent
     /// [`ResizeRequest`] that carries usable pixel metrics. Sticky: a
-    /// pixel-less resize (agent `TERMINAL_RESIZE`) keeps the established
+    /// pixel-less resize (agent `RESIZE_TERMINAL`) keeps the established
     /// value. Nonzero on both axes at all times, so pixel probes inside the
     /// pane (`kitten icat`, sixel sizers) always read a real cell size.
     cell_px: (u16, u16),
@@ -980,7 +980,7 @@ pub struct TerminalActorBundle {
     pub token: CancellationToken,
     /// One-shot receiver that fires when the actor observes PTY EOF
     /// (the child process exited, the pane is dying). The runtime
-    /// pairs this with the terminal's [`phux_core::ids::TerminalId`] and uses
+    /// pairs this with the terminal's [`phux_core::ids::ResourceId`] and uses
     /// it to drive client-detach on shell-`exit` (phux-it8).
     ///
     /// Used by the runtime's per-pane EOF watcher task; tests that
@@ -993,7 +993,7 @@ pub struct TerminalActorBundle {
     /// The payload is the child's exit status: `Some(code)` on a normal
     /// `_exit(n)` (or where the kernel reports a code at all), `None`
     /// for signal-killed children or unknown-cause exits. Mirrors the
-    /// `TERMINAL_CLOSED.exit_status` wire field exactly (phux-4li.11).
+    /// `RESOURCE_CLOSED.exit_status` wire field exactly (phux-4li.11).
     pub exit_notify: Option<oneshot::Receiver<Option<i32>>>,
 }
 

@@ -24,8 +24,8 @@ use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
 use phux_client_core::session::SessionKernel;
 #[cfg(test)]
 use phux_protocol::caps::BootstrapLimits;
-use phux_protocol::ids::{ClientId, TerminalId};
-use phux_protocol::wire::frame::TerminalLifecycle;
+use phux_protocol::ids::{ClientId, ResourceId};
+use phux_protocol::wire::frame::ResourceLifecycle;
 
 use super::outcome::AttachError;
 use super::render::{ReplicaWalk, TerminalRenderer};
@@ -45,7 +45,7 @@ pub(super) type AttachKernel = SessionKernel<GhosttyAdapter>;
 
 pub(super) fn published_terminal<'a>(
     kernel: &'a AttachKernel,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
 ) -> Option<&'a GhosttyTerminal<'static, 'static>> {
     kernel.published_engine(terminal_id)?.terminal()
 }
@@ -63,7 +63,7 @@ pub(super) fn published_terminal<'a>(
 /// [`published_terminal`].
 pub(super) fn published_replica<'a>(
     kernel: &'a AttachKernel,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
 ) -> Option<ReplicaWalk<'a, 'static, 'static>> {
     let replica = kernel.published(terminal_id)?;
     let terminal = replica.engine().terminal()?;
@@ -80,19 +80,19 @@ pub(super) fn published_replica<'a>(
 /// stale. Nothing in this state is serialized or written to metadata.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct AttentionNavigation {
-    origin: Option<TerminalId>,
+    origin: Option<ResourceId>,
 }
 
 impl AttentionNavigation {
     /// Save an origin only when a navigation excursion is not already active.
-    pub(super) fn save_origin_once(&mut self, origin: Option<&TerminalId>) {
+    pub(super) fn save_origin_once(&mut self, origin: Option<&ResourceId>) {
         if self.origin.is_none() {
             self.origin = origin.cloned();
         }
     }
 
     /// Consume the saved origin. A stale origin must not remain armed forever.
-    pub(super) const fn take_origin(&mut self) -> Option<TerminalId> {
+    pub(super) const fn take_origin(&mut self) -> Option<ResourceId> {
         self.origin.take()
     }
 }
@@ -118,7 +118,7 @@ pub(super) struct PaneSlot {
     /// ADR-0033 supervisory lifecycle for this pane, driven by inbound
     /// `TerminalControl` events: `Running` until a `Freeze` (SIGSTOP) flips it
     /// to `Frozen`. Read at paint time to render the "FROZEN" chrome badge.
-    pub lifecycle: TerminalLifecycle,
+    pub lifecycle: ResourceLifecycle,
     /// ADR-0033 input-lease holder for this pane (the wire `ClientId` that has
     /// "the wheel"), or `None` when the pane is `Open`. Compared against the
     /// driver's own `ClientId` to render "you" vs another client.
@@ -149,7 +149,7 @@ pub(super) struct PaneSlot {
     pub sync_output_dirty: bool,
     /// phux-foz.4: the pane's working directory as the server last
     /// announced it — seeded from the `ATTACHED` snapshot's
-    /// `TerminalInfo.cwd` (the spawn cwd) and refined by `cwd_changed`
+    /// `ResourceInfo.cwd` (the spawn cwd) and refined by `cwd_changed`
     /// events. `None` until either lands. Projected into the status-bar
     /// `cwd` widget when this pane is focused.
     pub cwd: Option<String>,
@@ -162,7 +162,7 @@ pub(super) struct PaneSlot {
     /// apply, cached from the published replica so title transitions are cheap.
     /// is the ONLY identity signal a plain `claude`/`codex` pane emits
     /// (no `phux.agent/v1` record, no ADR-0035 events), and it arrives
-    /// as ordinary `TERMINAL_OUTPUT` bytes — without this diff the
+    /// as ordinary `RESOURCE_OUTPUT` bytes — without this diff the
     /// sidebar's agents section (and the window-tab labels, phux-efj7)
     /// would only refresh on an unrelated chrome event. Empty ⇒ no
     /// title set, matching libghostty's `title()` contract.
@@ -210,7 +210,7 @@ impl PaneSlot {
             terminal,
             renderer: TerminalRenderer::new()?,
             geometry: (cols.max(1), rows.max(1)),
-            lifecycle: TerminalLifecycle::Running,
+            lifecycle: ResourceLifecycle::Running,
             input_holder: None,
             control_seen: false,
             viewport_scrolled: false,
@@ -274,8 +274,8 @@ impl PaneSlot {
 /// then a pane that has ASKED for a human still badges, because
 /// `PaneSlot::attention` is the ADR-0035 flag and is already local.
 pub(super) fn pane_label<'a>(
-    panes: &'a HashMap<TerminalId, PaneSlot>,
-    id: &TerminalId,
+    panes: &'a HashMap<ResourceId, PaneSlot>,
+    id: &ResourceId,
 ) -> Option<crate::render::chrome::dividers::PaneLabel<'a>> {
     let slot = panes.get(id)?;
     Some(crate::render::chrome::dividers::PaneLabel {
@@ -293,11 +293,11 @@ pub(super) fn pane_label<'a>(
 /// mutating the test-only [`PaneSlot::terminal`] compatibility field.
 #[cfg(test)]
 pub(super) fn published_test_state(
-    entries: &[(&TerminalId, u16, u16, &[u8])],
+    entries: &[(&ResourceId, u16, u16, &[u8])],
 ) -> (
     AttachKernel,
     KernelEffectBuffer,
-    HashMap<TerminalId, PaneSlot>,
+    HashMap<ResourceId, PaneSlot>,
 ) {
     use phux_client_core::session::KernelInput;
     use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId};
@@ -378,7 +378,7 @@ pub(super) fn published_test_state(
 }
 
 /// phux-p4vp: the driver's per-pane workspace metadata — each pane's
-/// working directory (from the `ATTACHED` snapshot's `TerminalInfo::cwd`)
+/// working directory (from the `ATTACHED` snapshot's `ResourceInfo::cwd`)
 /// plus the memoizing branch cache that turns a cwd into a VCS branch
 /// label by reading `.git/HEAD` (see [`phux_client::vcs`]). Entirely
 /// client-local: nothing here touches the wire or the server's actor
@@ -386,7 +386,7 @@ pub(super) fn published_test_state(
 #[derive(Debug, Default)]
 pub(super) struct VcsIndex {
     /// Pane → working directory, seeded from the `ATTACHED` snapshot.
-    cwds: HashMap<TerminalId, std::path::PathBuf>,
+    cwds: HashMap<ResourceId, std::path::PathBuf>,
     /// cwd → branch memo.
     cache: phux_client::vcs::BranchCache,
 }
@@ -395,7 +395,7 @@ impl VcsIndex {
     /// Fold an `ATTACHED` snapshot's `(pane, cwd)` pairs into the index.
     /// The snapshot is authoritative for the panes it names; panes that no
     /// longer exist are dropped (re-attach hygiene).
-    pub(super) fn apply_snapshot(&mut self, pane_cwds: Vec<(TerminalId, String)>) {
+    pub(super) fn apply_snapshot(&mut self, pane_cwds: Vec<(ResourceId, String)>) {
         if pane_cwds.is_empty() {
             return;
         }
@@ -407,7 +407,7 @@ impl VcsIndex {
 
     /// The VCS branch label for `pane`'s working directory, or `None` when
     /// the cwd is unknown or not inside a repository.
-    pub(super) fn branch_for_pane(&mut self, pane: &TerminalId) -> Option<String> {
+    pub(super) fn branch_for_pane(&mut self, pane: &ResourceId) -> Option<String> {
         let cwd = self.cwds.get(pane)?.clone();
         self.cache.branch_for(&cwd)
     }
@@ -425,8 +425,8 @@ impl VcsIndex {
 /// Re-anchor predictive echo to a newly focused published terminal.
 pub(super) fn reanchor_predict_to_pane(
     predict: &mut PredictionState,
-    panes: &HashMap<TerminalId, PaneSlot>,
-    fid: &TerminalId,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    fid: &ResourceId,
 ) {
     let Some(slot) = panes.get(fid) else {
         predict.suspend();
@@ -449,8 +449,8 @@ pub(super) fn reanchor_predict_to_pane(
 /// `true` when the flag actually flipped, so the caller can schedule a
 /// chrome repaint only on a real transition.
 pub(super) fn clear_attention_on_input(
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    pane: &TerminalId,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    pane: &ResourceId,
 ) -> bool {
     match panes.get_mut(pane) {
         Some(slot) if slot.attention => {
@@ -505,7 +505,7 @@ mod tests {
         use phux_client_core::session::KernelInput;
         use phux_protocol::{BootstrapId, BootstrapStreamProfile, StreamId};
 
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let (mut kernel, mut effects, mut panes) = published_test_state(&[(&id, 10, 2, b"AA")]);
         let slot = panes.get_mut(&id).expect("slot");
 
@@ -595,9 +595,9 @@ mod tests {
     #[test]
     fn attention_navigation_saves_once_and_consumes() {
         let mut navigation = AttentionNavigation::default();
-        navigation.save_origin_once(Some(&TerminalId::local(1)));
-        navigation.save_origin_once(Some(&TerminalId::local(2)));
-        assert_eq!(navigation.take_origin(), Some(TerminalId::local(1)));
+        navigation.save_origin_once(Some(&ResourceId::local(1)));
+        navigation.save_origin_once(Some(&ResourceId::local(2)));
+        assert_eq!(navigation.take_origin(), Some(ResourceId::local(1)));
         assert_eq!(navigation.take_origin(), None);
     }
 
@@ -606,8 +606,8 @@ mod tests {
     /// unknown panes report `false` (no spurious chrome repaints).
     #[test]
     fn clear_attention_on_input_clears_once() {
-        let id = TerminalId::local(1);
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let id = ResourceId::local(1);
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
         slot.attention = true;
         panes.insert(id.clone(), slot);
@@ -622,7 +622,7 @@ mod tests {
             "already-clear pane reports no transition"
         );
         assert!(
-            !clear_attention_on_input(&mut panes, &TerminalId::local(9)),
+            !clear_attention_on_input(&mut panes, &ResourceId::local(9)),
             "unknown pane reports no transition"
         );
     }

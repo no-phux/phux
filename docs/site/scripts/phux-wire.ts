@@ -1,4 +1,4 @@
-const TYPE_TERMINAL_OUTPUT = 0x90;
+const TYPE_RESOURCE_OUTPUT = 0x90;
 const TYPE_TERMINAL_SNAPSHOT = 0x91;
 
 // Exact phux 0.2 HELLO and CreateIfMissing ATTACH frames used by phux-web.
@@ -32,12 +32,12 @@ export function parseTerminalPayload(frame: Uint8Array): TerminalPayload | null 
   const bodyLength = new DataView(frame.buffer, frame.byteOffset, 4).getUint32(0);
   if (bodyLength !== frame.length - 4) throw new Error("invalid phux frame length");
   const type = frame[4];
-  if (type !== TYPE_TERMINAL_OUTPUT && type !== TYPE_TERMINAL_SNAPSHOT) return null;
+  if (type !== TYPE_RESOURCE_OUTPUT && type !== TYPE_TERMINAL_SNAPSHOT) return null;
 
   let offset = 5;
   let terminalId: Uint8Array | undefined;
   let bytes = new Uint8Array();
-  const contentField = type === TYPE_TERMINAL_OUTPUT ? 3 : 4;
+  const contentField = type === TYPE_RESOURCE_OUTPUT ? 3 : 4;
   while (offset < frame.length) {
     let fieldId: number;
     [fieldId, offset] = readVarint(frame, offset);

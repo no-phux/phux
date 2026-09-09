@@ -16,7 +16,7 @@ use phux_protocol::caps::{
     ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, TERMINAL_AGENT_KEY,
+    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, RESOURCE_AGENT_KEY,
 };
 use phux_protocol::wire::framing::FramingError;
 use tokio::net::UnixStream;
@@ -58,7 +58,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
     ServerFeatureSet::with(&[
         ServerFeature::AcknowledgedInput,
         ServerFeature::FileUpload,
-        ServerFeature::MoveTerminal,
+        ServerFeature::MoveResource,
         ServerFeature::TerminalReply,
         ServerFeature::Shutdown,
         ServerFeature::SpawnInitialSize,
@@ -98,7 +98,7 @@ mod negotiated_feature_tests {
 
 pub(crate) fn spawn_pane_event_drain(
     state: SharedState,
-    wire_terminal_id: phux_protocol::ids::TerminalId,
+    wire_terminal_id: phux_protocol::ids::ResourceId,
     mut event_rx: tokio::sync::mpsc::Receiver<AgentEvent>,
 ) {
     tokio::task::spawn_local(async move {
@@ -125,7 +125,7 @@ pub(crate) fn spawn_pane_event_drain(
 /// agent that streams output for ten minutes cost zero writes and zero events.
 pub(crate) fn spawn_agent_state_drain(
     state: SharedState,
-    wire_terminal_id: phux_protocol::ids::TerminalId,
+    wire_terminal_id: phux_protocol::ids::ResourceId,
     mut rx: tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>,
 ) {
     use crate::agent_detect::AgentDetectEvent;
@@ -143,7 +143,7 @@ pub(crate) fn spawn_agent_state_drain(
             // inside `with_mut` would deadlock. `None` means nothing actually
             // changed and no hook is owed.
             let hook = state.with_mut(|s| {
-                let scope = Scope::Terminal(wire_terminal_id.clone());
+                let scope = Scope::Resource(wire_terminal_id.clone());
                 // No dispatcher means no hook can run, so skip the work
                 // entirely: reading the prior record costs a metadata lookup
                 // and a JSON decode on every published transition, and a
@@ -155,7 +155,7 @@ pub(crate) fn spawn_agent_state_drain(
                         if let Ok(bytes) = serde_json::to_vec(&occupant) {
                             s.metadata_set(
                                 &scope,
-                                phux_protocol::wire::frame::TERMINAL_PANE_OCCUPANT_KEY,
+                                phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY,
                                 bytes,
                             );
                         }
@@ -203,7 +203,7 @@ pub(crate) fn spawn_agent_state_drain(
 /// would be a protocol change, not a refactor.
 fn drain_ask_sentinel(
     s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     ask: Option<crate::agent_asked::AskedPayload>,
 ) -> Option<crate::agent_asked::AskedPayload> {
     use crate::agent_asked::AskedSource;
@@ -239,20 +239,20 @@ fn drain_ask_sentinel(
 /// Anything else: not ours, do nothing.
 fn drain_retract(
     s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     scope: &phux_protocol::wire::frame::Scope,
     hooks_live: bool,
 ) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
 
-    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY);
+    let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
     let from = hooks_live
         .then(|| crate::agent_state::stored_state(existing.as_deref()))
         .flatten();
 
     if s.agent_records().is_declared(wire_terminal_id) {
         let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
-        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
         s.agent_records_mut()
             .note_declaration_withdrawn(wire_terminal_id);
         return hooks_live
@@ -269,14 +269,14 @@ fn drain_retract(
     if s.agent_records().has_explicit_identity(wire_terminal_id)
         && let Some(bytes) = crate::agent_state::withdraw_state(existing.as_deref())
     {
-        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
         s.agent_records_mut()
             .note_detector_retract(wire_terminal_id);
         return hooks_live
             .then(|| retract_hook(wire_terminal_id, from.as_deref()))
             .flatten();
     }
-    s.metadata_delete(scope, TERMINAL_AGENT_KEY);
+    s.metadata_delete(scope, RESOURCE_AGENT_KEY);
     s.agent_records_mut()
         .note_detector_retract(wire_terminal_id);
     hooks_live
@@ -302,22 +302,22 @@ fn drain_retract(
 /// record has nothing to correct, and a correction must never CREATE one.
 fn drain_reidentified(
     s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     scope: &phux_protocol::wire::frame::Scope,
     hooks_live: bool,
     kind: &str,
     name: &str,
 ) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
 
-    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY)?;
+    let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY)?;
     let from = hooks_live
         .then(|| crate::agent_state::stored_state(Some(&existing)))
         .flatten();
 
     if s.agent_records().is_declared(wire_terminal_id) {
         let bytes = crate::agent_state::withdraw_state(Some(&existing))?;
-        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
         s.agent_records_mut()
             .note_declaration_withdrawn(wire_terminal_id);
         return hooks_live
@@ -333,7 +333,7 @@ fn drain_reidentified(
         crate::hooks::AGENT_STATE_UNKNOWN,
         owned,
     );
-    s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+    s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut().note_detector_write(wire_terminal_id);
     hooks_live
         .then(|| {
@@ -368,17 +368,17 @@ fn drain_reidentified(
 /// `kind` naming another. See [`crate::agent_state::explicit_kind_is_contradicted`].
 fn drain_state(
     s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     scope: &phux_protocol::wire::frame::Scope,
     hooks_live: bool,
     report: &crate::agent_detect::AgentReport,
 ) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
 
     if s.agent_records().is_declared(wire_terminal_id) {
         return None;
     }
-    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY);
+    let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
     let from = hooks_live
         .then(|| crate::agent_state::stored_state(existing.as_deref()))
         .flatten();
@@ -409,7 +409,7 @@ fn drain_state(
             crate::agent_state::compose(existing.as_deref(), &report.kind, &report.name, to, owned);
         (to, bytes)
     };
-    s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+    s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     if !contradicted {
         // Deliberately skipped on the withheld path: withdrawing a state is not
         // authoring the record, and the detector must not acquire the right to
@@ -438,7 +438,7 @@ fn drain_state(
 /// is already there. Comparing against the store keeps the hook a true edge —
 /// a notifier that fires on a non-change is a notifier the operator turns off.
 fn state_change_hook(
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     kind: &str,
     name: &str,
     from: Option<&str>,
@@ -459,7 +459,7 @@ fn state_change_hook(
 /// The `agent-state-changed` event for a withdrawn record, unless the record
 /// was already `unknown` (a retract that changes nothing owes no hook).
 fn retract_hook(
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
     from: Option<&str>,
 ) -> Option<crate::hooks::HookEvent> {
     if from == Some(crate::hooks::AGENT_STATE_UNKNOWN) {
@@ -499,10 +499,10 @@ fn invalidate_agent_detector(
 ) {
     use phux_protocol::wire::frame::Scope;
 
-    if key != TERMINAL_AGENT_KEY {
+    if key != RESOURCE_AGENT_KEY {
         return;
     }
-    let Scope::Terminal(wire) = scope else {
+    let Scope::Resource(wire) = scope else {
         return;
     };
     let handle = state.with(|s| {
@@ -521,7 +521,7 @@ fn invalidate_agent_detector(
 /// Awaits the `TerminalActor`'s `exit_notify` oneshot. When the actor
 /// observes PTY EOF (the child process has exited — typically the
 /// shell typed `exit`), this watcher broadcasts the L1 lifecycle event
-/// `FrameKind::TerminalClosed { terminal_id, exit_status }` to every
+/// `FrameKind::ResourceClosed { terminal_id, exit_status }` to every
 /// client subscribed to the now-dead pane, then reaps the pane's
 /// server-side state.
 ///
@@ -546,10 +546,10 @@ fn invalidate_agent_detector(
 /// they only happen if the sender was dropped without firing, which
 /// in current code means the actor was dropped without going through
 /// the EOF branch — i.e. the pane is going away too. Broadcasting
-/// `TERMINAL_CLOSED` is still the right response.
+/// `RESOURCE_CLOSED` is still the right response.
 pub(crate) fn spawn_terminal_exit_watcher(
     state: SharedState,
-    pane: phux_core::ids::TerminalId,
+    pane: phux_core::ids::ResourceId,
     exit_notify: Option<oneshot::Receiver<Option<i32>>>,
     root_token: CancellationToken,
 ) {
@@ -563,7 +563,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
         let exit_status = rx.await.unwrap_or(None);
         // phux-emdv: gather the broadcast subscriber set AND reap the
         // dead pane in ONE critical section, BEFORE the awaited
-        // TERMINAL_CLOSED sends. This closes the TOCTOU window that left
+        // RESOURCE_CLOSED sends. This closes the TOCTOU window that left
         // a late attacher frozen on a dead pane: previously subscribers
         // were gathered in one lock, the sends were awaited, and the reap
         // happened in a SECOND lock — a client whose ATTACH landed in the
@@ -610,7 +610,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
                     continue;
                 };
                 // A child nobody marked is leaving because its parent is;
-                // one an operator named in the same `KILL_TERMINALS` keeps
+                // one an operator named in the same `KILL_RESOURCES` keeps
                 // the reason that kill recorded.
                 let child_reason = if recorded == CloseReason::Exited {
                     CloseReason::ParentClosed
@@ -629,7 +629,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             }
             // phux-w7z2.56: resolve every subscriber's mailbox, not just
             // the session-attached ones. This used to filter through
-            // `attached()`, which an `ATTACH_TERMINAL`-only consumer never
+            // `attached()`, which an `ATTACH_RESOURCE`-only consumer never
             // enters (L1 §5.1: "a session-scoped `ATTACH` is not
             // required"), so an agent watching a single pane — and a
             // federation hub's proxy subscription, which is exactly that
@@ -667,7 +667,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
         );
 
         // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
-        // TERMINAL_CLOSED to every client that was subscribed to the
+        // RESOURCE_CLOSED to every client that was subscribed to the
         // dying pane at reap time. The server's job ends here — it
         // reports the fact. The detach policy ("no Terminals left in my
         // collection ⇒ detach") is the consumer's (the TUI driver folds
@@ -722,7 +722,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
 }
 
 /// Everything the EOF watcher captures under one state lock before it
-/// performs the off-lock, awaited `TERMINAL_CLOSED` fanout (phux-emdv).
+/// performs the off-lock, awaited `RESOURCE_CLOSED` fanout (phux-emdv).
 ///
 /// Gathering the subscriber mailboxes, interning the wire id, and reaping
 /// the pane in a single critical section is what closes the TOCTOU race:
@@ -730,9 +730,9 @@ pub(crate) fn spawn_terminal_exit_watcher(
 /// EOF'd" pane between the gather and the reap.
 struct ReapAndNotify {
     /// The pane's wire id, interned before the reap retired it. Reused
-    /// for both the L1 `TERMINAL_CLOSED` fanout and the `PaneClosed`
+    /// for both the L1 `RESOURCE_CLOSED` fanout and the `ResourceClosed`
     /// agent event so they carry the id the client saw on spawn/snapshot.
-    wire_terminal_id: phux_protocol::ids::TerminalId,
+    wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Why this pane is closing, claimed from the close ledger in the same
     /// lock (ADR-0104 §4).
     reason: CloseReason,
@@ -742,9 +742,9 @@ struct ReapAndNotify {
     /// The resource this one was parented to, resolved before the reap
     /// retired the binding, so its `pane_closed` reaches whoever is
     /// watching the parent (ADR-0104 §2). `None` for a root pane.
-    parent: Option<phux_protocol::ids::TerminalId>,
+    parent: Option<phux_protocol::ids::ResourceId>,
     /// Outbound mailboxes of every client subscribed to the pane at reap
-    /// time. The L1 `TERMINAL_CLOSED` fanout targets exactly this set.
+    /// time. The L1 `RESOURCE_CLOSED` fanout targets exactly this set.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
     /// `true` iff the reap emptied the last session — the server self-exit
     /// signal (phux-60s).
@@ -757,28 +757,28 @@ struct ReapAndNotify {
 /// under the parent's lock and broadcast off it.
 struct CascadedClose {
     /// The child's wire id, interned before its reap retired it.
-    wire_terminal_id: phux_protocol::ids::TerminalId,
+    wire_terminal_id: phux_protocol::ids::ResourceId,
     /// The closing pane it hung off, so its `pane_closed` reaches the
     /// parent's watchers as well as its own.
-    parent: phux_protocol::ids::TerminalId,
+    parent: phux_protocol::ids::ResourceId,
     /// Mailboxes subscribed to the child at reap time.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
-    /// The reason its `TERMINAL_CLOSED` carries.
+    /// The reason its `RESOURCE_CLOSED` carries.
     reason: CloseReason,
 }
 
-/// Emit `TERMINAL_CLOSED { terminal_id, exit_status }` to every client
+/// Emit `RESOURCE_CLOSED { terminal_id, exit_status }` to every client
 /// in `targets` (phux-4li.11, SPEC §7.2 / §10.1).
 ///
 /// The subscriber set and `wire_terminal_id` are gathered by the caller
 /// ([`spawn_terminal_exit_watcher`]) in the SAME state lock that reaps the
 /// pane, so they reflect exactly the clients subscribed at reap time. This
 /// function only performs the off-lock work: the awaited L1 fanout and the
-/// `PaneClosed` agent-event broadcast. Both are done off-lock because
+/// `ResourceClosed` agent-event broadcast. Both are done off-lock because
 /// `with_mut` is synchronous and the borrow must not be held across an
 /// await (phux-emdv).
 ///
-/// The `wire_terminal_id` is the one the client saw on `TERMINAL_SPAWNED`
+/// The `wire_terminal_id` is the one the client saw on `RESOURCE_SPAWNED`
 /// / `TERMINAL_SNAPSHOT`; the caller interned it before the reap retired
 /// it. The send is best-effort: a client whose mailbox has closed (it
 /// dropped the socket) is silently skipped — `reap_terminal` (already run
@@ -786,29 +786,29 @@ struct CascadedClose {
 ///
 /// `reason` is the one the closer recorded in the close ledger
 /// (ADR-0104 §4), claimed by the caller in that same lock: `Killed` for a
-/// `KILL_TERMINAL`, `ParentClosed` for a cascade, `ServerShutdown` for a
+/// `KILL_RESOURCE`, `ParentClosed` for a cascade, `ServerShutdown` for a
 /// shutdown, and `Exited` when nothing decided otherwise and the inner
 /// process simply left. A consumer tells a cascade from a kill by reading
 /// it, without correlating frames.
 pub(crate) async fn broadcast_terminal_closed(
     state: &SharedState,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
-    parent: Option<&phux_protocol::ids::TerminalId>,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    parent: Option<&phux_protocol::ids::ResourceId>,
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
     exit_status: Option<i32>,
     reason: phux_protocol::wire::frame::CloseReason,
 ) {
     if targets.is_empty() {
-        debug!("TERMINAL_CLOSED: no L1-subscribed clients to notify");
+        debug!("RESOURCE_CLOSED: no L1-subscribed clients to notify");
     } else {
         debug!(
             count = targets.len(),
             ?exit_status,
-            "TERMINAL_CLOSED: broadcasting to subscribed clients",
+            "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
         for tx in targets {
             let _ = tx
-                .send(Outbound::Frame(FrameKind::TerminalClosed {
+                .send(Outbound::Frame(FrameKind::ResourceClosed {
                     terminal_id: wire_terminal_id.clone(),
                     exit_status,
                     reason,
@@ -828,7 +828,7 @@ pub(crate) async fn broadcast_terminal_closed(
         state,
         wire_terminal_id,
         parent,
-        &AgentEvent::PaneClosed { exit_status },
+        &AgentEvent::ResourceClosed { exit_status },
     );
 }
 
@@ -925,7 +925,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     // Federation relay (phux-v45.4): drop every hub-side proxy
     // subscription this client holds on any satellite link — the
     // counterpart to the registrations the satellite-scoped
-    // SUBSCRIBE_EVENTS / SUBSCRIBE_TERMINAL_EVENTS / ATTACH_TERMINAL
+    // SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS / ATTACH_RESOURCE
     // paths performed. Empty (no-op) on a non-hub server. Undroppable
     // (phux-v45.11 finding 1): rides the unbounded unsubscribe channel,
     // so a saturated relay mailbox can never leave a stale subscriber
@@ -941,7 +941,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     for (host, terminal) in state.with(|s| s.satellite_leases_held_by(client_id)) {
         if let Some(relay) = state.with(|s| s.hub_relay(&host)) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
-                terminal_id: phux_protocol::ids::TerminalId::local(terminal),
+                terminal_id: phux_protocol::ids::ResourceId::local(terminal),
             });
         }
     }
@@ -1504,7 +1504,7 @@ async fn dispatch_terminal_reply(
     state: &SharedState,
     client_id: ClientId,
     selection: NegotiatedConnection,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     bytes: bytes::Bytes,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
@@ -1888,7 +1888,7 @@ fn select_hello_profile(
 /// takes the request rather than six loose fields.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 struct HistoryPageRequest {
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     cursor: bytes::Bytes,
@@ -1909,7 +1909,7 @@ struct HistoryPageRequest {
 /// native history cuts, so either way the cursor's lease cannot exist.
 fn history_terminal(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Option<crate::terminal_actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
@@ -2419,7 +2419,7 @@ where
             FrameKind::SubscribeEvents { terminal } => {
                 handle_subscribe_events(&state, client_id, terminal, &plumbing.out_tx);
             }
-            FrameKind::SpawnTerminal {
+            FrameKind::SpawnResource {
                 request_id,
                 group,
                 command,
@@ -2460,7 +2460,7 @@ where
                 )
                 .await;
             }
-            FrameKind::MoveTerminal {
+            FrameKind::MoveResource {
                 request_id,
                 terminal,
                 owner_terminal,
@@ -2475,7 +2475,7 @@ where
                 )
                 .await;
             }
-            FrameKind::TerminalResize {
+            FrameKind::ResizeTerminal {
                 terminal_id,
                 cols,
                 rows,
@@ -2536,7 +2536,7 @@ fn route_client_input(
     state: &SharedState,
     input_lane: Option<&InputLaneHandle>,
     client_id: ClientId,
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     input: TerminalInput,
     frame_label: &'static str,
 ) {
@@ -2774,7 +2774,7 @@ fn reject_unknown_local_terminal_scope(
 ) -> bool {
     use phux_protocol::wire::frame::Scope;
 
-    let Scope::Terminal(terminal @ phux_protocol::ids::TerminalId::Local { .. }) = scope else {
+    let Scope::Resource(terminal @ phux_protocol::ids::ResourceId::Local { .. }) = scope else {
         return false;
     };
     if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
@@ -2803,8 +2803,8 @@ fn reject_set_metadata(
     value: &[u8],
 ) -> bool {
     use phux_protocol::wire::frame::{
-        MAX_AGENT_SESSION_RECORD_BYTES, Scope, TERMINAL_AGENT_SESSION_KEY,
-        TERMINAL_PANE_OCCUPANT_KEY,
+        MAX_AGENT_SESSION_RECORD_BYTES, RESOURCE_AGENT_SESSION_KEY, RESOURCE_PANE_OCCUPANT_KEY,
+        Scope,
     };
 
     if is_reserved_session_create_result(scope, key) {
@@ -2814,7 +2814,7 @@ fn reject_set_metadata(
         );
         return true;
     }
-    if key == TERMINAL_PANE_OCCUPANT_KEY {
+    if key == RESOURCE_PANE_OCCUPANT_KEY {
         warn!(
             ?client_id,
             request_id, "SET_METADATA: server-owned pane-occupant key; ignoring"
@@ -2825,10 +2825,10 @@ fn reject_set_metadata(
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
-    if key == TERMINAL_AGENT_SESSION_KEY
+    if key == RESOURCE_AGENT_SESSION_KEY
         && (!matches!(
             scope,
-            Scope::Terminal(phux_protocol::ids::TerminalId::Local { .. })
+            Scope::Resource(phux_protocol::ids::ResourceId::Local { .. })
         ) || value.is_empty()
             || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
     {
@@ -2919,12 +2919,12 @@ fn store_metadata_value(
     key: &str,
     value: Vec<u8>,
 ) {
-    let declared_agent_record = matches!(scope, phux_protocol::wire::frame::Scope::Terminal(_))
-        && key == TERMINAL_AGENT_KEY;
+    let declared_agent_record = matches!(scope, phux_protocol::wire::frame::Scope::Resource(_))
+        && key == RESOURCE_AGENT_KEY;
     let agent_value = declared_agent_record.then(|| value.clone());
 
     let delivered = state.with_mut(|s| {
-        if let (Some(bytes), phux_protocol::wire::frame::Scope::Terminal(terminal)) =
+        if let (Some(bytes), phux_protocol::wire::frame::Scope::Resource(terminal)) =
             (agent_value.as_deref(), scope)
         {
             s.agent_records_mut().note_explicit_set(terminal, bytes);
@@ -2994,7 +2994,7 @@ pub(crate) fn handle_delete_metadata(
         );
         return;
     }
-    if key == phux_protocol::wire::frame::TERMINAL_PANE_OCCUPANT_KEY {
+    if key == phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY {
         warn!(
             ?client_id,
             request_id, "DELETE_METADATA: server-owned pane-occupant key; ignoring"
@@ -3004,8 +3004,8 @@ pub(crate) fn handle_delete_metadata(
     let delivered = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
-        if let phux_protocol::wire::frame::Scope::Terminal(terminal) = scope
-            && key == TERMINAL_AGENT_KEY
+        if let phux_protocol::wire::frame::Scope::Resource(terminal) = scope
+            && key == RESOURCE_AGENT_KEY
         {
             s.agent_records_mut().note_explicit_delete(terminal);
         }
@@ -3083,8 +3083,8 @@ pub(crate) async fn handle_list_metadata(
 /// and reported `no_agent_record` for a live remote agent.
 ///
 /// Routing is the eventual answer, but it is not this change. It needs a
-/// return leg that re-tags `Scope::Terminal(Local(id))` to
-/// `Scope::Terminal(Satellite { host, id })`, a decision about what `Global`
+/// return leg that re-tags `Scope::Resource(Local(id))` to
+/// `Scope::Resource(Satellite { host, id })`, a decision about what `Global`
 /// and `Group` scopes even mean across a federation boundary, and — to be
 /// worth having — the federated `APPLY_INPUT` that would let a caller act on
 /// what it observed (phux-2en, post-1.0). A refusal is upgradeable to
@@ -3094,8 +3094,8 @@ pub(crate) async fn handle_list_metadata(
 /// # Why this code, and why it is not a wire change
 ///
 /// [`ErrorCode::UnsupportedSatelliteRoute`] already means "this frame
-/// carried a `TerminalId::Satellite` and there is no route for it"
-/// ([`phux_protocol::ids::TerminalId::Satellite`] makes the non-hub case a
+/// carried a `ResourceId::Satellite` and there is no route for it"
+/// ([`phux_protocol::ids::ResourceId::Satellite`] makes the non-hub case a
 /// MUST). "This *command* has no satellite route on any server" is the same
 /// fact about a different axis, and reusing the code keeps the change
 /// decode-safe: a new `ErrorCode` value is a hard decode error on a peer
@@ -3114,7 +3114,7 @@ fn refuse_satellite_metadata_scope(
     key: &str,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> bool {
-    let phux_protocol::wire::frame::Scope::Terminal(terminal) = scope else {
+    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
         return false;
     };
     let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
@@ -3212,7 +3212,7 @@ pub(crate) fn handle_subscribe_metadata(
 pub(crate) fn handle_subscribe_events(
     state: &SharedState,
     client_id: ClientId,
-    terminal: Option<phux_protocol::ids::TerminalId>,
+    terminal: Option<phux_protocol::ids::ResourceId>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
     debug!(?client_id, ?terminal, "SUBSCRIBE_EVENTS");
@@ -3247,7 +3247,7 @@ pub(crate) fn handle_subscribe_events(
                     bootstrap_limits: None,
                 },
                 FrameKind::SubscribeEvents {
-                    terminal: Some(phux_protocol::ids::TerminalId::local(id)),
+                    terminal: Some(phux_protocol::ids::ResourceId::local(id)),
                 },
             );
         } else {
@@ -3292,7 +3292,7 @@ pub(crate) fn handle_subscribe_events(
 /// The guard the two raw-profile refusals above share. `false` for an
 /// unknown or satellite-tagged id: those are the existing handlers' to
 /// answer, and a kind check must not swallow a routing question.
-fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::TerminalId) -> bool {
+fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
     state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
@@ -3302,7 +3302,7 @@ fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::Termi
 
 pub(crate) fn broadcast_event(
     state: &SharedState,
-    terminal: Option<&phux_protocol::ids::TerminalId>,
+    terminal: Option<&phux_protocol::ids::ResourceId>,
     event: &AgentEvent,
 ) {
     let targets = state.with(|s| s.event_targets(terminal));
@@ -3324,8 +3324,8 @@ pub(crate) fn broadcast_event(
 /// names the parent. Only the fan-out is widened, and only for these two.
 pub(crate) fn broadcast_child_event(
     state: &SharedState,
-    terminal: &phux_protocol::ids::TerminalId,
-    parent: Option<&phux_protocol::ids::TerminalId>,
+    terminal: &phux_protocol::ids::ResourceId,
+    parent: Option<&phux_protocol::ids::ResourceId>,
     event: &AgentEvent,
 ) {
     let targets = state.with(|s| s.child_event_targets(terminal, parent));
@@ -3335,7 +3335,7 @@ pub(crate) fn broadcast_child_event(
 /// The shared best-effort fan-out both broadcasters end in.
 fn fan_out_event(
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
-    terminal: Option<&phux_protocol::ids::TerminalId>,
+    terminal: Option<&phux_protocol::ids::ResourceId>,
     event: &AgentEvent,
 ) {
     if targets.is_empty() {
@@ -3402,7 +3402,7 @@ enum OutboundTerminalState {
 
 #[derive(Debug, Default)]
 struct OutboundGenerationFence {
-    terminals: HashMap<phux_protocol::ids::TerminalId, OutboundTerminalState>,
+    terminals: HashMap<phux_protocol::ids::ResourceId, OutboundTerminalState>,
 }
 
 impl OutboundGenerationFence {
@@ -3425,7 +3425,7 @@ impl OutboundGenerationFence {
                 bootstrap_id,
                 ..
             } => self.admit_tombstone(terminal_id, *stream_id, *bootstrap_id),
-            FrameKind::TerminalClosed { terminal_id, .. } => {
+            FrameKind::ResourceClosed { terminal_id, .. } => {
                 self.terminals
                     .insert(terminal_id.clone(), OutboundTerminalState::Closed);
                 true
@@ -3440,7 +3440,7 @@ impl OutboundGenerationFence {
 
     fn admit_begin(
         &mut self,
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -3464,7 +3464,7 @@ impl OutboundGenerationFence {
 
     fn admit_tombstone(
         &mut self,
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -3488,7 +3488,7 @@ impl OutboundGenerationFence {
 
     fn admit_data(
         &self,
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -3498,14 +3498,14 @@ impl OutboundGenerationFence {
             })
     }
 
-    fn current(&self, terminal_id: &phux_protocol::ids::TerminalId) -> Option<OutboundGeneration> {
+    fn current(&self, terminal_id: &phux_protocol::ids::ResourceId) -> Option<OutboundGeneration> {
         match self.terminals.get(terminal_id) {
             Some(OutboundTerminalState::Generation(generation)) => Some(*generation),
             Some(OutboundTerminalState::Closed) | None => None,
         }
     }
 
-    fn is_closed(&self, terminal_id: &phux_protocol::ids::TerminalId) -> bool {
+    fn is_closed(&self, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
         matches!(
             self.terminals.get(terminal_id),
             Some(OutboundTerminalState::Closed)
@@ -3521,7 +3521,7 @@ impl OutboundGenerationFence {
 const fn generation_of_outbound_frame(
     frame: &FrameKind,
 ) -> Option<(
-    &phux_protocol::ids::TerminalId,
+    &phux_protocol::ids::ResourceId,
     phux_protocol::ids::StreamId,
     phux_protocol::ids::BootstrapId,
 )> {
@@ -3556,7 +3556,7 @@ const fn generation_of_outbound_frame(
             bootstrap_id,
             ..
         }
-        | FrameKind::TerminalOutput {
+        | FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
@@ -3570,13 +3570,13 @@ const fn generation_of_outbound_frame(
 mod outbound_generation_fence_tests {
     use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
-    use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
     use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason, TombstoneReason};
 
     use super::{Outbound, OutboundGenerationFence};
 
-    fn terminal() -> TerminalId {
-        TerminalId::local(1)
+    fn terminal() -> ResourceId {
+        ResourceId::local(1)
     }
 
     fn stream() -> StreamId {
@@ -3600,7 +3600,7 @@ mod outbound_generation_fence_tests {
     }
 
     fn output(bootstrap_id: BootstrapId) -> Outbound {
-        Outbound::Frame(FrameKind::TerminalOutput {
+        Outbound::Frame(FrameKind::ResourceOutput {
             terminal_id: terminal(),
             stream_id: stream(),
             bootstrap_id,
@@ -3696,7 +3696,7 @@ fn encode_into_batch(
 /// screen. Measured over a 60 ms-RTT link, restricting to them still cut a
 /// warm attach from 438 ms to 248 ms.
 ///
-/// Live `TERMINAL_OUTPUT` is the opposite shape and measured worse: thousands
+/// Live `RESOURCE_OUTPUT` is the opposite shape and measured worse: thousands
 /// of modest frames, each of which would cost the receiver one inflate plus
 /// one fresh allocation sized to the inflated frame, on the path where
 /// per-frame cost is exactly what matters. A `seq 1 300000` burst over a
@@ -3824,7 +3824,7 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         };
         // Encode this message plus everything already queued behind it into
         // one buffer, then hand the whole batch to the transport. A PTY burst
-        // fans out as many small `TERMINAL_OUTPUT` frames that arrive faster
+        // fans out as many small `RESOURCE_OUTPUT` frames that arrive faster
         // than the socket drains, and writing each one separately paid a
         // syscall per frame for bytes that were going down the same stream
         // anyway. Nothing waits: the drain is `try_recv`, so a lone keystroke
@@ -3865,7 +3865,7 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         // phux-l96p.10: `write_frames` is allowed to only buffer — the
         // WebSocket transport does, because one frame must still be one
         // binary message — so the batch leaves here, once, rather than
-        // paying a flush per 4 KiB `TERMINAL_OUTPUT`.
+        // paying a flush per 4 KiB `RESOURCE_OUTPUT`.
         if let Err(err) = writer.flush().await {
             debug!(?client_id, error = %err, "writer flush failed; client task ending");
             let _ = writer.close().await;
@@ -4515,7 +4515,7 @@ mod fatal_preflight_close_tests {
 /// not recorded.
 #[cfg(test)]
 mod satellite_metadata_subscription_tests {
-    use phux_protocol::ids::{SatelliteHost, TerminalId as WireTerminalId};
+    use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
     use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope};
 
     use super::handle_subscribe_metadata;
@@ -4524,7 +4524,7 @@ mod satellite_metadata_subscription_tests {
     const AGENT_KEY: &str = "phux.agent/v1";
 
     fn satellite_scope() -> Scope {
-        Scope::Terminal(WireTerminalId::Satellite {
+        Scope::Resource(WireResourceId::Satellite {
             host: SatelliteHost::new("gpubox"),
             id: 7,
         })
@@ -4577,13 +4577,13 @@ mod satellite_metadata_subscription_tests {
     /// The refusal is scoped to satellite `Terminal` scopes only. A local
     /// pane's record is the whole reason this subscription exists, and
     /// `Global` / `Group` keys (the TUI's layout coordination) never carry a
-    /// `TerminalId` at all.
+    /// `ResourceId` at all.
     #[test]
     fn local_and_unscoped_subscriptions_are_untouched() {
         let state = SharedState::new();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
         let client = ClientId(2);
-        let local = Scope::Terminal(WireTerminalId::local(1));
+        let local = Scope::Resource(WireResourceId::local(1));
 
         handle_subscribe_metadata(&state, client, local.clone(), AGENT_KEY.to_owned(), &tx);
         handle_subscribe_metadata(
@@ -4613,7 +4613,7 @@ mod satellite_metadata_subscription_tests {
 
 #[cfg(test)]
 mod terminal_metadata_scope_tests {
-    use phux_protocol::ids::TerminalId as WireTerminalId;
+    use phux_protocol::ids::ResourceId as WireResourceId;
     use phux_protocol::wire::frame::Scope;
     use tokio_util::sync::CancellationToken;
 
@@ -4625,7 +4625,7 @@ mod terminal_metadata_scope_tests {
         let state = SharedState::new();
         let (_session, _window, pane) = state.with_mut(|s| s.seed_session("scope-test"));
         let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
-        let scope = Scope::Terminal(wire);
+        let scope = Scope::Resource(wire);
         let token = CancellationToken::new();
 
         handle_set_metadata(
@@ -4648,7 +4648,7 @@ mod terminal_metadata_scope_tests {
                 ClientId(1),
                 request_id,
                 &scope,
-                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
                 invalid,
                 &token,
             );
@@ -4657,7 +4657,7 @@ mod terminal_metadata_scope_tests {
                     .with(|s| {
                         s.metadata().get(
                             &scope,
-                            phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                            phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
                         )
                     })
                     .is_none(),
@@ -4682,7 +4682,7 @@ mod terminal_metadata_scope_tests {
             "reaped Terminal metadata is deleted and a stale id cannot recreate it"
         );
 
-        let missing = Scope::Terminal(WireTerminalId::local(u32::MAX));
+        let missing = Scope::Resource(WireResourceId::local(u32::MAX));
         handle_set_metadata(
             &state,
             ClientId(1),
@@ -4729,8 +4729,8 @@ mod terminal_metadata_scope_tests {
         let state = SharedState::new();
         let (_session, _window, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
         let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
-        let scope = Scope::Terminal(wire);
-        let key = phux_protocol::wire::frame::TERMINAL_PANE_OCCUPANT_KEY;
+        let scope = Scope::Resource(wire);
+        let key = phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
         let authoritative = br#"{"foreground":"zsh","is_pane_shell":true}"#.to_vec();
         state.with_mut(|s| s.metadata_set(&scope, key, authoritative.clone()));
 
@@ -4792,8 +4792,8 @@ mod terminal_metadata_scope_tests {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod agent_drain_tests {
-    use phux_protocol::ids::TerminalId as WireTerminalId;
-    use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+    use phux_protocol::ids::ResourceId as WireResourceId;
+    use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
     use super::{retract_hook, spawn_agent_state_drain, state_change_hook};
     use crate::agent_asked::AskedPayload;
@@ -4811,8 +4811,8 @@ mod agent_drain_tests {
 
     // --- agent-state-changed hook (the notification seam) -------------------
 
-    fn terminal() -> WireTerminalId {
-        WireTerminalId::local(1)
+    fn terminal() -> WireResourceId {
+        WireResourceId::local(1)
     }
 
     fn ctx(event: &crate::hooks::HookEvent, key: &str) -> Option<String> {
@@ -4888,7 +4888,7 @@ mod agent_drain_tests {
 
     /// Drive the real drain task to quiescence over `events`, and hand back the
     /// stored `phux.agent/v1` bytes.
-    async fn drain(state: &SharedState, terminal: &WireTerminalId, events: Vec<AgentDetectEvent>) {
+    async fn drain(state: &SharedState, terminal: &WireResourceId, events: Vec<AgentDetectEvent>) {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         spawn_agent_state_drain(state.clone(), terminal.clone(), rx);
         for event in events {
@@ -4902,10 +4902,10 @@ mod agent_drain_tests {
         }
     }
 
-    fn stored(state: &SharedState, terminal: &WireTerminalId) -> Option<AgentRecordJson> {
-        let scope = Scope::Terminal(terminal.clone());
+    fn stored(state: &SharedState, terminal: &WireResourceId) -> Option<AgentRecordJson> {
+        let scope = Scope::Resource(terminal.clone());
         state
-            .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+            .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
             .and_then(|bytes| AgentRecordJson::decode(&bytes))
     }
 
@@ -4923,14 +4923,14 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 // The human names the pane.
                 let declared = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
                 });
 
                 // The agent works, then exits back to the shell.
@@ -4971,7 +4971,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
+                let terminal = WireResourceId::new(1);
 
                 drain(
                     &state,
@@ -5013,14 +5013,14 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let declared =
                     br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
                 });
 
                 // The detector derives all it likes; none of it lands.
@@ -5081,18 +5081,18 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
                 });
 
                 drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
                 let first = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("withdrawn");
 
                 drain(
@@ -5102,7 +5102,7 @@ mod agent_drain_tests {
                 )
                 .await;
                 let after = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("still there");
 
                 assert_eq!(
@@ -5123,13 +5123,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let declared = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
                 });
 
                 drain(
@@ -5165,7 +5165,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
+                let terminal = WireResourceId::new(1);
 
                 drain(
                     &state,
@@ -5209,7 +5209,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
+                let terminal = WireResourceId::new(1);
 
                 drain(
                     &state,
@@ -5245,7 +5245,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
+                let terminal = WireResourceId::new(1);
 
                 drain(
                     &state,
@@ -5290,13 +5290,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
                 });
 
                 drain(
@@ -5331,7 +5331,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
+                let terminal = WireResourceId::new(1);
 
                 drain(
                     &state,
@@ -5380,14 +5380,14 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 // The shim's one identity write, at SessionStart.
                 let shim = br#"{"name":"claude","kind":"claude"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
                 });
 
                 // Claude runs, then the human kills it and starts codex. The
@@ -5433,13 +5433,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let shim = br#"{"name":"claude","kind":"claude"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
                 });
                 drain(
                     &state,
@@ -5451,7 +5451,7 @@ mod agent_drain_tests {
                 )
                 .await;
                 let first = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("written");
 
                 // Twenty more ticks, each deriving something different from
@@ -5468,7 +5468,7 @@ mod agent_drain_tests {
                 drain(&state, &terminal, repeats).await;
 
                 let after = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("still there");
                 assert_eq!(
                     first, after,
@@ -5490,13 +5490,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let labelled = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, labelled);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, labelled.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, labelled.to_vec());
                 });
 
                 drain(
@@ -5528,13 +5528,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let shim = br#"{"name":"claude","kind":"claude"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
                 });
 
                 drain(
@@ -5575,13 +5575,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let shim = br#"{"name":"claude","kind":"claude"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
                 });
                 drain(
                     &state,
@@ -5596,7 +5596,7 @@ mod agent_drain_tests {
 
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_delete(&terminal);
-                    s.metadata_delete(&scope, TERMINAL_AGENT_KEY);
+                    s.metadata_delete(&scope, RESOURCE_AGENT_KEY);
                 });
                 drain(
                     &state,
@@ -5635,7 +5635,7 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (first, second) = (WireTerminalId::new(1), WireTerminalId::new(2));
+                let (first, second) = (WireResourceId::new(1), WireResourceId::new(2));
 
                 for terminal in [&first, &second] {
                     drain(
@@ -5666,13 +5666,13 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, named);
-                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, named.to_vec());
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, named.to_vec());
                 });
 
                 drain(
@@ -5712,8 +5712,8 @@ mod agent_drain_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let terminal = WireTerminalId::new(1);
-                let scope = Scope::Terminal(terminal.clone());
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
 
                 drain(
                     &state,
@@ -5722,7 +5722,7 @@ mod agent_drain_tests {
                 )
                 .await;
                 let first = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("written once");
 
                 // Nine more identical emissions.
@@ -5732,7 +5732,7 @@ mod agent_drain_tests {
                 drain(&state, &terminal, repeats).await;
 
                 let after = state
-                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
                     .expect("still there");
                 assert_eq!(
                     first, after,

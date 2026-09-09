@@ -50,7 +50,7 @@ pub(super) enum UpgradeError {
     #[error("pane {pane:?} did not provide an upgrade handoff: {reason}")]
     PaneHandoff {
         /// The pane whose actor failed to answer.
-        pane: phux_core::ids::TerminalId,
+        pane: phux_core::ids::ResourceId,
         /// Whether its mailbox closed, reply disappeared, or deadline elapsed.
         reason: &'static str,
     },
@@ -61,7 +61,7 @@ pub(super) enum UpgradeError {
     #[error("pane {pane:?} returned an invalid PTY handoff (master fd and child pid must match)")]
     InvalidPaneHandoff {
         /// The pane whose actor returned an inconsistent pair.
-        pane: phux_core::ids::TerminalId,
+        pane: phux_core::ids::ResourceId,
     },
     /// All pane actors share one bounded preparation window.
     #[error("pane upgrade handoffs did not complete within the aggregate deadline")]
@@ -170,7 +170,7 @@ pub(super) struct UpgradePlan {
     _fd_flags: FdFlagsGuard,
     _blob_file: std::fs::File,
     _listener_fd: OwnedFd,
-    _handoffs: HashMap<phux_core::ids::TerminalId, PaneUpgradeHandle>,
+    _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -183,7 +183,7 @@ struct UpgradeContext {
     /// blob is reassembled only if the tree still matches this exactly.
     tree_identity: StateBlob,
     pane_senders: Vec<(
-        phux_core::ids::TerminalId,
+        phux_core::ids::ResourceId,
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
 }
@@ -266,7 +266,7 @@ fn reassemble_unchanged_tree(
     listener_fd: RawFd,
     inherited_fd: RawFd,
     tree_identity: &StateBlob,
-    handoffs: &HashMap<phux_core::ids::TerminalId, PaneUpgradeHandle>,
+    handoffs: &HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
 ) -> Result<StateBlob, UpgradeError> {
     state
         .with(|s| {
@@ -315,7 +315,7 @@ fn clear_inherited_cloexec(
 }
 
 async fn request_pane_handoff(
-    pane: phux_core::ids::TerminalId,
+    pane: phux_core::ids::ResourceId,
     upgrade: &mpsc::Sender<UpgradeHandleRequest>,
 ) -> Result<PaneUpgradeHandle, UpgradeError> {
     let (reply, rx) = oneshot::channel();
@@ -334,11 +334,11 @@ async fn request_pane_handoff(
 
 async fn collect_pane_handoffs(
     handles: Vec<(
-        phux_core::ids::TerminalId,
+        phux_core::ids::ResourceId,
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
     deadline: Duration,
-) -> Result<HashMap<phux_core::ids::TerminalId, PaneUpgradeHandle>, UpgradeError> {
+) -> Result<HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>, UpgradeError> {
     tokio::time::timeout(deadline, async move {
         let pane_count = handles.len();
         let mut pending = handles
@@ -760,7 +760,7 @@ mod tests {
         let (upgrade, receiver) = mpsc::channel(1);
         drop(receiver);
 
-        let result = request_pane_handoff(phux_core::ids::TerminalId::default(), &upgrade).await;
+        let result = request_pane_handoff(phux_core::ids::ResourceId::default(), &upgrade).await;
 
         assert!(matches!(
             result,
@@ -776,7 +776,7 @@ mod tests {
         let (upgrade, _receiver) = mpsc::channel(1);
 
         let result = collect_pane_handoffs(
-            vec![(phux_core::ids::TerminalId::default(), upgrade)],
+            vec![(phux_core::ids::ResourceId::default(), upgrade)],
             Duration::from_secs(2),
         )
         .await;
@@ -794,7 +794,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(1_500)).await;
                 let _ = request.reply.send(no_pty_handoff());
             });
-            handles.push((phux_core::ids::TerminalId::default(), sender));
+            handles.push((phux_core::ids::ResourceId::default(), sender));
         }
 
         let handoffs = collect_pane_handoffs(handles, Duration::from_secs(2))
@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn pane_handoff_rejects_a_half_present_pty_pair() {
-        let pane = phux_core::ids::TerminalId::default();
+        let pane = phux_core::ids::ResourceId::default();
         let (sender, mut receiver) = mpsc::channel::<UpgradeHandleRequest>(1);
         tokio::spawn(async move {
             let request = receiver.recv().await.unwrap();

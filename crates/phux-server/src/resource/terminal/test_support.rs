@@ -200,11 +200,11 @@ pub(super) fn render_viewport(t: &GhosttyTerminal<'_, '_>) -> Vec<String> {
     out
 }
 
-/// Drain every currently-queued `TERMINAL_OUTPUT` body from a consumer's
+/// Drain every currently-queued `RESOURCE_OUTPUT` body from a consumer's
 /// mailbox (its `seq` and bytes).
 pub(super) fn drain_outputs(rx: &mut mpsc::Receiver<Outbound>) -> Vec<(u64, Vec<u8>)> {
     let mut frames = Vec::new();
-    while let Ok(Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. })) = rx.try_recv() {
+    while let Ok(Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. })) = rx.try_recv() {
         frames.push((seq, bytes.to_vec()));
     }
     frames

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 
 use crate::layout::{SplitDir, Workspace};
@@ -17,8 +17,8 @@ use crate::layout::{SplitDir, Workspace};
 /// and a measurement of the scheduler on a saturated one (phux-br1f).
 pub(super) const PEER_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-pub(super) fn tid(id: u32) -> TerminalId {
-    TerminalId::local(id)
+pub(super) fn tid(id: u32) -> ResourceId {
+    ResourceId::local(id)
 }
 
 pub(super) fn test_engine_kernel() -> super::super::pane_state::AttachKernel {

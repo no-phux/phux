@@ -30,7 +30,7 @@
 
 use std::path::Path;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
@@ -66,7 +66,7 @@ pub struct AskedPayload {
 /// target pane, or server-side payload rejection.
 pub async fn report(
     socket: &Path,
-    pane: TerminalId,
+    pane: ResourceId,
     payload: AskedPayload,
 ) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
@@ -265,7 +265,7 @@ pub fn answer_events(text: &str) -> Vec<InputEvent> {
 /// "the connection broke" are different questions with different remedies.
 pub async fn deliver_answer(
     conn: &mut Connection,
-    pane: &TerminalId,
+    pane: &ResourceId,
     operation_id: InputOperationId,
     request_id: u32,
     text: &str,

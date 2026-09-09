@@ -93,7 +93,7 @@ surfaces there as a reviewable diff.
 ## 2. Nested encoding (positional within a field)
 
 Only the **message body** is field-tagged. A field's value MAY itself be a
-nested tagged union or sub-record (`TerminalId`, `ViewportInfo`,
+nested tagged union or sub-record (`ResourceId`, `ViewportInfo`,
 `AttachTarget`, `Scope`, `Command` / `CommandResult` / `CommandValue`,
 `SpawnResult`, `AgentEvent`, `SessionSnapshot`, `LayoutNode`, ...); these are
 encoded **positionally** inside the field's length-delimited value, with their

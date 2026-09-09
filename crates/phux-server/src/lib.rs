@@ -3,7 +3,7 @@
 //! Owns the canonical state of every session, window, and terminal for one
 //! user. Hosts an IPC endpoint for clients (see `phux-protocol`), feeds
 //! PTY output into per-terminal `libghostty_vt::Terminal` instances, and
-//! forwards bytes to attached clients as `TERMINAL_OUTPUT` frames per
+//! forwards bytes to attached clients as `RESOURCE_OUTPUT` frames per
 //! ADR-0013.
 
 #![deny(missing_docs)]

@@ -5,7 +5,7 @@ const vt = @import("ghostty-vt");
 const grid = @import("../../terminal/grid.zig");
 const provider_contract = @import("provider_contract");
 
-pub const LocalTerminalId = provider_contract.LocalTerminalId;
+pub const LocalResourceId = provider_contract.LocalResourceId;
 pub const TerminalRef = provider_contract.TerminalRef;
 pub const ReplicaOwner = provider_contract.ReplicaOwner;
 pub const Phase = provider_contract.Phase;
@@ -47,7 +47,7 @@ pub const max_terminals: usize = 32;
 /// thread and descriptor cost of every shell it opened.
 pub const max_live_shells: usize = native_sdk.max_effect_ptys;
 
-pub const first_terminal_raw: u64 = @intFromEnum(LocalTerminalId.terminal_1);
+pub const first_terminal_raw: u64 = @intFromEnum(LocalResourceId.terminal_1);
 pub const clipboard_key: u64 = 100;
 pub const paste_clipboard_key: u64 = 101;
 pub const outbound_buffer_bytes: usize = 64 * 1024;
@@ -125,16 +125,16 @@ pub const ShellCommand = struct {
     }
 };
 
-pub fn localRef(id: LocalTerminalId) TerminalRef {
+pub fn localRef(id: LocalResourceId) TerminalRef {
     return .{ .provider_id = .local, .terminal_id = .{ .local = id } };
 }
 
-pub fn initialTerminalId(index: usize) LocalTerminalId {
+pub fn initialResourceId(index: usize) LocalResourceId {
     return @enumFromInt(first_terminal_raw + index);
 }
 
 pub fn initialTerminalRef(index: usize) TerminalRef {
-    return localRef(initialTerminalId(index));
+    return localRef(initialResourceId(index));
 }
 
 pub fn ptyKey(index: usize) u64 {

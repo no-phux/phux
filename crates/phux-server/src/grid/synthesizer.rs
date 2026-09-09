@@ -436,7 +436,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     ///
     /// Fresh render state + iterators per call, NOT the pooled
     /// `self.pool`. The pooled state
-    /// can serve stale rows: after a `TERMINAL_RESIZE` raced an
+    /// can serve stale rows: after a `RESIZE_TERMINAL` raced an
     /// attach/resync snapshot (which walks the grid through its own
     /// fresh state), the pooled cache reported the new dims yet kept
     /// returning the pre-write (empty) row bodies for every later

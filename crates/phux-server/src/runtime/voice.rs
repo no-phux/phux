@@ -13,7 +13,7 @@
 //! not double it, and it inserts without submitting: the client shows the
 //! text it got back and the user decides whether to press Enter.
 
-use phux_protocol::ids::{FileUploadId, InputOperationId, TerminalId};
+use phux_protocol::ids::{FileUploadId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
@@ -31,7 +31,7 @@ pub(super) async fn handle_transcribe(
     state: &SharedState,
     client_id: ClientId,
     upload_id: FileUploadId,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     input_lane: Option<&InputLaneHandle>,
 ) -> CommandResult {
     if terminal_id.host().is_some() {
@@ -151,7 +151,7 @@ async fn run_transcriber(
 async fn paste_transcript(
     state: &SharedState,
     client_id: ClientId,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     input_lane: Option<&InputLaneHandle>,
     text: &str,
 ) -> CommandResult {

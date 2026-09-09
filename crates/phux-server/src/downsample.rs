@@ -1,7 +1,7 @@
 //! Per-client VT byte-stream rewriter (SPEC §6.2, [ADR-0013]).
 //!
 //! Under ADR-0013 the server forwards raw PTY bytes to each subscribed
-//! client as `TERMINAL_OUTPUT` frames. Per SPEC §6.2 those bytes MUST be
+//! client as `RESOURCE_OUTPUT` frames. Per SPEC §6.2 those bytes MUST be
 //! adapted to the client's advertised capability set before forwarding:
 //!
 //! - Truecolor SGR (`CSI 38;2;R;G;B m` / `CSI 48;2;R;G;B m`) is quantised

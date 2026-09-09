@@ -25,10 +25,10 @@ by a newer one, the newer line is the operative reading.
 
 - [0064](./0064-playback-as-a-pane.md) `phux play` creates a real Terminal fed from a cast; no wire change.
 - [0062](./0062-headless-resize-and-window-size-policy.md) An explicit headless resize applies now but does not outrank the `window-size` policy.
-- [0056](./0056-cross-session-terminal-move.md) `MOVE_TERMINAL` re-parents a live Terminal across sessions on L1; geometry stays L3.
-- [0050](./0050-explicit-spawn-ownership.md) `SPAWN_TERMINAL` may name an owning Terminal; placement remains a client-written L3 concern.
+- [0056](./0056-cross-session-terminal-move.md) `MOVE_RESOURCE` re-parents a live Terminal across sessions on L1; geometry stays L3.
+- [0050](./0050-explicit-spawn-ownership.md) `SPAWN_RESOURCE` may name an owning Terminal; placement remains a client-written L3 concern.
 - [0027](./0027-terminal-references-and-l3-links.md) A Terminal is one identity with one geometry; views, tags, and links are client-side.
-- [0016](./0016-terminal-id-as-wire-primary.md) `TerminalId`, local or satellite, is the wire primary; `PaneId` is consumer-side.
+- [0016](./0016-terminal-id-as-wire-primary.md) `ResourceId`, local or satellite, is the wire primary; `PaneId` is consumer-side.
 - [0015](./0015-protocol-layering.md) The wire is L1 Terminals, L2 Collections, L3 metadata; sessions and windows are conventions.
 - [0011](./0011-protocol-core-independence.md) `phux-protocol` and `phux-core` share no dependency edge; `IdBridge` is their meeting point.
 
@@ -104,7 +104,7 @@ by a newer one, the newer line is the operative reading.
 - [0068](./0068-native-agent-session-restore.md) A launch records a bounded native session identity; restore rebuilds resume argv from the integration.
 - [0067](./0067-cache-preserving-agent-fleet-context.md) Fleet context reaches models as sequenced tail deltas; static prompts never carry live values.
 - [0046](./0046-server-side-agent-state-detection.md) The server derives agent state from title and screen; unmatched means `idle`, never `blocked`.
-- [0042](./0042-launch-executor.md) `phux launch` spawns an integration template's argv through `SPAWN_TERMINAL`; no shell evaluation.
+- [0042](./0042-launch-executor.md) `phux launch` spawns an integration template's argv through `SPAWN_RESOURCE`; no shell evaluation.
 - [0040](./0040-agent-identity-metadata.md) Agent identity and lifecycle are one L3 record, `phux.agent/v1`, scoped to the Terminal.
 - [0036](./0036-agent-asked-detection.md) The `phux-ask` title sentinel triggers `Asked`; hooks are the next authority, scraping the fallback.
 - [0035](./0035-agent-asked-event.md) A blocked agent's question is an additive `AgentEvent::Asked` on the agent-event stream.
@@ -151,7 +151,7 @@ Drafted and under review; none of these governs anything yet.
 
 - [0104](./0104-parent-bindings-are-l1-lifecycle.md) Parent bindings between resources are L1 lifecycle; closing a parent closes its children.
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) An `AgentSession` is the second resource kind, fed by a producer over an append command.
-- [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; Terminal is the first; `ResourceId` replaces `TerminalId`.
+- [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; Terminal is the first; `ResourceId` replaces `ResourceId`.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

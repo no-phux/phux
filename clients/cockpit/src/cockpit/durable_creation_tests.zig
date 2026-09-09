@@ -231,7 +231,7 @@ pub fn restoredSubscription() !void {
     const engine = try start();
     defer engine.destroy();
     const model = engine.model;
-    const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteTerminalId.fromPhux(0, 8, "") } };
+    const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, 8, "") } };
     const remote = model.phux().?;
     _ = try remote.requestWorkspaceRefresh();
     try workspaceReply(engine, "workspace_split_metadata.bin", 8, 3);
@@ -462,7 +462,7 @@ test "refused shared creation retains the accepted durable terminal in the catal
 }
 
 fn expectCatalogTerminal(engine: *engine_module.Engine, id: u32) !void {
-    const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteTerminalId.fromPhux(0, id, "") } };
+    const ref: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, id, "") } };
     const remote = engine.model.phux().?;
     try testing.expect(remote.terminalKnown(ref));
     for (remote.catalogTerminals()) |entry| {

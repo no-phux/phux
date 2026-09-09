@@ -1,13 +1,13 @@
-//! phux-l96p.10, second pump: an `ATTACH_TERMINAL` consumer that falls behind
+//! phux-l96p.10, second pump: an `ATTACH_RESOURCE` consumer that falls behind
 //! must converge, exactly like a session-attached one.
 //!
-//! `ATTACH_TERMINAL` has its own output pump (`runtime::commands`), separate
+//! `ATTACH_RESOURCE` has its own output pump (`runtime::commands`), separate
 //! from the ATTACH pump in `runtime::attach`. When the broadcast gap fence was
 //! added it went into one of them, and this is the path that did not get it:
 //! `phux rec`, `phux play`, headless pane watchers, the FFI and mobile
 //! consumers, and a federation hub's proxy subscription all arrive here. Its
 //! lag handler asked the actor for a resync and then resumed forwarding live
-//! deltas immediately, putting a `TERMINAL_OUTPUT` whose `seq` skips the
+//! deltas immediately, putting a `RESOURCE_OUTPUT` whose `seq` skips the
 //! dropped window on the wire — which the consumer's session kernel rejects as
 //! a protocol error, killing the consumer before the resync can land.
 //!
@@ -16,10 +16,10 @@
 //! Before the fix this fails on the first one, seconds into the drain.
 //!
 //! One trap this test fell into once, worth naming: the bootstrap arrives
-//! *interleaved ahead of* the `COMMAND_RESULT` that answers `ATTACH_TERMINAL`,
+//! *interleaved ahead of* the `COMMAND_RESULT` that answers `ATTACH_RESOURCE`,
 //! so a helper that loops discarding everything but the result swallows the
 //! whole opening generation, and the stream then looks like it began with a
-//! bare `TERMINAL_OUTPUT`. It does not: ADR-0007 s4 requires the snapshot to
+//! bare `RESOURCE_OUTPUT`. It does not: ADR-0007 s4 requires the snapshot to
 //! precede every delta and the server honours it (`hub_relay_federation.rs`
 //! asserts the same ordering through a hub). [`attach_terminal_only`] returns
 //! the interleaved frames for exactly that reason, and the oracle below is
@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::{BootstrapId, GroupId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
@@ -62,7 +62,7 @@ const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
 /// Identity of one bootstrap generation on the wire.
-type Generation = (TerminalId, StreamId, BootstrapId);
+type Generation = (ResourceId, StreamId, BootstrapId);
 
 /// Per-generation live-sequence expectation, mirroring the client kernel's
 /// `expect_next_seq`.
@@ -92,7 +92,7 @@ impl SequenceOracle {
         self.live_frames += 1;
         let expected = self.next.get_mut(key).unwrap_or_else(|| {
             panic!(
-                "TERMINAL_OUTPUT seq={seq} names a generation no BOOTSTRAP_BEGIN opened; \
+                "RESOURCE_OUTPUT seq={seq} names a generation no BOOTSTRAP_BEGIN opened; \
                  ADR-0007 s4 requires the snapshot to precede every delta"
             )
         });
@@ -129,7 +129,7 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
             screen.write(payload);
             Applied::Other
         }
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
@@ -155,10 +155,10 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
 /// A second pane rather than the seed pane, so the seed keeps the session
 /// alive for the whole run and the burst pane's exit cannot trip the
 /// last-pane self-exit while the watcher is still reading.
-async fn spawn_burst_pane(owner: &mut UnixStream) -> TerminalId {
+async fn spawn_burst_pane(owner: &mut UnixStream) -> ResourceId {
     send_frame(
         owner,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id: 1,
             group: GroupId::new(1),
             command: Some(vec![
@@ -179,26 +179,26 @@ async fn spawn_burst_pane(owner: &mut UnixStream) -> TerminalId {
     .await;
     loop {
         let (_type_byte, frame) = recv_typed(owner).await;
-        if let FrameKind::TerminalSpawned { request_id, result } = frame
+        if let FrameKind::ResourceSpawned { request_id, result } = frame
             && request_id == 1
         {
             match result {
                 SpawnResult::Ok(id) => return id,
-                other => panic!("SPAWN_TERMINAL failed: {other:?}"),
+                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
             }
         }
     }
 }
 
-/// Subscribe `watcher` to `pane` with `ATTACH_TERMINAL` and nothing else — no
+/// Subscribe `watcher` to `pane` with `ATTACH_RESOURCE` and nothing else — no
 /// session-scoped `ATTACH` on this connection, ever. That is the shape `phux
 /// rec` and the FFI consumers take.
-async fn attach_terminal_only(watcher: &mut UnixStream, pane: &TerminalId) -> Vec<FrameKind> {
+async fn attach_terminal_only(watcher: &mut UnixStream, pane: &ResourceId) -> Vec<FrameKind> {
     send_frame(
         watcher,
         &FrameKind::Command {
             request_id: 100,
-            command: Command::AttachTerminal {
+            command: Command::AttachResource {
                 terminal_id: pane.clone(),
             },
         },
@@ -217,7 +217,7 @@ async fn attach_terminal_only(watcher: &mut UnixStream, pane: &TerminalId) -> Ve
         {
             assert!(
                 matches!(result, CommandResult::Ok),
-                "ATTACH_TERMINAL must succeed, got {result:?}",
+                "ATTACH_RESOURCE must succeed, got {result:?}",
             );
             return interleaved;
         }
@@ -254,7 +254,7 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
         }
         assert!(
             oracle.generations >= 1,
-            "ATTACH_TERMINAL must deliver a bootstrap before any delta \
+            "ATTACH_RESOURCE must deliver a bootstrap before any delta \
              (ADR-0007 s4); got {opening:?}",
         );
 
@@ -275,7 +275,7 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
         loop {
             assert!(
                 started.elapsed() < CONVERGE_DEADLINE,
-                "ATTACH_TERMINAL consumer never converged after the broadcast gap",
+                "ATTACH_RESOURCE consumer never converged after the broadcast gap",
             );
             let (_type_byte, frame) = recv_typed(&mut watcher).await;
             if let Applied::Fatal(what) = apply(&frame, &mut oracle, &mut screen) {

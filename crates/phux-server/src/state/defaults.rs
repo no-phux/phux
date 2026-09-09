@@ -57,7 +57,7 @@ impl ServerState {
 
     /// Set the per-pane scrollback bounds (`defaults.history-limit` and
     /// `defaults.history-bytes`) used by the attach-time creation path
-    /// and `SPAWN_TERMINAL`. Called once at server startup to mirror
+    /// and `SPAWN_RESOURCE`. Called once at server startup to mirror
     /// [`crate::runtime::ServerConfig::scrollback`] into state.
     pub const fn set_scrollback_limits(&mut self, scrollback: phux_config::ScrollbackLimits) {
         self.config.scrollback = scrollback;
@@ -95,7 +95,7 @@ impl ServerState {
     }
 
     /// Set the working-directory inheritance policy
-    /// (`defaults.cwd-inheritance`) used by `SPAWN_TERMINAL`. Called once
+    /// (`defaults.cwd-inheritance`) used by `SPAWN_RESOURCE`. Called once
     /// at server startup to mirror
     /// [`crate::runtime::ServerConfig::cwd_inheritance`] into state.
     pub const fn set_cwd_inheritance(&mut self, mode: phux_config::CwdInheritance) {
@@ -117,7 +117,7 @@ impl ServerState {
     }
 
     /// Read the default `TERM` set by [`Self::set_term`]. A per-spawn
-    /// `SPAWN_TERMINAL.env` entry for `TERM` overrides this baseline.
+    /// `SPAWN_RESOURCE.env` entry for `TERM` overrides this baseline.
     #[must_use]
     pub fn term(&self) -> &str {
         &self.config.term

@@ -18,9 +18,9 @@ use super::frame::{
     TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE,
     TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
     TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA,
-    TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED,
-    TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
+    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
+    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
     TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event, decode_attach_target,
     decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
     decode_bootstrap_stream_profile, decode_command, decode_command_result, decode_env,
@@ -33,7 +33,7 @@ use crate::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
 };
-use crate::ids::{BootstrapId, GroupId, ResourceKind, StreamId, TerminalId};
+use crate::ids::{BootstrapId, GroupId, ResourceId, ResourceKind, StreamId};
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
@@ -362,7 +362,7 @@ impl<'a> Decoder<'a> {
             TYPE_HELLO_OK => self.decode_hello_ok(),
             TYPE_PING => self.decode_ping(),
             TYPE_PONG => self.decode_pong(),
-            TYPE_TERMINAL_OUTPUT => self.decode_terminal_output(),
+            TYPE_RESOURCE_OUTPUT => self.decode_terminal_output(),
             TYPE_ATTACH => self.decode_attach(),
             TYPE_DETACH => self.decode_detach(),
             TYPE_INPUT_KEY => self.decode_input_key(),
@@ -394,12 +394,12 @@ impl<'a> Decoder<'a> {
             TYPE_METADATA_CHANGED => self.decode_metadata_changed(),
             TYPE_METADATA_VALUE => self.decode_metadata_value(),
             TYPE_METADATA_KEYS => self.decode_metadata_keys(),
-            TYPE_SPAWN_TERMINAL => self.decode_spawn_terminal(),
-            TYPE_TERMINAL_SPAWNED => self.decode_terminal_spawned(),
-            TYPE_MOVE_TERMINAL => self.decode_move_terminal(),
-            TYPE_TERMINAL_MOVED => self.decode_terminal_moved(),
-            TYPE_TERMINAL_CLOSED => self.decode_terminal_closed(),
-            TYPE_TERMINAL_RESIZE => self.decode_terminal_resize(),
+            TYPE_SPAWN_RESOURCE => self.decode_spawn_terminal(),
+            TYPE_RESOURCE_SPAWNED => self.decode_terminal_spawned(),
+            TYPE_MOVE_RESOURCE => self.decode_move_terminal(),
+            TYPE_RESOURCE_MOVED => self.decode_terminal_moved(),
+            TYPE_RESOURCE_CLOSED => self.decode_terminal_closed(),
+            TYPE_RESIZE_TERMINAL => self.decode_terminal_resize(),
             TYPE_COMMAND => self.decode_command(),
             TYPE_COMMAND_RESULT => self.decode_command_result(),
             TYPE_SUBSCRIBE_EVENTS => self.decode_subscribe_events(),
@@ -645,9 +645,9 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    /// Decode a `TERMINAL_OUTPUT` message body into [`FrameKind::TerminalOutput`].
+    /// Decode a `RESOURCE_OUTPUT` message body into [`FrameKind::ResourceOutput`].
     fn decode_terminal_output(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut stream_id: Option<StreamId> = None;
         let mut bootstrap_id: Option<BootstrapId> = None;
         let mut seq: Option<u64> = None;
@@ -672,7 +672,7 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::TerminalOutput {
+        Ok(FrameKind::ResourceOutput {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
             bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
@@ -723,7 +723,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `INPUT_KEY` message body into [`FrameKind::InputKey`].
     fn decode_input_key(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut event: Option<KeyEvent> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -742,7 +742,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `INPUT_MOUSE` message body into [`FrameKind::InputMouse`].
     fn decode_input_mouse(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut event: Option<MouseEvent> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -761,7 +761,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `INPUT_FOCUS` message body into [`FrameKind::InputFocus`].
     fn decode_input_focus(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut event: Option<FocusEvent> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -783,7 +783,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `INPUT_PASTE` message body into [`FrameKind::InputPaste`].
     fn decode_input_paste(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut event: Option<crate::input::paste::PasteEvent> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -802,7 +802,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `INPUT_TERMINAL_REPLY` message body into [`FrameKind::InputTerminalReply`].
     fn decode_input_terminal_reply(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut bytes: Option<bytes::Bytes> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -826,7 +826,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode a `FRAME_ACK` message body into [`FrameKind::FrameAck`].
     fn decode_frame_ack(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut stream_id: Option<StreamId> = None;
         let mut bootstrap_id: Option<BootstrapId> = None;
         let mut seq: Option<u64> = None;
@@ -1326,7 +1326,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode a `BELL` message body into [`FrameKind::Bell`].
     fn decode_bell(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         while let Some((id, value)) = self.read_field()? {
             if id == field::bell::TERMINAL_ID {
                 terminal_id = Some(sub!(value, decode_terminal_id));
@@ -1537,7 +1537,7 @@ impl<'a> Decoder<'a> {
         Ok(FrameKind::MetadataKeys { request_id, keys })
     }
 
-    /// Decode a `SPAWN_TERMINAL` message body into [`FrameKind::SpawnTerminal`].
+    /// Decode a `SPAWN_RESOURCE` message body into [`FrameKind::SpawnResource`].
     fn decode_spawn_terminal(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut group = GroupId::new(0);
@@ -1546,11 +1546,11 @@ impl<'a> Decoder<'a> {
         let mut env: Option<Vec<(String, String)>> = None;
         let mut term: Option<String> = None;
         let mut satellite: Option<crate::ids::SatelliteHost> = None;
-        let mut owner_terminal: Option<crate::ids::TerminalId> = None;
+        let mut owner_terminal: Option<crate::ids::ResourceId> = None;
         let mut agent_session: Option<Vec<u8>> = None;
         let mut initial_size: Option<(u16, u16)> = None;
         let mut kind = ResourceKind::Terminal;
-        let mut parent: Option<TerminalId> = None;
+        let mut parent: Option<ResourceId> = None;
         let mut provider: Option<String> = None;
         let mut native_id: Option<String> = None;
         while let Some((id, value)) = self.read_field()? {
@@ -1622,7 +1622,7 @@ impl<'a> Decoder<'a> {
         // and so is one that spells the defaults out; both decode to `None`
         // so the value is canonical and re-encodes to the pre-kind bytes.
         let resource = (!resource.is_default()).then(|| Box::new(resource));
-        let frame = FrameKind::SpawnTerminal {
+        let frame = FrameKind::SpawnResource {
             request_id,
             group,
             command,
@@ -1639,7 +1639,7 @@ impl<'a> Decoder<'a> {
         Ok(frame)
     }
 
-    /// Decode a `TERMINAL_SPAWNED` message body into [`FrameKind::TerminalSpawned`].
+    /// Decode a `RESOURCE_SPAWNED` message body into [`FrameKind::ResourceSpawned`].
     fn decode_terminal_spawned(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::SpawnResult> = None;
@@ -1654,17 +1654,17 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::TerminalSpawned {
+        Ok(FrameKind::ResourceSpawned {
             request_id,
             result: result.ok_or(DecodeError::UnexpectedEof)?,
         })
     }
 
-    /// Decode a `MOVE_TERMINAL` message body into [`FrameKind::MoveTerminal`].
+    /// Decode a `MOVE_RESOURCE` message body into [`FrameKind::MoveResource`].
     fn decode_move_terminal(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
-        let mut terminal: Option<TerminalId> = None;
-        let mut owner_terminal: Option<TerminalId> = None;
+        let mut terminal: Option<ResourceId> = None;
+        let mut owner_terminal: Option<ResourceId> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::move_terminal::REQUEST_ID => {
@@ -1679,14 +1679,14 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::MoveTerminal {
+        Ok(FrameKind::MoveResource {
             request_id,
             terminal: terminal.ok_or(DecodeError::UnexpectedEof)?,
             owner_terminal: owner_terminal.ok_or(DecodeError::UnexpectedEof)?,
         })
     }
 
-    /// Decode a `TERMINAL_MOVED` message body into [`FrameKind::TerminalMoved`].
+    /// Decode a `RESOURCE_MOVED` message body into [`FrameKind::ResourceMoved`].
     fn decode_terminal_moved(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::MoveResult> = None;
@@ -1701,15 +1701,15 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::TerminalMoved {
+        Ok(FrameKind::ResourceMoved {
             request_id,
             result: result.ok_or(DecodeError::UnexpectedEof)?,
         })
     }
 
-    /// Decode a `TERMINAL_CLOSED` message body into [`FrameKind::TerminalClosed`].
+    /// Decode a `RESOURCE_CLOSED` message body into [`FrameKind::ResourceClosed`].
     fn decode_terminal_closed(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut exit_status: Option<i32> = None;
         let mut reason = CloseReason::Unknown;
         while let Some((id, value)) = self.read_field()? {
@@ -1727,16 +1727,16 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::TerminalClosed {
+        Ok(FrameKind::ResourceClosed {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             exit_status,
             reason,
         })
     }
 
-    /// Decode a `TERMINAL_RESIZE` message body into [`FrameKind::TerminalResize`].
+    /// Decode a `RESIZE_TERMINAL` message body into [`FrameKind::ResizeTerminal`].
     fn decode_terminal_resize(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<TerminalId> = None;
+        let mut terminal_id: Option<ResourceId> = None;
         let mut cols = 0u16;
         let mut rows = 0u16;
         while let Some((id, value)) = self.read_field()? {
@@ -1753,7 +1753,7 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        Ok(FrameKind::TerminalResize {
+        Ok(FrameKind::ResizeTerminal {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             cols,
             rows,
@@ -1802,7 +1802,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode a `SUBSCRIBE_EVENTS` message body into [`FrameKind::SubscribeEvents`].
     fn decode_subscribe_events(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal: Option<TerminalId> = None;
+        let mut terminal: Option<ResourceId> = None;
         while let Some((id, value)) = self.read_field()? {
             if id == field::subscribe_events::TERMINAL {
                 terminal = Some(sub!(value, decode_terminal_id));
@@ -1813,7 +1813,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode an `EVENT` message body into [`FrameKind::Event`].
     fn decode_event(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal: Option<TerminalId> = None;
+        let mut terminal: Option<ResourceId> = None;
         let mut event: Option<crate::wire::frame::AgentEvent> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
@@ -1829,7 +1829,7 @@ impl<'a> Decoder<'a> {
     }
 }
 
-/// Decode one of `SPAWN_TERMINAL`'s agent-facet strings (`provider`,
+/// Decode one of `SPAWN_RESOURCE`'s agent-facet strings (`provider`,
 /// `native_id`), refusing an empty value or one over `max_bytes` before the
 /// bytes are copied out of the frame.
 fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, DecodeError> {
@@ -1841,7 +1841,7 @@ fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, Deco
         .to_owned())
 }
 
-/// Enforce `SPAWN_TERMINAL`'s per-kind field rules (`docs/spec/L1.md` §3.1).
+/// Enforce `SPAWN_RESOURCE`'s per-kind field rules (`docs/spec/L1.md` §3.1).
 ///
 /// A `Terminal` spawn carries none of the child-binding / agent-facet fields
 /// (12-14). An `AgentSession` spawn requires `parent` (12) and `provider`
@@ -1852,7 +1852,7 @@ fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, Deco
 /// `SpawnError::UnsupportedKind` instead of the connection failing on a
 /// malformed frame.
 fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
-    let FrameKind::SpawnTerminal {
+    let FrameKind::SpawnResource {
         command,
         cwd,
         env,

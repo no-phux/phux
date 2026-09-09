@@ -1,16 +1,16 @@
 //! Shared sub-record payload types: attach targets (SPEC §13), viewport
 //! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
 
-use crate::ids::{GroupId, ResourceKind, SessionId, TerminalId};
+use crate::ids::{GroupId, ResourceId, ResourceKind, SessionId};
 
 // -----------------------------------------------------------------------------
-// SpawnResource — the kind-bearing half of SPAWN_TERMINAL (L1.md §1.2).
+// SpawnResource — the kind-bearing half of SPAWN_RESOURCE (L1.md §1.2).
 // -----------------------------------------------------------------------------
 
-/// What kind of resource a `SPAWN_TERMINAL` creates and, for a child kind,
+/// What kind of resource a `SPAWN_RESOURCE` creates and, for a child kind,
 /// its binding and facet: fields 11-14 (`docs/spec/L1.md` §1.2).
 ///
-/// Carried on [`FrameKind::SpawnTerminal`](super::FrameKind::SpawnTerminal)
+/// Carried on [`FrameKind::SpawnResource`](super::FrameKind::SpawnResource)
 /// as `Option<Box<SpawnResource>>`. `None` is the plain Terminal spawn every
 /// pre-kind body decodes as; a `Some` whose every field is at its default is
 /// the same spawn and encodes to the same bytes, and the decoder yields
@@ -38,7 +38,7 @@ pub struct SpawnResource {
     /// `AgentSession`, whose parent is always a Terminal; set at spawn,
     /// immutable, and the server closes the child with
     /// `CloseReason::ParentClosed` when the parent closes.
-    pub parent: Option<TerminalId>,
+    pub parent: Option<ResourceId>,
     /// Agent provider name, e.g. `claude` (field 13; at most
     /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
     /// bytes, non-empty). Required for `AgentSession`.
@@ -54,7 +54,7 @@ impl SpawnResource {
     /// The fields of an `AgentSession` spawn bound to `parent`: the two the
     /// decoder requires, with `native_id` left to [`Self::with_native_id`].
     #[must_use]
-    pub fn agent_session(parent: TerminalId, provider: impl Into<String>) -> Self {
+    pub fn agent_session(parent: ResourceId, provider: impl Into<String>) -> Self {
         Self {
             kind: ResourceKind::AgentSession,
             parent: Some(parent),
@@ -171,14 +171,14 @@ impl ViewportInfo {
 /// - `Global` — keys scoped to the server (e.g. cross-Group prefs).
 ///
 /// Wire encoding: 1-byte tag + per-variant body.
-/// - tag `0x00` → `Terminal`, body = tagged `TerminalId`.
+/// - tag `0x00` → `Terminal`, body = tagged `ResourceId`.
 /// - tag `0x01` → `Group`, body = `u32` (the inner `GroupId`).
 /// - tag `0x02` → `Global`, body = empty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Scope {
-    /// Keys scoped to a single Terminal. Cleared when the Terminal closes.
-    Terminal(TerminalId),
+    /// Keys scoped to a single resource. Cleared when the resource closes.
+    Resource(ResourceId),
     /// Keys scoped to a Group (opaque grouping key).
     Group(GroupId),
     /// Server-wide keys.
@@ -188,8 +188,8 @@ pub enum Scope {
 // -----------------------------------------------------------------------------
 // SpawnError / SpawnResult — SPEC §7.2 / §10.1 (phux-4li.10).
 //
-// `SpawnResult` is the `Result<TerminalId, SpawnError>` carried inside
-// `TERMINAL_SPAWNED`. Modelled as a dedicated tagged union (rather than
+// `SpawnResult` is the `Result<ResourceId, SpawnError>` carried inside
+// `RESOURCE_SPAWNED`. Modelled as a dedicated tagged union (rather than
 // reusing the Rust `Result` type directly on the wire) so the codec
 // stays in lockstep with the SPEC text and so future error variants can
 // land without touching call sites that match on the type.
@@ -199,13 +199,13 @@ pub enum Scope {
 // existing [`ErrorCode`] / [`AttachTarget`] / [`Scope`] precedent.
 //
 // Wire encoding:
-//   SpawnResult tag 0x00 Ok  → tagged TerminalId
+//   SpawnResult tag 0x00 Ok  → tagged ResourceId
 //   SpawnResult tag 0x01 Err → SpawnError
 //   SpawnError  tag 0x00 GroupNotFound → no body
 //   SpawnError  tag 0x01 SpawnFailed        → length-prefixed UTF-8 str
 // -----------------------------------------------------------------------------
 
-/// Error variants for [`FrameKind::TerminalSpawned`](super::FrameKind::TerminalSpawned), SPEC §7.2 / §10.1.
+/// Error variants for [`FrameKind::ResourceSpawned`](super::FrameKind::ResourceSpawned), SPEC §7.2 / §10.1.
 ///
 /// `#[non_exhaustive]` so a v0.2.x server may add codes (e.g.
 /// `PermissionDenied`, `ResourceExhausted`) without breaking downstream
@@ -215,7 +215,7 @@ pub enum Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnError {
-    /// The `group` named in [`FrameKind::SpawnTerminal`](super::FrameKind::SpawnTerminal) does not
+    /// The `group` named in [`FrameKind::SpawnResource`](super::FrameKind::SpawnResource) does not
     /// exist on this server. v0.1 servers expose a single default
     /// Group at `GroupId(1)` (SPEC §7.4 L2-dependency note);
     /// any other id MAY surface this error.
@@ -225,7 +225,7 @@ pub enum SpawnError {
     /// enough to log inline; the SPEC does not constrain its contents
     /// beyond UTF-8.
     SpawnFailed(String),
-    /// The spawn named a satellite (`SPAWN_TERMINAL.satellite`) but this
+    /// The spawn named a satellite (`SPAWN_RESOURCE.satellite`) but this
     /// server cannot route to it: it is not a federation hub, or the host
     /// is absent from its satellite registry (phux-v45.6). The spawn-reply
     /// mirror of `ErrorCode::UnsupportedSatelliteRoute` — a configuration
@@ -252,9 +252,9 @@ pub enum SpawnError {
     ParentKindMismatch,
 }
 
-/// Tagged union carried by [`FrameKind::TerminalSpawned`](super::FrameKind::TerminalSpawned), SPEC §7.2 / §10.1.
+/// Tagged union carried by [`FrameKind::ResourceSpawned`](super::FrameKind::ResourceSpawned), SPEC §7.2 / §10.1.
 ///
-/// Either the server-allocated [`TerminalId`] of the freshly spawned
+/// Either the server-allocated [`ResourceId`] of the freshly spawned
 /// Terminal, or a structured [`SpawnError`]. Modelled as a dedicated
 /// enum rather than the Rust `core::result::Result` directly so the
 /// codec mirrors the SPEC's tagged-union vocabulary and so the
@@ -263,12 +263,12 @@ pub enum SpawnError {
 #[non_exhaustive]
 pub enum SpawnResult {
     /// The freshly spawned Terminal's identifier.
-    Ok(TerminalId),
+    Ok(ResourceId),
     /// Structured failure; see [`SpawnError`].
     Err(SpawnError),
 }
 
-/// Error variants for [`FrameKind::TerminalMoved`](super::FrameKind::TerminalMoved) (ADR-0056).
+/// Error variants for [`FrameKind::ResourceMoved`](super::FrameKind::ResourceMoved) (ADR-0056).
 ///
 /// `#[non_exhaustive]` on the same contract as [`SpawnError`]: additive
 /// variants are protocol-minor changes, and an unknown wire tag surfaces
@@ -289,9 +289,9 @@ pub enum MoveError {
     UnsupportedSatelliteRoute,
 }
 
-/// Tagged union carried by [`FrameKind::TerminalMoved`](super::FrameKind::TerminalMoved) (ADR-0056).
+/// Tagged union carried by [`FrameKind::ResourceMoved`](super::FrameKind::ResourceMoved) (ADR-0056).
 ///
-/// Either the moved Terminal's (unchanged) [`TerminalId`] — echoed back
+/// Either the moved Terminal's (unchanged) [`ResourceId`] — echoed back
 /// so a caller can correlate without holding request state — or a
 /// structured [`MoveError`]. A move never changes identity: the id is
 /// stable across it, so subscriptions and outstanding waits survive.
@@ -299,7 +299,7 @@ pub enum MoveError {
 #[non_exhaustive]
 pub enum MoveResult {
     /// The moved Terminal's identifier (stable across the move).
-    Ok(TerminalId),
+    Ok(ResourceId),
     /// Structured failure; see [`MoveError`].
     Err(MoveError),
 }

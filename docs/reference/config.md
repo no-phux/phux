@@ -92,7 +92,7 @@ The base layer embedded in the binary (`crates/phux-config/src/default.toml`), v
 # xterm-256color baseline is the safe universal value (phux-7vx): it gives
 # 256 colours and the standard xterm keys with no kitty-keyboard
 # advertisement, so ncurses TUIs like htop keep working. A per-spawn
-# SPAWN_TERMINAL env override for TERM always wins over this. Set to
+# SPAWN_RESOURCE env override for TERM always wins over this. Set to
 # "ghostty" to opt into ghostty's extended terminfo once your apps are
 # known to round-trip the kitty keyboard protocol. Evidence so far
 # (phux-0o8 harness, crates/phux-server/tests/terminal/kip_roundtrip.rs): the phux

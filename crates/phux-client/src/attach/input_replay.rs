@@ -46,7 +46,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::{InputOperationId, TerminalId};
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
@@ -72,7 +72,7 @@ const SERVER_ID_LEN: usize = 16;
 #[derive(Debug)]
 struct PendingOp {
     operation_id: InputOperationId,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     events: Vec<InputEvent>,
     /// The incarnation the first attempt was made against. `None` until the
     /// first attempt; bound at send time and compared on every reconnect.
@@ -228,7 +228,7 @@ impl InputReplayJournal {
 
     /// Journal one acknowledged batch. The operation id is minted here, once,
     /// and never again for this batch.
-    pub fn submit(&mut self, terminal_id: TerminalId, events: Vec<InputEvent>) {
+    pub fn submit(&mut self, terminal_id: ResourceId, events: Vec<InputEvent>) {
         self.ops.push_back(PendingOp {
             operation_id: mint_operation_id(),
             terminal_id,
@@ -426,8 +426,8 @@ mod tests {
     const SERVER_A: [u8; 16] = [0xAA; 16];
     const SERVER_B: [u8; 16] = [0xBB; 16];
 
-    fn tid(n: u32) -> TerminalId {
-        TerminalId::local(n)
+    fn tid(n: u32) -> ResourceId {
+        ResourceId::local(n)
     }
 
     fn paste(text: &str) -> Vec<InputEvent> {

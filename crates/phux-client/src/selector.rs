@@ -4,9 +4,9 @@
 //! windows, and panes — none of which are wire concepts (ADR-0017). Per
 //! [ADR-0021](../../../ADR/0021-control-plane-commands.md) selectors are
 //! therefore resolved **client-side** against a `GET_STATE` snapshot: a
-//! selector resolves to a concrete set of [`TerminalId`]s, and only those
+//! selector resolves to a concrete set of [`ResourceId`]s, and only those
 //! Terminal-scoped ids are sent back to the server (e.g. one
-//! `KILL_TERMINAL` per resolved Terminal). The server never parses a
+//! `KILL_RESOURCE` per resolved Terminal). The server never parses a
 //! selector and never learns the words "session" or "window".
 //!
 //! Grammar:
@@ -19,7 +19,7 @@
 //! | `name:N`    | window index `N` of session `name`                  |
 //! | `name:tag`  | window whose name is `tag` in session `name`        |
 //! | `name:N.M`  | pane index `M` of window `N` of session `name`      |
-//! | `@N`        | an opaque local Terminal id (`TerminalId::local(N)`) |
+//! | `@N`        | an opaque local Terminal id (`ResourceId::local(N)`) |
 //! | `host/@N`   | an opaque satellite Terminal id owned by `host`      |
 //! | `#tag`      | every Terminal carrying L3 tag `tag` (`phux.tags/v1`) |
 //! | `%name`     | the one agent named `name` (ADR-0075); see [`resolve_agent`] |
@@ -51,7 +51,7 @@
 //! resources only, and a pane index `M` counts Terminal-kind panes only, so an
 //! `AgentSession` bound to a pane never shifts its siblings' indices.
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::agent_meta::{AgentMetaState, AgentRecord};
@@ -68,9 +68,9 @@ pub enum Selector {
     /// `name:N.M` or `name:tag.M` — one pane of one window.
     Pane(String, WindowRef, u16),
     /// `@N` — a Terminal addressed directly by its local wire id.
-    TerminalId(u32),
+    ResourceId(u32),
     /// `host/@N` — a Terminal addressed by its hub-qualified wire id.
-    SatelliteTerminalId {
+    SatelliteResourceId {
         /// Opaque hub-local satellite routing token.
         host: String,
         /// Terminal id in the satellite server's local id space.
@@ -103,7 +103,7 @@ pub enum ParseError {
     /// The selector was empty.
     Empty,
     /// `@N` or `host/@N` carried a non-numeric or out-of-range id.
-    BadTerminalId(String),
+    BadResourceId(String),
     /// A pane index `M` (after the `.`) was non-numeric or out of range.
     BadPaneIndex(String),
     /// `#` carried no tag (the bare sigil).
@@ -122,7 +122,7 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty => write!(f, "empty selector"),
-            Self::BadTerminalId(s) => write!(f, "invalid terminal id in '@{s}'"),
+            Self::BadResourceId(s) => write!(f, "invalid terminal id in '@{s}'"),
             Self::BadPaneIndex(s) => write!(f, "invalid pane index '{s}'"),
             Self::EmptyTag => write!(f, "empty tag in '#' selector"),
             Self::EmptyAgentName => write!(f, "empty agent name in '%' selector"),
@@ -180,8 +180,8 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
     if let Some((host, rest)) = raw.rsplit_once("/@") {
         let id = rest
             .parse::<u32>()
-            .map_err(|_| ParseError::BadTerminalId(rest.to_owned()))?;
-        return Ok(Selector::SatelliteTerminalId {
+            .map_err(|_| ParseError::BadResourceId(rest.to_owned()))?;
+        return Ok(Selector::SatelliteResourceId {
             host: host.to_owned(),
             id,
         });
@@ -189,8 +189,8 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
     if let Some(rest) = raw.strip_prefix('@') {
         let id = rest
             .parse::<u32>()
-            .map_err(|_| ParseError::BadTerminalId(rest.to_owned()))?;
-        return Ok(Selector::TerminalId(id));
+            .map_err(|_| ParseError::BadResourceId(rest.to_owned()))?;
+        return Ok(Selector::ResourceId(id));
     }
     if let Some(tag) = raw.strip_prefix('#') {
         if tag.is_empty() {
@@ -255,21 +255,21 @@ pub fn is_addressable_agent_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-/// Resolve a parsed [`Selector`] to the [`TerminalId`]s it names.
+/// Resolve a parsed [`Selector`] to the [`ResourceId`]s it names.
 ///
 /// Returns an empty vec when the selector matches nothing (e.g. an unknown
 /// session) — callers decide whether that is an error (`kill` treats it as
 /// a selector miss).
 #[must_use]
-pub fn resolve(selector: &Selector, snapshot: &SessionSnapshot) -> Vec<TerminalId> {
+pub fn resolve(selector: &Selector, snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     resolve_with_tags(selector, snapshot, &TagIndex::new())
 }
 
-/// A map from `TerminalId` to its L3 tags (`phux.tags/v1`).
+/// A map from `ResourceId` to its L3 tags (`phux.tags/v1`).
 ///
 /// The caller fetches it alongside the snapshot. `resolve_with_tags` reads it
 /// only for a [`Selector::Tag`]; an empty map resolves every `#tag` to nothing.
-pub type TagIndex = std::collections::HashMap<TerminalId, Vec<String>>;
+pub type TagIndex = std::collections::HashMap<ResourceId, Vec<String>>;
 
 /// Like [`resolve`], but resolves a [`Selector::Tag`] against `tags`.
 ///
@@ -299,7 +299,7 @@ pub fn resolve_with_tags(
     selector: &Selector,
     snapshot: &SessionSnapshot,
     tags: &TagIndex,
-) -> Vec<TerminalId> {
+) -> Vec<ResourceId> {
     match selector {
         Selector::Current => terminals_in_session(snapshot, snapshot.focused_session),
         Selector::Session(name) => session_id_by_name(snapshot, name)
@@ -313,9 +313,9 @@ pub fn resolve_with_tags(
                 .into_iter()
                 .collect()
         }
-        Selector::TerminalId(id) => resolve_wire_id(snapshot, TerminalId::local(*id)),
-        Selector::SatelliteTerminalId { host, id } => {
-            resolve_wire_id(snapshot, TerminalId::satellite(host.as_str(), *id))
+        Selector::ResourceId(id) => resolve_wire_id(snapshot, ResourceId::local(*id)),
+        Selector::SatelliteResourceId { host, id } => {
+            resolve_wire_id(snapshot, ResourceId::satellite(host.as_str(), *id))
         }
         Selector::Tag(tag) => crate::resource::terminals(snapshot)
             .map(|p| p.id.clone())
@@ -345,7 +345,7 @@ pub fn resolve_with_tags(
 /// [`Default`] is therefore the *partial*, empty index: the fail-closed value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentIndex {
-    records: std::collections::HashMap<TerminalId, AgentRecord>,
+    records: std::collections::HashMap<ResourceId, AgentRecord>,
     complete: bool,
 }
 
@@ -353,7 +353,7 @@ impl AgentIndex {
     /// An index whose builder visited every pane in the snapshot and read a
     /// definite answer (a record, or a well-formed absence) for each.
     #[must_use]
-    pub const fn complete(records: std::collections::HashMap<TerminalId, AgentRecord>) -> Self {
+    pub const fn complete(records: std::collections::HashMap<ResourceId, AgentRecord>) -> Self {
         Self {
             records,
             complete: true,
@@ -364,7 +364,7 @@ impl AgentIndex {
     /// read, a hub that could not reach a satellite. Whatever it holds is a
     /// lower bound.
     #[must_use]
-    pub const fn partial(records: std::collections::HashMap<TerminalId, AgentRecord>) -> Self {
+    pub const fn partial(records: std::collections::HashMap<ResourceId, AgentRecord>) -> Self {
         Self {
             records,
             complete: false,
@@ -379,13 +379,13 @@ impl AgentIndex {
 
     /// The records, keyed by the Terminal they are scoped to.
     #[must_use]
-    pub const fn records(&self) -> &std::collections::HashMap<TerminalId, AgentRecord> {
+    pub const fn records(&self) -> &std::collections::HashMap<ResourceId, AgentRecord> {
         &self.records
     }
 
     /// The record for one Terminal, if the index holds one.
     #[must_use]
-    pub fn get(&self, id: &TerminalId) -> Option<&AgentRecord> {
+    pub fn get(&self, id: &ResourceId) -> Option<&AgentRecord> {
         self.records.get(id)
     }
 }
@@ -400,9 +400,9 @@ impl AgentIndex {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTarget {
     /// The Terminal whose `phux.agent/v1` record carries the name.
-    pub terminal: TerminalId,
+    pub terminal: ResourceId,
     /// Its unique live `AgentSession` child, when the server serves one.
-    pub session: Option<TerminalId>,
+    pub session: Option<ResourceId>,
 }
 
 /// Why a `%name` selector did not resolve to one agent.
@@ -427,7 +427,7 @@ pub enum AgentResolveError {
         /// The name that was typed after `%`.
         name: String,
         /// Every Terminal carrying it, in snapshot order.
-        candidates: Vec<TerminalId>,
+        candidates: Vec<ResourceId>,
     },
     /// At least one candidate's `name` equals its own `kind` — the shape a
     /// per-*kind* manifest constant leaves, not a name a human chose
@@ -443,7 +443,7 @@ pub enum AgentResolveError {
         /// The name that was typed after `%`.
         name: String,
         /// Every Terminal carrying it, in snapshot order.
-        candidates: Vec<TerminalId>,
+        candidates: Vec<ResourceId>,
     },
     /// The agent index was not built completely, so a "one match" or "no
     /// match" answer would be taken against a narrower world than the caller
@@ -456,7 +456,7 @@ pub enum AgentResolveError {
         /// The name that was typed after `%`.
         name: String,
         /// What the truncated index did match, in snapshot order.
-        matched: Vec<TerminalId>,
+        matched: Vec<ResourceId>,
     },
     /// The record resolved, but it carries a `kind` **and** `state: unknown` —
     /// exactly what a withdrawal leaves behind, so it is positive evidence
@@ -467,7 +467,7 @@ pub enum AgentResolveError {
         /// The name that was typed after `%`.
         name: String,
         /// The Terminal the name resolved to.
-        terminal: TerminalId,
+        terminal: ResourceId,
     },
     /// The name resolved to one Terminal, but that Terminal has more than one
     /// live `AgentSession` child, so "the session named `name`" is not one
@@ -477,9 +477,9 @@ pub enum AgentResolveError {
         /// The name that was typed after `%`.
         name: String,
         /// The Terminal the name resolved to.
-        terminal: TerminalId,
+        terminal: ResourceId,
         /// Every live session child, in snapshot order.
-        candidates: Vec<TerminalId>,
+        candidates: Vec<ResourceId>,
     },
 }
 
@@ -562,7 +562,7 @@ impl std::fmt::Display for AgentResolveError {
 
 impl std::error::Error for AgentResolveError {}
 
-fn render_candidates(candidates: &[TerminalId]) -> String {
+fn render_candidates(candidates: &[ResourceId]) -> String {
     candidates
         .iter()
         .map(format_terminal_id)
@@ -596,7 +596,7 @@ pub fn is_withdrawn_agent_record(record: &AgentRecord) -> bool {
 ///
 /// `pick_target_pane` is never applied: a name's entire value is that it names
 /// one thing, so every non-singular outcome is a refusal that enumerates what
-/// it saw (ADR-0075 point 3). Candidates are collected in `snapshot.panes`
+/// it saw (ADR-0075 point 3). Candidates are collected in `snapshot.resources`
 /// order so the enumeration is deterministic rather than hash order.
 ///
 /// The name is the `phux.agent/v1` `name` on a Terminal-kind resource. The
@@ -624,7 +624,7 @@ pub fn resolve_agent(
     // Exact match on `name`. The record's own field is looser than the
     // addressable grammar (§3.7), so a display-style name is listed and
     // reachable by `@N` but never by `%` — ADR-0075 point 4's two grammars.
-    let candidates: Vec<TerminalId> = crate::resource::terminals(snapshot)
+    let candidates: Vec<ResourceId> = crate::resource::terminals(snapshot)
         .map(|p| p.id.clone())
         .filter(|id| index.get(id).is_some_and(|rec| rec.name == name))
         .collect();
@@ -661,7 +661,7 @@ pub fn resolve_agent(
         .ok_or_else(|| AgentResolveError::Unknown {
             name: name.to_owned(),
         })?;
-    let sessions: Vec<TerminalId> = crate::resource::children_of(snapshot, &terminal)
+    let sessions: Vec<ResourceId> = crate::resource::children_of(snapshot, &terminal)
         .map(|info| info.id.clone())
         .collect();
     let session = match sessions.as_slice() {
@@ -729,7 +729,7 @@ fn is_kind_constant(record: &AgentRecord) -> bool {
 ///
 /// This is the seam `phux kill` uses to collapse a whole-session teardown
 /// into a single `KILL_COLLECTION` round-trip while keeping sub-session
-/// targets on the per-`KILL_TERMINAL` path (`phux-h9s`, ADR-0021 §3). The
+/// targets on the per-`KILL_RESOURCE` path (`phux-h9s`, ADR-0021 §3). The
 /// name is returned only when it resolves to a live session in `snapshot`,
 /// so the caller can rely on it existing server-side.
 #[must_use]
@@ -739,11 +739,11 @@ pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Op
         Selector::Session(name) => session_id_by_name(snapshot, name)?,
         Selector::Window(..)
         | Selector::Pane(..)
-        | Selector::TerminalId(_)
-        | Selector::SatelliteTerminalId { .. }
+        | Selector::ResourceId(_)
+        | Selector::SatelliteResourceId { .. }
         | Selector::Tag(_)
         // `%name` addresses one Terminal, never a session, so it must stay on
-        // the per-`KILL_TERMINAL` path.
+        // the per-`KILL_RESOURCE` path.
         | Selector::Agent(_) => return None,
     };
     snapshot
@@ -758,10 +758,10 @@ pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Op
 /// Local ids use `@N`; satellite ids retain their opaque hub-routing token
 /// and use `host/@N`. Both forms round-trip through [`parse`] + [`resolve`].
 #[must_use]
-pub fn format_terminal_id(id: &TerminalId) -> String {
+pub fn format_terminal_id(id: &ResourceId) -> String {
     match id {
-        TerminalId::Local { id } => format!("@{id}"),
-        TerminalId::Satellite { host, id } => format!("{}/@{id}", host.as_str()),
+        ResourceId::Local { id } => format!("@{id}"),
+        ResourceId::Satellite { host, id } => format!("{}/@{id}", host.as_str()),
     }
 }
 
@@ -771,7 +771,7 @@ pub fn format_terminal_id(id: &TerminalId) -> String {
 /// session I'm looking at" case), else the first in snapshot order. `None`
 /// only when the selector matched nothing. Shared by the CLI and MCP tools.
 #[must_use]
-pub fn pick_target_pane(candidates: &[TerminalId], focused: &TerminalId) -> Option<TerminalId> {
+pub fn pick_target_pane(candidates: &[ResourceId], focused: &ResourceId) -> Option<ResourceId> {
     candidates
         .iter()
         .find(|id| *id == focused)
@@ -779,9 +779,9 @@ pub fn pick_target_pane(candidates: &[TerminalId], focused: &TerminalId) -> Opti
         .cloned()
 }
 
-fn resolve_wire_id(snapshot: &SessionSnapshot, wanted: TerminalId) -> Vec<TerminalId> {
+fn resolve_wire_id(snapshot: &SessionSnapshot, wanted: ResourceId) -> Vec<ResourceId> {
     snapshot
-        .panes
+        .resources
         .iter()
         .any(|pane| pane.id == wanted)
         .then_some(wanted)
@@ -795,7 +795,7 @@ fn resolve_wire_id(snapshot: &SessionSnapshot, wanted: TerminalId) -> Vec<Termin
 fn terminals_in_session(
     snapshot: &SessionSnapshot,
     session: phux_protocol::ids::SessionId,
-) -> Vec<TerminalId> {
+) -> Vec<ResourceId> {
     let window_ids: Vec<_> = snapshot
         .windows
         .iter()
@@ -809,7 +809,7 @@ fn terminals_in_session(
 }
 
 /// Terminals in the window `name`/`window` names, in snapshot order.
-fn resolve_window(snapshot: &SessionSnapshot, name: &str, window: &WindowRef) -> Vec<TerminalId> {
+fn resolve_window(snapshot: &SessionSnapshot, name: &str, window: &WindowRef) -> Vec<ResourceId> {
     let Some(sid) = session_id_by_name(snapshot, name) else {
         return Vec::new();
     };
@@ -847,7 +847,7 @@ fn session_id_by_name(
 mod tests {
     use super::*;
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::info::{SessionInfo, TerminalInfo, WindowInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     #[test]
     fn parse_session_window_pane_and_terminal_forms() {
@@ -865,10 +865,10 @@ mod tests {
             parse("work:1.2").unwrap(),
             Selector::Pane("work".to_owned(), WindowRef::Index(1), 2),
         );
-        assert_eq!(parse("@42").unwrap(), Selector::TerminalId(42));
+        assert_eq!(parse("@42").unwrap(), Selector::ResourceId(42));
         assert_eq!(
             parse("devbox/@42").unwrap(),
-            Selector::SatelliteTerminalId {
+            Selector::SatelliteResourceId {
                 host: "devbox".to_owned(),
                 id: 42,
             },
@@ -879,14 +879,14 @@ mod tests {
     #[test]
     fn parse_rejects_empty_and_bad_numbers() {
         assert_eq!(parse(""), Err(ParseError::Empty));
-        assert!(matches!(parse("@nope"), Err(ParseError::BadTerminalId(_))));
+        assert!(matches!(parse("@nope"), Err(ParseError::BadResourceId(_))));
         assert!(matches!(
             parse("devbox/@nope"),
-            Err(ParseError::BadTerminalId(_))
+            Err(ParseError::BadResourceId(_))
         ));
         assert_eq!(
             parse("/@1").unwrap(),
-            Selector::SatelliteTerminalId {
+            Selector::SatelliteResourceId {
                 host: String::new(),
                 id: 1,
             }
@@ -905,17 +905,17 @@ mod tests {
         // Tag 'build' on panes 100 (work) and 200 (play) — a cross-session set.
         let mut tags = TagIndex::new();
         tags.insert(
-            TerminalId::local(100),
+            ResourceId::local(100),
             vec!["build".to_owned(), "ci".to_owned()],
         );
-        tags.insert(TerminalId::local(200), vec!["build".to_owned()]);
-        tags.insert(TerminalId::local(101), vec!["web".to_owned()]);
+        tags.insert(ResourceId::local(200), vec!["build".to_owned()]);
+        tags.insert(ResourceId::local(101), vec!["web".to_owned()]);
 
         let build = resolve_with_tags(&parse("#build").unwrap(), &snap, &tags);
-        assert_eq!(build, vec![TerminalId::local(100), TerminalId::local(200)]);
+        assert_eq!(build, vec![ResourceId::local(100), ResourceId::local(200)]);
 
         let ci = resolve_with_tags(&parse("#ci").unwrap(), &snap, &tags);
-        assert_eq!(ci, vec![TerminalId::local(100)]);
+        assert_eq!(ci, vec![ResourceId::local(100)]);
 
         // An unknown tag, and the no-index path, both resolve to nothing.
         assert!(resolve_with_tags(&parse("#nope").unwrap(), &snap, &tags).is_empty());
@@ -940,15 +940,15 @@ mod tests {
             WindowInfo::new(p0, play, "shell").with_index(0),
         ];
         let panes = vec![
-            TerminalInfo::new(TerminalId::local(100), w0, 80, 24),
-            TerminalInfo::new(TerminalId::local(101), w1, 80, 24),
-            TerminalInfo::new(TerminalId::local(102), w1, 80, 24),
-            TerminalInfo::new(TerminalId::local(200), p0, 80, 24),
+            ResourceInfo::new(ResourceId::local(100), w0, 80, 24),
+            ResourceInfo::new(ResourceId::local(101), w1, 80, 24),
+            ResourceInfo::new(ResourceId::local(102), w1, 80, 24),
+            ResourceInfo::new(ResourceId::local(200), p0, 80, 24),
         ];
-        SessionSnapshot::new(work, w0, TerminalId::local(100))
+        SessionSnapshot::new(work, w0, ResourceId::local(100))
             .with_sessions(sessions)
             .with_windows(windows)
-            .with_panes(panes)
+            .with_resources(panes)
     }
 
     #[test]
@@ -959,9 +959,9 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                TerminalId::local(100),
-                TerminalId::local(101),
-                TerminalId::local(102),
+                ResourceId::local(100),
+                ResourceId::local(101),
+                ResourceId::local(102),
             ],
         );
     }
@@ -971,7 +971,7 @@ mod tests {
         let snap = fixture();
         let by_index = resolve(&parse("work:1").unwrap(), &snap);
         let by_tag = resolve(&parse("work:editor").unwrap(), &snap);
-        let expected = vec![TerminalId::local(101), TerminalId::local(102)];
+        let expected = vec![ResourceId::local(101), ResourceId::local(102)];
         assert_eq!(by_index, expected);
         assert_eq!(by_tag, expected);
     }
@@ -980,25 +980,25 @@ mod tests {
     fn resolve_pane_picks_one_terminal() {
         let snap = fixture();
         let ids = resolve(&parse("work:1.1").unwrap(), &snap);
-        assert_eq!(ids, vec![TerminalId::local(102)]);
+        assert_eq!(ids, vec![ResourceId::local(102)]);
     }
 
     #[test]
     fn resolve_terminal_id_and_focused_and_misses() {
         let mut snap = fixture();
-        snap.panes.push(TerminalInfo::new(
-            TerminalId::satellite("devbox", 7),
+        snap.resources.push(ResourceInfo::new(
+            ResourceId::satellite("devbox", 7),
             WindowId::new(999),
             120,
             40,
         ));
         assert_eq!(
             resolve(&parse("@100").unwrap(), &snap),
-            vec![TerminalId::local(100)],
+            vec![ResourceId::local(100)],
         );
         assert_eq!(
             resolve(&parse("devbox/@7").unwrap(), &snap),
-            vec![TerminalId::satellite("devbox", 7)],
+            vec![ResourceId::satellite("devbox", 7)],
         );
         // Direct ids still require inventory membership; a wrong host or id misses.
         assert!(resolve(&parse("other/@7").unwrap(), &snap).is_empty());
@@ -1011,9 +1011,9 @@ mod tests {
         assert_eq!(
             resolve(&Selector::Current, &snap),
             vec![
-                TerminalId::local(100),
-                TerminalId::local(101),
-                TerminalId::local(102),
+                ResourceId::local(100),
+                ResourceId::local(101),
+                ResourceId::local(102),
             ],
         );
     }
@@ -1021,26 +1021,26 @@ mod tests {
     #[test]
     fn terminal_id_formatter_emits_parseable_canonical_selectors() {
         for id in [
-            TerminalId::local(7),
-            TerminalId::satellite("devbox", 42),
-            TerminalId::satellite("", 43),
-            TerminalId::satellite("region/@rack/@node", 44),
-            TerminalId::satellite("日本語 /@ host", 45),
-            TerminalId::satellite("@prod", 46),
+            ResourceId::local(7),
+            ResourceId::satellite("devbox", 42),
+            ResourceId::satellite("", 43),
+            ResourceId::satellite("region/@rack/@node", 44),
+            ResourceId::satellite("日本語 /@ host", 45),
+            ResourceId::satellite("@prod", 46),
         ] {
             let rendered = format_terminal_id(&id);
             let mut snap = fixture();
-            snap.panes
-                .push(TerminalInfo::new(id.clone(), WindowId::new(999), 80, 24));
+            snap.resources
+                .push(ResourceInfo::new(id.clone(), WindowId::new(999), 80, 24));
             assert_eq!(resolve(&parse(&rendered).unwrap(), &snap), vec![id]);
         }
     }
 
     #[test]
     fn pick_target_pane_prefers_focused_then_first_then_none() {
-        let a = TerminalId::local(1);
-        let b = TerminalId::local(2);
-        let c = TerminalId::local(3);
+        let a = ResourceId::local(1);
+        let b = ResourceId::local(2);
+        let c = ResourceId::local(3);
         // Focused is among the candidates → pick it, not the first.
         assert_eq!(
             pick_target_pane(&[a.clone(), b.clone()], &b),
@@ -1079,10 +1079,10 @@ mod tests {
             parse("work:1.2").unwrap(),
             Selector::Pane("work".to_owned(), WindowRef::Index(1), 2)
         );
-        assert_eq!(parse("@42").unwrap(), Selector::TerminalId(42));
+        assert_eq!(parse("@42").unwrap(), Selector::ResourceId(42));
         assert_eq!(
             parse("devbox/@42").unwrap(),
-            Selector::SatelliteTerminalId {
+            Selector::SatelliteResourceId {
                 host: "devbox".to_owned(),
                 id: 42,
             }
@@ -1138,7 +1138,7 @@ mod tests {
     fn index_of(entries: &[(u32, AgentRecord)], complete: bool) -> AgentIndex {
         let map: std::collections::HashMap<_, _> = entries
             .iter()
-            .map(|(id, rec)| (TerminalId::local(*id), rec.clone()))
+            .map(|(id, rec)| (ResourceId::local(*id), rec.clone()))
             .collect();
         if complete {
             AgentIndex::complete(map)
@@ -1160,7 +1160,7 @@ mod tests {
         assert_eq!(
             resolve_agent("build", &snap, &index).unwrap(),
             AgentTarget {
-                terminal: TerminalId::local(101),
+                terminal: ResourceId::local(101),
                 session: None,
             }
         );
@@ -1170,7 +1170,7 @@ mod tests {
             resolve_agent_for_input("review", &snap, &index)
                 .unwrap()
                 .terminal,
-            TerminalId::local(200)
+            ResourceId::local(200)
         );
     }
 
@@ -1209,7 +1209,7 @@ mod tests {
             ambiguous,
             AgentResolveError::Ambiguous {
                 name: "build".to_owned(),
-                candidates: vec![TerminalId::local(100), TerminalId::local(200)],
+                candidates: vec![ResourceId::local(100), ResourceId::local(200)],
             }
         );
         assert_eq!(ambiguous.exit_code(), 2);
@@ -1228,7 +1228,7 @@ mod tests {
             partial,
             AgentResolveError::PartialIndex {
                 name: "build".to_owned(),
-                matched: vec![TerminalId::local(101)],
+                matched: vec![ResourceId::local(101)],
             }
         );
         assert_eq!(partial.exit_code(), 3);
@@ -1257,7 +1257,7 @@ mod tests {
             err,
             AgentResolveError::KindConstant {
                 name: "claude".to_owned(),
-                candidates: vec![TerminalId::local(101)],
+                candidates: vec![ResourceId::local(101)],
             }
         );
         assert_eq!(err.exit_code(), 2);
@@ -1303,7 +1303,7 @@ mod tests {
             resolve_agent("claude-review", &snap, &chosen)
                 .unwrap()
                 .terminal,
-            TerminalId::local(101)
+            ResourceId::local(101)
         );
     }
 
@@ -1324,7 +1324,7 @@ mod tests {
         );
         assert_eq!(
             resolve_agent("build", &snap, &withdrawn).unwrap().terminal,
-            TerminalId::local(101),
+            ResourceId::local(101),
             "read-only verbs must still resolve a withdrawn record"
         );
         let err = resolve_agent_for_input("build", &snap, &withdrawn).unwrap_err();
@@ -1332,7 +1332,7 @@ mod tests {
             err,
             AgentResolveError::Withdrawn {
                 name: "build".to_owned(),
-                terminal: TerminalId::local(101),
+                terminal: ResourceId::local(101),
             }
         );
         assert_eq!(err.exit_code(), 2);
@@ -1347,7 +1347,7 @@ mod tests {
             resolve_agent_for_input("build", &snap, &identity_only)
                 .unwrap()
                 .terminal,
-            TerminalId::local(101)
+            ResourceId::local(101)
         );
 
         assert!(is_withdrawn_agent_record(&record(
@@ -1378,7 +1378,7 @@ mod tests {
         assert!(resolve_with_tags(&sel, &snap, &TagIndex::new()).is_empty());
         // Which is exactly what makes `pick_target_pane` fail closed here.
         assert_eq!(
-            pick_target_pane(&resolve(&sel, &snap), &snap.focused_pane),
+            pick_target_pane(&resolve(&sel, &snap), &snap.focused_resource),
             None
         );
         // And `%name` is a Terminal target, never a whole-session teardown.
@@ -1410,20 +1410,20 @@ mod tests {
         use phux_protocol::ids::ResourceKind;
         let mut snap = fixture();
         let w1 = WindowId::new(11);
-        snap.panes.push(
-            TerminalInfo::new(TerminalId::local(901), w1, 0, 0)
+        snap.resources.push(
+            ResourceInfo::new(ResourceId::local(901), w1, 0, 0)
                 .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(TerminalId::local(101))),
+                .with_parent(Some(ResourceId::local(101))),
         );
-        snap.panes.push(
-            TerminalInfo::new(TerminalId::local(902), w1, 0, 0)
+        snap.resources.push(
+            ResourceInfo::new(ResourceId::local(902), w1, 0, 0)
                 .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(TerminalId::local(102))),
+                .with_parent(Some(ResourceId::local(102))),
         );
-        snap.panes.push(
-            TerminalInfo::new(TerminalId::local(903), w1, 0, 0)
+        snap.resources.push(
+            ResourceInfo::new(ResourceId::local(903), w1, 0, 0)
                 .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(TerminalId::local(102))),
+                .with_parent(Some(ResourceId::local(102))),
         );
         snap
     }
@@ -1437,26 +1437,26 @@ mod tests {
         assert_eq!(
             resolve(&parse("work").unwrap(), &snap),
             vec![
-                TerminalId::local(100),
-                TerminalId::local(101),
-                TerminalId::local(102),
+                ResourceId::local(100),
+                ResourceId::local(101),
+                ResourceId::local(102),
             ],
         );
         assert_eq!(
             resolve(&parse("work:1").unwrap(), &snap),
-            vec![TerminalId::local(101), TerminalId::local(102)],
+            vec![ResourceId::local(101), ResourceId::local(102)],
         );
         assert_eq!(
             resolve(&parse("work:1.1").unwrap(), &snap),
-            vec![TerminalId::local(102)]
+            vec![ResourceId::local(102)]
         );
         assert!(resolve(&parse("work:1.2").unwrap(), &snap).is_empty());
         let mut tags = TagIndex::new();
-        tags.insert(TerminalId::local(901), vec!["build".to_owned()]);
-        tags.insert(TerminalId::local(101), vec!["build".to_owned()]);
+        tags.insert(ResourceId::local(901), vec!["build".to_owned()]);
+        tags.insert(ResourceId::local(101), vec!["build".to_owned()]);
         assert_eq!(
             resolve_with_tags(&parse("#build").unwrap(), &snap, &tags),
-            vec![TerminalId::local(101)],
+            vec![ResourceId::local(101)],
             "a tag on a session resource is not a pane match"
         );
     }
@@ -1468,11 +1468,11 @@ mod tests {
         let snap = kinded_fixture();
         assert_eq!(
             resolve(&parse("@901").unwrap(), &snap),
-            vec![TerminalId::local(901)]
+            vec![ResourceId::local(901)]
         );
         assert_eq!(
             resolve(&parse("@101").unwrap(), &snap),
-            vec![TerminalId::local(101)]
+            vec![ResourceId::local(101)]
         );
     }
 
@@ -1495,14 +1495,14 @@ mod tests {
         assert_eq!(
             resolve_agent("reviewer", &snap, &index).unwrap(),
             AgentTarget {
-                terminal: TerminalId::local(101),
-                session: Some(TerminalId::local(901)),
+                terminal: ResourceId::local(101),
+                session: Some(ResourceId::local(901)),
             }
         );
         assert_eq!(
             resolve_agent("solo", &snap, &index).unwrap(),
             AgentTarget {
-                terminal: TerminalId::local(100),
+                terminal: ResourceId::local(100),
                 session: None,
             },
             "a named pane with no session child still resolves for facet verbs"
@@ -1512,8 +1512,8 @@ mod tests {
             err,
             AgentResolveError::AmbiguousSession {
                 name: "builder".to_owned(),
-                terminal: TerminalId::local(102),
-                candidates: vec![TerminalId::local(902), TerminalId::local(903)],
+                terminal: ResourceId::local(102),
+                candidates: vec![ResourceId::local(902), ResourceId::local(903)],
             }
         );
         assert_eq!(err.exit_code(), 2);

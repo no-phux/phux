@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::ids::{SessionId, TerminalId};
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::info::SessionInfo;
 
 use crate::layout::Workspace;
@@ -40,9 +40,9 @@ pub(super) struct PeerInputs<'a> {
     /// Each peer session's persisted pane tree.
     pub foreign_layouts: &'a HashMap<SessionId, Workspace>,
     /// Each peer pane's `phux.agent/v1` record.
-    pub foreign_agents: &'a HashMap<TerminalId, AgentRecord>,
+    pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
-    pub foreign_attention: &'a HashSet<TerminalId>,
+    pub foreign_attention: &'a HashSet<ResourceId>,
 }
 
 impl PeerInputs<'_> {
@@ -57,7 +57,7 @@ impl PeerInputs<'_> {
 }
 
 /// Every pane of `workspace` as `(window index, dfs ordinal, id)`.
-fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, TerminalId)> {
+fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)> {
     let mut out = Vec::new();
     for (w, window) in workspace.windows.iter().enumerate() {
         if let Some(tree) = window.state.tree.as_ref() {
@@ -80,7 +80,7 @@ fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, TerminalId)
 /// Two honest degradations, both structural rather than oversights:
 ///
 /// - **Peer rows have no clock.** The per-pane last-change map is keyed by
-///   local `TerminalId`, so two peer agents that both went `blocked` cannot
+///   local `ResourceId`, so two peer agents that both went `blocked` cannot
 ///   be ordered by recency. They hold declaration order instead.
 /// - **Peer rows are never `seen`.** A pane is marked seen by focusing it,
 ///   which for a peer means switching sessions — at which point it stops
@@ -224,8 +224,8 @@ mod tests {
     struct Fixture {
         sessions: Vec<SessionInfo>,
         layouts: HashMap<SessionId, Workspace>,
-        agents: HashMap<TerminalId, AgentRecord>,
-        attention: HashSet<TerminalId>,
+        agents: HashMap<ResourceId, AgentRecord>,
+        attention: HashSet<ResourceId>,
     }
 
     impl Fixture {
@@ -242,8 +242,8 @@ mod tests {
 
     /// One peer session, `peer`, holding two panes.
     fn fixture() -> Fixture {
-        let mut ws = Workspace::single(TerminalId::local(10));
-        ws.add_window("two".to_owned(), TerminalId::local(11));
+        let mut ws = Workspace::single(ResourceId::local(10));
+        ws.add_window("two".to_owned(), ResourceId::local(11));
         let mut layouts = HashMap::new();
         layouts.insert(SessionId::new(2), ws);
         Fixture {
@@ -261,7 +261,7 @@ mod tests {
     fn a_peers_blocked_agent_outranks_a_local_working_one() {
         let mut f = fixture();
         f.agents.insert(
-            TerminalId::local(10),
+            ResourceId::local(10),
             record("claude", AgentMetaState::Blocked),
         );
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn a_peer_ask_alone_puts_a_row_on_the_queue() {
         let mut f = fixture();
-        f.attention.insert(TerminalId::local(11));
+        f.attention.insert(ResourceId::local(11));
 
         let rows = needs_you_queue(Vec::new(), &f.inputs());
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -312,11 +312,11 @@ mod tests {
     fn the_roster_rolls_a_peer_session_into_one_histogram() {
         let mut f = fixture();
         f.agents.insert(
-            TerminalId::local(10),
+            ResourceId::local(10),
             record("claude", AgentMetaState::Blocked),
         );
         f.agents.insert(
-            TerminalId::local(11),
+            ResourceId::local(11),
             record("codex", AgentMetaState::Working),
         );
 
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn a_satellite_session_reports_unknown_not_zero() {
         let mut f = fixture();
-        let sat = TerminalId::satellite("prod-3", 1);
+        let sat = ResourceId::satellite("prod-3", 1);
         f.layouts
             .insert(SessionId::new(2), Workspace::single(sat.clone()));
         // Even a record cached from somewhere must not promote it.
@@ -382,7 +382,7 @@ mod tests {
     fn an_unchanged_projection_does_not_report_a_change() {
         let mut f = fixture();
         f.agents.insert(
-            TerminalId::local(10),
+            ResourceId::local(10),
             record("claude", AgentMetaState::Blocked),
         );
         let local = vec![local_row("codex", AgentMetaState::Working)];

@@ -6,7 +6,7 @@ use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeature, ServerFeatureSet,
 };
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
     FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_HISTORY_REQUEST, TYPE_INPUT_TERMINAL_REPLY,
@@ -93,7 +93,7 @@ fn discriminator_is_client_originated_and_does_not_reuse_history() {
     assert_eq!(TYPE_INPUT_TERMINAL_REPLY & 0x80, 0);
 
     let frame = FrameKind::InputTerminalReply {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         bytes: Bytes::from_static(b"reply"),
     };
     assert_eq!(frame.type_byte(), TYPE_INPUT_TERMINAL_REPLY);
@@ -103,7 +103,7 @@ fn discriminator_is_client_originated_and_does_not_reuse_history() {
 fn opaque_nul_escape_and_non_utf8_bytes_round_trip_exactly() {
     let opaque = Bytes::from_static(b"\0\x1b[?1;2c\xff\x80\x1b]10;?\x07");
     let frame = FrameKind::InputTerminalReply {
-        terminal_id: TerminalId::local(0x1020_3040),
+        terminal_id: ResourceId::local(0x1020_3040),
         bytes: opaque.clone(),
     };
     let mut encoded = BytesMut::new();
@@ -120,7 +120,7 @@ fn opaque_nul_escape_and_non_utf8_bytes_round_trip_exactly() {
 #[test]
 fn fields_are_required_and_encoded_in_allocated_order() {
     let frame = FrameKind::InputTerminalReply {
-        terminal_id: TerminalId::local(7),
+        terminal_id: ResourceId::local(7),
         bytes: Bytes::from_static(b"\x1b[0n"),
     };
     let mut encoded = BytesMut::new();
@@ -154,7 +154,7 @@ fn fields_are_required_and_encoded_in_allocated_order() {
 #[test]
 fn maximum_sized_reply_is_accepted() {
     let frame = FrameKind::InputTerminalReply {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         bytes: Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES]),
     };
     let mut encoded = BytesMut::new();
@@ -171,7 +171,7 @@ fn empty_and_oversized_replies_are_rejected_before_dispatch() {
         Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES + 1]),
     ] {
         let frame = FrameKind::InputTerminalReply {
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
             bytes,
         };
         let mut encoded = BytesMut::new();
@@ -186,7 +186,7 @@ fn empty_and_oversized_replies_are_rejected_before_dispatch() {
 #[test]
 fn unknown_fields_are_skipped_without_touching_opaque_reply() {
     let frame = FrameKind::InputTerminalReply {
-        terminal_id: TerminalId::local(9),
+        terminal_id: ResourceId::local(9),
         bytes: Bytes::from_static(b"\xff\0\x1bPfuture-reply\x1b\\"),
     };
     let mut encoded = BytesMut::new();

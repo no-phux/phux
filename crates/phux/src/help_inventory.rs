@@ -288,7 +288,7 @@ fn long_help_has_one_complete_grouped_inventory() {
         !long.contains("\nCommands:\n"),
         "flat Clap catalog returned"
     );
-    for jargon in ["SPAWN_TERMINAL", "phux.agent/v1", " L3 "] {
+    for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
         assert!(
             !long.contains(jargon),
             "root help leaks protocol jargon {jargon}"
@@ -319,7 +319,7 @@ fn help_leaks_no_internal_ids() {
         !buf.contains("CREATE_SESSION"),
         "help still describes the removed CREATE_SESSION verb"
     );
-    for jargon in ["SPAWN_TERMINAL", "phux.agent/v1", " L3 "] {
+    for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
         assert!(
             !buf.contains(jargon),
             "user-facing help leaks protocol jargon {jargon}"
@@ -620,8 +620,8 @@ fn taught_selector_token(selector: &crate::selector::Selector) -> &'static str {
         Selector::Session(_) => "`name`",
         Selector::Window(..) => "`name:W`",
         Selector::Pane(..) => "`name:W.P`",
-        Selector::TerminalId(_) => "@N",
-        Selector::SatelliteTerminalId { .. } => "host/@N",
+        Selector::ResourceId(_) => "@N",
+        Selector::SatelliteResourceId { .. } => "host/@N",
         Selector::Tag(_) => "#tag",
         Selector::Agent(_) => "%name",
     }

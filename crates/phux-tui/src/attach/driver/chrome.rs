@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::{ClientId, TerminalId};
-use phux_protocol::wire::frame::TerminalLifecycle;
+use phux_protocol::ids::{ClientId, ResourceId};
+use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
@@ -22,12 +22,12 @@ use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord, agent
 /// events; the holder renders as "you" when it matches this client's own id,
 /// else as the other client's numeric id. No emojis (plain ASCII chrome).
 fn supervisory_badge(
-    panes: &HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
 ) -> Option<String> {
-    let slot = panes.get(focused_pane?)?;
-    let frozen = matches!(slot.lifecycle, TerminalLifecycle::Frozen);
+    let slot = panes.get(focused_resource?)?;
+    let frozen = matches!(slot.lifecycle, ResourceLifecycle::Frozen);
     format_supervisory_badge(frozen, slot.input_holder, own_client_id)
 }
 
@@ -58,7 +58,7 @@ fn format_supervisory_badge(
 /// is waiting on a human answer. Counts every pane with the ADR-0035 asked
 /// flag set (across ALL windows, not just the active one — the hint's job is
 /// to surface a question the user cannot currently see).
-fn attention_hint(panes: &HashMap<TerminalId, PaneSlot>) -> Option<String> {
+fn attention_hint(panes: &HashMap<ResourceId, PaneSlot>) -> Option<String> {
     format_attention_hint(panes.values().filter(|slot| slot.attention).count())
 }
 
@@ -99,8 +99,8 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static SESSIONS: &[phux_protocol::wire::info::SessionInfo] = &[];
     static LAYOUTS: LazyLock<HashMap<phux_protocol::ids::SessionId, Workspace>> =
         LazyLock::new(HashMap::new);
-    static AGENTS: LazyLock<HashMap<TerminalId, AgentRecord>> = LazyLock::new(HashMap::new);
-    static ATTENTION: LazyLock<std::collections::HashSet<TerminalId>> =
+    static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
+    static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
         LazyLock::new(std::collections::HashSet::new);
     crate::attach::sidebar_zones::PeerInputs {
         sessions: SESSIONS,
@@ -121,8 +121,8 @@ pub(super) const fn peer_inputs<'a>(
     sessions: &'a [phux_protocol::wire::info::SessionInfo],
     focused_session: Option<phux_protocol::ids::SessionId>,
     foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    foreign_agents: &'a HashMap<TerminalId, AgentRecord>,
-    foreign_attention: &'a std::collections::HashSet<TerminalId>,
+    foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
+    foreign_attention: &'a std::collections::HashSet<ResourceId>,
 ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
     crate::attach::sidebar_zones::PeerInputs {
         sessions,
@@ -143,9 +143,9 @@ pub(super) fn refresh_window_chrome(
     status_bar: Option<&mut StatusBarPainter>,
     sidebar_painter: &mut SidebarPainter,
     workspace: &Workspace,
-    panes: &HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
-    zoomed: Option<&TerminalId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
+    zoomed: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
     // ADR-0040: structured `phux.agent/v1` records; a window whose focused
     // leaf carries one is labelled from it instead of the OSC title. The whole
@@ -169,14 +169,14 @@ pub(super) fn refresh_window_chrome(
     let mut changed = false;
     if let Some(sb) = status_bar {
         changed |= sb.set_windows(windows.clone());
-        changed |= sb.set_supervisory(supervisory_badge(panes, focused_pane, own_client_id));
+        changed |= sb.set_supervisory(supervisory_badge(panes, focused_resource, own_client_id));
         changed |= sb.set_attention(attention_hint(panes));
         // phux-foz.4: project the focused pane's data feeds into the bar so
         // the `cwd` / `exit` widgets track focus changes and inbound
         // `cwd_changed` / `command_finished` events through this same
         // chokepoint. Unfocused (or unknown) folds to None => the widgets
         // render nothing.
-        let focused = focused_pane.and_then(|id| panes.get(id));
+        let focused = focused_resource.and_then(|id| panes.get(id));
         changed |= sb.set_focused_cwd(focused.and_then(|slot| slot.cwd.clone()));
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
@@ -199,14 +199,14 @@ pub(super) fn refresh_window_chrome(
 /// OSC 0/2 title, then the stored window name.
 pub(super) fn window_infos(
     workspace: &Workspace,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     // phux-x2hm: the driver's pane-zoom state. The active window's tab gets a
     // `Z` marker (`WindowInfo.zoomed`) when a pane is zoomed; non-active tabs
     // never show it (zoom is per the active window).
-    zoomed: Option<&TerminalId>,
+    zoomed: Option<&ResourceId>,
     // ADR-0040: Terminal → decoded `phux.agent/v1` record, kept live by the
     // driver's per-pane metadata subscriptions.
-    agent_meta: &HashMap<TerminalId, AgentRecord>,
+    agent_meta: &HashMap<ResourceId, AgentRecord>,
     // phux-p4vp: pane-cwd index + branch memo. The window's branch line is
     // its focused leaf's VCS branch (mut only for the memo).
     vcs: &mut VcsIndex,
@@ -294,7 +294,7 @@ pub(super) fn window_infos(
 /// nothing.
 pub(super) fn agent_entries(
     workspace: &Workspace,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
     agent_sessions: &AgentSessionRows,
 ) -> Vec<AgentEntry> {
@@ -394,10 +394,10 @@ pub(super) fn agent_entries(
 /// agent, about the very pane the user is looking at, until some unrelated
 /// chrome event happens to recompute [`agent_entries`].
 pub(super) fn mark_focused_seen(
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
 ) -> bool {
-    focused_pane
+    focused_resource
         .and_then(|fid| panes.get_mut(fid))
         .is_some_and(|slot| !std::mem::replace(&mut slot.seen, true))
 }
@@ -453,12 +453,12 @@ mod tests {
     /// the asked flag — including a non-focused leaf — and only that window.
     #[test]
     fn window_infos_flags_attention_on_the_asking_window() {
-        let front = TerminalId::local(1);
-        let back = TerminalId::local(2);
+        let front = ResourceId::local(1);
+        let back = ResourceId::local(2);
         let mut workspace = Workspace::single(front.clone());
         workspace.add_window("2".to_owned(), back.clone());
         workspace.select(0);
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(front, PaneSlot::new_with_size(80, 24).expect("slot"));
         let mut asking = PaneSlot::new_with_size(80, 24).expect("slot");
         asking.attention = true;
@@ -496,7 +496,7 @@ mod tests {
     fn window_infos_prefers_osc_title_over_stored_name() {
         // A program in the focused leaf sets an OSC 2 window title; the tab
         // strip must show it (tmux automatic-rename / Warp tab titling).
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
         let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src/phux\x07")]);
 
@@ -518,9 +518,9 @@ mod tests {
     #[test]
     fn window_infos_falls_back_to_stored_name_without_title() {
         // No OSC title set ⇒ the window's stored name ("1" for the first).
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id, PaneSlot::new_with_size(80, 24).expect("slot"));
 
         let infos = window_infos(
@@ -536,9 +536,9 @@ mod tests {
     #[test]
     fn window_infos_ignores_a_whitespace_only_title() {
         // A title of only spaces is not a useful label; fall back to the name.
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
         slot.terminal.vt_write(b"\x1b]2;   \x07");
         panes.insert(id, slot);
@@ -558,13 +558,13 @@ mod tests {
         // ADR-0040: a declared `phux.agent/v1` record labels the window from
         // structured data — the OSC title (set here to an unrelated string)
         // must NOT leak through, and no substring parsing is involved.
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
         slot.terminal.vt_write(b"\x1b]2;~/src/phux\x07");
         panes.insert(id.clone(), slot);
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         records.insert(
             id,
             AgentRecord {
@@ -585,7 +585,7 @@ mod tests {
     fn window_infos_falls_back_to_title_when_record_cleared() {
         // ADR-0040 compatibility path: no record ⇒ the OSC title labels the
         // tab exactly as before.
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
         let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;claude task\x07")]);
 
@@ -601,7 +601,7 @@ mod tests {
 
     /// An `AgentMetaIndex` holding `records` and nothing else — the shape
     /// `agent_entries` reads.
-    fn meta_index(records: HashMap<TerminalId, AgentRecord>) -> AgentMetaIndex {
+    fn meta_index(records: HashMap<ResourceId, AgentRecord>) -> AgentMetaIndex {
         AgentMetaIndex {
             records,
             ..AgentMetaIndex::default()
@@ -615,18 +615,18 @@ mod tests {
     /// outrank one that is merely still busy.
     #[test]
     fn agent_entries_rank_unreviewed_done_above_working() {
-        let working = TerminalId::local(1);
-        let done = TerminalId::local(2);
-        let blocked = TerminalId::local(3);
+        let working = ResourceId::local(1);
+        let done = ResourceId::local(2);
+        let blocked = ResourceId::local(3);
         let mut workspace = Workspace::single(working.clone());
         workspace.add_window("w2".to_owned(), done.clone());
         workspace.add_window("w3".to_owned(), blocked.clone());
 
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         for id in [&working, &done, &blocked] {
             panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         }
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         for (id, name, state) in [
             (&working, "w", AgentMetaState::Working),
             (&done, "d", AgentMetaState::Done),
@@ -682,16 +682,16 @@ mod tests {
     /// `false`, so an idle loop pass costs one hash lookup and nothing else.
     #[test]
     fn focusing_an_unreviewed_done_pane_flips_seen_and_dirties_the_chrome() {
-        let working = TerminalId::local(1);
-        let done = TerminalId::local(2);
+        let working = ResourceId::local(1);
+        let done = ResourceId::local(2);
         let mut workspace = Workspace::single(working.clone());
         workspace.add_window("w2".to_owned(), done.clone());
 
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         for id in [&working, &done] {
             panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         }
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         for (id, name, state) in [
             (&working, "w", AgentMetaState::Working),
             (&done, "d", AgentMetaState::Done),
@@ -804,15 +804,15 @@ mod tests {
     /// keys preserves window/leaf order.
     #[test]
     fn agent_entries_break_rank_ties_by_most_recent_change() {
-        let old = TerminalId::local(1);
-        let fresh = TerminalId::local(2);
-        let never = TerminalId::local(3);
+        let old = ResourceId::local(1);
+        let fresh = ResourceId::local(2);
+        let never = ResourceId::local(3);
         let mut workspace = Workspace::single(old.clone());
         workspace.add_window("w2".to_owned(), fresh.clone());
         workspace.add_window("w3".to_owned(), never.clone());
 
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         for (id, name) in [(&old, "old"), (&fresh, "fresh"), (&never, "never")] {
             panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
             records.insert(
@@ -845,13 +845,13 @@ mod tests {
     /// conflicting agent name here) is never consulted when a record exists.
     #[test]
     fn agent_entries_prefer_the_declared_record() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
         slot.terminal.vt_write(b"\x1b]2;codex resume\x07");
         panes.insert(id.clone(), slot);
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         records.insert(
             id,
             AgentRecord {
@@ -879,8 +879,8 @@ mod tests {
     /// source produces no row.
     #[test]
     fn agent_entries_fall_back_to_the_title_heuristic() {
-        let claude = TerminalId::local(1);
-        let shell = TerminalId::local(2);
+        let claude = ResourceId::local(1);
+        let shell = ResourceId::local(2);
         let mut workspace = Workspace::single(claude.clone());
         workspace.add_window("scratch".to_owned(), shell.clone());
         let (_, _, mut panes) = published_test_state(&[
@@ -916,11 +916,11 @@ mod tests {
     /// the entry even without the asked flag.
     #[test]
     fn agent_entries_carry_record_attention() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         records.insert(
             id,
             AgentRecord {
@@ -941,11 +941,11 @@ mod tests {
     #[test]
     fn agent_entries_take_state_from_the_stream_and_name_from_the_record() {
         use crate::attach::agent_rows::AgentSessionRow;
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
-        let mut records: HashMap<TerminalId, AgentRecord> = HashMap::new();
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         records.insert(
             id.clone(),
             AgentRecord {
@@ -958,7 +958,7 @@ mod tests {
         sessions.insert(
             id,
             vec![AgentSessionRow {
-                id: TerminalId::local(9),
+                id: ResourceId::local(9),
                 provider: Some("claude".to_owned()),
                 native_id: Some("s-1".to_owned()),
                 state: AgentMetaState::Blocked,
@@ -982,22 +982,22 @@ mod tests {
     #[test]
     fn agent_entries_list_a_stream_without_any_record() {
         use crate::attach::agent_rows::AgentSessionRow;
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         let mut sessions: AgentSessionRows = HashMap::new();
         sessions.insert(
             id,
             vec![
                 AgentSessionRow {
-                    id: TerminalId::local(8),
+                    id: ResourceId::local(8),
                     provider: Some("codex".to_owned()),
                     native_id: None,
                     state: AgentMetaState::Working,
                 },
                 AgentSessionRow {
-                    id: TerminalId::local(9),
+                    id: ResourceId::local(9),
                     provider: None,
                     native_id: None,
                     state: AgentMetaState::Done,
@@ -1024,11 +1024,11 @@ mod tests {
     fn window_infos_flags_zoom_only_on_the_active_window() {
         // phux-x2hm: the active window's `zoomed` reflects the zoom state;
         // a non-active window is never marked zoomed.
-        let active = TerminalId::local(1);
+        let active = ResourceId::local(1);
         let mut workspace = Workspace::single(active.clone());
-        workspace.add_window("2".to_owned(), TerminalId::local(2));
+        workspace.add_window("2".to_owned(), ResourceId::local(2));
         workspace.select(0); // active window is index 0
-        let panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
 
         let infos = window_infos(
             &workspace,

@@ -6,10 +6,10 @@ use std::{error::Error, path::Path};
 use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::ServerCapabilities;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientId,
-    PROTOCOL_VERSION, SessionId, StreamId, TerminalId, WindowId,
+    PROTOCOL_VERSION, ResourceId, SessionId, StreamId, WindowId,
 };
 
 // Each row resets attributes. Truecolor values are fixture inputs, not a
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bootstrap_limits: BootstrapLimits::new(1024, 1024).ok_or("invalid limits")?,
         },
     )?;
-    let terminal_id = TerminalId::local(7);
+    let terminal_id = ResourceId::local(7);
     let session_id = SessionId::new(1);
     let window_id = WindowId::new(1);
     let stream_id = StreamId::new(7).ok_or("invalid stream")?;
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let snapshot = SessionSnapshot::new(session_id, window_id, terminal_id.clone())
         .with_sessions(vec![SessionInfo::new(session_id, "styles")])
         .with_windows(vec![WindowInfo::new(window_id, session_id, "styles")])
-        .with_panes(vec![TerminalInfo::new(
+        .with_resources(vec![ResourceInfo::new(
             terminal_id.clone(),
             window_id,
             16,
@@ -129,8 +129,8 @@ fn update(output: &Path, name: &str, seq: u64, bytes: &'static [u8]) -> Result<(
     write(
         output,
         name,
-        &FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(7),
+        &FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(7).ok_or("invalid stream")?,
             bootstrap_id: BootstrapId::new(1).ok_or("invalid bootstrap")?,
             seq,

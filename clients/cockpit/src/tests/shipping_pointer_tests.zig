@@ -89,7 +89,7 @@ const Fixture = struct {
         try std.testing.expectEqualStrings(expected, text);
     }
 
-    /// TERMINAL_OUTPUT TLVs follow appendix-encoding and wire/field.rs. The
+    /// RESOURCE_OUTPUT TLVs follow appendix-encoding and wire/field.rs. The
     /// production FFI decoder validates these before any gesture is exercised.
     fn output(self: Fixture, text: []const u8, seq: u64) !void {
         var storage: [4096]u8 = undefined;

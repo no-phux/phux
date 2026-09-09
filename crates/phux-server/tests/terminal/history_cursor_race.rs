@@ -16,7 +16,7 @@
 //! mid-attach is created at a hardcoded 80x24
 //! (`runtime::commands::spawn_pane_with_pty_and_colors`) and bootstrapped
 //! immediately, so the client learns about it, reflows its layout, and sends
-//! `TERMINAL_RESIZE` for the new leaf. `TerminalActor::handle_resize` calls
+//! `RESIZE_TERMINAL` for the new leaf. `TerminalActor::handle_resize` calls
 //! `invalidate_all_native_cursors`, which *drains* `native_cursor_owners`.
 //! The client's `HISTORY_REQUEST` — issued off `BOOTSTRAP_READY`, hence
 //! strictly after the resize on one ordered stream — then quotes a cursor
@@ -41,7 +41,7 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(
     clippy::doc_markdown,
-    reason = "the narrative above uses bare wire-frame names (HISTORY_REQUEST, TERMINAL_RESIZE, …) the way the sibling integration tests do"
+    reason = "the narrative above uses bare wire-frame names (HISTORY_REQUEST, RESIZE_TERMINAL, …) the way the sibling integration tests do"
 )]
 
 use bytes::Bytes;
@@ -49,7 +49,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
 };
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason,
     SpawnResult, StateScope, TombstoneReason, ViewportInfo,
@@ -172,13 +172,13 @@ async fn attach(stream: &mut UnixStream, attach_id: u32) {
 /// history cursor its `BOOTSTRAP_READY` handed out.
 #[derive(Debug)]
 struct SpawnedGeneration {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     cursor: Bytes,
 }
 
-/// Send `SPAWN_TERMINAL` and collect the new pane's `TERMINAL_SPAWNED` +
+/// Send `SPAWN_RESOURCE` and collect the new pane's `RESOURCE_SPAWNED` +
 /// `BOOTSTRAP_BEGIN` + `BOOTSTRAP_READY`.
 ///
 /// This is the `C-a c` half of the reproduction: an attached client splitting
@@ -187,7 +187,7 @@ struct SpawnedGeneration {
 async fn split_pane(stream: &mut UnixStream, request_id: u32) -> SpawnedGeneration {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: DEFAULT_GROUP_ID,
             // `cat` keeps the child alive for the whole race window; a
@@ -205,16 +205,16 @@ async fn split_pane(stream: &mut UnixStream, request_id: u32) -> SpawnedGenerati
     )
     .await;
 
-    let mut spawned: Option<TerminalId> = None;
+    let mut spawned: Option<ResourceId> = None;
     let mut begin: Option<(StreamId, BootstrapId)> = None;
     loop {
         match recv_no_error(stream, "split").await {
-            FrameKind::TerminalSpawned {
+            FrameKind::ResourceSpawned {
                 request_id: got,
                 result,
             } if got == request_id => match result {
                 SpawnResult::Ok(id) => spawned = Some(id),
-                other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+                other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
             },
             FrameKind::BootstrapBegin {
                 terminal_id,
@@ -302,7 +302,7 @@ async fn await_resize_tombstone(stream: &mut UnixStream, generation: &SpawnedGen
 /// and an `ERROR` is caught by [`recv_no_error`].
 async fn request_history_expecting_tombstone(
     stream: &mut UnixStream,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     cursor: &Bytes,
@@ -415,7 +415,7 @@ async fn assert_retired_history_is_silenced_and_connection_usable(
             } if got == request_id => match result {
                 CommandResult::OkWith(CommandValue::State(snapshot)) => {
                     assert!(
-                        !snapshot.panes.is_empty(),
+                        !snapshot.resources.is_empty(),
                         "the attach must still see its panes after retirement",
                     );
                     return;
@@ -453,7 +453,7 @@ async fn assert_connection_still_usable(stream: &mut UnixStream, request_id: u32
             match result {
                 CommandResult::OkWith(CommandValue::State(snapshot)) => {
                     assert!(
-                        !snapshot.panes.is_empty(),
+                        !snapshot.resources.is_empty(),
                         "the attach must still see its panes after a tombstoned cursor",
                     );
                     return;
@@ -503,11 +503,11 @@ fn stale_cursor_after_split_resize_is_silenced_after_generation_retirement() {
         attach(&mut stream, 1).await;
         let generation = split_pane(&mut stream, 7).await;
 
-        // The client reflows its layout on TERMINAL_SPAWNED and sizes the new
+        // The client reflows its layout on RESOURCE_SPAWNED and sizes the new
         // leaf to the real split geometry — never the 80x24 the server picked.
         send_frame(
             &mut stream,
-            &FrameKind::TerminalResize {
+            &FrameKind::ResizeTerminal {
                 terminal_id: generation.terminal_id.clone(),
                 cols: RESIZE_COLS,
                 rows: RESIZE_ROWS,
@@ -542,7 +542,7 @@ fn history_request_for_unknown_terminal_tombstones_as_released() {
 
         // Far above anything `intern_terminal_wire` could have allocated for a
         // one-pane server, so `terminal_from_wire` cannot resolve it.
-        let ghost = TerminalId::local(9_999_999);
+        let ghost = ResourceId::local(9_999_999);
         let reason = request_history_expecting_tombstone(
             &mut stream,
             &ghost,

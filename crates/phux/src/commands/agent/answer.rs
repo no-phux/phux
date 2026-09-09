@@ -472,7 +472,7 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
-        let Some(info) = snapshot.panes.iter().find(|info| info.id == pane) else {
+        let Some(info) = snapshot.resources.iter().find(|info| info.id == pane) else {
             return Refusal::new(
                 json_err::codes::NO_SUCH_TARGET,
                 format!("{label} is gone: it left between resolving the target and reading it"),

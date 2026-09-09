@@ -30,7 +30,7 @@
 
 use std::rc::Rc;
 
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 
 use crate::state::ServerState;
 
@@ -56,7 +56,7 @@ pub(crate) type LiveSessionProbe = Rc<dyn Fn() -> bool>;
 /// `false` for an id that resolves to nothing on this server: an unknown or
 /// satellite-tagged Terminal owns no local child, and the routing question
 /// belongs to the caller, not to a kind lookup.
-pub(crate) fn server_has_live_session(state: &ServerState, terminal: &WireTerminalId) -> bool {
+pub(crate) fn server_has_live_session(state: &ServerState, terminal: &WireResourceId) -> bool {
     state
         .terminal_from_wire(terminal)
         .is_some_and(|core| state.has_live_agent_session_child(core))

@@ -25,7 +25,7 @@
 //!   `1, 2, 3, …` allocation is self-evident and a new field appends to the
 //!   end of its module.
 //!
-//! Nested tagged unions and sub-records (e.g. `TerminalId`, `ViewportInfo`,
+//! Nested tagged unions and sub-records (e.g. `ResourceId`, `ViewportInfo`,
 //! `Command`, `SessionSnapshot`) are encoded *positionally* inside a field's
 //! length-delimited value; only the message body itself is field-tagged. Their
 //! wire-tag bytes live alongside their definitions in `wire::frame` /
@@ -82,9 +82,9 @@ pub mod ping {
     pub const NONCE: u32 = 1;
 }
 
-/// `TERMINAL_OUTPUT` body fields (`docs/spec/L1.md` §8.1, ADR-0013).
+/// `RESOURCE_OUTPUT` body fields (`docs/spec/L1.md` §8.1, ADR-0013).
 pub mod terminal_output {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// Monotonic per-terminal sequence id (`u64`).
     pub const SEQ: u32 = 2;
@@ -112,7 +112,7 @@ pub mod attach {
 
 /// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
 pub mod input_key {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// `KeyEvent` (positional sub-record).
     pub const EVENT: u32 = 2;
@@ -120,7 +120,7 @@ pub mod input_key {
 
 /// `INPUT_MOUSE` body fields (`docs/spec/input.md` §3).
 pub mod input_mouse {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// `MouseEvent` (positional sub-record).
     pub const EVENT: u32 = 2;
@@ -128,7 +128,7 @@ pub mod input_mouse {
 
 /// `INPUT_FOCUS` body fields (`docs/spec/input.md` §4).
 pub mod input_focus {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// Focus kind (`u8`: gained=0 / lost=1).
     pub const EVENT: u32 = 2;
@@ -136,7 +136,7 @@ pub mod input_focus {
 
 /// `INPUT_PASTE` body fields (`docs/spec/input.md` §5).
 pub mod input_paste {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// `PasteEvent` (positional sub-record: trust byte + bytes).
     pub const EVENT: u32 = 2;
@@ -144,7 +144,7 @@ pub mod input_paste {
 
 /// `INPUT_TERMINAL_REPLY` body fields (`docs/spec/input.md` §6).
 pub mod input_terminal_reply {
-    /// Attached target `TerminalId` (positional tagged union).
+    /// Attached target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// Opaque terminal-emulator-generated PTY reply bytes.
     pub const BYTES: u32 = 2;
@@ -152,7 +152,7 @@ pub mod input_terminal_reply {
 
 /// `FRAME_ACK` body fields (`docs/spec/proto.md` §7.2 / §8.2).
 pub mod frame_ack {
-    /// Acked `TerminalId` (positional tagged union).
+    /// Acked `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// Acked sequence id (`u64`).
     pub const SEQ: u32 = 2;
@@ -186,7 +186,7 @@ pub mod attach_ready {
 
 /// `HISTORY_REQUEST` body fields (`docs/spec/L1.md` §4.5).
 pub mod history_request {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -202,7 +202,7 @@ pub mod history_request {
 
 /// `BOOTSTRAP_BEGIN` body fields (`docs/spec/L1.md` §4.3).
 pub mod bootstrap_begin {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -222,7 +222,7 @@ pub mod bootstrap_begin {
 
 /// `BOOTSTRAP_CHUNK` body fields (`docs/spec/L1.md` §4.3).
 pub mod bootstrap_chunk {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -247,7 +247,7 @@ pub mod frame_compressed {
 
 /// `BOOTSTRAP_READY` body fields (`docs/spec/L1.md` §4.3).
 pub mod bootstrap_ready {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -259,7 +259,7 @@ pub mod bootstrap_ready {
 
 /// `HISTORY_PAGE` body fields (`docs/spec/L1.md` §4.5).
 pub mod history_page {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -279,7 +279,7 @@ pub mod history_page {
 
 /// `BOOTSTRAP_TOMBSTONE` body fields (`docs/spec/L1.md` §4.6).
 pub mod bootstrap_tombstone {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -293,7 +293,7 @@ pub mod bootstrap_tombstone {
 
 /// `HISTORY_TOMBSTONE` body fields (`docs/spec/L1.md` §4.5).
 pub mod history_tombstone {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -307,7 +307,7 @@ pub mod history_tombstone {
 
 /// `HISTORY_REJECTED` body fields (`docs/spec/L1.md` §4.5).
 pub mod history_rejected {
-    /// Target `TerminalId`.
+    /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
     /// Logical `StreamId`.
     pub const STREAM_ID: u32 = 2;
@@ -415,7 +415,7 @@ pub mod metadata_keys {
     pub const KEYS: u32 = 2;
 }
 
-/// `SPAWN_TERMINAL` body fields (`docs/spec/L1.md` §10.1).
+/// `SPAWN_RESOURCE` body fields (`docs/spec/L1.md` §10.1).
 pub mod spawn_terminal {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -451,7 +451,7 @@ pub mod spawn_terminal {
     /// `CWD`, `ENV`, `TERM`, `OWNER_TERMINAL`, or `INITIAL_SIZE`; a
     /// `Terminal` spawn carries none of fields 12-14.
     pub const KIND: u32 = 11;
-    /// Optional parent resource (positional tagged `TerminalId`). Required
+    /// Optional parent resource (positional tagged `ResourceId`). Required
     /// for `AgentSession`, which is always bound to a Terminal parent.
     pub const PARENT: u32 = 12;
     /// Optional agent provider name (`str`, e.g. `claude`). Required for
@@ -461,7 +461,7 @@ pub mod spawn_terminal {
     pub const NATIVE_ID: u32 = 14;
 }
 
-/// `TERMINAL_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
+/// `RESOURCE_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
 pub mod terminal_spawned {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -469,7 +469,7 @@ pub mod terminal_spawned {
     pub const RESULT: u32 = 2;
 }
 
-/// `MOVE_TERMINAL` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+/// `MOVE_RESOURCE` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
 pub mod move_terminal {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -477,11 +477,11 @@ pub mod move_terminal {
     pub const TERMINAL: u32 = 2;
     /// Existing Terminal whose owning window becomes the destination
     /// (positional tagged union). Ownership address only, as in
-    /// `SPAWN_TERMINAL.owner_terminal`.
+    /// `SPAWN_RESOURCE.owner_terminal`.
     pub const OWNER_TERMINAL: u32 = 3;
 }
 
-/// `TERMINAL_MOVED` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+/// `RESOURCE_MOVED` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
 pub mod terminal_moved {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -489,9 +489,9 @@ pub mod terminal_moved {
     pub const RESULT: u32 = 2;
 }
 
-/// `TERMINAL_CLOSED` body fields (`docs/spec/L1.md` §10.1).
+/// `RESOURCE_CLOSED` body fields (`docs/spec/L1.md` §10.1).
 pub mod terminal_closed {
-    /// Closed `TerminalId` (positional tagged union).
+    /// Closed `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// Optional exit status (absent field = signal / unknown).
     pub const EXIT_STATUS: u32 = 2;
@@ -501,9 +501,9 @@ pub mod terminal_closed {
     pub const REASON: u32 = 3;
 }
 
-/// `TERMINAL_RESIZE` body fields (`docs/spec/L1.md` §10.2).
+/// `RESIZE_TERMINAL` body fields (`docs/spec/L1.md` §10.2).
 pub mod terminal_resize {
-    /// Target `TerminalId` (positional tagged union).
+    /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
     /// New column count (`u16`).
     pub const COLS: u32 = 2;
@@ -529,13 +529,13 @@ pub mod command_result {
 
 /// `SUBSCRIBE_EVENTS` body fields (`docs/spec/L1.md` §7.5).
 pub mod subscribe_events {
-    /// Optional `TerminalId` scope (absent field = server-scoped `None`).
+    /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
 }
 
 /// `EVENT` body fields (`docs/spec/L1.md` §7.5).
 pub mod event {
-    /// Optional `TerminalId` scope (absent field = server-scoped `None`).
+    /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
     /// `AgentEvent` tagged union (positional TLV: tag + length-prefixed body).
     pub const EVENT: u32 = 2;
@@ -564,7 +564,7 @@ pub mod event_asked {
     pub const ELAPSED_SECONDS: u32 = 4;
 }
 
-/// `AgentEvent::PaneSpawned` body fields (`docs/spec/L1.md` §7.1).
+/// `AgentEvent::ResourceSpawned` body fields (`docs/spec/L1.md` §7.1).
 ///
 /// Field-tagged TLV like [`event_asked`]: a body that predates the fields is
 /// empty and decodes as a root Terminal, and an older decoder ignores the
@@ -573,7 +573,7 @@ pub mod event_pane_spawned {
     /// `ResourceKind` tag (`u8`). Absent = `Terminal`; the encoder writes it
     /// only for another kind.
     pub const KIND: u32 = 1;
-    /// Parent resource (positional tagged `TerminalId`). Absent = a root.
+    /// Parent resource (positional tagged `ResourceId`). Absent = a root.
     pub const PARENT: u32 = 2;
 }
 
@@ -586,5 +586,5 @@ pub const SESSION_ID_TAG_LOCAL: u32 = 0;
 /// `SessionId::Satellite` tag (reserved for v0.2+; decoders MUST reject).
 pub const SESSION_ID_TAG_SATELLITE: u32 = 1;
 
-// The `TerminalId` wire-side tag bytes (`u8`) live in `crate::ids` alongside the
-// [`TerminalId`](crate::ids::TerminalId) definition — ADR-0016 §Decision.
+// The `ResourceId` wire-side tag bytes (`u8`) live in `crate::ids` alongside the
+// [`ResourceId`](crate::ids::ResourceId) definition — ADR-0016 §Decision.

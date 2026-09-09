@@ -7,7 +7,7 @@ const first_id: workspace.WindowId = @splat(1);
 const second_id: workspace.WindowId = @splat(2);
 
 fn terminal(id: u32) contract.TerminalRef {
-    return .{ .provider_id = .phux, .terminal_id = .{ .phux = contract.RemoteTerminalId.fromPhux(0, id, "") catch unreachable } };
+    return .{ .provider_id = .phux, .terminal_id = .{ .phux = contract.RemoteResourceId.fromPhux(0, id, "") catch unreachable } };
 }
 
 const nodes = [_]workspace.Node{

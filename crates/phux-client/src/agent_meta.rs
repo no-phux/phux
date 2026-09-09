@@ -15,8 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
-pub use phux_protocol::wire::frame::TERMINAL_PANE_OCCUPANT_KEY;
+pub use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
+pub use phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
 
 /// Server-observed foreground process for `phux.pane-occupant/v1`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

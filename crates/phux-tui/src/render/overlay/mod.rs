@@ -5,7 +5,7 @@
 //! pane's stdin) and pane stdout flushing is paused (per ADR-0020 §Decision
 //! invariant 5). Pane libghostty mirrors keep consuming server VT bytes —
 //! we only pause the *outbound* flush so the modal doesn't get trampled by
-//! a `TERMINAL_OUTPUT` repaint. On dismiss, the driver triggers a full
+//! a `RESOURCE_OUTPUT` repaint. On dismiss, the driver triggers a full
 //! repaint to restore pane content.
 //!
 //! [`OverlayState`] carries a *stack* of overlays. The top of the stack

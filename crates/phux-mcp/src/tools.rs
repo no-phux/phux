@@ -23,7 +23,7 @@ use phux_client::selector::{self, Selector};
 use phux_client::state::{self, StateView};
 use phux_client::wait::{Condition, DEFAULT_IDLE_DWELL, DEFAULT_POLL_INTERVAL, WaitOutcome};
 use phux_client::watch::WatchItem;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::PasteTrust;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue};
 use serde_json::{Value, json};
@@ -609,7 +609,7 @@ async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
 /// the collected prefix is returned, not an error.
 async fn collect_watch_items(
     socket: &std::path::Path,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
     max_items: Option<usize>,
     timeout: Option<Duration>,
 ) -> Result<Vec<WatchItem>, AttachError> {
@@ -705,14 +705,14 @@ fn agent_event_json(ev: &phux_client::watch::WatchEvent) -> Value {
         AgentEvent::Bell => ("bell", json!({})),
         // Additive (ADR-0102): the spawned resource's kind and parent, so a
         // consumer can tell a new pane from a new agent session.
-        AgentEvent::PaneSpawned { kind, parent } => (
+        AgentEvent::ResourceSpawned { kind, parent } => (
             "pane_spawned",
             json!({
                 "kind": kind.as_str(),
                 "parent": parent.as_ref().map(selector::format_terminal_id),
             }),
         ),
-        AgentEvent::PaneClosed { exit_status } => {
+        AgentEvent::ResourceClosed { exit_status } => {
             ("pane_closed", json!({ "exit_status": exit_status }))
         }
         AgentEvent::Dirty => ("dirty", json!({})),
@@ -824,7 +824,7 @@ async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
     view: &StateView,
-) -> Result<TerminalId, ToolError> {
+) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
     // resolves to exactly one agent or refuses with the reason.
@@ -835,7 +835,7 @@ async fn resolve_one(
             .map_err(|err| ToolError::new(err.to_string()));
     }
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
-    selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
+    selector::pick_target_pane(&candidates, &snapshot.focused_resource).ok_or_else(|| {
         if view.is_complete() {
             ToolError::new("no such target")
         } else {
@@ -848,8 +848,8 @@ async fn resolve_one(
     })
 }
 
-/// A JSON rendering of a `TerminalId` using the canonical direct selector.
-fn pane_value(id: &TerminalId) -> Value {
+/// A JSON rendering of a `ResourceId` using the canonical direct selector.
+fn pane_value(id: &ResourceId) -> Value {
     json!(selector::format_terminal_id(id))
 }
 
@@ -905,8 +905,8 @@ mod tests {
     use phux_client::state::Degradation;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TERMINAL_TAGS_KEY};
-    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+    use phux_protocol::wire::frame::{ErrorCode, FrameKind, RESOURCE_TAGS_KEY, Scope};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -1267,7 +1267,7 @@ mod tests {
         // A transition carries identity, the new state, the derived
         // attention, and where it came from.
         let moved = AgentStateUpdate {
-            terminal: Some(TerminalId::local(7)),
+            terminal: Some(ResourceId::local(7)),
             record: Some(record(AgentMetaState::Blocked)),
             previous: Some(record(AgentMetaState::Working)),
         };
@@ -1291,7 +1291,7 @@ mod tests {
         // forever, and the identity it had survives so that consumer still
         // recognizes whose line it is.
         let cleared = AgentStateUpdate {
-            terminal: Some(TerminalId::local(7)),
+            terminal: Some(ResourceId::local(7)),
             record: None,
             previous: Some(record(AgentMetaState::Working)),
         };
@@ -1352,13 +1352,13 @@ mod tests {
         assert_eq!(tv["title"], json!("vim"));
 
         let satellite = WatchEvent {
-            terminal: Some(TerminalId::satellite("devbox", 7)),
+            terminal: Some(ResourceId::satellite("devbox", 7)),
             event: AgentEvent::Dirty,
         };
         assert_eq!(agent_event_json(&satellite)["terminal"], json!("devbox/@7"));
-        assert_eq!(pane_value(&TerminalId::local(3)), json!("@3"));
+        assert_eq!(pane_value(&ResourceId::local(3)), json!("@3"));
         assert_eq!(
-            pane_value(&TerminalId::satellite("devbox", 7)),
+            pane_value(&ResourceId::satellite("devbox", 7)),
             json!("devbox/@7"),
         );
 
@@ -1421,7 +1421,7 @@ mod tests {
         );
         assert_eq!(
             parse_target(&json!({ "target": "@100" })).unwrap(),
-            Selector::TerminalId(100),
+            Selector::ResourceId(100),
         );
         // Malformed and headless `=` both error before any server round trip.
         assert!(parse_target(&json!({ "target": "@nope" })).is_err());
@@ -1454,15 +1454,15 @@ mod tests {
             resolve_one(socket, &selector::parse("work").unwrap(), &whole)
                 .await
                 .unwrap(),
-            TerminalId::local(100),
+            ResourceId::local(100),
         );
         // Window, exact pane, local id, and satellite id selectors.
         for (raw, expected) in [
-            ("work:1", TerminalId::local(101)),
-            ("work:editor", TerminalId::local(101)),
-            ("work:1.1", TerminalId::local(102)),
-            ("@200", TerminalId::local(200)),
-            ("devbox/@7", TerminalId::satellite("devbox", 7)),
+            ("work:1", ResourceId::local(101)),
+            ("work:editor", ResourceId::local(101)),
+            ("work:1.1", ResourceId::local(102)),
+            ("@200", ResourceId::local(200)),
+            ("devbox/@7", ResourceId::satellite("devbox", 7)),
         ] {
             assert_eq!(
                 resolve_one(socket, &selector::parse(raw).unwrap(), &whole)
@@ -1477,7 +1477,7 @@ mod tests {
             resolve_one(socket, &Selector::Current, &whole)
                 .await
                 .unwrap(),
-            TerminalId::local(100),
+            ResourceId::local(100),
         );
         // Misses error.
         assert!(
@@ -1531,8 +1531,8 @@ mod tests {
         // The shared harness owns the correlation (one METADATA_VALUE per
         // request id, in order); this closure supplies only the values.
         let spec = ScriptSpec::new().metadata(|scope, key| {
-            assert_eq!(key, TERMINAL_TAGS_KEY);
-            let Scope::Terminal(terminal_id) = scope else {
+            assert_eq!(key, RESOURCE_TAGS_KEY);
+            let Scope::Resource(terminal_id) = scope else {
                 panic!("tag lookup must be terminal-scoped, got {scope:?}");
             };
             matches!(terminal_id.local_id(), Some(100 | 200))
@@ -1543,7 +1543,7 @@ mod tests {
         let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &whole_fleet())
             .await
             .unwrap();
-        assert_eq!(pane, TerminalId::local(100));
+        assert_eq!(pane, ResourceId::local(100));
         let seen = server.await.unwrap();
         // One per pane, satellite panes included. The hand-written fake this
         // replaced served exactly four and then dropped the socket, so the
@@ -1557,7 +1557,7 @@ mod tests {
         let metadata = &seen[1..];
         assert_eq!(
             metadata.len(),
-            fixture().panes.len(),
+            fixture().resources.len(),
             "one GET_METADATA per pane in the snapshot, pipelined; got {seen:?}"
         );
         assert!(
@@ -1662,22 +1662,22 @@ mod tests {
             WindowInfo::new(p0, play, "shell").with_index(0),
         ];
         let panes = vec![
-            TerminalInfo::new(TerminalId::local(100), w0, 80, 24),
-            TerminalInfo::new(TerminalId::local(101), w1, 80, 24),
-            TerminalInfo::new(TerminalId::local(102), w1, 80, 24),
-            TerminalInfo::new(TerminalId::local(200), p0, 80, 24),
+            ResourceInfo::new(ResourceId::local(100), w0, 80, 24),
+            ResourceInfo::new(ResourceId::local(101), w1, 80, 24),
+            ResourceInfo::new(ResourceId::local(102), w1, 80, 24),
+            ResourceInfo::new(ResourceId::local(200), p0, 80, 24),
             // Aggregated federation inventory carries satellite panes without
             // inventing hub-local session/window joins.
-            TerminalInfo::new(
-                TerminalId::satellite("devbox", 7),
+            ResourceInfo::new(
+                ResourceId::satellite("devbox", 7),
                 WindowId::new(999),
                 80,
                 24,
             ),
         ];
-        SessionSnapshot::new(work, w0, TerminalId::local(100))
+        SessionSnapshot::new(work, w0, ResourceId::local(100))
             .with_sessions(sessions)
             .with_windows(windows)
-            .with_panes(panes)
+            .with_resources(panes)
     }
 }

@@ -2,7 +2,7 @@
 //! terminal as VT escape sequences.
 //!
 //! Under ADR-0013 the client owns one `Terminal` per attached pane;
-//! `TERMINAL_OUTPUT` byte frames are fed into it via `vt_write`. This
+//! `RESOURCE_OUTPUT` byte frames are fed into it via `vt_write`. This
 //! module reads the resulting structured state back out via
 //! `RenderState` (per-row dirty tracking) and emits VT to stdout.
 //!

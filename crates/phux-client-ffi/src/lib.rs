@@ -177,7 +177,7 @@ fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(),
 
 fn apply_input(
     client: &mut Client,
-    terminal_id: &phux_protocol::TerminalId,
+    terminal_id: &phux_protocol::ResourceId,
     event: &InputEvent,
 ) -> Result<(), BridgeError> {
     client.ensure_attached()?;
@@ -616,14 +616,14 @@ pub unsafe extern "C" fn phux_client_feed_frame(
 )]
 #[derive(Clone, Copy, Debug)]
 struct StreamRef<'a> {
-    terminal_id: &'a phux_protocol::TerminalId,
+    terminal_id: &'a phux_protocol::ResourceId,
     stream_id: phux_protocol::StreamId,
     bootstrap_id: phux_protocol::BootstrapId,
 }
 
 impl<'a> StreamRef<'a> {
     const fn new(
-        terminal_id: &'a phux_protocol::TerminalId,
+        terminal_id: &'a phux_protocol::ResourceId,
         stream_id: phux_protocol::StreamId,
         bootstrap_id: phux_protocol::BootstrapId,
     ) -> Self {
@@ -842,7 +842,7 @@ fn dispatch_history_frame(client: &mut Client, frame: FrameKind) -> Result<(), B
 /// kernel does not accept.
 fn dispatch_terminal_frame(client: &mut Client, frame: FrameKind) -> Result<(), BridgeError> {
     match frame {
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
@@ -854,7 +854,7 @@ fn dispatch_terminal_frame(client: &mut Client, frame: FrameKind) -> Result<(), 
             seq,
             bytes.as_ref(),
         ),
-        FrameKind::TerminalClosed { terminal_id, .. } => {
+        FrameKind::ResourceClosed { terminal_id, .. } => {
             apply_terminal_closed(client, &terminal_id)
         }
         _ => Err(BridgeError::protocol(
@@ -971,14 +971,14 @@ fn apply_attached(
     // kernel as a record stream instead, and its records reach the host as
     // AGENT_RECORDS effects.
     let terminals: Vec<_> = snapshot
-        .panes
+        .resources
         .iter()
         .filter(|pane| pane.kind == ResourceKind::Terminal)
         .filter(|pane| focused_windows.contains(&pane.window_id))
         .map(|pane| pane.id.clone())
         .collect();
     let agent_sessions: Vec<_> = snapshot
-        .panes
+        .resources
         .iter()
         .filter(|pane| pane.kind == ResourceKind::AgentSession)
         .filter(|pane| {
@@ -988,7 +988,7 @@ fn apply_attached(
         })
         .collect();
     client.agent_streams.clear();
-    client.resources = snapshot.panes.iter().map(resource_summary).collect();
+    client.resources = snapshot.resources.iter().map(resource_summary).collect();
     apply_kernel_input(
         client,
         KernelInput::AttachStarted {
@@ -1017,7 +1017,7 @@ fn apply_attached(
 }
 
 /// Projects one snapshot resource into the host-facing catalog entry.
-fn resource_summary(pane: &phux_protocol::wire::info::TerminalInfo) -> client::ResourceSummary {
+fn resource_summary(pane: &phux_protocol::wire::info::ResourceInfo) -> client::ResourceSummary {
     let facet = pane.agent.as_ref();
     client::ResourceSummary::new(
         pane.id.clone(),
@@ -1143,7 +1143,7 @@ fn apply_bootstrap_ready(
 /// The history cache counters that decide whether a page changed the document.
 fn history_cache_counters(
     client: &Client,
-    terminal_id: &phux_protocol::TerminalId,
+    terminal_id: &phux_protocol::ResourceId,
 ) -> Option<(usize, usize, usize)> {
     client.session.history_cache(terminal_id).map(|cache| {
         let status = cache.status();
@@ -1244,7 +1244,7 @@ fn apply_terminal_output(
     let before = published_last_seq(client, stream.terminal_id);
     apply_kernel_input(
         client,
-        KernelInput::TerminalOutput {
+        KernelInput::ResourceOutput {
             terminal_id: stream.terminal_id,
             stream_id: stream.stream_id,
             bootstrap_id: stream.bootstrap_id,
@@ -1260,7 +1260,7 @@ fn apply_terminal_output(
 }
 
 /// The published sequence a terminal's replica has reached, when it has one.
-fn published_last_seq(client: &Client, terminal_id: &phux_protocol::TerminalId) -> Option<u64> {
+fn published_last_seq(client: &Client, terminal_id: &phux_protocol::ResourceId) -> Option<u64> {
     client
         .session
         .published(terminal_id)
@@ -1268,7 +1268,7 @@ fn published_last_seq(client: &Client, terminal_id: &phux_protocol::TerminalId) 
 }
 
 /// Drops the client-side state of a terminal the bridge can no longer serve.
-fn forget_terminal(client: &mut Client, terminal_id: &phux_protocol::TerminalId) {
+fn forget_terminal(client: &mut Client, terminal_id: &phux_protocol::ResourceId) {
     client.render.remove(terminal_id);
     client.document_revisions.remove(terminal_id);
     client.invalidate_terminal_handles(terminal_id);
@@ -1309,10 +1309,10 @@ fn apply_bootstrap_tombstone(
 /// Records a terminal whose process exited and drops its state.
 fn apply_terminal_closed(
     client: &mut Client,
-    terminal_id: &phux_protocol::TerminalId,
+    terminal_id: &phux_protocol::ResourceId,
 ) -> Result<(), BridgeError> {
     client.ensure_participant(terminal_id)?;
-    apply_kernel_input(client, KernelInput::TerminalClosed { terminal_id })?;
+    apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
     if client.is_agent_stream(terminal_id) {
         // The kernel drops the stream silently (nothing was painted); the
         // host still needs to retire its projection of the resource.
@@ -1342,7 +1342,7 @@ fn apply_terminal_closed(
 /// Publishes a bell as an effect the embedder can observe.
 fn apply_bell(
     client: &mut Client,
-    terminal_id: phux_protocol::TerminalId,
+    terminal_id: phux_protocol::ResourceId,
 ) -> Result<(), BridgeError> {
     client.ensure_participant(&terminal_id)?;
     client
@@ -1354,7 +1354,7 @@ fn apply_bell(
 
 /// Publishes a server error as an effect the embedder can observe.
 fn apply_error(client: &mut Client, code: phux_protocol::wire::frame::ErrorCode, message: &str) {
-    let mut effect = OwnedEffect::simple(2, 4, phux_protocol::TerminalId::local(0));
+    let mut effect = OwnedEffect::simple(2, 4, phux_protocol::ResourceId::local(0));
     effect.bytes = format!("{code:?}: {message}").into_bytes();
     client.owned_effects.push(effect);
     client.publish_effects();
@@ -1367,7 +1367,7 @@ fn apply_detached(
     message: String,
 ) {
     client.detach();
-    let mut effect = OwnedEffect::simple(2, 5, phux_protocol::TerminalId::local(0));
+    let mut effect = OwnedEffect::simple(2, 5, phux_protocol::ResourceId::local(0));
     // phux-l83x: carry the ending's reason across the bridge as a
     // stable wire value, the way RESYNC_REQUIRED carries its
     // `TombstoneReason`. A consumer that only sees "detached"
@@ -1647,7 +1647,7 @@ pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> Ph
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_grid(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     out_view: *mut PhuxTerminalGridView,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -1673,7 +1673,7 @@ pub unsafe extern "C" fn phux_client_terminal_grid(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
     client: *const PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     out_enabled: *mut bool,
 ) -> PhuxClientResult {
     with_client_ref(client, |client| {
@@ -1697,7 +1697,7 @@ pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_key(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     event: *const PhuxKeyEvent,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -1806,7 +1806,7 @@ unsafe fn key_input_event(event: &PhuxKeyEvent) -> Result<InputEvent, BridgeErro
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_mouse(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     event: *const PhuxMouseEvent,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -1843,7 +1843,7 @@ pub unsafe extern "C" fn phux_client_send_mouse(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_focus(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     focused: bool,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -1871,7 +1871,7 @@ pub unsafe extern "C" fn phux_client_send_focus(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_paste(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     data: *const u8,
     len: usize,
     trusted: bool,
@@ -1904,7 +1904,7 @@ pub unsafe extern "C" fn phux_client_send_paste(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_resize(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     cols: u16,
     rows: u16,
 ) -> PhuxClientResult {
@@ -1924,7 +1924,7 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
         if client.operations.detaching(&terminal_id) {
             return Err(BridgeError::state("terminal detach is pending"));
         }
-        client.queue_frame(&FrameKind::TerminalResize {
+        client.queue_frame(&FrameKind::ResizeTerminal {
             terminal_id,
             cols,
             rows,
@@ -1989,7 +1989,7 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_scroll_viewport(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     kind: u32,
     value: i64,
 ) -> PhuxClientResult {
@@ -2010,7 +2010,7 @@ pub unsafe extern "C" fn phux_client_scroll_viewport(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_anchor_create(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     point: PhuxDocumentPoint,
     out_anchor: *mut PhuxDocumentAnchor,
 ) -> PhuxClientResult {
@@ -2034,7 +2034,7 @@ pub unsafe extern "C" fn phux_client_anchor_create(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_anchor_release(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     anchor: PhuxDocumentAnchor,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -2055,7 +2055,7 @@ pub unsafe extern "C" fn phux_client_anchor_release(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_clear_presentation(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     stream_id: u64,
     bootstrap_id: u64,
 ) -> PhuxClientResult {
@@ -2075,7 +2075,7 @@ pub unsafe extern "C" fn phux_client_clear_presentation(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_history_viewport_pin(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     anchor: PhuxDocumentAnchor,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -2094,7 +2094,7 @@ pub unsafe extern "C" fn phux_client_history_viewport_pin(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_history_follow_live(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
@@ -2112,7 +2112,7 @@ pub unsafe extern "C" fn phux_client_history_follow_live(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_set(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     start: PhuxDocumentAnchor,
     end: PhuxDocumentAnchor,
     rectangle: bool,
@@ -2133,7 +2133,7 @@ pub unsafe extern "C" fn phux_client_selection_set(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_clear(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
@@ -2153,7 +2153,7 @@ pub unsafe extern "C" fn phux_client_selection_clear(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_text(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     out_text: *mut PhuxBytes,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -2206,7 +2206,7 @@ pub unsafe extern "C" fn phux_client_perf_json(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_search(
     client: *mut PhuxClient,
-    terminal_id: *const PhuxTerminalId,
+    terminal_id: *const PhuxResourceId,
     query_utf8: PhuxBytes,
     case_sensitive: bool,
     out_results: *mut *const PhuxSearchResult,
@@ -2372,7 +2372,7 @@ mod tests {
             (*client).inner.owned_effects.push(OwnedEffect::simple(
                 1,
                 1,
-                phux_protocol::TerminalId::local(7),
+                phux_protocol::ResourceId::local(7),
             ));
         }
         assert_eq!(invoke_attached(client), PhuxClientResult::Ok);
@@ -2521,8 +2521,8 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn stale_tombstone_preserves_newer_grid_revision() {
-        let terminal_id = phux_protocol::TerminalId::local(7);
-        let c_terminal_id = PhuxTerminalId {
+        let terminal_id = phux_protocol::ResourceId::local(7);
+        let c_terminal_id = PhuxResourceId {
             kind: 0,
             id: 7,
             host: PhuxBytes::default(),
@@ -2543,7 +2543,7 @@ mod tests {
         .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
             window_id, session_id, "working",
         )])
-        .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
+        .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
             terminal_id.clone(),
             window_id,
             80,
@@ -2666,8 +2666,8 @@ mod tests {
         let other_session = SessionId::new(1);
         let focused_window = phux_protocol::WindowId::new(20);
         let other_window = phux_protocol::WindowId::new(10);
-        let focused_terminal = phux_protocol::TerminalId::local(30);
-        let other_terminal = phux_protocol::TerminalId::local(40);
+        let focused_terminal = phux_protocol::ResourceId::local(30);
+        let other_terminal = phux_protocol::ResourceId::local(40);
         let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
             focused_session,
             focused_window,
@@ -2689,14 +2689,14 @@ mod tests {
                 "focused".to_owned(),
             ),
         ])
-        .with_panes(vec![
-            phux_protocol::wire::info::TerminalInfo::new(
+        .with_resources(vec![
+            phux_protocol::wire::info::ResourceInfo::new(
                 other_terminal.clone(),
                 other_window,
                 80,
                 24,
             ),
-            phux_protocol::wire::info::TerminalInfo::new(
+            phux_protocol::wire::info::ResourceInfo::new(
                 focused_terminal.clone(),
                 focused_window,
                 80,
@@ -2734,9 +2734,9 @@ mod tests {
     }
 
     fn three_pane_snapshot(
-        seed: &phux_protocol::TerminalId,
-        horizontal: &phux_protocol::TerminalId,
-        vertical: &phux_protocol::TerminalId,
+        seed: &phux_protocol::ResourceId,
+        horizontal: &phux_protocol::ResourceId,
+        vertical: &phux_protocol::ResourceId,
     ) -> phux_protocol::wire::info::SessionSnapshot {
         use phux_protocol::wire::info::{LayoutNode, SplitDir};
 
@@ -2767,30 +2767,30 @@ mod tests {
         .with_windows(vec![
             phux_protocol::wire::info::WindowInfo::new(catalog_window, catalog_session, "catalog"),
             phux_protocol::wire::info::WindowInfo::new(working_window, working_session, "working")
-                .with_active_pane(Some(seed.clone()))
+                .with_active_resource(Some(seed.clone()))
                 .with_layout(Some(layout)),
         ])
-        .with_panes(vec![
-            phux_protocol::wire::info::TerminalInfo::new(
-                phux_protocol::TerminalId::local(1),
+        .with_resources(vec![
+            phux_protocol::wire::info::ResourceInfo::new(
+                phux_protocol::ResourceId::local(1),
                 catalog_window,
                 80,
                 24,
             ),
-            phux_protocol::wire::info::TerminalInfo::new(seed.clone(), working_window, 80, 24),
-            phux_protocol::wire::info::TerminalInfo::new(
+            phux_protocol::wire::info::ResourceInfo::new(seed.clone(), working_window, 80, 24),
+            phux_protocol::wire::info::ResourceInfo::new(
                 horizontal.clone(),
                 working_window,
                 40,
                 24,
             ),
-            phux_protocol::wire::info::TerminalInfo::new(vertical.clone(), working_window, 40, 12),
+            phux_protocol::wire::info::ResourceInfo::new(vertical.clone(), working_window, 40, 12),
         ])
     }
 
     fn feed_complete_bootstrap(
         client: *mut PhuxClient,
-        terminal_id: phux_protocol::TerminalId,
+        terminal_id: phux_protocol::ResourceId,
         payload: &'static [u8],
     ) {
         let stream_id = phux_protocol::StreamId::new(7).expect("stream");
@@ -2833,7 +2833,7 @@ mod tests {
             (*client).inner.selected_profile =
                 Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
         }
-        let terminal = phux_protocol::TerminalId::local(1);
+        let terminal = phux_protocol::ResourceId::local(1);
         let session = SessionId::new(1);
         let window = phux_protocol::WindowId::new(1);
         let snapshot =
@@ -2841,7 +2841,7 @@ mod tests {
                 .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
                     window, session, "search",
                 )])
-                .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
+                .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
                     terminal.clone(),
                     window,
                     40,
@@ -2870,9 +2870,9 @@ mod tests {
     #[test]
     fn search_pin_moves_rendered_viewport_and_follow_live_restores_tail() {
         let client = client_with_searchable_scrollback();
-        let terminal = PhuxTerminalId {
+        let terminal = PhuxResourceId {
             id: 1,
-            ..PhuxTerminalId::default()
+            ..PhuxResourceId::default()
         };
         let mut view = PhuxTerminalGridView::default();
         let mut results = ptr::null();
@@ -2965,9 +2965,9 @@ mod tests {
             (*client).inner.selected_profile =
                 Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
         }
-        let seed = phux_protocol::TerminalId::local(2);
-        let horizontal = phux_protocol::TerminalId::local(3);
-        let vertical = phux_protocol::TerminalId::local(4);
+        let seed = phux_protocol::ResourceId::local(2);
+        let horizontal = phux_protocol::ResourceId::local(3);
+        let vertical = phux_protocol::ResourceId::local(4);
         let snapshot = three_pane_snapshot(&seed, &horizontal, &vertical);
         assert_eq!(
             feed_kind(
@@ -2985,7 +2985,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                &FrameKind::TerminalClosed {
+                &FrameKind::ResourceClosed {
                     terminal_id: seed.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -3016,7 +3016,7 @@ mod tests {
         let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
             SessionId::new(2),
             phux_protocol::WindowId::new(20),
-            phux_protocol::TerminalId::local(30),
+            phux_protocol::ResourceId::local(30),
         )
         .with_sessions(vec![
             phux_protocol::wire::info::SessionInfo::new(SessionId::new(1), "other")
@@ -3107,7 +3107,7 @@ mod tests {
         assert_eq!(client::EFFECT_VIEW_BUILDS.get(), 64);
         // Pending effects remain hidden until successful processing publishes them.
         let mut satellite =
-            OwnedEffect::simple(2, 2, phux_protocol::TerminalId::satellite("peer", 9));
+            OwnedEffect::simple(2, 2, phux_protocol::ResourceId::satellite("peer", 9));
         satellite.bytes = b"satellite title".to_vec();
         satellite.stream_id = 11;
         satellite.bootstrap_id = 12;
@@ -3285,7 +3285,7 @@ mod tests {
             feed_kind(
                 client,
                 &FrameKind::BootstrapChunk {
-                    terminal_id: phux_protocol::TerminalId::local(7),
+                    terminal_id: phux_protocol::ResourceId::local(7),
                     stream_id: phux_protocol::StreamId::new(1).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
                     chunk_seq: 0,
@@ -3298,14 +3298,14 @@ mod tests {
             (*client)
                 .inner
                 .session
-                .active_attach_contains(&phux_protocol::TerminalId::local(7))
+                .active_attach_contains(&phux_protocol::ResourceId::local(7))
         });
         unsafe { phux_client_free(client) };
     }
 
     #[test]
     fn terminal_state_frames_require_an_active_attach_participant() {
-        let terminal_id = phux_protocol::TerminalId::local(7);
+        let terminal_id = phux_protocol::ResourceId::local(7);
         let client = boxed_client();
         unsafe {
             (*client).inner.protocol_ready = true;
@@ -3325,7 +3325,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                &FrameKind::TerminalClosed {
+                &FrameKind::ResourceClosed {
                     terminal_id: terminal_id.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -3351,7 +3351,7 @@ mod tests {
             feed_kind(
                 client,
                 &FrameKind::BootstrapBegin {
-                    terminal_id: phux_protocol::TerminalId::local(8),
+                    terminal_id: phux_protocol::ResourceId::local(8),
                     stream_id: phux_protocol::StreamId::new(2).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(2).expect("bootstrap"),
                     profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
@@ -3394,7 +3394,7 @@ mod tests {
 
     #[test]
     fn detached_releases_attach_and_rejects_subsequent_output_transactionally() {
-        let terminal_id = phux_protocol::TerminalId::local(7);
+        let terminal_id = phux_protocol::ResourceId::local(7);
         let authorized = [terminal_id.clone()];
         let client = boxed_client();
         unsafe {
@@ -3430,7 +3430,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                &FrameKind::TerminalOutput {
+                &FrameKind::ResourceOutput {
                     terminal_id,
                     stream_id: phux_protocol::StreamId::new(1).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -3489,8 +3489,8 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn mouse_tracking_getter_uses_published_dec_modes_and_preserves_borrows() {
-        let terminal_id = phux_protocol::TerminalId::local(7);
-        let c_terminal_id = PhuxTerminalId {
+        let terminal_id = phux_protocol::ResourceId::local(7);
+        let c_terminal_id = PhuxResourceId {
             kind: 0,
             id: 7,
             host: PhuxBytes::default(),
@@ -3564,7 +3564,7 @@ mod tests {
 
         apply_kernel_input(
             unsafe { &mut (*client).inner },
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -3599,7 +3599,7 @@ mod tests {
             unsafe { phux_client_terminal_mouse_tracking(client, ptr::null(), &raw mut enabled) },
             PhuxClientResult::InvalidArgument
         );
-        let unknown_id = PhuxTerminalId {
+        let unknown_id = PhuxResourceId {
             id: 8,
             ..c_terminal_id
         };
@@ -3682,8 +3682,8 @@ mod tests {
 
     /// A focused session holding one terminal and one agent session bound to it.
     fn mixed_kind_snapshot(
-        terminal: &phux_protocol::TerminalId,
-        agent: &phux_protocol::TerminalId,
+        terminal: &phux_protocol::ResourceId,
+        agent: &phux_protocol::ResourceId,
     ) -> phux_protocol::wire::info::SessionSnapshot {
         let session_id = SessionId::new(1);
         let window_id = phux_protocol::WindowId::new(10);
@@ -3694,9 +3694,9 @@ mod tests {
             .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
                 window_id, session_id, "working",
             )])
-            .with_panes(vec![
-                phux_protocol::wire::info::TerminalInfo::new(terminal.clone(), window_id, 80, 24),
-                phux_protocol::wire::info::TerminalInfo::new(
+            .with_resources(vec![
+                phux_protocol::wire::info::ResourceInfo::new(terminal.clone(), window_id, 80, 24),
+                phux_protocol::wire::info::ResourceInfo::new(
                     agent.clone(),
                     phux_protocol::WindowId::new(0),
                     0,
@@ -3717,8 +3717,8 @@ mod tests {
     /// A client attached to [`mixed_kind_snapshot`] with the terminal READY and
     /// the attach complete; the agent session is declared but has no stream yet.
     fn attached_mixed_client() -> *mut PhuxClient {
-        let terminal = phux_protocol::TerminalId::local(MIXED_TERMINAL);
-        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+        let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
         let stream_id = phux_protocol::StreamId::new(1).expect("stream");
         let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
         let client = boxed_client();
@@ -3763,8 +3763,8 @@ mod tests {
 
     #[test]
     fn agent_sessions_are_catalogued_but_never_gate_the_barrier() {
-        let terminal = phux_protocol::TerminalId::local(MIXED_TERMINAL);
-        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+        let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
         let client = attached_mixed_client();
         let inner = unsafe { &(*client).inner };
         assert!(
@@ -3844,7 +3844,7 @@ mod tests {
     /// and one live record: the retained backlog publishes once at READY,
     /// then live records follow.
     fn open_agent_stream(client: *mut PhuxClient) {
-        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
         let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).expect("stream");
         let bootstrap_id = phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).expect("bootstrap");
         let retained = format!(
@@ -3875,7 +3875,7 @@ mod tests {
                 bootstrap_id,
                 history_cursor: None,
             },
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id: agent.clone(),
                 stream_id,
                 bootstrap_id,
@@ -3929,7 +3929,7 @@ mod tests {
 
     #[test]
     fn agent_stream_faults_retire_the_generation_and_closes_retire_the_resource() {
-        let agent = phux_protocol::TerminalId::local(MIXED_AGENT);
+        let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
         let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).expect("stream");
         let bootstrap_id = phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).expect("bootstrap");
         let client = attached_mixed_client();
@@ -3961,7 +3961,7 @@ mod tests {
         assert_ne!(
             feed_kind(
                 client,
-                &FrameKind::TerminalOutput {
+                &FrameKind::ResourceOutput {
                     terminal_id: agent.clone(),
                     stream_id,
                     bootstrap_id,
@@ -3988,7 +3988,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                &FrameKind::TerminalClosed {
+                &FrameKind::ResourceClosed {
                     terminal_id: agent.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
@@ -4008,7 +4008,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                &FrameKind::TerminalOutput {
+                &FrameKind::ResourceOutput {
                     terminal_id: agent,
                     stream_id,
                     bootstrap_id,

@@ -9,7 +9,7 @@
 //!
 //! A single client is modelled by [`ClientHandle`]: it owns the wire
 //! [`UnixStream`], a [`Screen`] oracle fed by every drained
-//! `TERMINAL_OUTPUT`, and the focused pane's [`TerminalId`] (so callers
+//! `RESOURCE_OUTPUT`, and the focused pane's [`ResourceId`] (so callers
 //! send input without re-extracting it from the snapshot each time). The
 //! handle exposes the verbs a repro actually wants:
 //!
@@ -42,12 +42,12 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
-    TYPE_TERMINAL_OUTPUT, ViewportInfo,
+    TYPE_RESOURCE_OUTPUT, ViewportInfo,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -294,7 +294,7 @@ pub struct ClientHandle {
     screen: Screen,
     /// The focused pane's wire id, captured from the opening `ATTACHED`
     /// snapshot. Input frames target this terminal.
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     /// Server-allocated client id for this attachment.
     pub client_id: u32,
     session: String,
@@ -337,7 +337,7 @@ impl ClientHandle {
             } => {
                 assert_eq!(attach_id, 1, "ATTACHED must echo ATTACH.attach_id");
                 let pane = snapshot
-                    .panes
+                    .resources
                     .first()
                     .ok_or_else(|| "ATTACHED snapshot had no panes".to_owned())?;
                 (initial_client_id.get(), pane.id.clone())
@@ -452,7 +452,7 @@ impl ClientHandle {
         self.send_keys(&[Key::Enter]).await;
     }
 
-    /// Drain whatever `TERMINAL_OUTPUT` is *already* buffered on the wire
+    /// Drain whatever `RESOURCE_OUTPUT` is *already* buffered on the wire
     /// into the oracle, without blocking for new output, then return a
     /// mutable view of the oracle. A non-blocking snapshot of "what the
     /// client would render right now."
@@ -462,7 +462,7 @@ impl ClientHandle {
         // still consuming a frame that is mid-flight.
         loop {
             match timeout(Duration::from_millis(20), recv_typed(&mut self.stream)).await {
-                Ok((tb, FrameKind::TerminalOutput { bytes, .. })) if tb == TYPE_TERMINAL_OUTPUT => {
+                Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     self.screen.write(&bytes);
                 }
                 Ok(_) => {}      // non-output frame (bell, metadata, ack echo): ignore
@@ -482,7 +482,7 @@ impl ClientHandle {
         self.screen.snapshot_text()
     }
 
-    /// Drain up to `max_frames` of immediately-available `TERMINAL_OUTPUT`
+    /// Drain up to `max_frames` of immediately-available `RESOURCE_OUTPUT`
     /// into the oracle, stopping early on a brief (5ms) quiet gap.
     ///
     /// Unlike [`Self::screenshot`], this is BOUNDED by frame count, so it is
@@ -495,7 +495,7 @@ impl ClientHandle {
     pub async fn drain_output_bounded(&mut self, max_frames: usize) {
         for _ in 0..max_frames {
             match timeout(Duration::from_millis(5), recv_typed(&mut self.stream)).await {
-                Ok((tb, FrameKind::TerminalOutput { bytes, .. })) if tb == TYPE_TERMINAL_OUTPUT => {
+                Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     self.screen.write(&bytes);
                 }
                 Ok(_) => {}      // non-output frame: ignore, keep draining
@@ -504,7 +504,7 @@ impl ClientHandle {
         }
     }
 
-    /// Drain `TERMINAL_OUTPUT` into the oracle until `pred` holds or
+    /// Drain `RESOURCE_OUTPUT` into the oracle until `pred` holds or
     /// [`WIRE_RECV_TIMEOUT`] elapses. Returns `Ok(())` if the predicate
     /// held, `Err` with the final screen text on timeout.
     ///
@@ -556,8 +556,8 @@ impl ClientHandle {
             // than panicking with `UnexpectedEof` on the length prefix.
             match timeout(remaining, try_recv_typed(&mut self.stream)).await {
                 Ok(Some((tb, frame))) => {
-                    if tb == TYPE_TERMINAL_OUTPUT
-                        && let FrameKind::TerminalOutput { bytes, .. } = frame
+                    if tb == TYPE_RESOURCE_OUTPUT
+                        && let FrameKind::ResourceOutput { bytes, .. } = frame
                     {
                         self.screen.write(&bytes);
                         if pred(&mut self.screen) {
@@ -578,10 +578,10 @@ impl ClientHandle {
     /// latency the perf gate measures.
     ///
     /// Two phases. First, wait up to [`WIRE_RECV_TIMEOUT`] for the FIRST
-    /// `TERMINAL_OUTPUT` — the idle rule does NOT apply before any output
+    /// `RESOURCE_OUTPUT` — the idle rule does NOT apply before any output
     /// arrives, so a deferred burst (e.g. a seed pane that sleeps before
     /// printing) is not mistaken for "already settled." Once output starts,
-    /// the idle rule kicks in: when no further `TERMINAL_OUTPUT` arrives
+    /// the idle rule kicks in: when no further `RESOURCE_OUTPUT` arrives
     /// within `idle_ms`, the screen is settled. A long-running emitter (an
     /// infinite output loop) never settles and the call returns at the
     /// [`WIRE_RECV_TIMEOUT`] ceiling.
@@ -603,7 +603,7 @@ impl ClientHandle {
                 hard_deadline - now
             };
             match timeout(budget, recv_typed(&mut self.stream)).await {
-                Ok((tb, FrameKind::TerminalOutput { bytes, .. })) if tb == TYPE_TERMINAL_OUTPUT => {
+                Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     first_byte_at.get_or_insert_with(Instant::now);
                     self.screen.write(&bytes);
                 }

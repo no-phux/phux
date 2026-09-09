@@ -10,14 +10,14 @@
 //! `phux attach` purely for its side effect on the grid.
 //!
 //! This module closes that with the frame the wire already had:
-//! [`FrameKind::TerminalResize`] (`TERMINAL_RESIZE`, `L1.md` §3.1) is a
+//! [`FrameKind::ResizeTerminal`] (`RESIZE_TERMINAL`, `L1.md` §3.1) is a
 //! C→S frame naming one Terminal and its exact cell dimensions, and the
 //! reference server has driven `TIOCSWINSZ` from it since it landed. No
 //! viewport, no attach, no subscription, no wire change.
 //!
 //! # Why this verifies instead of assuming
 //!
-//! `TERMINAL_RESIZE` is deliberately unacknowledged — the S→C
+//! `RESIZE_TERMINAL` is deliberately unacknowledged — the S→C
 //! `TERMINAL_RESIZED` counterpart at `0x92` is spec-only — so a caller that
 //! merely sends it learns nothing about whether the size took. That matters
 //! here because the size a pane ends up at is *not* purely a function of the
@@ -32,9 +32,9 @@
 //! delivered frame for an applied resize.
 //!
 //! The read-back is ordered, not racy: the server handles frames from one
-//! connection in arrival order, and its `TERMINAL_RESIZE` handler updates
+//! connection in arrival order, and its `RESIZE_TERMINAL` handler updates
 //! the registry `dims` synchronously — the same field `GET_STATE` projects
-//! into [`TerminalInfo`] — before the next frame is read. (A `GET_SCREEN`
+//! into [`ResourceInfo`] — before the next frame is read. (A `GET_SCREEN`
 //! read-back would *not* be safe: that projection is served by the pane
 //! actor from a different mailbox than the resize, and the actor's `select!`
 //! polls the screen arm first.)
@@ -42,9 +42,9 @@
 use std::num::NonZeroU16;
 use std::path::Path;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::TerminalInfo;
+use phux_protocol::wire::info::ResourceInfo;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -79,7 +79,7 @@ impl ResizeOutcome {
 /// holds afterwards.
 ///
 /// Opens a fresh connection, negotiates generic L1, sends one
-/// `TERMINAL_RESIZE`, then reads the pane's dimensions back out of a
+/// `RESIZE_TERMINAL`, then reads the pane's dimensions back out of a
 /// `GET_STATE` snapshot on that same connection. No `ATTACH` and no
 /// subscription: this connection never becomes a view of the pane, so it
 /// contributes nothing to the window-size policy.
@@ -95,15 +95,15 @@ impl ResizeOutcome {
 /// [`AttachError::Disconnected`] when the server closes mid-request, and
 /// [`AttachError::Refused`] when the pane is absent from the post-resize
 /// snapshot — which is how an unknown or just-died Terminal surfaces, since
-/// `TERMINAL_RESIZE` itself has no error reply.
+/// `RESIZE_TERMINAL` itself has no error reply.
 pub async fn resize_to(
     socket: &Path,
-    pane: &TerminalId,
+    pane: &ResourceId,
     cols: NonZeroU16,
     rows: NonZeroU16,
 ) -> Result<ResizeOutcome, AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    conn.send(&FrameKind::TerminalResize {
+    conn.send(&FrameKind::ResizeTerminal {
         terminal_id: pane.clone(),
         cols: cols.get(),
         rows: rows.get(),
@@ -114,10 +114,10 @@ pub async fn resize_to(
     // screen projection is not.
     let (snapshot, degradation) = get_state_on(&mut conn).await?.into_parts();
     let applied = snapshot
-        .panes
+        .resources
         .iter()
         .find(|info| info.id == *pane)
-        .map(|info: &TerminalInfo| (info.cols, info.rows))
+        .map(|info: &ResourceInfo| (info.cols, info.rows))
         .ok_or_else(|| {
             // The read-back searches `panes`, which is exactly the list a
             // hub's federation merge leaves incomplete. Absent-and-complete
@@ -153,7 +153,7 @@ mod tests {
     )]
 
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
     use tokio::net::UnixListener;
 
     use crate::testkit::{ScriptSpec, ScriptedServer};
@@ -165,17 +165,22 @@ mod tests {
     }
 
     /// A `GET_STATE` snapshot with one pane at `(cols, rows)`.
-    fn snapshot_with(pane: &TerminalId, cols: u16, rows: u16) -> SessionSnapshot {
-        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), pane.clone()).with_panes(vec![
-            TerminalInfo::new(pane.clone(), WindowId::new(1), cols, rows),
-        ])
+    fn snapshot_with(pane: &ResourceId, cols: u16, rows: u16) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), pane.clone()).with_resources(
+            vec![ResourceInfo::new(
+                pane.clone(),
+                WindowId::new(1),
+                cols,
+                rows,
+            )],
+        )
     }
 
     /// Drive `resize_to` against the shared scripted server and return
     /// `(outcome, frames the client actually sent)`.
     async fn drive(
         state: SessionSnapshot,
-        pane: &TerminalId,
+        pane: &ResourceId,
     ) -> (Result<ResizeOutcome, AttachError>, Vec<FrameKind>) {
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("phux.sock");
@@ -190,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn negotiates_then_sends_terminal_resize_and_read_back() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, seen) = drive(snapshot_with(&pane, 120, 40), &pane).await;
 
         let outcome = outcome.expect("the scripted server answers GET_STATE");
@@ -213,7 +218,7 @@ mod tests {
         );
         assert!(matches!(
             seen.get(1),
-            Some(FrameKind::TerminalResize {
+            Some(FrameKind::ResizeTerminal {
                 cols: 120,
                 rows: 40,
                 ..
@@ -235,7 +240,7 @@ mod tests {
         // view-derived `window-size` policy holds the pane somewhere else.
         // `resize_to` must surface the server's number, not echo the
         // request back and let the caller believe it won.
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, _) = drive(snapshot_with(&pane, 80, 24), &pane).await;
 
         let outcome = outcome.expect("the scripted server answers GET_STATE");
@@ -246,12 +251,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_pane_missing_from_the_read_back_is_a_refusal() {
-        // `TERMINAL_RESIZE` has no error reply, so an unknown or just-died
+        // `RESIZE_TERMINAL` has no error reply, so an unknown or just-died
         // pane can only be detected by its absence downstream. Silently
         // reporting success there would be the exact failure mode the
         // read-back exists to prevent.
-        let pane = TerminalId::local(7);
-        let other = TerminalId::local(9);
+        let pane = ResourceId::local(7);
+        let other = ResourceId::local(9);
         let (outcome, _) = drive(snapshot_with(&other, 120, 40), &pane).await;
 
         assert!(

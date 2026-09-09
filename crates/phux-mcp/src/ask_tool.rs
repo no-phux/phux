@@ -1,7 +1,7 @@
 use phux_client::ask::AskedPayload;
 use phux_client::selector::{self, Selector};
 use phux_client::state::{self, StateView};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::socket;
@@ -44,7 +44,7 @@ pub(crate) fn schema() -> Value {
     })
 }
 
-fn success_value(pane: &TerminalId, payload: &AskedPayload) -> Value {
+fn success_value(pane: &ResourceId, payload: &AskedPayload) -> Value {
     json!({
         "schema_version": 1,
         "event": "asked",
@@ -64,10 +64,10 @@ async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
     view: &StateView,
-) -> Result<TerminalId, ToolError> {
+) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
-    selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
+    selector::pick_target_pane(&candidates, &snapshot.focused_resource).ok_or_else(|| {
         if view.is_complete() {
             ToolError::new("no such target")
         } else {
@@ -140,7 +140,7 @@ mod tests {
             suggestions: vec!["yes".to_owned()],
             elapsed_seconds: Some(5),
         };
-        let value = success_value(&TerminalId::satellite("region/@build", 7), &payload);
+        let value = success_value(&ResourceId::satellite("region/@build", 7), &payload);
         assert_eq!(value["terminal"], json!("region/@build/@7"));
         assert_eq!(value["event"], json!("asked"));
         assert_eq!(value["id"], json!("q1"));
@@ -158,7 +158,7 @@ mod tests {
             suggestions: Vec::new(),
             elapsed_seconds: None,
         };
-        let value = success_value(&TerminalId::local(3), &payload);
+        let value = success_value(&ResourceId::local(3), &payload);
         assert_eq!(value["schema_version"], json!(1));
     }
 

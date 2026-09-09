@@ -107,7 +107,7 @@ fn metadata_keys_huge_count_does_not_over_reserve() {
 
 #[test]
 fn spawn_terminal_huge_command_list_does_not_over_reserve() {
-    // SPAWN_TERMINAL (0x22): the COMMAND field (id 3) value is a positional u32
+    // SPAWN_RESOURCE (0x22): the COMMAND field (id 3) value is a positional u32
     // count + strings. Declare count = u32::MAX inside a tiny field.
     let mut cmd_value = Vec::new();
     cmd_value.extend_from_slice(&u32::MAX.to_be_bytes());
@@ -123,7 +123,7 @@ fn spawn_terminal_huge_command_list_does_not_over_reserve() {
 
 #[test]
 fn spawn_terminal_huge_env_list_does_not_over_reserve() {
-    // SPAWN_TERMINAL env: the ENV field (id 5) value is a positional u32 count
+    // SPAWN_RESOURCE env: the ENV field (id 5) value is a positional u32 count
     // + pairs. Declare count = u32::MAX inside a tiny field.
     let mut env_value = Vec::new();
     env_value.extend_from_slice(&u32::MAX.to_be_bytes());
@@ -226,7 +226,7 @@ fn oversized_append_resource_output_rejects_before_owned_bytes_allocation() {
     // is a u32-prefixed leaf `bytes` inside the positional command value. One
     // byte over the cap must be refused before the Vec copy is made.
     let mut command = vec![0x1au8];
-    command.push(0); // TerminalId::Local tag
+    command.push(0); // ResourceId::Local tag
     command.extend_from_slice(&1_u32.to_be_bytes());
     let payload_len = MAX_APPEND_BYTES + 1;
     command.extend_from_slice(&u32::try_from(payload_len).unwrap().to_be_bytes());
@@ -279,7 +279,7 @@ fn snapshot_huge_resource_facet_count_does_not_over_reserve() {
     snap.extend_from_slice(&0_u32.to_be_bytes()); // panes
     snap.extend_from_slice(&1_u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1_u32.to_be_bytes()); // focused_window
-    snap.push(0); // focused_pane tag local
+    snap.push(0); // focused_resource tag local
     snap.extend_from_slice(&1_u32.to_be_bytes());
     snap.extend_from_slice(&u32::MAX.to_be_bytes()); // facet rows: huge
     let mut fields = Vec::new();

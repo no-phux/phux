@@ -9,11 +9,11 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
-use phux_core::ids::{SessionId, TerminalId, WindowId};
+use phux_core::ids::{ResourceId, SessionId, WindowId};
 use phux_core::terminal::TerminalFacet;
 use phux_core::window::{LayoutNode, SplitDir};
 use phux_protocol::ids::{
-    SessionId as WireSessionId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+    ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -66,7 +66,7 @@ impl ServerState {
     /// re-adopt for it.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut handoffs = HashMap::new();
-        let tids: Vec<TerminalId> = self.resources.resource_ids();
+        let tids: Vec<ResourceId> = self.resources.resource_ids();
         for tid in tids {
             if let Some(handoff) = self.request_pane_handoff(tid).await {
                 handoffs.insert(tid, handoff);
@@ -100,7 +100,7 @@ impl ServerState {
     /// each engine's upgrade handoff *outside* the `ServerState` lock (it
     /// can't hold the `Arc<Mutex<_>>` across the await; see
     /// [`Self::assemble_upgrade_blob`]).
-    pub(crate) fn upgrade_handles(&self) -> Vec<(TerminalId, ResourceHandle)> {
+    pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
         self.all_resource_handles()
     }
 
@@ -110,7 +110,7 @@ impl ServerState {
     pub(crate) fn assemble_upgrade_blob(
         &self,
         listener_fd: RawFd,
-        handoffs: &HashMap<TerminalId, PaneUpgradeHandle>,
+        handoffs: &HashMap<ResourceId, PaneUpgradeHandle>,
     ) -> StateBlob {
         let mut sessions = Vec::new();
         let mut windows = Vec::new();
@@ -151,7 +151,7 @@ impl ServerState {
                         .iter()
                         .filter_map(|t| self.terminal_wire(*t))
                         .collect(),
-                    active_pane: window.active.and_then(|t| self.terminal_wire(t)),
+                    active_resource: window.active.and_then(|t| self.terminal_wire(t)),
                     layout: window.layout.as_ref().and_then(|l| self.layout_to_blob(l)),
                     last_cwd: self.sessions.last_cwd(wid).cloned(),
                 });
@@ -191,7 +191,7 @@ impl ServerState {
 
     /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
     /// no registered handle or the actor has gone away.
-    async fn request_pane_handoff(&self, tid: TerminalId) -> Option<PaneUpgradeHandle> {
+    async fn request_pane_handoff(&self, tid: ResourceId) -> Option<PaneUpgradeHandle> {
         let handle = self.resource_handle(tid)?;
         let (reply, rx) = oneshot::channel();
         handle
@@ -214,10 +214,10 @@ impl ServerState {
             .map(phux_protocol::WindowId::get)
     }
 
-    fn terminal_wire(&self, tid: TerminalId) -> Option<u32> {
+    fn terminal_wire(&self, tid: ResourceId) -> Option<u32> {
         self.idspace
             .terminal_wire(tid)
-            .and_then(phux_protocol::TerminalId::local_id)
+            .and_then(phux_protocol::ResourceId::local_id)
     }
 
     /// Map a [`LayoutNode`] to its wire-id-keyed [`LayoutBlob`] mirror. Returns
@@ -282,12 +282,12 @@ fn pane_blob(
 
 /// Each rebuilt pane's core id and the one-shot exit receiver the runtime
 /// restores its lifecycle watcher from.
-type PaneExitWatchers = Vec<(TerminalId, oneshot::Receiver<Option<i32>>)>;
+type PaneExitWatchers = Vec<(ResourceId, oneshot::Receiver<Option<i32>>)>;
 
 /// What the pane pass produces: the wire-id -> core-id map the re-link passes
 /// resolve against, and each rebuilt pane's exit receiver.
 struct RebuiltPanes {
-    core_ids: HashMap<u32, TerminalId>,
+    core_ids: HashMap<u32, ResourceId>,
     exit_watchers: PaneExitWatchers,
 }
 
@@ -316,7 +316,7 @@ impl ServerState {
     pub fn rebuild_from_blob(
         &mut self,
         blob: &StateBlob,
-    ) -> Result<Vec<(TerminalId, oneshot::Receiver<Option<i32>>)>, RebuildError> {
+    ) -> Result<Vec<(ResourceId, oneshot::Receiver<Option<i32>>)>, RebuildError> {
         let session_core = self.rebuild_sessions(blob);
         let window_core = self.rebuild_windows(blob, &session_core)?;
         let panes = self.rebuild_panes(blob, &window_core)?;
@@ -407,7 +407,7 @@ impl ServerState {
             // no-op (it returns the existing mapping instead of allocating a
             // fresh one that would diverge from the blob).
             self.idspace
-                .bind_terminal(core, WireTerminalId::local(p.wire_id));
+                .bind_terminal(core, WireResourceId::local(p.wire_id));
             let crate::terminal_actor::TerminalActorBundle {
                 actor,
                 handle,
@@ -429,14 +429,14 @@ impl ServerState {
         &mut self,
         blob: &StateBlob,
         window_core: &HashMap<u32, WindowId>,
-        pane_core: &HashMap<u32, TerminalId>,
+        pane_core: &HashMap<u32, ResourceId>,
     ) {
         for w in &blob.windows {
             let Some(&core) = window_core.get(&w.wire_id) else {
                 continue;
             };
             let panes = resolve_ids(&w.pane_wire_ids, pane_core);
-            let active = w.active_pane.and_then(|id| pane_core.get(&id).copied());
+            let active = w.active_resource.and_then(|id| pane_core.get(&id).copied());
             let layout = w
                 .layout
                 .as_ref()
@@ -537,7 +537,7 @@ fn pane_seed(p: &PaneBlob) -> Vec<u8> {
 
 /// Rebuild a [`LayoutNode`] from its [`LayoutBlob`] mirror, resolving pane wire
 /// ids to core ids. `None` if any referenced pane is missing.
-fn layout_from_blob(node: &LayoutBlob, panes: &HashMap<u32, TerminalId>) -> Option<LayoutNode> {
+fn layout_from_blob(node: &LayoutBlob, panes: &HashMap<u32, ResourceId>) -> Option<LayoutNode> {
     match node {
         LayoutBlob::Leaf(wire) => panes.get(wire).copied().map(LayoutNode::Leaf),
         LayoutBlob::Split {

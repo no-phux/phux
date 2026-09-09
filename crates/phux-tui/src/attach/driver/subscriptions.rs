@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
-use phux_client::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
+use phux_client::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 /// phux-foz.8: fetch each peer session's persisted layout — one
@@ -91,7 +91,7 @@ pub(super) fn apply_foreign_layout_reply(
 }
 
 /// phux-jpqd: fetch the `phux.agent/v1` record of every pane in one peer
-/// session's just-loaded `workspace` — one `GET_METADATA` per `TerminalId`
+/// session's just-loaded `workspace` — one `GET_METADATA` per `ResourceId`
 /// leaf on the pane's agent key — so the agent-fleet dashboard's foreign
 /// rows show its agent glyph/state without attaching there. Correlated
 /// through `pending` (request id -> terminal id); replies fold via
@@ -103,14 +103,14 @@ pub(super) async fn sync_foreign_agent_subscriptions(
     conn: &mut Connection,
     workspace: &Workspace,
     next_request_id: &mut u32,
-    pending: &mut HashMap<u32, TerminalId>,
-    subscribed: &mut std::collections::HashSet<TerminalId>,
+    pending: &mut HashMap<u32, ResourceId>,
+    subscribed: &mut std::collections::HashSet<ResourceId>,
 ) -> Result<(), AttachError> {
     // Collect the leaf ids first so the immutable borrow of `pending` (for
     // the in-flight check) is released before we mutate it in the send loop.
-    let targets: Vec<TerminalId> = {
-        let in_flight: std::collections::HashSet<&TerminalId> = pending.values().collect();
-        let mut targets: Vec<TerminalId> = Vec::new();
+    let targets: Vec<ResourceId> = {
+        let in_flight: std::collections::HashSet<&ResourceId> = pending.values().collect();
+        let mut targets: Vec<ResourceId> = Vec::new();
         for window in &workspace.windows {
             if let Some(tree) = window.state.tree.as_ref() {
                 for id in crate::layout::leaves(tree) {
@@ -137,15 +137,15 @@ pub(super) async fn sync_foreign_agent_subscriptions(
         pending.insert(request_id, id.clone());
         conn.send(&FrameKind::GetMetadata {
             request_id,
-            scope: Scope::Terminal(id.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
         // The level, then the edge — same shape as the layout sweep.
         if subscribed.insert(id.clone()) {
             conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(id),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(id),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             })
             .await?;
         }
@@ -159,8 +159,8 @@ pub(super) async fn sync_foreign_agent_subscriptions(
 /// showing stale identity — the same clear-on-empty policy as
 /// [`apply_foreign_layout_reply`].
 pub(super) fn apply_foreign_agent_reply(
-    cache: &mut HashMap<TerminalId, AgentRecord>,
-    id: TerminalId,
+    cache: &mut HashMap<ResourceId, AgentRecord>,
+    id: ResourceId,
     value: Option<&[u8]>,
 ) {
     match value.and_then(parse_agent_record) {
@@ -183,11 +183,11 @@ pub(super) fn apply_foreign_agent_reply(
 /// — leaving it in the `subscribed` set would suppress the re-subscribe and
 /// the row would go permanently silent.
 pub(super) fn prune_foreign_agents(
-    cache: &mut HashMap<TerminalId, AgentRecord>,
-    subscribed: &mut std::collections::HashSet<TerminalId>,
+    cache: &mut HashMap<ResourceId, AgentRecord>,
+    subscribed: &mut std::collections::HashSet<ResourceId>,
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
 ) {
-    let live: std::collections::HashSet<TerminalId> = foreign_layouts
+    let live: std::collections::HashSet<ResourceId> = foreign_layouts
         .values()
         .flat_map(|ws| ws.windows.iter())
         .filter_map(|w| w.state.tree.as_ref())
@@ -216,7 +216,7 @@ pub(super) async fn sync_agent_meta_subscriptions(
     // libghostty mirror that is not `Send`, and holding a reference to it
     // across the sends would make this future `!Send` (clippy
     // `future_not_send`). Callers pass `panes.keys().cloned().collect()`.
-    pane_ids: Vec<TerminalId>,
+    pane_ids: Vec<ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     next_request_id: &mut u32,
 ) -> Result<(), AttachError> {
@@ -224,7 +224,7 @@ pub(super) async fn sync_agent_meta_subscriptions(
     agent_meta.records.retain(|id, _| pane_ids.contains(id));
     agent_meta.pending.retain(|_, id| pane_ids.contains(id));
     // Same hygiene for the attention ladder's clock: a closed pane must not
-    // leave a timestamp behind for a recycled TerminalId to inherit.
+    // leave a timestamp behind for a recycled ResourceId to inherit.
     agent_meta.change_at.retain(|id, _| pane_ids.contains(id));
     for id in &pane_ids {
         if agent_meta.subscribed.contains(id) {
@@ -246,13 +246,13 @@ pub(super) async fn sync_agent_meta_subscriptions(
         agent_meta.pending.insert(request_id, id.clone());
         conn.send(&FrameKind::GetMetadata {
             request_id,
-            scope: Scope::Terminal(id.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
         conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Terminal(id.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
         agent_meta.subscribed.insert(id.clone());

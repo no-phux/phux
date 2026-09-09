@@ -5,7 +5,7 @@
 
 use super::{
     AgentDetectEvent, AgentEvent, AskMarker, ControlAction, ControlRequest, DetectOutcome,
-    TerminalActor, TerminalLifecycle, TerminalSignal, mpsc, osc133, trace,
+    ResourceLifecycle, TerminalActor, TerminalSignal, mpsc, osc133, trace,
 };
 use crate::agent_asked::AskedPayload;
 use crate::agent_detect::DetectedState;
@@ -456,10 +456,10 @@ impl TerminalActor {
                 if result.is_ok() {
                     // Reflect the reversible brake in the lifecycle the next
                     // broadcast reports. Terminating signals leave it
-                    // `Running` until the EOF path fires `PaneClosed`.
+                    // `Running` until the EOF path fires `ResourceClosed`.
                     match signal {
-                        TerminalSignal::Freeze => self.lifecycle = TerminalLifecycle::Frozen,
-                        TerminalSignal::Resume => self.lifecycle = TerminalLifecycle::Running,
+                        TerminalSignal::Freeze => self.lifecycle = ResourceLifecycle::Frozen,
+                        TerminalSignal::Resume => self.lifecycle = ResourceLifecycle::Running,
                         TerminalSignal::Interrupt
                         | TerminalSignal::Terminate
                         | TerminalSignal::Kill => {}

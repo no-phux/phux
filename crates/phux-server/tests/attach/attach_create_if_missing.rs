@@ -99,8 +99,8 @@ fn create_if_missing_with_cwd_frame(name: &str, cwd: &str) -> FrameKind {
 fn attached_pane_cwd(attached: FrameKind) -> std::path::PathBuf {
     match attached {
         FrameKind::Attached { snapshot, .. } => {
-            assert_eq!(snapshot.panes.len(), 1, "exactly one seed pane");
-            let wire_cwd = snapshot.panes[0]
+            assert_eq!(snapshot.resources.len(), 1, "exactly one seed pane");
+            let wire_cwd = snapshot.resources[0]
                 .cwd
                 .as_deref()
                 .expect("ATTACHED pane must carry a cwd for a PTY-backed pane");
@@ -140,7 +140,7 @@ fn create_if_missing_creates_session_when_absent() {
                     "CreateIfMissing must create the named session",
                 );
                 assert_eq!(snapshot.windows.len(), 1, "one seed window");
-                assert_eq!(snapshot.panes.len(), 1, "one seed pane");
+                assert_eq!(snapshot.resources.len(), 1, "one seed pane");
                 assert!(
                     initial_client_id.get() >= 1,
                     "initial_client_id must be allocated (monotonic from 1)",
@@ -334,7 +334,7 @@ fn create_if_missing_attaches_to_existing_session_without_duplicating() {
                 // And exactly the pre-seed's single window+pane — no
                 // extra resources allocated.
                 assert_eq!(snapshot.windows.len(), 1, "one window");
-                assert_eq!(snapshot.panes.len(), 1, "one pane");
+                assert_eq!(snapshot.resources.len(), 1, "one pane");
             }
             other => panic!("expected Attached, got {other:?}"),
         }

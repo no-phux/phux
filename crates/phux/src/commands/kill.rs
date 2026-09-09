@@ -12,10 +12,10 @@ use crate::selector;
 /// `phux kill TARGET` — resolve the selector client-side, then ask the
 /// server to tear it down. A whole-session target (`.` or a bare
 /// `name`) resolves to its full Terminal-id list and rides a single
-/// `KILL_TERMINALS { ids }` round-trip — the atomic multi-terminal op the
+/// `KILL_RESOURCES { ids }` round-trip — the atomic multi-terminal op the
 /// v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) put in place of the
 /// dissolved `KILL_COLLECTION` verb. A window / pane / `@id` target falls
-/// back to one `KILL_TERMINAL` per resolved Terminal. Exit codes: 0 on
+/// back to one `KILL_RESOURCE` per resolved Terminal. Exit codes: 0 on
 /// success, 1 on a selector miss / no server, 2 on a server-side refusal, 3
 /// when a miss cannot be trusted because the hub could not see the whole
 /// fleet (see [`partial`]).
@@ -144,13 +144,13 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
         };
 
         // A whole-session target tears down in one round-trip via
-        // KILL_TERMINALS { ids } — the atomic multi-terminal op the v0.3.0
+        // KILL_RESOURCES { ids } — the atomic multi-terminal op the v0.3.0
         // "Option B" re-tier put in place of the dissolved KILL_COLLECTION
         // verb (ADR-0019 / ADR-0027). Grouping is now client logic: we
         // resolve the session to its full pane-id list and the server tears
         // them down together under its single state lock. Window / pane /
         // @id selectors address a strict subset and stay on the per-pane
-        // KILL_TERMINAL path below.
+        // KILL_RESOURCE path below.
         if let Some(session_name) = selector::whole_session_name(&selector, &snapshot) {
             let ids = selector::resolve(&selector, &snapshot);
             if ids.is_empty() {
@@ -166,7 +166,7 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
             // while half the fleet is invisible is still worth saying out
             // loud: the user asked to kill "everything named X".
             partial::warn_partial_view("kill", &degradation);
-            return match command_on(&mut conn, 1, WireCommand::KillTerminals { ids }).await {
+            return match command_on(&mut conn, 1, WireCommand::KillResources { ids }).await {
                 // `Ok` is the ack; a clean disconnect means the server
                 // self-exited after its last session was reaped (phux-60s),
                 // so the session is already gone — both are success.
@@ -212,7 +212,7 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
             match command_on(
                 &mut conn,
                 request_id,
-                WireCommand::KillTerminal {
+                WireCommand::KillResource {
                     terminal_id: terminal_id.clone(),
                 },
             )

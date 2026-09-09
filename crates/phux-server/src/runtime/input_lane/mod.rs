@@ -99,7 +99,7 @@ pub(crate) struct RoutedInput {
     pub(crate) client_id: ClientId,
     /// Wire pane id. Always local (`is_local()`); satellite ids never reach
     /// the lane.
-    pub(crate) terminal_id: phux_protocol::ids::TerminalId,
+    pub(crate) terminal_id: phux_protocol::ids::ResourceId,
     /// The authority policy and reply behavior for this wire surface.
     pub(crate) kind: RoutedInputKind,
 }
@@ -129,7 +129,7 @@ pub(crate) enum RoutedInputKind {
 impl RoutedInput {
     pub(crate) const fn attached(
         client_id: ClientId,
-        terminal_id: phux_protocol::ids::TerminalId,
+        terminal_id: phux_protocol::ids::ResourceId,
         input: TerminalInput,
         frame_label: &'static str,
     ) -> Self {
@@ -184,7 +184,7 @@ impl InputLaneHandle {
     pub(crate) async fn route_command(
         &self,
         client_id: ClientId,
-        terminal_id: phux_protocol::ids::TerminalId,
+        terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
     ) -> CommandResult {
         let (reply, result) = oneshot::channel();
@@ -213,7 +213,7 @@ impl InputLaneHandle {
         &self,
         client_id: ClientId,
         operation_id: InputOperationId,
-        terminal_id: phux_protocol::ids::TerminalId,
+        terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
     ) -> CommandResult {
         let Some(reservation) = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
@@ -255,7 +255,7 @@ impl InputLaneHandle {
     fn enqueue_command(
         &self,
         client_id: ClientId,
-        terminal_id: phux_protocol::ids::TerminalId,
+        terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
     ) -> oneshot::Receiver<CommandResult> {
         let (reply, result) = oneshot::channel();
@@ -272,7 +272,7 @@ impl InputLaneHandle {
         &self,
         client_id: ClientId,
         operation_id: InputOperationId,
-        terminal_id: phux_protocol::ids::TerminalId,
+        terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
     ) -> Result<oneshot::Receiver<CommandResult>, CommandResult> {
         let reservation = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
@@ -435,14 +435,14 @@ impl LaneEncoderSet {
 }
 
 fn prune_closed_encoders(
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
 ) {
     encoders.retain(|_, encoder| encoder.snapshot.has_changed().is_ok());
 }
 
 fn encoder_for<'a>(
-    encoders: &'a mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
-    pane: phux_core::ids::TerminalId,
+    encoders: &'a mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
+    pane: phux_core::ids::ResourceId,
     handle: &TerminalHandle,
 ) -> Result<&'a mut LaneEncoderSet, libghostty_vt::Error> {
     let replace = encoders
@@ -460,8 +460,8 @@ fn encoder_for<'a>(
 }
 
 fn encode_input(
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
-    pane: phux_core::ids::TerminalId,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
+    pane: phux_core::ids::ResourceId,
     handle: &TerminalHandle,
     input: &TerminalInput,
 ) -> Option<Vec<u8>> {
@@ -476,7 +476,7 @@ fn encode_input(
 }
 
 fn handoff_encoded(
-    pane: phux_core::ids::TerminalId,
+    pane: phux_core::ids::ResourceId,
     handle: &TerminalHandle,
     bytes: Option<Vec<u8>>,
     echo_probe: bool,
@@ -505,9 +505,9 @@ fn handoff_encoded(
 
 fn process_attached(
     state: &SharedState,
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     input: &TerminalInput,
     frame_label: &'static str,
 ) {
@@ -556,9 +556,9 @@ fn process_attached(
 
 fn process_headless(
     state: &SharedState,
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     client_id: ClientId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     event: InputEvent,
 ) -> CommandResult {
     let destination =
@@ -634,11 +634,11 @@ struct PreparedBatch {
 )]
 fn prepare_acknowledged_batch(
     state: &SharedState,
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     cache: &SharedOperationCache,
     client_id: ClientId,
     operation_id: InputOperationId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     events: Vec<InputEvent>,
     admitted_at: std::time::Instant,
 ) -> Result<PreparedBatch, CommandResult> {
@@ -723,14 +723,14 @@ fn prepare_acknowledged_batch(
 )]
 fn process_apply_input(
     state: &SharedState,
-    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     cache: &SharedOperationCache,
     waiter: &CompletionWaiterHandle,
     ticket: CompletionTicket,
     completion_timeout: std::time::Duration,
     client_id: ClientId,
     operation_id: InputOperationId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     events: Vec<InputEvent>,
     reservation: AcknowledgedReservation,
     reply: oneshot::Sender<CommandResult>,
@@ -956,8 +956,8 @@ mod tests {
     /// encoded by the actor and observable on `writer_rx`.
     struct Fixture {
         state: SharedState,
-        wire: phux_protocol::ids::TerminalId,
-        pane: phux_core::ids::TerminalId,
+        wire: phux_protocol::ids::ResourceId,
+        pane: phux_core::ids::ResourceId,
         client_a: ClientId,
         client_b: ClientId,
         encoded_input: mpsc::Sender<EncodedInputRequest>,
@@ -1892,7 +1892,7 @@ mod tests {
                     .apply_input(
                         fx.client_a,
                         operation_id(12),
-                        phux_protocol::TerminalId::satellite("peer", 1),
+                        phux_protocol::ResourceId::satellite("peer", 1),
                         vec![InputEvent::Paste(paste_event(b"x"))],
                     )
                     .await;
@@ -1936,7 +1936,7 @@ mod tests {
     /// another. Its own session, because nothing on the acknowledged path
     /// consults session membership.
     struct SecondPane {
-        wire: phux_protocol::ids::TerminalId,
+        wire: phux_protocol::ids::ResourceId,
         writer_rx: mpsc::Receiver<EncodedInputRequest>,
         token: CancellationToken,
     }
@@ -2218,7 +2218,7 @@ mod tests {
         };
         handle.route(RoutedInput::attached(
             ClientId(1),
-            phux_protocol::TerminalId::local(1),
+            phux_protocol::ResourceId::local(1),
             paste(b"legacy"),
             "INPUT_PASTE",
         ));
@@ -2226,7 +2226,7 @@ mod tests {
             .apply_input(
                 ClientId(1),
                 operation_id(17),
-                phux_protocol::TerminalId::local(1),
+                phux_protocol::ResourceId::local(1),
                 vec![InputEvent::Paste(paste_event(b"ack"))],
             )
             .await;
@@ -2237,6 +2237,6 @@ mod tests {
                 ..
             }
         ));
-        assert!(!admission.is_in_flight(&phux_protocol::TerminalId::local(1)));
+        assert!(!admission.is_in_flight(&phux_protocol::ResourceId::local(1)));
     }
 }

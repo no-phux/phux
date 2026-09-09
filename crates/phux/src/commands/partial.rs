@@ -27,7 +27,7 @@
 //!   in some other datacenter break the listing of the panes on this laptop.
 //!
 //! - **Verbs that resolve a Terminal target.** `kill`, `tag`, `agent set` and
-//!   friends *search* `snapshot.panes` and act on what they find. Against a
+//!   friends *search* `snapshot.resources` and act on what they find. Against a
 //!   degraded snapshot, finding nothing has two completely different causes
 //!   that the old code collapsed into one sentence:
 //!

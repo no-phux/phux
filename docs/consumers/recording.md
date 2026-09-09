@@ -233,16 +233,16 @@ deliberately does not build.
 
 ## 7. Where this fits
 
-Recording adds nothing to the wire. It rides the `ATTACH_TERMINAL` observer
+Recording adds nothing to the wire. It rides the `ATTACH_RESOURCE` observer
 subscription that [`../spec/L1.md`](../spec/L1.md) §5.1 already specifies —
 snapshot, then deltas, no session attach, no resize — and the GIF and APNG
 encoders are in-process, so `phux rec` works on a machine with no `agg`, no
 `vhs`, and no `ffmpeg`. The reasoning, and the design spaces it closes, are in
 [ADR-0060](../../ADR/0060-self-contained-session-recording.md).
 
-Playback adds nothing to the wire either. `SPAWN_TERMINAL` already carries a
+Playback adds nothing to the wire either. `SPAWN_RESOURCE` already carries a
 command, the server already tells a spawned pane its own id and socket, and
-`TERMINAL_RESIZE` already exists — so the pane's "process" is simply the phux
+`RESIZE_TERMINAL` already exists — so the pane's "process" is simply the phux
 binary re-invoked in a mode that writes a cast to its own stdout.
 [ADR-0064](../../ADR/0064-playback-as-a-pane.md) has the reasoning, including
 why the shell-level player stays unbuilt.

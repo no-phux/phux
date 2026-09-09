@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::connection::Connection;
@@ -29,9 +29,9 @@ pub(super) const FRAME_COALESCE_CAP: usize = 1024;
 /// frame (phux-jhv8). Output and snapshot frames carry pane content; every
 /// other frame (layout, lifecycle, control) paints through its own path or
 /// not at all, so it never defers (returns `None`).
-pub(super) const fn frame_paint_target(frame: &FrameKind) -> Option<&TerminalId> {
+pub(super) const fn frame_paint_target(frame: &FrameKind) -> Option<&ResourceId> {
     match frame {
-        FrameKind::TerminalOutput { terminal_id, .. } => Some(terminal_id),
+        FrameKind::ResourceOutput { terminal_id, .. } => Some(terminal_id),
         _ => None,
     }
 }
@@ -46,7 +46,7 @@ pub(super) const fn frame_paint_target(frame: &FrameKind) -> Option<&TerminalId>
 /// stale; control frames (`None`) never defer.
 pub(super) fn coalesce_defer_flags<T>(
     items: &[T],
-    target: impl for<'a> Fn(&'a T) -> Option<&'a TerminalId>,
+    target: impl for<'a> Fn(&'a T) -> Option<&'a ResourceId>,
 ) -> Vec<bool> {
     let paint_count = items.iter().filter(|item| target(item).is_some()).count();
     let mut seen = HashSet::with_capacity(paint_count);
@@ -68,7 +68,7 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
 /// `initial_attached` is the `FrameKind::Attached` frame that
 /// [`wait_for_attached`] already pulled off the wire; we replay it
 /// through `handle_server_frame` so the focused-pane bookkeeping lives
-/// in one place. Subsequent bootstrap and `TERMINAL_OUTPUT` frames come off the
+/// in one place. Subsequent bootstrap and `RESOURCE_OUTPUT` frames come off the
 /// wire as usual.
 ///
 /// phux-eb0: returns a [`LoopExit`] so the outer loop in
@@ -181,7 +181,7 @@ mod tests {
     fn coalesce_defers_every_pane_frame_but_its_last() {
         // phux-jhv8: in a coalesced burst, every output frame for a pane
         // defers EXCEPT that pane's final frame, which settles the screen.
-        let p = |id| Some(TerminalId::Local { id });
+        let p = |id| Some(ResourceId::Local { id });
         // Single-pane burst: only the last frame paints.
         assert_eq!(
             coalesce_defer_flags(&[p(2), p(2), p(2)], Option::as_ref),
@@ -195,7 +195,7 @@ mod tests {
     fn coalesce_keys_deferral_per_pane_not_globally() {
         // Two panes interleaved: each pane's LAST frame paints, so neither is
         // left stale even when the burst ends on the other pane's output.
-        let p = |id| Some(TerminalId::Local { id });
+        let p = |id| Some(ResourceId::Local { id });
         // A(defer, later A) B(defer, later B) A(last A) B(last B)
         assert_eq!(
             coalesce_defer_flags(&[p(1), p(2), p(1), p(2)], Option::as_ref),
@@ -210,8 +210,8 @@ mod tests {
 
     #[test]
     fn output_honors_coalescing_decision() {
-        let output = FrameKind::TerminalOutput {
-            terminal_id: TerminalId::Local { id: 1 },
+        let output = FrameKind::ResourceOutput {
+            terminal_id: ResourceId::Local { id: 1 },
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
             seq: 1,
@@ -225,7 +225,7 @@ mod tests {
     fn coalesce_control_frames_never_defer() {
         // `None` (a non-painting control frame) never defers, and never
         // counts as a later same-pane paint for the frames before it.
-        let p = |id| Some(TerminalId::Local { id });
+        let p = |id| Some(ResourceId::Local { id });
         assert_eq!(
             coalesce_defer_flags(&[p(1), None, p(1)], Option::as_ref),
             vec![true, false, false]
@@ -234,7 +234,7 @@ mod tests {
             coalesce_defer_flags(&[None, None], Option::as_ref),
             vec![false, false]
         );
-        let empty: [Option<TerminalId>; 0] = [];
+        let empty: [Option<ResourceId>; 0] = [];
         assert_eq!(
             coalesce_defer_flags(&empty, Option::as_ref),
             Vec::<bool>::new()

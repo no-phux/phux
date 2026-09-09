@@ -6,7 +6,7 @@
 //! every **enabled** entry's endpoint URI into a typed
 //! [`SatelliteTarget`] and holds the result — alongside the entry's
 //! ADR-0038 auth material — as a [`HubTable`] keyed by [`SatelliteHost`],
-//! the same host token that tags `TerminalId::Satellite` on the wire
+//! the same host token that tags `ResourceId::Satellite` on the wire
 //! (ADR-0007, ADR-0015).
 //!
 //! The [`link`] submodule is the outbound dialer (phux-v45.3): one link
@@ -119,7 +119,7 @@ pub enum HubTableError {
     },
 
     /// Two registry entries share a name. Names key the table (and tag
-    /// `TerminalId::Satellite` on the wire), so duplicates are rejected
+    /// `ResourceId::Satellite` on the wire), so duplicates are rejected
     /// outright — including duplicates involving disabled entries, to
     /// match the `phux host add --role satellite` CRUD invariant.
     #[error("duplicate satellite name {name:?} in registry")]

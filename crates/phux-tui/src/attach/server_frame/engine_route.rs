@@ -9,11 +9,11 @@ use phux_client_core::session::{
     HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason, KernelEffect,
     KernelInput, KernelSend,
 };
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
 };
-use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use phux_protocol::{BootstrapId, ResourceKind, StreamId};
 
 use crate::render::chrome::status_bar::Notice;
@@ -22,17 +22,17 @@ use super::outcome::pane_label;
 
 #[derive(Default)]
 pub(super) struct KernelRoute {
-    pub(super) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
-    pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
-    pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
-    pub(super) damaged: HashSet<TerminalId>,
+    pub(super) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
+    pub(super) history_request: Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+    pub(super) pty_writes: Vec<(ResourceId, Vec<u8>)>,
+    pub(super) damaged: HashSet<ResourceId>,
     /// `AgentSession` resources whose record log grew under this frame. The
     /// chrome projects them, so the handler raises a chrome repaint.
-    pub(super) agent_touched: HashSet<TerminalId>,
-    /// An `AgentSession` this frame's `PaneSpawned` declared to the kernel for
+    pub(super) agent_touched: HashSet<ResourceId>,
+    /// An `AgentSession` this frame's `ResourceSpawned` declared to the kernel for
     /// the first time: a live-spawned child of one of our panes, which the
     /// handler asks the driver to attach as a record stream.
-    pub(super) declared_agent: Option<TerminalId>,
+    pub(super) declared_agent: Option<ResourceId>,
     pub(super) resync_required: bool,
     pub(super) ignored: bool,
     pub(super) failed: Option<String>,
@@ -42,7 +42,7 @@ pub(super) struct KernelRoute {
     pub(super) notices: Vec<Notice>,
 }
 impl KernelRoute {
-    pub(super) fn damaged(&self, terminal_id: &TerminalId) -> bool {
+    pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
         self.damaged.contains(terminal_id)
     }
 }
@@ -76,7 +76,7 @@ pub(super) const fn history_rejection_reason(
 
 /// Whether a snapshot entry is a Terminal-kind resource: the only kind that
 /// owns a grid, a pane slot, and a layout leaf.
-pub(super) const fn is_terminal(info: &TerminalInfo) -> bool {
+pub(super) const fn is_terminal(info: &ResourceInfo) -> bool {
     matches!(info.kind, ResourceKind::Terminal)
 }
 
@@ -85,10 +85,10 @@ pub(super) const fn is_terminal(info: &TerminalInfo) -> bool {
 /// become pane slots or barrier participants.
 pub(super) fn attach_agent_sessions<'a>(
     snapshot: &'a SessionSnapshot,
-    participants: &[TerminalId],
-) -> Vec<&'a TerminalInfo> {
+    participants: &[ResourceId],
+) -> Vec<&'a ResourceInfo> {
     snapshot
-        .panes
+        .resources
         .iter()
         .filter(|info| matches!(info.kind, ResourceKind::AgentSession))
         .filter(|info| {
@@ -133,7 +133,7 @@ pub(super) fn attach_agent_sessions<'a>(
 /// grid (the snapshot encodes that as `0x0` and no window) and paints
 /// nothing, so it has no first paint for the barrier to gate; see
 /// [`attach_agent_sessions`] for how it enters the kernel instead.
-pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<TerminalId> {
+pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     let focused_windows: Vec<_> = snapshot
         .windows
         .iter()
@@ -141,7 +141,7 @@ pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<TerminalId>
         .map(|window| window.id)
         .collect();
     snapshot
-        .panes
+        .resources
         .iter()
         .filter(|pane| is_terminal(pane))
         .filter(|pane| focused_windows.contains(&pane.window_id))
@@ -190,7 +190,7 @@ pub(super) fn route_engine_frame(
     route
 }
 
-/// Register a live-spawned `AgentSession` announced by `PaneSpawned` on the
+/// Register a live-spawned `AgentSession` announced by `ResourceSpawned` on the
 /// server-wide event stream, when its parent is a Terminal this kernel holds
 /// and the child is not yet known. A child of a pane in another session, or
 /// a spawn the attach snapshot already declared, is left alone.
@@ -203,7 +203,7 @@ fn declare_spawned_agent_session(
     let FrameKind::Event {
         terminal: Some(terminal_id),
         event:
-            AgentEvent::PaneSpawned {
+            AgentEvent::ResourceSpawned {
                 kind: ResourceKind::AgentSession,
                 parent: Some(parent),
             },
@@ -238,7 +238,7 @@ fn declare_spawned_agent_session(
 /// the same route.
 fn declare_agent_sessions(
     snapshot: &SessionSnapshot,
-    participants: &[TerminalId],
+    participants: &[ResourceId],
     kernel: &mut crate::attach::pane_state::AttachKernel,
     effects: &mut KernelEffectBuffer,
     route: &mut KernelRoute,
@@ -266,7 +266,7 @@ fn declare_agent_sessions(
 ///
 /// Materialized before the input translation so `KernelInput::AttachStarted`
 /// has a slice to borrow that outlives the translation itself.
-fn frame_attach_participants(frame: &FrameKind) -> Vec<TerminalId> {
+fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
     let FrameKind::Attached { snapshot, .. } = frame else {
         return Vec::new();
     };
@@ -280,7 +280,7 @@ fn frame_attach_participants(frame: &FrameKind) -> Vec<TerminalId> {
 /// into a rejected route.
 fn kernel_input_for<'a>(
     frame: &'a FrameKind,
-    terminals: &'a [TerminalId],
+    terminals: &'a [ResourceId],
 ) -> Result<Option<KernelInput<'a>>, &'static str> {
     if let Some(input) = attach_stream_input(frame, terminals) {
         return Ok(Some(input));
@@ -294,7 +294,7 @@ fn kernel_input_for<'a>(
 /// The attach barrier and bootstrap-transcript frames.
 fn attach_stream_input<'a>(
     frame: &'a FrameKind,
-    terminals: &'a [TerminalId],
+    terminals: &'a [ResourceId],
 ) -> Option<KernelInput<'a>> {
     match frame {
         FrameKind::Attached { attach_id, .. } => Some(KernelInput::AttachStarted {
@@ -367,21 +367,21 @@ fn attach_stream_input<'a>(
 /// The live-content frames: applied VT bytes and the pane's permanent close.
 fn content_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
     match frame {
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
             seq,
             bytes,
-        } => Some(KernelInput::TerminalOutput {
+        } => Some(KernelInput::ResourceOutput {
             terminal_id,
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
             seq: *seq,
             payload: bytes,
         }),
-        FrameKind::TerminalClosed { terminal_id, .. } => {
-            Some(KernelInput::TerminalClosed { terminal_id })
+        FrameKind::ResourceClosed { terminal_id, .. } => {
+            Some(KernelInput::ResourceClosed { terminal_id })
         }
         _ => None,
     }

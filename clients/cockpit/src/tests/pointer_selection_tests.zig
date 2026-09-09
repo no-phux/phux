@@ -118,7 +118,7 @@ test "pointer ownership survives focus and reorder but never crosses close gener
     const across = rectCenter(frames[1]);
 
     try pointerInput(harness, app_iface, .pointer_down, start, 0, .{}, 0);
-    try testing.expectEqual(app.LocalTerminalId.terminal_1, activePointerCapture(&host.inner.model, 7).?.terminal_id);
+    try testing.expectEqual(app.LocalResourceId.terminal_1, activePointerCapture(&host.inner.model, 7).?.terminal_id);
     try host.inner.dispatch(&harness.runtime, 1, .{ .cycle_pane = 1 });
     try host.inner.dispatch(&harness.runtime, 1, .{ .move_terminal = -1 });
     try pointerInput(harness, app_iface, .pointer_drag, across, 0, .{}, 0);

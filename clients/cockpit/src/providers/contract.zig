@@ -20,18 +20,18 @@ pub const ProviderId = enum(u64) {
 };
 
 /// Durable identities owned by the built-in local provider.
-pub const LocalTerminalId = enum(u64) {
+pub const LocalResourceId = enum(u64) {
     terminal_1 = 0x7465_726d_0000_0001,
     terminal_2 = 0x7465_726d_0000_0002,
     _,
 };
 
-pub const RemoteTerminalIdError = error{HostTooLong};
+pub const RemoteResourceIdError = error{HostTooLong};
 
 /// Durable Phux execution identity. `host_storage` is inline so identity values
 /// never borrow an FFI frame and never allocate. Hosts longer than the protocol
 /// maximum are rejected rather than truncated into a collision.
-pub const RemoteTerminalId = struct {
+pub const RemoteResourceId = struct {
     pub const max_host_bytes: usize = 255;
 
     kind: u32,
@@ -39,23 +39,23 @@ pub const RemoteTerminalId = struct {
     host_storage: [max_host_bytes]u8 = [_]u8{0} ** max_host_bytes,
     host_len: u8 = 0,
 
-    pub fn fromPhux(kind: u32, id: u32, host_name: []const u8) RemoteTerminalIdError!RemoteTerminalId {
+    pub fn fromPhux(kind: u32, id: u32, host_name: []const u8) RemoteResourceIdError!RemoteResourceId {
         if (host_name.len > max_host_bytes) return error.HostTooLong;
-        var result: RemoteTerminalId = .{ .kind = kind, .id = id };
+        var result: RemoteResourceId = .{ .kind = kind, .id = id };
         @memcpy(result.host_storage[0..host_name.len], host_name);
         result.host_len = @intCast(host_name.len);
         return result;
     }
 
-    pub fn host(remote: *const RemoteTerminalId) []const u8 {
+    pub fn host(remote: *const RemoteResourceId) []const u8 {
         return remote.host_storage[0..remote.host_len];
     }
 
-    pub fn eql(a: RemoteTerminalId, b: RemoteTerminalId) bool {
+    pub fn eql(a: RemoteResourceId, b: RemoteResourceId) bool {
         return a.kind == b.kind and a.id == b.id and std.mem.eql(u8, a.host(), b.host());
     }
 
-    pub fn hash(remote: RemoteTerminalId) u64 {
+    pub fn hash(remote: RemoteResourceId) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(std.mem.asBytes(&remote.kind));
         hasher.update(std.mem.asBytes(&remote.id));
@@ -66,11 +66,11 @@ pub const RemoteTerminalId = struct {
 
 /// Provider-owned terminal identity. It is not sufficient for UI routing until
 /// qualified by the owning provider in `TerminalRef`.
-pub const TerminalId = union(enum) {
-    local: LocalTerminalId,
-    phux: RemoteTerminalId,
+pub const ResourceId = union(enum) {
+    local: LocalResourceId,
+    phux: RemoteResourceId,
 
-    pub fn eql(a: TerminalId, b: TerminalId) bool {
+    pub fn eql(a: ResourceId, b: ResourceId) bool {
         return switch (a) {
             .local => |id| switch (b) {
                 .local => |other| id == other,
@@ -83,7 +83,7 @@ pub const TerminalId = union(enum) {
         };
     }
 
-    pub fn hash(id: TerminalId) u64 {
+    pub fn hash(id: ResourceId) u64 {
         return switch (id) {
             .local => |local| mixHash(0, @intFromEnum(local)),
             .phux => |remote| mixHash(1, remote.hash()),
@@ -94,7 +94,7 @@ pub const TerminalId = union(enum) {
 /// The sole identity accepted by provider lookup and stored in placements.
 pub const TerminalRef = struct {
     provider_id: ProviderId,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
 
     pub fn eql(a: TerminalRef, b: TerminalRef) bool {
         return a.provider_id == b.provider_id and a.terminal_id.eql(b.terminal_id);
@@ -268,16 +268,16 @@ pub const Presentation = struct {
     history_unread_rows: u64 = 0,
 };
 
-pub fn localTerminalId(index: usize) LocalTerminalId {
+pub fn localResourceId(index: usize) LocalResourceId {
     return if (index == 0) .terminal_1 else .terminal_2;
 }
 
-pub fn localTerminalRef(id: LocalTerminalId) TerminalRef {
+pub fn localTerminalRef(id: LocalResourceId) TerminalRef {
     return .{ .provider_id = .local, .terminal_id = .{ .local = id } };
 }
 
 pub fn localTerminalRefForIndex(index: usize) TerminalRef {
-    return localTerminalRef(localTerminalId(index));
+    return localTerminalRef(localResourceId(index));
 }
 
 pub fn localGeneration(spawn_generation: u64) Generation {
@@ -294,7 +294,7 @@ pub fn localReplicaOwner(terminal_ref: TerminalRef, spawn_generation: u64) Repli
     };
 }
 
-pub fn localId(terminal_ref: TerminalRef) ?LocalTerminalId {
+pub fn localId(terminal_ref: TerminalRef) ?LocalResourceId {
     if (terminal_ref.provider_id != .local) return null;
     return switch (terminal_ref.terminal_id) {
         .local => |id| id,

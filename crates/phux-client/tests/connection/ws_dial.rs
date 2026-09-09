@@ -11,7 +11,7 @@ use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, WsDial};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -65,7 +65,7 @@ where
 
 const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
-        terminal_id: TerminalId::Local { id: 1 },
+        terminal_id: ResourceId::Local { id: 1 },
         stream_id: phux_protocol::StreamId::new(1).expect("stream"),
         bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         seq,

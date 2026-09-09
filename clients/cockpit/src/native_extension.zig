@@ -1300,7 +1300,7 @@ test "shipping close detaches a Phux pane without destroying a local terminal" {
     const engine = bridge.engine.?;
     const ref: cockpit.TerminalRef = .{
         .provider_id = .phux,
-        .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") },
+        .terminal_id = .{ .phux = try cockpit.RemoteResourceId.fromPhux(0, 7, "") },
     };
     try std.testing.expect(engine.model.admitTab(ref));
     try std.testing.expect(engine.model.selectTerminal(ref));

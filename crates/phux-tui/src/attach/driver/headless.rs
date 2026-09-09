@@ -11,7 +11,7 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{SessionId, TerminalId};
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope};
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
@@ -24,7 +24,7 @@ use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::StatusBarPainter;
-use phux_client::agent_meta::TERMINAL_AGENT_KEY;
+use phux_client::agent_meta::RESOURCE_AGENT_KEY;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{agent_entries, window_infos};
@@ -35,7 +35,7 @@ use super::session_io::{
 use crate::settings::TuiSettings;
 
 type HeadlessHistoryGeneration = (
-    TerminalId,
+    ResourceId,
     phux_protocol::StreamId,
     phux_protocol::BootstrapId,
 );
@@ -93,7 +93,7 @@ impl HeadlessCompletion {
 
     pub(super) fn note_history_request(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: phux_protocol::StreamId,
         bootstrap_id: phux_protocol::BootstrapId,
     ) {
@@ -116,7 +116,7 @@ impl HeadlessCompletion {
 /// The next opaque native history page to pull, as the frame dispatcher
 /// reports it.
 type HistoryPageRequest = (
-    TerminalId,
+    ResourceId,
     phux_protocol::StreamId,
     phux_protocol::BootstrapId,
     bytes::Bytes,
@@ -172,13 +172,13 @@ struct HeadlessSession {
     /// `handle_server_frame` still needs a `Write`.
     sink: Vec<u8>,
     /// The pane mirrors, keyed by Terminal.
-    panes: HashMap<TerminalId, PaneSlot>,
+    panes: HashMap<ResourceId, PaneSlot>,
     /// The multi-pane layout the composite tiles against.
     workspace: Workspace,
     /// The pane the composited frame draws as focused.
-    focused_pane: Option<TerminalId>,
+    focused_resource: Option<ResourceId>,
     /// The zoomed pane, if the layout carries one.
-    zoomed: Option<TerminalId>,
+    zoomed: Option<ResourceId>,
     /// The session name, learned from ATTACHED.
     session_name: String,
     /// The status-bar painter, absent when the config disables it.
@@ -199,7 +199,7 @@ struct HeadlessSession {
     pending_windows: HashMap<u32, PendingWindow>,
     /// phux-i0e8.2.2: headless composite dispatches no kill actions, so the
     /// expected-close set stays empty; threaded for the shared signature.
-    expected_closes: HashSet<TerminalId>,
+    expected_closes: HashSet<ResourceId>,
     /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
     /// labels prefer structured agent records, matching a live attach.
     agent_meta: AgentMetaIndex,
@@ -221,7 +221,7 @@ impl HeadlessSession {
             sink: Vec::new(),
             panes: HashMap::new(),
             workspace: Workspace::default(),
-            focused_pane: None,
+            focused_resource: None,
             zoomed: None,
             session_name: String::new(),
             status_bar: chrome.status_bar,
@@ -259,7 +259,7 @@ impl HeadlessSession {
             frame,
             &mut self.panes,
             &mut self.workspace,
-            &mut self.focused_pane,
+            &mut self.focused_resource,
             &mut self.zoomed,
             &mut self.session_name,
             focused_session,
@@ -292,8 +292,8 @@ impl HeadlessSession {
             self.agent_meta.pending.insert(req_id, id.clone());
             conn.send(&FrameKind::GetMetadata {
                 request_id: req_id,
-                scope: Scope::Terminal(id.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(id.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             })
             .await?;
             req_id = req_id.wrapping_add(1);
@@ -352,7 +352,7 @@ impl HeadlessSession {
             &layout_state,
             &mut self.panes,
             &self.engine_kernel,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.viewport_dims,
             self.status_bar.as_ref(),
             self.sidebar,

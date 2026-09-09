@@ -16,7 +16,7 @@
 //!
 //! Lifecycle is the shared one: cancelling the resource's token ends the
 //! run loop, which fires the core's exit notification, which the per-resource
-//! exit watcher turns into `TERMINAL_CLOSED` and a reap. A session therefore
+//! exit watcher turns into `RESOURCE_CLOSED` and a reap. A session therefore
 //! closes through exactly the path a Terminal does, with the
 //! [`CloseReason`](phux_protocol::wire::frame::CloseReason) the closer
 //! recorded.

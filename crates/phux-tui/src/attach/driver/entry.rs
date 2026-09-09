@@ -561,7 +561,7 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 /// is released before the next `ATTACH` on the same connection.
 ///
 /// Frames that arrive between our `DETACH` and the server's `DETACHED`
-/// (a `TERMINAL_OUTPUT` already in flight, a late `METADATA_CHANGED`) are
+/// (a `RESOURCE_OUTPUT` already in flight, a late `METADATA_CHANGED`) are
 /// discarded — we are tearing the session down and rebuilding all
 /// session-scoped state on the next attach, so nothing in this window is
 /// worth applying. A server-initiated disconnect during the drain is a

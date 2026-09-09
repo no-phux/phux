@@ -472,7 +472,7 @@ pub(crate) enum PtyEvent {
     Eof,
 }
 
-/// Map a `portable_pty::ExitStatus` into the `TERMINAL_CLOSED.exit_status`
+/// Map a `portable_pty::ExitStatus` into the `RESOURCE_CLOSED.exit_status`
 /// wire shape (phux-4li.11).
 ///
 /// `Some(code)` for `_exit(n)`, `None` for signal-killed or
@@ -491,7 +491,7 @@ pub(crate) fn exit_status_to_wire(status: &portable_pty::ExitStatus) -> Option<i
     }
     // Both "Success" (success() == true) and "Exited with code N" hit
     // this branch. `exit_code()` returns u32 — coerce into i32 saturating
-    // at i32::MAX, since `TERMINAL_CLOSED.exit_status` is `Option<i32>`
+    // at i32::MAX, since `RESOURCE_CLOSED.exit_status` is `Option<i32>`
     // on the wire and the practical exit-code range is 0..=255.
     Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
 }
@@ -620,7 +620,7 @@ fn apply_login_mode(cmd: &mut CommandBuilder, shell: &str, login: bool) {
 /// SGR colour extensions). Those features are still reachable when the
 /// app opts in directly, and both opt-in paths exist today: the
 /// server-wide `defaults.term` config knob and the per-spawn
-/// `SPAWN_TERMINAL.term` wire field (phux-ign).
+/// `SPAWN_RESOURCE.term` wire field (phux-ign).
 ///
 /// Status of the "revert to ghostty" question (phux-0o8): the
 /// round-trip harness in `tests/kip_roundtrip.rs` proves the phux stack
@@ -660,7 +660,7 @@ pub const DEFAULT_TERM: &str = "xterm-256color";
 /// set by [`default_shell_command`] / [`shell_command`]. Callers in the
 /// runtime apply this after building the command from the wire/config so a
 /// single server-wide `TERM` default flows to the seed session,
-/// attach-time creation, and `SPAWN_TERMINAL`.
+/// attach-time creation, and `SPAWN_RESOURCE`.
 pub fn apply_term(cmd: &mut CommandBuilder, term: &str) {
     cmd.env("TERM", term);
 }
@@ -686,7 +686,7 @@ pub fn apply_term(cmd: &mut CommandBuilder, term: &str) {
 /// same value.
 pub fn apply_terminal_id(
     cmd: &mut CommandBuilder,
-    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
 ) {
     if let Some(id) = wire_terminal_id.local_id() {
         cmd.env("PHUX_TERMINAL_ID", id.to_string());

@@ -616,7 +616,7 @@ fn check_server(socket_path: &std::path::Path) -> Check {
     match rt.block_on(phux_client::state::get_state(socket_path)) {
         Ok(view) => {
             let sessions = view.snapshot().sessions.len();
-            let panes = view.snapshot().panes.len();
+            let panes = view.snapshot().resources.len();
             let protocol = format!(
                 "client protocol {}.{}.{}",
                 phux_protocol::PROTOCOL_VERSION.major,

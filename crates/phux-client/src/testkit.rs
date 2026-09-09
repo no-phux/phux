@@ -32,7 +32,7 @@
 //!
 //! # The orderings encoded, with their reference-server citations
 //!
-//! - `ATTACH_TERMINAL` — `handle_attach_terminal`
+//! - `ATTACH_RESOURCE` — `handle_attach_terminal`
 //!   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
 //!   bootstrap transcript before the acknowledgement and never re-sends it.
 //!   [`ScriptSpec::priming_snapshot`] is therefore **mandatory** for any script
@@ -56,9 +56,9 @@
 //!   [`PROTOCOL_VERSION`].
 //! - `GET_METADATA` / `SET_METADATA` — correlated `METADATA_VALUE` /
 //!   `COMMAND_RESULT` on the caller's `request_id`.
-//! - `SPAWN_TERMINAL` — `handle_spawn_terminal`
+//! - `SPAWN_RESOURCE` — `handle_spawn_terminal`
 //!   (`crates/phux-server/src/runtime/client.rs`) answers with
-//!   `TERMINAL_SPAWNED` on the caller's `request_id`, behind any frames
+//!   `RESOURCE_SPAWNED` on the caller's `request_id`, behind any frames
 //!   already queued for the connection. [`ScriptSpec::spawn_result`] is
 //!   therefore **mandatory** for a script whose client spawns.
 //!   [`ScriptSpec::refuse_spawn`] models the other legal answer: the
@@ -89,7 +89,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, ServerFeatureSet,
     select_bootstrap_profile,
 };
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
 };
@@ -107,7 +107,7 @@ const FIXTURE_BOOTSTRAP_ID: BootstrapId =
 /// What the scripted server does once it has played its script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndOfScript {
-    /// Keep serving until the client sends `DETACH_TERMINAL` or hangs up.
+    /// Keep serving until the client sends `DETACH_RESOURCE` or hangs up.
     ///
     /// The shape that lets a test inspect the *complete* set of client-sent
     /// frames, including a teardown the client emits last.
@@ -149,10 +149,10 @@ pub struct ScriptSpec {
     /// When set, every metadata request is refused with a *correlated*
     /// `ERROR` instead of answered.
     metadata_error: Option<(ErrorCode, String)>,
-    /// The `TERMINAL_SPAWNED` payload a `SPAWN_TERMINAL` is answered with.
+    /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with.
     spawn: Option<SpawnResult>,
-    /// When set, every `SPAWN_TERMINAL` is refused with a *correlated*
-    /// `ERROR` instead of a `TERMINAL_SPAWNED`.
+    /// When set, every `SPAWN_RESOURCE` is refused with a *correlated*
+    /// `ERROR` instead of a `RESOURCE_SPAWNED`.
     spawn_error: Option<(ErrorCode, String)>,
     /// The client count a `DetachClients` command acks with. `None` defaults
     /// to `0` (nobody was attached) — `handle_detach_clients`
@@ -207,11 +207,11 @@ impl ScriptSpec {
     }
 
     /// The synthesized raw-VT bootstrap the server pushes before the
-    /// `ATTACH_TERMINAL` acknowledgement.
+    /// `ATTACH_RESOURCE` acknowledgement.
     #[must_use]
     pub fn priming_snapshot(
         mut self,
-        terminal: &TerminalId,
+        terminal: &ResourceId,
         cols: u16,
         rows: u16,
         replay: &[u8],
@@ -246,7 +246,7 @@ impl ScriptSpec {
     }
 
     /// The retained `AgentEventsJsonlV1` transcript pushed before the
-    /// `ATTACH_TERMINAL` acknowledgement of an `AgentSession` resource.
+    /// `ATTACH_RESOURCE` acknowledgement of an `AgentSession` resource.
     ///
     /// The agent-session twin of [`Self::priming_snapshot`]: `BOOTSTRAP_BEGIN`
     /// carries `cols = rows = 0` (a session has no grid) and the JSONL
@@ -258,7 +258,7 @@ impl ScriptSpec {
     ///
     /// On more than `u32::MAX` lines, which no fixture has.
     #[must_use]
-    pub fn agent_log_bootstrap(mut self, session: &TerminalId, lines: &[&str]) -> Self {
+    pub fn agent_log_bootstrap(mut self, session: &ResourceId, lines: &[&str]) -> Self {
         let stream_id = FIXTURE_STREAM_ID;
         let bootstrap_id = FIXTURE_BOOTSTRAP_ID;
         self.priming = vec![FrameKind::BootstrapBegin {
@@ -390,7 +390,7 @@ impl ScriptSpec {
         self
     }
 
-    /// The `TERMINAL_SPAWNED` payload a `SPAWN_TERMINAL` is answered with.
+    /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with.
     ///
     /// Mandatory for any script whose client spawns: without it the harness
     /// panics rather than modelling a server that answers a spawn with
@@ -401,10 +401,10 @@ impl ScriptSpec {
         self
     }
 
-    /// Refuse every `SPAWN_TERMINAL` with a *correlated* `ERROR`.
+    /// Refuse every `SPAWN_RESOURCE` with a *correlated* `ERROR`.
     ///
     /// A satellite MAY answer a relayed spawn this way instead of with
-    /// `TERMINAL_SPAWNED` — `crates/phux-server/src/hub/relay.rs`
+    /// `RESOURCE_SPAWNED` — `crates/phux-server/src/hub/relay.rs`
     /// (`handle_inbound`) normalizes exactly that shape on the return leg, so
     /// it is a shape a hub's own clients can see. The correlation is what
     /// stops the caller waiting forever.
@@ -577,7 +577,7 @@ impl ScriptedServer {
             let detached = matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::DetachTerminal { .. },
+                    command: Command::DetachResource { .. },
                     ..
                 }
             );
@@ -619,7 +619,7 @@ impl ScriptedServer {
 ///
 /// # Panics
 ///
-/// On `ATTACH_TERMINAL` when the spec declared no priming snapshot — see
+/// On `ATTACH_RESOURCE` when the spec declared no priming snapshot — see
 /// [`ScriptedServer::run`].
 fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
     match frame {
@@ -697,12 +697,12 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
             Vec::new()
         }
         // `handle_spawn_terminal` (`crates/phux-server/src/runtime/client.rs`)
-        // answers with `TERMINAL_SPAWNED` on the caller's `request_id`, after
+        // answers with `RESOURCE_SPAWNED` on the caller's `request_id`, after
         // whatever this connection already had queued. A hub relaying to a
         // satellite may instead surface the satellite's *correlated* `ERROR`
         // (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`), which is
         // what [`ScriptSpec::refuse_spawn`] models.
-        FrameKind::SpawnTerminal { request_id, .. } => {
+        FrameKind::SpawnResource { request_id, .. } => {
             let mut out = std::mem::take(&mut spec.pre_ack);
             if let Some((code, message)) = spec.spawn_error.clone() {
                 out.push(FrameKind::Error {
@@ -713,11 +713,11 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 return out;
             }
             let result = spec.spawn.clone().expect(
-                "a scripted server whose client sends SPAWN_TERMINAL must declare an \
+                "a scripted server whose client sends SPAWN_RESOURCE must declare an \
                  outcome: handle_spawn_terminal always answers. Call \
                  ScriptSpec::spawn_result or ScriptSpec::refuse_spawn.",
             );
-            out.push(FrameKind::TerminalSpawned {
+            out.push(FrameKind::ResourceSpawned {
                 request_id: *request_id,
                 result,
             });
@@ -746,10 +746,10 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
     // the interleave unavoidable for the first ack of any session.
     let mut out = std::mem::take(&mut spec.pre_ack);
     match command {
-        Command::AttachTerminal { .. } => {
+        Command::AttachResource { .. } => {
             assert!(
                 !spec.priming.is_empty(),
-                "a scripted server whose client sends ATTACH_TERMINAL must declare \
+                "a scripted server whose client sends ATTACH_RESOURCE must declare \
                  priming bootstrap frames. Call ScriptSpec::priming_snapshot."
             );
             out.extend(spec.priming.clone());

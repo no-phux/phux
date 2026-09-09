@@ -2,7 +2,7 @@
 //!
 //! Wire-level integration test for the sidebar's VCS-branch data path.
 //! The TUI derives each window's git branch client-side from
-//! `SessionSnapshot.panes[].cwd` (see `phux-client/src/attach/
+//! `SessionSnapshot.resources[].cwd` (see `phux-client/src/attach/
 //! server_frame.rs`), so a server that ships `cwd: None` for normally
 //! spawned panes renders every branch row blank. Two server-side
 //! mechanisms populate the field:
@@ -67,8 +67,8 @@ fn attached_snapshot_carries_pane_cwd() {
         );
         match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-                let wire_cwd = snapshot.panes[0]
+                assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+                let wire_cwd = snapshot.resources[0]
                     .cwd
                     .as_deref()
                     .expect("ATTACHED pane must carry a cwd for a PTY-backed pane");
@@ -125,8 +125,8 @@ fn attached_snapshot_reflects_post_spawn_cd() {
         assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
         match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-                let wire_cwd = snapshot.panes[0]
+                assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+                let wire_cwd = snapshot.resources[0]
                     .cwd
                     .as_deref()
                     .expect("ATTACHED pane must carry a cwd for a PTY-backed pane");

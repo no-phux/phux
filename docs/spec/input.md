@@ -46,7 +46,7 @@ with the `Terminal` and the encoder. See [ADR-0006] and [ADR-0008].
 
 ```
 INPUT_KEY {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     event: KeyEvent,
 }
 
@@ -249,7 +249,7 @@ known.
 
 ```
 INPUT_MOUSE {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     event: MouseEvent,
 }
 
@@ -316,7 +316,7 @@ latest libghostty-captured effective tracking/format snapshot, sets
 
 ```
 INPUT_FOCUS {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     event: FocusKind,
 }
 
@@ -342,7 +342,7 @@ metadata convention of the TUI consumer (see
 
 ```
 INPUT_PASTE {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     event: PasteEvent,
 }
 
@@ -405,7 +405,7 @@ its result by operation id, and is safe to retry after a reconnect — or
 
 ```
 INPUT_TERMINAL_REPLY {
-    terminal_id: TerminalId,  // field 1
+    terminal_id: ResourceId,  // field 1
     bytes: bytes,             // field 2
 }
 ```
@@ -442,7 +442,7 @@ payload byte to the PTY.
 
 ```
 INPUT_RAW {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     data: bytes,
 }
 ```

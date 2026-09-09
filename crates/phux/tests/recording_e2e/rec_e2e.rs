@@ -199,7 +199,7 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
     let (cols, rows) = server.pane_size();
 
     // Drive the pane from a second process WHILE the recorder observes, so
-    // the marker arrives as a streamed `TERMINAL_OUTPUT` delta rather than
+    // the marker arrives as a streamed `RESOURCE_OUTPUT` delta rather than
     // riding in on the priming snapshot. That is the path a recording
     // actually exercises.
     let socket = server.socket.clone();
@@ -247,7 +247,7 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
 }
 
 /// The observer guarantee, proved against a real server. This is the reason
-/// `phux rec` speaks `ATTACH_TERMINAL` and not `ATTACH`; see `phux-client`'s
+/// `phux rec` speaks `ATTACH_RESOURCE` and not `ATTACH`; see `phux-client`'s
 /// `record` module docs.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
@@ -288,7 +288,7 @@ fn rec_does_not_resize_the_recorded_pane() {
     assert_eq!(
         after, before,
         "`phux rec` RESIZED the pane it was recording, from {before:?} to \
-         {after:?}. The recorder must speak ATTACH_TERMINAL (L1 §5.1), a \
+         {after:?}. The recorder must speak ATTACH_RESOURCE (L1 §5.1), a \
          non-resizing observer subscription. A session-scoped ATTACH \
          instead runs the server's `apply_attach_viewport`, which drives \
          TIOCSWINSZ on every pane in the session under the default \

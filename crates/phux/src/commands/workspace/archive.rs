@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult};
 use phux_server::runtime::default_socket_path;
 
@@ -239,7 +239,7 @@ async fn confirm_restored_agent(
 ) -> Result<(), String> {
     let local_id = u32::try_from(pane_id)
         .map_err(|_| format!("restored terminal id {pane_id} exceeds the local wire-id range"))?;
-    let terminal = TerminalId::local(local_id);
+    let terminal = ResourceId::local(local_id);
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not confirm restored agent session: {err}"))?;
@@ -247,7 +247,7 @@ async fn confirm_restored_agent(
         let cleanup = conn
             .request(
                 13,
-                Command::KillTerminal {
+                Command::KillResource {
                     terminal_id: terminal,
                 },
             )
@@ -309,9 +309,9 @@ fn same_local_terminals(
 ) -> bool {
     let local_ids = |snapshot: &phux_protocol::wire::info::SessionSnapshot| {
         snapshot
-            .panes
+            .resources
             .iter()
-            .filter(|pane| matches!(pane.id, TerminalId::Local { .. }))
+            .filter(|pane| matches!(pane.id, ResourceId::Local { .. }))
             .map(|pane| pane.id.clone())
             .collect::<HashSet<_>>()
     };
@@ -321,16 +321,17 @@ fn same_local_terminals(
 #[cfg(test)]
 mod tests {
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
     use super::*;
 
     fn snapshot(ids: &[u32]) -> SessionSnapshot {
-        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1)).with_panes(
-            ids.iter()
-                .map(|id| TerminalInfo::new(TerminalId::local(*id), WindowId::new(1), 80, 24))
-                .collect(),
-        )
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_resources(
+                ids.iter()
+                    .map(|id| ResourceInfo::new(ResourceId::local(*id), WindowId::new(1), 80, 24))
+                    .collect(),
+            )
     }
 
     #[test]

@@ -47,7 +47,7 @@
 //! The rectangle map comes from [`crate::multi_pane::pane_rects_in`] — the
 //! *same* local-divider tiling [`crate::multi_pane::compute_layout_in`] paints
 //! with. Reflow-emit and paint therefore agree by construction: the size a
-//! pane's PTY is told to be (`TERMINAL_RESIZE`) is exactly the rect it is
+//! pane's PTY is told to be (`RESIZE_TERMINAL`) is exactly the rect it is
 //! drawn into, so a nested split can never leave the gap/overlap dead space
 //! that arose when reflow subtracted dividers globally and paint subtracted
 //! them per-node (phux-islu). Divider accounting lives inside the walk. The
@@ -62,7 +62,7 @@
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
 use crate::layout::{LayoutState, Rect};
 use crate::multi_pane::pane_rects_in;
@@ -74,11 +74,11 @@ use crate::multi_pane::pane_rects_in;
 pub struct ReflowDiff {
     /// The full per-leaf rectangle map for the new outer dims. The caller
     /// stores this as its next `prev_rects` snapshot.
-    pub new_rects: HashMap<TerminalId, Rect>,
+    pub new_rects: HashMap<ResourceId, Rect>,
     /// Leaves whose (w, h) differs from the previous snapshot, plus leaves
     /// new to this snapshot (no entry in `prev_rects`). x/y-only movement
     /// does **not** appear here — see the module docs for why.
-    pub changed: Vec<(TerminalId, Rect)>,
+    pub changed: Vec<(ResourceId, Rect)>,
     /// Some leaf in `new_rects` renders with `w < 2` or `h < 1`: the
     /// viewport is below the layout's aggregate minimums, so §6.2
     /// min-size freezing disengaged and proportional tiling resumed
@@ -109,7 +109,7 @@ pub struct ReflowDiff {
 #[must_use]
 pub fn compute_reflow<S: BuildHasher>(
     layout: &LayoutState,
-    prev_rects: &HashMap<TerminalId, Rect, S>,
+    prev_rects: &HashMap<ResourceId, Rect, S>,
     content: Rect,
 ) -> ReflowDiff {
     let Some(tree) = layout.tree.as_ref() else {
@@ -122,7 +122,7 @@ pub fn compute_reflow<S: BuildHasher>(
 
     let new_rects = pane_rects_in(tree, content);
 
-    let mut changed: Vec<(TerminalId, Rect)> = Vec::new();
+    let mut changed: Vec<(ResourceId, Rect)> = Vec::new();
     let mut too_small = false;
     for (id, rect) in &new_rects {
         if rect.w < 2 || rect.h < 1 {
@@ -155,8 +155,8 @@ mod tests {
     use super::*;
     use crate::layout::{LayoutNode, SplitDir, leaves, split_at};
 
-    fn t(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn t(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     /// A None-equivalent content rect: the full viewport anchored at the
@@ -176,7 +176,7 @@ mod tests {
         LayoutNode::Leaf(t(id))
     }
 
-    fn state_with(tree: LayoutNode, focus: TerminalId) -> LayoutState {
+    fn state_with(tree: LayoutNode, focus: ResourceId) -> LayoutState {
         LayoutState {
             tree: Some(tree),
             focus: Some(focus),
@@ -405,17 +405,17 @@ mod tests {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<TerminalId>) {
+    fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<ResourceId>) {
         let mut next_id: u32 = 1;
-        let first = TerminalId::local(next_id);
+        let first = ResourceId::local(next_id);
         next_id += 1;
         let mut tree: Option<LayoutNode> = Some(LayoutNode::Leaf(first.clone()));
-        let mut alive: Vec<TerminalId> = vec![first];
+        let mut alive: Vec<ResourceId> = vec![first];
 
         for op in ops {
             match op {
                 Op::AddPane => {
-                    let new_pane = TerminalId::local(next_id);
+                    let new_pane = ResourceId::local(next_id);
                     next_id += 1;
                     let Some(target) = alive.last().cloned() else {
                         tree = Some(LayoutNode::Leaf(new_pane.clone()));

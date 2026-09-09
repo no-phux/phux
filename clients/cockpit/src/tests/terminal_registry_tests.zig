@@ -265,7 +265,7 @@ test "close frees the terminal eagerly and its slot is immediately reusable" {
     app.update(&state.model, .new_terminal, &state.effects);
     try testing.expectEqual(@as(usize, 3), state.model.ws().tab_count);
 
-    const closed_id = state.model.selectedTerminalId() orelse return error.TestExpectedTerminal;
+    const closed_id = state.model.selectedResourceId() orelse return error.TestExpectedTerminal;
     const closed_key = state.model.provider.terminal(closed_id).?.pty_key;
     var survivor_keys: [app.max_tabs]u64 = undefined;
     var survivor_count: usize = 0;
@@ -283,8 +283,8 @@ test "close frees the terminal eagerly and its slot is immediately reusable" {
         .modifiers = .{ .primary = true },
     } });
     try testing.expectEqual(@as(usize, 2), state.model.ws().tab_count);
-    try testing.expect(state.model.selectedTerminalId() != null);
-    try testing.expect(state.model.provider.terminal(state.model.focusedTerminalId().?) != null);
+    try testing.expect(state.model.selectedResourceId() != null);
+    try testing.expect(state.model.provider.terminal(state.model.focusedResourceId().?) != null);
     // Gone from the registry the moment it closed, not parked.
     try testing.expect(state.model.provider.terminal(closed_id) == null);
     try testing.expect(state.model.provider.terminalForPty(closed_key) == null);
@@ -295,7 +295,7 @@ test "close frees the terminal eagerly and its slot is immediately reusable" {
     // The freed slot is available RIGHT AWAY, with fresh identity.
     app.update(&state.model, .new_terminal, &state.effects);
     try testing.expectEqual(@as(usize, 3), state.model.ws().tab_count);
-    const replacement_id = state.model.selectedTerminalId() orelse return error.TestExpectedTerminal;
+    const replacement_id = state.model.selectedResourceId() orelse return error.TestExpectedTerminal;
     const replacement = state.model.provider.terminal(replacement_id) orelse return error.TestExpectedTerminal;
     try testing.expect(!replacement_id.eql(closed_id));
     try testing.expect(replacement.pty_key > closed_key);
@@ -326,7 +326,7 @@ test "reordering preserves terminal identity, process generation, and pane struc
     app.update(&state.model, .new_terminal, &state.effects);
     app.update(&state.model, .new_terminal, &state.effects);
 
-    const selected = state.model.selectedTerminalId() orelse return error.TestExpectedTerminal;
+    const selected = state.model.selectedResourceId() orelse return error.TestExpectedTerminal;
     const pane = state.model.provider.terminal(selected) orelse return error.TestExpectedTerminal;
     const session = pane.session;
     const key = pane.pty_key;
@@ -340,7 +340,7 @@ test "reordering preserves terminal identity, process generation, and pane struc
     app.update(&state.model, .{ .move_terminal = -1 }, &state.effects);
 
     // Moving a tab moves the WHOLE tree, and selection rides along with it.
-    try testing.expectEqual(selected, state.model.selectedTerminalId().?);
+    try testing.expectEqual(selected, state.model.selectedResourceId().?);
     try testing.expectEqual(@as(usize, 0), state.model.tabOfTerminal(selected).?);
     try testing.expectEqual(@as(usize, 0), state.model.ws().selected_tab);
     const moved = state.model.provider.terminal(selected) orelse return error.TestExpectedTerminal;
@@ -367,7 +367,7 @@ test "closing a live terminal kills its pty and stops accepting its output" {
     defer stopCockpit(state);
     app.update(&state.model, .new_terminal, &state.effects);
 
-    const closed_id = state.model.selectedTerminalId().?;
+    const closed_id = state.model.selectedResourceId().?;
     const key = state.model.provider.terminal(closed_id).?.pty_key;
     const writes_before = state.effects.ptyWrittenBytes(key).len;
     app.update(&state.model, .close_terminal, &state.effects);
@@ -393,9 +393,9 @@ test "terminal identity allocation rejects exhaustion reserved keys and duplicat
 
     model.provider.next_terminal_raw = std.math.maxInt(u64) - 1;
     try testing.expectError(error.TerminalIdentityExhausted, model.provider.createTerminal());
-    model.provider.next_terminal_raw = @intFromEnum(app.LocalTerminalId.terminal_1);
+    model.provider.next_terminal_raw = @intFromEnum(app.LocalResourceId.terminal_1);
     try testing.expectError(error.TerminalIdentityCollision, model.provider.createTerminal());
-    model.provider.next_terminal_raw = @intFromEnum(app.LocalTerminalId.terminal_2) + 1;
+    model.provider.next_terminal_raw = @intFromEnum(app.LocalResourceId.terminal_2) + 1;
 
     model.provider.next_pty_key = std.math.maxInt(u64) - 1;
     try testing.expectError(error.TerminalIdentityExhausted, model.provider.createTerminal());
