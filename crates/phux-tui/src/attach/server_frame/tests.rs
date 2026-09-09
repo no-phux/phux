@@ -836,10 +836,7 @@ fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
 /// A single-window workspace wrapping `state`, for the reconcile tests.
 fn ws1(state: LayoutState) -> Workspace {
     Workspace {
-        windows: vec![crate::layout::WindowState {
-            name: "1".to_owned(),
-            state,
-        }],
+        windows: vec![crate::layout::WindowState::new("1".to_owned(), state)],
         active: 0,
     }
 }
@@ -909,14 +906,8 @@ fn reconcile_without_bootstrap_focus_keeps_the_tree() {
 fn reconcile_multi_window_does_not_alias_non_active_windows() {
     let ws = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: LayoutState::single(tid(1)),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: LayoutState::single(tid(2)),
-            },
+            crate::layout::WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
+            crate::layout::WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 0,
     };
@@ -1121,14 +1112,8 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
 
     let mut local = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "local-one".to_owned(),
-                state: split2(1, 2, 2),
-            },
-            crate::layout::WindowState {
-                name: "local-two".to_owned(),
-                state: split2(3, 4, 4),
-            },
+            crate::layout::WindowState::new("local-one".to_owned(), split2(1, 2, 2)),
+            crate::layout::WindowState::new("local-two".to_owned(), split2(3, 4, 4)),
         ],
         active: 1,
     };
@@ -1167,6 +1152,75 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
         local.windows[1].state.tree,
         Some(LayoutNode::Split { ratio, .. }) if (ratio - 0.7).abs() < f32::EPSILON
     ));
+}
+
+#[test]
+fn old_layout_schema_refuses_attach_and_broadcast_without_resetting_metadata() {
+    let bytes = b"\xa1\x67version\x02".to_vec();
+    let mut workspace = Workspace::single(tid(1));
+    let before = workspace.clone();
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1)]);
+    for frame in [
+        FrameKind::MetadataValue {
+            request_id: 42,
+            value: Some(bytes.clone()),
+        },
+        FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            value: Some(bytes),
+        },
+    ] {
+        let error =
+            try_drive_layout_frame(frame, Some(42), &mut workspace, &mut focused, &mut panes)
+                .expect_err("unsupported metadata must not seed a replacement write");
+        assert!(
+            matches!(error, AttachError::Protocol(message) if message.contains("stored metadata was preserved"))
+        );
+        assert_eq!(workspace, before);
+        assert_eq!(focused, Some(tid(1)));
+    }
+}
+
+#[test]
+fn shared_window_identity_preserves_focus_on_reorder_and_empty_is_authoritative() {
+    let mut local = Workspace::single(tid(1));
+    local.add_window("two".into(), tid(2));
+    let active_id = local.windows[1].id;
+    let mut incoming = local.clone();
+    incoming.windows.swap(0, 1);
+    incoming.active = 1;
+    let mut focused = Some(tid(2));
+    let mut panes = panes_for(&[&tid(1), &tid(2)]);
+    for topology in [incoming, Workspace::new()] {
+        let empty = topology.windows.is_empty();
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+                key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+                value: Some(topology.encode_topology_cbor().expect("topology")),
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+        assert!(outcome.layout_replaced);
+        if empty {
+            assert!(local.windows.is_empty());
+            assert_eq!(focused, None);
+            assert_eq!(
+                panes.len(),
+                2,
+                "presentation removal retains durable replicas"
+            );
+        } else {
+            assert_eq!(local.active, 0);
+            assert_eq!(local.windows[local.active].id, active_id);
+            assert_eq!(focused, Some(tid(2)));
+        }
+    }
 }
 
 /// phux-k0cw, THE guard this stage exists for: once a client subscribes
@@ -1395,14 +1449,8 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
     local.add_window("3".to_owned(), tid(9));
     let incoming = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: split2(1, 4, 4),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: split2(2, 3, 3),
-            },
+            crate::layout::WindowState::new("1".to_owned(), split2(1, 4, 4)),
+            crate::layout::WindowState::new("2".to_owned(), split2(2, 3, 3)),
         ],
         active: 0,
     };
@@ -1423,14 +1471,8 @@ fn layout_tombstone_resets_to_local_focused_pane() {
 
     let mut local = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: LayoutState::single(tid(1)),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: LayoutState::single(tid(2)),
-            },
+            crate::layout::WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
+            crate::layout::WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 1,
     };
@@ -1468,10 +1510,7 @@ fn two_pane_workspace(left: &TerminalId, right: &TerminalId, focus: &TerminalId)
         focus: Some(focus.clone()),
     };
     Workspace {
-        windows: vec![crate::layout::WindowState {
-            name: "1".to_owned(),
-            state,
-        }],
+        windows: vec![crate::layout::WindowState::new("1".to_owned(), state)],
         active: 0,
     }
 }

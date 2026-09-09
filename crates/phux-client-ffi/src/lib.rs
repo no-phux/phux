@@ -11,13 +11,14 @@ mod grid_metadata;
 mod operations;
 mod pointer;
 mod types;
+mod workspace;
 
 use std::collections::HashSet;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
-use client::{Client, Limits, SessionSummary};
+use client::{Client, Limits};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
@@ -39,6 +40,7 @@ pub use pointer::{
     phux_client_terminal_mouse_mode,
 };
 pub use types::*;
+pub use workspace::*;
 
 #[repr(C)]
 pub struct PhuxClient {
@@ -672,6 +674,9 @@ fn dispatch_frame(
     frame: FrameKind,
     notify_attached: &mut bool,
 ) -> Result<(), BridgeError> {
+    let Some(frame) = workspace::dispatch(client, frame) else {
+        return Ok(());
+    };
     let Some(frame) = operations::dispatch(client, frame)? else {
         return Ok(());
     };
@@ -983,18 +988,6 @@ fn apply_attached(
         .collect();
     client.agent_streams.clear();
     client.resources = snapshot.panes.iter().map(resource_summary).collect();
-    client.sessions = snapshot
-        .sessions
-        .into_iter()
-        .map(|session| SessionSummary {
-            session_id: session.id.get(),
-            name: session.name.into_bytes(),
-            created_at_unix_secs: session.created_at_unix_secs,
-            window_count: session.window_count,
-            attached_client_count: session.attached_client_count,
-            focused: session.id == focused_session,
-        })
-        .collect();
     apply_kernel_input(
         client,
         KernelInput::AttachStarted {
@@ -1016,8 +1009,9 @@ fn apply_attached(
         )?;
         client
             .agent_streams
-            .insert(pane.id.clone(), client::AgentStream::default());
+              .insert(pane.id.clone(), client::AgentStream::default());
     }
+    workspace::attached(client, snapshot);
     Ok(())
 }
 
@@ -1047,6 +1041,7 @@ fn apply_attach_ready(client: &mut Client, attach_id: u32) -> Result<(), BridgeE
     apply_kernel_input(client, KernelInput::AttachReady { attach_id })?;
     client.attach_queued = false;
     client.attached = true;
+    workspace::initial_read(client);
     Ok(())
 }
 

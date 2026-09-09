@@ -515,17 +515,14 @@ mod tests {
         .expect("split");
         Workspace {
             windows: vec![
-                WindowState {
-                    name: "main".to_owned(),
-                    state: LayoutState {
+                WindowState::new(
+                    "main".to_owned(),
+                    LayoutState {
                         tree: Some(tree),
                         focus: Some(tid(a)),
                     },
-                },
-                WindowState {
-                    name: "logs".to_owned(),
-                    state: LayoutState::single(tid(c)),
-                },
+                ),
+                WindowState::new("logs".to_owned(), LayoutState::single(tid(c))),
             ],
             active: 0,
         }

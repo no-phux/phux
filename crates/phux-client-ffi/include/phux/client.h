@@ -435,8 +435,9 @@ typedef struct PhuxAttachOptions {
 #define PHUX_CLIENT_MAX_OPERATION_MESSAGE_BYTES 4096u
 
 /** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
- * Request IDs are nonzero and strictly increasing across spawn/attach/detach-terminal
- * calls for this client, including after results are cleared. Validation failure
+ * Request IDs are in 1..0x7fffffff and strictly increasing across
+ * spawn/attach/detach-terminal and workspace refresh/mutation calls for this
+ * client, including after results are cleared. Validation failure
  * does not consume an ID. All operations require completed session ATTACH.
  * Pending requests plus retained completions are bounded by MAX_OPERATIONS;
  * consume/clear completions to free capacity. Spawn is never retried internally.
@@ -822,6 +823,86 @@ PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index,
  * mutable call. */
 size_t phux_client_resource_count(const PhuxClient *client);
 PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index, PhuxResourceInfo *out_resource);
+/* Rust-owned shared topology, ABI version 1. All output records require initialized
+ * size/version. Borrowed names/IDs expire on the next mutable client call.
+ * Catalog bounds: 256 sessions, 256 terminals; topology: 32 windows, 512 nodes,
+ * depth 64. Names/title/cwd/host are bounded to 4096 UTF-8 bytes (refusal, no truncation).
+ * Registry window IDs are NOT these durable 128-bit layout window IDs.
+ * Initial attachment exposes catalog only (state 0) until metadata/state replies
+ * complete. Only confirmed metadata absence yields fallback. Present layouts
+ * require schema v3 and stable IDs; unsupported stored data is refused, not reset.
+ * No focus is shared; clients preserve their own selection by stable IDs. */
+typedef struct PhuxWorkspaceInfo {
+    size_t size;
+    uint32_t version;
+    uint64_t revision;
+    uint32_t session_id;
+    /* state: 0 unavailable, 1 fallback, 2 authoritative, 3 last-good with error. */
+    uint32_t state;
+    uint32_t window_count, node_count, terminal_count;
+    /* Latest refresh/mutation: 0 idle, 1 pending, 2 confirmed, 3 refused,
+     * 4 disconnected/unknown outcome. request_id=0 is automatic initial read. */
+    uint32_t request_id, status;
+    PhuxBytes message;
+} PhuxWorkspaceInfo;
+typedef struct PhuxWorkspaceWindow {
+    size_t size;
+    uint32_t version;
+    uint8_t window_id[16];
+    PhuxBytes name;
+    uint32_t root_node;
+} PhuxWorkspaceWindow;
+typedef struct PhuxWorkspaceNode {
+    size_t size;
+    uint32_t version;
+    /* leaf=1, side-by-side=2, stacked=3; child indices are snapshot-global. */
+    uint32_t kind;
+    PhuxTerminalId terminal_id;
+    uint32_t first, second;
+    float ratio;
+} PhuxWorkspaceNode;
+typedef struct PhuxCatalogTerminal {
+    size_t size;
+    uint32_t version;
+    PhuxTerminalId terminal_id;
+    /* 0 means unknown ownership (e.g. satellite); never inferred from numeric ID. */
+    uint32_t session_id;
+    PhuxBytes title, cwd;
+} PhuxCatalogTerminal;
+typedef struct PhuxWorkspaceMutation {
+    size_t size;
+    uint32_t version, request_id;
+    uint64_t expected_revision;
+    uint32_t session_id;
+    /* add=1, split=2, remove presentation=3, reorder=4, resize=5, rename=6,
+     * remove entire window presentation=7. Neither removal kills terminals. */
+    uint32_t kind;
+    uint8_t window_id[16];
+    /* add: terminal_id seeds a Rust-minted ID (window_id ignored).
+     * split: terminal_id is target, new_terminal_id is the new sibling. */
+    PhuxTerminalId terminal_id, new_terminal_id;
+    PhuxBytes name;
+    /* split direction: side-by-side=2, stacked=3; resize uses ratio only.
+     * Both require a finite ratio strictly between 0 and 1. */
+    uint32_t direction, index;
+    float ratio;
+    /* Root-to-split path, low bit first: 0 first child, 1 second child. */
+    uint32_t path_len;
+    uint64_t path_bits;
+} PhuxWorkspaceMutation;
+/* Host request IDs across spawn/subscribe/refresh/mutate must strictly increase,
+ * 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
+ * One refresh OR mutation may be pending. Poll <=1s and before palette display.
+ * Refresh never changes the actual attached session or allocates emulators.
+ * Mutation is whole-value LWW SET followed by GET confirmation, NOT CAS:
+ * expected_revision fences this client's snapshot, not concurrent server writers.
+ * Adopt only the confirmed current snapshot; never retry unknown spawns. */
+PhuxClientResult phux_client_workspace_refresh(PhuxClient *client, uint32_t request_id);
+PhuxClientResult phux_client_workspace_mutate(PhuxClient *client, const PhuxWorkspaceMutation *mutation);
+PhuxClientResult phux_client_workspace_info(const PhuxClient *client, PhuxWorkspaceInfo *out_info);
+PhuxClientResult phux_client_workspace_window_get(const PhuxClient *client, size_t index, PhuxWorkspaceWindow *out_window);
+PhuxClientResult phux_client_workspace_node_get(const PhuxClient *client, size_t index, PhuxWorkspaceNode *out_node);
+PhuxClientResult phux_client_catalog_terminal_get(const PhuxClient *client, size_t index, PhuxCatalogTerminal *out_terminal);
 size_t phux_client_outgoing_count(const PhuxClient *client);
 PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index, PhuxBytes *out_frame);
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);

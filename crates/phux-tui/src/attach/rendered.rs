@@ -310,9 +310,9 @@ mod tests {
 
     fn two_pane(left: &TerminalId, right: &TerminalId) -> Workspace {
         Workspace {
-            windows: vec![WindowState {
-                name: "1".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "1".to_owned(),
+                LayoutState {
                     tree: Some(LayoutNode::Split {
                         dir: SplitDir::Horizontal,
                         ratio: 0.5,
@@ -321,7 +321,7 @@ mod tests {
                     }),
                     focus: Some(left.clone()),
                 },
-            }],
+            )],
             active: 0,
         }
     }

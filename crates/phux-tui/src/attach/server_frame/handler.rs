@@ -328,10 +328,10 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             Ok(FrameOutcome::default())
         }
         FrameKind::MetadataValue { request_id, value } => {
-            Ok(handle_metadata_value(ctx, request_id, value))
+            handle_metadata_value(ctx, request_id, value)
         }
         FrameKind::MetadataChanged { scope, key, value } => {
-            Ok(handle_metadata_changed(ctx, &scope, &key, value))
+            handle_metadata_changed(ctx, &scope, &key, value)
         }
         FrameKind::TerminalSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
@@ -991,7 +991,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
     value: Option<Vec<u8>>,
-) -> FrameOutcome {
+) -> Result<FrameOutcome, AttachError> {
     // ADR-0040: a pending per-Terminal `phux.agent/v1` GET reply.
     // `value: None` (key absent) clears any stale record.
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
@@ -999,25 +999,25 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
         if changed {
             note_agent_change(ctx.panes, ctx.focused_pane.as_ref(), &terminal);
         }
-        return FrameOutcome {
+        return Ok(FrameOutcome {
             agent_meta_changed: changed,
             ..FrameOutcome::default()
-        };
+        });
     }
     if Some(request_id) != ctx.pending_layout_request {
         tracing::debug!(
             request_id,
             "dropping MetadataValue with no matching pending request"
         );
-        return FrameOutcome::default();
+        return Ok(FrameOutcome::default());
     }
     let Some(bytes) = value else {
-        return FrameOutcome::default();
+        return Ok(FrameOutcome::default());
     };
     match ctx.decode_own_layout(&bytes) {
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
-            FrameOutcome {
+            Ok(FrameOutcome {
                 layout_replaced: true,
                 layout_get_answered: true,
                 // phux-e9fd: the persisted layout just replaced the
@@ -1028,12 +1028,9 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
                 reflow_panes: true,
                 attach_panes,
                 ..FrameOutcome::default()
-            }
+            })
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to decode persisted layout; keeping bootstrap");
-            FrameOutcome::default()
-        }
+        Err(err) => Err(layout_decode_refusal(&err)),
     }
 }
 
@@ -1048,21 +1045,21 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     scope: &Scope,
     key: &str,
     value: Option<Vec<u8>>,
-) -> FrameOutcome {
+) -> Result<FrameOutcome, AttachError> {
     if key == TERMINAL_AGENT_KEY {
-        return apply_agent_broadcast(ctx, scope, value);
+        return Ok(apply_agent_broadcast(ctx, scope, value));
     }
     // phux-foz.5: the config-reload doorbell. Value bytes are an
     // opaque nonce (only there to defeat the server's equal-bytes
     // SET dedup); a tombstone is not a reload request.
     if key == CONFIG_RELOAD_KEY && matches!(scope, Scope::Global) {
-        return FrameOutcome {
+        return Ok(FrameOutcome {
             config_reload: value.is_some(),
             ..FrameOutcome::default()
-        };
+        });
     }
     let Some(key_session) = layout_key_scope_session(scope, key) else {
-        return FrameOutcome::default();
+        return Ok(FrameOutcome::default());
     };
     // phux-k0cw: adopt ONLY our own session's layout. The legacy
     // key predates per-session keying and is ours by construction;
@@ -1073,10 +1070,10 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if let LayoutKeyOwner::Session(session) = key_session
         && ctx.focused_session != Some(session)
     {
-        return FrameOutcome {
+        return Ok(FrameOutcome {
             foreign_layout: Some((session, value)),
             ..FrameOutcome::default()
-        };
+        });
     }
     let Some(bytes) = value else {
         // Tombstone: layout reset. Fall back to single-pane
@@ -1085,15 +1082,15 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
             .focused_pane
             .clone()
             .map_or_else(Workspace::default, Workspace::single);
-        return FrameOutcome {
+        return Ok(FrameOutcome {
             layout_replaced: true,
             ..FrameOutcome::default()
-        };
+        });
     };
     match ctx.decode_own_layout(&bytes) {
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
-            FrameOutcome {
+            Ok(FrameOutcome {
                 layout_replaced: true,
                 // phux-e9fd: a peer's topology change reshapes our
                 // tiles too. The peer sized the PTYs against ITS
@@ -1102,13 +1099,16 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
                 reflow_panes: true,
                 attach_panes,
                 ..FrameOutcome::default()
-            }
+            })
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "broadcast layout decode failed; ignoring");
-            FrameOutcome::default()
-        }
+        Err(err) => Err(layout_decode_refusal(&err)),
     }
+}
+
+fn layout_decode_refusal(error: &crate::layout::LayoutDecodeError) -> AttachError {
+    AttachError::Protocol(format!(
+        "shared layout refused: {error}; stored metadata was preserved, not reset"
+    ))
 }
 
 /// ADR-0040: a `phux.agent/v1` broadcast for a subscribed pane.
@@ -1824,19 +1824,42 @@ pub(super) fn reconcile_loaded_workspace_checked(
         return (Workspace::single(focus.clone()), false);
     }
 
-    for (index, window) in incoming.windows.iter_mut().enumerate() {
+    for window in &mut incoming.windows {
         let local_focus = local
             .windows
-            .get(index)
-            .and_then(|local_window| local_window.state.focus.as_ref());
+            .iter()
+            .find(|old| old.id == window.id)
+            .and_then(|local_window| local_window.state.focus.as_ref())
+            .or(bootstrap_focus);
         reconcile_loaded_layout(&mut window.state, local_focus);
     }
-    incoming.active = if incoming.windows.is_empty() {
-        0
-    } else {
-        local.active.min(incoming.windows.len() - 1)
-    };
+    incoming.active = reconciled_active_window(&incoming, local, bootstrap_focus);
     (incoming, true)
+}
+
+fn reconciled_active_window(
+    incoming: &Workspace,
+    local: &Workspace,
+    bootstrap_focus: Option<&TerminalId>,
+) -> usize {
+    let active_id = local.windows.get(local.active).map(|window| window.id);
+    incoming
+        .windows
+        .iter()
+        .position(|window| Some(window.id) == active_id)
+        .or_else(|| window_containing_focus(incoming, bootstrap_focus))
+        .unwrap_or_else(|| local.active.min(incoming.windows.len().saturating_sub(1)))
+}
+
+fn window_containing_focus(workspace: &Workspace, focus: Option<&TerminalId>) -> Option<usize> {
+    let focus = focus?;
+    workspace.windows.iter().position(|window| {
+        window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(focus))
+    })
 }
 
 /// Preserve a valid local focus while adopting `state`'s tree topology.

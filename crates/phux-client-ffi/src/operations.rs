@@ -214,17 +214,26 @@ impl Operations {
     }
 
     fn check_capacity(&self, request_id: u32) -> Result<(), BridgeError> {
-        if request_id <= self.last_request_id {
-            return Err(BridgeError::invalid(
-                "operation request IDs must be nonzero and strictly increasing",
-            ));
-        }
+        self.check_request_id(request_id)?;
         if self.pending.len() + self.completed.len() >= MAX_OPERATIONS {
             return Err(BridgeError::state(
                 "operation queue is full; consume and clear results",
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn check_request_id(&self, request_id: u32) -> Result<(), BridgeError> {
+        if request_id <= self.last_request_id || request_id >= crate::workspace::INTERNAL_START {
+            return Err(BridgeError::invalid(
+                "host request IDs must strictly increase in 1..0x7fffffff",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn consume_request_id(&mut self, request_id: u32) {
+        self.last_request_id = request_id;
     }
 
     fn check_admission_capacity(&self) -> Result<(), BridgeError> {

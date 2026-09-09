@@ -12,15 +12,15 @@
 //! Layout persistence (per [ADR-0019] decision 1) wraps the whole
 //! [`Workspace`] (the set of windows plus the active index) in a
 //! versioned CBOR envelope and stores it server-side under the L3
-//! metadata key `phux.tui.layout/v1`. The current envelope is v2 —
-//! `{version, windows: [{name, root: LayoutNode, focused_terminal}],
+//! metadata key `phux.tui.layout/v1`. The current envelope is v3 —
+//! `{version, windows: [{id, name, root: LayoutNode, focused_terminal}],
 //! focused_window_index}` (docs/spec/L3.md §3.2), encoded by
 //! [`Workspace::encode_cbor`] / [`Workspace::decode_cbor`]. Focus fields remain
-//! for compatibility but are non-authoritative; ADR-0049 requires recipients
-//! to preserve their client-local focus when adopting topology. The legacy
-//! v1 single-window envelope (`{version, root, focus}`) is no longer
-//! written but is still decoded for back-compat
-//! ([`LayoutState::decode_cbor`]) and wrapped as a one-window workspace.
+//! non-authoritative; ADR-0049 requires recipients
+//! to preserve their client-local focus when adopting topology. Earlier
+//! envelopes are explicitly refused. Every window requires a nonzero,
+//! unique 16-byte stable identity. Readers never infer identity from persisted
+//! terminal overlap or replace unsupported stored layouts with a fallback.
 //!
 //! The wire crate exposes neither `serde::Serialize` for its types nor
 //! a public encoder API; for the CBOR envelope we therefore round-trip
@@ -43,17 +43,9 @@ pub use phux_protocol::wire::info::{LayoutNode, SplitDir};
 /// envelope shape changes incompatibly; readers MUST refuse unknown
 /// versions (see [`LayoutDecodeError::UnsupportedVersion`]).
 ///
-/// v2 is the multi-window [`Workspace`] envelope (`{version, windows,
-/// focused_window_index}`, per docs/spec/L3.md §3.2). v1 was the
-/// single-window envelope (`{version, root, focus}`); [`Workspace::decode_cbor`]
-/// still reads v1 blobs for back-compat, wrapping them as a one-window
-/// workspace.
-pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 2;
-
-/// The legacy single-window envelope version that [`LayoutState::decode_cbor`]
-/// expects. [`Workspace::decode_cbor`] accepts it for back-compat with layout
-/// blobs written by pre-window clients.
-const LAYOUT_ENVELOPE_VERSION_V1: u8 = 1;
+/// v3 requires stable window identities. Prior envelopes are not migrated by
+/// the decoder; stored bytes remain available for explicit recovery.
+pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 3;
 
 // -----------------------------------------------------------------------------
 // Direction / Rect — TUI-local geometry types
@@ -165,7 +157,7 @@ pub enum LayoutError {
     LastPane,
 }
 
-/// Errors returned by [`LayoutState::decode_cbor`].
+/// Errors returned by [`Workspace::decode_cbor`].
 #[derive(Debug, Error)]
 pub enum LayoutDecodeError {
     /// The envelope's `version` byte is one this build doesn't recognise.
@@ -207,14 +199,14 @@ pub enum LayoutEncodeError {
 ///
 /// The reference TUI holds one of these per attached window. On attach
 /// the client requests `phux.tui.layout/v1` from the server's L3
-/// metadata; if present, it decodes via [`Self::decode_cbor`] and
+/// metadata; if present, it decodes via [`Workspace::decode_cbor`] and
 /// re-renders multi-pane. If absent, it falls back to single-pane
 /// (the [`Default`] shape — an empty tree, no focus). On `split_at` /
 /// `kill_pane` the TUI mutates the in-memory tree and pushes the new
 /// shape back to the server via [`Workspace::encode_cbor`] +
 /// `SET_METADATA`.
 ///
-/// Focus is per-client (ADR-0019 decision 6). Compatibility envelopes still
+/// Focus is per-client (ADR-0019 decision 6). Workspace envelopes
 /// serialize it, but recipients ignore the sender's value during topology
 /// reconciliation (ADR-0049); it lives here as renderer-local state.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -245,28 +237,6 @@ impl LayoutState {
             focus: Some(focus),
         }
     }
-
-    /// Decode a v1 CBOR envelope into a [`LayoutState`].
-    ///
-    /// # Errors
-    /// * [`LayoutDecodeError::UnsupportedVersion`] if the envelope's
-    ///   version byte isn't one this build knows about.
-    /// * [`LayoutDecodeError::MalformedRatio`] if any `Split.ratio` is
-    ///   NaN, infinite, or outside `(0.0, 1.0)`.
-    /// * [`LayoutDecodeError::Cbor`] for malformed CBOR.
-    pub fn decode_cbor(bytes: &[u8]) -> Result<Self, LayoutDecodeError> {
-        let envelope: CborEnvelope = ciborium::de::from_reader(Cursor::new(bytes))
-            .map_err(|e| LayoutDecodeError::Cbor(e.to_string()))?;
-        if envelope.version != LAYOUT_ENVELOPE_VERSION_V1 {
-            return Err(LayoutDecodeError::UnsupportedVersion(envelope.version));
-        }
-        let tree = envelope.root.into_layout_node()?;
-        let focus: TerminalId = envelope.focus.into();
-        Ok(Self {
-            tree: Some(tree),
-            focus: Some(focus),
-        })
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -282,11 +252,25 @@ impl LayoutState {
 /// the renderer already knows how to paint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowState {
+    /// Durable layout identity, distinct from the server registry's window ID.
+    pub id: [u8; 16],
     /// Display name, shown in the window/tab bar.
     pub name: String,
     /// This window's pane layout and per-client focus.
     pub state: LayoutState,
 }
+
+impl WindowState {
+    /// Seed an identity once from the first durable terminal. Keep it when the
+    /// tree changes, including when that original terminal is removed.
+    #[must_use]
+    pub fn new(name: String, state: LayoutState) -> Self {
+        let id = identity::seed_id(&state);
+        Self { id, name, state }
+    }
+}
+
+mod identity;
 
 /// The set of windows the TUI presents for one Group, plus which
 /// one is active.
@@ -321,6 +305,7 @@ impl Workspace {
     pub fn single(pane: TerminalId) -> Self {
         Self {
             windows: vec![WindowState {
+                id: identity::terminal_id(&pane),
                 name: "1".to_owned(),
                 state: LayoutState::single(pane),
             }],
@@ -370,6 +355,7 @@ impl Workspace {
     /// make it active.
     pub fn add_window(&mut self, name: String, seed: TerminalId) {
         self.windows.push(WindowState {
+            id: identity::fresh_id(&seed, &self.windows),
             name,
             state: LayoutState::single(seed),
         });
@@ -452,7 +438,7 @@ impl Workspace {
             .to_string()
     }
 
-    /// Encode the workspace as the v2 CBOR envelope (docs/spec/L3.md §3.2).
+    /// Encode the workspace as the v3 CBOR envelope (docs/spec/L3.md §3.2).
     ///
     /// # Errors
     /// * [`LayoutEncodeError::Empty`] if there are no windows, or any
@@ -462,12 +448,26 @@ impl Workspace {
         if self.windows.is_empty() {
             return Err(LayoutEncodeError::Empty);
         }
+        self.encode_topology_cbor()
+    }
+
+    /// Encode shared topology, including an intentionally empty workspace.
+    /// Empty differs from missing metadata: consumers must not synthesize windows.
+    ///
+    /// # Errors
+    /// Returns [`LayoutEncodeError::Empty`] for an unseeded window, or
+    /// [`LayoutEncodeError::Cbor`] if serialization fails.
+    pub fn encode_topology_cbor(&self) -> Result<Vec<u8>, LayoutEncodeError> {
         let mut windows = Vec::with_capacity(self.windows.len());
         for w in &self.windows {
+            if w.id == [0; 16] {
+                return Err(LayoutEncodeError::Empty);
+            }
             let (Some(tree), Some(focus)) = (w.state.tree.as_ref(), w.state.focus.as_ref()) else {
                 return Err(LayoutEncodeError::Empty);
             };
             windows.push(CborWindow {
+                id: w.id,
                 name: w.name.clone(),
                 root: CborLayoutNode::from(tree),
                 focused_terminal: CborTerminalId::from(focus),
@@ -484,13 +484,12 @@ impl Workspace {
         Ok(buf)
     }
 
-    /// Decode a layout blob into a [`Workspace`], accepting both the v2
-    /// multi-window envelope and the legacy v1 single-window envelope
-    /// (wrapped as a one-window workspace named `"1"`).
+    /// Decode a current v3 layout blob into a [`Workspace`]. Missing identities
+    /// and earlier schema versions are refused without migration or fallback.
     ///
     /// # Errors
     /// * [`LayoutDecodeError::UnsupportedVersion`] for any version byte
-    ///   other than 1 or 2.
+    ///   other than 3.
     /// * [`LayoutDecodeError::MalformedRatio`] if any `Split.ratio` is
     ///   NaN, infinite, or outside `(0.0, 1.0)`.
     /// * [`LayoutDecodeError::Cbor`] for malformed CBOR.
@@ -501,41 +500,31 @@ impl Workspace {
         // the extra fields).
         let probe: VersionProbe = ciborium::de::from_reader(Cursor::new(bytes))
             .map_err(|e| LayoutDecodeError::Cbor(e.to_string()))?;
-        match probe.version {
-            LAYOUT_ENVELOPE_VERSION => {
-                let envelope: CborWorkspaceEnvelope = ciborium::de::from_reader(Cursor::new(bytes))
-                    .map_err(|e| LayoutDecodeError::Cbor(e.to_string()))?;
-                let mut windows = Vec::with_capacity(envelope.windows.len());
-                for w in envelope.windows {
-                    let tree = w.root.into_layout_node()?;
-                    let focus: TerminalId = w.focused_terminal.into();
-                    windows.push(WindowState {
-                        name: w.name,
-                        state: LayoutState {
-                            tree: Some(tree),
-                            focus: Some(focus),
-                        },
-                    });
-                }
-                let active = if windows.is_empty() {
-                    0
-                } else {
-                    (envelope.focused_window_index as usize).min(windows.len() - 1)
-                };
-                Ok(Self { windows, active })
-            }
-            LAYOUT_ENVELOPE_VERSION_V1 => {
-                let state = LayoutState::decode_cbor(bytes)?;
-                Ok(Self {
-                    windows: vec![WindowState {
-                        name: "1".to_owned(),
-                        state,
-                    }],
-                    active: 0,
-                })
-            }
-            other => Err(LayoutDecodeError::UnsupportedVersion(other)),
+        if probe.version != LAYOUT_ENVELOPE_VERSION {
+            return Err(LayoutDecodeError::UnsupportedVersion(probe.version));
         }
+        Self::decode_current(bytes)
+    }
+
+    fn decode_current(bytes: &[u8]) -> Result<Self, LayoutDecodeError> {
+        let envelope: CborWorkspaceEnvelope = ciborium::de::from_reader(Cursor::new(bytes))
+            .map_err(|e| LayoutDecodeError::Cbor(e.to_string()))?;
+        let mut windows = Vec::with_capacity(envelope.windows.len());
+        for w in envelope.windows {
+            let tree = w.root.into_layout_node()?;
+            let focus: TerminalId = w.focused_terminal.into();
+            windows.push(WindowState {
+                id: w.id,
+                name: w.name,
+                state: LayoutState {
+                    tree: Some(tree),
+                    focus: Some(focus),
+                },
+            });
+        }
+        identity::validate(&windows)?;
+        let active = (envelope.focused_window_index as usize).min(windows.len().saturating_sub(1));
+        Ok(Self { windows, active })
     }
 
     /// Decode a layout blob and reject any leaf `is_terminal` refuses.
@@ -1010,9 +999,7 @@ const fn perpendicular_axis(dir: Direction) -> SplitDir {
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
 mod serialize;
 
-use serialize::{
-    CborEnvelope, CborLayoutNode, CborTerminalId, CborWindow, CborWorkspaceEnvelope, VersionProbe,
-};
+use serialize::{CborLayoutNode, CborTerminalId, CborWindow, CborWorkspaceEnvelope, VersionProbe};
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
@@ -1021,7 +1008,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::serialize::CborSplitDir;
     use super::*;
     use serde::Serialize;
 
@@ -1033,31 +1019,25 @@ mod tests {
         LayoutNode::Leaf(t(id))
     }
 
-    /// Test-only v1 writer. Production stopped emitting the v1
-    /// single-window envelope (every write path is v2,
-    /// [`Workspace::encode_cbor`]), but the v1 decode path is retained
-    /// for back-compat, so tests synthesize v1 blobs here.
-    fn encode_cbor_v1(state: &LayoutState) -> Vec<u8> {
-        let envelope = CborEnvelope {
-            version: LAYOUT_ENVELOPE_VERSION_V1,
-            root: CborLayoutNode::from(state.tree.as_ref().expect("tree")),
-            focus: CborTerminalId::from(state.focus.as_ref().expect("focus")),
-        };
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&envelope, &mut buf).expect("cbor encode");
-        buf
+    fn encode_state(state: &LayoutState) -> Vec<u8> {
+        Workspace {
+            windows: vec![WindowState::new("1".into(), state.clone())],
+            active: 0,
+        }
+        .encode_cbor()
+        .unwrap()
     }
 
     fn ws_split(a: u32, b: u32, focus: u32) -> Workspace {
         let tree = split_at(&leaf(a), &t(a), &t(b), SplitDir::Horizontal, 0.5).unwrap();
         Workspace {
-            windows: vec![WindowState {
-                name: "1".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "1".to_owned(),
+                LayoutState {
                     tree: Some(tree),
                     focus: Some(t(focus)),
                 },
-            }],
+            )],
             active: 0,
         }
     }
@@ -1217,9 +1197,9 @@ mod tests {
     #[test]
     fn cbor_round_trip_single_pane() {
         let state = LayoutState::single(t(7));
-        let bytes = encode_cbor_v1(&state);
-        let decoded = LayoutState::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded, state);
+        let bytes = encode_state(&state);
+        let decoded = Workspace::decode_cbor(&bytes).unwrap();
+        assert_eq!(decoded.windows[0].state, state);
     }
 
     #[test]
@@ -1231,9 +1211,9 @@ mod tests {
             tree: Some(t2),
             focus: Some(t(2)),
         };
-        let bytes = encode_cbor_v1(&state);
-        let decoded = LayoutState::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded, state);
+        let bytes = encode_state(&state);
+        let decoded = Workspace::decode_cbor(&bytes).unwrap();
+        assert_eq!(decoded.windows[0].state, state);
     }
 
     #[test]
@@ -1243,9 +1223,9 @@ mod tests {
             tree: Some(LayoutNode::Leaf(focus.clone())),
             focus: Some(focus),
         };
-        let bytes = encode_cbor_v1(&state);
-        let decoded = LayoutState::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded, state);
+        let bytes = encode_state(&state);
+        let decoded = Workspace::decode_cbor(&bytes).unwrap();
+        assert_eq!(decoded.windows[0].state, state);
     }
 
     #[test]
@@ -1266,35 +1246,22 @@ mod tests {
         };
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-        let err = LayoutState::decode_cbor(&buf).unwrap_err();
+        let err = Workspace::decode_cbor(&buf).unwrap_err();
         assert!(matches!(err, LayoutDecodeError::UnsupportedVersion(99)));
     }
 
     #[test]
     fn cbor_rejects_malformed_ratio() {
-        #[derive(Serialize)]
-        struct Forged {
-            version: u8,
-            root: CborLayoutNode,
-            focus: CborTerminalId,
-        }
-        let forged = Forged {
-            version: 1,
-            root: CborLayoutNode::Split {
-                dir: CborSplitDir::Horizontal,
-                ratio: 2.0, // out of range
-                left: Box::new(CborLayoutNode::Leaf {
-                    pane: CborTerminalId::Local { id: 1 },
-                }),
-                right: Box::new(CborLayoutNode::Leaf {
-                    pane: CborTerminalId::Local { id: 2 },
-                }),
-            },
-            focus: CborTerminalId::Local { id: 1 },
+        let bytes = ws_split(1, 2, 1).encode_cbor().unwrap();
+        let mut forged: CborWorkspaceEnvelope =
+            ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let CborLayoutNode::Split { ratio, .. } = &mut forged.windows[0].root else {
+            panic!("split")
         };
+        *ratio = 2.0;
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-        let err = LayoutState::decode_cbor(&buf).unwrap_err();
+        let err = Workspace::decode_cbor(&buf).unwrap_err();
         assert!(matches!(err, LayoutDecodeError::MalformedRatio(_)));
     }
 
@@ -1380,20 +1347,20 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Workspace — CBOR v2 + v1 back-compat
+    // Workspace — current CBOR schema
     // -------------------------------------------------------------------------
 
     #[test]
-    fn cbor_v2_round_trip_multi_window() {
+    fn cbor_current_round_trip_multi_window() {
         let mut ws = Workspace::single(t(1));
         let split = split_at(&leaf(2), &t(2), &t(3), SplitDir::Vertical, 0.4).unwrap();
-        ws.windows.push(WindowState {
-            name: "editor".to_owned(),
-            state: LayoutState {
+        ws.windows.push(WindowState::new(
+            "editor".to_owned(),
+            LayoutState {
                 tree: Some(split),
                 focus: Some(t(3)),
             },
-        });
+        ));
         ws.active = 1;
         let bytes = ws.encode_cbor().unwrap();
         let decoded = Workspace::decode_cbor(&bytes).unwrap();
@@ -1401,24 +1368,25 @@ mod tests {
     }
 
     #[test]
-    fn cbor_v1_blob_decodes_as_single_window() {
-        // A v1 single-window blob written by a pre-window client.
-        let v1 = LayoutState {
-            tree: Some(split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap()),
-            focus: Some(t(2)),
-        };
-        let bytes = encode_cbor_v1(&v1);
-        let ws = Workspace::decode_cbor(&bytes).unwrap();
-        assert_eq!(ws.windows.len(), 1);
-        assert_eq!(ws.active, 0);
-        assert_eq!(ws.windows[0].name, "1");
-        assert_eq!(ws.windows[0].state, v1);
+    fn prior_schema_versions_are_refused_without_migration() {
+        for version in [1, 2] {
+            let value = ciborium::Value::Map(vec![(
+                ciborium::Value::Text("version".into()),
+                ciborium::Value::Integer(version.into()),
+            )]);
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&value, &mut bytes).unwrap();
+            assert!(
+                matches!(Workspace::decode_cbor(&bytes), Err(LayoutDecodeError::UnsupportedVersion(found)) if found == version)
+            );
+        }
     }
 
     #[test]
-    fn cbor_v2_focused_index_out_of_range_clamps() {
+    fn cbor_current_focused_index_out_of_range_clamps() {
         #[derive(Serialize)]
         struct ForgedWin {
+            id: [u8; 16],
             name: String,
             root: CborLayoutNode,
             focused_terminal: CborTerminalId,
@@ -1430,8 +1398,9 @@ mod tests {
             focused_window_index: u32,
         }
         let forged = Forged {
-            version: 2,
+            version: LAYOUT_ENVELOPE_VERSION,
             windows: vec![ForgedWin {
+                id: [1; 16],
                 name: "1".to_owned(),
                 root: CborLayoutNode::Leaf {
                     pane: CborTerminalId::Local { id: 1 },
@@ -1455,14 +1424,14 @@ mod tests {
             focused_window_index: u32,
         }
         let forged = Forged {
-            version: 3,
+            version: 99,
             windows: vec![],
             focused_window_index: 0,
         };
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&forged, &mut buf).unwrap();
         let err = Workspace::decode_cbor(&buf).unwrap_err();
-        assert!(matches!(err, LayoutDecodeError::UnsupportedVersion(3)));
+        assert!(matches!(err, LayoutDecodeError::UnsupportedVersion(99)));
     }
 
     #[test]
@@ -1493,7 +1462,10 @@ mod tests {
     /// that should currently live in the tree.
     #[allow(clippy::needless_pass_by_value)]
     fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<TerminalId>) {
-        let mut next_id: u32 = 1;
+        apply_ops_from(ops, 1)
+    }
+
+    fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<TerminalId>) {
         let first = TerminalId::local(next_id);
         next_id += 1;
         let mut tree: Option<LayoutNode> = Some(LayoutNode::Leaf(first.clone()));
@@ -1607,9 +1579,9 @@ mod tests {
             let Some(tree) = tree else { return Ok(()) };
             let Some(focus) = alive.last().cloned() else { return Ok(()) };
             let state = LayoutState { tree: Some(tree), focus: Some(focus) };
-            let bytes = encode_cbor_v1(&state);
-            let decoded = LayoutState::decode_cbor(&bytes).expect("decode");
-            prop_assert_eq!(decoded, state);
+            let bytes = encode_state(&state);
+            let decoded = Workspace::decode_cbor(&bytes).expect("decode");
+            prop_assert_eq!(&decoded.windows[0].state, &state);
         }
 
         /// Invariant 5: a multi-window [`Workspace`] CBOR-round-trips for
@@ -1621,14 +1593,14 @@ mod tests {
         ) {
             let mut windows = Vec::new();
             for (i, ops) in per_window.into_iter().enumerate() {
-                let (tree, alive) = apply_ops(ops);
+                // A workspace has one durable namespace, not independently
+                // reused terminal IDs in each generated window.
+                let seed = u32::try_from(i).unwrap() * 100 + 1;
+                let (tree, alive) = apply_ops_from(ops, seed);
                 let (Some(tree), Some(focus)) = (tree, alive.last().cloned()) else {
                     continue;
                 };
-                windows.push(WindowState {
-                    name: (i + 1).to_string(),
-                    state: LayoutState { tree: Some(tree), focus: Some(focus) },
-                });
+                windows.push(WindowState::new((i + 1).to_string(), LayoutState { tree: Some(tree), focus: Some(focus) }));
             }
             prop_assume!(!windows.is_empty());
             let active = windows.len() / 2;
