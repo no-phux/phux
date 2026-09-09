@@ -218,10 +218,9 @@ pub const Engine = struct {
     /// Consume the fully resolved startup model and establish its final storage.
     pub fn createFromInitialized(initialized_value: startup.InitializedModel) !*Engine {
         var initialized = initialized_value;
-        errdefer model_module.deinitModel(&initialized.model);
-        const model = try std.heap.page_allocator.create(Model);
+        const model = initialized.model;
         errdefer std.heap.page_allocator.destroy(model);
-        model.* = initialized.model;
+        errdefer model_module.deinitModel(model);
         if (initialized.provenance == .restored) {
             model_module.applyRestoredWorkingDirectories(model, &initialized.restored_snapshot);
         }

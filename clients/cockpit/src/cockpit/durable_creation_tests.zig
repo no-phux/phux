@@ -292,13 +292,19 @@ pub fn restoredEmptyWorkspace() !void {
     seed.model.dropTab(0);
     seed.model.writeWorkspaceState(testing.io);
     seed.destroy();
-    var initialized = try startup.initializeResolvedModel(testing.allocator, testing.io, .{}, null, path, null);
-    try testing.expectEqual(.restored, initialized.provenance);
-    const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture.sock" }, null, "test");
-    model_module.attachPhuxProvider(&initialized.model, remote);
+    const initialized = initialized: {
+        const value = try startup.initializeResolvedModel(testing.allocator, testing.io, .{}, null, path, null);
+        errdefer std.heap.page_allocator.destroy(value.model);
+        errdefer model_module.deinitModel(value.model);
+        try testing.expectEqual(.restored, value.provenance);
+        const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture.sock" }, null, "test");
+        model_module.attachPhuxProvider(value.model, remote);
+        break :initialized value;
+    };
     const engine = try engine_module.Engine.createFromInitialized(initialized);
     defer engine.destroy();
     try testing.expectEqual(@as(usize, 0), engine.model.provider.activeCount());
+    const remote = engine.model.phux().?;
     try fixture.attachHost(remote.host);
     _ = try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
     try testing.expectEqual(@as(u32, 7), engine.model.focusedTerminalRef().?.terminal_id.phux.id);
