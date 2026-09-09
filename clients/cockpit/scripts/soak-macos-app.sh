@@ -597,13 +597,16 @@ EOF
 # Every location the app or the coordinator resolves from the environment
 # points into the cycle: config, state, caches, and the socket. A developer's
 # runtime dir, session choice, and Cockpit overrides are unset rather than
-# blanked so neither binary sees an empty value it has to interpret.
+# blanked so neither binary sees an empty value it has to interpret. The
+# coordinator seeds whatever `SHELL` names (a CI runner's login shell is
+# bash), so the shell whose controlled .zshrc records the PID is pinned too.
 launch_app() {
     local home_dir="$1"
 
     /usr/bin/env -u XDG_RUNTIME_DIR -u PHUX_SESSION \
         -u PHUX_COCKPIT_CONFIG -u PHUX_COCKPIT_STATE -u PHUX_COCKPIT_TABS \
         HOME="${home_dir}" \
+        SHELL=/bin/zsh \
         ZDOTDIR="${home_dir}" \
         XDG_CONFIG_HOME="${home_dir}/.config" \
         XDG_STATE_HOME="${home_dir}/.local/state" \
