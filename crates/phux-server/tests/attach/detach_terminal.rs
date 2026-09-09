@@ -122,6 +122,7 @@ async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> TerminalId {
             owner_terminal: None,
             agent_session: None,
             initial_size: Some((80, 24)),
+            resource: None,
         },
     )
     .await;

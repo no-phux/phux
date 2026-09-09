@@ -706,6 +706,10 @@ pub(crate) async fn broadcast_terminal_closed(
                 .send(Outbound::Frame(FrameKind::TerminalClosed {
                     terminal_id: wire_terminal_id.clone(),
                     exit_status,
+                    reason: exit_status
+                        .map_or(phux_protocol::wire::frame::CloseReason::Unknown, |_| {
+                            phux_protocol::wire::frame::CloseReason::Exited
+                        }),
                 }))
                 .await;
         }
@@ -2287,6 +2291,7 @@ where
                 owner_terminal,
                 agent_session,
                 initial_size,
+                ..
             } => {
                 let Some(selection) = negotiated.as_ref() else {
                     continue;

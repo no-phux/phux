@@ -1033,6 +1033,7 @@ impl RelaySession {
                     owner_terminal: spawn.owner_terminal.map(TerminalId::local),
                     agent_session: None,
                     initial_size: spawn.initial_size,
+                    resource: None,
                 }))
             }
             RelayRequest::Subscribe {
@@ -1307,6 +1308,7 @@ impl RelaySession {
             FrameKind::TerminalClosed {
                 terminal_id,
                 exit_status,
+                ..
             } => self.relay_terminal_closed(&terminal_id, exit_status),
             FrameKind::Bell { terminal_id } => self.relay_bell(&terminal_id),
             other => {
@@ -1486,6 +1488,7 @@ impl RelaySession {
             &FrameKind::TerminalClosed {
                 terminal_id: TerminalId::satellite(self.host.clone(), id),
                 exit_status,
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             },
         );
         // The satellite terminal is gone; its proxy
@@ -3217,6 +3220,7 @@ mod tests {
             owner_terminal: Some(TerminalId::local(91)),
             agent_session: None,
             initial_size: Some((132, 43)),
+            resource: None,
         };
         let consumer = handle.spawn(spawn);
         let satellite = async {
@@ -3346,6 +3350,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalClosed {
                 terminal_id: TerminalId::local(9),
                 exit_status: Some(0),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("closed fanned out") else {
@@ -3356,6 +3361,7 @@ mod tests {
             FrameKind::TerminalClosed {
                 terminal_id: TerminalId::satellite("devbox", 9),
                 exit_status: Some(0),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }
         );
         // Subscription is gone: further frames for id 9 do not fan out.
@@ -3641,6 +3647,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalClosed {
                 terminal_id: TerminalId::local(9),
                 exit_status: Some(0),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = rx_b.try_recv().expect("close delivered past the gate") else {
@@ -3651,6 +3658,7 @@ mod tests {
             FrameKind::TerminalClosed {
                 terminal_id: TerminalId::satellite("devbox", 9),
                 exit_status: Some(0),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             },
             "a gated subscriber must still see TERMINAL_CLOSED"
         );

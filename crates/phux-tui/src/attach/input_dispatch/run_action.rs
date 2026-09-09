@@ -178,6 +178,7 @@ fn split_pane(
         owner_terminal: None,
         agent_session: None,
         initial_size: predicted_split_size(ctx, &pending),
+        resource: None,
     };
     effects.spawn_terminal = Some((request_id, pending, frame));
 }
@@ -354,6 +355,7 @@ fn new_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         // fills the whole content rect. Predicting that here spares
         // the pane a bootstrap-then-reflow round trip.
         initial_size: spawn_initial_size(ctx, |content| Some((content.w, content.h))),
+        resource: None,
     };
     effects.spawn_window = Some((request_id, PendingWindow { name }, frame));
 }

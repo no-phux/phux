@@ -2832,6 +2832,7 @@ mod tests {
                 &FrameKind::TerminalClosed {
                     terminal_id: seed.clone(),
                     exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
                 },
             ),
             PhuxClientResult::Ok,
@@ -3153,6 +3154,7 @@ mod tests {
                 &FrameKind::TerminalClosed {
                     terminal_id: terminal_id.clone(),
                     exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
                 },
             ),
             PhuxClientResult::ProtocolError

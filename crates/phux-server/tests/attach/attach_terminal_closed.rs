@@ -109,6 +109,7 @@ async fn await_terminal_closed(
         if let FrameKind::TerminalClosed {
             terminal_id,
             exit_status,
+            ..
         } = frame
             && terminal_id == *victim
         {
@@ -193,6 +194,7 @@ async fn spawn_victim_pane(owner: &mut UnixStream) -> TerminalId {
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
+            resource: None,
         },
     )
     .await;

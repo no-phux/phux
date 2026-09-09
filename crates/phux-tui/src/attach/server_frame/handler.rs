@@ -293,6 +293,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::TerminalClosed {
             terminal_id,
             exit_status,
+            ..
         } => Ok(handle_terminal_closed(ctx, &terminal_id, exit_status)),
         event @ FrameKind::Event { .. } => Ok(handle_agent_event(ctx, event)),
         FrameKind::Error {
@@ -1407,7 +1408,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         // cross-session sidebar inside the existing wire (ADR-0030).
         FrameKind::Event {
             terminal: Some(terminal),
-            event: AgentEvent::PaneSpawned | AgentEvent::PaneClosed { .. },
+            event: AgentEvent::PaneSpawned { .. } | AgentEvent::PaneClosed { .. },
         } if !ctx.panes.contains_key(&terminal) => FrameOutcome {
             foreign_pane_set_dirty: true,
             ..FrameOutcome::default()

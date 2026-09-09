@@ -2354,7 +2354,10 @@ impl SpawnPublication<'_> {
         broadcast_event(
             self.state,
             Some(&self.wire_terminal_id),
-            &AgentEvent::PaneSpawned,
+            &AgentEvent::PaneSpawned {
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                parent: None,
+            },
         );
     }
 
@@ -2729,6 +2732,7 @@ impl AttachStaging {
                 .map(|terminal_id| FrameKind::TerminalClosed {
                     terminal_id,
                     exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
                 }),
         );
         self.budget

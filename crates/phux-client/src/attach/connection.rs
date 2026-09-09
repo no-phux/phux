@@ -1978,6 +1978,7 @@ mod tests {
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
+            resource: None,
         }
     }
 

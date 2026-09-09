@@ -424,7 +424,7 @@ const fn watch_event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::CommandFinished { .. } => "command_finished",
         AgentEvent::TitleChanged { .. } => "title_changed",
         AgentEvent::Bell => "bell",
-        AgentEvent::PaneSpawned => "pane_spawned",
+        AgentEvent::PaneSpawned { .. } => "pane_spawned",
         AgentEvent::PaneClosed { .. } => "pane_closed",
         AgentEvent::Dirty => "dirty",
         AgentEvent::Idle => "idle",
@@ -726,7 +726,10 @@ mod tests {
                 title: "build".to_owned(),
             },
             AgentEvent::Bell,
-            AgentEvent::PaneSpawned,
+            AgentEvent::PaneSpawned {
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                parent: None,
+            },
             AgentEvent::PaneClosed {
                 exit_status: Some(0),
             },

@@ -474,6 +474,7 @@ async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
     let closed = session.on_frame(FrameKind::TerminalClosed {
         terminal_id,
         exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Unknown,
     });
     assert!(!closed.render);
     assert!(!session.render_visible());

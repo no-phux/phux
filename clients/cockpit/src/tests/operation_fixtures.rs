@@ -130,6 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         vec![FrameKind::TerminalClosed {
             terminal_id: local.clone(),
             exit_status: Some(0),
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }],
     )?;
     write(
@@ -150,6 +151,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         vec![FrameKind::TerminalClosed {
             terminal_id: TerminalId::local(7),
             exit_status: Some(0),
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }],
     )?;
     for (name, host, owner) in [
@@ -174,6 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 owner_terminal: owner,
                 agent_session: None,
                 initial_size: Some((80, 24)),
+                resource: None,
             }],
         )?;
     }

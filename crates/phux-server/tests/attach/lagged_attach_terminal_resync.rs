@@ -173,6 +173,7 @@ async fn spawn_burst_pane(owner: &mut UnixStream) -> TerminalId {
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
+            resource: None,
         },
     )
     .await;

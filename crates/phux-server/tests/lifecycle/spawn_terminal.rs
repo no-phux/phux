@@ -154,6 +154,7 @@ async fn await_terminal_closed(
         if let FrameKind::TerminalClosed {
             terminal_id,
             exit_status,
+            ..
         } = frame
             && &terminal_id == pane
         {
@@ -283,6 +284,7 @@ fn spawn_terminal_in_default_group_round_trips_input() {
                 owner_terminal: None,
                 agent_session: Some(agent_session.clone()),
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -373,6 +375,7 @@ fn spawn_terminal_rejects_invalid_agent_session_provenance() {
                     owner_terminal: None,
                     agent_session: Some(agent_session),
                     initial_size: None,
+                    resource: None,
                 },
             )
             .await;
@@ -416,6 +419,7 @@ fn failed_actor_build_reaps_atomic_agent_session_provenance() {
                 owner_terminal: None,
                 agent_session: Some(br#"{"native_id":"never-live"}"#.to_vec()),
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -495,6 +499,7 @@ fn explicit_owner_terminal_selects_exact_session_window() {
                 owner_terminal: Some(owner.clone()),
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -590,6 +595,7 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -675,6 +681,7 @@ fn spawn_terminal_env_term_overrides_default() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -733,6 +740,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -790,6 +798,7 @@ fn spawn_terminal_term_field_overrides_default() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -845,6 +854,7 @@ fn spawn_terminal_env_term_beats_term_field() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -895,6 +905,7 @@ fn spawn_terminal_unknown_group_returns_group_not_found() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -945,6 +956,7 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1012,6 +1024,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1210,6 +1223,7 @@ fn spawn_initial_size_builds_the_first_bootstrap_at_the_requested_grid() {
                 // attached client's 80x24 viewport, so neither fallback can
                 // produce this answer by accident.
                 initial_size: Some((132, 43)),
+                resource: None,
             },
         )
         .await;
@@ -1267,6 +1281,7 @@ fn spawn_without_initial_size_and_with_a_zero_axis_keep_the_default_grid() {
                     owner_terminal: None,
                     agent_session: None,
                     initial_size,
+                    resource: None,
                 },
             )
             .await;
@@ -1390,6 +1405,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1522,6 +1538,7 @@ fn spawn_terminal_injects_server_socket_env() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1683,6 +1700,7 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1856,6 +1874,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;
@@ -1945,6 +1964,7 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
                 owner_terminal: None,
                 agent_session: None,
                 initial_size: None,
+                resource: None,
             },
         )
         .await;

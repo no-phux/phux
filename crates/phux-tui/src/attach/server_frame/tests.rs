@@ -2812,6 +2812,7 @@ fn drive_closed_expecting(
         FrameKind::TerminalClosed {
             terminal_id: terminal_id.clone(),
             exit_status,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         },
         panes,
         layout,
