@@ -1075,7 +1075,7 @@ definitions.
 
 #### 11.2.1 Resource kinds
 
-<!-- impl-status: spec-only; probe: ResourceKind,RESOURCE_KINDS -->
+<!-- impl-status: partial; probe: ResourceKind -->
 > **Status: spec-only.** No `kind` is on the wire and the reference server
 > serves Terminals only, so every requirement below is vacuously met by a
 > current consumer. The requirements bind a consumer the day a server

@@ -278,7 +278,7 @@ Server sends (frame type 0xB1):
 
 ## Step 7: Bind an agent session to the terminal
 
-<!-- impl-status: spec-only; probe: ResourceKind,RESOURCE_KINDS -->
+<!-- impl-status: partial; probe: ResourceKind -->
 > **Status: spec-only —** this whole step. No server advertises
 > `RESOURCE_KINDS`, `SPAWN_TERMINAL` has no field 11, and tag `0x1a` decodes
 > as unknown. [L1.md §1.1, §1.2, §4.8, and §5.5](./L1.md) carry the contract
