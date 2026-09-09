@@ -1093,11 +1093,10 @@ definitions.
 
 #### 11.2.1 Resource kinds
 
-<!-- impl-status: partial; probe: ResourceKind,RESOURCE_KINDS -->
-> **Status: partial.** The codec carries `kind`, but the reference server
-> serves Terminals only and does not advertise `RESOURCE_KINDS`, so every
-> requirement below is vacuously met by a current consumer. The
-> requirements bind a consumer the day a server advertises the bit.
+<!-- impl-status: shipped; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: shipped.** The reference server advertises `RESOURCE_KINDS` and
+> serves both `TERMINAL` and `AGENT_SESSION`; the requirements below bind
+> every consumer of it.
 
 An L1 identity names a resource of some `ResourceKind`; a Terminal is the
 first kind and an `AGENT_SESSION` the second ([L1.md §1.1](./L1.md)). Every

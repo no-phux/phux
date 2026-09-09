@@ -37,11 +37,49 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mailbox::Outbound;
 
+pub mod agent_session;
 pub mod terminal;
 
 pub use phux_core::ids::ResourceId;
 pub use phux_core::resource::ResourceKind;
 
+/// The wire tag for a kind the server serves.
+///
+/// `phux-core` and `phux-protocol` must not depend on each other, so the
+/// domain kind and the wire kind are two enums and this crate — which
+/// depends on both — is where they meet, exactly as
+/// [`id_bridge`](crate::id_bridge) is where the two id spaces meet.
+#[must_use]
+pub const fn wire_kind(kind: ResourceKind) -> phux_protocol::ids::ResourceKind {
+    match kind {
+        ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
+        ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
+        // The domain enum is `non_exhaustive` for the same forward-compat
+        // reason the wire one is, and this crate is where a new kind gets
+        // its tag. A domain kind with no tag here is a build that added one
+        // side of the pair; reporting it as opaque is the one answer that
+        // cannot be mistaken for a Terminal, and 255 is not an allocated
+        // tag.
+        _ => phux_protocol::ids::ResourceKind::Unknown { tag: u8::MAX },
+    }
+}
+
+/// The domain kind a wire tag names, or `None` for a tag this build does
+/// not serve.
+///
+/// `None` is not a decode failure — the wire enum is open on purpose, so a
+/// newer consumer naming a kind this server has never heard of gets a typed
+/// refusal (`SpawnError::UnsupportedKind`) instead of a dropped connection.
+#[must_use]
+pub const fn core_kind(kind: phux_protocol::ids::ResourceKind) -> Option<ResourceKind> {
+    match kind {
+        phux_protocol::ids::ResourceKind::Terminal => Some(ResourceKind::Terminal),
+        phux_protocol::ids::ResourceKind::AgentSession => Some(ResourceKind::AgentSession),
+        _ => None,
+    }
+}
+
+use agent_session::AgentSessionHandle;
 use terminal::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, TerminalHandle,
     UpgradeHandleRequest,
@@ -207,6 +245,29 @@ pub enum ControlRequest {
     /// change" — which, for an agent sitting idle waiting on a human, is
     /// never. No-op on a resource with no detector.
     AgentRecordInvalidated,
+    /// Bind the producer channel of an `AgentSession` child that just
+    /// spawned under this Terminal (ADR-0103 §6), so a hook report becomes
+    /// a record on that child's stream rather than a second opinion beside
+    /// it. No reply: the binding is a fact, not a request.
+    BindAgentSession {
+        /// The child engine's append channel.
+        append: mpsc::Sender<agent_session::AppendRequest>,
+    },
+    /// Feed an `AgentSession` child's derived state into this Terminal's
+    /// detector at the `Stream` rank (ADR-0103 §5).
+    ///
+    /// The rank is what distinguishes this from
+    /// [`Self::ReportAgentState`]: while a session is producing records its
+    /// stream outranks the hook edge, because the stream carries the same
+    /// facts in order and with a replayable log behind them. `None` is the
+    /// retraction a `session_end` produces — the stream stops asserting a
+    /// state, and lower-ranked evidence resumes.
+    ReportStreamState {
+        /// The derived state, or `None` to withdraw the stream's claim.
+        state: Option<ReportedAgentState>,
+        /// Whether the detector accepted the evidence.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Feed lifecycle-hook evidence into the pane's detector.
     ReportAgentState {
         /// Hook-reported state.
@@ -273,6 +334,9 @@ pub enum ResourceFacetHandle {
     /// Terminal engine: input, snapshot, screen, resize, cwd, palette, and
     /// native-checkpoint channels plus the construction-time grid size.
     Terminal(TerminalHandle),
+    /// Agent-session engine: producer appends, bootstrap cuts, and the
+    /// session's immutable provider and native id.
+    AgentSession(AgentSessionHandle),
 }
 
 impl ResourceFacetHandle {
@@ -281,6 +345,7 @@ impl ResourceFacetHandle {
     pub const fn kind(&self) -> ResourceKind {
         match self {
             Self::Terminal(_) => ResourceKind::Terminal,
+            Self::AgentSession(_) => ResourceKind::AgentSession,
         }
     }
 }
@@ -355,12 +420,26 @@ impl ResourceHandle {
     pub const fn terminal(&self) -> Result<&TerminalHandle, WrongResourceKind> {
         match &self.facet {
             ResourceFacetHandle::Terminal(handle) => Ok(handle),
-            #[allow(
-                unreachable_patterns,
-                reason = "the facet enum is non_exhaustive; a second engine makes this arm live"
-            )]
             _ => Err(WrongResourceKind {
                 required: ResourceKind::Terminal,
+                actual: self.facet.kind(),
+            }),
+        }
+    }
+
+    /// The `AgentSession` facet: the only route from runtime code to a
+    /// session-only channel (producer append, bootstrap cut) and to the
+    /// session's provider and native id.
+    ///
+    /// # Errors
+    ///
+    /// [`WrongResourceKind`] when this resource is not an agent session —
+    /// the reply `APPEND_RESOURCE_OUTPUT` on a Terminal earns.
+    pub const fn agent_session(&self) -> Result<&AgentSessionHandle, WrongResourceKind> {
+        match &self.facet {
+            ResourceFacetHandle::AgentSession(handle) => Ok(handle),
+            _ => Err(WrongResourceKind {
+                required: ResourceKind::AgentSession,
                 actual: self.facet.kind(),
             }),
         }

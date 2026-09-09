@@ -50,6 +50,30 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
+    /// Whether `client_id` may feed a producer-fed resource's stream
+    /// (ADR-0103 §3).
+    ///
+    /// The producer holds the ADR-0098 `Input` verb on the resource, and
+    /// under the current policy that is every owner-socket client and no
+    /// remote one: a client that reached this server over a network
+    /// transport can drive a Terminal it has been granted, but writing an
+    /// agent session's stream is asserting what a *local* harness did, and
+    /// a remote peer cannot be the author of that.
+    ///
+    /// A connection whose peer identity was never stamped is refused: the
+    /// answer is "not established", and for an authorship claim that is a
+    /// no.
+    #[must_use]
+    pub fn client_may_produce(&self, client_id: ClientId) -> bool {
+        matches!(
+            self.peer_identity(client_id).map(|peer| peer.transport),
+            Some(
+                phux_protocol::policy::TransportType::UnixSocket
+                    | phux_protocol::policy::TransportType::Localhost
+            )
+        )
+    }
+
     /// Remove a peer identity when a client *disconnects* — not when it
     /// detaches. Peer identity is stamped by the accepting transport and
     /// cannot be re-established on a live connection, so

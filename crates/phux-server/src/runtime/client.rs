@@ -16,7 +16,7 @@ use phux_protocol::caps::{
     ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::wire::frame::{
-    AgentEvent, DetachReason, ErrorCode, FrameKind, TERMINAL_AGENT_KEY,
+    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, TERMINAL_AGENT_KEY,
 };
 use phux_protocol::wire::framing::FramingError;
 use tokio::net::UnixStream;
@@ -65,6 +65,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::ReportAgentState,
         ServerFeature::GetPerf,
         ServerFeature::Transcribe,
+        ServerFeature::ResourceKinds,
     ])
 }
 
@@ -577,12 +578,46 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // `reap_terminal` clears `terminal_subscribers` for the pane
         // (via `forget_terminal_bookkeeping`) and retires its wire id, so
         // both MUST be captured in the same lock before the reap runs.
-        let ReapAndNotify {
+        let Some(ReapAndNotify {
             wire_terminal_id,
+            reason,
+            cascaded,
             targets,
             server_empty,
             served,
-        } = state.with_mut(|s| {
+        }) = state.with_mut(|s| {
+            // ADR-0104 §2: claim this resource before touching anything. A
+            // cascading parent reaps its children inside its own lock, so a
+            // child's watcher can wake for a resource that is already gone;
+            // it must emit nothing rather than intern a fresh wire id for a
+            // corpse.
+            let reason = s.begin_resource_close(pane)?;
+            // The cascade runs in this same acquisition, before the parent
+            // is reaped, so no client observes a child whose parent has
+            // left. Each child's frame is emitted here rather than by its
+            // own watcher, which by then finds the child already claimed.
+            let mut cascaded = Vec::new();
+            for child in s.resource_children(pane) {
+                let Some(recorded) = s.begin_resource_close(child) else {
+                    continue;
+                };
+                // A child nobody marked is leaving because its parent is;
+                // one an operator named in the same `KILL_TERMINALS` keeps
+                // the reason that kill recorded.
+                let child_reason = if recorded == CloseReason::Exited {
+                    CloseReason::ParentClosed
+                } else {
+                    recorded
+                };
+                let wire_child_id = s.intern_terminal_wire(child);
+                let child_targets = s.terminal_fanout_targets(child);
+                s.reap_terminal(child);
+                cascaded.push(CascadedClose {
+                    wire_terminal_id: wire_child_id,
+                    targets: child_targets,
+                    reason: child_reason,
+                });
+            }
             let wire_terminal_id = s.intern_terminal_wire(pane);
             // phux-w7z2.56: resolve every subscriber's mailbox, not just
             // the session-attached ones. This used to filter through
@@ -600,13 +635,18 @@ pub(crate) fn spawn_terminal_exit_watcher(
             // between "gather" and "reap".
             let server_empty = s.reap_terminal(pane);
             let served = s.has_served_client();
-            ReapAndNotify {
+            Some(ReapAndNotify {
                 wire_terminal_id,
+                reason,
+                cascaded,
                 targets,
                 server_empty,
                 served,
-            }
-        });
+            })
+        })
+        else {
+            return;
+        };
 
         // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited —
         // the `pane-exit` hook point. Fired off-lock (the hook helper
@@ -626,7 +666,21 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // pane closes); the server no longer sends `Detached` on EOF
         // (ADR-0015 L1). The sends are awaited off-lock — `with_mut` is
         // synchronous and must not hold the state borrow across an await.
-        broadcast_terminal_closed(&state, &wire_terminal_id, &targets, exit_status).await;
+        // Children first: a subscriber watching both sees the session end
+        // before the pane it lived in, which is the order the tree actually
+        // came apart in. Their exit status is `None` — a session has no
+        // process to report one.
+        for child in &cascaded {
+            broadcast_terminal_closed(
+                &state,
+                &child.wire_terminal_id,
+                &child.targets,
+                None,
+                child.reason,
+            )
+            .await;
+        }
+        broadcast_terminal_closed(&state, &wire_terminal_id, &targets, exit_status, reason).await;
 
         // phux-60s: when the last session is gone the server has nothing
         // left to serve, so fire the root token — the tmux server-exit
@@ -661,6 +715,12 @@ struct ReapAndNotify {
     /// for both the L1 `TERMINAL_CLOSED` fanout and the `PaneClosed`
     /// agent event so they carry the id the client saw on spawn/snapshot.
     wire_terminal_id: phux_protocol::ids::TerminalId,
+    /// Why this pane is closing, claimed from the close ledger in the same
+    /// lock (ADR-0104 §4).
+    reason: CloseReason,
+    /// The children this pane took with it, already reaped, each waiting
+    /// only for its off-lock frame.
+    cascaded: Vec<CascadedClose>,
     /// Outbound mailboxes of every client subscribed to the pane at reap
     /// time. The L1 `TERMINAL_CLOSED` fanout targets exactly this set.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
@@ -669,6 +729,17 @@ struct ReapAndNotify {
     server_empty: bool,
     /// Whether any client has ever attached (arms the phux-60s self-exit).
     served: bool,
+}
+
+/// One resource closed because its parent did (ADR-0104 §2), captured
+/// under the parent's lock and broadcast off it.
+struct CascadedClose {
+    /// The child's wire id, interned before its reap retired it.
+    wire_terminal_id: phux_protocol::ids::TerminalId,
+    /// Mailboxes subscribed to the child at reap time.
+    targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
+    /// The reason its `TERMINAL_CLOSED` carries.
+    reason: CloseReason,
 }
 
 /// Emit `TERMINAL_CLOSED { terminal_id, exit_status }` to every client
@@ -687,11 +758,19 @@ struct ReapAndNotify {
 /// it. The send is best-effort: a client whose mailbox has closed (it
 /// dropped the socket) is silently skipped — `reap_terminal` (already run
 /// by the caller) handled server-side state cleanup.
+///
+/// `reason` is the one the closer recorded in the close ledger
+/// (ADR-0104 §4), claimed by the caller in that same lock: `Killed` for a
+/// `KILL_TERMINAL`, `ParentClosed` for a cascade, `ServerShutdown` for a
+/// shutdown, and `Exited` when nothing decided otherwise and the inner
+/// process simply left. A consumer tells a cascade from a kill by reading
+/// it, without correlating frames.
 pub(crate) async fn broadcast_terminal_closed(
     state: &SharedState,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
     exit_status: Option<i32>,
+    reason: phux_protocol::wire::frame::CloseReason,
 ) {
     if targets.is_empty() {
         debug!("TERMINAL_CLOSED: no L1-subscribed clients to notify");
@@ -706,10 +785,7 @@ pub(crate) async fn broadcast_terminal_closed(
                 .send(Outbound::Frame(FrameKind::TerminalClosed {
                     terminal_id: wire_terminal_id.clone(),
                     exit_status,
-                    reason: exit_status
-                        .map_or(phux_protocol::wire::frame::CloseReason::Unknown, |_| {
-                            phux_protocol::wire::frame::CloseReason::Exited
-                        }),
+                    reason,
                 }))
                 .await;
         }
@@ -2190,6 +2266,38 @@ where
                 )
                 .await;
             }
+            // ADR-0103 §4: an agent-session stream is raw-profile. There is
+            // no `StateSync` reference for a `FRAME_ACK` to advance, and no
+            // page older than the retained ring for a `HISTORY_REQUEST` to
+            // ask for — the bootstrap already replayed all of it. Both are
+            // refused uncorrelated (neither frame carries a request id) and
+            // neither ends the connection: a consumer that misjudged the
+            // profile has a live stream to keep reading.
+            FrameKind::FrameAck {
+                ref terminal_id, ..
+            } if is_agent_session(&state, terminal_id) => {
+                let _ = plumbing
+                    .out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::MalformedMessage,
+                        message: "FRAME_ACK is not valid on an agent-session stream".to_owned(),
+                    }))
+                    .await;
+            }
+            FrameKind::HistoryRequest {
+                ref terminal_id, ..
+            } if is_agent_session(&state, terminal_id) => {
+                let _ = plumbing
+                    .out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::WrongResourceKind,
+                        message: "an agent-session stream retains no history beyond its bootstrap"
+                            .to_owned(),
+                    }))
+                    .await;
+            }
             FrameKind::FrameAck {
                 terminal_id,
                 stream_id,
@@ -2291,7 +2399,7 @@ where
                 owner_terminal,
                 agent_session,
                 initial_size,
-                ..
+                resource,
             } => {
                 let Some(selection) = negotiated.as_ref() else {
                     continue;
@@ -2310,6 +2418,7 @@ where
                         owner_terminal,
                         agent_session,
                         initial_size,
+                        resource,
                     },
                     &plumbing.out_tx,
                     selection.profile,
@@ -3147,6 +3256,19 @@ pub(crate) fn handle_subscribe_events(
 ///
 /// Synchronous: fanout uses non-blocking `try_send`, so there is nothing
 /// to await — the caller need not be in an async context to push an event.
+/// Whether `terminal_id` resolves, on this server, to an agent session.
+///
+/// The guard the two raw-profile refusals above share. `false` for an
+/// unknown or satellite-tagged id: those are the existing handlers' to
+/// answer, and a kind check must not swallow a routing question.
+fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::TerminalId) -> bool {
+    state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .and_then(|core| s.resource_handle(core))
+            .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::AgentSession)
+    })
+}
+
 pub(crate) fn broadcast_event(
     state: &SharedState,
     terminal: Option<&phux_protocol::ids::TerminalId>,

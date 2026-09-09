@@ -39,6 +39,13 @@ pub(super) struct ServerConfig {
     /// Defaults to the `phux_config` schema default so tests that never
     /// call the setter still get a sane bound.
     pub(super) scrollback: phux_config::ScrollbackLimits,
+    /// Bytes of `AgentEventsJsonlV1` records each agent session retains
+    /// (`defaults.agent-log-bytes`, ADR-0103 §4).
+    ///
+    /// Mirrors the config value for the same reason `scrollback` does: the
+    /// spawn path reads it under the state lock, and a session built from a
+    /// stale copy would retain a window the operator did not ask for.
+    pub(super) agent_log_bytes: u32,
     /// `[voice]` transcriber settings behind `TRANSCRIBE`. Mirrors
     /// [`crate::runtime::ServerConfig::voice`] via
     /// [`super::ServerState::set_voice`].
@@ -149,6 +156,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
+            agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             voice: phux_config::VoiceCfg::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,

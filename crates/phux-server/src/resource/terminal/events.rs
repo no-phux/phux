@@ -43,6 +43,31 @@ impl TerminalActor {
         self.agent_state_sink = Some(sink);
     }
 
+    /// Wire the detector's live-`AgentSession`-child probe (ADR-0103 §5).
+    ///
+    /// Installed by the spawn path, for the same reason the two sinks are:
+    /// the answer depends on `ServerState`, which the pane engine never
+    /// holds, and the detector this feeds is not built until `run` starts.
+    pub(crate) fn set_live_session_probe(
+        &mut self,
+        probe: crate::agent_detect::live_session::LiveSessionProbe,
+    ) {
+        self.live_session_probe = Some(probe);
+    }
+
+    /// Bind the producer channel of the `AgentSession` child that just
+    /// spawned under this Terminal (ADR-0103 §6).
+    ///
+    /// One child at a time: a second session under the same pane replaces
+    /// the first as the destination for synthesized hook records, which is
+    /// the same "latest session wins" rule the record itself follows.
+    pub(crate) fn bind_agent_session(
+        &mut self,
+        append: mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    ) {
+        self.agent_session_append = Some(append);
+    }
+
     /// Best-effort detector emission. `try_send`: a full sink drops the
     /// event rather than stalling the actor. Safe to drop — the detector is
     /// level-triggered, so the next tick re-derives and re-publishes.
@@ -381,9 +406,43 @@ impl TerminalActor {
                     detector.invalidate_published();
                 }
             }
+            ControlRequest::ReportStreamState { state, reply } => {
+                let state = state.map(|state| match state {
+                    phux_protocol::wire::frame::ReportedAgentState::Working => {
+                        crate::agent_detect::DetectedState::Working
+                    }
+                    phux_protocol::wire::frame::ReportedAgentState::Blocked => {
+                        crate::agent_detect::DetectedState::Blocked
+                    }
+                    phux_protocol::wire::frame::ReportedAgentState::Done => {
+                        crate::agent_detect::DetectedState::Done
+                    }
+                });
+                let result = self
+                    .agent_detect
+                    .as_mut()
+                    .ok_or_else(|| "agent detection is unavailable for this pane".to_owned())
+                    .map(|detector| detector.report_stream_state(state, std::time::Instant::now()));
+                match result {
+                    Ok(report) => {
+                        if let Some(report) = report {
+                            self.emit_agent_state(AgentDetectEvent::State(report));
+                        }
+                        // A retraction hands the pane back to the fallback,
+                        // so the next tick must actually look rather than
+                        // reuse the stream's last conclusion.
+                        self.agent_dirty_since_detect = true;
+                        let _ = reply.send(Ok(()));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
             ControlRequest::ReportAgentState { state, reply } => {
                 let _ = reply.send(self.apply_hook_state(hook_state(state)));
             }
+            ControlRequest::BindAgentSession { append } => self.bind_agent_session(append),
             ControlRequest::SynthesizeAgentStateRecord { state, reply } => {
                 let _ = reply.send(self.synthesize_state_record(hook_state(state)));
             }
@@ -475,28 +534,52 @@ impl TerminalActor {
     /// child, so the hook's evidence reaches the arbiter the same way every
     /// other thing the agent says about itself does (ADR-0103 decision 6).
     ///
-    /// # The default body, and why it is not a `todo!`
+    /// # The fallback, and why it stays
     ///
-    /// There is no `AgentSession` engine on this branch, so there is nothing
-    /// to append to and no stream to derive from. The honest behaviour is
-    /// therefore the ADR-0085 one: report the gap once, at `trace`, and take
-    /// the legacy path — a hook that reports `blocked` still turns the pane
-    /// red, which is the entire user-visible contract of
-    /// `REPORT_AGENT_STATE`. A `todo!` here would panic the pane engine on a
-    /// shipped command, and returning an error would make the shim's
-    /// `report-state` call start failing, both to signal an absence the
-    /// caller could not act on.
+    /// The caller's live-child test and this actor's bound channel can
+    /// disagree for exactly as long as it takes a `session_end` to land, and
+    /// a hook that reports `blocked` must turn the pane red either way —
+    /// that is the whole user-visible contract of `REPORT_AGENT_STATE`. So a
+    /// missing or closed channel takes the ADR-0085 path rather than
+    /// failing: an error would make the shim's `report-state` call start
+    /// failing to signal an absence the caller cannot act on.
     ///
-    /// The `AgentSession` engine lane replaces the body with the real append;
-    /// the fallback stays, because the caller's live-child test and this
-    /// actor's view of its own children can disagree for exactly as long as
-    /// it takes a `session_end` to land.
+    /// The record and the pane's own record are written from the same edge
+    /// rather than one waiting on the other: the append's reply would have
+    /// to be awaited, and the control mailbox this runs on is synchronous.
+    /// The evidence is the same either way, and it enters the arbiter at the
+    /// rank the stream carries.
     pub(super) fn synthesize_state_record(&mut self, state: DetectedState) -> Result<(), String> {
-        trace!(
-            state = state.as_str(),
-            "REPORT_AGENT_STATE: no agent-session stream to append to; using the detector path",
+        let record = format!(
+            "{{\"type\":\"state\",\"data\":{{\"state\":\"{}\",\"source\":\"hook\"}}}}\n",
+            state.as_str()
         );
-        self.apply_hook_state(state)
+        let (reply, _unread) = tokio::sync::oneshot::channel();
+        let appended = self.agent_session_append.as_ref().is_some_and(|append| {
+            append
+                .try_send(crate::resource::agent_session::AppendRequest {
+                    bytes: bytes::Bytes::from(record),
+                    reply,
+                })
+                .is_ok()
+        });
+        if !appended {
+            trace!(
+                state = state.as_str(),
+                "REPORT_AGENT_STATE: no agent-session stream to append to; using the detector path",
+            );
+            return self.apply_hook_state(state);
+        }
+        if let Some(detector) = self.agent_detect.as_mut()
+            && let Some(report) =
+                detector.report_stream_state(Some(state), std::time::Instant::now())
+        {
+            self.emit_agent_state(AgentDetectEvent::State(report));
+        }
+        // The stream's claim is level-triggered like every other, so one
+        // ordinary derivation still runs behind it.
+        self.agent_dirty_since_detect = true;
+        Ok(())
     }
 
     /// Build and broadcast an [`AgentEvent::TerminalControl`] (ADR-0033)

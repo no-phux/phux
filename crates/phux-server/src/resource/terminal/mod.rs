@@ -834,6 +834,26 @@ pub struct TerminalActor {
     /// `runtime::client::spawn_agent_state_drain`, which owns `ServerState`
     /// and performs the arbitration + `metadata_set`.
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
+    /// The detector's answer to "does this pane own a live `AgentSession`
+    /// child?", installed alongside the sinks and handed to the detector
+    /// when [`Self::install_agent_detector`] builds it (ADR-0103 §5).
+    ///
+    /// Held here rather than passed to `AgentDetector::new`: the detector is
+    /// built inside `run`, after the actor has moved onto the `LocalSet`,
+    /// and the probe closes over server state the spawn path has and the
+    /// run loop does not.
+    ///
+    /// [`Self::install_agent_detector`]: TerminalActor
+    live_session_probe: Option<crate::agent_detect::live_session::LiveSessionProbe>,
+    /// The live `AgentSession` child's producer channel, when one is bound.
+    ///
+    /// What makes `REPORT_AGENT_STATE` a record rather than a second opinion
+    /// (ADR-0103 §6): with a child bound, a hook report is appended to the
+    /// child's stream, so the arbiter keeps hearing one account of the pane.
+    /// A closed channel — the child left and nothing has cleared this yet —
+    /// is indistinguishable from no child for every purpose that matters,
+    /// and both fall back to the ADR-0085 path.
+    agent_session_append: Option<mpsc::Sender<crate::resource::agent_session::AppendRequest>>,
     /// Grid-mutation flag scoped to the DETECTOR's tick (100-500 ms).
     ///
     /// Deliberately distinct from `terminal_dirty_since_tick`, which

@@ -21,6 +21,7 @@ impl ServerState {
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.
             lifecycle: Lifecycle::new(),
+            close_reasons: std::collections::HashMap::new(),
         }
     }
 }

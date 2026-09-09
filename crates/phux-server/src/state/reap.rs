@@ -73,6 +73,10 @@ impl ServerState {
         // Handle, actor token, subscribers, and the pane's ATTACH_TERMINAL
         // pumps (phux-v45.7) all go in one step.
         self.resources.forget_resource(pane);
+        // The close reason was claimed by whoever emitted TERMINAL_CLOSED;
+        // an entry still here belonged to a resource that never got that
+        // far, and it must not outlive the id it is filed under.
+        self.forget_close_reason(pane);
         // The asked-detector is keyed by core pane id, so it clears before
         // the wire id is retired; the arbiter half is keyed by wire id and
         // clears after.

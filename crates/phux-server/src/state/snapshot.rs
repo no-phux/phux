@@ -19,6 +19,7 @@ impl ServerState {
     /// Returns `None` if `focus_session` has no active window or pane,
     /// since `SessionSnapshot::focused_window` / `focused_pane` are
     /// required fields on the wire.
+    #[allow(clippy::too_many_lines)]
     pub fn build_session_snapshot(
         &mut self,
         focus_session: SessionId,
@@ -101,6 +102,35 @@ impl ServerState {
                     );
                 }
             }
+        }
+
+        // Non-Terminal resources hold no window slot, so the window walk
+        // above never reaches them (ADR-0102). They are listed after it,
+        // carrying the `0 x 0` grid and `WindowId(0)` sentinel that says "no
+        // grid, no window", their immutable parent, and the facet a
+        // consumer needs to render them without a second query.
+        for (id, descriptor) in self
+            .sessions
+            .registry
+            .resources()
+            .filter(|(_, r)| r.kind != phux_core::resource::ResourceKind::Terminal)
+            .map(|(id, r)| (id, r.clone()))
+            .collect::<Vec<_>>()
+        {
+            let wire = self.intern_terminal_wire(id);
+            let parent = descriptor.parent.map(|p| self.intern_terminal_wire(p));
+            let agent = descriptor.agent.as_ref().map(|facet| {
+                phux_protocol::wire::info::AgentFacet::new(
+                    facet.provider.clone(),
+                    facet.state.clone().unwrap_or_else(|| "unknown".to_owned()),
+                )
+                .with_native_id(facet.native_id.clone())
+            });
+            panes.push(
+                TerminalInfo::resource(wire, crate::resource::wire_kind(descriptor.kind))
+                    .with_parent(parent)
+                    .with_agent(agent),
+            );
         }
 
         let session = self.sessions.registry.session(focus_session)?;

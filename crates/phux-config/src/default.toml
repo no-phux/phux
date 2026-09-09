@@ -51,6 +51,13 @@ term = "xterm-256color"
 # so the engine keeps at least one standard page of history whatever you set.
 history-limit = 50000
 history-bytes = 2097152
+# Bytes of AgentEventsJsonlV1 records an agent session retains (ADR-0103).
+# The ring is replayed when a client attaches to the session stream, so this
+# is both how far back `phux agent log` can see and what each attach re-sends.
+# An append past the ceiling evicts the oldest records and counts a tombstone
+# the bootstrap reports; it is never an error. 67108864 (64 MiB) is the
+# accepted maximum.
+agent-log-bytes = 4194304
 # Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).

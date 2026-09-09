@@ -43,6 +43,20 @@ impl ServerState {
         self.resources.subscribe(client, terminal);
     }
 
+    /// One client's outbound mailbox, resolved the same way
+    /// [`Self::terminal_fanout_targets`] resolves each of its subscribers:
+    /// the session-attached mailbox first, then the `ATTACH_TERMINAL`-only
+    /// one.
+    ///
+    /// For a caller that already knows which one client to reach — an
+    /// uncorrelated `ERROR` reply to a fire-and-forget input frame that
+    /// named the wrong resource kind (`docs/spec/input.md` §9) — rather
+    /// than every subscriber of a pane.
+    #[must_use]
+    pub fn client_mailbox(&self, client: ClientId) -> Option<mpsc::Sender<Outbound>> {
+        self.clients.terminal_fanout_mailbox(client).cloned()
+    }
+
     /// Outbound mailboxes of every client subscribed to `terminal`, for the
     /// server's out-of-band terminal-scoped fanout (`TERMINAL_CLOSED`).
     ///
@@ -159,6 +173,13 @@ impl ServerState {
     /// must not be held across an await).
     pub(crate) fn all_resource_handles(&self) -> Vec<(TerminalId, ResourceHandle)> {
         self.resources.all_handles()
+    }
+
+    /// Every registered resource id, whatever its kind. Cheap relative to
+    /// `Self::all_resource_handles`: no handle clones.
+    #[must_use]
+    pub fn resource_ids(&self) -> Vec<TerminalId> {
+        self.resources.resource_ids()
     }
 
     /// Install a new `ATTACH_TERMINAL` pump generation for `(client,

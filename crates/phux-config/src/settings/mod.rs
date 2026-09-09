@@ -25,7 +25,7 @@ use std::path::Path;
 
 pub use write::{Edit, EditOutcome, apply_edit, write_edit};
 
-use crate::{ConfigError, ConfigProvenance, LayerSource, MAX_HISTORY_BYTES};
+use crate::{ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_HISTORY_BYTES};
 
 /// A top-level `config.toml` table that holds scalar settings.
 ///
@@ -292,6 +292,9 @@ const U16_MAX: i64 = u16::MAX as i64;
 const U32_MAX: i64 = u32::MAX as i64;
 /// [`MAX_HISTORY_BYTES`] as an `i64` bound.
 const HISTORY_BYTES_MAX: i64 = MAX_HISTORY_BYTES as i64;
+
+/// Upper bound of the `defaults.agent-log-bytes` integer setting.
+const AGENT_LOG_BYTES_MAX: i64 = MAX_AGENT_LOG_BYTES as i64;
 /// Cap on `keybindings.which-key-delay-ms`: one minute. See the row's
 /// detail text.
 const WHICH_KEY_DELAY_MAX_MS: i64 = 60_000;
@@ -370,6 +373,22 @@ pub const CATALOG: &[SettingSpec] = &[
                  when a client attaches, on the single server thread: roughly 8 ms at the \
                  2 MiB default, 65 ms at 10 MiB, 222 ms at 32 MiB. 67108864 (64 MiB) is \
                  the accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.agent-log-bytes",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: AGENT_LOG_BYTES_MAX,
+        },
+        summary: "Bytes of agent-session records retained per session stream",
+        detail: "An agent session keeps a bounded ring of the JSONL records its producer \
+                 appends and replays that ring when a client attaches to the stream \
+                 (ADR-0103). An append past the ceiling evicts the oldest records and \
+                 counts a tombstone the bootstrap reports; it is never an error. Records \
+                 are small, so the 4 MiB default is tens of thousands of them. 67108864 \
+                 (64 MiB) is the accepted maximum; phux config check rejects more.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {
