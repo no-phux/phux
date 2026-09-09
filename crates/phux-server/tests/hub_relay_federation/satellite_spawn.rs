@@ -23,6 +23,7 @@ async fn spawn_split(
             owner_terminal,
             agent_session,
             initial_size: Some((132, 43)),
+            resource: None,
         },
     )
     .await;

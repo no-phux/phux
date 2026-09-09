@@ -579,6 +579,7 @@ async fn spawn_via_stream(
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
+            resource: None,
         },
     )
     .await;

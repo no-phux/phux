@@ -119,7 +119,8 @@ fn closed_initial_participant_drops_deferred_sends_before_detach_refusal() {
     assert_eq!(
         h.feed(FrameKind::TerminalClosed {
             terminal_id: id.clone(),
-            exit_status: None
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }),
         PhuxClientResult::Ok
     );
@@ -255,7 +256,8 @@ fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnec
             assert_eq!(
                 h.feed(FrameKind::TerminalClosed {
                     terminal_id: id.clone(),
-                    exit_status: None
+                    exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
                 }),
                 PhuxClientResult::Ok
             );
@@ -855,7 +857,8 @@ fn pending_plus_results_and_dynamic_admissions_are_bounded() {
     assert_eq!(
         h.feed(FrameKind::TerminalClosed {
             terminal_id: TerminalId::local(2),
-            exit_status: None
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }),
         PhuxClientResult::Ok
     );
@@ -1082,7 +1085,8 @@ fn dynamic_terminal_churn_releases_kernel_identity_retention() {
         assert_eq!(
             h.feed(FrameKind::TerminalClosed {
                 terminal_id: id.clone(),
-                exit_status: None
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
             }),
             PhuxClientResult::Ok
         );
@@ -1151,7 +1155,8 @@ fn closure_before_attach_result_cannot_allow_overlapping_admission_owners() {
     assert_eq!(
         h.feed(FrameKind::TerminalClosed {
             terminal_id: id.clone(),
-            exit_status: None
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }),
         PhuxClientResult::Ok
     );

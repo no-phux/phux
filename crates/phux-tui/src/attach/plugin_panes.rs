@@ -152,6 +152,7 @@ impl PluginPaneEntry {
             // chooses, which this entry does not decide. `run_action` fills
             // it in from the tile it is about to park.
             initial_size: None,
+            resource: None,
         }
     }
 }
@@ -303,6 +304,7 @@ mod tests {
             owner_terminal,
             agent_session,
             initial_size,
+            ..
         } = entry.spawn_frame(7)
         else {
             panic!("expected SpawnTerminal");

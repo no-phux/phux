@@ -388,6 +388,7 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
         owner_terminal,
         agent_session: None,
         initial_size: Some((options.cols, options.rows)),
+        resource: None,
     })
 }
 

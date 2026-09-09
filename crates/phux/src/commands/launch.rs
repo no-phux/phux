@@ -123,6 +123,7 @@ fn spawn_resolved(
         owner_terminal: None,
         agent_session,
         initial_size: None,
+        resource: None,
     };
     let result = match target {
         Some(target) => dispatch_spawn_placed(

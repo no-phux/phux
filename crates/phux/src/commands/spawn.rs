@@ -64,6 +64,7 @@ pub(crate) fn run_spawn(
         // layout, so it has nothing honest to name here. The pane takes the
         // server default and is sized by whichever client attaches.
         initial_size: None,
+        resource: None,
     };
     let result = match target {
         Some(target) => dispatch_spawn_placed(
@@ -638,6 +639,7 @@ mod tests {
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
+            resource: None,
         }
     }
 

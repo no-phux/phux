@@ -74,7 +74,14 @@ pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
 /// seeds through `spawn_pane_with_pty_and_colors`), so no pane is announced
 /// twice.
 fn announce_seed_pane(state: &SharedState, wire_terminal_id: &phux_protocol::ids::TerminalId) {
-    broadcast_event(state, Some(wire_terminal_id), &AgentEvent::PaneSpawned);
+    broadcast_event(
+        state,
+        Some(wire_terminal_id),
+        &AgentEvent::PaneSpawned {
+            kind: phux_protocol::ids::ResourceKind::Terminal,
+            parent: None,
+        },
+    );
 }
 
 pub(crate) fn seed_session_with_actor(

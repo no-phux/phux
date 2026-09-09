@@ -703,7 +703,7 @@ fn agent_event_json(ev: &phux_client::watch::WatchEvent) -> Value {
         }
         AgentEvent::TitleChanged { title } => ("title_changed", json!({ "title": title })),
         AgentEvent::Bell => ("bell", json!({})),
-        AgentEvent::PaneSpawned => ("pane_spawned", json!({})),
+        AgentEvent::PaneSpawned { .. } => ("pane_spawned", json!({})),
         AgentEvent::PaneClosed { exit_status } => {
             ("pane_closed", json!({ "exit_status": exit_status }))
         }

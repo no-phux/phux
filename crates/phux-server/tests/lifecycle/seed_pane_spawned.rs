@@ -153,7 +153,7 @@ async fn await_pane_spawned(
         };
         if let FrameKind::Event {
             terminal,
-            event: AgentEvent::PaneSpawned,
+            event: AgentEvent::PaneSpawned { .. },
         } = frame
         {
             return Some(terminal);
