@@ -1,7 +1,7 @@
 //! `phux tag` — read and write a Terminal's L3 tags (`phux-f8wi`, ADR-0027).
 //!
 //! Tags are freeform strings stored as L3 metadata under the conventional
-//! key [`TERMINAL_TAGS_KEY`] (`phux.tags/v1`), scoped to a `TerminalId`. The
+//! key [`RESOURCE_TAGS_KEY`] (`phux.tags/v1`), scoped to a `ResourceId`. The
 //! value is a UTF-8 JSON array of tag strings; the server stores the bytes
 //! opaquely ([`docs/spec/L3.md`](../../../docs/spec/L3.md) §3.6). Once a
 //! Terminal is tagged, the `#tag` selector ([`crate::selector`]) addresses
@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
 use phux_client::selector::{self, TagIndex};
-use phux_protocol::ids::TerminalId;
-use phux_protocol::wire::frame::{FrameKind, Scope, TERMINAL_TAGS_KEY};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{FrameKind, RESOURCE_TAGS_KEY, Scope};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
@@ -77,7 +77,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
 
         match action {
             TagAction::Ls { .. } => {
-                let rows: Vec<(TerminalId, Vec<String>)> = targets
+                let rows: Vec<(ResourceId, Vec<String>)> = targets
                     .iter()
                     .map(|id| (id.clone(), index.get(id).cloned().unwrap_or_default()))
                     .collect();
@@ -108,7 +108,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
 /// Print the per-Terminal tag rows: the human view (one `SELECTOR\tTAGS`
 /// line per Terminal) or, under `--json`, the stable document
 /// [`tags_document`] pins.
-fn print_rows(json: bool, rows: &[(TerminalId, Vec<String>)]) -> ExitCode {
+fn print_rows(json: bool, rows: &[(ResourceId, Vec<String>)]) -> ExitCode {
     if json {
         return match serde_json::to_string_pretty(&tags_document(rows)) {
             Ok(rendered) => {
@@ -140,7 +140,7 @@ fn print_rows(json: bool, rows: &[(TerminalId, Vec<String>)]) -> ExitCode {
 /// selector (`@7`, or `host/@7` for a satellite pane) and `tags` is the
 /// Terminal's full tag list — for the edit verbs, as read back from the
 /// server after the write, never echoed from the request.
-fn tags_document(rows: &[(TerminalId, Vec<String>)]) -> serde_json::Value {
+fn tags_document(rows: &[(ResourceId, Vec<String>)]) -> serde_json::Value {
     let terminals: Vec<_> = rows
         .iter()
         .map(|(id, tags)| {
@@ -170,7 +170,7 @@ fn normalize(tags: &[String]) -> Vec<String> {
 }
 
 /// One tag output line, prefixed by a canonical, reusable Terminal selector.
-fn render_tags(id: &TerminalId, tags: &[String]) -> String {
+fn render_tags(id: &ResourceId, tags: &[String]) -> String {
     format!("{}\t{}", selector::format_terminal_id(id), tags.join(" "))
 }
 
@@ -186,7 +186,7 @@ fn render_tags(id: &TerminalId, tags: &[String]) -> String {
 /// print that confirmed value.
 async fn edit_tags<F: Fn(&mut Vec<String>)>(
     conn: &mut Connection,
-    targets: &[TerminalId],
+    targets: &[ResourceId],
     index: &TagIndex,
     socket_path: &std::path::Path,
     json: bool,
@@ -196,7 +196,7 @@ async fn edit_tags<F: Fn(&mut Vec<String>)>(
     // document after every write lands: a partial document on stdout would
     // break the "one object or nothing" hygiene contract, and any failure
     // below leaves stdout empty with the error line on stderr.
-    let mut rows: Vec<(TerminalId, Vec<String>)> = Vec::with_capacity(targets.len());
+    let mut rows: Vec<(ResourceId, Vec<String>)> = Vec::with_capacity(targets.len());
     let mut req: u32 = 100;
     for id in targets {
         let mut cur = index.get(id).cloned().unwrap_or_default();
@@ -208,8 +208,8 @@ async fn edit_tags<F: Fn(&mut Vec<String>)>(
         if let Err(err) = conn
             .send(&FrameKind::SetMetadata {
                 request_id: req,
-                scope: Scope::Terminal(id.clone()),
-                key: TERMINAL_TAGS_KEY.to_owned(),
+                scope: Scope::Resource(id.clone()),
+                key: RESOURCE_TAGS_KEY.to_owned(),
                 value,
             })
             .await
@@ -225,8 +225,8 @@ async fn edit_tags<F: Fn(&mut Vec<String>)>(
         let reply = match conn
             .request_metadata(
                 req,
-                Scope::Terminal(id.clone()),
-                TERMINAL_TAGS_KEY.to_owned(),
+                Scope::Resource(id.clone()),
+                RESOURCE_TAGS_KEY.to_owned(),
             )
             .await
         {
@@ -278,7 +278,7 @@ mod tests {
     fn satellite_tag_output_uses_canonical_selector() {
         assert_eq!(
             render_tags(
-                &TerminalId::satellite("region/@build", 7),
+                &ResourceId::satellite("region/@build", 7),
                 &["ci".to_owned(), "urgent".to_owned()],
             ),
             "region/@build/@7\tci urgent"
@@ -294,10 +294,10 @@ mod tests {
     fn tags_document_pins_the_shape() {
         let rows = vec![
             (
-                TerminalId::local(7),
+                ResourceId::local(7),
                 vec!["build".to_owned(), "ci".to_owned()],
             ),
-            (TerminalId::satellite("edge", 3), Vec::new()),
+            (ResourceId::satellite("edge", 3), Vec::new()),
         ];
         let doc = tags_document(&rows);
         assert_eq!(doc["schema_version"], 1);

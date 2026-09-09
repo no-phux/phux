@@ -5,8 +5,8 @@ use crate::caps::{
     BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
 };
 use crate::ids::{
-    BootstrapId, GroupId, SatelliteHost, SessionId, StreamId, TERMINAL_ID_TAG_LOCAL,
-    TERMINAL_ID_TAG_SATELLITE, TerminalId,
+    BootstrapId, GroupId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE, ResourceId,
+    SatelliteHost, SessionId, StreamId,
 };
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
@@ -21,7 +21,7 @@ use super::{
     ATTACH_TARGET_BY_ID, ATTACH_TARGET_BY_NAME, ATTACH_TARGET_CREATE_IF_MISSING,
     ATTACH_TARGET_LAST, AttachTarget, MOVE_ERROR_TAG_MOVE_FAILED,
     MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, MOVE_RESULT_ERR, MOVE_RESULT_OK, MoveError,
-    MoveResult, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP, SCOPE_TAG_TERMINAL,
+    MoveResult, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP, SCOPE_TAG_RESOURCE,
     SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH,
     SPAWN_ERROR_TAG_PARENT_NOT_FOUND, SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
     SPAWN_ERROR_TAG_SPAWN_FAILED, SPAWN_ERROR_TAG_UNSUPPORTED_KIND,
@@ -322,9 +322,9 @@ pub(in crate::wire) fn decode_paste_event(
 }
 
 // -----------------------------------------------------------------------------
-// `TerminalId` tagged-union codec — ADR-0016 §Decision (phux-vp0.4).
+// `ResourceId` tagged-union codec — ADR-0016 §Decision (phux-vp0.4).
 //
-// Every `TerminalId` on the wire is prefixed with a 1-byte tag:
+// Every `ResourceId` on the wire is prefixed with a 1-byte tag:
 //
 //   tag = 0  → Local      { id: u32 }
 //   tag = 1  → Satellite  { host: str, id: u32 }
@@ -335,48 +335,48 @@ pub(in crate::wire) fn decode_paste_event(
 // federation hub. Unknown tags surface as `DecodeError::UnknownEnumValue`.
 // -----------------------------------------------------------------------------
 
-/// Encode a [`TerminalId`] including its discriminant byte.
-pub(in crate::wire) fn encode_terminal_id(id: &TerminalId, enc: &mut Encoder<'_>) {
+/// Encode a [`ResourceId`] including its discriminant byte.
+pub(in crate::wire) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>) {
     match id {
-        TerminalId::Local { id } => {
-            enc.write_u8(TERMINAL_ID_TAG_LOCAL);
+        ResourceId::Local { id } => {
+            enc.write_u8(RESOURCE_ID_TAG_LOCAL);
             enc.write_u32_be(*id);
         }
-        TerminalId::Satellite { host, id } => {
-            enc.write_u8(TERMINAL_ID_TAG_SATELLITE);
+        ResourceId::Satellite { host, id } => {
+            enc.write_u8(RESOURCE_ID_TAG_SATELLITE);
             enc.write_str(host.as_str());
             enc.write_u32_be(*id);
         }
     }
 }
 
-/// Decode a [`TerminalId`] previously written by [`encode_terminal_id`].
+/// Decode a [`ResourceId`] previously written by [`encode_terminal_id`].
 ///
 /// v0.1 decoders MUST accept the `Satellite` tag and surface it to the
 /// dispatcher; the dispatcher responds with `ERROR
 /// { UnsupportedSatelliteRoute }` when the server is not a federation hub.
 pub(in crate::wire) fn decode_terminal_id(
     dec: &mut Decoder<'_>,
-) -> Result<TerminalId, DecodeError> {
+) -> Result<ResourceId, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
-        TERMINAL_ID_TAG_LOCAL => {
+        RESOURCE_ID_TAG_LOCAL => {
             let id = dec.read_u32_be()?;
-            Ok(TerminalId::Local { id })
+            Ok(ResourceId::Local { id })
         }
-        TERMINAL_ID_TAG_SATELLITE => {
+        RESOURCE_ID_TAG_SATELLITE => {
             let host = SatelliteHost::new(dec.read_str()?);
             let id = dec.read_u32_be()?;
-            Ok(TerminalId::Satellite { host, id })
+            Ok(ResourceId::Satellite { host, id })
         }
         other => Err(DecodeError::UnknownEnumValue {
-            field: "TerminalId",
+            field: "ResourceId",
             value: u32::from(other),
         }),
     }
 }
 
-// The optional `TerminalId` scope of `SUBSCRIBE_EVENTS` / `EVENT` is now
+// The optional `ResourceId` scope of `SUBSCRIBE_EVENTS` / `EVENT` is now
 // carried by TLV field *presence* (an absent `terminal` field = server-scoped
 // `None`), so the old `encode_optional_terminal_id` / `decode_optional_terminal_id`
 // presence-tag helpers were retired with the field-tagged migration.
@@ -502,7 +502,7 @@ pub(in crate::wire) fn decode_optional_string_list(
 /// Encode a string list as a `u32` count + N length-prefixed UTF-8 strings,
 /// with no outer presence tag.
 ///
-/// The optionality of a `SPAWN_TERMINAL.command` field is now carried by TLV
+/// The optionality of a `SPAWN_RESOURCE.command` field is now carried by TLV
 /// field *presence* (an absent field is `None`); a present field always holds a
 /// concrete list, so the inner encoding drops the old `0/1` presence byte. An
 /// empty list (`Some(vec![])`) round-trips as a present field whose value is
@@ -577,17 +577,17 @@ pub(in crate::wire) fn decode_env(
 // Scope codec — SPEC §7.4 (phux-4li.2).
 //
 // Layout: 1-byte tag + variant body.
-//   0x00 Terminal   → tagged TerminalId (re-uses the L1 codec)
+//   0x00 Terminal   → tagged ResourceId (re-uses the L1 codec)
 //   0x01 Group      → u32 (the inner GroupId; once federation ships a
 //                     Local/Satellite tag will prefix this, mirroring the
-//                     ADR-0016 TerminalId shape)
+//                     ADR-0016 ResourceId shape)
 //   0x02 Global     → no body
 // -----------------------------------------------------------------------------
 
 pub(in crate::wire) fn encode_scope(scope: &Scope, enc: &mut Encoder<'_>) {
     match scope {
-        Scope::Terminal(terminal_id) => {
-            enc.write_u8(SCOPE_TAG_TERMINAL);
+        Scope::Resource(terminal_id) => {
+            enc.write_u8(SCOPE_TAG_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
         Scope::Group(group_id) => {
@@ -603,7 +603,7 @@ pub(in crate::wire) fn encode_scope(scope: &Scope, enc: &mut Encoder<'_>) {
 pub(in crate::wire) fn decode_scope(dec: &mut Decoder<'_>) -> Result<Scope, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
-        SCOPE_TAG_TERMINAL => Ok(Scope::Terminal(decode_terminal_id(dec)?)),
+        SCOPE_TAG_RESOURCE => Ok(Scope::Resource(decode_terminal_id(dec)?)),
         SCOPE_TAG_GROUP => Ok(Scope::Group(GroupId::new(dec.read_u32_be()?))),
         SCOPE_TAG_GLOBAL => Ok(Scope::Global),
         other => Err(DecodeError::UnknownEnumValue {
@@ -653,8 +653,8 @@ pub(in crate::wire) fn decode_metadata_scope_key(
 // -----------------------------------------------------------------------------
 // SpawnResult / SpawnError codec — SPEC §7.2 / §10.1 (phux-4li.10).
 //
-// Layout (outer SpawnResult, the body of `TERMINAL_SPAWNED.result`):
-//   tag 0x00 Ok  → tagged TerminalId
+// Layout (outer SpawnResult, the body of `RESOURCE_SPAWNED.result`):
+//   tag 0x00 Ok  → tagged ResourceId
 //   tag 0x01 Err → SpawnError body:
 //                    tag 0x00 GroupNotFound             → no further bytes
 //                    tag 0x01 SpawnFailed               → length-prefixed UTF-8

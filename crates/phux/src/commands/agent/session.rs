@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 
 use phux_client::attach::connection::{Answer, Connection};
 use phux_plugin::ResolvedLaunch;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, Scope};
 use phux_protocol::wire::info::SessionSnapshot;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY;
+pub(crate) use phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY;
 const MAX_PROVENANCE_ID_BYTES: usize = 120;
 
 /// Inert provenance persisted for one exact provider-native agent session.
@@ -68,11 +68,11 @@ impl AgentSessionRecord {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() || bytes.len() > MAX_AGENT_SESSION_RECORD_BYTES {
             return Err(format!(
-                "invalid {TERMINAL_AGENT_SESSION_KEY}: encoded record must contain 1..={MAX_AGENT_SESSION_RECORD_BYTES} bytes"
+                "invalid {RESOURCE_AGENT_SESSION_KEY}: encoded record must contain 1..={MAX_AGENT_SESSION_RECORD_BYTES} bytes"
             ));
         }
         let raw: Self = serde_json::from_slice(bytes)
-            .map_err(|err| format!("invalid {TERMINAL_AGENT_SESSION_KEY} JSON: {err}"))?;
+            .map_err(|err| format!("invalid {RESOURCE_AGENT_SESSION_KEY} JSON: {err}"))?;
         Self::new(&raw.plugin_id, &raw.integration_id, &raw.native_id)
     }
 }
@@ -152,19 +152,19 @@ fn prepare_with_argv(
 /// server that ignored the additive spawn field.
 pub(crate) async fn persist_record(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     record: &AgentSessionRecord,
     request_id: u32,
 ) -> Result<(), String> {
-    if !matches!(terminal, TerminalId::Local { .. }) {
+    if !matches!(terminal, ResourceId::Local { .. }) {
         return Err("agent session records are local-terminal only".to_owned());
     }
     let value = record.encode()?;
     let (existing, interleaved) = conn
         .request_metadata(
             request_id,
-            Scope::Terminal(terminal.clone()),
-            TERMINAL_AGENT_SESSION_KEY.to_owned(),
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_SESSION_KEY.to_owned(),
         )
         .await
         .map_err(|err| err.to_string())?
@@ -185,8 +185,8 @@ pub(crate) async fn persist_record(
 
     conn.send(&FrameKind::SetMetadata {
         request_id: request_id.wrapping_add(1),
-        scope: Scope::Terminal(terminal.clone()),
-        key: TERMINAL_AGENT_SESSION_KEY.to_owned(),
+        scope: Scope::Resource(terminal.clone()),
+        key: RESOURCE_AGENT_SESSION_KEY.to_owned(),
         value: value.clone(),
     })
     .await
@@ -194,8 +194,8 @@ pub(crate) async fn persist_record(
     let (answer, interleaved) = conn
         .request_metadata(
             request_id.wrapping_add(2),
-            Scope::Terminal(terminal.clone()),
-            TERMINAL_AGENT_SESSION_KEY.to_owned(),
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_SESSION_KEY.to_owned(),
         )
         .await
         .map_err(|err| err.to_string())?
@@ -219,12 +219,12 @@ pub(crate) async fn persist_record(
 pub(crate) async fn fetch_record_index(
     socket_path: &Path,
     snapshot: &SessionSnapshot,
-) -> Result<HashMap<TerminalId, AgentSessionRecord>, String> {
+) -> Result<HashMap<ResourceId, AgentSessionRecord>, String> {
     let mut index = HashMap::new();
     let local = snapshot
-        .panes
+        .resources
         .iter()
-        .filter(|pane| matches!(pane.id, TerminalId::Local { .. }));
+        .filter(|pane| matches!(pane.id, ResourceId::Local { .. }));
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| err.to_string())?;
@@ -233,8 +233,8 @@ pub(crate) async fn fetch_record_index(
         let (answer, interleaved) = conn
             .request_metadata(
                 request_id,
-                Scope::Terminal(pane.id.clone()),
-                TERMINAL_AGENT_SESSION_KEY.to_owned(),
+                Scope::Resource(pane.id.clone()),
+                RESOURCE_AGENT_SESSION_KEY.to_owned(),
             )
             .await
             .map_err(|err| err.to_string())?

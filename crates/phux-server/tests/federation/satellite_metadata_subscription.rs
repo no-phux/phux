@@ -3,7 +3,7 @@
 //!
 //! L3 metadata does not federate: the hub relay carries L1 commands and
 //! `SUBSCRIBE_EVENTS` across a satellite link and nothing else, so a
-//! subscription to `Scope::Terminal(Satellite { .. })` can never produce a
+//! subscription to `Scope::Resource(Satellite { .. })` can never produce a
 //! `METADATA_CHANGED`. Before this ticket the server recorded it anyway, and
 //! the consumer waited forever for a frame no code path emits — which is how
 //! `phux agent wait host/@N` came to report `no_agent_record` about a live
@@ -31,7 +31,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use phux_protocol::ids::{SatelliteHost, TerminalId};
+use phux_protocol::ids::{ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TYPE_ERROR, TYPE_METADATA_VALUE};
 use tempfile::TempDir;
 
@@ -44,7 +44,7 @@ const AGENT_KEY: &str = "phux.agent/v1";
 const BARRIER_REQUEST_ID: u32 = 0x0057_57F0;
 
 fn satellite_scope() -> Scope {
-    Scope::Terminal(TerminalId::Satellite {
+    Scope::Resource(ResourceId::Satellite {
         host: SatelliteHost::new("gpubox"),
         id: 7,
     })

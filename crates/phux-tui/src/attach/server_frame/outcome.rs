@@ -1,7 +1,7 @@
 //! `FrameOutcome` — the follow-up a handled frame asks of the driver —
 //! and the small labeling helpers the handler logs and notices with.
 
-use phux_protocol::ids::{ClientId, SessionId, TerminalId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::SessionInfo;
 use phux_protocol::{BootstrapId, StreamId};
@@ -22,12 +22,12 @@ use crate::render::chrome::status_bar::Notice;
 #[derive(Debug, Clone, Default)]
 pub(in crate::attach) struct FrameOutcome {
     /// `true` ⇒ the loop should exit cleanly: either the server sent
-    /// `DETACHED`, or a `TERMINAL_CLOSED` folded the last pane out of the
+    /// `DETACHED`, or a `RESOURCE_CLOSED` folded the last pane out of the
     /// layout and the consumer-owned detach policy (phux-4r1) decided to
     /// leave (nothing left to render or route input to).
     pub(in crate::attach) exit: bool,
     /// phux-i0e8.2.2: WHY the loop is exiting, when `exit` is `true`.
-    /// `Some(LastPaneClosed { .. })` is set ONLY by the `TerminalClosed`
+    /// `Some(LastPaneClosed { .. })` is set ONLY by the `ResourceClosed`
     /// arm when the fold emptied the workspace, carrying the dead pane's
     /// exit status so the CLI can explain the exit on the cooked terminal
     /// after teardown. `Some(Detached { reason })` is set by the `Detached`
@@ -57,11 +57,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// because `sync_agent_meta_subscriptions` retains that index against the
     /// LOCAL pane set and would silently evict a foreign record on the next
     /// sweep.
-    pub(in crate::attach) foreign_agent: Option<(TerminalId, Option<Vec<u8>>)>,
+    pub(in crate::attach) foreign_agent: Option<(ResourceId, Option<Vec<u8>>)>,
     /// phux-k0cw: an ADR-0035 `Asked` event for a Terminal outside this
     /// client's pane set — a peer agent is blocked on a human.
-    pub(in crate::attach) foreign_attention: Option<TerminalId>,
-    /// phux-k0cw: a `PaneSpawned` / `PaneClosed` for a Terminal this client
+    pub(in crate::attach) foreign_attention: Option<ResourceId>,
+    /// phux-k0cw: a `ResourceSpawned` / `ResourceClosed` for a Terminal this client
     /// does not hold, so the peer pane set (and its subscriptions) needs
     /// re-sweeping. This is what closes the enumerate-then-subscribe race
     /// without any wire change.
@@ -88,7 +88,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// Layout leaves newly discovered from peer metadata. The driver attaches
     /// each Terminal so its authoritative snapshot/output stream can populate
     /// a pane slot; this does not alter client-local focus.
-    pub(in crate::attach) attach_panes: Vec<TerminalId>,
+    pub(in crate::attach) attach_panes: Vec<ResourceId>,
     /// phux-4li.12: `true` ⇒ the server-side frame mutated layout in
     /// a way the *local* client originated (split landed, kill folded);
     /// the driver should broadcast the new envelope via
@@ -96,16 +96,16 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) emit_set_metadata: bool,
     /// phux-tnh: `true` ⇒ a pane lifecycle event (close/spawn) changed
     /// surviving panes' dimensions. The driver must diff the new layout
-    /// against the pre-frame rects and emit a `TERMINAL_RESIZE` per
+    /// against the pre-frame rects and emit a `RESIZE_TERMINAL` per
     /// changed leaf so the server reflows each PTY (TIOCSWINSZ) — without
     /// this the survivor of a close keeps its old small winsize and the
     /// shell never redraws to fill the freed space. Set ONLY by the
-    /// `TerminalClosed`/`TerminalSpawned` arms, not by the broader
+    /// `ResourceClosed`/`ResourceSpawned` arms, not by the broader
     /// `layout_replaced` reconcile/broadcast paths (which already sized
     /// their panes and would otherwise thrash on attach).
     pub(in crate::attach) reflow_panes: bool,
     /// Exact cumulative `StateSync` acknowledgement emitted by the session kernel.
-    pub(in crate::attach) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
+    pub(in crate::attach) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
     /// The engine rejected a generation after emitting a typed resync status.
     ///
     /// The driver issues a fresh in-connection ATTACH while this outcome leaves
@@ -113,9 +113,9 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) resync_required: bool,
     /// Pull the next opaque native history page after READY or a prior page.
     pub(in crate::attach) history_request:
-        Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+        Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     /// Exact terminal-engine response writes to forward on the ordered PTY lane.
-    pub(in crate::attach) pty_writes: Vec<(TerminalId, Vec<u8>)>,
+    pub(in crate::attach) pty_writes: Vec<(ResourceId, Vec<u8>)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
@@ -133,7 +133,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// flag (ADR-0035 `Asked`), so the driver must repaint the chrome
     /// (supervisory badge, attention hint, window-tab markers) even though no
     /// grid content changed. Set by the `Event`, bootstrap, and
-    /// `TerminalOutput` arms when the applied bytes moved the pane's OSC 0/2
+    /// `ResourceOutput` arms when the applied bytes moved the pane's OSC 0/2
     /// title — the title feeds the window-tab labels and
     /// the sidebar's agents section (the only identity signal a plain
     /// `claude`/`codex` pane emits), and title bytes arrive on the ordinary
@@ -146,11 +146,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// `MetadataValue` / `MetadataChanged` arms.
     pub(in crate::attach) agent_meta_changed: bool,
     /// phux-p4vp: per-pane working directories carried by the `ATTACHED`
-    /// snapshot (`TerminalInfo::cwd`). The driver folds these into its
+    /// snapshot (`ResourceInfo::cwd`). The driver folds these into its
     /// pane-cwd index, from which the sidebar's branch line is derived
     /// client-side (see `phux_client::vcs`). Set ONLY by the `Attached` arm;
     /// empty otherwise.
-    pub(in crate::attach) pane_cwds: Vec<(TerminalId, String)>,
+    pub(in crate::attach) pane_cwds: Vec<(ResourceId, String)>,
     /// phux-foz.5: `true` ⇒ a subscribed `phux.config.reload/v1`
     /// doorbell rang (a `phux config reload` from some shell). The driver
     /// re-runs its layered config loader and swaps its config-derived
@@ -188,13 +188,13 @@ pub(super) const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::HistoryRejected { .. } => "history_rejected",
         FrameKind::BootstrapTombstone { .. } => "bootstrap_tombstone",
         FrameKind::AttachReady { .. } => "attach_ready",
-        FrameKind::TerminalOutput { .. } => "terminal_output",
+        FrameKind::ResourceOutput { .. } => "terminal_output",
         FrameKind::Detached { .. } => "detached",
         FrameKind::Bell { .. } => "bell",
         FrameKind::MetadataValue { .. } => "metadata_value",
         FrameKind::MetadataChanged { .. } => "metadata_changed",
-        FrameKind::TerminalSpawned { .. } => "terminal_spawned",
-        FrameKind::TerminalClosed { .. } => "terminal_closed",
+        FrameKind::ResourceSpawned { .. } => "terminal_spawned",
+        FrameKind::ResourceClosed { .. } => "terminal_closed",
         _ => "other",
     }
 }
@@ -217,9 +217,9 @@ pub(super) fn input_authority_notice(holder: Option<ClientId>) -> String {
 /// A local terminal reads `pane N`; a federation satellite's pane keeps
 /// its host tag (`pane host/N`) so the notice does not alias two panes
 /// with the same peer-local id.
-pub(super) fn pane_label(id: &TerminalId) -> String {
+pub(super) fn pane_label(id: &ResourceId) -> String {
     match id {
-        TerminalId::Local { id } => format!("pane {id}"),
-        TerminalId::Satellite { host, id } => format!("pane {host}/{id}"),
+        ResourceId::Local { id } => format!("pane {id}"),
+        ResourceId::Satellite { host, id } => format!("pane {host}/{id}"),
     }
 }

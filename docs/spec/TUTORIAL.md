@@ -14,7 +14,7 @@ last-reviewed: 2026-08-02
 
 A phux session, in one breath: a client connects to a server, negotiates capabilities, attaches to a terminal (or creates one), receives a stream of VT bytes as the PTY emits them, sends keypresses and mouse events back, and eventually detaches. The flow is asymmetric on purpose. The server sends opaque terminal **bytes**; the client sends **structured** input events. Both ends run the same terminal engine (libghostty), so neither side re-encodes terminal state into a second model — the bytes go straight onto the wire and are parsed once on each end.
 
-Protocol version for this walkthrough is `0.8.0`.
+Protocol version for this walkthrough is `0.9.0`.
 
 ---
 
@@ -173,9 +173,9 @@ history without pausing the PTY or adding a bootstrap-ACK round trip.
 exactly one sequence after BEGIN's inclusive cut:
 
 ```
-Server sends TERMINAL_OUTPUT (0x90):
+Server sends RESOURCE_OUTPUT (0x90):
   {
-    terminal_id: TerminalId::LOCAL(42),
+    terminal_id: ResourceId::LOCAL(42),
     stream_id: StreamId(9),
     bootstrap_id: BootstrapId(4),
     seq: 2,
@@ -183,8 +183,8 @@ Server sends TERMINAL_OUTPUT (0x90):
   }
 
 A moment later:
-  TERMINAL_OUTPUT {
-    terminal_id: TerminalId::LOCAL(42),
+  RESOURCE_OUTPUT {
+    terminal_id: ResourceId::LOCAL(42),
     stream_id: StreamId(9),
     bootstrap_id: BootstrapId(4),
     seq: 3,
@@ -212,7 +212,7 @@ User presses Ctrl+C.
 
 Client sends (frame type 0x10):
   INPUT_KEY {
-    terminal_id: TerminalId::LOCAL(42),
+    terminal_id: ResourceId::LOCAL(42),
     event: {
       action: PRESS,
       key: KEY_C,
@@ -221,15 +221,15 @@ Client sends (frame type 0x10):
     }
   }
 
-The server looks up TerminalId(42), refreshes its key encoder against
+The server looks up ResourceId(42), refreshes its key encoder against
 that terminal's current modes, encodes, and writes the bytes to the PTY.
 The process receives SIGINT or the byte, depending on terminal mode.
 
 A moment later, the process exits and the prompt returns:
 
 Server sends (frame type 0x90):
-  TERMINAL_OUTPUT {
-    terminal_id: TerminalId::LOCAL(42),
+  RESOURCE_OUTPUT {
+    terminal_id: ResourceId::LOCAL(42),
     seq: 4,
     bytes: b"^C\r\n$ "
   }
@@ -250,7 +250,7 @@ Process sets the window title via OSC 0:
 
 Server sends (frame type 0xB1):
   TERMINAL_EVENT {
-    terminal_id: TerminalId::LOCAL(42),
+    terminal_id: ResourceId::LOCAL(42),
     event: TITLE { title: "my-project — vim" }
   }
 
@@ -258,19 +258,19 @@ Process rings the bell (BEL):
 
 Server sends (frame type 0xB0):
   BELL {
-    terminal_id: TerminalId::LOCAL(42),
+    terminal_id: ResourceId::LOCAL(42),
   }
 
 Process reports its working directory via OSC 7:
 
 Server sends (frame type 0xB1):
   TERMINAL_EVENT {
-    terminal_id: TerminalId::LOCAL(42),
+    terminal_id: ResourceId::LOCAL(42),
     event: CURRENT_DIR { uri: "file:///Users/alice/workspace" }
   }
 ```
 
-**Wire shape:** [L1.md §1.2–1.3](./L1.md) define `BELL` and `TERMINAL_EVENT`. The server's engine parses the OSC sequence once and forwards a structured field, so a consumer reads "the current directory" without parsing escape sequences itself. These frames are `spec-only` today; the live byte stream already carries the same OSC sequences inside `TERMINAL_OUTPUT`, so a consumer can also read title and cwd from its own engine.
+**Wire shape:** [L1.md §1.2–1.3](./L1.md) define `BELL` and `TERMINAL_EVENT`. The server's engine parses the OSC sequence once and forwards a structured field, so a consumer reads "the current directory" without parsing escape sequences itself. These frames are `spec-only` today; the live byte stream already carries the same OSC sequences inside `RESOURCE_OUTPUT`, so a consumer can also read title and cwd from its own engine.
 
 **Why it matters:** structured terminal events decouple a consumer from OSC parsing. An agent sees title and cwd as fields.
 
@@ -297,17 +297,17 @@ plain terminal.
 
 ```
 Client sends (frame type 0x22):
-  SPAWN_TERMINAL {
+  SPAWN_RESOURCE {
     request_id: 7,                 // field 1
     group: GroupId(1),             // field 2; must equal the parent's Group
     kind: AGENT_SESSION,           // field 11
-    parent: TerminalId::LOCAL(42), // field 12
+    parent: ResourceId::LOCAL(42), // field 12
     provider: "claude",            // field 13
     native_id: "c0ffee-…",         // field 14, the provider's own session id
   }                                // fields 3–6, 8, 10 are absent: no process, no window, no grid
 
 Server replies (frame type 0xA2):
-  TERMINAL_SPAWNED { request_id: 7, result: OK(TerminalId::LOCAL(43)) }
+  RESOURCE_SPAWNED { request_id: 7, result: OK(ResourceId::LOCAL(43)) }
 ```
 
 Resource 43 is not a pane. A `GET_STATE` snapshot lists it with
@@ -320,7 +320,7 @@ command; `seq` and `ts_ms` are absent because the server assigns them:
 ```
 Client sends (frame type 0x31):
   COMMAND { request_id: 8, cmd: APPEND_RESOURCE_OUTPUT {   // tag 0x1a
-    resource_id: TerminalId::LOCAL(43),
+    resource_id: ResourceId::LOCAL(43),
     bytes: b'{"type":"session_start","data":{"provider":"claude","native_id":"c0ffee-…"}}\n'
   } }
 Server replies (frame type 0xC2):
@@ -328,7 +328,7 @@ Server replies (frame type 0xC2):
 
 Client sends (frame type 0x31):
   COMMAND { request_id: 9, cmd: APPEND_RESOURCE_OUTPUT {
-    resource_id: TerminalId::LOCAL(43),
+    resource_id: ResourceId::LOCAL(43),
     bytes: b'{"type":"prompt","data":{"length":412}}\n'
   } }
 Server replies (frame type 0xC2):
@@ -345,7 +345,7 @@ the same generation:
 
 ```
 Client sends (frame type 0x31):
-  COMMAND { request_id: 10, cmd: ATTACH_TERMINAL { terminal_id: LOCAL(43) } }
+  COMMAND { request_id: 10, cmd: ATTACH_RESOURCE { terminal_id: LOCAL(43) } }
 
 Server sends BOOTSTRAP_BEGIN (0x93):
   { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5,
@@ -363,14 +363,14 @@ Server replies (frame type 0xC2):
 
 Later, the harness calls a tool:
 
-Server sends TERMINAL_OUTPUT (0x90):
+Server sends RESOURCE_OUTPUT (0x90):
   { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, seq: 3,
     bytes: b'{"seq":3,"ts_ms":1789000009002,"type":"tool_start","data":{"tool_name":"Read"}}\n' }
 ```
 
 When the shell in terminal 42 exits, the server closes 42 and 43 in one
 lock acquisition; the dashboard receives
-`TERMINAL_CLOSED { terminal_id: LOCAL(43), exit_status: None, reason: PARENT_CLOSED }`
+`RESOURCE_CLOSED { terminal_id: LOCAL(43), exit_status: None, reason: PARENT_CLOSED }`
 and never sees a snapshot with 43 and without 42.
 
 **Wire shape:** [L1.md §1.2](./L1.md) owns the spawn fields and the cascade,
@@ -430,13 +430,13 @@ Client                              Server                    Terminal (PTY)
   |              <----- BOOTSTRAP_CHUNK (opaque checkpoint)       |
   |              <----- BOOTSTRAP_READY                            |
   |              <----- ATTACH_READY                               |
-  |              <----- TERMINAL_OUTPUT (seq 2) -------- shell prompt
+  |              <----- RESOURCE_OUTPUT (seq 2) -------- shell prompt
   |              user types "ls\n" ----->                         |
   |------- INPUT_KEY ------>          |------- write VT bytes --->
   |                                   |                      <---- echo "ls"
-  |              <----- TERMINAL_OUTPUT (seq 3) -------- ls output
+  |              <----- RESOURCE_OUTPUT (seq 3) -------- ls output
   |                                   |                           |
-  |              <----- TERMINAL_OUTPUT (seq 4) -------- prompt   |
+  |              <----- RESOURCE_OUTPUT (seq 4) -------- prompt   |
   |                                   |                           |
   |------- DETACH ------>             |                           |
   |                   <------ DETACHED |                           |

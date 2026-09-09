@@ -16,10 +16,10 @@
 //!
 //! `length` is at least `1` (the type byte) and at most `MAX_FRAME_LEN`.
 //!
-//! Under [ADR-0013] terminal content rides as raw VT bytes (`TERMINAL_OUTPUT`).
+//! Under [ADR-0013] terminal content rides as raw VT bytes (`RESOURCE_OUTPUT`).
 //! There is no structured per-cell diff variant on this enum — earlier
 //! drafts carried `PaneDiff` at type byte `0x40`; that slot is retired
-//! and `TERMINAL_OUTPUT` (type `0x90` per SPEC §7.2) takes its place.
+//! and `RESOURCE_OUTPUT` (type `0x90` per SPEC §7.2) takes its place.
 //!
 //! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 
@@ -46,11 +46,11 @@ pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
 /// one or more complete records, never a bulk upload, so a producer with more
 /// to say sends more appends.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
-/// Maximum bytes in a `SPAWN_TERMINAL.provider` string (field 13): the
+/// Maximum bytes in a `SPAWN_RESOURCE.provider` string (field 13): the
 /// `integration_id` bound of the `phux.agent-session/v1` record
 /// (`docs/spec/L3.md` §3.7.1).
 pub const MAX_RESOURCE_PROVIDER_BYTES: usize = 120;
-/// Maximum bytes in a `SPAWN_TERMINAL.native_id` string (field 14): the
+/// Maximum bytes in a `SPAWN_RESOURCE.native_id` string (field 14): the
 /// `native_id` bound of the `phux.agent-session/v1` record
 /// (`docs/spec/L3.md` §3.7.1).
 pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
@@ -86,7 +86,7 @@ pub const TYPE_INPUT_TERMINAL_REPLY: u8 = 0x17;
 /// Discriminant for StateSync-only `FRAME_ACK` (client to server,
 /// `docs/spec/proto.md` §8.2).
 ///
-/// Cumulative within one `(TerminalId, StreamId, BootstrapId)` after the
+/// Cumulative within one `(ResourceId, StreamId, BootstrapId)` after the
 /// client applies the acknowledged transition. Raw profiles never send it.
 pub const TYPE_FRAME_ACK: u8 = 0x21;
 /// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md` §7.1 / §10.5).
@@ -118,10 +118,10 @@ pub const TYPE_BELL: u8 = 0xB0;
 pub const TYPE_ERROR: u8 = 0xC1;
 /// Discriminant for `PONG` (server to client, `docs/spec/proto.md` §7.4).
 pub const TYPE_PONG: u8 = 0xFF;
-/// Discriminant for generation-bound `TERMINAL_OUTPUT` (server to client,
+/// Discriminant for generation-bound `RESOURCE_OUTPUT` (server to client,
 /// `docs/spec/L1.md` §4.1). Native-profile payloads are byte-identical raw PTY
 /// bytes and are never capability-rewritten.
-pub const TYPE_TERMINAL_OUTPUT: u8 = 0x90;
+pub const TYPE_RESOURCE_OUTPUT: u8 = 0x90;
 // 0x91 was `TERMINAL_SNAPSHOT` through protocol 0.6. It is permanently
 // retired by ADR-0070 and MUST NOT be decoded or reassigned.
 /// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
@@ -221,7 +221,7 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// Conventional L3 metadata key holding a Terminal's freeform string tags
 /// (ADR-0027 decision point 4, `phux-p0yq`).
 ///
-/// Scope: the Terminal's [`TerminalId`](crate::ids::TerminalId). Value: a UTF-8 JSON array of
+/// Scope: the Terminal's [`ResourceId`](crate::ids::ResourceId). Value: a UTF-8 JSON array of
 /// non-empty, duplicate-free tag strings, e.g. `["build","ci"]`; an empty
 /// array or an absent key both mean "no tags". The server stores the bytes
 /// without interpreting them ([`docs/spec/L3.md`](../../../docs/spec/L3.md)
@@ -229,12 +229,12 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// the `#tag` selector ([ADR-0027](../../../ADR/0027-terminal-references-and-l3-links.md)
 /// decision point 5) resolves identically across consumers. Set via
 /// `SET_METADATA`, read via `GET_METADATA`/`LIST_METADATA`.
-pub const TERMINAL_TAGS_KEY: &str = "phux.tags/v1";
+pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 
 /// Conventional L3 metadata key holding a Terminal's outgoing *link* edges
 /// (ADR-0027 decision point 4, `phux-p0yq`).
 ///
-/// Scope: the source Terminal's [`TerminalId`](crate::ids::TerminalId). Value: a UTF-8 JSON array of
+/// Scope: the source Terminal's [`ResourceId`](crate::ids::ResourceId). Value: a UTF-8 JSON array of
 /// link records `{ "target": u32, "kind": str }`, where `target` is the
 /// linked Terminal's local wire id and `kind` is an OPEN enum — v1 defines
 /// `"group"` (a soft grouping edge); unknown kinds are preserved, not
@@ -242,7 +242,7 @@ pub const TERMINAL_TAGS_KEY: &str = "phux.tags/v1";
 /// opaquely; link *meaning* is the normative client convention this key
 /// names. A link is a metadata value, never a second wire identity
 /// ([ADR-0027](../../../ADR/0027-terminal-references-and-l3-links.md)).
-pub const TERMINAL_LINK_KEY: &str = "phux.link/v1";
+pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
 /// Conventional L3 metadata key holding a Terminal's declared agent
 /// identity and lifecycle record (ADR-0040, `phux-3ert`).
@@ -259,19 +259,19 @@ pub const TERMINAL_LINK_KEY: &str = "phux.link/v1";
 /// prefer it over OSC-title or screen-scrape heuristics; heuristics remain
 /// the fallback when the key is absent. Set via `SET_METADATA`, cleared via
 /// `DELETE_METADATA`, observed via `GET_METADATA`/`SUBSCRIBE_METADATA`.
-pub const TERMINAL_AGENT_KEY: &str = "phux.agent/v1";
+pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
 
 /// Conventional Terminal-scoped provenance for provider-native session resume.
 ///
 /// Value: bounded UTF-8 JSON `{plugin_id, integration_id, native_id}` owned by
-/// ADR-0068. `SPAWN_TERMINAL.agent_session` may install these opaque bytes
+/// ADR-0068. `SPAWN_RESOURCE.agent_session` may install these opaque bytes
 /// atomically with a local spawn; ordinary L3 reads and writes use this key.
-pub const TERMINAL_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
+pub const RESOURCE_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
 
 /// Conventional Terminal-scoped metadata key for the server-observed
 /// foreground process and available-shell answer. Clients may read and
 /// subscribe to this key but MUST NOT set or delete it.
-pub const TERMINAL_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
+pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 
 /// Maximum encoded `phux.agent-session/v1` record accepted by server mutations.
 pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
@@ -321,24 +321,24 @@ pub const TYPE_METADATA_KEYS: u8 = 0xD2;
 // VIEWPORT_RESIZE (`0x20`) / FRAME_ACK (`0x21`). The 0x14..=0x1F
 // hot-path reservation in Appendix B is preserved by skipping past it.
 // S→C allocations honour the spec-only reservations carried in SPEC §7.2
-// (`0xA1 TERMINAL_CLOSED`) and extend by one (`0xA2 TERMINAL_SPAWNED`)
+// (`0xA1 RESOURCE_CLOSED`) and extend by one (`0xA2 RESOURCE_SPAWNED`)
 // for the dedicated SPAWN reply — see SPEC Appendix C for the
 // 0.2.0-draft.2 entry.
 // -----------------------------------------------------------------------------
 
-/// Discriminant for `SPAWN_TERMINAL` (client to server, `docs/spec/L1.md` §1 / §10.1).
+/// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Carries `{ request_id, group, command: Option<list<str>>,
 /// cwd: Option<str>, env: Option<list<(str, str)>> }`. The reply rides on
-/// [`TYPE_TERMINAL_SPAWNED`] correlated by `request_id`.
-pub const TYPE_SPAWN_TERMINAL: u8 = 0x22;
-/// Discriminant for `TERMINAL_RESIZE` (client to server, `docs/spec/L1.md` §1 / §10.2).
+/// [`TYPE_RESOURCE_SPAWNED`] correlated by `request_id`.
+pub const TYPE_SPAWN_RESOURCE: u8 = 0x22;
+/// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/spec/L1.md` §1 / §10.2).
 ///
 /// Per-Terminal PTY resize. Drives `ioctl(TIOCSWINSZ)` server-side; the
 /// outer-viewport `VIEWPORT_RESIZE` (`0x20`) remains the
 /// minimum-bounding-box signal. Both flow from a single SIGWINCH on the
 /// client (phux-4li.9).
-pub const TYPE_TERMINAL_RESIZE: u8 = 0x23;
+pub const TYPE_RESIZE_TERMINAL: u8 = 0x23;
 
 // ---------------------------------------------------------------------------
 // `0x24..=0x29` C→S and `0xA3..=0xA7` S→C stay unallocated. The PTY-less
@@ -348,36 +348,36 @@ pub const TYPE_TERMINAL_RESIZE: u8 = 0x23;
 // output / close frames, not a parallel frame family.
 // ---------------------------------------------------------------------------
 
-/// Discriminant for `MOVE_TERMINAL` (client to server, `docs/spec/L1.md`
+/// Discriminant for `MOVE_RESOURCE` (client to server, `docs/spec/L1.md`
 /// §1 / §10.1; ADR-0056).
 ///
 /// Re-parents a live Terminal into the window that currently owns
 /// `owner_terminal` — possibly in a different session — without touching
 /// its process, PTY, scrollback, or metadata. Ownership addressing only,
-/// exactly as `SPAWN_TERMINAL.owner_terminal`: no split direction, ratio,
-/// or focus. The reply rides on [`TYPE_TERMINAL_MOVED`] correlated by
-/// `request_id`. Gated on the `MOVE_TERMINAL` server feature bit
-/// (`crate::caps::MOVE_TERMINAL`); allocated at `0x2A`, past the
+/// exactly as `SPAWN_RESOURCE.owner_terminal`: no split direction, ratio,
+/// or focus. The reply rides on [`TYPE_RESOURCE_MOVED`] correlated by
+/// `request_id`. Gated on the `MOVE_RESOURCE` server feature bit
+/// (`crate::caps::MOVE_RESOURCE`); allocated at `0x2A`, past the
 /// unallocated `0x24..=0x29` block.
-pub const TYPE_MOVE_TERMINAL: u8 = 0x2A;
-/// Discriminant for `TERMINAL_MOVED` (server to client, `docs/spec/L1.md`
+pub const TYPE_MOVE_RESOURCE: u8 = 0x2A;
+/// Discriminant for `RESOURCE_MOVED` (server to client, `docs/spec/L1.md`
 /// §1 / §10.1; ADR-0056).
 ///
-/// Reply frame for `MOVE_TERMINAL`; correlated by `request_id`. Carries a
-/// `Result<TerminalId, MoveError>` tagged union — see [`MoveResult`].
+/// Reply frame for `MOVE_RESOURCE`; correlated by `request_id`. Carries a
+/// `Result<ResourceId, MoveError>` tagged union — see [`MoveResult`].
 /// Allocated at `0xA8`, past the unallocated `0xA3..=0xA7` block.
-pub const TYPE_TERMINAL_MOVED: u8 = 0xA8;
+pub const TYPE_RESOURCE_MOVED: u8 = 0xA8;
 
-/// Discriminant for `TERMINAL_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
+/// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Push notification when a Terminal's PTY exits, naturally or via
-/// `KILL_TERMINAL`. Honours the spec-only reservation at `0xA1`.
-pub const TYPE_TERMINAL_CLOSED: u8 = 0xA1;
-/// Discriminant for `TERMINAL_SPAWNED` (server to client, `docs/spec/L1.md` §1 / §10.1).
+/// `KILL_RESOURCE`. Honours the spec-only reservation at `0xA1`.
+pub const TYPE_RESOURCE_CLOSED: u8 = 0xA1;
+/// Discriminant for `RESOURCE_SPAWNED` (server to client, `docs/spec/L1.md` §1 / §10.1).
 ///
-/// Reply frame for `SPAWN_TERMINAL`; correlated by `request_id`. Carries a
-/// `Result<TerminalId, SpawnError>` tagged union — see [`SpawnResult`].
-pub const TYPE_TERMINAL_SPAWNED: u8 = 0xA2;
+/// Reply frame for `SPAWN_RESOURCE`; correlated by `request_id`. Carries a
+/// `Result<ResourceId, SpawnError>` tagged union — see [`SpawnResult`].
+pub const TYPE_RESOURCE_SPAWNED: u8 = 0xA2;
 
 // Wire tags for the `SpawnResult` tagged union (SPEC §7.2 / §10.1).
 //
@@ -419,8 +419,8 @@ pub(crate) const MOVE_ERROR_TAG_MOVE_FAILED: u8 = 0;
 pub(crate) const MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 1;
 
 // Wire tags for the `Scope` tagged union (SPEC §7.4 / §11.L3).
-/// Wire tag for [`Scope::Terminal`].
-pub(crate) const SCOPE_TAG_TERMINAL: u8 = 0;
+/// Wire tag for [`Scope::Resource`].
+pub(crate) const SCOPE_TAG_RESOURCE: u8 = 0;
 /// Wire tag for [`Scope::Group`].
 pub(crate) const SCOPE_TAG_GROUP: u8 = 1;
 /// Wire tag for [`Scope::Global`].
@@ -477,10 +477,10 @@ pub(crate) const EVENT_TAG_COMMAND_FINISHED: u8 = 0x01;
 pub(crate) const EVENT_TAG_TITLE_CHANGED: u8 = 0x02;
 /// Wire tag for [`AgentEvent::Bell`].
 pub(crate) const EVENT_TAG_BELL: u8 = 0x03;
-/// Wire tag for [`AgentEvent::PaneSpawned`].
-pub(crate) const EVENT_TAG_PANE_SPAWNED: u8 = 0x04;
-/// Wire tag for [`AgentEvent::PaneClosed`].
-pub(crate) const EVENT_TAG_PANE_CLOSED: u8 = 0x05;
+/// Wire tag for [`AgentEvent::ResourceSpawned`].
+pub(crate) const EVENT_TAG_RESOURCE_SPAWNED: u8 = 0x04;
+/// Wire tag for [`AgentEvent::ResourceClosed`].
+pub(crate) const EVENT_TAG_RESOURCE_CLOSED: u8 = 0x05;
 /// Wire tag for [`AgentEvent::Dirty`].
 pub(crate) const EVENT_TAG_DIRTY: u8 = 0x06;
 /// Wire tag for [`AgentEvent::Idle`].
@@ -508,28 +508,28 @@ pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
 
 // Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
 // spec catalog order so the allocation is stable as later verbs land:
-// SPAWN=0x00, ATTACH_TERMINAL=0x01, DETACH_TERMINAL=0x02, KILL_TERMINAL=0x03,
+// SPAWN=0x00, ATTACH_RESOURCE=0x01, DETACH_RESOURCE=0x02, KILL_RESOURCE=0x03,
 // RESIZE_TERMINAL=0x04, GET_STATE=0x05, RUN_HOOK=0x06. v0.1 implements only
-// KILL_TERMINAL and GET_STATE (ADR-0021 §3); the rest are reserved and
+// KILL_RESOURCE and GET_STATE (ADR-0021 §3); the rest are reserved and
 // decode as `UnknownEnumValue` until wired.
-/// Wire tag for [`Command::AttachTerminal`], taking the `0x01` slot the
-/// SPEC §5.1 catalog reserved for `ATTACH_TERMINAL` (phux-v45.7). The
+/// Wire tag for [`Command::AttachResource`], taking the `0x01` slot the
+/// SPEC §5.1 catalog reserved for `ATTACH_RESOURCE` (phux-v45.7). The
 /// per-Terminal output-subscription verb: it wires the caller to receive a
-/// profile-selected bootstrap stream plus `TERMINAL_OUTPUT`.
+/// profile-selected bootstrap stream plus `RESOURCE_OUTPUT`.
 /// The catalog's `role_policy` field is not yet
 /// encoded — an absent policy decodes as
 /// `RolePolicy { requested_role: PRIMARY, takeover: NEVER }` per SPEC §8.1,
 /// which is exactly what this body-less-policy encoding means; the field
 /// lands additively behind its own wire bump.
-pub(crate) const COMMAND_TAG_ATTACH_TERMINAL: u8 = 0x01;
-/// Wire tag for [`Command::DetachTerminal`], taking the `0x02` slot the
-/// SPEC §5.1 catalog reserved for `DETACH_TERMINAL` (phux-v45.7). Drops the
-/// caller's per-Terminal output subscription (the `ATTACH_TERMINAL`
+pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = 0x01;
+/// Wire tag for [`Command::DetachResource`], taking the `0x02` slot the
+/// SPEC §5.1 catalog reserved for `DETACH_RESOURCE` (phux-v45.7). Drops the
+/// caller's per-Terminal output subscription (the `ATTACH_RESOURCE`
 /// counterpart) and its per-Terminal event-stream subscription; the
 /// Terminal itself is unaffected.
-pub(crate) const COMMAND_TAG_DETACH_TERMINAL: u8 = 0x02;
-/// Wire tag for [`Command::KillTerminal`].
-pub(crate) const COMMAND_TAG_KILL_TERMINAL: u8 = 0x03;
+pub(crate) const COMMAND_TAG_DETACH_RESOURCE: u8 = 0x02;
+/// Wire tag for [`Command::KillResource`].
+pub(crate) const COMMAND_TAG_KILL_RESOURCE: u8 = 0x03;
 /// Wire tag for [`Command::GetState`].
 pub(crate) const COMMAND_TAG_GET_STATE: u8 = 0x05;
 /// Wire tag for [`Command::GetScreen`]. Appended after `RUN_HOOK`'s
@@ -542,20 +542,20 @@ pub(crate) const COMMAND_TAG_GET_SCREEN: u8 = 0x07;
 /// attach, subscription, or resize — the write counterpart to the
 /// side-effect-free `GET_SCREEN` read.
 pub(crate) const COMMAND_TAG_ROUTE_INPUT: u8 = 0x08;
-/// Wire tag for [`Command::KillTerminals`]. Reuses the `0x09` slot freed
+/// Wire tag for [`Command::KillResources`]. Reuses the `0x09` slot freed
 /// when the L2 lifecycle verbs (`CREATE_SESSION` / `KILL_COLLECTION` /
 /// `RENAME_SESSION`) were dissolved in the v0.3.0 "Option B" re-tier
-/// (ADR-0019 / ADR-0027). `KILL_TERMINALS` is the one irreducible
+/// (ADR-0019 / ADR-0027). `KILL_RESOURCES` is the one irreducible
 /// multi-terminal op the dissolved `KILL_COLLECTION` left behind: it
 /// destroys a *list* of Terminals atomically under the server's single
 /// state lock — all-or-nothing for a local server — replacing the
 /// per-session teardown verb with a pure L1 list operation. Grouping
 /// (which Terminals form a "session") is now client logic over L3
 /// metadata, so the server need only know the resolved ids. The reply
-/// rides `COMMAND_RESULT { Ok }` (the async `TERMINAL_CLOSED` frames
-/// confirm teardown), the same ack shape `KILL_TERMINAL` uses. Backs
+/// rides `COMMAND_RESULT { Ok }` (the async `RESOURCE_CLOSED` frames
+/// confirm teardown), the same ack shape `KILL_RESOURCE` uses. Backs
 /// `phux kill SESSION`.
-pub(crate) const COMMAND_TAG_KILL_TERMINALS: u8 = 0x09;
+pub(crate) const COMMAND_TAG_KILL_RESOURCES: u8 = 0x09;
 /// Wire tag for [`Command::GetTerminalState`]. Appended after
 /// `RENAME_SESSION`'s `0x0b`; `GET_TERMINAL_STATE` is an additive
 /// L2 Collection-aware query (ADR-0015 L2) that returns a comprehensive
@@ -566,9 +566,9 @@ pub(crate) const COMMAND_TAG_KILL_TERMINALS: u8 = 0x09;
 /// grid), this returns structured state suitable for agent polling and
 /// change detection. The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`.
 pub(crate) const COMMAND_TAG_GET_TERMINAL_STATE: u8 = 0x0c;
-pub(crate) const COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS: u8 = 0x0d;
+pub(crate) const COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS: u8 = 0x0d;
 /// Wire tag for [`Command::Upgrade`]. Appended after
-/// `SUBSCRIBE_TERMINAL_EVENTS`'s `0x0d`; `UPGRADE` is an additive control
+/// `SUBSCRIBE_RESOURCE_EVENTS`'s `0x0d`; `UPGRADE` is an additive control
 /// command (ADR-0032) that triggers a graceful in-place re-exec. It carries no
 /// payload — the handoff state blob is built and passed server-side.
 pub(crate) const COMMAND_TAG_UPGRADE: u8 = 0x0e;
@@ -582,7 +582,7 @@ pub(crate) const COMMAND_TAG_ACQUIRE_INPUT: u8 = 0x0f;
 pub(crate) const COMMAND_TAG_RELEASE_INPUT: u8 = 0x10;
 /// Wire tag for [`Command::SignalTerminal`]. Delivers an explicit POSIX
 /// signal (interrupt / freeze / resume / terminate / kill) to the process
-/// group inside a Terminal — distinct from `KILL_TERMINAL`, which removes the
+/// group inside a Terminal — distinct from `KILL_RESOURCE`, which removes the
 /// pane. The reversible `Freeze`/`Resume` brake lives here. ADR-0033.
 pub(crate) const COMMAND_TAG_SIGNAL_TERMINAL: u8 = 0x11;
 /// Wire tag for [`Command::ReportAsked`]. This is the opt-in agent hook
@@ -645,8 +645,8 @@ pub(crate) const COMMAND_RESULT_TAG_OK_WITH: u8 = 0x01;
 pub(crate) const COMMAND_RESULT_TAG_ERROR: u8 = 0x02;
 
 // Wire tags for the `CommandValue` tagged union (SPEC §5).
-/// Wire tag for [`CommandValue::TerminalId`].
-pub(crate) const COMMAND_VALUE_TAG_TERMINAL_ID: u8 = 0x00;
+/// Wire tag for [`CommandValue::ResourceId`].
+pub(crate) const COMMAND_VALUE_TAG_RESOURCE_ID: u8 = 0x00;
 /// Wire tag for [`CommandValue::GroupId`].
 pub(crate) const COMMAND_VALUE_TAG_GROUP_ID: u8 = 0x01;
 /// Wire tag for [`CommandValue::State`].
@@ -677,7 +677,7 @@ mod status;
 
 pub use command::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
-    ReportedAgentState, StateScope, TerminalEventType, TerminalLifecycle, TerminalSignal,
+    ReportedAgentState, ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
 };
 pub use kind::FrameKind;
 pub use payload::{

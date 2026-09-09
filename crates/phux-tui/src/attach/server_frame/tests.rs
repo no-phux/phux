@@ -11,10 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use phux_protocol::ResourceKind;
-use phux_protocol::ids::{ClientId, SessionId, TerminalId, WindowId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{CloseReason, DetachReason, FrameKind};
 use phux_protocol::wire::info::{
-    AgentFacet, LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
+    AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
 };
 
 use crate::attach::outcome::{AttachEnd, AttachError};
@@ -42,7 +42,7 @@ fn attach_participants_cover_only_the_focused_session() {
     let focused_window = WindowId::new(10);
     let other_window = WindowId::new(20);
 
-    let snapshot = SessionSnapshot::new(focused, focused_window, TerminalId::new(100))
+    let snapshot = SessionSnapshot::new(focused, focused_window, ResourceId::new(100))
         .with_sessions(vec![
             SessionInfo::new(focused, "focused".to_owned()),
             SessionInfo::new(other, "other".to_owned()),
@@ -51,24 +51,24 @@ fn attach_participants_cover_only_the_focused_session() {
             WindowInfo::new(focused_window, focused, "w0".to_owned()),
             WindowInfo::new(other_window, other, "w0".to_owned()),
         ])
-        .with_panes(vec![
-            TerminalInfo::new(TerminalId::new(100), focused_window, 80, 24),
-            TerminalInfo::new(TerminalId::new(101), focused_window, 80, 24),
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::new(100), focused_window, 80, 24),
+            ResourceInfo::new(ResourceId::new(101), focused_window, 80, 24),
             // Belongs to a session this attach does not touch; the server
             // will never bootstrap it.
-            TerminalInfo::new(TerminalId::new(200), other_window, 80, 24),
+            ResourceInfo::new(ResourceId::new(200), other_window, 80, 24),
         ]);
 
     let participants = attach_participants(&snapshot);
 
     assert_eq!(
         participants,
-        vec![TerminalId::new(100), TerminalId::new(101)],
+        vec![ResourceId::new(100), ResourceId::new(101)],
         "only the focused session's panes are bootstrapped, so only they \
              may be attach participants",
     );
     assert!(
-        !participants.contains(&TerminalId::new(200)),
+        !participants.contains(&ResourceId::new(200)),
         "a pane from another session would never resolve, and ATTACH_READY \
              would be rejected for as many panes as the other sessions hold",
     );
@@ -80,17 +80,17 @@ fn attach_participants_cover_only_the_focused_session() {
 fn a_single_session_snapshot_keeps_every_pane() {
     let session = SessionId::new(1);
     let window = WindowId::new(10);
-    let snapshot = SessionSnapshot::new(session, window, TerminalId::new(100))
+    let snapshot = SessionSnapshot::new(session, window, ResourceId::new(100))
         .with_sessions(vec![SessionInfo::new(session, "only".to_owned())])
         .with_windows(vec![WindowInfo::new(window, session, "w0".to_owned())])
-        .with_panes(vec![
-            TerminalInfo::new(TerminalId::new(100), window, 80, 24),
-            TerminalInfo::new(TerminalId::new(101), window, 80, 24),
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::new(100), window, 80, 24),
+            ResourceInfo::new(ResourceId::new(101), window, 80, 24),
         ]);
 
     assert_eq!(
         attach_participants(&snapshot),
-        vec![TerminalId::new(100), TerminalId::new(101)]
+        vec![ResourceId::new(100), ResourceId::new(101)]
     );
 }
 
@@ -117,8 +117,8 @@ fn strip_csi(s: &str) -> String {
     out
 }
 
-fn tid(id: u32) -> TerminalId {
-    TerminalId::local(id)
+fn tid(id: u32) -> ResourceId {
+    ResourceId::local(id)
 }
 fn stream() -> phux_protocol::StreamId {
     phux_protocol::StreamId::new(1).expect("stream")
@@ -128,7 +128,7 @@ fn bootstrap() -> phux_protocol::BootstrapId {
     phux_protocol::BootstrapId::new(1).expect("bootstrap")
 }
 
-fn begin_frame(terminal_id: &TerminalId) -> FrameKind {
+fn begin_frame(terminal_id: &ResourceId) -> FrameKind {
     FrameKind::BootstrapBegin {
         terminal_id: terminal_id.clone(),
         stream_id: stream(),
@@ -140,7 +140,7 @@ fn begin_frame(terminal_id: &TerminalId) -> FrameKind {
     }
 }
 
-fn ready_frame(terminal_id: &TerminalId) -> FrameKind {
+fn ready_frame(terminal_id: &ResourceId) -> FrameKind {
     FrameKind::BootstrapReady {
         terminal_id: terminal_id.clone(),
         stream_id: stream(),
@@ -196,7 +196,7 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
     );
     assert!(
         route_engine_frame(
-            &FrameKind::TerminalOutput {
+            &FrameKind::ResourceOutput {
                 terminal_id: terminal_id.clone(),
                 stream_id: stream(),
                 bootstrap_id: bootstrap(),
@@ -217,7 +217,7 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
     );
     assert!(released.damaged(&terminal_id));
     let live = route_engine_frame(
-        &FrameKind::TerminalOutput {
+        &FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id: stream(),
             bootstrap_id: bootstrap(),
@@ -229,7 +229,7 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
     );
     assert!(live.damaged(&terminal_id));
     let reply = route_engine_frame(
-        &FrameKind::TerminalOutput {
+        &FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id: stream(),
             bootstrap_id: bootstrap(),
@@ -356,9 +356,9 @@ fn off_window_ready_waits_for_every_snapshot_pane_and_attach_ready() {
             WindowInfo::new(focused_window, session, "w0".to_owned()),
             WindowInfo::new(other_window, session, "w1".to_owned()),
         ])
-        .with_panes(vec![
-            TerminalInfo::new(focused.clone(), focused_window, 80, 24),
-            TerminalInfo::new(off_window.clone(), other_window, 80, 24),
+        .with_resources(vec![
+            ResourceInfo::new(focused.clone(), focused_window, 80, 24),
+            ResourceInfo::new(off_window.clone(), other_window, 80, 24),
         ]);
     let mut kernel = phux_client_core::session::SessionKernel::new(
         phux_client_core::engine::ghostty::GhosttyAdapter::new(
@@ -445,12 +445,12 @@ fn dispatch_engine_frame(
         phux_client_core::engine::ghostty::GhosttyAdapter,
     >,
     effects: &mut phux_client_core::session::EffectBuffer,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     frame: FrameKind,
 ) -> FrameOutcome {
     let mut out = Vec::new();
     let mut workspace = Workspace::default();
-    let mut focused_pane = None;
+    let mut focused_resource = None;
     let mut zoomed = None;
     let mut session_name = String::new();
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
@@ -466,7 +466,7 @@ fn dispatch_engine_frame(
         frame,
         panes,
         &mut workspace,
-        &mut focused_pane,
+        &mut focused_resource,
         &mut zoomed,
         &mut session_name,
         None,
@@ -544,7 +544,7 @@ fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
         &mut kernel,
         &mut effects,
         &mut panes,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: ready_terminal.clone(),
             stream_id: stream(),
             bootstrap_id: bootstrap(),
@@ -657,7 +657,7 @@ fn malformed_history_tombstones_only_history_and_replacement_publishes_atomicall
         &mut kernel,
         &mut effects,
         &mut panes,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id: stream(),
             bootstrap_id: bootstrap(),
@@ -767,10 +767,10 @@ fn malformed_history_tombstones_only_history_and_replacement_publishes_atomicall
 fn handle_server_frame<W: crate::attach::RenderSink>(
     out: &mut W,
     frame: FrameKind,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     workspace: &mut Workspace,
-    focused_pane: &mut Option<TerminalId>,
-    zoomed: &mut Option<TerminalId>,
+    focused_resource: &mut Option<ResourceId>,
+    zoomed: &mut Option<ResourceId>,
     session_name: &mut String,
     // phux-k0cw: this client's own session, so a test can drive the
     // foreign-layout guard.
@@ -783,7 +783,7 @@ fn handle_server_frame<W: crate::attach::RenderSink>(
     pending_layout_request: Option<u32>,
     pending_splits: &mut HashMap<u32, crate::attach::actions::PendingSplit>,
     pending_windows: &mut HashMap<u32, crate::attach::actions::PendingWindow>,
-    expected_closes: &mut HashSet<TerminalId>,
+    expected_closes: &mut HashSet<ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     overlay_active: bool,
     defer_paint: bool,
@@ -802,7 +802,7 @@ fn handle_server_frame<W: crate::attach::RenderSink>(
         frame,
         panes,
         workspace,
-        focused_pane,
+        focused_resource,
         zoomed,
         session_name,
         focused_session,
@@ -842,7 +842,7 @@ fn ws1(state: LayoutState) -> Workspace {
 }
 
 /// Leaves of a workspace's window at `idx`.
-fn window_leaves(ws: &Workspace, idx: usize) -> Vec<TerminalId> {
+fn window_leaves(ws: &Workspace, idx: usize) -> Vec<ResourceId> {
     ws.windows[idx]
         .state
         .tree
@@ -921,7 +921,7 @@ fn reconcile_multi_window_does_not_alias_non_active_windows() {
 }
 
 /// Build a `panes` map with a warm [`PaneSlot`] per supplied id.
-fn panes_for(ids: &[&TerminalId]) -> HashMap<TerminalId, PaneSlot> {
+fn panes_for(ids: &[&ResourceId]) -> HashMap<ResourceId, PaneSlot> {
     let mut panes = HashMap::new();
     for id in ids {
         panes.insert((*id).clone(), PaneSlot::new().expect("pane slot"));
@@ -935,8 +935,8 @@ struct EngineFixture {
 }
 
 fn published_fixture(
-    entries: &[(&TerminalId, u16, u16, &[u8])],
-) -> (EngineFixture, HashMap<TerminalId, PaneSlot>) {
+    entries: &[(&ResourceId, u16, u16, &[u8])],
+) -> (EngineFixture, HashMap<ResourceId, PaneSlot>) {
     let (kernel, effects, panes) = super::super::pane_state::published_test_state(entries);
     (EngineFixture { kernel, effects }, panes)
 }
@@ -946,12 +946,12 @@ fn try_drive_layout_frame(
     frame: FrameKind,
     pending_layout_request: Option<u32>,
     workspace: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
 ) -> Result<FrameOutcome, AttachError> {
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -987,8 +987,8 @@ fn drive_layout_frame(
     frame: FrameKind,
     pending_layout_request: Option<u32>,
     workspace: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
 ) -> FrameOutcome {
     try_drive_layout_frame(frame, pending_layout_request, workspace, focused, panes)
         .expect("handle layout frame")
@@ -1033,7 +1033,7 @@ fn duplicate_hello_ok_is_fatal_in_attached_phase() {
 /// answered — or has gone away — therefore arrives here as ordinary
 /// interleaved traffic.
 ///
-/// `COMMAND_RESULT` and `TERMINAL_MOVED` had no arm, so they fell to the
+/// `COMMAND_RESULT` and `RESOURCE_MOVED` had no arm, so they fell to the
 /// catch-all and killed a healthy attach with
 /// `protocol error: frame is not valid from a server in the attached phase:
 /// CommandResult { request_id: 4, result: Ok }`. `spatial_e2e` caught it:
@@ -1062,7 +1062,7 @@ fn raced_request_correlated_replies_are_inert_not_fatal() {
             request_id: 4,
             result: phux_protocol::wire::frame::CommandResult::Ok,
         },
-        FrameKind::TerminalMoved {
+        FrameKind::ResourceMoved {
             request_id: 7,
             result: phux_protocol::wire::frame::MoveResult::Ok(pane.clone()),
         },
@@ -1317,7 +1317,7 @@ fn an_unscoped_layout_key_has_no_session_authority() {
 /// a foreign record folded in there would be evicted on the next sweep.
 #[test]
 fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
-    use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+    use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
     let mut local = Workspace::single(tid(1));
     let mut focused = Some(tid(1));
@@ -1326,8 +1326,8 @@ fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
 
     let outcome = drive_layout_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(tid(77)),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(tid(77)),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(record),
         },
         None,
@@ -1519,7 +1519,7 @@ fn layout_tombstone_resets_to_local_focused_pane() {
 /// A single-window workspace whose window is two leaves split
 /// side-by-side (vertical divider), with `focus` on the supplied
 /// leaf. Exercises the multi-pane render paths without a real tty.
-fn two_pane_workspace(left: &TerminalId, right: &TerminalId, focus: &TerminalId) -> Workspace {
+fn two_pane_workspace(left: &ResourceId, right: &ResourceId, focus: &ResourceId) -> Workspace {
     let state = LayoutState {
         tree: Some(LayoutNode::Split {
             dir: SplitDir::Horizontal,
@@ -1539,9 +1539,9 @@ fn drive_output(
     engine: &mut EngineFixture,
     out: &mut Vec<u8>,
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     bytes: &[u8],
 ) {
     let seq = engine
@@ -1561,14 +1561,14 @@ fn drive_output_deferred(
     engine: &mut EngineFixture,
     out: &mut Vec<u8>,
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     bytes: &[u8],
     seq: u64,
 ) -> FrameOutcome {
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -1577,7 +1577,7 @@ fn drive_output_deferred(
         &mut engine.kernel,
         &mut engine.effects,
         out,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -1614,9 +1614,9 @@ fn drive_output_seq(
     engine: &mut EngineFixture,
     out: &mut Vec<u8>,
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     bytes: &[u8],
     seq: u64,
 ) -> FrameOutcome {
@@ -1641,15 +1641,15 @@ fn drive_output_seq_with_viewport(
     engine: &mut EngineFixture,
     out: &mut Vec<u8>,
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     bytes: &[u8],
     seq: u64,
     viewport_dims: (u16, u16),
 ) -> FrameOutcome {
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(
         PredictiveConfig::disabled(),
         viewport_dims.0,
@@ -1662,7 +1662,7 @@ fn drive_output_seq_with_viewport(
         &mut engine.kernel,
         &mut engine.effects,
         out,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: terminal_id.clone(),
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -1764,7 +1764,7 @@ fn synchronized_output_paints_only_after_end_across_frames() {
 /// phux-l96p.3: an incremental output paint is ONE synchronized-output block.
 ///
 /// Before this, only the destructive full-frame path wrapped itself in DEC
-/// 2026; the incremental path — the one that runs on every `TERMINAL_OUTPUT` —
+/// 2026; the incremental path — the one that runs on every `RESOURCE_OUTPUT` —
 /// emitted pane cells, then chrome, then the cursor, each visible to the outer
 /// terminal as it landed. The invariants asserted here are the frame contract:
 /// exactly one open and one close, the open first, the close last, and the
@@ -1910,7 +1910,7 @@ fn a_frame_that_changes_nothing_writes_nothing() {
     );
 }
 
-/// phux-foz.9: an OSC 0/2 title riding in ordinary `TERMINAL_OUTPUT`
+/// phux-foz.9: an OSC 0/2 title riding in ordinary `RESOURCE_OUTPUT`
 /// bytes is the only identity signal a plain `claude`/`codex` pane
 /// emits — the frame must raise `chrome_dirty` when the title moves so
 /// the driver refreshes the window labels and the sidebar's agents
@@ -2080,11 +2080,11 @@ fn attached_seeds_pane_slots_from_snapshot_dimensions() {
     let window = WindowId::new(1);
     let session = SessionId::new(1);
     let snapshot = SessionSnapshot::new(session, window, pane.clone())
-        .with_panes(vec![TerminalInfo::new(pane.clone(), window, 132, 43)]);
+        .with_resources(vec![ResourceInfo::new(pane.clone(), window, 132, 43)]);
     let mut panes = HashMap::new();
     let mut workspace = Workspace::default();
     let mut focused = None;
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut session_name = String::new();
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 132, 43);
     let overlay = Overlay;
@@ -2160,7 +2160,7 @@ fn terminal_output_seq_zero_is_rejected() {
     let pane = tid(1);
     let (mut engine, _) = published_fixture(&[(&pane, 80, 24, b"")]);
     let route = route_engine_frame(
-        &FrameKind::TerminalOutput {
+        &FrameKind::ResourceOutput {
             terminal_id: pane,
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -2178,7 +2178,7 @@ fn terminal_output_seq_zero_is_rejected() {
 }
 
 /// phux-2x9 via the injectable sink: a NON-focused pane must repaint
-/// on its own `TERMINAL_OUTPUT` so it isn't visually frozen. We feed
+/// on its own `RESOURCE_OUTPUT` so it isn't visually frozen. We feed
 /// output for the right (non-focused) pane and assert the captured VT
 /// carries a CUP into the right pane's rect origin plus the emitted
 /// graphemes — proving the regression without a live terminal.
@@ -2238,7 +2238,7 @@ fn a_settle_paints_every_withheld_pane_in_one_frame() {
             panes: &mut panes,
             workspace: &layout,
             zoomed: None,
-            focused_pane: focused.as_ref(),
+            focused_resource: focused.as_ref(),
             status_bar: None,
             sidebar: None,
             viewport_dims: (80, 24),
@@ -2315,9 +2315,9 @@ fn drive_snapshot(
     engine: &mut EngineFixture,
     out: &mut Vec<u8>,
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     cols: u16,
     rows: u16,
     vt_replay_bytes: &[u8],
@@ -2535,22 +2535,22 @@ fn focused_pane_repaints_on_output() {
     }
 }
 
-/// Off-screen invariant: a `TERMINAL_OUTPUT` for a pane that lives in
+/// Off-screen invariant: a `RESOURCE_OUTPUT` for a pane that lives in
 /// a NON-active window must warm that pane's libghostty mirror but
 /// paint nothing (it isn't on screen). The pane has no rect in the
 /// active window's composition, so the renderer emits no CUP.
 #[test]
 fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
-    let active_pane = tid(1);
+    let active_resource = tid(1);
     let other_pane = tid(2);
     // Two windows: active window holds pane 1; window 2 holds pane 2.
-    let mut workspace = Workspace::single(active_pane.clone());
+    let mut workspace = Workspace::single(active_resource.clone());
     workspace.add_window("2".to_owned(), other_pane.clone());
     // Re-select window 0 as active (add_window activated the new one).
     workspace.select(0);
-    let mut focused = Some(active_pane.clone());
+    let mut focused = Some(active_resource.clone());
     let (mut engine, mut panes) =
-        published_fixture(&[(&active_pane, 80, 24, b""), (&other_pane, 80, 24, b"")]);
+        published_fixture(&[(&active_resource, 80, 24, b""), (&other_pane, 80, 24, b"")]);
 
     let mut out: Vec<u8> = Vec::new();
     drive_output(
@@ -2582,7 +2582,7 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
     assert_eq!(cell, Some('o'), "pane 2 mirror should hold the output");
 }
 
-/// phux-4li.15: a `TERMINAL_SPAWNED` reply for a parked new-window
+/// phux-4li.15: a `RESOURCE_SPAWNED` reply for a parked new-window
 /// opens a new window seeded on the spawned pane, makes it active,
 /// re-anchors focus, and asks for a broadcast + reflow.
 #[test]
@@ -2625,10 +2625,10 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
 }
 
-/// Drive a `TERMINAL_SPAWNED { Ok }` reply through the full dispatcher
+/// Drive a `RESOURCE_SPAWNED { Ok }` reply through the full dispatcher
 /// with one parked [`PendingSplit`], returning the resulting `zoomed`
 /// state (phux-r82.7's zoom-on-spawn contract lives there).
-fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<TerminalId> {
+fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<ResourceId> {
     use crate::attach::actions::PendingSplit;
     use phux_protocol::wire::frame::SpawnResult;
 
@@ -2638,7 +2638,7 @@ fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<TerminalId> {
     let mut panes = panes_for(&[&anchor]);
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = Some(anchor.clone());
+    let mut zoomed: Option<ResourceId> = Some(anchor.clone());
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -2655,7 +2655,7 @@ fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<TerminalId> {
     let before = focused.clone();
     let outcome = handle_server_frame(
         &mut out,
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 7,
             result: SpawnResult::Ok(tid(2)),
         },
@@ -2705,7 +2705,7 @@ fn terminal_spawned_without_zoom_on_spawn_clears_zoom() {
 }
 
 /// phux-flywheel: the apply-vs-paint split is observable. Driving a
-/// `TERMINAL_OUTPUT` for the focused pane under a debug-level capturing
+/// `RESOURCE_OUTPUT` for the focused pane under a debug-level capturing
 /// subscriber must close BOTH child spans — `vt_apply` (libghostty
 /// parse) and `paint_trigger` (render) — so a trace can attribute
 /// client lag to apply-ms vs paint-ms separately. We assert on
@@ -2792,8 +2792,8 @@ fn output_emits_separate_apply_and_paint_spans() {
 fn bell_frame_writes_bel_to_sink() {
     let mut layout = Workspace::single(tid(1));
     let mut focused = Some(tid(1));
-    let mut zoomed: Option<TerminalId> = None;
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut zoomed: Option<ResourceId> = None;
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut session_name = String::new();
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
@@ -2830,14 +2830,14 @@ fn bell_frame_writes_bel_to_sink() {
     assert_eq!(&out, b"\x07", "bell must emit a single BEL byte");
 }
 
-/// Drive a `TERMINAL_CLOSED { terminal_id, exit_status }` through
+/// Drive a `RESOURCE_CLOSED { terminal_id, exit_status }` through
 /// [`handle_server_frame`] and return the resulting [`FrameOutcome`]
 /// so the consumer-side detach policy (phux-4r1) can be asserted.
 fn drive_closed(
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     exit_status: Option<i32>,
 ) -> FrameOutcome {
     drive_closed_expecting(
@@ -2854,22 +2854,22 @@ fn drive_closed(
 /// phux-i0e8.2.2 suppress-and-drain contract can be asserted.
 fn drive_closed_expecting(
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     exit_status: Option<i32>,
-    expected_closes: &mut HashSet<TerminalId>,
+    expected_closes: &mut HashSet<ResourceId>,
 ) -> FrameOutcome {
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
     handle_server_frame(
         &mut out,
-        FrameKind::TerminalClosed {
+        FrameKind::ResourceClosed {
             terminal_id: terminal_id.clone(),
             exit_status,
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -2898,9 +2898,9 @@ fn drive_closed_expecting(
 
 /// phux-4r1: the detach policy is consumer-owned. When the LAST pane
 /// closes there is nothing left to render or route input to, so the
-/// TUI detaches itself — the `TerminalClosed` arm returns
+/// TUI detaches itself — the `ResourceClosed` arm returns
 /// `FrameOutcome { exit: true }`. This is the consumer-side half of
-/// the EOF reshape: the server emits `TERMINAL_CLOSED` (an L1
+/// the EOF reshape: the server emits `RESOURCE_CLOSED` (an L1
 /// lifecycle fact) and the client decides to leave.
 #[test]
 fn last_pane_closed_detaches_the_client() {
@@ -2969,7 +2969,7 @@ fn detached_carries_the_servers_reason_into_the_exit() {
         let mut panes = panes_for(&[&pane]);
         let mut out: Vec<u8> = Vec::new();
         let mut session_name = String::new();
-        let mut zoomed: Option<TerminalId> = None;
+        let mut zoomed: Option<ResourceId> = None;
         let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
         let overlay = Overlay;
         let mut pending_splits = HashMap::new();
@@ -3015,14 +3015,14 @@ fn detached_carries_the_servers_reason_into_the_exit() {
 /// and return the outcome (phux-foz.1 / ADR-0035).
 fn drive_asked(
     layout: &mut Workspace,
-    focused: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
 ) -> FrameOutcome {
     use phux_protocol::wire::frame::AgentEvent;
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -3128,15 +3128,15 @@ fn asked_event_for_unknown_pane_is_dropped() {
 /// phux-foz.4: drive one agent event through [`handle_server_frame`]
 /// with minimal single-pane scaffolding; returns the outcome.
 fn drive_event(
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     event: phux_protocol::wire::frame::AgentEvent,
 ) -> FrameOutcome {
     let mut layout = Workspace::single(terminal_id.clone());
     let mut focused = Some(terminal_id.clone());
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -3276,9 +3276,9 @@ fn idle_event_is_ignored() {
 /// phux-i0e8.2.1: a `TerminalControl` event carrying `holder` and a
 /// running lifecycle.
 fn control_event(holder: Option<ClientId>) -> phux_protocol::wire::frame::AgentEvent {
-    use phux_protocol::wire::frame::{AgentEvent, ControlAction, TerminalLifecycle};
+    use phux_protocol::wire::frame::{AgentEvent, ControlAction, ResourceLifecycle};
     AgentEvent::TerminalControl {
-        lifecycle: TerminalLifecycle::Running,
+        lifecycle: ResourceLifecycle::Running,
         exit_status: None,
         input_holder: holder,
         action: match holder {
@@ -3293,15 +3293,15 @@ fn control_event(holder: Option<ClientId>) -> phux_protocol::wire::frame::AgentE
 /// with an explicit focused pane (which `drive_event` pins to the
 /// event's own terminal), for the input-authority notice tests.
 fn drive_frame_focused(
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    focused_id: &TerminalId,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_id: &ResourceId,
     frame: FrameKind,
 ) -> FrameOutcome {
     let mut layout = Workspace::single(focused_id.clone());
     let mut focused = Some(focused_id.clone());
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -3595,7 +3595,7 @@ fn history_unavailable_status_names_the_pane_in_a_warn_notice() {
 }
 
 /// phux-4r1: closing one of several panes is NOT a detach. The
-/// survivor stays attached — the `TerminalClosed` arm folds the
+/// survivor stays attached — the `ResourceClosed` arm folds the
 /// closed leaf out, re-anchors focus, and asks for a repaint +
 /// reflow + broadcast, with `exit: false`.
 #[test]
@@ -3683,7 +3683,7 @@ fn expected_close_suppresses_notice_and_drains_the_marker() {
     let mut workspace = two_pane_workspace(&left, &right, &left);
     let mut focused = Some(left.clone());
     let mut panes = panes_for(&[&left, &right]);
-    let mut expected: HashSet<TerminalId> = HashSet::new();
+    let mut expected: HashSet<ResourceId> = HashSet::new();
     expected.insert(left.clone());
 
     let outcome = drive_closed_expecting(
@@ -3736,10 +3736,10 @@ fn drive_meta_frame(frame: FrameKind, agent_meta: &mut AgentMetaIndex) -> FrameO
     // a record into the LOCAL index, so the fixture must hold the slot it
     // claims to be receiving records for — which is what a subscribed
     // pane always has in practice.
-    let mut panes: HashMap<TerminalId, PaneSlot> = panes_for(&[&pane]);
+    let mut panes: HashMap<ResourceId, PaneSlot> = panes_for(&[&pane]);
     let mut out: Vec<u8> = Vec::new();
     let mut session_name = String::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
@@ -3774,14 +3774,14 @@ fn drive_meta_frame(frame: FrameKind, agent_meta: &mut AgentMetaIndex) -> FrameO
 /// the record so labels fall back to the OSC-title path.
 #[test]
 fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
-    use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+    use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
     let pane = tid(1);
     let mut agent_meta = AgentMetaIndex::default();
 
     let outcome = drive_meta_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(pane.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(pane.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(br#"{"name":"reviewer","state":"blocked"}"#.to_vec()),
         },
         &mut agent_meta,
@@ -3797,8 +3797,8 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
     // Re-asserting the identical record is a no-op (no repaint churn).
     let outcome = drive_meta_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(pane.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(pane.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(br#"{"name":"reviewer","state":"blocked"}"#.to_vec()),
         },
         &mut agent_meta,
@@ -3811,8 +3811,8 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
     // Tombstone (DELETE_METADATA) clears the record.
     let outcome = drive_meta_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(pane.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(pane.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: None,
         },
         &mut agent_meta,
@@ -3890,7 +3890,7 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
     // Wrong scope: some other consumer's key reuse must not ring it.
     let outcome = drive_meta_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(tid(9)),
+            scope: Scope::Resource(tid(9)),
             key: CONFIG_RELOAD_KEY.to_owned(),
             value: Some(b"5678-99".to_vec()),
         },
@@ -3903,13 +3903,13 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
 /// as "no declared agent" — never a stored record, never a crash.
 #[test]
 fn agent_metadata_rejects_malformed_records() {
-    use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+    use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
     let pane = tid(1);
     let mut agent_meta = AgentMetaIndex::default();
     let outcome = drive_meta_frame(
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(pane),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(pane),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(b"not json at all".to_vec()),
         },
         &mut agent_meta,
@@ -3925,15 +3925,15 @@ fn agent_metadata_rejects_malformed_records() {
 /// A snapshot with one Terminal pane and one `AgentSession` bound to it, the
 /// way a server advertises a `phux agent session open` child: no grid
 /// (`0x0`), no window, a parent, and an agent facet.
-fn mixed_kind_snapshot(pane: &TerminalId, agent: &TerminalId) -> SessionSnapshot {
+fn mixed_kind_snapshot(pane: &ResourceId, agent: &ResourceId) -> SessionSnapshot {
     let window = WindowId::new(1);
     let session = SessionId::new(1);
     SessionSnapshot::new(session, window, pane.clone())
         .with_sessions(vec![SessionInfo::new(session, "work".to_owned())])
         .with_windows(vec![WindowInfo::new(window, session, "w0".to_owned())])
-        .with_panes(vec![
-            TerminalInfo::new(pane.clone(), window, 100, 30),
-            TerminalInfo::new(agent.clone(), WindowId::new(0), 0, 0)
+        .with_resources(vec![
+            ResourceInfo::new(pane.clone(), window, 100, 30),
+            ResourceInfo::new(agent.clone(), WindowId::new(0), 0, 0)
                 .with_kind(ResourceKind::AgentSession)
                 .with_parent(Some(pane.clone()))
                 .with_agent(Some(
@@ -3959,12 +3959,12 @@ fn kind_fixture() -> EngineFixture {
 fn drive_kind_frame(
     fixture: &mut EngineFixture,
     frame: FrameKind,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     workspace: &mut Workspace,
-    focused: &mut Option<TerminalId>,
+    focused: &mut Option<ResourceId>,
 ) -> Result<FrameOutcome, AttachError> {
     let mut out: Vec<u8> = Vec::new();
-    let mut zoomed: Option<TerminalId> = None;
+    let mut zoomed: Option<ResourceId> = None;
     let mut session_name = String::new();
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 100, 30);
     let overlay = Overlay;
@@ -4007,7 +4007,7 @@ fn attach_participants_and_agent_sessions_split_a_mixed_kind_snapshot() {
         vec![pane],
         "only the Terminal-kind resource is a barrier participant"
     );
-    let children: Vec<&TerminalId> = attach_agent_sessions(&snapshot, &participants)
+    let children: Vec<&ResourceId> = attach_agent_sessions(&snapshot, &participants)
         .into_iter()
         .map(|info| &info.id)
         .collect();
@@ -4157,7 +4157,7 @@ fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
     let live = "{\"seq\":2,\"ts_ms\":2,\"type\":\"stop\",\"data\":{}}\n";
     let output = drive_kind_frame(
         &mut fixture,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id: agent.clone(),
             stream_id,
             bootstrap_id,
@@ -4210,7 +4210,7 @@ fn closing_an_agent_session_removes_only_its_row() {
 
     let outcome = drive_kind_frame(
         &mut fixture,
-        FrameKind::TerminalClosed {
+        FrameKind::ResourceClosed {
             terminal_id: agent.clone(),
             exit_status: None,
             reason: CloseReason::ParentClosed,
@@ -4307,7 +4307,7 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
         &mut fixture,
         FrameKind::Event {
             terminal: Some(late.clone()),
-            event: phux_protocol::wire::frame::AgentEvent::PaneSpawned {
+            event: phux_protocol::wire::frame::AgentEvent::ResourceSpawned {
                 kind: ResourceKind::AgentSession,
                 parent: Some(pane.clone()),
             },
@@ -4339,7 +4339,7 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
         &mut fixture,
         FrameKind::Event {
             terminal: Some(tid(4)),
-            event: phux_protocol::wire::frame::AgentEvent::PaneSpawned {
+            event: phux_protocol::wire::frame::AgentEvent::ResourceSpawned {
                 kind: ResourceKind::AgentSession,
                 parent: Some(tid(99)),
             },

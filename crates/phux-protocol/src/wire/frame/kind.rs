@@ -7,7 +7,7 @@ use crate::caps::{
     BootstrapCodec, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
     Compression, OutputMode, ServerCapabilities,
 };
-use crate::ids::{BootstrapId, ClientId, GroupId, SatelliteHost, StreamId, TerminalId};
+use crate::ids::{BootstrapId, ClientId, GroupId, ResourceId, SatelliteHost, StreamId};
 use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
@@ -30,9 +30,9 @@ use super::{
     TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
     TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
     TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA,
-    TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED,
-    TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
+    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
+    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
     TYPE_VIEWPORT_RESIZE, TombstoneReason, ViewportInfo, encode_agent_event, encode_attach_target,
     encode_bootstrap_codec, encode_bootstrap_profile, encode_command, encode_command_result,
     encode_env, encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
@@ -45,7 +45,7 @@ use super::{
 /// The phux-6yl.4 scaffold populated `Hello`, `Ping`, and `PaneDiff`. The
 /// phux-4az pass added the message-catalog variants needed for the attach
 /// lifecycle. Protocol 0.7 replaces the retired synthesized snapshot frame with
-/// explicit bootstrap/profile/history frames from ADR-0070. `TerminalOutput`
+/// explicit bootstrap/profile/history frames from ADR-0070. `ResourceOutput`
 /// remains VT bytes, now bound to a non-zero stream and bootstrap generation.
 ///
 /// [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
@@ -109,16 +109,16 @@ pub enum FrameKind {
         nonce: u64,
     },
 
-    /// `TERMINAL_OUTPUT` — live terminal content (`docs/spec/L1.md` §4.1).
+    /// `RESOURCE_OUTPUT` — live terminal content (`docs/spec/L1.md` §4.1).
     ///
     /// `stream_id` and `bootstrap_id` bind every live frame to one published
     /// replica generation. `seq` is checked, non-wrapping, and contiguous
     /// within that pair. Under `NativeState`, `bytes` are the exact PTY bytes
     /// and MUST NOT be color- or capability-rewritten. Compatibility profiles
     /// may carry raw or synthesized VT according to the selected profile.
-    TerminalOutput {
+    ResourceOutput {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription receiving this output.
         stream_id: StreamId,
         /// Published replica generation this output extends.
@@ -157,10 +157,10 @@ pub enum FrameKind {
 
     /// `INPUT_KEY` — client forwards a structured key event (`docs/spec/input.md` §2).
     ///
-    /// Wire shape: tagged [`TerminalId`] followed by the encoded [`KeyEvent`].
+    /// Wire shape: tagged [`ResourceId`] followed by the encoded [`KeyEvent`].
     InputKey {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Structured key event; libghostty atoms inside.
         event: KeyEvent,
     },
@@ -168,7 +168,7 @@ pub enum FrameKind {
     /// `INPUT_MOUSE` — client forwards a mouse event (`docs/spec/input.md` §3).
     InputMouse {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Structured mouse event; coordinates are terminal-local pixels.
         event: MouseEvent,
     },
@@ -177,7 +177,7 @@ pub enum FrameKind {
     /// (`docs/spec/input.md` §4).
     InputFocus {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Whether the client window gained or lost focus.
         event: FocusEvent,
     },
@@ -185,7 +185,7 @@ pub enum FrameKind {
     /// `INPUT_PASTE` — client forwards a paste payload (`docs/spec/input.md` §5).
     InputPaste {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Paste payload plus trust classification.
         event: PasteEvent,
     },
@@ -198,7 +198,7 @@ pub enum FrameKind {
     /// the terminal's ordered encoded-input lane.
     InputTerminalReply {
         /// Attached target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Non-empty opaque PTY reply bytes. NUL and non-UTF-8 are valid.
         bytes: bytes::Bytes,
     },
@@ -211,12 +211,12 @@ pub enum FrameKind {
     /// boundary releases raw bytes without an extra RTT.
     FrameAck {
         /// Acked terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription whose `StateSync` reference advances.
         stream_id: StreamId,
         /// Replica generation whose reference advances.
         bootstrap_id: BootstrapId,
-        /// Highest contiguous `TERMINAL_OUTPUT.seq` applied.
+        /// Highest contiguous `RESOURCE_OUTPUT.seq` applied.
         seq: u64,
     },
 
@@ -279,7 +279,7 @@ pub enum FrameKind {
     /// `BOOTSTRAP_BEGIN` — declares one replacement replica generation.
     BootstrapBegin {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// New generation for this stream.
@@ -297,7 +297,7 @@ pub enum FrameKind {
     /// `BOOTSTRAP_CHUNK` — one bounded opaque checkpoint fragment.
     BootstrapChunk {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation.
@@ -310,7 +310,7 @@ pub enum FrameKind {
     /// `BOOTSTRAP_READY` — prior chunks reach the selected codec's READY boundary.
     BootstrapReady {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation now safe to publish.
@@ -321,7 +321,7 @@ pub enum FrameKind {
     /// `HISTORY_REQUEST` — request the next bounded history suffix page.
     HistoryRequest {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation that issued the cursor.
@@ -336,7 +336,7 @@ pub enum FrameKind {
     /// `HISTORY_PAGE` — one independently decodable opaque history page.
     HistoryPage {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation that issued the cursor.
@@ -355,7 +355,7 @@ pub enum FrameKind {
     /// `BOOTSTRAP_TOMBSTONE` — permanently invalidates one generation.
     BootstrapTombstone {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Invalidated generation.
@@ -368,7 +368,7 @@ pub enum FrameKind {
     /// `HISTORY_TOMBSTONE` — invalidates one progressive history cursor only.
     HistoryTombstone {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation that issued the cursor.
@@ -381,7 +381,7 @@ pub enum FrameKind {
     /// `HISTORY_REJECTED` — retryable refusal that preserves cursor continuity.
     HistoryRejected {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation that issued the cursor.
@@ -399,7 +399,7 @@ pub enum FrameKind {
     /// `BELL` — terminal received a bell character (`docs/spec/L1.md` §1.2).
     Bell {
         /// Terminal that bell'd.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
     },
 
     /// `ERROR` — server-to-client structured error (`docs/spec/proto.md` §9).
@@ -585,10 +585,10 @@ pub enum FrameKind {
     // The server-side handler + client-side emission land in follow-up
     // tickets; this enum allocation is the wire substrate they build on.
     // -------------------------------------------------------------------------
-    /// `SPAWN_TERMINAL` — client requests a new Terminal under `group`
+    /// `SPAWN_RESOURCE` — client requests a new Terminal under `group`
     /// (`docs/spec/L1.md` §1 / §10.1).
     ///
-    /// Async: the server replies with [`FrameKind::TerminalSpawned`]
+    /// Async: the server replies with [`FrameKind::ResourceSpawned`]
     /// correlated by `request_id`. `command = None` means "use the server's
     /// default shell" (the same convention as
     /// `AttachTarget::CreateIfMissing.command = None`). `cwd = None` means
@@ -601,8 +601,8 @@ pub enum FrameKind {
     /// `GroupId(1)` (SPEC §7.4 L2-dependency note). Other group
     /// ids MAY surface as [`SpawnError::GroupNotFound`](super::SpawnError::GroupNotFound) inside the
     /// reply frame's [`SpawnResult::Err`] arm.
-    SpawnTerminal {
-        /// Correlates this request with the eventual `TerminalSpawned`.
+    SpawnResource {
+        /// Correlates this request with the eventual `ResourceSpawned`.
         request_id: u32,
         /// Group under which to spawn the new Terminal.
         group: GroupId,
@@ -639,8 +639,8 @@ pub enum FrameKind {
         /// write layout metadata to place the returned leaf. `None` preserves
         /// the legacy attached-client / most-recent-session policy. Encoded as
         /// additive optional field id 8.
-        owner_terminal: Option<TerminalId>,
-        /// Opaque [`TERMINAL_AGENT_SESSION_KEY`](super::TERMINAL_AGENT_SESSION_KEY) bytes to install atomically on
+        owner_terminal: Option<ResourceId>,
+        /// Opaque [`RESOURCE_AGENT_SESSION_KEY`](super::RESOURCE_AGENT_SESSION_KEY) bytes to install atomically on
         /// the new local Terminal before it becomes visible to other clients.
         /// Additive optional field id 9; old servers ignore it, after which a
         /// new launcher still performs its ordinary SET/GET confirmation.
@@ -650,7 +650,7 @@ pub enum FrameKind {
         /// server). A layout-owning consumer knows the tile the new leaf
         /// will occupy before it has an id for it, and passing that here
         /// is strictly better than letting the pane bootstrap at a default
-        /// and then reflowing it: the post-spawn `TERMINAL_RESIZE` becomes
+        /// and then reflowing it: the post-spawn `RESIZE_TERMINAL` becomes
         /// a no-op instead of invalidating the bootstrap generation the
         /// server just built (bead phux-a5xj).
         ///
@@ -673,71 +673,71 @@ pub enum FrameKind {
         resource: Option<Box<SpawnResource>>,
     },
 
-    /// `TERMINAL_SPAWNED` — server reply to a prior `SpawnTerminal`
+    /// `RESOURCE_SPAWNED` — server reply to a prior `SpawnResource`
     /// (`docs/spec/L1.md` §1 / §10.1).
     ///
     /// Correlated to the originating request by `request_id`. `result`
-    /// carries either the freshly allocated [`TerminalId`] or a structured
+    /// carries either the freshly allocated [`ResourceId`] or a structured
     /// [`SpawnError`](super::SpawnError). The structured error is deliberately separate from
     /// the generic [`FrameKind::Error`] catch-all so command-correlated
     /// failures stay typed end-to-end (matching the
     /// `METADATA_VALUE` precedent from phux-4li.8).
-    TerminalSpawned {
-        /// Correlates this reply with a prior `SpawnTerminal.request_id`.
+    ResourceSpawned {
+        /// Correlates this reply with a prior `SpawnResource.request_id`.
         request_id: u32,
         /// Either the freshly allocated Terminal, or a structured error.
         result: SpawnResult,
     },
 
-    /// `MOVE_TERMINAL` — re-parent a live Terminal into the window owning
+    /// `MOVE_RESOURCE` — re-parent a live Terminal into the window owning
     /// `owner_terminal` (`docs/spec/L1.md` §1 / §10.1; ADR-0056).
     ///
-    /// Async: the server replies with [`FrameKind::TerminalMoved`]
+    /// Async: the server replies with [`FrameKind::ResourceMoved`]
     /// correlated by `request_id`. `owner_terminal` is an ownership
-    /// address exactly as in `SPAWN_TERMINAL`: the destination window may
+    /// address exactly as in `SPAWN_RESOURCE`: the destination window may
     /// belong to a different session, and the frame conveys no split
     /// direction, ratio, or focus — layout stays a client-written L3
     /// concern. The pane's process, PTY, scrollback, metadata, and agent
-    /// record are untouched, and its `TerminalId` is stable across the
+    /// record are untouched, and its `ResourceId` is stable across the
     /// move. Local-only: a satellite-tagged Terminal on either end is
     /// refused with [`MoveError::UnsupportedSatelliteRoute`](super::MoveError::UnsupportedSatelliteRoute). Senders
-    /// MUST first see the `MOVE_TERMINAL` feature bit in
-    /// `HELLO_OK.server_caps` (`crate::caps::MOVE_TERMINAL`).
-    MoveTerminal {
-        /// Correlates this request with the eventual `TerminalMoved`.
+    /// MUST first see the `MOVE_RESOURCE` feature bit in
+    /// `HELLO_OK.server_caps` (`crate::caps::MOVE_RESOURCE`).
+    MoveResource {
+        /// Correlates this request with the eventual `ResourceMoved`.
         request_id: u32,
         /// The Terminal to re-parent.
-        terminal: TerminalId,
+        terminal: ResourceId,
         /// Existing Terminal whose owning window becomes the destination.
-        owner_terminal: TerminalId,
+        owner_terminal: ResourceId,
     },
 
-    /// `TERMINAL_MOVED` — server reply to a prior `MoveTerminal`
+    /// `RESOURCE_MOVED` — server reply to a prior `MoveResource`
     /// (`docs/spec/L1.md` §1 / §10.1; ADR-0056).
     ///
     /// Correlated by `request_id`. `result` carries the moved Terminal's
-    /// unchanged [`TerminalId`] or a structured [`MoveError`](super::MoveError) — typed
-    /// end-to-end for the same reason as [`FrameKind::TerminalSpawned`].
-    TerminalMoved {
-        /// Correlates this reply with a prior `MoveTerminal.request_id`.
+    /// unchanged [`ResourceId`] or a structured [`MoveError`](super::MoveError) — typed
+    /// end-to-end for the same reason as [`FrameKind::ResourceSpawned`].
+    ResourceMoved {
+        /// Correlates this reply with a prior `MoveResource.request_id`.
         request_id: u32,
         /// Either the moved Terminal, or a structured error.
         result: MoveResult,
     },
 
-    /// `TERMINAL_CLOSED` — server notifies clients that a Terminal exited
+    /// `RESOURCE_CLOSED` — server notifies clients that a Terminal exited
     /// (`docs/spec/L1.md` §1 / §10.1).
     ///
     /// Emitted when the underlying PTY exits, whether by `_exit(n)`, by
-    /// signal, or via a `KILL_TERMINAL` command. `exit_status = Some(n)`
+    /// signal, or via a `KILL_RESOURCE` command. `exit_status = Some(n)`
     /// reports the process's exit code; `None` covers signal kills and
     /// unknown-cause exits (a deliberately compact subset of SPEC §10.1's
     /// `ExitStatus` tagged union — the wider tagged union grows in a
     /// follow-up wire bump if the additional structure proves
     /// load-bearing).
-    TerminalClosed {
+    ResourceClosed {
         /// The Terminal that exited.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Process exit code (`_exit(n)`), or `None` for signals / unknown.
         exit_status: Option<i32>,
         /// Why the resource closed. Additive optional field id 3: the
@@ -747,7 +747,7 @@ pub enum FrameKind {
         reason: CloseReason,
     },
 
-    /// `TERMINAL_RESIZE` — client signals a per-Terminal PTY resize
+    /// `RESIZE_TERMINAL` — client signals a per-Terminal PTY resize
     /// (`docs/spec/L1.md` §1 / §10.2).
     ///
     /// Sent in addition to (not in place of) `VIEWPORT_RESIZE`: the
@@ -757,9 +757,9 @@ pub enum FrameKind {
     /// `ioctl(TIOCSWINSZ)` from this. Implementations SHOULD treat `cols`
     /// or `rows` of zero as a no-op rather than a kernel error (the
     /// codec round-trips zero faithfully).
-    TerminalResize {
+    ResizeTerminal {
         /// Target Terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// New width in cells.
         cols: u16,
         /// New height in cells.
@@ -815,7 +815,7 @@ pub enum FrameKind {
     SubscribeEvents {
         /// Per-Terminal scope, or `None` for every Terminal the client may
         /// observe.
-        terminal: Option<TerminalId>,
+        terminal: Option<ResourceId>,
     },
 
     /// `EVENT` — server pushes one [`AgentEvent`] to a subscribed client
@@ -828,7 +828,7 @@ pub enum FrameKind {
     /// [`AgentEvent::Unknown`] rather than failing the parse.
     Event {
         /// The Terminal this event concerns, or `None` if server-scoped.
-        terminal: Option<TerminalId>,
+        terminal: Option<ResourceId>,
         /// The event payload.
         event: AgentEvent,
     },
@@ -844,7 +844,7 @@ impl InputEvent {
     /// `crate::input` stays a leaf of the wire layer: frames know about
     /// input atoms, input atoms know nothing about frames.
     #[must_use]
-    pub fn into_frame(self, terminal_id: TerminalId) -> FrameKind {
+    pub fn into_frame(self, terminal_id: ResourceId) -> FrameKind {
         match self {
             Self::Key(event) => FrameKind::InputKey { terminal_id, event },
             Self::Mouse(event) => FrameKind::InputMouse { terminal_id, event },
@@ -863,7 +863,7 @@ impl FrameKind {
             Self::HelloOk { .. } => TYPE_HELLO_OK,
             Self::Ping { .. } => TYPE_PING,
             Self::Pong { .. } => TYPE_PONG,
-            Self::TerminalOutput { .. } => TYPE_TERMINAL_OUTPUT,
+            Self::ResourceOutput { .. } => TYPE_RESOURCE_OUTPUT,
             Self::Attach { .. } => TYPE_ATTACH,
             Self::Detach => TYPE_DETACH,
             Self::InputKey { .. } => TYPE_INPUT_KEY,
@@ -894,12 +894,12 @@ impl FrameKind {
             Self::MetadataChanged { .. } => TYPE_METADATA_CHANGED,
             Self::MetadataValue { .. } => TYPE_METADATA_VALUE,
             Self::MetadataKeys { .. } => TYPE_METADATA_KEYS,
-            Self::SpawnTerminal { .. } => TYPE_SPAWN_TERMINAL,
-            Self::MoveTerminal { .. } => TYPE_MOVE_TERMINAL,
-            Self::TerminalMoved { .. } => TYPE_TERMINAL_MOVED,
-            Self::TerminalSpawned { .. } => TYPE_TERMINAL_SPAWNED,
-            Self::TerminalClosed { .. } => TYPE_TERMINAL_CLOSED,
-            Self::TerminalResize { .. } => TYPE_TERMINAL_RESIZE,
+            Self::SpawnResource { .. } => TYPE_SPAWN_RESOURCE,
+            Self::MoveResource { .. } => TYPE_MOVE_RESOURCE,
+            Self::ResourceMoved { .. } => TYPE_RESOURCE_MOVED,
+            Self::ResourceSpawned { .. } => TYPE_RESOURCE_SPAWNED,
+            Self::ResourceClosed { .. } => TYPE_RESOURCE_CLOSED,
+            Self::ResizeTerminal { .. } => TYPE_RESIZE_TERMINAL,
             Self::Command { .. } => TYPE_COMMAND,
             Self::CommandResult { .. } => TYPE_COMMAND_RESULT,
             Self::SubscribeEvents { .. } => TYPE_SUBSCRIBE_EVENTS,
@@ -1041,7 +1041,7 @@ impl FrameKind {
             // `Ping` and `Pong` share a single-`u64` nonce field; merged to
             // satisfy `clippy::match_same_arms`.
             Self::Ping { nonce } | Self::Pong { nonce } => Self::encode_nonce(enc, *nonce),
-            Self::TerminalOutput {
+            Self::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1261,7 +1261,7 @@ impl FrameKind {
             Self::MetadataKeys { request_id, keys } => {
                 Self::encode_metadata_keys(enc, *request_id, keys);
             }
-            Self::SpawnTerminal {
+            Self::SpawnResource {
                 request_id,
                 group,
                 command,
@@ -1293,23 +1293,23 @@ impl FrameKind {
                     Self::encode_spawn_terminal_resource(enc, resource);
                 }
             }
-            Self::TerminalSpawned { request_id, result } => {
+            Self::ResourceSpawned { request_id, result } => {
                 Self::encode_terminal_spawned(enc, *request_id, result);
             }
-            Self::MoveTerminal {
+            Self::MoveResource {
                 request_id,
                 terminal,
                 owner_terminal,
             } => Self::encode_move_terminal(enc, *request_id, terminal, owner_terminal),
-            Self::TerminalMoved { request_id, result } => {
+            Self::ResourceMoved { request_id, result } => {
                 Self::encode_terminal_moved(enc, *request_id, result);
             }
-            Self::TerminalClosed {
+            Self::ResourceClosed {
                 terminal_id,
                 exit_status,
                 reason,
             } => Self::encode_terminal_closed(enc, terminal_id, *exit_status, *reason),
-            Self::TerminalResize {
+            Self::ResizeTerminal {
                 terminal_id,
                 cols,
                 rows,
@@ -1447,10 +1447,10 @@ impl FrameKind {
         enc.write_field_with(field::ping::NONCE, |e| e.write_u64_be(nonce));
     }
 
-    /// Write the `TERMINAL_OUTPUT` payload: VT bytes bound to a generation.
+    /// Write the `RESOURCE_OUTPUT` payload: VT bytes bound to a generation.
     fn encode_terminal_output(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         seq: u64,
@@ -1509,7 +1509,7 @@ impl FrameKind {
     }
 
     /// Write the `INPUT_KEY` payload.
-    fn encode_input_key(enc: &mut Encoder<'_>, terminal_id: &TerminalId, event: &KeyEvent) {
+    fn encode_input_key(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &KeyEvent) {
         enc.write_field_with(field::input_key::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1517,7 +1517,7 @@ impl FrameKind {
     }
 
     /// Write the `INPUT_MOUSE` payload.
-    fn encode_input_mouse(enc: &mut Encoder<'_>, terminal_id: &TerminalId, event: &MouseEvent) {
+    fn encode_input_mouse(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &MouseEvent) {
         enc.write_field_with(field::input_mouse::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1525,7 +1525,7 @@ impl FrameKind {
     }
 
     /// Write the `INPUT_FOCUS` payload.
-    fn encode_input_focus(enc: &mut Encoder<'_>, terminal_id: &TerminalId, event: FocusEvent) {
+    fn encode_input_focus(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: FocusEvent) {
         enc.write_field_with(field::input_focus::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1535,7 +1535,7 @@ impl FrameKind {
     }
 
     /// Write the `INPUT_PASTE` payload.
-    fn encode_input_paste(enc: &mut Encoder<'_>, terminal_id: &TerminalId, event: &PasteEvent) {
+    fn encode_input_paste(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &PasteEvent) {
         enc.write_field_with(field::input_paste::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1543,7 +1543,7 @@ impl FrameKind {
     }
 
     /// Write the `INPUT_TERMINAL_REPLY` payload.
-    fn encode_input_terminal_reply(enc: &mut Encoder<'_>, terminal_id: &TerminalId, bytes: &[u8]) {
+    fn encode_input_terminal_reply(enc: &mut Encoder<'_>, terminal_id: &ResourceId, bytes: &[u8]) {
         enc.write_field_with(field::input_terminal_reply::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1553,7 +1553,7 @@ impl FrameKind {
     /// Write the `FRAME_ACK` payload.
     fn encode_frame_ack(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         seq: u64,
@@ -1603,7 +1603,7 @@ impl FrameKind {
     /// Write the generation binding that opens the `BOOTSTRAP_BEGIN` payload.
     fn encode_bootstrap_begin_stream(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
     ) {
@@ -1659,7 +1659,7 @@ impl FrameKind {
     /// Write the `BOOTSTRAP_CHUNK` payload.
     fn encode_bootstrap_chunk(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         chunk_seq: u32,
@@ -1683,7 +1683,7 @@ impl FrameKind {
     /// Write the `BOOTSTRAP_READY` payload.
     fn encode_bootstrap_ready(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         history_cursor: Option<&[u8]>,
@@ -1705,7 +1705,7 @@ impl FrameKind {
     /// Write the `HISTORY_REQUEST` payload.
     fn encode_history_request(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         cursor: &[u8],
@@ -1733,7 +1733,7 @@ impl FrameKind {
     /// Write the generation binding that opens the `HISTORY_PAGE` payload.
     fn encode_history_page_stream(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
     ) {
@@ -1773,7 +1773,7 @@ impl FrameKind {
     /// Write the `BOOTSTRAP_TOMBSTONE` payload.
     fn encode_bootstrap_tombstone(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         reason: TombstoneReason,
@@ -1799,7 +1799,7 @@ impl FrameKind {
     /// Write the `HISTORY_TOMBSTONE` payload.
     fn encode_history_tombstone(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         cursor: &[u8],
@@ -1823,7 +1823,7 @@ impl FrameKind {
     /// Write the generation binding that opens the `HISTORY_REJECTED` payload.
     fn encode_history_rejected_stream(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
     ) {
@@ -1859,7 +1859,7 @@ impl FrameKind {
     }
 
     /// Write the `BELL` payload.
-    fn encode_bell(enc: &mut Encoder<'_>, terminal_id: &TerminalId) {
+    fn encode_bell(enc: &mut Encoder<'_>, terminal_id: &ResourceId) {
         enc.write_field_with(field::bell::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
         });
@@ -1970,7 +1970,7 @@ impl FrameKind {
         });
     }
 
-    /// Write the request identity that opens the `SPAWN_TERMINAL` payload.
+    /// Write the request identity that opens the `SPAWN_RESOURCE` payload.
     fn encode_spawn_terminal_request(enc: &mut Encoder<'_>, request_id: u32, group: GroupId) {
         enc.write_field_with(field::spawn_terminal::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -1980,7 +1980,7 @@ impl FrameKind {
         });
     }
 
-    /// Write the process shape `SPAWN_TERMINAL` asks the server to launch.
+    /// Write the process shape `SPAWN_RESOURCE` asks the server to launch.
     ///
     /// Optional command/cwd/env: absent field = None. An empty list
     /// (`Some(vec![])`) stays distinct: a present field with a zero count.
@@ -2011,7 +2011,7 @@ impl FrameKind {
     fn encode_spawn_terminal_placement(
         enc: &mut Encoder<'_>,
         satellite: Option<&SatelliteHost>,
-        owner_terminal: Option<&TerminalId>,
+        owner_terminal: Option<&ResourceId>,
         agent_session: Option<&[u8]>,
         initial_size: Option<(u16, u16)>,
     ) {
@@ -2057,7 +2057,7 @@ impl FrameKind {
         }
     }
 
-    /// Write the `TERMINAL_SPAWNED` payload.
+    /// Write the `RESOURCE_SPAWNED` payload.
     fn encode_terminal_spawned(enc: &mut Encoder<'_>, request_id: u32, result: &SpawnResult) {
         enc.write_field_with(field::terminal_spawned::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -2067,12 +2067,12 @@ impl FrameKind {
         });
     }
 
-    /// Write the `MOVE_TERMINAL` payload.
+    /// Write the `MOVE_RESOURCE` payload.
     fn encode_move_terminal(
         enc: &mut Encoder<'_>,
         request_id: u32,
-        terminal: &TerminalId,
-        owner_terminal: &TerminalId,
+        terminal: &ResourceId,
+        owner_terminal: &ResourceId,
     ) {
         enc.write_field_with(field::move_terminal::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -2085,7 +2085,7 @@ impl FrameKind {
         });
     }
 
-    /// Write the `TERMINAL_MOVED` payload.
+    /// Write the `RESOURCE_MOVED` payload.
     fn encode_terminal_moved(enc: &mut Encoder<'_>, request_id: u32, result: &MoveResult) {
         enc.write_field_with(field::terminal_moved::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -2095,10 +2095,10 @@ impl FrameKind {
         });
     }
 
-    /// Write the `TERMINAL_CLOSED` payload.
+    /// Write the `RESOURCE_CLOSED` payload.
     fn encode_terminal_closed(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         exit_status: Option<i32>,
         reason: CloseReason,
     ) {
@@ -2118,10 +2118,10 @@ impl FrameKind {
         }
     }
 
-    /// Write the `TERMINAL_RESIZE` payload.
+    /// Write the `RESIZE_TERMINAL` payload.
     fn encode_terminal_resize(
         enc: &mut Encoder<'_>,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         cols: u16,
         rows: u16,
     ) {
@@ -2149,7 +2149,7 @@ impl FrameKind {
     }
 
     /// Write the `SUBSCRIBE_EVENTS` payload.
-    fn encode_subscribe_events(enc: &mut Encoder<'_>, terminal: Option<&TerminalId>) {
+    fn encode_subscribe_events(enc: &mut Encoder<'_>, terminal: Option<&ResourceId>) {
         // Optional terminal scope: absent field = server-scoped None.
         if let Some(t) = terminal {
             enc.write_field_with(field::subscribe_events::TERMINAL, |e| {
@@ -2159,7 +2159,7 @@ impl FrameKind {
     }
 
     /// Write the `EVENT` payload.
-    fn encode_event(enc: &mut Encoder<'_>, terminal: Option<&TerminalId>, event: &AgentEvent) {
+    fn encode_event(enc: &mut Encoder<'_>, terminal: Option<&ResourceId>, event: &AgentEvent) {
         if let Some(t) = terminal {
             enc.write_field_with(field::event::TERMINAL, |e| encode_terminal_id(t, e));
         }

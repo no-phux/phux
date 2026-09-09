@@ -19,7 +19,7 @@ use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::policy::QUIC_ALPN;
 use phux_protocol::wire::frame::FrameKind;
 use rustls::pki_types::pem::PemObject as _;
@@ -105,7 +105,7 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
 
 const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
-        terminal_id: TerminalId::Local { id: 1 },
+        terminal_id: ResourceId::Local { id: 1 },
         stream_id: phux_protocol::StreamId::new(1).expect("stream"),
         bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         seq,

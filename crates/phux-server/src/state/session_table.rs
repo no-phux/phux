@@ -57,7 +57,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use phux_core::ids::{SessionId, TerminalId, WindowId};
+use phux_core::ids::{ResourceId, SessionId, WindowId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
 
@@ -162,7 +162,7 @@ impl SessionTable {
 
     /// Look up the active pane of the active window of `session`, if any.
     #[must_use]
-    pub(super) fn active_pane_of(&self, session: SessionId) -> Option<TerminalId> {
+    pub(super) fn active_pane_of(&self, session: SessionId) -> Option<ResourceId> {
         let session = self.registry.session(session)?;
         let window_id = session.active?;
         let window = self.registry.window(window_id)?;
@@ -197,7 +197,7 @@ impl SessionTable {
     /// first window. The `session-root` policy reads this pane's CWD to
     /// establish the session's creation directory.
     #[must_use]
-    pub(super) fn seed_pane_of(&self, session: SessionId) -> Option<TerminalId> {
+    pub(super) fn seed_pane_of(&self, session: SessionId) -> Option<ResourceId> {
         let session = self.registry.session(session)?;
         let window_id = *session.windows.first()?;
         let window = self.registry.window(window_id)?;
@@ -232,7 +232,7 @@ impl SessionTable {
     }
 
     /// Seed a session+window+pane. Returns the new
-    /// `(SessionId, WindowId, TerminalId)`.
+    /// `(SessionId, WindowId, ResourceId)`.
     ///
     /// # Panics
     ///
@@ -241,7 +241,7 @@ impl SessionTable {
     /// entity was created on the line above. A panic here indicates a
     /// `phux-core::Registry` regression.
     #[allow(clippy::expect_used, reason = "unreachable: parent just created")]
-    pub(super) fn seed(&mut self, name: &str) -> (SessionId, WindowId, TerminalId) {
+    pub(super) fn seed(&mut self, name: &str) -> (SessionId, WindowId, ResourceId) {
         let sid = self.registry.new_session(name.to_owned());
         let wid = self.registry.new_window(sid).expect("session just created");
         let pid = self
@@ -257,7 +257,7 @@ impl SessionTable {
     /// unreachable for a seeded session, which always has at least one
     /// window.
     #[must_use]
-    pub(super) fn add_pane(&mut self, session: SessionId) -> Option<TerminalId> {
+    pub(super) fn add_pane(&mut self, session: SessionId) -> Option<ResourceId> {
         let wid = self.registry.session(session)?.windows.first().copied()?;
         self.registry.new_terminal(wid).ok()
     }
@@ -268,7 +268,7 @@ impl SessionTable {
     /// which resolves the caller's wire id through the id space before it
     /// can name `owner`.
     #[must_use]
-    pub(super) fn add_pane_beside(&mut self, owner: TerminalId) -> Option<TerminalId> {
+    pub(super) fn add_pane_beside(&mut self, owner: ResourceId) -> Option<ResourceId> {
         let window = self.registry.resource(owner)?.window?;
         self.registry.new_terminal(window).ok()
     }

@@ -229,8 +229,8 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
                 client.workspace.fail(&BridgeError::state(message));
             }
         }
-        FrameKind::TerminalSpawned { request_id, .. }
-        | FrameKind::TerminalMoved { request_id, .. }
+        FrameKind::ResourceSpawned { request_id, .. }
+        | FrameKind::ResourceMoved { request_id, .. }
             if request_id >= INTERNAL_START =>
         {
             if pending_id(&client.workspace, request_id) {

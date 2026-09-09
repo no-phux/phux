@@ -132,7 +132,7 @@ fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
     const NAMED: &[(ServerFeature, &str)] = &[
         (ServerFeature::AcknowledgedInput, "acknowledged_input"),
         (ServerFeature::FileUpload, "file_upload"),
-        (ServerFeature::MoveTerminal, "move_terminal"),
+        (ServerFeature::MoveResource, "move_terminal"),
         (ServerFeature::TerminalReply, "terminal_reply"),
         (ServerFeature::Shutdown, "shutdown"),
         (ServerFeature::SpawnInitialSize, "spawn_initial_size"),
@@ -162,7 +162,7 @@ fn build_report(
     let mut sessions = snapshot.sessions.clone();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     let satellite_terminals = snapshot
-        .panes
+        .resources
         .iter()
         .filter(|pane| pane.id.host().is_some())
         .map(|pane| crate::selector::format_terminal_id(&pane.id))
@@ -395,8 +395,8 @@ mod tests {
     use phux_client::state::Degradation;
     use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::wire::frame::FrameKind;
-    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo};
-    use phux_protocol::{SessionId, TerminalId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+    use phux_protocol::{ResourceId, SessionId, WindowId};
 
     use super::{
         StatusReport, build_report, feature_names, format_uptime, not_running_document,
@@ -548,12 +548,12 @@ mod tests {
     #[test]
     fn build_report_sorts_and_splits() {
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
                 .with_sessions(vec![session("beta", 1, 1), session("alpha", 2, 0)])
-                .with_panes(vec![
-                    TerminalInfo::new(TerminalId::local(1), WindowId::new(1), 80, 24),
-                    TerminalInfo::new(
-                        TerminalId::satellite("build-box", 1),
+                .with_resources(vec![
+                    ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+                    ResourceInfo::new(
+                        ResourceId::satellite("build-box", 1),
                         WindowId::new(1),
                         80,
                         24,

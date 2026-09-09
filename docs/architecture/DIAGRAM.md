@@ -43,7 +43,7 @@ last-reviewed: 2026-09-09
        │  one frame codec, five byte streams                    │
        │  UDS · WebSocket · QUIC · WebTransport · SSH-stdio     │
        │                                                        │
-       │  server → client: BOOTSTRAP_* / TERMINAL_OUTPUT bytes, │
+       │  server → client: BOOTSTRAP_* / RESOURCE_OUTPUT bytes, │
        │                   lifecycle, EVENT, metadata           │
        │  client → server: INPUT_* atoms (Terminal kind only),  │
        │                   commands, metadata, append           │
@@ -150,8 +150,7 @@ consumer speaks L1 plus whatever L3 keys it chooses.
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
 | AgentSession engine and `APPEND_RESOURCE_OUTPUT` | `ResourceFacetHandle` has only the `Terminal` variant; nothing in `phux-server` accepts appended records, and agent state comes from hooks and screen scraping. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |
-| Server-side cascade close with `CloseReason::ParentClosed` | Parent bindings and their cascade exist in the `phux-core` registry; the runtime spawns no child resources and `TERMINAL_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
-| Resource vocabulary on the wire (`RESOURCE_OUTPUT`, `ResourceId`, protocol 0.9.0) | Frames and ids carry the Terminal spelling (`TERMINAL_OUTPUT`, `TerminalId`); `PROTOCOL_VERSION` is 0.8.0. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |
+| Server-side cascade close with `CloseReason::ParentClosed` | Parent bindings and their cascade exist in the `phux-core` registry; the runtime spawns no child resources and `RESOURCE_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
 
 ## See also
 

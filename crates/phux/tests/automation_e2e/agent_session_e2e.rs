@@ -615,7 +615,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
 /// name a resource's close carries in this stream's vocabulary.
 ///
 /// `parent_closed` is not asserted because the CLI cannot see it:
-/// `AgentEvent::PaneClosed` carries only `exit_status`, so `watch --json`
+/// `AgentEvent::ResourceClosed` carries only `exit_status`, so `watch --json`
 /// has no reason field to render. The disappearance from `ls --json` and the
 /// refusal from `agent log` are what stand in for it at this surface.
 #[test]

@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use phux_core::ids::TerminalId;
+use phux_core::ids::ResourceId;
 use tokio::sync::mpsc;
 
 use super::client::ClientId;
@@ -72,7 +72,7 @@ pub(super) struct LeaseTable {
     /// fire-and-forget input invariant). Absent = `Open`: any subscriber's
     /// input passes (the back-compat default). Released automatically when
     /// the holder detaches or its connection drops.
-    input: HashMap<TerminalId, ClientId>,
+    input: HashMap<ResourceId, ClientId>,
     /// Hub-side ledger of which **hub consumer** owns the input lease over
     /// a satellite terminal (phux-v45.7). All hub consumers share the
     /// link's single client identity on the satellite, so the satellite's
@@ -91,7 +91,7 @@ pub(super) struct LeaseTable {
     /// satellite cannot, since it sees only the shared link identity. See
     /// L1 §9.1.
     satellite: BTreeMap<(phux_protocol::ids::SatelliteHost, u32), SatelliteLease>,
-    /// Successful satellite `ATTACH_TERMINAL` proxy ownership, mirrored at the
+    /// Successful satellite `ATTACH_RESOURCE` proxy ownership, mirrored at the
     /// hub authority boundary.
     ///
     /// The hub relays opaque reply and input frames on behalf of a consumer,
@@ -122,7 +122,7 @@ impl LeaseTable {
 
     // -- satellite proxy attach registrations -----------------------------
 
-    /// Whether `client` holds a proxied `ATTACH_TERMINAL` over `terminal` on
+    /// Whether `client` holds a proxied `ATTACH_RESOURCE` over `terminal` on
     /// `host`. The gate every relayed reply/input frame passes.
     pub(super) fn has_satellite_proxy_attach(
         &self,
@@ -161,7 +161,7 @@ impl LeaseTable {
     /// The client currently holding `terminal`'s input lease (ADR-0033), or
     /// `None` if the pane is `Open`.
     #[must_use]
-    pub(super) fn holder(&self, terminal: TerminalId) -> Option<ClientId> {
+    pub(super) fn holder(&self, terminal: ResourceId) -> Option<ClientId> {
         self.input.get(&terminal).copied()
     }
 
@@ -169,7 +169,7 @@ impl LeaseTable {
     /// client's lease. `false` when the pane is `Open` or `client` is the
     /// holder.
     #[must_use]
-    pub(super) fn blocked(&self, terminal: TerminalId, client: ClientId) -> bool {
+    pub(super) fn blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.input
             .get(&terminal)
             .is_some_and(|holder| *holder != client)
@@ -177,14 +177,14 @@ impl LeaseTable {
 
     /// Grant `terminal`'s input lease to `client`, returning the prior
     /// holder if the lease was already held (a `Seize` preemption).
-    pub(super) fn acquire(&mut self, terminal: TerminalId, client: ClientId) -> Option<ClientId> {
+    pub(super) fn acquire(&mut self, terminal: ResourceId, client: ClientId) -> Option<ClientId> {
         self.input.insert(terminal, client)
     }
 
     /// Release `terminal`'s input lease if `client` holds it. Returns
     /// `true` if a lease was actually released. A no-op (returns `false`)
     /// if the pane is `Open` or held by someone else.
-    pub(super) fn release(&mut self, terminal: TerminalId, client: ClientId) -> bool {
+    pub(super) fn release(&mut self, terminal: ResourceId, client: ClientId) -> bool {
         if self.input.get(&terminal) == Some(&client) {
             self.input.remove(&terminal);
             true
@@ -195,7 +195,7 @@ impl LeaseTable {
 
     /// Every pane whose input lease `client` currently holds.
     #[must_use]
-    pub(super) fn held_by(&self, client: ClientId) -> Vec<TerminalId> {
+    pub(super) fn held_by(&self, client: ClientId) -> Vec<ResourceId> {
         self.input
             .iter()
             .filter_map(|(pane, holder)| (*holder == client).then_some(*pane))

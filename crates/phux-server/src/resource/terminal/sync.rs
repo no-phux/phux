@@ -160,12 +160,12 @@ pub struct ConsumerSyncState {
     /// [`crate::grid::SnapshotSynthesizer::synthesize_against_reference`].
     pub reference: ConsumerReference,
     /// Per-consumer outbound mailbox the tick driver pushes
-    /// `TERMINAL_OUTPUT` frames into. Cloned from the
+    /// `RESOURCE_OUTPUT` frames into. Cloned from the
     /// [`crate::state::AttachedClient`]'s `tx` at ATTACH time.
     pub outbound: mpsc::Sender<Outbound>,
-    /// Wire-level terminal id for the `TerminalOutput` frame
+    /// Wire-level terminal id for the `ResourceOutput` frame
     /// (`docs/spec/L1.md` §2.1). Carried per-consumer because the runtime owns
-    /// the mapping `(TerminalActor, WireTerminalId)` and may differ
+    /// the mapping `(TerminalActor, WireResourceId)` and may differ
     /// across consumers in future tier topologies.
     pub wire_terminal_id: u32,
     /// Logical protocol-0.7 subscription identity.
@@ -174,13 +174,13 @@ pub struct ConsumerSyncState {
     pub bootstrap_id: BootstrapId,
     /// Aggregate-attach gate; false suppresses live output until `ATTACH_READY`.
     pub live_gate: watch::Receiver<bool>,
-    /// Per-consumer monotonic sequence id for `TERMINAL_OUTPUT`
+    /// Per-consumer monotonic sequence id for `RESOURCE_OUTPUT`
     /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each
     /// emitted frame. Per-consumer (not shared) so each consumer can
     /// `FRAME_ACK` against its own stream — this matches the existing
     /// per-pump scheme in `runtime.rs::handle_attach`.
     pub next_seq: u64,
-    /// `FrameId` of the most recent `TERMINAL_OUTPUT` this consumer has
+    /// `FrameId` of the most recent `RESOURCE_OUTPUT` this consumer has
     /// `ACK`ed. `0` means "no acks yet — the next emission is the only
     /// thing this consumer has seen" (matches `FrameId::ZERO`'s "empty
     /// initial frame" semantics).
@@ -217,7 +217,7 @@ pub struct ConsumerSyncState {
     pub rtt: RttEstimator,
     /// Emit timestamps for in-flight (emitted, not-yet-acked) `seq`s, used to
     /// measure RTT server-side when the matching `FRAME_ACK` arrives
-    /// (phux-q0e.5). Keyed by the `seq` stamped on each `TERMINAL_OUTPUT`;
+    /// (phux-q0e.5). Keyed by the `seq` stamped on each `RESOURCE_OUTPUT`;
     /// the value is the `tokio::time::Instant` the frame was handed to the
     /// outbound mailbox. Pruned up to the acked `seq` on every ack so it
     /// stays bounded by the number of frames in flight within one RTT (a
@@ -255,7 +255,7 @@ pub struct ConsumerSyncState {
     /// the actor's `on_frame_ack` to the grid snapshot a cumulative ack covers.
     pub acked_reference: ConsumerReference,
     /// Grid snapshots of each emitted-but-not-yet-acked frame, keyed by the
-    /// `seq` stamped on its `TERMINAL_OUTPUT` (phux-v45.8). On `FRAME_ACK` the
+    /// `seq` stamped on its `RESOURCE_OUTPUT` (phux-v45.8). On `FRAME_ACK` the
     /// consumer's [`Self::acked_reference`] advances to the snapshot of the
     /// highest `seq` the (cumulative) ack covers, and every entry at or below it
     /// is pruned. Bounded by the in-flight window for an acking consumer and

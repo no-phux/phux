@@ -46,12 +46,12 @@ pub enum ErrorCode {
     TerminalNotFound = 104,
     /// The requested client id does not exist.
     ClientNotFound = 105,
-    /// SPEC §10.1 / ADR-0016: the frame carried a `TerminalId::Satellite`
+    /// SPEC §10.1 / ADR-0016: the frame carried a `ResourceId::Satellite`
     /// but this server is not configured as a federation hub, or names a
     /// satellite host absent from the hub's registry. Non-hub servers
     /// always respond with this code when handed a `Satellite` id.
     UnsupportedSatelliteRoute = 106,
-    /// ADR-0007 / SPEC §14: the frame's `TerminalId::Satellite` names a
+    /// ADR-0007 / SPEC §14: the frame's `ResourceId::Satellite` names a
     /// satellite this hub knows but cannot reach right now — the outbound
     /// link is down, still dialing, refused fail-closed, or dropped before
     /// the relayed reply arrived. Distinct from
@@ -297,7 +297,7 @@ pub enum DetachReason {
     /// The server process is stopping (`SHUTDOWN`, signal, or supervisor).
     ServerShutdown = 1,
     /// Legacy name, retained for wire compatibility: the group the attach was
-    /// rooted in was torn down (now a `KILL_TERMINALS` over its members; see
+    /// rooted in was torn down (now a `KILL_RESOURCES` over its members; see
     /// `docs/spec/L2.md` / ADR-0030).
     SessionKilled = 2,
     /// Another consumer took over an exclusive attach.
@@ -353,13 +353,13 @@ impl DetachReason {
     }
 }
 
-/// Why a resource ceased to exist (`TERMINAL_CLOSED.reason`,
+/// Why a resource ceased to exist (`RESOURCE_CLOSED.reason`,
 /// `docs/spec/L1.md` §3.1).
 ///
 /// Carried as an optional trailing field, so a body that predates the field
 /// decodes as [`Unknown`](Self::Unknown) and a body carrying `Unknown` is
 /// encoded with the field absent. Like [`DetachReason`], an unrecognised
-/// wire value is not a decode error: `TERMINAL_CLOSED` is a lifecycle fact
+/// wire value is not a decode error: `RESOURCE_CLOSED` is a lifecycle fact
 /// and failing it would hide the ending, so a future reason decodes as
 /// `Unknown` on an older peer.
 #[repr(u8)]
@@ -370,7 +370,7 @@ pub enum CloseReason {
     /// the process received from something other than phux), or a
     /// producer-fed resource was closed by its producer.
     Exited = 0,
-    /// A `KILL_TERMINAL` / `KILL_TERMINALS` command removed the resource.
+    /// A `KILL_RESOURCE` / `KILL_RESOURCES` command removed the resource.
     Killed = 1,
     /// The resource's parent closed, and the server cascaded the close under
     /// its single state lock.

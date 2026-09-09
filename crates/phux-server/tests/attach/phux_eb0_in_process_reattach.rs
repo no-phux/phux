@@ -17,7 +17,7 @@
 //! in-process switch would be impossible and this test would fail.
 //!
 //! Distinguishing A from B: the two sessions have distinct names and
-//! distinct seed-pane `TerminalId`s, so the second ATTACHED's snapshot
+//! distinct seed-pane `ResourceId`s, so the second ATTACHED's snapshot
 //! (focused session name + focused pane id) must differ from the first.
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use phux_protocol::wire::frame::{
     AttachTarget, DetachReason, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
-    TYPE_TERMINAL_OUTPUT, ViewportInfo,
+    TYPE_RESOURCE_OUTPUT, ViewportInfo,
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -114,7 +114,7 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
                     .find(|s| s.id == snapshot.focused_session)
                     .expect("focused session in graph");
                 assert_eq!(focused.name, "alpha", "A: focused session is alpha");
-                (focused.name.clone(), snapshot.focused_pane.clone())
+                (focused.name.clone(), snapshot.focused_resource.clone())
             }
             other => panic!("A: expected Attached, got {other:?}"),
         };
@@ -152,7 +152,7 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
                     .find(|s| s.id == snapshot.focused_session)
                     .expect("focused session in graph");
                 assert_eq!(focused.name, "beta", "B: focused session is now beta");
-                (focused.name.clone(), snapshot.focused_pane.clone())
+                (focused.name.clone(), snapshot.focused_resource.clone())
             }
             other => panic!("B: expected Attached, got {other:?}"),
         };
@@ -248,8 +248,8 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
         let mut saw_alpha = false;
         for _ in 0..20 {
             let (type_byte, frame) = recv_typed(&mut client).await;
-            if type_byte == TYPE_TERMINAL_OUTPUT
-                && let FrameKind::TerminalOutput { bytes, .. } = frame
+            if type_byte == TYPE_RESOURCE_OUTPUT
+                && let FrameKind::ResourceOutput { bytes, .. } = frame
                 && bytes.windows(b"ALPHA".len()).any(|w| w == b"ALPHA")
             {
                 saw_alpha = true;
@@ -283,10 +283,10 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
             let Ok((type_byte, frame)) = timeout(remaining, recv_typed(&mut client)).await else {
                 break;
             };
-            if type_byte != TYPE_TERMINAL_OUTPUT {
+            if type_byte != TYPE_RESOURCE_OUTPUT {
                 continue;
             }
-            let FrameKind::TerminalOutput { bytes, .. } = frame else {
+            let FrameKind::ResourceOutput { bytes, .. } = frame else {
                 continue;
             };
             assert!(

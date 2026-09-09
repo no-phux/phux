@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::ids::{GroupId, TerminalId as WireTerminalId};
+use phux_protocol::ids::{GroupId, ResourceId as WireResourceId};
 use phux_protocol::wire::frame::Scope;
 use tokio::sync::mpsc;
 
@@ -38,7 +38,7 @@ const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 512;
 pub struct MetadataStore {
     /// Per-Terminal key → value. Cleared when the Terminal closes (the
     /// L1 lifecycle that owns the Terminal).
-    terminal: HashMap<WireTerminalId, HashMap<String, Vec<u8>>>,
+    terminal: HashMap<WireResourceId, HashMap<String, Vec<u8>>>,
     /// Per-Group key → value.
     group: HashMap<GroupId, HashMap<String, Vec<u8>>>,
     /// Global key → value.
@@ -83,7 +83,7 @@ impl MetadataStore {
     #[must_use]
     pub fn get(&self, scope: &Scope, key: &str) -> Option<Vec<u8>> {
         match scope {
-            Scope::Terminal(tid) => self.terminal.get(tid).and_then(|m| m.get(key)).cloned(),
+            Scope::Resource(tid) => self.terminal.get(tid).and_then(|m| m.get(key)).cloned(),
             Scope::Group(gid) => self.group.get(gid).and_then(|m| m.get(key)).cloned(),
             Scope::Global => self.global.get(key).cloned(),
             // `Scope` is `#[non_exhaustive]`: a forward-compat variant we
@@ -99,7 +99,7 @@ impl MetadataStore {
     /// broadcast).
     pub fn set(&mut self, scope: &Scope, key: &str, value: Vec<u8>) -> MetadataSetOutcome {
         let bucket: &mut HashMap<String, Vec<u8>> = match scope {
-            Scope::Terminal(tid) => self.terminal.entry(tid.clone()).or_default(),
+            Scope::Resource(tid) => self.terminal.entry(tid.clone()).or_default(),
             Scope::Group(gid) => self.group.entry(*gid).or_default(),
             Scope::Global => &mut self.global,
             // Unknown forward-compat variant: silently drop the write.
@@ -120,7 +120,7 @@ impl MetadataStore {
     /// caller can suppress the broadcast on a true noop).
     pub fn delete(&mut self, scope: &Scope, key: &str) -> bool {
         match scope {
-            Scope::Terminal(tid) => self
+            Scope::Resource(tid) => self
                 .terminal
                 .get_mut(tid)
                 .and_then(|m| m.remove(key))
@@ -140,7 +140,7 @@ impl MetadataStore {
     #[must_use]
     pub fn list(&self, scope: &Scope) -> Vec<String> {
         let mut keys: Vec<String> = match scope {
-            Scope::Terminal(tid) => self
+            Scope::Resource(tid) => self
                 .terminal
                 .get(tid)
                 .map(|m| m.keys().cloned().collect())
@@ -171,10 +171,10 @@ impl MetadataStore {
     /// other per-Terminal key) accumulates one dead subscription per closed
     /// pane for as long as the connection is open — on a `phux service
     /// install` server, unboundedly.
-    pub fn forget_terminal(&mut self, terminal: &WireTerminalId) {
+    pub fn forget_terminal(&mut self, terminal: &WireResourceId) {
         self.terminal.remove(terminal);
         self.subscriptions
-            .retain(|(_, scope, _)| !matches!(scope, Scope::Terminal(tid) if tid == terminal));
+            .retain(|(_, scope, _)| !matches!(scope, Scope::Resource(tid) if tid == terminal));
     }
 
     /// Register `(client, scope, key)` as an active subscription, subject
@@ -493,23 +493,23 @@ mod tests {
     fn forget_terminal_reaps_only_subscriptions_naming_that_terminal() {
         let mut store = MetadataStore::default();
         let client = ClientId(1);
-        let dead = WireTerminalId::local(1);
-        let alive = WireTerminalId::local(2);
+        let dead = WireResourceId::local(1);
+        let alive = WireResourceId::local(2);
 
-        assert!(store.subscribe(client, Scope::Terminal(dead.clone()), "k".to_owned()));
-        assert!(store.subscribe(client, Scope::Terminal(alive.clone()), "k".to_owned()));
+        assert!(store.subscribe(client, Scope::Resource(dead.clone()), "k".to_owned()));
+        assert!(store.subscribe(client, Scope::Resource(alive.clone()), "k".to_owned()));
         assert!(store.subscribe(client, Scope::Global, "k".to_owned()));
 
         store.forget_terminal(&dead);
 
         assert!(
             store
-                .subscribers_for(&Scope::Terminal(dead.clone()), "k")
+                .subscribers_for(&Scope::Resource(dead.clone()), "k")
                 .is_empty(),
             "the dead Terminal's subscription must be reaped",
         );
         assert_eq!(
-            store.subscribers_for(&Scope::Terminal(alive), "k"),
+            store.subscribers_for(&Scope::Resource(alive), "k"),
             vec![client],
             "a different Terminal's subscription must survive",
         );
@@ -527,10 +527,10 @@ mod tests {
     fn forget_terminal_frees_a_cap_slot_for_reuse() {
         let mut store = MetadataStore::default();
         let client = ClientId(1);
-        let terminal = WireTerminalId::local(1);
+        let terminal = WireResourceId::local(1);
 
         for n in 0..MAX_SUBSCRIPTIONS_PER_CLIENT {
-            assert!(store.subscribe(client, Scope::Terminal(terminal.clone()), key(n)));
+            assert!(store.subscribe(client, Scope::Resource(terminal.clone()), key(n)));
         }
         assert!(!store.subscribe(client, Scope::Global, "overflow".to_owned()));
 

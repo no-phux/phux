@@ -202,7 +202,7 @@ pub struct WindowBlob {
     /// Member panes, in insertion order, by wire id.
     pub pane_wire_ids: Vec<u32>,
     /// Active pane wire id, if any.
-    pub active_pane: Option<u32>,
+    pub active_resource: Option<u32>,
     /// The split-tree layout over the panes, if any.
     #[serde(default)]
     pub layout: Option<LayoutBlob>,
@@ -250,7 +250,7 @@ pub struct PaneBlob {
 }
 
 /// A serializable mirror of [`LayoutNode`](phux_core::window::LayoutNode),
-/// with panes referenced by wire id instead of core `TerminalId`.
+/// with panes referenced by wire id instead of core `ResourceId`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LayoutBlob {
     /// A single pane, by wire id.
@@ -314,7 +314,7 @@ mod tests {
                 wire_id: 1,
                 session_wire_id: 1,
                 pane_wire_ids: vec![1, 2],
-                active_pane: Some(2),
+                active_resource: Some(2),
                 layout: Some(LayoutBlob::Split {
                     dir: SplitDirBlob::Horizontal,
                     ratio: 0.5,

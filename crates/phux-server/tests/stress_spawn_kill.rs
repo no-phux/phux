@@ -1,14 +1,14 @@
 //! Spawn/kill adversarial stress (crash-hunt wave).
 //!
-//! Drives the SPAWN_TERMINAL / KILL_TERMINAL lifecycle hard:
+//! Drives the SPAWN_RESOURCE / KILL_RESOURCE lifecycle hard:
 //!
 //!   * a storm of spawns ("deep splits" → many panes), each running a tiny
 //!     command, then a storm of kills tearing them all down;
 //!   * killing panes while a long-lived anchor pane streams output, with a
-//!     KILL_TERMINAL aimed at an already-dead pane (the double-kill race).
+//!     KILL_RESOURCE aimed at an already-dead pane (the double-kill race).
 //!
 //! The server must reply to every command (Ok / typed error), emit a
-//! TERMINAL_CLOSED for each reaped pane, and never panic a reaping actor or
+//! RESOURCE_CLOSED for each reaped pane, and never panic a reaping actor or
 //! the connection task. Heavy `just e2e` lane only.
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -18,7 +18,7 @@
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
 use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, SpawnResult, TYPE_COMMAND_RESULT, TYPE_TERMINAL_SPAWNED,
+    Command, CommandResult, FrameKind, SpawnResult, TYPE_COMMAND_RESULT, TYPE_RESOURCE_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use tokio::net::UnixStream;
@@ -29,7 +29,7 @@ use phux_server_testkit::{
     spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
-/// Drain until the matching `TERMINAL_SPAWNED` arrives; return its result.
+/// Drain until the matching `RESOURCE_SPAWNED` arrives; return its result.
 async fn await_spawned(stream: &mut UnixStream, request_id: u32) -> SpawnResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -37,8 +37,8 @@ async fn await_spawned(stream: &mut UnixStream, request_id: u32) -> SpawnResult 
         let Ok((tb, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if tb == TYPE_TERMINAL_SPAWNED
-            && let FrameKind::TerminalSpawned {
+        if tb == TYPE_RESOURCE_SPAWNED
+            && let FrameKind::ResourceSpawned {
                 request_id: got,
                 result,
             } = frame
@@ -47,10 +47,10 @@ async fn await_spawned(stream: &mut UnixStream, request_id: u32) -> SpawnResult 
             return result;
         }
     }
-    panic!("timed out waiting for TERMINAL_SPAWNED request_id={request_id}");
+    panic!("timed out waiting for RESOURCE_SPAWNED request_id={request_id}");
 }
 
-/// Drain until the next `COMMAND_RESULT` arrives; return it. (KILL_TERMINAL
+/// Drain until the next `COMMAND_RESULT` arrives; return it. (KILL_RESOURCE
 /// replies with a bare Ok/Error COMMAND_RESULT.)
 async fn await_command_result(stream: &mut UnixStream) -> CommandResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
@@ -91,7 +91,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
         for req in 0..24u32 {
             send_frame(
                 &mut stream,
-                &FrameKind::SpawnTerminal {
+                &FrameKind::SpawnResource {
                     request_id: req,
                     group: DEFAULT_GROUP_ID,
                     command: Some(vec![
@@ -129,7 +129,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
                 &mut stream,
                 &FrameKind::Command {
                     request_id: req_id,
-                    command: Command::KillTerminal {
+                    command: Command::KillResource {
                         terminal_id: id.clone(),
                     },
                 },
@@ -148,7 +148,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
             &mut stream,
             &FrameKind::Command {
                 request_id: req_id,
-                command: Command::KillTerminal {
+                command: Command::KillResource {
                     terminal_id: spawned[0].clone(),
                 },
             },
@@ -204,7 +204,7 @@ fn kill_last_pane_reaps_session_cleanly() {
 
         // Recover the seed pane id from the ATTACHED snapshot.
         let seed = if let FrameKind::Attached { snapshot, .. } = attached {
-            snapshot.panes.first().expect("a seed pane").id.clone()
+            snapshot.resources.first().expect("a seed pane").id.clone()
         } else {
             panic!("expected ATTACHED");
         };
@@ -215,7 +215,7 @@ fn kill_last_pane_reaps_session_cleanly() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 1,
-                command: Command::KillTerminal { terminal_id: seed },
+                command: Command::KillResource { terminal_id: seed },
             },
         )
         .await;

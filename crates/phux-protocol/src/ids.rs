@@ -4,9 +4,9 @@
 //! IDs are stable for the server's lifetime and are not reused after the
 //! entity is destroyed.
 //!
-//! [`TerminalId`] is the exception: per [ADR-0016] it is a tagged union that
+//! [`ResourceId`] is the exception: per [ADR-0016] it is a tagged union that
 //! also records the host that owns the terminal. Non-hub servers only ever
-//! construct [`TerminalId::Local`]; the [`TerminalId::Satellite`] variant is
+//! construct [`ResourceId::Local`]; the [`ResourceId::Satellite`] variant is
 //! how a federation hub addresses (and re-tags) satellite-owned terminals
 //! per [ADR-0007].
 //!
@@ -65,7 +65,7 @@ id_type!(
     /// grouping key** because it is still threaded through three surviving
     /// surfaces that would balloon the re-tier if removed in the same pass:
     /// the `Scope::Group` L3-metadata scope (`docs/spec/L3.md` §1),
-    /// the `SpawnTerminal.group` field, and the `CommandValue::GroupId`
+    /// the `SpawnResource.group` field, and the `CommandValue::GroupId`
     /// reply variant. Removing it entirely is a follow-up bead.
     ///
     /// It is **not** a lifecycle tier: v0.3 servers expose a single static
@@ -212,7 +212,7 @@ impl core::fmt::Debug for FileUploadId {
     }
 }
 
-/// Federation-routing host identifier for a [`TerminalId::Satellite`].
+/// Federation-routing host identifier for a [`ResourceId::Satellite`].
 ///
 /// Per [ADR-0007] the satellite link is an opaque host token negotiated at
 /// federation-handshake time. v0 keeps the shape minimal: a length-prefixed
@@ -222,7 +222,7 @@ impl core::fmt::Debug for FileUploadId {
 /// [ADR-0007]: https://github.com/phall1/phux/blob/main/ADR/0007-mosh-class-transport-and-satellites.md
 ///
 /// Stored as a `Box<str>` rather than a `String`: the token is immutable
-/// once built, and the two-word representation keeps [`TerminalId`] at 24
+/// once built, and the two-word representation keeps [`ResourceId`] at 24
 /// bytes, which every frame that carries one or two ids inherits.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -268,14 +268,14 @@ impl From<&str> for SatelliteHost {
     }
 }
 
-/// Wire tag byte for [`TerminalId::Local`].
-pub const TERMINAL_ID_TAG_LOCAL: u8 = 0;
-/// Wire tag byte for [`TerminalId::Satellite`].
-pub const TERMINAL_ID_TAG_SATELLITE: u8 = 1;
+/// Wire tag byte for [`ResourceId::Local`].
+pub const RESOURCE_ID_TAG_LOCAL: u8 = 0;
+/// Wire tag byte for [`ResourceId::Satellite`].
+pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
 
 /// Wire identifier for a managed terminal, per [ADR-0016].
 ///
-/// `TerminalId` is a tagged union: [`Local`](Self::Local) names a terminal
+/// `ResourceId` is a tagged union: [`Local`](Self::Local) names a terminal
 /// owned by this server; [`Satellite`](Self::Satellite) names a terminal
 /// reachable through a federation peer. v0.1 servers only ever construct
 /// `Local`; v0.1 decoders MUST accept the `Satellite` tag and respond with
@@ -290,7 +290,7 @@ pub const TERMINAL_ID_TAG_SATELLITE: u8 = 1;
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub enum TerminalId {
+pub enum ResourceId {
     /// A terminal owned by the receiving server (wire tag = 0).
     Local {
         /// Monotonic per-server identifier.
@@ -315,7 +315,7 @@ pub enum TerminalId {
     },
 }
 
-impl TerminalId {
+impl ResourceId {
     /// Construct a `Local` terminal id from a raw `u32`.
     ///
     /// This is the v0.1 hot path — every terminal allocated by a v0.1
@@ -342,7 +342,7 @@ impl TerminalId {
     /// Construct from a raw `u32`, defaulting to the `Local` variant.
     ///
     /// Compatibility shim for call sites that historically held a bare
-    /// `u32` from the wire — equivalent to `TerminalId::local(raw)`.
+    /// `u32` from the wire — equivalent to `ResourceId::local(raw)`.
     #[must_use]
     pub const fn new(raw: u32) -> Self {
         Self::local(raw)
@@ -382,30 +382,20 @@ impl TerminalId {
     }
 }
 
-impl Default for TerminalId {
+impl Default for ResourceId {
     fn default() -> Self {
         Self::local(0)
     }
 }
 
-impl core::fmt::Display for TerminalId {
+impl core::fmt::Display for ResourceId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Local { id } => write!(f, "TerminalId({id})"),
-            Self::Satellite { host, id } => write!(f, "TerminalId({host}/{id})"),
+            Self::Local { id } => write!(f, "ResourceId({id})"),
+            Self::Satellite { host, id } => write!(f, "ResourceId({host}/{id})"),
         }
     }
 }
-
-/// Alias for [`TerminalId`] naming any served resource.
-///
-/// Every server-owned addressable thing is a *resource*: a PTY-backed
-/// Terminal is one [`ResourceKind`], an agent session is another. All kinds
-/// share one identifier space and one tagged-union wire shape (`Local` /
-/// `Satellite`), so location stays orthogonal to kind. The alias lets
-/// kind-agnostic code say what it means; the underlying type is still
-/// `TerminalId` on the wire and in every consumer.
-pub type ResourceId = TerminalId;
 
 /// Wire tag byte for [`ResourceKind::Terminal`].
 pub const RESOURCE_KIND_TAG_TERMINAL: u8 = 0;

@@ -2,7 +2,7 @@
 //!
 //! End-to-end test for the fanout half of SPEC §12 / ADR-0006: two
 //! clients attached concurrently to the same session MUST both observe
-//! the same `TERMINAL_OUTPUT` stream after keystrokes from either side.
+//! the same `RESOURCE_OUTPUT` stream after keystrokes from either side.
 //!
 //! Coverage:
 //!   * Both clients receive `ATTACHED + TERMINAL_SNAPSHOT` for the same
@@ -28,10 +28,10 @@
     reason = "client_a / client_b / screen_a / screen_b are the test's vocabulary"
 )]
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -56,7 +56,7 @@ const fn enter_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` from `stream` into `screen` until `needle`
+/// Drain `RESOURCE_OUTPUT` from `stream` into `screen` until `needle`
 /// appears or `WIRE_RECV_TIMEOUT` elapses. Returns total bytes consumed
 /// for diagnostic reporting.
 async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle: &str) -> usize {
@@ -67,10 +67,10 @@ async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle:
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             total += bytes.len();
             screen.write(&bytes);
             if screen.contains(needle) {
@@ -84,7 +84,7 @@ async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle:
 /// Attach a fresh socket to `default` and drain the
 /// `ATTACHED + TERMINAL_SNAPSHOT` opening sequence. Returns the open
 /// stream, the allocated `ClientId`, and the snapshot's `terminal_id`.
-async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, u32, TerminalId) {
+async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, u32, ResourceId) {
     let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(&mut stream, &attach_by_name("default")).await;
 
@@ -96,8 +96,8 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, u32, Term
             snapshot,
             initial_client_id,
         } => {
-            assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-            (initial_client_id.get(), snapshot.panes[0].id.clone())
+            assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+            (initial_client_id.get(), snapshot.resources[0].id.clone())
         }
         other => panic!("expected Attached, got {other:?}"),
     };
@@ -139,7 +139,7 @@ fn two_clients_attached_to_same_session_both_see_keystroke() {
 
         // ============================================================
         // Phase 2 — client A sends a keystroke. Fanout invariant: the
-        // TERMINAL_OUTPUT (from cat's echo) MUST reach BOTH streams.
+        // RESOURCE_OUTPUT (from cat's echo) MUST reach BOTH streams.
         // ============================================================
         send_frame(
             &mut client_a,

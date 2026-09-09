@@ -32,10 +32,10 @@
 
 use std::time::Duration;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, ReportedAgentState, Scope, TERMINAL_AGENT_KEY,
-    TERMINAL_PANE_OCCUPANT_KEY, TYPE_ATTACHED,
+    Command, CommandResult, FrameKind, RESOURCE_AGENT_KEY, RESOURCE_PANE_OCCUPANT_KEY,
+    ReportedAgentState, Scope, TYPE_ATTACHED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -290,10 +290,10 @@ fn write_fake_agent_ending_with(dir: &std::path::Path, tail: &str) -> std::path:
 
 /// Drain frames until a `METADATA_CHANGED` for `phux.agent/v1` on `terminal`
 /// arrives with a value, or the deadline elapses. Every other frame
-/// (`TERMINAL_OUTPUT`, snapshots, ...) is skipped.
+/// (`RESOURCE_OUTPUT`, snapshots, ...) is skipped.
 async fn collect_agent_record(
     stream: &mut UnixStream,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     deadline: Duration,
 ) -> Option<serde_json::Value> {
     let end = tokio::time::Instant::now() + deadline;
@@ -306,8 +306,8 @@ async fn collect_agent_record(
             return None;
         };
         if let FrameKind::MetadataChanged { scope, key, value } = frame
-            && key == TERMINAL_AGENT_KEY
-            && scope == Scope::Terminal(terminal.clone())
+            && key == RESOURCE_AGENT_KEY
+            && scope == Scope::Resource(terminal.clone())
             && let Some(bytes) = value
         {
             return serde_json::from_slice(&bytes).ok();
@@ -319,7 +319,7 @@ async fn collect_agent_record(
 /// record for `terminal`.
 async fn collect_pane_occupant(
     stream: &mut UnixStream,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     deadline: Duration,
 ) -> Option<serde_json::Value> {
     let end = tokio::time::Instant::now() + deadline;
@@ -332,8 +332,8 @@ async fn collect_pane_occupant(
             return None;
         };
         if let FrameKind::MetadataChanged { scope, key, value } = frame
-            && key == TERMINAL_PANE_OCCUPANT_KEY
-            && scope == Scope::Terminal(terminal.clone())
+            && key == RESOURCE_PANE_OCCUPANT_KEY
+            && scope == Scope::Resource(terminal.clone())
             && let Some(bytes) = value
         {
             return serde_json::from_slice(&bytes).ok();
@@ -356,7 +356,7 @@ async fn collect_pane_occupant(
 /// for however far the detector happened to get before the first frame.
 async fn await_agent_state(
     stream: &mut UnixStream,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     want: &str,
     deadline: Duration,
 ) -> Option<serde_json::Value> {
@@ -399,14 +399,14 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         // ---- SUBSCRIBE_METADATA on this pane's agent record ----
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -464,7 +464,7 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
                     result: CommandResult::Ok,
                 } => acked = true,
                 FrameKind::MetadataChanged { scope, key, value }
-                    if scope == Scope::Terminal(terminal.clone()) && key == TERMINAL_AGENT_KEY =>
+                    if scope == Scope::Resource(terminal.clone()) && key == RESOURCE_AGENT_KEY =>
                 {
                     saw_done = value
                         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -518,13 +518,13 @@ fn a_plain_shell_pane_never_gets_an_agent_record() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_PANE_OCCUPANT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_PANE_OCCUPANT_KEY.to_owned(),
             },
         )
         .await;
@@ -537,8 +537,8 @@ fn a_plain_shell_pane_never_gets_an_agent_record() {
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -591,13 +591,13 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -622,8 +622,8 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
             &mut stream,
             &FrameKind::DeleteMetadata {
                 request_id: 7,
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -681,16 +681,16 @@ fn an_unattached_subscriber_receives_the_detectors_record() {
         let FrameKind::Attached { snapshot, .. } = frame else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         // The watcher: HELLO, SUBSCRIBE_METADATA, and nothing else. No
-        // ATTACH, no ATTACH_TERMINAL, no viewport.
+        // ATTACH, no ATTACH_RESOURCE, no viewport.
         let mut watcher = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
             &mut watcher,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -754,7 +754,7 @@ fn write_fake_codex(dir: &std::path::Path) -> std::path::PathBuf {
 /// final state.
 async fn collect_agent_records_until(
     stream: &mut UnixStream,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     deadline: Duration,
     done: impl Fn(&serde_json::Value) -> bool,
 ) -> Vec<serde_json::Value> {
@@ -835,13 +835,13 @@ fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -861,8 +861,8 @@ fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
             &mut stream,
             &FrameKind::SetMetadata {
                 request_id: 11,
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
                 value: br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#
                     .to_vec(),
             },
@@ -935,13 +935,13 @@ fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -969,8 +969,8 @@ fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
                 panic!("the record was never retracted");
             };
             if let FrameKind::MetadataChanged { scope, key, value } = frame
-                && key == TERMINAL_AGENT_KEY
-                && scope == Scope::Terminal(terminal.clone())
+                && key == RESOURCE_AGENT_KEY
+                && scope == Scope::Resource(terminal.clone())
             {
                 deleted = value.is_none();
             }
@@ -1021,13 +1021,13 @@ fn a_kind_change_never_leaves_a_stale_kind_beside_a_live_state() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -1133,13 +1133,13 @@ fn a_declared_kind_never_gains_a_state_derived_from_a_different_occupant() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -1160,8 +1160,8 @@ fn a_declared_kind_never_gains_a_state_derived_from_a_different_occupant() {
             &mut stream,
             &FrameKind::SetMetadata {
                 request_id: 11,
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
                 value: br#"{"name":"claude","kind":"claude"}"#.to_vec(),
             },
         )
@@ -1235,13 +1235,13 @@ fn an_identity_only_set_gets_its_state_filled_in_by_the_detector() {
         let FrameKind::Attached { snapshot, .. } = attached else {
             panic!("expected ATTACHED");
         };
-        let terminal = snapshot.focused_pane.clone();
+        let terminal = snapshot.focused_resource.clone();
 
         send_frame(
             &mut stream,
             &FrameKind::SubscribeMetadata {
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             },
         )
         .await;
@@ -1256,8 +1256,8 @@ fn an_identity_only_set_gets_its_state_filled_in_by_the_detector() {
             &mut stream,
             &FrameKind::SetMetadata {
                 request_id: 9,
-                scope: Scope::Terminal(terminal.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(terminal.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
                 value: br#"{"name":"reviewer","session":"fleet-7"}"#.to_vec(),
             },
         )

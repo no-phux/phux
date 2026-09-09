@@ -1,6 +1,6 @@
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use phux_config::plugin::{PluginAgentAttention, PluginAgentState};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -279,7 +279,7 @@ pub(super) const fn record_attention(attention: AgentAttention) -> Attention {
     }
 }
 
-pub(crate) fn format_terminal(id: &TerminalId) -> String {
+pub(crate) fn format_terminal(id: &ResourceId) -> String {
     crate::selector::format_terminal_id(id)
 }
 

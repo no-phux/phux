@@ -4,9 +4,9 @@
 //! deliberately:
 //!
 //!   * `phux_core::window::{LayoutNode, SplitDir}` — the domain tree, keyed by
-//!     the registry's opaque `TerminalId`;
+//!     the registry's opaque `ResourceId`;
 //!   * `phux_protocol::wire::info::{LayoutNode, SplitDir}` — the wire mirror,
-//!     keyed by the wire `TerminalId`, with its own tag bytes and its own
+//!     keyed by the wire `ResourceId`, with its own tag bytes and its own
 //!     decode-time validation;
 //!   * `phux_server::upgrade::blob::{LayoutBlob, SplitDirBlob}` — the
 //!     graceful-upgrade carrier, keyed by `u32` wire id, deriving `Serialize`
@@ -133,11 +133,11 @@
 
 use std::collections::HashMap;
 
-use phux_core::ids::{TerminalId as CoreTerminalId, WindowId as CoreWindowId};
+use phux_core::ids::{ResourceId as CoreResourceId, WindowId as CoreWindowId};
 use phux_core::registry::Registry;
 use phux_core::window::{LayoutError, LayoutNode as CoreNode, SplitDir as CoreDir};
 use phux_protocol::ids::{
-    ClientId, SessionId as WireSessionId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+    ClientId, ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
 use phux_protocol::wire::error::DecodeError;
 use phux_protocol::wire::frame::FrameKind;
@@ -346,11 +346,11 @@ fn balanced(depth: u32, next: &mut u32) -> Shape {
 // ---------------------------------------------------------------------------
 // Encoding 1: phux_core::window::LayoutNode.
 //
-// Keyed by opaque `TerminalId`s, which only a `Registry` can mint, so the
+// Keyed by opaque `ResourceId`s, which only a `Registry` can mint, so the
 // builder takes the ids it should use for pane indices `0..n`.
 // ---------------------------------------------------------------------------
 
-fn build_core(shape: &Shape, ids: &[CoreTerminalId]) -> CoreNode {
+fn build_core(shape: &Shape, ids: &[CoreResourceId]) -> CoreNode {
     match shape {
         Shape::Pane(i) => CoreNode::Leaf(ids[*i as usize]),
         Shape::Divide {
@@ -370,7 +370,7 @@ fn build_core(shape: &Shape, ids: &[CoreTerminalId]) -> CoreNode {
     }
 }
 
-fn project_core(node: &CoreNode, index_of: &HashMap<CoreTerminalId, u32>) -> Shape {
+fn project_core(node: &CoreNode, index_of: &HashMap<CoreResourceId, u32>) -> Shape {
     match node {
         CoreNode::Leaf(tid) => Shape::Pane(index_of[tid]),
         CoreNode::Split {
@@ -393,12 +393,12 @@ fn project_core(node: &CoreNode, index_of: &HashMap<CoreTerminalId, u32>) -> Sha
 // ---------------------------------------------------------------------------
 // Encoding 2: phux_protocol::wire::info::LayoutNode.
 //
-// Wire pane ids are `index + 1`; `TerminalId::new(0)` is a legal id but a
+// Wire pane ids are `index + 1`; `ResourceId::new(0)` is a legal id but a
 // confusing sentinel to read in a failure message.
 // ---------------------------------------------------------------------------
 
-const fn wire_pane_id(index: u32) -> WireTerminalId {
-    WireTerminalId::new(index + 1)
+const fn wire_pane_id(index: u32) -> WireResourceId {
+    WireResourceId::new(index + 1)
 }
 
 fn build_wire(shape: &Shape) -> WireNode {
@@ -505,7 +505,7 @@ fn project_blob(node: &LayoutBlob, index_of: &HashMap<u32, u32>) -> Shape {
 
 /// A registry holding one session, one window, and `panes` terminals; returns
 /// the ids in creation order so pane index `i` maps to `ids[i]`.
-fn seeded_registry(panes: usize) -> (Registry, CoreWindowId, Vec<CoreTerminalId>) {
+fn seeded_registry(panes: usize) -> (Registry, CoreWindowId, Vec<CoreResourceId>) {
     let mut reg = Registry::new();
     let sid = reg.new_session("conformance".to_owned());
     let wid = reg.new_window(sid).expect("session exists");
@@ -532,7 +532,7 @@ fn all_three_encodings_describe_the_same_tree() {
     for (name, shape) in corpus() {
         let indices = shape.panes();
         let (_reg, _wid, core_ids) = seeded_registry(indices.len());
-        let index_of_core: HashMap<CoreTerminalId, u32> = core_ids
+        let index_of_core: HashMap<CoreResourceId, u32> = core_ids
             .iter()
             .enumerate()
             .map(|(i, tid)| (*tid, u32::try_from(i).expect("corpus is small")))
@@ -607,7 +607,7 @@ fn round_trip_layout_through_a_frame(node: &WireNode) -> Result<WireNode, Decode
     let snapshot = SessionSnapshot::new(
         WireSessionId::new(1),
         WireWindowId::new(1),
-        WireTerminalId::new(1),
+        WireResourceId::new(1),
     )
     .with_windows(vec![
         WindowInfo::new(WireWindowId::new(1), WireSessionId::new(1), "w")
@@ -643,7 +643,7 @@ fn round_trip_layout_through_a_frame(node: &WireNode) -> Result<WireNode, Decode
 fn wire_split_tags_are_pinned_to_their_spec_bytes() {
     // LAYOUT_TAG_SPLIT = 0x01, SPLIT_DIR_HORIZONTAL = 0x00,
     // SPLIT_DIR_VERTICAL = 0x01, LAYOUT_TAG_LEAF = 0x00, and a `Local`
-    // TerminalId is tag 0x00 followed by a big-endian u32.
+    // ResourceId is tag 0x00 followed by a big-endian u32.
     const RATIO_HALF_BE: [u8; 4] = [0x3F, 0x00, 0x00, 0x00];
     const LEAF_ONE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     const LEAF_TWO: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x02];
@@ -699,7 +699,7 @@ fn encoded_attached_bytes(node: &WireNode) -> Vec<u8> {
     let snapshot = SessionSnapshot::new(
         WireSessionId::new(1),
         WireWindowId::new(1),
-        WireTerminalId::new(1),
+        WireResourceId::new(1),
     )
     .with_windows(vec![
         WindowInfo::new(WireWindowId::new(1), WireSessionId::new(1), "w")
@@ -777,7 +777,7 @@ fn state_with_one_window(
 ) -> (
     ServerState,
     CoreWindowId,
-    HashMap<CoreTerminalId, u32>,
+    HashMap<CoreResourceId, u32>,
     HashMap<u32, u32>,
 ) {
     let mut state = ServerState::new();

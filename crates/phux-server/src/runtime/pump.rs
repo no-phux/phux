@@ -1,7 +1,7 @@
 //! Shared per-generation state for the pane output pumps.
 //!
 //! Two pumps forward one pane's broadcast output to one consumer: the ATTACH
-//! pump in [`crate::runtime::attach`] and the `ATTACH_TERMINAL` pump in
+//! pump in [`crate::runtime::attach`] and the `ATTACH_RESOURCE` pump in
 //! [`crate::runtime::commands`]. They differ in how they publish a bootstrap
 //! and in what they do when they fail, but the rules for *what may go on the
 //! wire right now* are identical — and when they were written twice, only one
@@ -26,7 +26,7 @@ use crate::terminal_actor::PaneOutput;
 pub(super) fn spawn_tracked(
     state: &crate::state::SharedState,
     client: crate::state::ClientId,
-    terminal: phux_core::TerminalId,
+    terminal: phux_core::ResourceId,
     tasks: Option<&mut tokio::task::JoinSet<()>>,
     future: impl std::future::Future<Output = ()> + 'static,
 ) {
@@ -53,7 +53,7 @@ pub(super) fn spawn_tracked(
 pub(super) async fn stop_output(
     state: &crate::state::SharedState,
     client: crate::state::ClientId,
-    terminal: phux_core::TerminalId,
+    terminal: phux_core::ResourceId,
 ) {
     let completions = state.with_mut(|s| s.stop_terminal_output_pumps(client, terminal));
     for done in completions {
@@ -104,7 +104,7 @@ pub(super) struct PumpGeneration {
     /// when the replacement generation is published.
     ///
     /// While it is set the pump forwards nothing. Two things depend on that.
-    /// First, the consumer's mirror is exactly sequenced: a `TERMINAL_OUTPUT`
+    /// First, the consumer's mirror is exactly sequenced: a `RESOURCE_OUTPUT`
     /// whose `seq` skips the dropped window is a `SequenceGap`, which the
     /// client kernel treats as a protocol error and detaches on — so
     /// forwarding "the rest" after a gap does not degrade the session, it ends
@@ -288,7 +288,7 @@ mod tests {
         tokio::task::LocalSet::new().block_on(&runtime, async {
             let state = crate::state::SharedState::new();
             let client = crate::state::ClientId(1);
-            let terminal = phux_core::TerminalId::default();
+            let terminal = phux_core::ResourceId::default();
             let mut tasks = tokio::task::JoinSet::new();
             let (mailbox, mut receive) = tokio::sync::mpsc::channel(1);
             let (output, _) = tokio::sync::broadcast::channel::<()>(1);
@@ -341,7 +341,7 @@ mod tests {
         tokio::task::LocalSet::new().block_on(&runtime, async {
             let state = crate::state::SharedState::new();
             let client = crate::state::ClientId(1);
-            let terminal = phux_core::TerminalId::default();
+            let terminal = phux_core::ResourceId::default();
             let (output, _) = tokio::sync::broadcast::channel::<()>(1);
             let receiver = output.subscribe();
             super::spawn_tracked(&state, client, terminal, None, async move {

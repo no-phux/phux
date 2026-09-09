@@ -19,7 +19,7 @@
 //! `runtime::client` / `runtime::commands` and reaches in through the
 //! delegating accessors on `ServerState` (see `state::agent`). The two
 //! ledgers are keyed differently on purpose and that is not incidental:
-//! the detector is keyed by core [`TerminalId`] because it is fed by pane
+//! the detector is keyed by core [`ResourceId`] because it is fed by pane
 //! output, while the arbiter is keyed by *wire* terminal id because it
 //! mirrors the per-Terminal L3 metadata scope. `state::reap` therefore
 //! clears the detector before retiring the wire id and the arbiter after,
@@ -46,8 +46,8 @@
 //! the same module at every use site, so the file is named for the concern
 //! instead of for the struct.
 
-use phux_core::ids::TerminalId;
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_core::ids::ResourceId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 
 use crate::agent_asked::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
 use crate::agent_state::AgentRecordArbiter;
@@ -91,7 +91,7 @@ impl AgentState {
     /// the pane's pending-question state.
     pub(super) fn report_asked(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
         payload: AskedPayload,
     ) -> AskedTransition {
@@ -103,7 +103,7 @@ impl AgentState {
     /// [`AskedDetector::retract`].
     pub(super) fn retract_asked(
         &mut self,
-        terminal: TerminalId,
+        terminal: ResourceId,
         source: AskedSource,
     ) -> Option<AskedPayload> {
         self.asked.retract(terminal, source)
@@ -111,16 +111,16 @@ impl AgentState {
 
     /// The question `terminal`'s agent is currently waiting on, if any.
     #[cfg(test)]
-    pub(super) fn current_asked(&self, terminal: TerminalId) -> Option<&AskedPayload> {
+    pub(super) fn current_asked(&self, terminal: ResourceId) -> Option<&AskedPayload> {
         self.asked.current(terminal)
     }
 
     /// Drop any pending question for a pane that is going away.
     ///
-    /// Keyed by core [`TerminalId`], so `state::reap` calls this *before*
+    /// Keyed by core [`ResourceId`], so `state::reap` calls this *before*
     /// the wire id is retired; the arbiter half ([`Self::forget_record`])
     /// is keyed by wire id and is cleared after.
-    pub(super) fn clear_asked(&mut self, terminal: TerminalId) {
+    pub(super) fn clear_asked(&mut self, terminal: ResourceId) {
         self.asked.clear_terminal(terminal);
     }
 
@@ -139,7 +139,7 @@ impl AgentState {
     /// The record died with the per-Terminal metadata scope; the arbiter's
     /// bookkeeping about who owned it must not outlive it, or a recycled
     /// wire id would inherit a stale declaration.
-    pub(super) fn forget_record(&mut self, terminal: &WireTerminalId) {
+    pub(super) fn forget_record(&mut self, terminal: &WireResourceId) {
         self.records.forget(terminal);
     }
 }

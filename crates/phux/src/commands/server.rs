@@ -208,7 +208,7 @@ fn build_server_config(
     // single config snapshot above — `defaults.shell` when set, else
     // `$SHELL`, else `/bin/sh` — and thread it into every server-owned
     // spawn path (seed session, `--seed-command`, `CreateIfMissing`,
-    // `SESSION_CREATE_KEY`, command-less `SPAWN_TERMINAL`). This bind
+    // `SESSION_CREATE_KEY`, command-less `SPAWN_RESOURCE`). This bind
     // must stay below the config load.
     let shell = phux_server::terminal_actor::resolve_shell(defaults.shell.as_deref());
 
@@ -243,10 +243,10 @@ fn build_server_config(
     // `defaults.history-limit` and `defaults.history-bytes` bound each pane's
     // retained scrollback; libghostty prunes on whichever is reached first,
     // and on a wide grid that is usually the byte bound (ADR-0094).
-    // `defaults.cwd-inheritance` selects how `SPAWN_TERMINAL` resolves a
+    // `defaults.cwd-inheritance` selects how `SPAWN_RESOURCE` resolves a
     // new pane's working directory. `defaults.term` is the `TERM`
     // advertised to every server-spawned pane (a per-spawn
-    // `SPAWN_TERMINAL.env` entry for `TERM` overrides it).
+    // `SPAWN_RESOURCE.env` entry for `TERM` overrides it).
     // `defaults.window-size` picks the multi-client geometry policy
     // (phux-nk07).
     ServerConfig {

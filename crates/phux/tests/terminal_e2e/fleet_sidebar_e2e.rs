@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use phux_client::attach::connection::Connection;
 use phux_client::layout::Workspace;
 use phux_client::layout_ops::layout_key;
-use phux_protocol::ids::{GroupId, SessionId, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -119,13 +119,13 @@ impl ServerGuard {
     }
 
     /// The peer's seed pane, read back rather than assumed.
-    fn peer_pane(&self) -> TerminalId {
+    fn peer_pane(&self) -> ResourceId {
         let stdout = self.success(&["snapshot", "--json", PEER]);
         let snapshot: serde_json::Value =
             serde_json::from_str(&stdout).expect("snapshot JSON for the peer session");
         let pane = u32::try_from(snapshot["pane"].as_u64().expect("snapshot pane id"))
             .expect("pane id fits u32");
-        TerminalId::local(pane)
+        ResourceId::local(pane)
     }
 
     /// Wait until SOME session has persisted a layout naming `pane`.
@@ -144,7 +144,7 @@ impl ServerGuard {
     /// testing anything the day allocation changes — it would seed a key
     /// nobody reads, and the assertion would fail for a reason that has
     /// nothing to do with the sweep.
-    fn wait_for_persisted_layout(&self, pane: &TerminalId) {
+    fn wait_for_persisted_layout(&self, pane: &ResourceId) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

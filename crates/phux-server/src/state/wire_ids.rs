@@ -4,8 +4,8 @@
 //! the delegating shims the runtime calls, kept on [`ServerState`] because
 //! that is the receiver every dispatch site already holds.
 
-use phux_core::ids::{TerminalId, WindowId};
-use phux_protocol::ids::{TerminalId as WireTerminalId, WindowId as WireWindowId};
+use phux_core::ids::{ResourceId, WindowId};
+use phux_protocol::ids::{ResourceId as WireResourceId, WindowId as WireWindowId};
 
 use super::ServerState;
 
@@ -14,14 +14,14 @@ impl ServerState {
     ///
     /// Delegates to `IdSpace::intern_terminal` (crate-internal);
     /// idempotent, and several call sites depend on that.
-    pub fn intern_terminal_wire(&mut self, terminal: TerminalId) -> WireTerminalId {
+    pub fn intern_terminal_wire(&mut self, terminal: ResourceId) -> WireResourceId {
         self.idspace.intern_terminal(terminal)
     }
 
     /// Reverse lookup: which core pane id (if any) does `wire`
     /// resolve to?
     #[must_use]
-    pub fn terminal_from_wire(&self, wire: &WireTerminalId) -> Option<TerminalId> {
+    pub fn terminal_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
         self.idspace.terminal_from_wire(wire)
     }
 

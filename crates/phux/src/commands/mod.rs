@@ -2153,7 +2153,7 @@ pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
 /// Unlike the library paths, this one owns stderr, so it prints rather than
 /// logging into a `tracing` subscriber a CLI user has not installed. Any
 /// *other* interleaved frame is dropped: on a connection that never attached
-/// or subscribed there is no consumer for a `TERMINAL_OUTPUT` or an `EVENT`,
+/// or subscribed there is no consumer for a `RESOURCE_OUTPUT` or an `EVENT`,
 /// and no verb here can act on one.
 pub(crate) async fn command_on(
     conn: &mut Connection,
@@ -2268,7 +2268,7 @@ pub(crate) async fn resolve_target(
     selector: &crate::selector::Selector,
     verb: &str,
     json: bool,
-) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     resolve_target_with(socket_path, selector, verb, json, false).await
 }
 
@@ -2281,7 +2281,7 @@ pub(crate) async fn resolve_target_for_input(
     selector: &crate::selector::Selector,
     verb: &str,
     json: bool,
-) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     resolve_target_with(socket_path, selector, verb, json, true).await
 }
 
@@ -2291,7 +2291,7 @@ async fn resolve_target_with(
     verb: &str,
     json: bool,
     for_input: bool,
-) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?
@@ -2309,7 +2309,7 @@ async fn resolve_target_with(
         return Ok(target.terminal);
     }
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
-    let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+    let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         .ok_or_else(|| partial::report_target_miss_keeping_status_for(json, None, &degradation))?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
@@ -2372,7 +2372,7 @@ pub(crate) fn report_agent_resolve_error(
     )
 }
 
-/// Resolve `selector` to its `TerminalId`s, fetching L3 tag metadata first
+/// Resolve `selector` to its `ResourceId`s, fetching L3 tag metadata first
 /// only when the selector is `#tag` (`phux-f8wi`). Non-tag selectors resolve
 /// purely against `snapshot`, so the common path pays no extra round-trip.
 ///
@@ -2383,7 +2383,7 @@ pub(crate) async fn resolve_targets(
     socket_path: &Path,
     selector: &crate::selector::Selector,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-) -> Vec<phux_protocol::ids::TerminalId> {
+) -> Vec<phux_protocol::ids::ResourceId> {
     phux_client::state::resolve_targets(socket_path, selector, snapshot).await
 }
 
@@ -2647,11 +2647,11 @@ mod tests {
         );
         assert_eq!(
             parse_selector(Some("@42")).unwrap(),
-            Selector::TerminalId(42),
+            Selector::ResourceId(42),
         );
         assert_eq!(
             parse_selector(Some("devbox/@42")).unwrap(),
-            Selector::SatelliteTerminalId {
+            Selector::SatelliteResourceId {
                 host: "devbox".to_owned(),
                 id: 42,
             },

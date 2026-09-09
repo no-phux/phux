@@ -21,7 +21,7 @@ use phux_protocol::caps::{
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
     ImageProtocolSet, ServerFeature,
 };
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{
@@ -148,9 +148,9 @@ fn validate_hello_ok(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentBadge {
     /// The resource id the server assigned to the agent session.
-    pub id: TerminalId,
+    pub id: ResourceId,
     /// The terminal the session is bound to, when the server reported one.
-    pub parent: Option<TerminalId>,
+    pub parent: Option<ResourceId>,
     /// Provider name, for example `claude`; empty until something names one.
     pub provider: String,
     /// Derived lifecycle state word (`working`, `blocked`, `done`, `idle`,
@@ -516,8 +516,8 @@ pub struct Session {
     effects: EffectBuffer,
     cols: u16,
     rows: u16,
-    focused_terminal: Option<TerminalId>,
-    terminal_order: Vec<TerminalId>,
+    focused_terminal: Option<ResourceId>,
+    terminal_order: Vec<ResourceId>,
     bootstrap_limits: Option<BootstrapLimits>,
     selected_profile: Option<BootstrapProfile>,
     terminal_reply_supported: bool,
@@ -632,7 +632,7 @@ impl Session {
     }
 
     /// Whether the kernel knows `terminal_id` as an `AgentSession` resource.
-    fn is_agent_session(&self, terminal_id: &TerminalId) -> bool {
+    fn is_agent_session(&self, terminal_id: &ResourceId) -> bool {
         self.kernel.as_ref().is_some_and(|kernel| {
             kernel.resource_kind(terminal_id) == Some(ResourceKind::AgentSession)
         })
@@ -723,12 +723,12 @@ impl Session {
                 // barrier; an AgentSession bound to one of them is declared
                 // to the kernel as a record stream and projected as a badge.
                 let terminal_ids: Vec<_> = snapshot
-                    .panes
+                    .resources
                     .iter()
                     .filter(|pane| pane.kind == ResourceKind::Terminal)
                     .map(|pane| pane.id.clone())
                     .collect();
-                let focused_terminal = snapshot.focused_pane;
+                let focused_terminal = snapshot.focused_resource;
                 let (mut outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
                     attach_id,
                     terminals: &terminal_ids,
@@ -737,7 +737,7 @@ impl Session {
                     return outcome;
                 }
                 for pane in snapshot
-                    .panes
+                    .resources
                     .iter()
                     .filter(|pane| pane.kind == ResourceKind::AgentSession)
                     .filter(|pane| {
@@ -883,14 +883,14 @@ impl Session {
                 })
                 .0
             }
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
                 seq,
                 bytes,
             } => {
-                self.apply_kernel(KernelInput::TerminalOutput {
+                self.apply_kernel(KernelInput::ResourceOutput {
                     terminal_id: &terminal_id,
                     stream_id,
                     bootstrap_id,
@@ -915,10 +915,10 @@ impl Session {
                 })
                 .0
             }
-            FrameKind::TerminalClosed { terminal_id, .. } => {
+            FrameKind::ResourceClosed { terminal_id, .. } => {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
                 let was_agent = self.is_agent_session(&terminal_id);
-                let (mut outcome, applied) = self.apply_kernel(KernelInput::TerminalClosed {
+                let (mut outcome, applied) = self.apply_kernel(KernelInput::ResourceClosed {
                     terminal_id: &terminal_id,
                 });
                 if applied && was_focused {
@@ -1074,7 +1074,7 @@ impl Session {
         }
     }
 
-    fn first_published_terminal(&self) -> Option<TerminalId> {
+    fn first_published_terminal(&self) -> Option<ResourceId> {
         let kernel = self.kernel.as_ref()?;
         if let Some(focused) = self.focused_terminal.as_ref()
             && kernel.published(focused).is_some()
@@ -1109,7 +1109,7 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
 }
 
 /// The resource a terminal-stream frame addresses, when it addresses one.
-fn frame_resource_id(frame: &FrameKind) -> Option<&TerminalId> {
+fn frame_resource_id(frame: &FrameKind) -> Option<&ResourceId> {
     match frame {
         FrameKind::BootstrapBegin { terminal_id, .. }
         | FrameKind::BootstrapChunk { terminal_id, .. }
@@ -1118,8 +1118,8 @@ fn frame_resource_id(frame: &FrameKind) -> Option<&TerminalId> {
         | FrameKind::HistoryPage { terminal_id, .. }
         | FrameKind::HistoryTombstone { terminal_id, .. }
         | FrameKind::HistoryRejected { terminal_id, .. }
-        | FrameKind::TerminalOutput { terminal_id, .. }
-        | FrameKind::TerminalClosed { terminal_id, .. } => Some(terminal_id),
+        | FrameKind::ResourceOutput { terminal_id, .. }
+        | FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id),
         _ => None,
     }
 }

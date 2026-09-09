@@ -19,7 +19,7 @@
 //!    `cat` (cooked-mode echo gives a crisp signal).
 //! 2. Resolve the pane id via the side-effect-free `GET_STATE` (no attach).
 //! 3. On a routing connection, `ATTACH` (to gain PRIMARY) then size the
-//!    pane to `120x40` with `TERMINAL_RESIZE` so the explicit live
+//!    pane to `120x40` with `RESIZE_TERMINAL` so the explicit live
 //!    dimensions exceed any attach viewport.
 //! 4. `ROUTE_INPUT` a key + Enter — `ROUTE_INPUT` advertises no viewport.
 //! 5. `GET_SCREEN` again: the pane MUST still report `120x40`, not the
@@ -90,7 +90,10 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
 }
 
 /// `GET_STATE { Server }` → the focused pane id of the seeded session.
-async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol::ids::TerminalId {
+async fn focused_resource(
+    stream: &mut UnixStream,
+    request_id: u32,
+) -> phux_protocol::ids::ResourceId {
     send_frame(
         stream,
         &FrameKind::Command {
@@ -102,7 +105,7 @@ async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol
     )
     .await;
     match await_command_result(stream, request_id).await {
-        CommandResult::OkWith(CommandValue::State(snap)) => snap.focused_pane,
+        CommandResult::OkWith(CommandValue::State(snap)) => snap.focused_resource,
         other => panic!("expected Ok_With(State(..)), got {other:?}"),
     }
 }
@@ -111,7 +114,7 @@ async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol
 /// `TERMINAL_SNAPSHOT` frames. Attaching subscribes the connection to the
 /// session's active pane, which is the interim PRIMARY proxy `ROUTE_INPUT`
 /// gates on (phux-nlo). The 80x24 attach viewport is intentionally
-/// overridden by a later `TERMINAL_RESIZE`.
+/// overridden by a later `RESIZE_TERMINAL`.
 async fn attach_and_drain(stream: &mut UnixStream, name: &str) {
     send_frame(stream, &attach_by_name(name)).await;
     let (type_byte, frame) = recv_typed(stream).await;
@@ -131,7 +134,7 @@ async fn attach_and_drain(stream: &mut UnixStream, name: &str) {
 async fn screen(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> phux_core::screen::ScreenState {
     send_frame(
         stream,
@@ -170,12 +173,12 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         // Resolve the pane id without attaching.
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
 
         // Route input on a connection that ATTACHes first — `ROUTE_INPUT`
         // is PRIMARY-only (phux-nlo), and attaching is the interim way to
         // hold PRIMARY. The 80x24 attach viewport is then overridden by an
-        // explicit TERMINAL_RESIZE, so any reversion to 80x24 would be a
+        // explicit RESIZE_TERMINAL, so any reversion to 80x24 would be a
         // ROUTE_INPUT-induced resize.
         let mut route_conn = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         attach_and_drain(&mut route_conn, "work").await;
@@ -183,7 +186,7 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
         // Size the pane to 120x40 (the dims the agent surface must preserve).
         send_frame(
             &mut route_conn,
-            &FrameKind::TerminalResize {
+            &FrameKind::ResizeTerminal {
                 terminal_id: pane.clone(),
                 cols: 120,
                 rows: 40,
@@ -196,7 +199,7 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
         assert_eq!(
             (before.cols, before.rows),
             (120, 40),
-            "TERMINAL_RESIZE must size the pane to 120x40 before ROUTE_INPUT",
+            "RESIZE_TERMINAL must size the pane to 120x40 before ROUTE_INPUT",
         );
 
         for (i, key) in [ascii_key('z', PhysicalKey::Z), enter_key()]
@@ -263,7 +266,7 @@ fn route_input_from_unsubscribed_agent_is_accepted() {
 
         // Resolve the pane id without attaching — GET_STATE does not
         // subscribe, so this connection is the headless agent surface.
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
 
         send_frame(
             &mut stream,
@@ -295,7 +298,7 @@ fn route_input_from_primary_subscriber_succeeds() {
             spawn_server_with_seed_cmd(socket_path.clone(), "work", CommandBuilder::new("cat"));
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
 
         // ATTACH subscribes this connection to the active pane → PRIMARY.
         let mut primary = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -330,7 +333,7 @@ fn route_input_from_primary_subscriber_succeeds() {
 /// Poll `GET_SCREEN` until the pane reports `want` dims (or attempts run out).
 async fn poll_for_dims(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     want: (u16, u16),
     attempts: u32,
 ) -> phux_core::screen::ScreenState {
@@ -356,7 +359,7 @@ async fn poll_for_dims(
 /// the last seen so the caller's assertions fail with real diagnostics.
 async fn poll_for_echo(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     needle: char,
     dims: Option<(u16, u16)>,
     attempts: u32,

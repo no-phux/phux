@@ -30,7 +30,7 @@ fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_liv
             let (result, _) = command_via_hub(
                 client,
                 2,
-                Command::SubscribeTerminalEvents {
+                Command::SubscribeResourceEvents {
                     terminal_id: pane.clone(),
                     event_types: Vec::new(),
                 },
@@ -100,7 +100,7 @@ fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_liv
 async fn assert_legacy_event_after_cut(
     client: &mut UnixStream,
     observer: &mut UnixStream,
-    pane: &TerminalId,
+    pane: &ResourceId,
 ) {
     let (result, _) = command_via_hub(
         client,
@@ -136,14 +136,14 @@ fn assert_no_terminal_frame(frame: &FrameKind) {
     assert!(
         !matches!(
             frame,
-            FrameKind::TerminalOutput { .. }
+            FrameKind::ResourceOutput { .. }
                 | FrameKind::BootstrapBegin { .. }
                 | FrameKind::BootstrapChunk { .. }
                 | FrameKind::BootstrapReady { .. }
                 | FrameKind::BootstrapTombstone { .. }
                 | FrameKind::HistoryPage { .. }
                 | FrameKind::HistoryTombstone { .. }
-                | FrameKind::TerminalClosed { .. }
+                | FrameKind::ResourceClosed { .. }
         ),
         "terminal frame after hub detach success: {frame:?}"
     );
@@ -173,10 +173,10 @@ async fn assert_quiet(client: &mut UnixStream) {
     }
 }
 
-async fn live_sequence(client: &mut UnixStream, pane: &TerminalId) -> u64 {
+async fn live_sequence(client: &mut UnixStream, pane: &ResourceId) -> u64 {
     timeout(STEP_DEADLINE, async {
         loop {
-            if let FrameKind::TerminalOutput {
+            if let FrameKind::ResourceOutput {
                 terminal_id,
                 seq,
                 bytes,
@@ -193,11 +193,11 @@ async fn live_sequence(client: &mut UnixStream, pane: &TerminalId) -> u64 {
     .expect("live satellite output")
 }
 
-async fn detach(client: &mut UnixStream, pane: &TerminalId) {
+async fn detach(client: &mut UnixStream, pane: &ResourceId) {
     let (result, _) = command_via_hub(
         client,
         8000,
-        Command::DetachTerminal {
+        Command::DetachResource {
             terminal_id: pane.clone(),
         },
     )
@@ -205,11 +205,11 @@ async fn detach(client: &mut UnixStream, pane: &TerminalId) {
     assert_eq!(result, CommandResult::Ok);
 }
 
-async fn attach_live(client: &mut UnixStream, pane: &TerminalId) -> Vec<FrameKind> {
+async fn attach_live(client: &mut UnixStream, pane: &ResourceId) -> Vec<FrameKind> {
     let (result, frames) = command_via_hub(
         client,
         7000,
-        Command::AttachTerminal {
+        Command::AttachResource {
             terminal_id: pane.clone(),
         },
     )
@@ -224,7 +224,7 @@ async fn attach_live(client: &mut UnixStream, pane: &TerminalId) -> Vec<FrameKin
     frames
 }
 
-async fn cycle(a: &mut UnixStream, b: &mut UnixStream, round: u32) -> TerminalId {
+async fn cycle(a: &mut UnixStream, b: &mut UnixStream, round: u32) -> ResourceId {
     let result = spawn_via_stream(
         a,
         100 + round,
@@ -240,7 +240,7 @@ async fn cycle(a: &mut UnixStream, b: &mut UnixStream, round: u32) -> TerminalId
     let SpawnResult::Ok(pane) = result else {
         panic!("remote spawn failed: {result:?}");
     };
-    assert!(matches!(&pane, TerminalId::Satellite { host, .. } if host.as_str() == "sat"));
+    assert!(matches!(&pane, ResourceId::Satellite { host, .. } if host.as_str() == "sat"));
     if round == 0 {
         // SPAWN itself publishes upstream even before a proxy is attached.
         detach(a, &pane).await;
@@ -305,11 +305,11 @@ fn satellite_detach_fences_twenty_live_spawns_and_preserves_shared_consumers() {
         let CommandResult::OkWith(CommandValue::State(state)) = result else {
             panic!("state unavailable");
         };
-        let panes: Vec<_> = state.panes.iter().map(|p| &p.id).collect();
+        let panes: Vec<_> = state.resources.iter().map(|p| &p.id).collect();
         assert!(
             panes
                 .iter()
-                .all(|id| matches!(id, TerminalId::Satellite { .. })),
+                .all(|id| matches!(id, ResourceId::Satellite { .. })),
             "no local PTY fallback"
         );
         for pane in &spawned {

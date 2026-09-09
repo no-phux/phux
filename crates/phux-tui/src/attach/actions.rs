@@ -32,7 +32,7 @@
 //! The two SPAWN-requiring actions (`split-pane`, `kill-pane`) are
 //! implemented as pure tree operations here so they unit-test cleanly; the
 //! driver-side frame I/O is partially blocked on the SPAWN frame family
-//! (no `SpawnTerminal` / `KillTerminal` variants exist in
+//! (no `SpawnResource` / `KillResource` variants exist in
 //! [`phux_protocol::wire::frame::FrameKind`] as of this commit). See the
 //! TODO comments at the call sites in `attach::driver`.
 //!
@@ -40,7 +40,7 @@
 
 use std::io::{self, Write};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use thiserror::Error;
 
 use super::paint::{SidebarReservation, content_rect};
@@ -83,7 +83,7 @@ pub enum ActionError {
 /// Apply a `split-pane` action.
 ///
 /// Splits the leaf at `state.focus` into two children along `dir` at a
-/// 50/50 ratio. `new_pane` is the [`TerminalId`] for the new sibling
+/// 50/50 ratio. `new_pane` is the [`ResourceId`] for the new sibling
 /// (the caller is responsible for obtaining one — see the ADR-0019
 /// decision 2 SPAWN path; driver-side wiring is deferred pending the
 /// SPAWN frame family).
@@ -99,7 +99,7 @@ pub enum ActionError {
 ///   [`layout::split_at`] (`PaneNotInLayout`, `InvalidRatio`).
 pub fn apply_split(
     state: &LayoutState,
-    new_pane: TerminalId,
+    new_pane: ResourceId,
     dir: SplitDir,
 ) -> Result<LayoutState, ActionError> {
     let tree = state.tree.as_ref().ok_or(ActionError::EmptyTree)?;
@@ -264,7 +264,7 @@ pub(super) fn apply_resize(
 /// * mirror for the other three directions
 fn resize_along_axis(
     node: &LayoutNode,
-    focused: &TerminalId,
+    focused: &ResourceId,
     axis: SplitDir,
     dir: Direction,
     delta: f32,
@@ -333,7 +333,7 @@ fn resize_along_axis(
     }
 }
 
-fn tree_contains(node: &LayoutNode, target: &TerminalId) -> bool {
+fn tree_contains(node: &LayoutNode, target: &ResourceId) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
         LayoutNode::Split { left, right, .. } => {
@@ -509,8 +509,8 @@ pub fn write_bell<W: Write>(out: &mut W) -> io::Result<()> {
 
 /// Parked state for an in-flight `split-pane` action (phux-4li.12).
 ///
-/// `run_action` emits a `SPAWN_TERMINAL` request and parks one of these
-/// keyed by the request id. When the matching `TERMINAL_SPAWNED { Ok }`
+/// `run_action` emits a `SPAWN_RESOURCE` request and parks one of these
+/// keyed by the request id. When the matching `RESOURCE_SPAWNED { Ok }`
 /// reply arrives, the driver applies [`crate::attach::actions::apply_split`] against
 /// the focused leaf captured here, splitting along the recorded
 /// direction. If a sibling action mutated focus between request and
@@ -522,7 +522,7 @@ pub(super) struct PendingSplit {
     /// split is applied against this id, not the live focus (which may
     /// have moved). Empty layouts can't request a split so this is
     /// always populated.
-    pub focused_at_request: TerminalId,
+    pub focused_at_request: ResourceId,
     /// Axis along which to split.
     pub dir: SplitDir,
     /// phux-r82.7: `true` ⇒ after the split applies, zoom the freshly
@@ -532,8 +532,8 @@ pub(super) struct PendingSplit {
     pub zoom_on_spawn: bool,
 }
 
-/// A `new-window` action that emitted a `SPAWN_TERMINAL` and is awaiting
-/// its `TERMINAL_SPAWNED` reply (phux-4li.15). The reply handler adds a
+/// A `new-window` action that emitted a `SPAWN_RESOURCE` and is awaiting
+/// its `RESOURCE_SPAWNED` reply (phux-4li.15). The reply handler adds a
 /// new window named `name` holding the spawned pane as its sole leaf.
 /// Parked separately from [`PendingSplit`] (keyed by the same
 /// `request_id` space) so the reply knows whether it's growing the
@@ -544,7 +544,7 @@ pub(super) struct PendingWindow {
     pub name: String,
 }
 
-/// Pure seam for the `TerminalSpawned { Ok }` handler (phux-4li.12).
+/// Pure seam for the `ResourceSpawned { Ok }` handler (phux-4li.12).
 ///
 /// Applies a parked [`PendingSplit`] against `state`. The driver side
 /// then takes the returned new state, replaces its `layout_state`, and
@@ -562,7 +562,7 @@ pub(super) struct PendingWindow {
 /// Propagates [`ActionError`] from [`apply_split`].
 pub(super) fn apply_spawned_ok(
     state: &LayoutState,
-    new_id: TerminalId,
+    new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<LayoutState, ActionError> {
     // Anchor the split against the leaf the user targeted; if it's
@@ -586,14 +586,14 @@ pub(super) fn apply_spawned_ok(
     apply_split(&anchored, new_id, pending.dir)
 }
 
-/// A local `TerminalId` that is not a leaf of `state` — a stand-in for the
+/// A local `ResourceId` that is not a leaf of `state` — a stand-in for the
 /// id the server has not allocated yet.
 ///
 /// Geometry does not depend on which id a leaf carries, only on the shape of
 /// the tree, so tiling a provisional split against a placeholder yields the
 /// rect the real leaf will get. The id only has to be distinct from every
 /// live leaf, or `split_at` would attach the new node to the wrong place.
-fn unused_leaf_id(state: &LayoutState) -> TerminalId {
+fn unused_leaf_id(state: &LayoutState) -> ResourceId {
     let leaves = state
         .tree
         .as_ref()
@@ -603,7 +603,7 @@ fn unused_leaf_id(state: &LayoutState) -> TerminalId {
     // viewport, so this loop terminates long before it exhausts the space.
     let mut candidate = u32::MAX;
     loop {
-        let id = TerminalId::local(candidate);
+        let id = ResourceId::local(candidate);
         if !leaves.contains(&id) {
             return id;
         }
@@ -618,9 +618,9 @@ fn unused_leaf_id(state: &LayoutState) -> TerminalId {
 /// applied by [`apply_spawned_ok`], tiled by
 /// [`crate::multi_pane::pane_rects_in`] into the same `content` rect — run
 /// one round trip early, against a placeholder id. Sending the answer as
-/// `SPAWN_TERMINAL.initial_size` means the server builds the pane's grid,
+/// `SPAWN_RESOURCE.initial_size` means the server builds the pane's grid,
 /// PTY, and bootstrap generation at the client's real geometry, and the
-/// `TERMINAL_RESIZE` the reflow emits next is a no-op rather than a
+/// `RESIZE_TERMINAL` the reflow emits next is a no-op rather than a
 /// tombstone over a checkpoint that was just captured.
 ///
 /// `None` when the split cannot be predicted — an empty tree, an anchor that
@@ -643,7 +643,7 @@ pub(super) fn predicted_spawn_dims(
     rects.get(&placeholder).map(|rect| (rect.w, rect.h))
 }
 
-/// Pure seam for the `TerminalClosed` handler (phux-4li.12).
+/// Pure seam for the `ResourceClosed` handler (phux-4li.12).
 ///
 /// Folds `dying` out of `state`, using [`apply_kill`] under
 /// the hood. Because `apply_kill` operates on `state.focus`, this
@@ -659,7 +659,7 @@ pub(super) fn predicted_spawn_dims(
 /// Propagates [`ActionError`] from [`apply_kill`].
 pub(super) fn apply_terminal_closed(
     state: &LayoutState,
-    dying: &TerminalId,
+    dying: &ResourceId,
 ) -> Result<LayoutState, ActionError> {
     let anchored = LayoutState {
         tree: state.tree.clone(),
@@ -678,8 +678,8 @@ mod tests {
     use super::*;
     use crate::layout::{LayoutNode, SplitDir, split_at};
 
-    fn t(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn t(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     fn two_pane_h() -> LayoutState {

@@ -17,14 +17,14 @@ impl ServerState {
     /// the attaching client's focused window/pane fall back to the
     /// session's `active` / window's `active` (tmux semantics).
     /// Returns `None` if `focus_session` has no active window or pane,
-    /// since `SessionSnapshot::focused_window` / `focused_pane` are
+    /// since `SessionSnapshot::focused_window` / `focused_resource` are
     /// required fields on the wire.
     #[allow(clippy::too_many_lines)]
     pub fn build_session_snapshot(
         &mut self,
         focus_session: SessionId,
     ) -> Option<phux_protocol::wire::info::SessionSnapshot> {
-        use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
         let attached_counts: HashMap<SessionId, u16> = {
             let mut counts: HashMap<SessionId, u16> = HashMap::new();
@@ -80,7 +80,7 @@ impl ServerState {
                 windows.push(
                     WindowInfo::new(window_wire, session_wire, format!("window-{index}"))
                         .with_index(u16::try_from(index).unwrap_or(u16::MAX))
-                        .with_active_pane(active_pane_wire),
+                        .with_active_resource(active_pane_wire),
                 );
 
                 for pid in &window.slots {
@@ -91,7 +91,7 @@ impl ServerState {
                     let cwd =
                         Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
                     panes.push(
-                        TerminalInfo::new(
+                        ResourceInfo::new(
                             terminal_wire,
                             window_wire,
                             terminal.dims.0,
@@ -127,7 +127,7 @@ impl ServerState {
                 .with_native_id(facet.native_id.clone())
             });
             panes.push(
-                TerminalInfo::resource(wire, crate::resource::wire_kind(descriptor.kind))
+                ResourceInfo::resource(wire, crate::resource::wire_kind(descriptor.kind))
                     .with_parent(parent)
                     .with_agent(agent),
             );
@@ -135,17 +135,17 @@ impl ServerState {
 
         let session = self.sessions.registry.session(focus_session)?;
         let focused_window = session.active?;
-        let focused_pane = self.sessions.registry.window(focused_window)?.active?;
+        let focused_resource = self.sessions.registry.window(focused_window)?.active?;
 
         let focused_session_wire = self.idspace.intern_session(focus_session);
         let focused_window_wire = self.intern_window_wire(focused_window);
-        let focused_pane_wire = self.intern_terminal_wire(focused_pane);
+        let focused_pane_wire = self.intern_terminal_wire(focused_resource);
 
         Some(
             SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)
                 .with_sessions(sessions)
                 .with_windows(windows)
-                .with_panes(panes),
+                .with_resources(panes),
         )
     }
 

@@ -60,18 +60,18 @@ pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs
 /// clients targeting one pane still exclude each other.
 #[derive(Debug, Default)]
 pub(super) struct AcknowledgedAdmission {
-    in_flight: Mutex<HashSet<phux_protocol::ids::TerminalId>>,
+    in_flight: Mutex<HashSet<phux_protocol::ids::ResourceId>>,
 }
 
 impl AcknowledgedAdmission {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<phux_protocol::ids::TerminalId>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<phux_protocol::ids::ResourceId>> {
         self.in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[cfg(test)]
-    pub(super) fn is_in_flight(&self, terminal_id: &phux_protocol::ids::TerminalId) -> bool {
+    pub(super) fn is_in_flight(&self, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
         self.lock().contains(terminal_id)
     }
 }
@@ -88,14 +88,14 @@ impl AcknowledgedAdmission {
 )]
 pub(crate) struct AcknowledgedReservation {
     admission: Arc<AcknowledgedAdmission>,
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     admitted_at: Instant,
 }
 
 impl AcknowledgedReservation {
     pub(super) fn try_acquire(
         admission: &Arc<AcknowledgedAdmission>,
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
     ) -> Option<Self> {
         if !admission.lock().insert(terminal_id.clone()) {
             return None;
@@ -237,7 +237,7 @@ impl SharedOperationCache {
 
 pub(super) fn operation_digest(
     operation_id: InputOperationId,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     events: Vec<InputEvent>,
 ) -> [u8; 32] {
     let frame = FrameKind::Command {
@@ -620,8 +620,8 @@ mod tests {
     #[test]
     fn admission_is_scoped_to_one_terminal() {
         let admission = Arc::new(AcknowledgedAdmission::default());
-        let first = phux_protocol::TerminalId::local(1);
-        let second = phux_protocol::TerminalId::local(2);
+        let first = phux_protocol::ResourceId::local(1);
+        let second = phux_protocol::ResourceId::local(2);
 
         let held = AcknowledgedReservation::try_acquire(&admission, &first).expect("first admits");
         assert!(
@@ -717,7 +717,7 @@ mod tests {
         let mut pending = PendingSet::default();
 
         let mut register = |pending: &mut PendingSet, terminal: u32, offset_ms: u64| {
-            let terminal_id = phux_protocol::TerminalId::local(terminal);
+            let terminal_id = phux_protocol::ResourceId::local(terminal);
             let reservation = AcknowledgedReservation::try_acquire(&admission, &terminal_id)
                 .expect("distinct terminals admit");
             // The receiver is dropped immediately: this test exercises the

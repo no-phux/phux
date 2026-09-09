@@ -7,10 +7,10 @@
 
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
-use phux_protocol::ids::{FileUploadId, TerminalId};
+use phux_protocol::ids::{FileUploadId, ResourceId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACH_READY,
-    TYPE_COMMAND_RESULT, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT,
+    TYPE_COMMAND_RESULT, TYPE_HELLO_OK, TYPE_RESOURCE_OUTPUT,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -52,13 +52,13 @@ async fn connect(path: &std::path::Path) -> UnixStream {
 }
 
 /// Attach and return the seed pane's id from the `ATTACHED` snapshot.
-async fn attach(stream: &mut UnixStream) -> TerminalId {
+async fn attach(stream: &mut UnixStream) -> ResourceId {
     send_frame(stream, &attach_by_name(SESSION)).await;
     let mut pane = None;
     loop {
         let (type_byte, frame) = recv_typed(stream).await;
         if let FrameKind::Attached { snapshot, .. } = &frame {
-            pane = snapshot.panes.first().map(|p| p.id.clone());
+            pane = snapshot.resources.first().map(|p| p.id.clone());
         }
         if type_byte == TYPE_ATTACH_READY {
             break;
@@ -84,7 +84,7 @@ async fn command_result(stream: &mut UnixStream, request_id: u32) -> CommandResu
     }
 }
 
-async fn upload(stream: &mut UnixStream, pane: &TerminalId, bytes: &[u8]) -> FileUploadId {
+async fn upload(stream: &mut UnixStream, pane: &ResourceId, bytes: &[u8]) -> FileUploadId {
     let upload_id = FileUploadId::new([0x5a; 16]).expect("non-zero");
     send_frame(
         stream,
@@ -172,7 +172,7 @@ fn transcribe_pastes_the_transcript_into_the_pane_and_returns_it() {
                     CommandResult::OkWith(CommandValue::Json(json)) => reply = Some(json),
                     other => panic!("TRANSCRIBE failed: {other:?}"),
                 },
-                FrameKind::TerminalOutput { bytes, .. } if type_byte == TYPE_TERMINAL_OUTPUT => {
+                FrameKind::ResourceOutput { bytes, .. } if type_byte == TYPE_RESOURCE_OUTPUT => {
                     echoed.extend_from_slice(&bytes);
                 }
                 _ => {}

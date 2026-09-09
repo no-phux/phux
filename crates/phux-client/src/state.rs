@@ -7,13 +7,13 @@
 use std::path::Path;
 
 use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, Scope, StateScope, TERMINAL_TAGS_KEY,
+    Command, CommandResult, CommandValue, FrameKind, RESOURCE_TAGS_KEY, Scope, StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
-use crate::agent_meta::{TERMINAL_AGENT_KEY, parse_agent_record};
+use crate::agent_meta::{RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 use crate::selector::{self, AgentIndex, AgentResolveError, AgentTarget, Selector, TagIndex};
@@ -76,7 +76,7 @@ impl Degradation {
 /// say so.
 ///
 /// That omission is invisible at exactly the moment it matters. Every
-/// selector the CLI resolves is a *search* over `snapshot.panes`, and a search
+/// selector the CLI resolves is a *search* over `snapshot.resources`, and a search
 /// that finds nothing is reported as "no such target". Against a degraded
 /// snapshot that sentence is a guess: the pane may be sitting on the
 /// satellite the hub could not reach. Returning the snapshot alone lets a
@@ -391,8 +391,8 @@ pub async fn fetch_tag_index(conn: &mut Connection, snapshot: &SessionSnapshot) 
         let Ok(reply) = conn
             .request_metadata(
                 request_id,
-                Scope::Terminal(pane.id.clone()),
-                TERMINAL_TAGS_KEY.to_owned(),
+                Scope::Resource(pane.id.clone()),
+                RESOURCE_TAGS_KEY.to_owned(),
             )
             .await
         else {
@@ -432,8 +432,8 @@ pub async fn fetch_agent_index(conn: &mut Connection, snapshot: &SessionSnapshot
         let Ok(reply) = conn
             .request_metadata(
                 request_id,
-                Scope::Terminal(pane.id.clone()),
-                TERMINAL_AGENT_KEY.to_owned(),
+                Scope::Resource(pane.id.clone()),
+                RESOURCE_AGENT_KEY.to_owned(),
             )
             .await
         else {
@@ -494,7 +494,7 @@ pub async fn resolve_targets(
     socket: &Path,
     selector: &Selector,
     snapshot: &SessionSnapshot,
-) -> Vec<TerminalId> {
+) -> Vec<ResourceId> {
     if !matches!(selector, Selector::Tag(_)) {
         return selector::resolve(selector, snapshot);
     }
@@ -514,9 +514,9 @@ pub async fn resolve_targets(
     reason = "tests"
 )]
 mod tests {
-    use phux_protocol::ids::{SessionId, TerminalId, WindowId};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
-    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
     use tokio::net::UnixListener;
 
     use super::{Connection, get_state};
@@ -528,7 +528,7 @@ mod tests {
         let socket = dir.path().join("state.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let expected =
-            SessionSnapshot::new(SessionId::new(7), WindowId::new(8), TerminalId::local(9));
+            SessionSnapshot::new(SessionId::new(7), WindowId::new(8), ResourceId::local(9));
         // A COMMAND_RESULT for request 99 belongs to some other pipelined
         // request; the shared harness always emits it AHEAD of this one's
         // ack, because that is the only ordering in which it is a hazard.
@@ -583,7 +583,7 @@ mod tests {
         let socket = dir.path().join("degraded.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let expected =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), TerminalId::local(3));
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), ResourceId::local(3));
         let spec = ScriptSpec::new()
             .degradation_notice("no satellite route to build-box")
             .state(expected.clone());
@@ -628,7 +628,7 @@ mod tests {
         let socket = dir.path().join("view.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let expected =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), TerminalId::local(3));
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), ResourceId::local(3));
         let spec = ScriptSpec::new()
             .degradation_notice("satellite build-box is unreachable: link is down")
             .state(expected.clone());
@@ -714,25 +714,25 @@ mod tests {
         let socket = dir.path().join("index.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let spec = ScriptSpec::new().metadata(|scope, key| {
-            (key == crate::agent_meta::TERMINAL_AGENT_KEY
+            (key == crate::agent_meta::RESOURCE_AGENT_KEY
                 && matches!(
                     scope,
-                    phux_protocol::wire::frame::Scope::Terminal(id) if *id == TerminalId::local(1)
+                    phux_protocol::wire::frame::Scope::Resource(id) if *id == ResourceId::local(1)
                 ))
             .then(|| br#"{"name":"reviewer","kind":"claude","state":"working"}"#.to_vec())
         });
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
-                .with_panes(vec![
-                    TerminalInfo::new(TerminalId::local(1), WindowId::new(1), 80, 24),
-                    TerminalInfo::new(TerminalId::local(2), WindowId::new(1), 80, 24),
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                .with_resources(vec![
+                    ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+                    ResourceInfo::new(ResourceId::local(2), WindowId::new(1), 80, 24),
                 ]);
         let mut conn = Connection::connect(&socket).await.unwrap();
         let index = super::fetch_agent_index(&mut conn, &snapshot).await;
         assert!(index.is_complete());
         assert_eq!(index.records().len(), 1);
-        assert_eq!(index.get(&TerminalId::local(1)).unwrap().name, "reviewer");
+        assert_eq!(index.get(&ResourceId::local(1)).unwrap().name, "reviewer");
         drop(conn);
         server.await.unwrap();
 
@@ -796,10 +796,10 @@ mod tests {
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
-                .with_panes(vec![
-                    TerminalInfo::new(TerminalId::local(1), WindowId::new(1), 80, 24),
-                    TerminalInfo::new(TerminalId::local(2), WindowId::new(1), 80, 24),
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                .with_resources(vec![
+                    ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+                    ResourceInfo::new(ResourceId::local(2), WindowId::new(1), 80, 24),
                 ]);
         let mut conn = Connection::connect(&socket).await.unwrap();
         let index =

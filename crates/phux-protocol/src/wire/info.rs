@@ -1,6 +1,6 @@
 //! Snapshot-graph types delivered with `ATTACHED` per `docs/spec/L1.md` §7.
 //!
-//! SPEC §13 references `SessionInfo`, `WindowInfo`, `TerminalInfo`, and
+//! SPEC §13 references `SessionInfo`, `WindowInfo`, `ResourceInfo`, and
 //! `SessionSnapshot` but does not define their fields. This module fills that
 //! gap with wire-portable shapes that mirror `phux_core::{Session, Window,
 //! Pane, LayoutNode, SplitDir}` semantics WITHOUT crossing the
@@ -12,7 +12,7 @@
 //! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
 //! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
 
-use crate::ids::{ClientId, ResourceKind, SessionId, TerminalId, WindowId};
+use crate::ids::{ClientId, ResourceId, ResourceKind, SessionId, WindowId};
 
 use super::decode::Decoder;
 use super::encode::Encoder;
@@ -54,7 +54,7 @@ pub enum SplitDir {
 
 /// Wire-side mirror of `phux_core::window::LayoutNode`.
 ///
-/// `Leaf` carries a single [`TerminalId`]; `Split` divides its rectangle between
+/// `Leaf` carries a single [`ResourceId`]; `Split` divides its rectangle between
 /// two children along [`SplitDir`] at `ratio` (the left/top child gets
 /// `ratio` of the parent dimension along the split axis).
 ///
@@ -64,7 +64,7 @@ pub enum SplitDir {
 #[non_exhaustive]
 pub enum LayoutNode {
     /// A single pane — recursion base.
-    Leaf(TerminalId),
+    Leaf(ResourceId),
     /// An interior node that splits its rectangle in two.
     Split {
         /// The axis the split is taken along.
@@ -89,7 +89,7 @@ pub enum LayoutNode {
 }
 
 // -----------------------------------------------------------------------------
-// SessionInfo / WindowInfo / TerminalInfo / SessionSnapshot
+// SessionInfo / WindowInfo / ResourceInfo / SessionSnapshot
 // -----------------------------------------------------------------------------
 
 /// Description of a single session, sufficient for UI chrome and `phux ls`.
@@ -181,8 +181,8 @@ impl SessionInfo {
 
 /// Description of a single window, sufficient for tab/pane chrome.
 ///
-/// Excludes the panes themselves — those are flattened into
-/// [`SessionSnapshot::panes`] and joined via `TerminalInfo::window_id`.
+/// Excludes the resources themselves — those are flattened into
+/// [`SessionSnapshot::resources`] and joined via `ResourceInfo::window_id`.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 #[derive(Debug, Clone, PartialEq)]
@@ -201,10 +201,10 @@ pub struct WindowInfo {
     /// Human-readable window name.
     pub name: String,
     /// Window's remembered focused pane.
-    pub active_pane: Option<TerminalId>,
+    pub active_resource: Option<ResourceId>,
     /// Pane layout as a binary split tree.
     ///
-    /// `None` iff this window has no panes — `SessionSnapshot::panes`
+    /// `None` iff this window has no resources — `SessionSnapshot::resources`
     /// filtered by `window_id` will be empty.
     pub layout: Option<LayoutNode>,
 }
@@ -212,7 +212,7 @@ pub struct WindowInfo {
 impl WindowInfo {
     /// Construct a `WindowInfo` from its load-bearing fields.
     ///
-    /// `index` defaults to `0`; `active_pane` and `layout` default to
+    /// `index` defaults to `0`; `active_resource` and `layout` default to
     /// `None`. Use the `with_*` setters to fill them when meaningful.
     #[must_use]
     pub fn new(id: WindowId, session_id: SessionId, name: impl Into<String>) -> Self {
@@ -221,7 +221,7 @@ impl WindowInfo {
             session_id,
             index: 0,
             name: name.into(),
-            active_pane: None,
+            active_resource: None,
             layout: None,
         }
     }
@@ -233,10 +233,10 @@ impl WindowInfo {
         self
     }
 
-    /// Builder setter for [`Self::active_pane`].
+    /// Builder setter for [`Self::active_resource`].
     #[must_use]
-    pub fn with_active_pane(mut self, active_pane: Option<TerminalId>) -> Self {
-        self.active_pane = active_pane;
+    pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
+        self.active_resource = active_resource;
         self
     }
 
@@ -312,9 +312,9 @@ impl AgentFacet {
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub struct TerminalInfo {
+pub struct ResourceInfo {
     /// Stable resource identifier.
-    pub id: TerminalId,
+    pub id: ResourceId,
     /// Foreign key into [`SessionSnapshot::windows`]; `WindowId(0)` for a
     /// non-Terminal kind, which no window owns.
     pub window_id: WindowId,
@@ -336,20 +336,20 @@ pub struct TerminalInfo {
     pub kind: ResourceKind,
     /// The resource this one is bound to, when it is a child. Set at spawn
     /// and immutable; closing the parent closes the child.
-    pub parent: Option<TerminalId>,
+    pub parent: Option<ResourceId>,
     /// The agent-session facet, present iff `kind` is
     /// [`ResourceKind::AgentSession`].
     pub agent: Option<AgentFacet>,
 }
 
-impl TerminalInfo {
-    /// Construct a `TerminalInfo` from its load-bearing fields.
+impl ResourceInfo {
+    /// Construct a `ResourceInfo` from its load-bearing fields.
     ///
     /// `title` and `cwd` default to `None`; `kind` to `Terminal`; `parent`
     /// and `agent` to `None`. Set them via the `with_*` helpers when the
     /// server has the data.
     #[must_use]
-    pub const fn new(id: TerminalId, window_id: WindowId, cols: u16, rows: u16) -> Self {
+    pub const fn new(id: ResourceId, window_id: WindowId, cols: u16, rows: u16) -> Self {
         Self {
             id,
             window_id,
@@ -366,7 +366,7 @@ impl TerminalInfo {
     /// Construct the entry for a non-Terminal resource: no window
     /// (`WindowId(0)`), no grid (`0 x 0`), the given `kind`.
     #[must_use]
-    pub const fn resource(id: TerminalId, kind: ResourceKind) -> Self {
+    pub const fn resource(id: ResourceId, kind: ResourceKind) -> Self {
         Self {
             id,
             window_id: WindowId::new(0),
@@ -403,7 +403,7 @@ impl TerminalInfo {
 
     /// Builder setter for [`Self::parent`].
     #[must_use]
-    pub fn with_parent(mut self, parent: Option<TerminalId>) -> Self {
+    pub fn with_parent(mut self, parent: Option<ResourceId>) -> Self {
         self.parent = parent;
         self
     }
@@ -423,26 +423,26 @@ impl TerminalInfo {
     }
 }
 
-/// Flat graph of sessions/windows/panes delivered with `ATTACHED`.
+/// Flat graph of sessions/windows/resources delivered with `ATTACHED`.
 ///
 /// All three lists are joined by id. The triple of `focused_*` fields
 /// records the **attaching client's** current focus — distinct from the
-/// per-container `SessionInfo::active_window` / `WindowInfo::active_pane`,
+/// per-container `SessionInfo::active_window` / `WindowInfo::active_resource`,
 /// which record the container's remembered focus from when no client was
 /// attached (tmux behavior: detach → attach later restores last focus).
 ///
 /// # Wire shape and the trailing resource facets
 ///
 /// The snapshot is positional: three `u32`-counted lists, then the focus
-/// triple. After `focused_pane` an encoder appends one more `u32`-counted
-/// list, the *resource facets*, with one row per `panes` entry whose
-/// [`TerminalInfo::kind`], [`TerminalInfo::parent`], or
-/// [`TerminalInfo::agent`] is non-default:
+/// triple. After `focused_resource` an encoder appends one more `u32`-counted
+/// list, the *resource facets*, with one row per `resources` entry whose
+/// [`ResourceInfo::kind`], [`ResourceInfo::parent`], or
+/// [`ResourceInfo::agent`] is non-default:
 ///
 /// ```text
-/// facet_row = id: TerminalId
+/// facet_row = id: ResourceId
 ///          || kind: u8
-///          || parent: optional<TerminalId>
+///          || parent: optional<ResourceId>
 ///          || agent: optional<provider: str || native_id: optional<str> || state: str>
 /// ```
 ///
@@ -450,8 +450,8 @@ impl TerminalInfo {
 /// snapshot is byte-identical to one encoded before it existed. A decoder
 /// reads it only when bytes remain in the enclosing field (`at_body_end`),
 /// so a snapshot from an older peer decodes with every entry at the defaults,
-/// and an older decoder stops at `focused_pane` and never sees the list.
-/// Rows are joined onto `panes` by id on decode; a row naming no entry is
+/// and an older decoder stops at `focused_resource` and never sees the list.
+/// Rows are joined onto `resources` by id on decode; a row naming no entry is
 /// ignored. This is the trailing-additive convention of
 /// `docs/spec/appendix-encoding.md` §2 applied at the one place in the
 /// snapshot where a trailing value is unambiguous: a per-entry suffix would
@@ -462,22 +462,22 @@ impl TerminalInfo {
 /// # Example
 ///
 /// ```
-/// use phux_protocol::wire::info::{TerminalInfo, SessionInfo, SessionSnapshot, WindowInfo};
-/// use phux_protocol::{TerminalId, SessionId, WindowId};
+/// use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+/// use phux_protocol::{ResourceId, SessionId, WindowId};
 ///
 /// let snapshot = SessionSnapshot::new(
 ///     SessionId::new(1),
 ///     WindowId::new(10),
-///     TerminalId::new(100),
+///     ResourceId::new(100),
 /// )
 /// .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")
 ///     .with_window_count(1)
 ///     .with_attached_client_count(1)])
 /// .with_windows(vec![
 ///     WindowInfo::new(WindowId::new(10), SessionId::new(1), "code")
-///         .with_active_pane(Some(TerminalId::new(100))),
+///         .with_active_resource(Some(ResourceId::new(100))),
 /// ])
-/// .with_panes(vec![TerminalInfo::new(TerminalId::new(100), WindowId::new(10), 80, 24)]);
+/// .with_resources(vec![ResourceInfo::new(ResourceId::new(100), WindowId::new(10), 80, 24)]);
 /// assert_eq!(snapshot.sessions.len(), 1);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -488,13 +488,13 @@ pub struct SessionSnapshot {
     /// Every window across every visible session.
     pub windows: Vec<WindowInfo>,
     /// Every pane across every visible window.
-    pub panes: Vec<TerminalInfo>,
+    pub resources: Vec<ResourceInfo>,
     /// The attaching client's initial focused session.
     pub focused_session: SessionId,
     /// The attaching client's initial focused window.
     pub focused_window: WindowId,
     /// The attaching client's initial focused pane.
-    pub focused_pane: TerminalId,
+    pub focused_resource: ResourceId,
 }
 
 impl SessionSnapshot {
@@ -505,15 +505,15 @@ impl SessionSnapshot {
     pub const fn new(
         focused_session: SessionId,
         focused_window: WindowId,
-        focused_pane: TerminalId,
+        focused_resource: ResourceId,
     ) -> Self {
         Self {
             sessions: Vec::new(),
             windows: Vec::new(),
-            panes: Vec::new(),
+            resources: Vec::new(),
             focused_session,
             focused_window,
-            focused_pane,
+            focused_resource,
         }
     }
 
@@ -531,10 +531,10 @@ impl SessionSnapshot {
         self
     }
 
-    /// Builder setter for [`Self::panes`].
+    /// Builder setter for [`Self::resources`].
     #[must_use]
-    pub fn with_panes(mut self, panes: Vec<TerminalInfo>) -> Self {
-        self.panes = panes;
+    pub fn with_resources(mut self, resources: Vec<ResourceInfo>) -> Self {
+        self.resources = resources;
         self
     }
 }
@@ -592,7 +592,7 @@ pub(super) fn encode_layout_node(node: &LayoutNode, enc: &mut Encoder<'_>) {
 /// unbounded tree of attacker-controlled bytes would overflow the stack and
 /// abort the process — a 16 MiB frame admits millions of `Split` levels at
 /// roughly six bytes each. A real terminal layout nests only as deep as the
-/// user has split panes (tens at the very most); `64` is comfortably above
+/// user has split resources (tens at the very most); `64` is comfortably above
 /// any legitimate value while keeping the worst-case decode recursion shallow
 /// enough to never approach the stack limit.
 pub const MAX_LAYOUT_DEPTH: usize = 64;
@@ -695,7 +695,7 @@ pub(super) fn encode_window_info(info: &WindowInfo, enc: &mut Encoder<'_>) {
     enc.write_u32_be(info.session_id.get());
     enc.write_u16_be(info.index);
     enc.write_str(&info.name);
-    encode_option_terminal_id(info.active_pane.as_ref(), enc);
+    encode_option_terminal_id(info.active_resource.as_ref(), enc);
     encode_option_layout_node(info.layout.as_ref(), enc);
 }
 
@@ -704,19 +704,19 @@ pub(super) fn decode_window_info(dec: &mut Decoder<'_>) -> Result<WindowInfo, De
     let session_id = SessionId::new(dec.read_u32_be()?);
     let index = dec.read_u16_be()?;
     let name = dec.read_str()?.to_owned();
-    let active_pane = decode_option_terminal_id(dec)?;
+    let active_resource = decode_option_terminal_id(dec)?;
     let layout = decode_option_layout_node(dec)?;
     Ok(WindowInfo {
         id,
         session_id,
         index,
         name,
-        active_pane,
+        active_resource,
         layout,
     })
 }
 
-pub(super) fn encode_terminal_info(info: &TerminalInfo, enc: &mut Encoder<'_>) {
+pub(super) fn encode_terminal_info(info: &ResourceInfo, enc: &mut Encoder<'_>) {
     encode_terminal_id(&info.id, enc);
     enc.write_u32_be(info.window_id.get());
     enc.write_u16_be(info.cols);
@@ -725,14 +725,14 @@ pub(super) fn encode_terminal_info(info: &TerminalInfo, enc: &mut Encoder<'_>) {
     encode_option_str(info.cwd.as_deref(), enc);
 }
 
-pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<TerminalInfo, DecodeError> {
+pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo, DecodeError> {
     let id = decode_terminal_id(dec)?;
     let window_id = WindowId::new(dec.read_u32_be()?);
     let cols = dec.read_u16_be()?;
     let rows = dec.read_u16_be()?;
     let title = decode_option_str(dec)?.map(str::to_owned);
     let cwd = decode_option_str(dec)?.map(str::to_owned);
-    Ok(TerminalInfo {
+    Ok(ResourceInfo {
         id,
         window_id,
         cols,
@@ -747,13 +747,13 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<TerminalInfo
 
 /// Write the trailing resource-facet list (see [`SessionSnapshot`]), or
 /// nothing when every entry is a plain Terminal.
-fn encode_resource_facets(panes: &[TerminalInfo], enc: &mut Encoder<'_>) {
-    let rows = panes.iter().filter(|p| p.has_resource_facets()).count();
+fn encode_resource_facets(resources: &[ResourceInfo], enc: &mut Encoder<'_>) {
+    let rows = resources.iter().filter(|p| p.has_resource_facets()).count();
     if rows == 0 {
         return;
     }
     encode_list_len(rows, enc);
-    for pane in panes.iter().filter(|p| p.has_resource_facets()) {
+    for pane in resources.iter().filter(|p| p.has_resource_facets()) {
         encode_terminal_id(&pane.id, enc);
         enc.write_u8(pane.kind.as_wire());
         encode_option_terminal_id(pane.parent.as_ref(), enc);
@@ -770,10 +770,10 @@ fn encode_resource_facets(panes: &[TerminalInfo], enc: &mut Encoder<'_>) {
 }
 
 /// Read the trailing resource-facet list if the enclosing field has bytes
-/// left, joining each row onto its `panes` entry by id.
+/// left, joining each row onto its `resources` entry by id.
 fn decode_resource_facets(
     dec: &mut Decoder<'_>,
-    panes: &mut [TerminalInfo],
+    resources: &mut [ResourceInfo],
 ) -> Result<(), DecodeError> {
     if dec.at_body_end() {
         return Ok(());
@@ -802,7 +802,7 @@ fn decode_resource_facets(
                 });
             }
         };
-        if let Some(pane) = panes.iter_mut().find(|p| p.id == id) {
+        if let Some(pane) = resources.iter_mut().find(|p| p.id == id) {
             pane.kind = kind;
             pane.parent = parent;
             pane.agent = agent;
@@ -820,14 +820,14 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     for w in &snap.windows {
         encode_window_info(w, enc);
     }
-    encode_list_len(snap.panes.len(), enc);
-    for p in &snap.panes {
+    encode_list_len(snap.resources.len(), enc);
+    for p in &snap.resources {
         encode_terminal_info(p, enc);
     }
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
-    encode_terminal_id(&snap.focused_pane, enc);
-    encode_resource_facets(&snap.panes, enc);
+    encode_terminal_id(&snap.focused_resource, enc);
+    encode_resource_facets(&snap.resources, enc);
 }
 
 pub(super) fn decode_session_snapshot(
@@ -848,22 +848,22 @@ pub(super) fn decode_session_snapshot(
     for _ in 0..windows_len {
         windows.push(decode_window_info(dec)?);
     }
-    let panes_len = decode_list_len(dec)?;
-    let mut panes = dec.bounded_capacity(panes_len);
-    for _ in 0..panes_len {
-        panes.push(decode_terminal_info(dec)?);
+    let resources_len = decode_list_len(dec)?;
+    let mut resources = dec.bounded_capacity(resources_len);
+    for _ in 0..resources_len {
+        resources.push(decode_terminal_info(dec)?);
     }
     let focused_session = SessionId::new(dec.read_u32_be()?);
     let focused_window = WindowId::new(dec.read_u32_be()?);
-    let focused_pane = decode_terminal_id(dec)?;
-    decode_resource_facets(dec, &mut panes)?;
+    let focused_resource = decode_terminal_id(dec)?;
+    decode_resource_facets(dec, &mut resources)?;
     Ok(SessionSnapshot {
         sessions,
         windows,
-        panes,
+        resources,
         focused_session,
         focused_window,
-        focused_pane,
+        focused_resource,
     })
 }
 
@@ -896,7 +896,7 @@ pub(super) fn decode_option_window_id(
     }
 }
 
-pub(super) fn encode_option_terminal_id(value: Option<&TerminalId>, enc: &mut Encoder<'_>) {
+pub(super) fn encode_option_terminal_id(value: Option<&ResourceId>, enc: &mut Encoder<'_>) {
     match value {
         None => enc.write_u8(0),
         Some(id) => {
@@ -908,13 +908,13 @@ pub(super) fn encode_option_terminal_id(value: Option<&TerminalId>, enc: &mut En
 
 pub(super) fn decode_option_terminal_id(
     dec: &mut Decoder<'_>,
-) -> Result<Option<TerminalId>, DecodeError> {
+) -> Result<Option<ResourceId>, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
         0 => Ok(None),
         1 => Ok(Some(decode_terminal_id(dec)?)),
         other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<TerminalId> tag",
+            field: "Option<ResourceId> tag",
             value: u32::from(other),
         }),
     }

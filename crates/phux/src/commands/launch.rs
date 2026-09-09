@@ -111,7 +111,7 @@ fn spawn_resolved(
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id,
         // v0.1 servers expose the single default group (SPEC §3.1).
         group: GroupId::new(1),
@@ -156,7 +156,7 @@ fn spawn_resolved(
         Ok(_) => {
             eprintln!(
                 "phux: {}",
-                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+                phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
         }
@@ -241,12 +241,12 @@ fn print_resolved(resolved: &ResolvedLaunch, argv: &[String], json: bool) -> Exi
 fn print_launched(
     resolved: &ResolvedLaunch,
     argv: &[String],
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
     json: bool,
 ) -> ExitCode {
     let id = match terminal_id {
-        phux_protocol::ids::TerminalId::Local { id }
-        | phux_protocol::ids::TerminalId::Satellite { id, .. } => *id,
+        phux_protocol::ids::ResourceId::Local { id }
+        | phux_protocol::ids::ResourceId::Satellite { id, .. } => *id,
     };
     if json {
         let payload = serde_json::json!({

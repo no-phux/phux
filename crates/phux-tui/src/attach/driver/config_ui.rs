@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::{ClientId, TerminalId};
+use phux_protocol::ids::{ClientId, ResourceId};
 
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, paint_full_frame};
 use crate::attach::pane_state::{AttachKernel, PaneSlot, VcsIndex};
@@ -100,10 +100,10 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     sidebar_painter: &mut SidebarPainter,
     overlays: &mut OverlayState,
     workspace: &Workspace,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
-    focused_pane: Option<&TerminalId>,
-    zoomed: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
+    zoomed: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
     agent_meta: &AgentMetaIndex,
     vcs: &mut VcsIndex,
@@ -135,7 +135,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                 sidebar_painter,
                 workspace,
                 panes,
-                focused_pane,
+                focused_resource,
                 zoomed,
                 own_client_id,
                 agent_meta,
@@ -151,7 +151,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                     ls,
                     panes,
                     engine_kernel,
-                    focused_pane,
+                    focused_resource,
                     viewport_dims,
                     settings.status_bar.as_mut(),
                     sidebar,
@@ -185,7 +185,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             workspace,
             panes,
             engine_kernel,
-            focused_pane,
+            focused_resource,
             zoomed,
             viewport_dims,
             settings.status_bar.as_mut(),

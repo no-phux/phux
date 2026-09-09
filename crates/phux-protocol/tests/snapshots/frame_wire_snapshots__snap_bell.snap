@@ -1,5 +1,5 @@
 ---
 source: crates/phux-protocol/tests/frame_wire_snapshots.rs
-expression: "dump_frame(&FrameKind::Bell { terminal_id: TerminalId::local(0x0000_00BE), })"
+expression: "dump_frame(&FrameKind::Bell { terminal_id: ResourceId::local(0x0000_00BE), })"
 ---
 00000000 | 00 00 00 09 b0 01 04 05  00 00 00 00 be          |.............

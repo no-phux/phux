@@ -18,7 +18,7 @@ use phux_client::layout_ops::{
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, Layer, LayerSet, ServerFeature};
-use phux_protocol::ids::{SessionId, TerminalId, WindowId};
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{
     Command as WireCommand, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope,
     StateScope,
@@ -95,13 +95,13 @@ struct Plan {
 }
 
 /// A move whose source and destination panes live in different sessions
-/// (ADR-0056): ownership moves on L1 via `MOVE_TERMINAL`, then geometry is
+/// (ADR-0056): ownership moves on L1 via `MOVE_RESOURCE`, then geometry is
 /// written client-side — a `Split` into the destination envelope and a
 /// `Close` out of the source envelope.
 #[derive(Debug)]
 struct CrossMovePlan {
-    source: TerminalId,
-    target: TerminalId,
+    source: ResourceId,
+    target: ResourceId,
     source_window: WindowId,
     dest_window: WindowId,
     source_session: SessionId,
@@ -109,11 +109,11 @@ struct CrossMovePlan {
     dir: SplitDir,
     ratio: f32,
     /// A surviving sibling in the source window, the ownership address the
-    /// inverse `MOVE_TERMINAL` needs if the destination layout write fails.
+    /// inverse `MOVE_RESOURCE` needs if the destination layout write fails.
     /// `None` when the source pane was its window's only leaf — rollback is
     /// then impossible (the emptied window is reaped server-side) and the
     /// failure is reported instead (ADR-0056: best-effort).
-    rollback_owner: Option<TerminalId>,
+    rollback_owner: Option<ResourceId>,
     output: serde_json::Value,
     human: String,
 }
@@ -230,7 +230,7 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
 
 /// Execute a cross-session move (ADR-0056): feature-gate, re-parent on L1,
 /// then write geometry — destination first, so a failed placement rolls
-/// back with a single inverse `MOVE_TERMINAL` and no layout repair.
+/// back with a single inverse `MOVE_RESOURCE` and no layout repair.
 ///
 /// The source envelope's stale leaf is dropped last. If the move reaped the
 /// source session, its one-leaf envelope is deleted instead; cleanup failures
@@ -248,7 +248,7 @@ async fn execute_cross_move(
                 json,
                 &CliError::new(
                     codes::SERVER_TOO_OLD,
-                    "this server predates cross-session moves (MOVE_TERMINAL)",
+                    "this server predates cross-session moves (MOVE_RESOURCE)",
                     "upgrade it with `phux upgrade`, then retry",
                 ),
                 1,
@@ -257,7 +257,7 @@ async fn execute_cross_move(
         Err(err) => return json_err::report_no_server(json, &err, socket_path, "layout"),
     }
 
-    let frame = FrameKind::MoveTerminal {
+    let frame = FrameKind::MoveResource {
         request_id: 200,
         terminal: plan.source.clone(),
         owner_terminal: plan.target.clone(),
@@ -412,7 +412,7 @@ async fn cleanup_source_layout(
 fn cross_move_plan(
     snapshot: &SessionSnapshot,
     operation: &RequestedOperation,
-    terminals: &[TerminalId],
+    terminals: &[ResourceId],
 ) -> Option<PlanKind> {
     let RequestedOperation::Move {
         direction, ratio, ..
@@ -459,7 +459,7 @@ fn cross_move_plan(
     }))
 }
 
-/// Fold a `TERMINAL_MOVED` result into the verb's error vocabulary.
+/// Fold a `RESOURCE_MOVED` result into the verb's error vocabulary.
 /// `MoveResult` is `#[non_exhaustive]`; a future variant from a newer server
 /// reads as a refusal rather than a silent success.
 fn move_refusal(moved: MoveResult) -> Result<(), CliError> {
@@ -483,7 +483,7 @@ fn move_refusal(moved: MoveResult) -> Result<(), CliError> {
     }
 }
 
-/// Best-effort inverse `MOVE_TERMINAL` after a failed destination layout
+/// Best-effort inverse `MOVE_RESOURCE` after a failed destination layout
 /// write; `true` when ownership was restored. `rollback_owner = None` means
 /// the emptied source window was reaped — there is no ownership address to
 /// move back to.
@@ -497,7 +497,7 @@ async fn rollback_move(conn: &mut Connection, plan: &CrossMovePlan) -> bool {
     if !owner_is_still_in_source {
         return false;
     }
-    let inverse = FrameKind::MoveTerminal {
+    let inverse = FrameKind::MoveResource {
         request_id: 205,
         terminal: plan.source.clone(),
         owner_terminal: owner.clone(),
@@ -523,7 +523,7 @@ async fn rollback_suffix(conn: &mut Connection, plan: &CrossMovePlan) -> &'stati
     }
 }
 
-fn workspace_contains(workspace: &Workspace, terminal: &TerminalId) -> bool {
+fn workspace_contains(workspace: &Workspace, terminal: &ResourceId) -> bool {
     workspace
         .windows
         .iter()
@@ -533,8 +533,8 @@ fn workspace_contains(workspace: &Workspace, terminal: &TerminalId) -> bool {
 
 fn workspace_has_placement(
     workspace: &Workspace,
-    target: &TerminalId,
-    moved: &TerminalId,
+    target: &ResourceId,
+    moved: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> bool {
@@ -554,8 +554,8 @@ fn snapshot_confirms_destination(snapshot: &SessionSnapshot, plan: &CrossMovePla
 
 fn tree_has_placement(
     node: &LayoutNode,
-    target: &TerminalId,
-    moved: &TerminalId,
+    target: &ResourceId,
+    moved: &ResourceId,
     expected_dir: SplitDir,
     expected_ratio: f32,
 ) -> bool {
@@ -609,12 +609,12 @@ fn err_text(err: &MoveError) -> String {
     }
 }
 
-/// Whether the server advertises the `MOVE_TERMINAL` feature bit.
+/// Whether the server advertises the `MOVE_RESOURCE` feature bit.
 ///
 /// The CLI's UDS connection is tolerated HELLO-less, so no capabilities were
 /// exchanged yet: send the HELLO now and read the `HELLO_OK` it must answer
 /// with. An old server that lacks the bit would otherwise silently drop the
-/// unknown `MOVE_TERMINAL` discriminant and hang the caller forever.
+/// unknown `MOVE_RESOURCE` discriminant and hang the caller forever.
 async fn server_supports_move(conn: &mut Connection) -> Result<bool, AttachError> {
     conn.send(&FrameKind::Hello {
         client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
@@ -628,7 +628,7 @@ async fn server_supports_move(conn: &mut Connection) -> Result<bool, AttachError
     // the next frame; the bound is a guard against a misbehaving peer.
     for _ in 0..32 {
         if let FrameKind::HelloOk { server_caps, .. } = conn.recv().await? {
-            return Ok(server_caps.features.contains(ServerFeature::MoveTerminal));
+            return Ok(server_caps.features.contains(ServerFeature::MoveResource));
         }
     }
     Err(AttachError::Protocol(
@@ -638,14 +638,14 @@ async fn server_supports_move(conn: &mut Connection) -> Result<bool, AttachError
 
 /// Another pane sharing `terminal`'s window, if any — the inverse move's
 /// ownership address.
-fn sibling_in_window(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<TerminalId> {
+fn sibling_in_window(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<ResourceId> {
     let window = snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| &pane.id == terminal)?
         .window_id;
     snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| pane.window_id == window && &pane.id != terminal)
         .map(|pane| pane.id.clone())
@@ -724,7 +724,7 @@ async fn build_plan(
     }
 
     // Cross-session move (ADR-0056): the one spatial operation that may span
-    // sessions. Ownership moves on L1 via MOVE_TERMINAL; the two layout
+    // sessions. Ownership moves on L1 via MOVE_RESOURCE; the two layout
     // writes stay client-side. Every other operation keeps the same-session
     // requirement below.
     if let Some(plan) = cross_move_plan(snapshot, &operation, &terminals) {
@@ -837,7 +837,7 @@ fn validate_ratio(ratio: f32) -> Result<(), CliError> {
     }
 }
 
-fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId, CliError> {
+fn exactly_one_local(role: &str, candidates: &[ResourceId]) -> Result<ResourceId, CliError> {
     let [terminal] = candidates else {
         let err = if candidates.is_empty() {
             CliError::new(
@@ -858,8 +858,8 @@ fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId
         return Err(err);
     };
     match terminal {
-        TerminalId::Local { .. } => Ok(terminal.clone()),
-        TerminalId::Satellite { .. } => Err(CliError::new(
+        ResourceId::Local { .. } => Ok(terminal.clone()),
+        ResourceId::Satellite { .. } => Err(CliError::new(
             codes::SATELLITE_TARGET,
             format!("{role} must resolve to a local pane; satellite panes are not supported"),
             "pick a hub-local pane for layout edits",
@@ -869,9 +869,9 @@ fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId
 
 fn same_session(
     snapshot: &SessionSnapshot,
-    terminals: &[TerminalId],
+    terminals: &[ResourceId],
 ) -> Result<SessionId, CliError> {
-    let unknown_session = |terminal: &TerminalId| {
+    let unknown_session = |terminal: &ResourceId| {
         CliError::new(
             codes::UNKNOWN_TERMINAL_SESSION,
             format!(
@@ -902,7 +902,7 @@ fn same_session(
     Ok(session)
 }
 
-fn session_for(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<SessionId> {
+fn session_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<SessionId> {
     let window = window_for(snapshot, terminal)?;
     snapshot
         .windows
@@ -911,15 +911,15 @@ fn session_for(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<Sess
         .map(|candidate| candidate.session_id)
 }
 
-fn window_for(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<WindowId> {
+fn window_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<WindowId> {
     snapshot
-        .panes
+        .resources
         .iter()
         .find(|pane| &pane.id == terminal)
         .map(|pane| pane.window_id)
 }
 
-fn local_id(terminal: &TerminalId) -> u32 {
+fn local_id(terminal: &ResourceId) -> u32 {
     terminal.local_id().unwrap_or(0)
 }
 
@@ -994,10 +994,10 @@ fn print_layout_error(json: bool, err: &LayoutOpsError, socket_path: &Path) -> E
 mod tests {
     use super::*;
     use phux_protocol::ids::{SatelliteHost, WindowId};
-    use phux_protocol::wire::info::{SessionInfo, TerminalInfo, WindowInfo};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     fn snapshot() -> SessionSnapshot {
-        SessionSnapshot::new(SessionId::new(1), WindowId::new(10), TerminalId::local(1))
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
             .with_sessions(vec![
                 SessionInfo::new(SessionId::new(1), "one"),
                 SessionInfo::new(SessionId::new(2), "two"),
@@ -1006,10 +1006,10 @@ mod tests {
                 WindowInfo::new(WindowId::new(10), SessionId::new(1), "a"),
                 WindowInfo::new(WindowId::new(20), SessionId::new(2), "b"),
             ])
-            .with_panes(vec![
-                TerminalInfo::new(TerminalId::local(1), WindowId::new(10), 80, 24),
-                TerminalInfo::new(TerminalId::local(2), WindowId::new(10), 80, 24),
-                TerminalInfo::new(TerminalId::local(3), WindowId::new(20), 80, 24),
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(10), 80, 24),
+                ResourceInfo::new(ResourceId::local(2), WindowId::new(10), 80, 24),
+                ResourceInfo::new(ResourceId::local(3), WindowId::new(20), 80, 24),
             ])
     }
 
@@ -1019,7 +1019,7 @@ mod tests {
         let path = Path::new("/unused-for-local-selectors");
 
         // @1 (session 1) -> beside @3 (session 2): the plan switches to the
-        // MOVE_TERMINAL path, and @2 (the surviving sibling in @1's window)
+        // MOVE_RESOURCE path, and @2 (the surviving sibling in @1's window)
         // is the inverse move's ownership address.
         let op = RequestedOperation::Move {
             source: "@1".to_owned(),
@@ -1030,13 +1030,13 @@ mod tests {
         let selectors = op.parse_selectors().unwrap();
         match build_plan(path, &snapshot, op, selectors).await.unwrap() {
             PlanKind::CrossMove(plan) => {
-                assert_eq!(plan.source, TerminalId::local(1));
-                assert_eq!(plan.target, TerminalId::local(3));
+                assert_eq!(plan.source, ResourceId::local(1));
+                assert_eq!(plan.target, ResourceId::local(3));
                 assert_eq!(plan.source_window, WindowId::new(10));
                 assert_eq!(plan.dest_window, WindowId::new(20));
                 assert_eq!(plan.source_session, SessionId::new(1));
                 assert_eq!(plan.dest_session, SessionId::new(2));
-                assert_eq!(plan.rollback_owner, Some(TerminalId::local(2)));
+                assert_eq!(plan.rollback_owner, Some(ResourceId::local(2)));
                 assert_eq!(plan.output["cross_session"], true);
             }
             PlanKind::Local(other) => panic!("expected a cross-session plan, got {other:?}"),
@@ -1082,8 +1082,8 @@ mod tests {
 
     #[test]
     fn destination_confirmation_requires_the_requested_split() {
-        let target = TerminalId::local(1);
-        let moved = TerminalId::local(2);
+        let target = ResourceId::local(1);
+        let moved = ResourceId::local(2);
         let expected = LayoutNode::Split {
             dir: SplitDir::Horizontal,
             ratio: 0.4,
@@ -1131,19 +1131,19 @@ mod tests {
             "selector_miss"
         );
         assert_eq!(
-            exactly_one_local("target", &[TerminalId::local(1), TerminalId::local(2)])
+            exactly_one_local("target", &[ResourceId::local(1), ResourceId::local(2)])
                 .unwrap_err()
                 .code,
             "selector_not_single"
         );
-        let satellite = TerminalId::satellite(SatelliteHost::new("edge"), 7);
+        let satellite = ResourceId::satellite(SatelliteHost::new("edge"), 7);
         assert_eq!(
             exactly_one_local("target", &[satellite]).unwrap_err().code,
             "satellite_target"
         );
         assert_eq!(
-            exactly_one_local("target", &[TerminalId::local(7)]).unwrap(),
-            TerminalId::local(7)
+            exactly_one_local("target", &[ResourceId::local(7)]).unwrap(),
+            ResourceId::local(7)
         );
     }
 
@@ -1151,11 +1151,11 @@ mod tests {
     fn panes_must_belong_to_one_session() {
         let snapshot = snapshot();
         assert_eq!(
-            same_session(&snapshot, &[TerminalId::local(1), TerminalId::local(2)]).unwrap(),
+            same_session(&snapshot, &[ResourceId::local(1), ResourceId::local(2)]).unwrap(),
             SessionId::new(1)
         );
         assert_eq!(
-            same_session(&snapshot, &[TerminalId::local(1), TerminalId::local(3)])
+            same_session(&snapshot, &[ResourceId::local(1), ResourceId::local(3)])
                 .unwrap_err()
                 .code,
             "cross_session"
@@ -1193,8 +1193,8 @@ mod tests {
                 new_pane,
                 dir: SplitDir::Horizontal,
                 ratio,
-            } if target == TerminalId::local(1)
-                && new_pane == TerminalId::local(2)
+            } if target == ResourceId::local(1)
+                && new_pane == ResourceId::local(2)
                 && (ratio - 0.3).abs() < f32::EPSILON
         ));
         assert_eq!(plan.output["schema_version"], 1);

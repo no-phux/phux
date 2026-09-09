@@ -25,7 +25,7 @@ use phux_client_core::session::{EffectBuffer, KernelEffect, KernelInput, Session
 use phux_protocol::caps::{
     BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
 };
-use phux_protocol::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::{BootstrapId, ResourceId, StreamId};
 use support::{
     Comparison, Corpus, HISTORY_PAGE_LIMIT, MEASURED_SAMPLES, Threshold, WARMUP_SAMPLES,
     deterministic_page, percentile,
@@ -150,12 +150,12 @@ fn fixture(
     corpus: Corpus,
 ) -> (
     SessionKernel<BenchAdapter>,
-    TerminalId,
+    ResourceId,
     StreamId,
     BootstrapId,
     EffectBuffer,
 ) {
-    let terminal = TerminalId::local(7);
+    let terminal = ResourceId::local(7);
     let stream = StreamId::new(11).expect("stream id");
     let bootstrap = BootstrapId::new(13).expect("bootstrap id");
     let mut kernel = SessionKernel::with_history_config(
@@ -214,7 +214,7 @@ const fn page_bytes(corpus: Corpus) -> usize {
 
 fn apply_first_page(
     kernel: &mut SessionKernel<BenchAdapter>,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     stream: StreamId,
     bootstrap: BootstrapId,
     payload: &[u8],
@@ -238,7 +238,7 @@ fn apply_first_page(
 }
 fn replace_ready(
     kernel: &mut SessionKernel<BenchAdapter>,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     stream: StreamId,
     replacement: BootstrapId,
     base_seq: u64,
@@ -318,7 +318,7 @@ fn criterion_history(c: &mut Criterion) {
                 b.iter(|| {
                     kernel
                         .update(
-                            KernelInput::TerminalOutput {
+                            KernelInput::ResourceOutput {
                                 terminal_id: &terminal,
                                 stream_id: stream,
                                 bootstrap_id: bootstrap,
@@ -377,7 +377,7 @@ fn checked_history_gates() {
             let paint_started = Instant::now();
             kernel
                 .update(
-                    KernelInput::TerminalOutput {
+                    KernelInput::ResourceOutput {
                         terminal_id: &terminal,
                         stream_id: stream,
                         bootstrap_id: bootstrap,

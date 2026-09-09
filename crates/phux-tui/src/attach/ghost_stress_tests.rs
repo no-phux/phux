@@ -26,7 +26,7 @@ use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::{LayoutNode, SplitDir};
 use phux_protocol::{
@@ -39,8 +39,8 @@ use super::server_frame::{AgentMetaIndex, handle_server_frame};
 use crate::layout::{LayoutState, WindowState, Workspace};
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
-const fn tid(id: u32) -> TerminalId {
-    TerminalId::local(id)
+const fn tid(id: u32) -> ResourceId {
+    ResourceId::local(id)
 }
 
 /// Read a terminal's visible grid as one `String` per row (blank cells as
@@ -100,10 +100,10 @@ fn dump(grid: &[String]) -> String {
 /// triggers the same `paint_full_frame` the driver runs on
 /// `layout_changed`.
 struct Rig {
-    panes: HashMap<TerminalId, PaneSlot>,
+    panes: HashMap<ResourceId, PaneSlot>,
     workspace: Workspace,
-    focused: Option<TerminalId>,
-    zoomed: Option<TerminalId>,
+    focused: Option<ResourceId>,
+    zoomed: Option<ResourceId>,
     session_name: String,
     sidebar: Option<SidebarReservation>,
     overlay_active: bool,
@@ -113,10 +113,10 @@ struct Rig {
     agent_meta: AgentMetaIndex,
     glass: GhosttyTerminal<'static, 'static>,
     viewport: (u16, u16),
-    seq: HashMap<TerminalId, u64>,
+    seq: HashMap<ResourceId, u64>,
     kernel: SessionKernel<GhosttyAdapter>,
     kernel_effects: KernelEffectBuffer,
-    bootstraps: HashMap<TerminalId, BootstrapId>,
+    bootstraps: HashMap<ResourceId, BootstrapId>,
     next_bootstrap: u64,
     attach_released: bool,
 }
@@ -175,7 +175,7 @@ impl Rig {
     /// Seed a pane slot at an explicit (server-authoritative) mirror size
     /// with initial content — the "resize handshake in flight" fixture when
     /// the size differs from the pane's layout rect.
-    fn seed_pane(&mut self, id: &TerminalId, cols: u16, rows: u16, content: &[u8]) {
+    fn seed_pane(&mut self, id: &ResourceId, cols: u16, rows: u16, content: &[u8]) {
         self.panes.insert(
             id.clone(),
             PaneSlot::new_with_size(cols, rows).expect("pane slot"),
@@ -217,13 +217,13 @@ impl Rig {
         outcome
     }
 
-    /// `TERMINAL_OUTPUT` for `pane` — the hot path.
-    fn output(&mut self, pane: &TerminalId, bytes: &[u8]) {
+    /// `RESOURCE_OUTPUT` for `pane` — the hot path.
+    fn output(&mut self, pane: &ResourceId, bytes: &[u8]) {
         let seq = self.seq.entry(pane.clone()).or_insert(0);
         *seq += 1;
         let seq = *seq;
         let bootstrap_id = *self.bootstraps.get(pane).expect("published bootstrap");
-        self.drive(FrameKind::TerminalOutput {
+        self.drive(FrameKind::ResourceOutput {
             terminal_id: pane.clone(),
             stream_id: StreamId::new(1).expect("stream"),
             bootstrap_id,
@@ -233,7 +233,7 @@ impl Rig {
     }
 
     /// Negotiated synthesized-VT replacement bootstrap for one pane.
-    fn snapshot(&mut self, pane: &TerminalId, cols: u16, rows: u16, replay: &[u8]) {
+    fn snapshot(&mut self, pane: &ResourceId, cols: u16, rows: u16, replay: &[u8]) {
         let bootstrap_id = BootstrapId::new(self.next_bootstrap).expect("bootstrap");
         self.next_bootstrap += 1;
         let stream_id = StreamId::new(1).expect("stream");
@@ -416,7 +416,7 @@ impl Rig {
 }
 
 /// Window 0: a single full-content pane. Window 1: a side-by-side split.
-fn two_window_workspace(p: &TerminalId, q: &TerminalId, r: &TerminalId) -> Workspace {
+fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> Workspace {
     Workspace {
         windows: vec![
             WindowState::new("one".to_owned(), LayoutState::single(p.clone())),

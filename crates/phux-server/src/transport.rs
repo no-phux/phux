@@ -485,7 +485,7 @@ impl Incoming for WsListener {
         let source_ip = peer.ip();
 
         // Nagle off (phux-l96p.10). A terminal is a latency wire: the server
-        // answers a keystroke with a short `TERMINAL_OUTPUT`, which Nagle
+        // answers a keystroke with a short `RESOURCE_OUTPUT`, which Nagle
         // holds until the peer's delayed ACK returns, adding tens of
         // milliseconds to every echo. UDS has no such algorithm and QUIC does
         // not implement one, which is why only this transport showed a 33 ms

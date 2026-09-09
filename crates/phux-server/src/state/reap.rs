@@ -1,4 +1,4 @@
-use phux_core::ids::{SessionId, TerminalId, WindowId};
+use phux_core::ids::{ResourceId, SessionId, WindowId};
 
 use super::ServerState;
 
@@ -19,7 +19,7 @@ impl ServerState {
     /// dead pane; this one frees the domain entities and their server-side
     /// bookkeeping (actor handle, token, input log, subscribers, wire-id
     /// interning, and per-Terminal L3 metadata).
-    pub fn reap_terminal(&mut self, pane: TerminalId) -> bool {
+    pub fn reap_terminal(&mut self, pane: ResourceId) -> bool {
         // Resolve the parent window before the registry drops the pane.
         let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
         if self.sessions.registry.remove_resource(pane).is_some() {
@@ -37,7 +37,7 @@ impl ServerState {
     /// Cascade the `window → session` half of [`Self::reap_terminal`]:
     /// remove `window` when it holds no panes, and its session when that
     /// leaves the session with no windows. A no-op on a still-populated or
-    /// unknown window. Shared by pane reaping and `MOVE_TERMINAL`
+    /// unknown window. Shared by pane reaping and `MOVE_RESOURCE`
     /// (ADR-0056), whose re-parent can empty the source window without any
     /// pane dying.
     pub fn reap_window_if_empty(&mut self, window_id: WindowId) {
@@ -69,11 +69,11 @@ impl ServerState {
     /// Cancels the actor token defensively (the actor has usually already
     /// exited by the time we reap, but a still-live token is cleanly
     /// resolved by the cancel) and retires the wire id without reuse.
-    fn forget_terminal_bookkeeping(&mut self, pane: TerminalId) {
-        // Handle, actor token, subscribers, and the pane's ATTACH_TERMINAL
+    fn forget_terminal_bookkeeping(&mut self, pane: ResourceId) {
+        // Handle, actor token, subscribers, and the pane's ATTACH_RESOURCE
         // pumps (phux-v45.7) all go in one step.
         self.resources.forget_resource(pane);
-        // The close reason was claimed by whoever emitted TERMINAL_CLOSED;
+        // The close reason was claimed by whoever emitted RESOURCE_CLOSED;
         // an entry still here belonged to a resource that never got that
         // far, and it must not outlive the id it is filed under.
         self.forget_close_reason(pane);

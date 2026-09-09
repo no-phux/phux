@@ -83,10 +83,10 @@ critical section: take the lock, read or mutate `ServerState`, drop the lock,
 then await any I/O. Holding a `std::sync::Mutex` across a yield point would
 risk deadlocking the single thread; the discipline of dropping it first is
 what keeps that from happening and what lets group operations such as
-`KILL_TERMINALS` apply all-or-nothing under a single acquisition. The same
+`KILL_RESOURCES` apply all-or-nothing under a single acquisition. The same
 discipline is what the Terminal exit path relies on: gathering subscribers,
 reaping the domain entity, and forgetting the table entry happen in one
-critical section, and only the `TERMINAL_CLOSED` sends are awaited after
+critical section, and only the `RESOURCE_CLOSED` sends are awaited after
 it ([data-model.md](./data-model.md)).
 
 This reconciles the earlier server-design sketch, which described the state

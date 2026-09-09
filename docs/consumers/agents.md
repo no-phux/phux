@@ -41,7 +41,7 @@ projection — run the engine and read its grid directly — should copy
 (ADR-0030 §4).
 
 The live wire does expose agent affordances: `GET_SCREEN`, `ROUTE_INPUT`,
-`GET_TERMINAL_STATE`, `SUBSCRIBE_TERMINAL_EVENTS`, and an `AgentEvent` push
+`GET_TERMINAL_STATE`, `SUBSCRIBE_RESOURCE_EVENTS`, and an `AgentEvent` push
 frame, documented in [`../spec/L1.md`](../spec/L1.md). Read those as
 engine-convenience snapshots over the shared engine — a convenience for
 consumers that have not adopted the carry-your-own-engine pattern — not a
@@ -328,7 +328,7 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   [--socket P] [TARGET]`** — record a pane and export it as an asciinema cast,
   an animated GIF, or an APNG. `-o`/`--out` is the only required argument; its
   extension picks the format (`.cast`, `.gif`, `.png`/`.apng`; no extension
-  means GIF) unless `--format` overrides it. Capture subscribes with `ATTACH_TERMINAL` and is
+  means GIF) unless `--format` overrides it. Capture subscribes with `ATTACH_RESOURCE` and is
   viewport-safe in the same sense as `snapshot` and `watch`: it neither
   attaches the session nor resizes the pane. `--from` re-renders an existing
   cast offline and never contacts the server. `--json` emits the result object
@@ -711,7 +711,7 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   `--json` launch shape is in §4.13.
 - **`phux spawn [--satellite NAME] [--target TARGET [--split horizontal|vertical]
   [--ratio R]] [-c CWD] [-- COMMAND...] [--json] [--socket P]`** — spawn a
-  terminal without attaching (`SPAWN_TERMINAL`). With `--target`, the new pane
+  terminal without attaching (`SPAWN_RESOURCE`). With `--target`, the new pane
   is owned by the target's exact local window and inserted beside it; `vertical`
   means side-by-side and `horizontal` means stacked; `R` is
   finite and strictly between 0 and 1. Without placement flags, the pane joins
@@ -826,7 +826,7 @@ proof of completion; verify inventory or terminal state under a finite bound.
 session verb. Per
 [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md) §5,
 the session lifecycle verbs were removed from L1 and decompose into substrate
-primitives plus L3 metadata: `new` is `SPAWN_TERMINAL` plus an L3 metadata
+primitives plus L3 metadata: `new` is `SPAWN_RESOURCE` plus an L3 metadata
 write on the `phux.session.create/v1` key (the assigned identity is read back
 via a nonce-correlated `phux.session.created/v1/<request_token>` one-shot
 result), and rename is an L3 metadata SET on the

@@ -15,7 +15,7 @@ const geometry = native_sdk.geometry;
 
 pub const PhuxProvider = support.PhuxProvider;
 pub const TerminalRef = support.TerminalRef;
-pub const LocalTerminalId = support.LocalTerminalId;
+pub const LocalResourceId = support.LocalResourceId;
 pub const ReplicaOwner = support.ReplicaOwner;
 pub const Presentation = support.Presentation;
 pub const MouseButton = support.MouseButton;
@@ -307,7 +307,7 @@ pub const PointerModifiers = struct {
 
 pub const TerminalPointerEvent = struct {
     window_id: native_sdk.platform.WindowId = 1,
-    terminal_id: LocalTerminalId,
+    terminal_id: LocalResourceId,
     generation: u64,
     phase: canvas.WidgetPointerPhase,
     pointer_id: u64 = 0,
@@ -327,7 +327,7 @@ pub const PasteTarget = enum { terminal, search_needle };
 pub const PointerCapture = struct {
     active: bool = false,
     window_id: native_sdk.platform.WindowId = 0,
-    terminal_id: LocalTerminalId,
+    terminal_id: LocalResourceId,
     generation: u64 = 0,
     pointer_id: u64 = 0,
     button: i32 = 0,
@@ -1335,7 +1335,7 @@ pub const Model = struct {
         return if (model.containsTerminal(id)) id else null;
     }
 
-    pub fn selectedTerminalId(model: *const Model) ?TerminalRef {
+    pub fn selectedResourceId(model: *const Model) ?TerminalRef {
         return model.selectedTerminalRef();
     }
 
@@ -1348,7 +1348,7 @@ pub const Model = struct {
         return model.wsConst().focusedTerminalRef();
     }
 
-    pub fn focusedTerminalId(model: *const Model) ?TerminalRef {
+    pub fn focusedResourceId(model: *const Model) ?TerminalRef {
         return model.focusedTerminalRef();
     }
 
@@ -1979,7 +1979,7 @@ fn restoreWindow(model: *Model, snapshot: *const TopologySnapshot, window_index:
     }
 }
 
-fn restoreLocalPane(provider: *LocalProvider, terminal: LocalTerminalId) !void {
+fn restoreLocalPane(provider: *LocalProvider, terminal: LocalResourceId) !void {
     // Runtime capacity failure propagates, preserving the valid source file.
     if (provider.liveShellCount() >= local.max_live_shells) return error.TerminalCapacityReached;
     const session = try grid.Session.createWithScrollback(provider.gpa, provider.io, 80, 24, provider.max_scrollback_bytes);

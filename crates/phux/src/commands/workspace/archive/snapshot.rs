@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::commands::agent::AgentSessionRecord;
-use phux_protocol::ids::{SessionId, TerminalId, WindowId};
-use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo};
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::wire::info::{LayoutNode, ResourceInfo, SessionSnapshot, SplitDir, WindowInfo};
 
 use super::model::{
     ARCHIVE_SCHEMA_VERSION, WorkspaceAgentSession, WorkspaceArchive, WorkspaceLayoutNode,
@@ -11,10 +11,10 @@ use super::model::{
 
 pub(super) fn archive_from_snapshot(
     snapshot: &SessionSnapshot,
-    agent_sessions: &HashMap<TerminalId, AgentSessionRecord>,
+    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
 ) -> WorkspaceArchive {
     let windows_by_session = windows_by_session(&snapshot.windows);
-    let panes_by_window = panes_by_window(&snapshot.panes);
+    let panes_by_window = panes_by_window(&snapshot.resources);
     let sessions = snapshot
         .sessions
         .iter()
@@ -50,8 +50,8 @@ pub(super) fn archive_from_snapshot(
 fn archive_window(
     window: &WindowInfo,
     active_window: Option<WindowId>,
-    panes_by_window: &BTreeMap<WindowId, Vec<&TerminalInfo>>,
-    agent_sessions: &HashMap<TerminalId, AgentSessionRecord>,
+    panes_by_window: &BTreeMap<WindowId, Vec<&ResourceInfo>>,
+    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
 ) -> WorkspaceWindow {
     let panes = panes_by_window.get(&window.id).cloned().unwrap_or_default();
     let pane_index = panes
@@ -69,7 +69,7 @@ fn archive_window(
         panes: panes
             .into_iter()
             .map(|pane| WorkspacePane {
-                active: Some(pane.id.clone()) == window.active_pane,
+                active: Some(pane.id.clone()) == window.active_resource,
                 title: pane.title.clone(),
                 cwd: pane.cwd.clone(),
                 command: None,
@@ -98,8 +98,8 @@ fn windows_by_session(windows: &[WindowInfo]) -> BTreeMap<SessionId, Vec<&Window
     grouped
 }
 
-fn panes_by_window(panes: &[TerminalInfo]) -> BTreeMap<WindowId, Vec<&TerminalInfo>> {
-    let mut grouped: BTreeMap<WindowId, Vec<&TerminalInfo>> = BTreeMap::new();
+fn panes_by_window(panes: &[ResourceInfo]) -> BTreeMap<WindowId, Vec<&ResourceInfo>> {
+    let mut grouped: BTreeMap<WindowId, Vec<&ResourceInfo>> = BTreeMap::new();
     for pane in panes {
         grouped.entry(pane.window_id).or_default().push(pane);
     }
@@ -108,7 +108,7 @@ fn panes_by_window(panes: &[TerminalInfo]) -> BTreeMap<WindowId, Vec<&TerminalIn
 
 fn archive_layout(
     layout: &LayoutNode,
-    pane_index: &BTreeMap<TerminalId, usize>,
+    pane_index: &BTreeMap<ResourceId, usize>,
 ) -> Option<WorkspaceLayoutNode> {
     match layout {
         LayoutNode::Leaf(id) => pane_index
@@ -141,8 +141,8 @@ const fn split_dir(dir: SplitDir) -> Option<WorkspaceSplitDir> {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use phux_protocol::ids::{SessionId, TerminalId, WindowId};
-    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
     use super::*;
 
@@ -152,17 +152,17 @@ mod tests {
             .with_active_window(Some(WindowId::new(2)))
             .with_window_count(1);
         let window = WindowInfo::new(WindowId::new(2), SessionId::new(1), "main")
-            .with_active_pane(Some(TerminalId::local(3)));
-        let pane = TerminalInfo::new(TerminalId::local(3), WindowId::new(2), 120, 40)
+            .with_active_resource(Some(ResourceId::local(3)));
+        let pane = ResourceInfo::new(ResourceId::local(3), WindowId::new(2), 120, 40)
             .with_title(Some("monitor".to_owned()))
             .with_cwd(Some("/tmp/phux-ops".to_owned()));
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), TerminalId::local(3))
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), ResourceId::local(3))
                 .with_sessions(vec![session])
                 .with_windows(vec![window])
-                .with_panes(vec![pane]);
+                .with_resources(vec![pane]);
         let agent_sessions = HashMap::from([(
-            TerminalId::local(3),
+            ResourceId::local(3),
             AgentSessionRecord::new("com.phux.agents", "claude-code", "session-42")
                 .expect("valid record"),
         )]);
@@ -196,19 +196,19 @@ mod tests {
             .with_active_window(Some(WindowId::new(3)))
             .with_window_count(2);
         let inactive_window = WindowInfo::new(WindowId::new(2), SessionId::new(1), "left")
-            .with_active_pane(Some(TerminalId::local(4)));
+            .with_active_resource(Some(ResourceId::local(4)));
         let active_window = WindowInfo::new(WindowId::new(3), SessionId::new(1), "right")
             .with_index(1)
-            .with_active_pane(Some(TerminalId::local(5)));
+            .with_active_resource(Some(ResourceId::local(5)));
         let panes = vec![
-            TerminalInfo::new(TerminalId::local(4), WindowId::new(2), 80, 24),
-            TerminalInfo::new(TerminalId::local(5), WindowId::new(3), 80, 24),
+            ResourceInfo::new(ResourceId::local(4), WindowId::new(2), 80, 24),
+            ResourceInfo::new(ResourceId::local(5), WindowId::new(3), 80, 24),
         ];
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(3), TerminalId::local(5))
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(3), ResourceId::local(5))
                 .with_sessions(vec![session])
                 .with_windows(vec![inactive_window, active_window])
-                .with_panes(panes);
+                .with_resources(panes);
 
         let archive = archive_from_snapshot(&snapshot, &HashMap::new());
 

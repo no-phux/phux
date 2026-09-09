@@ -25,14 +25,14 @@
 //! The wire crate exposes neither `serde::Serialize` for its types nor
 //! a public encoder API; for the CBOR envelope we therefore round-trip
 //! through small local shim types (`CborLayoutNode`, `CborSplitDir`,
-//! `CborTerminalId`) that mirror the wire shape and convert via `From`.
+//! `CborResourceId`) that mirror the wire shape and convert via `From`.
 //!
 //! [ADR-0019]: ../../ADR/0019-tui-multi-pane-rendering.md
 
 use std::borrow::Cow;
 use std::io::Cursor;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use thiserror::Error;
 
 pub use phux_protocol::wire::info::{LayoutNode, SplitDir};
@@ -142,9 +142,9 @@ impl NodePath {
 /// variants and the same string forms.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LayoutError {
-    /// The target [`TerminalId`] is not present in the tree.
+    /// The target [`ResourceId`] is not present in the tree.
     #[error("pane not in layout: {0:?}")]
-    PaneNotInLayout(TerminalId),
+    PaneNotInLayout(ResourceId),
     /// The requested split ratio is outside `(0.0, 1.0)`, or is NaN.
     #[error("invalid split ratio: {0}")]
     InvalidRatio(f32),
@@ -173,7 +173,7 @@ pub enum LayoutDecodeError {
     /// A leaf names a resource that is not a Terminal. Only Terminal-kind
     /// resources occupy layout slots; an `AgentSession` has no grid to tile.
     #[error("layout leaf {0:?} is not a terminal resource")]
-    NonTerminalLeaf(TerminalId),
+    NonTerminalLeaf(ResourceId),
 }
 
 /// Errors returned by [`Workspace::encode_cbor`].
@@ -215,7 +215,7 @@ pub struct LayoutState {
     pub tree: Option<LayoutNode>,
     /// The client-local focused leaf. `None` until the first pane is
     /// seeded; reset to `None` if the tree becomes empty.
-    pub focus: Option<TerminalId>,
+    pub focus: Option<ResourceId>,
 }
 
 impl LayoutState {
@@ -230,7 +230,7 @@ impl LayoutState {
 
     /// Construct a state with a single leaf and matching focus.
     #[must_use]
-    pub fn single(pane: TerminalId) -> Self {
+    pub fn single(pane: ResourceId) -> Self {
         let focus = pane.clone();
         Self {
             tree: Some(LayoutNode::Leaf(pane)),
@@ -302,7 +302,7 @@ impl Workspace {
 
     /// A workspace with a single window named `"1"` holding one pane.
     #[must_use]
-    pub fn single(pane: TerminalId) -> Self {
+    pub fn single(pane: ResourceId) -> Self {
         Self {
             windows: vec![WindowState {
                 id: identity::terminal_id(&pane),
@@ -341,7 +341,7 @@ impl Workspace {
     /// keep using [`Self::active_window`] (the real tree); only render/reflow
     /// reads go through here.
     #[must_use]
-    pub fn render_window(&self, zoomed: Option<&TerminalId>) -> Option<Cow<'_, LayoutState>> {
+    pub fn render_window(&self, zoomed: Option<&ResourceId>) -> Option<Cow<'_, LayoutState>> {
         let active = self.active_window()?;
         if let Some(id) = zoomed
             && active.tree.as_ref().is_some_and(|t| leaves(t).contains(id))
@@ -353,7 +353,7 @@ impl Workspace {
 
     /// Append a new window named `name` holding a single `seed` pane and
     /// make it active.
-    pub fn add_window(&mut self, name: String, seed: TerminalId) {
+    pub fn add_window(&mut self, name: String, seed: ResourceId) {
         self.windows.push(WindowState {
             id: identity::fresh_id(&seed, &self.windows),
             name,
@@ -470,7 +470,7 @@ impl Workspace {
                 id: w.id,
                 name: w.name.clone(),
                 root: CborLayoutNode::from(tree),
-                focused_terminal: CborTerminalId::from(focus),
+                focused_terminal: CborResourceId::from(focus),
             });
         }
         let envelope = CborWorkspaceEnvelope {
@@ -512,7 +512,7 @@ impl Workspace {
         let mut windows = Vec::with_capacity(envelope.windows.len());
         for w in envelope.windows {
             let tree = w.root.into_layout_node()?;
-            let focus: TerminalId = w.focused_terminal.into();
+            let focus: ResourceId = w.focused_terminal.into();
             windows.push(WindowState {
                 id: w.id,
                 name: w.name,
@@ -540,7 +540,7 @@ impl Workspace {
     /// window then depth-first order.
     pub fn decode_cbor_checked(
         bytes: &[u8],
-        is_terminal: &dyn Fn(&TerminalId) -> bool,
+        is_terminal: &dyn Fn(&ResourceId) -> bool,
     ) -> Result<Self, LayoutDecodeError> {
         let workspace = Self::decode_cbor(bytes)?;
         let refused = workspace
@@ -571,15 +571,15 @@ impl Workspace {
 /// via `tree = Some(LayoutNode::Leaf(pane))` directly — callers don't
 /// need a separate `seed_layout` helper because there is no
 /// `LayoutNode` invariant to protect (unlike `phux-core::Window`,
-/// which also tracks `panes: Vec<TerminalId>`).
+/// which also tracks `panes: Vec<ResourceId>`).
 ///
 /// # Errors
 /// * [`LayoutError::PaneNotInLayout`] if `target` is not present.
 /// * [`LayoutError::InvalidRatio`] if `ratio` is NaN or outside `(0, 1)`.
 pub fn split_at(
     tree: &LayoutNode,
-    target: &TerminalId,
-    new_pane: &TerminalId,
+    target: &ResourceId,
+    new_pane: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> Result<LayoutNode, LayoutError> {
@@ -673,8 +673,8 @@ fn unknown_split_dir() -> ! {
 
 fn split_inner(
     node: &LayoutNode,
-    target: &TerminalId,
-    new_pane: &TerminalId,
+    target: &ResourceId,
+    new_pane: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> LayoutNode {
@@ -728,7 +728,7 @@ fn split_inner(
 /// [`LayoutError::PaneNotInLayout`] if `target` is not present.
 pub fn kill_pane(
     tree: &LayoutNode,
-    target: &TerminalId,
+    target: &ResourceId,
 ) -> Result<Option<LayoutNode>, LayoutError> {
     match tree {
         LayoutNode::Leaf(p) if p == target => Ok(None),
@@ -745,7 +745,7 @@ pub fn kill_pane(
     }
 }
 
-fn collapse(node: &LayoutNode, target: &TerminalId) -> (LayoutNode, bool) {
+fn collapse(node: &LayoutNode, target: &ResourceId) -> (LayoutNode, bool) {
     match node {
         LayoutNode::Leaf(p) => (LayoutNode::Leaf(p.clone()), false),
         LayoutNode::Split {
@@ -800,9 +800,9 @@ fn collapse(node: &LayoutNode, target: &TerminalId) -> (LayoutNode, bool) {
 #[must_use]
 pub fn focus_direction(
     tree: &LayoutNode,
-    current: &TerminalId,
+    current: &ResourceId,
     dir: Direction,
-) -> Option<TerminalId> {
+) -> Option<ResourceId> {
     let mut path: Vec<(SplitDir, ChildSide)> = Vec::new();
     if !record_path(tree, current, &mut path) {
         return None;
@@ -821,7 +821,7 @@ pub fn focus_direction(
 // Internal helpers — same shapes as phux-core::window
 // -----------------------------------------------------------------------------
 
-fn contains(node: &LayoutNode, target: &TerminalId) -> bool {
+fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
         LayoutNode::Split { left, right, .. } => contains(left, target) || contains(right, target),
@@ -835,13 +835,13 @@ fn contains(node: &LayoutNode, target: &TerminalId) -> bool {
 /// decision 6 (focus defaults to the first leaf in left-to-right
 /// traversal order) and for invariant proptests.
 #[must_use]
-pub fn leaves(node: &LayoutNode) -> Vec<TerminalId> {
+pub fn leaves(node: &LayoutNode) -> Vec<ResourceId> {
     let mut out = Vec::new();
     collect_leaves(node, &mut out);
     out
 }
 
-fn collect_leaves(node: &LayoutNode, out: &mut Vec<TerminalId>) {
+fn collect_leaves(node: &LayoutNode, out: &mut Vec<ResourceId>) {
     match node {
         LayoutNode::Leaf(p) => out.push(p.clone()),
         LayoutNode::Split { left, right, .. } => {
@@ -868,7 +868,7 @@ enum ChildSide {
 
 fn record_path(
     node: &LayoutNode,
-    target: &TerminalId,
+    target: &ResourceId,
     out: &mut Vec<(SplitDir, ChildSide)>,
 ) -> bool {
     match node {
@@ -934,7 +934,7 @@ fn descend_to_leaf(
     node: &LayoutNode,
     dir: Direction,
     suffix: &[(SplitDir, ChildSide)],
-) -> TerminalId {
+) -> ResourceId {
     let perp = perpendicular_axis(dir);
     let hints: Vec<ChildSide> = suffix
         .iter()
@@ -989,7 +989,7 @@ const fn perpendicular_axis(dir: Direction) -> SplitDir {
 // CBOR envelope — local shim types
 // -----------------------------------------------------------------------------
 //
-// The wire-side `LayoutNode`, `SplitDir`, and `TerminalId` don't derive
+// The wire-side `LayoutNode`, `SplitDir`, and `ResourceId` don't derive
 // `serde::Serialize`/`Deserialize` and we can't modify the wire crate
 // from this ticket (sibling-agent rule). The CBOR envelope therefore
 // round-trips through small local types that mirror the wire shapes 1:1.
@@ -999,7 +999,7 @@ const fn perpendicular_axis(dir: Direction) -> SplitDir {
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
 mod serialize;
 
-use serialize::{CborLayoutNode, CborTerminalId, CborWindow, CborWorkspaceEnvelope, VersionProbe};
+use serialize::{CborLayoutNode, CborResourceId, CborWindow, CborWorkspaceEnvelope, VersionProbe};
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
@@ -1011,8 +1011,8 @@ mod tests {
     use super::*;
     use serde::Serialize;
 
-    fn t(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn t(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     fn leaf(id: u32) -> LayoutNode {
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn cbor_round_trip_satellite_focus() {
-        let focus = TerminalId::satellite("peer.example", 42);
+        let focus = ResourceId::satellite("peer.example", 42);
         let state = LayoutState {
             tree: Some(LayoutNode::Leaf(focus.clone())),
             focus: Some(focus),
@@ -1235,14 +1235,14 @@ mod tests {
         struct Forged {
             version: u8,
             root: CborLayoutNode,
-            focus: CborTerminalId,
+            focus: CborResourceId,
         }
         let forged = Forged {
             version: 99,
             root: CborLayoutNode::Leaf {
-                pane: CborTerminalId::Local { id: 1 },
+                pane: CborResourceId::Local { id: 1 },
             },
-            focus: CborTerminalId::Local { id: 1 },
+            focus: CborResourceId::Local { id: 1 },
         };
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&forged, &mut buf).unwrap();
@@ -1389,7 +1389,7 @@ mod tests {
             id: [u8; 16],
             name: String,
             root: CborLayoutNode,
-            focused_terminal: CborTerminalId,
+            focused_terminal: CborResourceId,
         }
         #[derive(Serialize)]
         struct Forged {
@@ -1403,9 +1403,9 @@ mod tests {
                 id: [1; 16],
                 name: "1".to_owned(),
                 root: CborLayoutNode::Leaf {
-                    pane: CborTerminalId::Local { id: 1 },
+                    pane: CborResourceId::Local { id: 1 },
                 },
-                focused_terminal: CborTerminalId::Local { id: 1 },
+                focused_terminal: CborResourceId::Local { id: 1 },
             }],
             focused_window_index: 99,
         };
@@ -1461,20 +1461,20 @@ mod tests {
     /// tree (or `None` if killed empty) plus the ordered list of leaves
     /// that should currently live in the tree.
     #[allow(clippy::needless_pass_by_value)]
-    fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<TerminalId>) {
+    fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<ResourceId>) {
         apply_ops_from(ops, 1)
     }
 
-    fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<TerminalId>) {
-        let first = TerminalId::local(next_id);
+    fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<ResourceId>) {
+        let first = ResourceId::local(next_id);
         next_id += 1;
         let mut tree: Option<LayoutNode> = Some(LayoutNode::Leaf(first.clone()));
-        let mut alive: Vec<TerminalId> = vec![first];
+        let mut alive: Vec<ResourceId> = vec![first];
 
         for op in ops {
             match op {
                 Op::AddPane => {
-                    let new_pane = TerminalId::local(next_id);
+                    let new_pane = ResourceId::local(next_id);
                     next_id += 1;
                     let Some(target) = alive.last().cloned() else {
                         // Tree was empty — reseed.
@@ -1527,7 +1527,7 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-        /// Invariant 1: every TerminalId appears as exactly one leaf.
+        /// Invariant 1: every ResourceId appears as exactly one leaf.
         #[test]
         fn proptest_leaves_match_alive(ops in prop::collection::vec(arb_op(), 1..20)) {
             let (tree, alive) = apply_ops(ops);

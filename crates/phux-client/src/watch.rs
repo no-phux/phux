@@ -26,10 +26,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, Scope};
 
-use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
+use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 
@@ -42,7 +42,7 @@ use crate::attach::connection::Connection;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchEvent {
     /// The Terminal the event concerns, or `None` if server-scoped.
-    pub terminal: Option<TerminalId>,
+    pub terminal: Option<ResourceId>,
     /// The event payload.
     pub event: AgentEvent,
 }
@@ -66,7 +66,7 @@ pub struct AgentStateUpdate {
     /// The Terminal whose record changed. Always `Some` in practice —
     /// `phux.agent/v1` is Terminal-scoped — but carried as an `Option` so
     /// it renders through the same selector formatting as [`WatchEvent`].
-    pub terminal: Option<TerminalId>,
+    pub terminal: Option<ResourceId>,
     /// The new record, or `None` for a deletion / unreadable value.
     pub record: Option<AgentRecord>,
     /// The record this session last saw for the same Terminal, if any.
@@ -115,7 +115,7 @@ pub enum WatchItem {
 /// EOF is NOT an error (returns `Ok(())`).
 pub async fn watch_events<F>(
     socket: &Path,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
     sink: F,
 ) -> Result<(), AttachError>
 where
@@ -143,7 +143,7 @@ where
 /// Returns [`AttachError`] on connect or send failure.
 pub async fn subscribe(
     socket: &Path,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
 ) -> Result<Connection, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     conn.send(&FrameKind::SubscribeEvents {
@@ -152,8 +152,8 @@ pub async fn subscribe(
     .await?;
     if let Some(id) = &terminal {
         conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Terminal(id.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
     }
@@ -177,7 +177,7 @@ where
     // Per-Terminal memory of the last record seen, so an update can carry
     // the state it came from. Session-local by construction — see
     // [`AgentStateUpdate::previous`].
-    let mut last_seen: HashMap<TerminalId, AgentRecord> = HashMap::new();
+    let mut last_seen: HashMap<ResourceId, AgentRecord> = HashMap::new();
     loop {
         match conn.recv().await {
             Ok(FrameKind::Event { terminal, event }) => {
@@ -186,12 +186,12 @@ where
                 }
             }
             Ok(FrameKind::MetadataChanged { scope, key, value }) => {
-                if key != TERMINAL_AGENT_KEY {
+                if key != RESOURCE_AGENT_KEY {
                     continue;
                 }
                 // `phux.agent/v1` is Terminal-scoped (L3 §3.7); a record
                 // published at any other scope is not one of ours.
-                let Scope::Terminal(id) = scope else {
+                let Scope::Resource(id) = scope else {
                     continue;
                 };
                 let record = value.as_deref().and_then(parse_agent_record);
@@ -265,7 +265,7 @@ pub enum WatchOutcome {
 /// EOF is not an error — it is [`WatchOutcome::Ended`].
 pub async fn watch_bounded<F>(
     socket: &Path,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
     timeout: Option<Duration>,
     mut sink: F,
 ) -> Result<WatchOutcome, AttachError>
@@ -330,7 +330,7 @@ where
 /// Returns [`AttachError`] on connect/transport failure before any timeout.
 pub async fn collect_events(
     socket: &Path,
-    terminal: Option<TerminalId>,
+    terminal: Option<ResourceId>,
     max_events: Option<usize>,
     timeout: Option<Duration>,
 ) -> Result<Vec<WatchEvent>, AttachError> {
@@ -373,10 +373,10 @@ mod tests {
 
     use super::*;
 
-    fn agent_record(scope_terminal: &TerminalId, json: &str) -> FrameKind {
+    fn agent_record(scope_terminal: &ResourceId, json: &str) -> FrameKind {
         FrameKind::MetadataChanged {
-            scope: Scope::Terminal(scope_terminal.clone()),
-            key: TERMINAL_AGENT_KEY.to_owned(),
+            scope: Scope::Resource(scope_terminal.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(json.as_bytes().to_vec()),
         }
     }
@@ -397,7 +397,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_returns_prefix_when_timeout_elapses() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("phux.sock");
         let listener = UnixListener::bind(&socket).expect("bind scripted server");
@@ -420,7 +420,7 @@ mod tests {
 
         let collected = collect_events(
             &socket,
-            Some(TerminalId::local(7)),
+            Some(ResourceId::local(7)),
             None,
             Some(Duration::from_millis(150)),
         )
@@ -435,7 +435,7 @@ mod tests {
     /// every streamed item and returning it alongside the frames the client
     /// actually sent.
     async fn drive(
-        terminal: Option<TerminalId>,
+        terminal: Option<ResourceId>,
         script: Vec<FrameKind>,
     ) -> (Vec<WatchItem>, Vec<FrameKind>) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -470,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn a_keyed_push_waits_for_its_own_subscription() {
         async fn drive_keyed(scope: Scope, key: &str) -> Vec<WatchItem> {
-            let pane = TerminalId::local(7);
+            let pane = ResourceId::local(7);
             let dir = tempfile::tempdir().expect("temp dir");
             let socket = dir.path().join("phux.sock");
             let listener = UnixListener::bind(&socket).expect("bind scripted server");
@@ -498,7 +498,7 @@ mod tests {
 
         // The watch subscribes to `Terminal(7) / phux.agent/v1`, so a push
         // keyed to exactly that is released.
-        let matched = drive_keyed(Scope::Terminal(TerminalId::local(7)), TERMINAL_AGENT_KEY).await;
+        let matched = drive_keyed(Scope::Resource(ResourceId::local(7)), RESOURCE_AGENT_KEY).await;
         assert!(
             matched
                 .iter()
@@ -509,14 +509,14 @@ mod tests {
         // Same key, different scope: never released, because a real server
         // fans a METADATA_CHANGED only to that scope's subscribers.
         let wrong_scope =
-            drive_keyed(Scope::Terminal(TerminalId::local(8)), TERMINAL_AGENT_KEY).await;
+            drive_keyed(Scope::Resource(ResourceId::local(8)), RESOURCE_AGENT_KEY).await;
         assert!(
             wrong_scope.is_empty(),
             "a push keyed to another pane must not reach this watch; got {wrong_scope:?}"
         );
 
         // Same scope, different key: likewise.
-        let wrong_key = drive_keyed(Scope::Terminal(TerminalId::local(7)), "phux.other/v1").await;
+        let wrong_key = drive_keyed(Scope::Resource(ResourceId::local(7)), "phux.other/v1").await;
         assert!(
             wrong_key.is_empty(),
             "a push keyed to another key must not reach this watch; got {wrong_key:?}"
@@ -528,7 +528,7 @@ mod tests {
     /// detector's publications never reach a headless consumer.
     #[tokio::test]
     async fn terminal_scoped_watch_subscribes_to_events_and_the_agent_key() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (_items, seen) = drive(
             Some(pane.clone()),
             vec![agent_record(&pane, r#"{"name":"reviewer"}"#)],
@@ -545,8 +545,8 @@ mod tests {
         assert!(
             seen.iter().any(|f| matches!(
                 f,
-                FrameKind::SubscribeMetadata { scope: Scope::Terminal(id), key }
-                    if *id == pane && key == TERMINAL_AGENT_KEY
+                FrameKind::SubscribeMetadata { scope: Scope::Resource(id), key }
+                    if *id == pane && key == RESOURCE_AGENT_KEY
             )),
             "watch must subscribe to the pane's phux.agent/v1 record; sent {seen:?}"
         );
@@ -564,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_records_stream_as_agent_state_items_carrying_the_previous_record() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (items, _seen) = drive(
             Some(pane.clone()),
             vec![
@@ -612,14 +612,14 @@ mod tests {
     /// agent has to learn the record went away.
     #[tokio::test]
     async fn a_tombstone_streams_with_no_record_and_the_last_state_as_previous() {
-        let pane = TerminalId::local(3);
+        let pane = ResourceId::local(3);
         let (items, _seen) = drive(
             Some(pane.clone()),
             vec![
                 agent_record(&pane, r#"{"name":"reviewer","state":"blocked"}"#),
                 FrameKind::MetadataChanged {
-                    scope: Scope::Terminal(pane.clone()),
-                    key: TERMINAL_AGENT_KEY.to_owned(),
+                    scope: Scope::Resource(pane.clone()),
+                    key: RESOURCE_AGENT_KEY.to_owned(),
                     value: None,
                 },
             ],
@@ -641,7 +641,7 @@ mod tests {
     /// (L3 §3.7), not a stream-wedging parse error.
     #[tokio::test]
     async fn an_unreadable_value_streams_as_a_cleared_record() {
-        let pane = TerminalId::local(3);
+        let pane = ResourceId::local(3);
         let (items, _seen) = drive(
             Some(pane.clone()),
             vec![agent_record(&pane, "not a record")],
@@ -660,12 +660,12 @@ mod tests {
     /// rather than render a line for it.
     #[tokio::test]
     async fn other_metadata_keys_are_ignored() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (items, _seen) = drive(
             Some(pane.clone()),
             vec![
                 FrameKind::MetadataChanged {
-                    scope: Scope::Terminal(pane.clone()),
+                    scope: Scope::Resource(pane.clone()),
                     key: "phux.tui.layout/v1".to_owned(),
                     value: Some(b"{}".to_vec()),
                 },
@@ -681,7 +681,7 @@ mod tests {
     /// order the server pushed them.
     #[tokio::test]
     async fn events_and_agent_state_share_one_ordered_stream() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (items, _seen) = drive(
             Some(pane.clone()),
             vec![
@@ -705,7 +705,7 @@ mod tests {
     /// hangs up after the script (an EOF) or stays connected (so a deadline
     /// is the only way out).
     async fn drive_bounded<P>(
-        terminal: Option<TerminalId>,
+        terminal: Option<ResourceId>,
         script: Vec<FrameKind>,
         end: EndOfScript,
         timeout: Option<Duration>,
@@ -739,7 +739,7 @@ mod tests {
     /// render the event that satisfied it.
     #[tokio::test]
     async fn watch_bounded_stops_on_the_first_matching_item_and_still_delivers_it() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, items) = drive_bounded(
             Some(pane.clone()),
             vec![
@@ -775,7 +775,7 @@ mod tests {
     /// the same stream, and `agent_state` is a name `--until` can spell.
     #[tokio::test]
     async fn watch_bounded_can_stop_on_an_agent_state_item() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, items) = drive_bounded(
             Some(pane.clone()),
             vec![agent_record(
@@ -797,7 +797,7 @@ mod tests {
     /// `sleep`-and-`kill` shell workaround's replacement.
     #[tokio::test]
     async fn watch_bounded_reports_the_deadline_when_no_item_matches() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, items) = drive_bounded(
             Some(pane.clone()),
             vec![FrameKind::Event {
@@ -825,7 +825,7 @@ mod tests {
     /// away — the same class of false positive a level read of `idle` makes.
     #[tokio::test]
     async fn watch_bounded_distinguishes_a_server_eof_from_a_satisfied_gate() {
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let (outcome, _items) = drive_bounded(
             Some(pane.clone()),
             vec![FrameKind::Event {

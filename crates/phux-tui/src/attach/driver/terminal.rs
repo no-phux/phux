@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use rustix::termios::{LocalModes, OptionalActions, Termios};
 
 use crate::attach::outcome::{AttachEnd, AttachError};
@@ -277,8 +277,8 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
 /// focused pane yet (pre-ATTACHED) the global gate alone decides.
 pub(super) fn desired_mouse_capture(
     cfg_on: bool,
-    focused: Option<&TerminalId>,
-    optout: &std::collections::HashSet<TerminalId>,
+    focused: Option<&ResourceId>,
+    optout: &std::collections::HashSet<ResourceId>,
 ) -> bool {
     cfg_on && !focused.is_some_and(|id| optout.contains(id))
 }
@@ -815,8 +815,8 @@ mod tests {
     /// AND the focused pane has not opted out.
     #[test]
     fn desired_mouse_capture_follows_focused_pane_optout() {
-        let t1 = TerminalId::local(1);
-        let t2 = TerminalId::local(2);
+        let t1 = ResourceId::local(1);
+        let t2 = ResourceId::local(2);
         let mut optout = std::collections::HashSet::new();
         optout.insert(t2.clone());
 

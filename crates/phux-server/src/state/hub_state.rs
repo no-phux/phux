@@ -57,7 +57,7 @@ pub(super) struct HubState {
     /// Per-satellite frame-relay handles (phux-v45.4, ADR-0007 §4).
     /// `None` on every non-hub server. Set once at hub startup via
     /// [`Self::set_relays`] alongside the link spawn; command and input
-    /// dispatch resolve `TerminalId::Satellite { host, .. }` through it to
+    /// dispatch resolve `ResourceId::Satellite { host, .. }` through it to
     /// the owning link's relay mailbox.
     relays: Option<crate::hub::relay::HubRelays>,
 }

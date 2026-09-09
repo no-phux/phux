@@ -1,7 +1,7 @@
 //! The one place a wire resource id becomes something the runtime can act on.
 //!
 //! Every terminal-scoped frame and command carries a
-//! [`phux_protocol::ids::TerminalId`], and every handler needs the same three
+//! [`phux_protocol::ids::ResourceId`], and every handler needs the same three
 //! answers from it: is this resource ours, does it belong to a satellite we
 //! relay for, or is it nothing we know? [`ServerState::resolve_resource`]
 //! answers all three once, so the handlers stop open-coding the
@@ -19,7 +19,7 @@
 //! [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal),
 //! the crate's sole producer of `WrongResourceKind`.
 
-use phux_protocol::ids::{SatelliteHost, TerminalId as WireTerminalId};
+use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
 
 use super::ServerState;
 use crate::hub::relay::RelayHandle;
@@ -70,8 +70,8 @@ pub(crate) struct RelayRoute {
 
 impl RelayRoute {
     /// The satellite-local wire id to stamp into the relayed frame.
-    pub(crate) fn local_wire_id(&self) -> WireTerminalId {
-        WireTerminalId::local(self.id)
+    pub(crate) fn local_wire_id(&self) -> WireResourceId {
+        WireResourceId::local(self.id)
     }
 }
 
@@ -120,7 +120,7 @@ impl ServerState {
     /// A `Local`-tagged id is `Local` only when it is interned *and* an
     /// engine handle is registered; those two are installed and retired
     /// together, so either miss means the same thing to a caller.
-    pub(crate) fn resolve_resource(&self, wire: &WireTerminalId) -> Resolved<'_> {
+    pub(crate) fn resolve_resource(&self, wire: &WireResourceId) -> Resolved<'_> {
         if let Some((host, id)) = crate::hub::relay::satellite_route(wire) {
             let relay = self.hub_relay(&host);
             return Resolved::Remote(RelayRoute { host, id, relay });
@@ -137,7 +137,7 @@ impl ServerState {
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::ids::{SatelliteHost, TerminalId as WireTerminalId};
+    use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
     use tokio_util::sync::CancellationToken;
 
     use super::{Resolved, ServerState};
@@ -166,21 +166,21 @@ mod tests {
 
         assert!(
             matches!(
-                server.resolve_resource(&WireTerminalId::local(9_999)),
+                server.resolve_resource(&WireResourceId::local(9_999)),
                 Resolved::Unknown
             ),
             "a Local-tagged id this server never minted is Unknown",
         );
 
         let host = SatelliteHost::from("edge");
-        let satellite_id = WireTerminalId::satellite(host.clone(), 7);
+        let satellite_id = WireResourceId::satellite(host.clone(), 7);
         match server.resolve_resource(&satellite_id) {
             Resolved::Remote(route) => {
                 assert_eq!(route.host, host);
                 assert_eq!(route.id, 7);
                 assert_eq!(
                     route.local_wire_id(),
-                    WireTerminalId::local(7),
+                    WireResourceId::local(7),
                     "the relayed frame carries the satellite's own Local id",
                 );
                 assert!(

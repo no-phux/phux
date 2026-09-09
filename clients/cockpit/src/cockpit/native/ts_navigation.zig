@@ -216,7 +216,7 @@ test "navigation reaches available remote identities and the last session beyond
     try std.testing.expectEqual(Connection.offline, connection(engine.model));
     const ref: model_module.TerminalRef = .{
         .provider_id = .phux,
-        .terminal_id = .{ .phux = try support.RemoteTerminalId.fromPhux(0, 900, "") },
+        .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, 900, "") },
     };
     engine.model.remote_inventory[0] = ref;
     engine.model.remote_inventory_count = 1;

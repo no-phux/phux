@@ -4,7 +4,7 @@
 //! * `paint_full_frame` — clear viewport, render every pane, dividers,
 //!   status bar. Use after layout mutations, viewport resize, or attach.
 //! * `paint_focused_pane` + `paint_bar_after_pane` — incremental path
-//!   for `TERMINAL_OUTPUT` arrivals where only the focused pane changed.
+//!   for `RESOURCE_OUTPUT` arrivals where only the focused pane changed.
 //!
 //! `content_rect` reserves one outer-terminal row for the status bar —
 //! the bottom row by default, the top row under `[status] position =
@@ -15,7 +15,7 @@ use std::io::Write;
 use std::time::SystemTime;
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 
 use super::pane_state::{AttachKernel, PaneSlot, published_replica};
 use crate::layout::LayoutState;
@@ -45,7 +45,7 @@ const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 ///
 /// * **One block, not none.** Before this, only the destructive full-frame
 ///   paint was wrapped in mode 2026. The incremental path — the one that runs
-///   on every `TERMINAL_OUTPUT` — emitted pane cells, then the status bar,
+///   on every `RESOURCE_OUTPUT` — emitted pane cells, then the status bar,
 ///   then the cursor, each visible to the outer terminal as it landed. A
 ///   conforming terminal presented up to three intermediate states per frame.
 /// * **One flush, not two.** [`end_of_frame_cursor`] flushes, and before
@@ -208,7 +208,7 @@ impl<W: Write> Write for FrameBlock<'_, W> {
 ///
 /// [`crate::multi_pane::compute_layout_in`] is not free: it walks the split
 /// tree, allocates a `HashMap` of rects, rasterizes every divider cell into a
-/// `Vec`, and builds the drag hit-map. The `TERMINAL_OUTPUT` path used to run
+/// `Vec`, and builds the drag hit-map. The `RESOURCE_OUTPUT` path used to run
 /// it up to three times per frame (mirror sizing, the focused pane's rect,
 /// the cursor-fallback origin) for a layout that changes only when the user
 /// splits, resizes, zooms, or switches windows — i.e. essentially never,
@@ -315,7 +315,7 @@ pub(super) fn tiled_rect(
     layout: &LayoutState,
     content: crate::layout::Rect,
     viewport_dims: (u16, u16),
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
 ) -> Option<crate::layout::Rect> {
     with_tiling(layout, content, viewport_dims, |tiling| {
         tiling.rects.get(terminal_id).copied()
@@ -366,7 +366,7 @@ pub(super) fn mirror_dims(
 ///
 /// The rect is the CALLER's, not re-derived here: both call sites already
 /// hold the frame's tiling (`paint_full_frame` computed it, the
-/// `TERMINAL_OUTPUT` path reads it from the [`LayoutCache`]), and re-tiling
+/// `RESOURCE_OUTPUT` path reads it from the [`LayoutCache`]), and re-tiling
 /// inside this function made the incremental path compute the same layout
 /// three times per frame. Callers pass the content rect itself when the
 /// layout has no entry for the pane (single-pane bootstrap).
@@ -380,9 +380,9 @@ pub(super) fn mirror_dims(
 pub(super) fn paint_focused_pane<W: Write>(
     out: &mut W,
     rect: crate::layout::Rect,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
-    focused: &TerminalId,
+    focused: &ResourceId,
     force_full: bool,
 ) -> Option<(u16, u16)> {
     let slot = panes.get_mut(focused)?;
@@ -469,9 +469,9 @@ pub(super) fn end_of_frame_cursor<W: Write>(
 pub(super) fn paint_full_frame<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
-    focused_pane: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     mut status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -485,7 +485,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         layout_state,
         panes,
         kernel,
-        focused_pane,
+        focused_resource,
         viewport_dims,
         status_bar.as_deref_mut(),
         sidebar,
@@ -527,9 +527,9 @@ fn seal_frame<W: Write>(
 fn paint_full_frame_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
-    focused_pane: Option<&TerminalId>,
+    focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -567,7 +567,7 @@ fn paint_full_frame_into<W: Write>(
     // expose a `cursor_viewport`, so a "restore cursor after the bar"
     // strategy strands the cursor invisible.
     for (id, rect) in &multi.rects {
-        if Some(id) == focused_pane {
+        if Some(id) == focused_resource {
             continue;
         }
         if let (Some(slot), Some(walk)) = (panes.get_mut(id), published_replica(kernel, id)) {
@@ -590,7 +590,7 @@ fn paint_full_frame_into<W: Write>(
         &multi,
         content,
         rail,
-        focused_pane,
+        focused_resource,
         theme,
         |id| super::pane_state::pane_label(panes_ref, id),
     );
@@ -622,14 +622,14 @@ fn paint_full_frame_into<W: Write>(
     // last_cursor and always emit an explicit cursor placement so the
     // frame ends with a deterministic cursor position regardless of
     // whether render_at touched the cursor. See phux-gxy.
-    let final_cursor = focused_pane.and_then(|fid| {
+    let final_cursor = focused_resource.and_then(|fid| {
         let rect = multi.rects.get(fid).copied().unwrap_or(content);
         paint_focused_pane(out, rect, panes, kernel, fid, true)
     });
     // The focused pane's Rect origin is the fallback cursor parking spot when
     // `final_cursor` is None (phux-gxy/9xn). All cursor placement + the flush
     // is owned by the one composite authority.
-    let fallback_origin = focused_pane
+    let fallback_origin = focused_resource
         .and_then(|fid| multi.rects.get(fid).copied())
         .map(|r| (r.x, r.y));
     let cursor_published = end_of_frame_cursor(out, final_cursor, fallback_origin).is_ok();
@@ -681,8 +681,8 @@ fn paint_full_frame_into<W: Write>(
 pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
-    panes: &HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     mut status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -695,7 +695,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
         &mut block,
         layout_state,
         panes,
-        focused_pane,
+        focused_resource,
         viewport_dims,
         status_bar.as_deref_mut(),
         sidebar,
@@ -714,8 +714,8 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
 fn paint_chrome_in_place_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
-    panes: &HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -739,10 +739,10 @@ fn paint_chrome_in_place_into<W: Write>(
     // The focused pane's LAST authoritative cursor — read, never re-derived by
     // a render. `None` (hidden / not yet rendered) falls back to the pane's
     // rect origin, hidden, exactly as every other paint tail does.
-    let restore = focused_pane
+    let restore = focused_resource
         .and_then(|fid| panes.get(fid))
         .and_then(|slot| slot.renderer.last_cursor());
-    let fallback = focused_pane
+    let fallback = focused_resource
         .and_then(|fid| multi.rects.get(fid))
         .map(|r| (r.x, r.y));
     // The enclosing frame block is the outer-terminal transaction; the
@@ -758,7 +758,7 @@ fn paint_chrome_in_place_into<W: Write>(
         &multi,
         content,
         rail,
-        focused_pane,
+        focused_resource,
         theme,
         |id| super::pane_state::pane_label(panes, id),
     );
@@ -812,7 +812,7 @@ fn paint_chrome_in_place_into<W: Write>(
 /// `bar_row_clobbered` controls whether the painter's content cache is
 /// bypassed. Pane rendering is confined to the rows ABOVE the reserved
 /// bar row (see [`pane_viewport`]), so on the steady-state hot path
-/// (`TERMINAL_OUTPUT`) the focused pane render never overwrites the bar
+/// (`RESOURCE_OUTPUT`) the focused pane render never overwrites the bar
 /// row — the painter's own cache then makes an unchanged bar a zero-byte
 /// no-op (the win in phux's incremental-paint pass). Pass `true` only
 /// from callers that physically cleared the bar row (the `paint_full_frame`
@@ -1216,7 +1216,7 @@ mod tests {
     use crate::attach::render::SYNC_OUTPUT_END;
     use crate::render::ChromeBreakpoints;
 
-    fn leaf_layout(id: &TerminalId) -> LayoutState {
+    fn leaf_layout(id: &ResourceId) -> LayoutState {
         LayoutState {
             tree: Some(crate::layout::LayoutNode::Leaf(id.clone())),
             focus: Some(id.clone()),
@@ -1224,13 +1224,13 @@ mod tests {
     }
 
     /// The whole point of the cache: an unchanged layout tiles ONCE, however
-    /// many times the frame asks for a rect. The `TERMINAL_OUTPUT` path used
+    /// many times the frame asks for a rect. The `RESOURCE_OUTPUT` path used
     /// to run `compute_layout_in` three times per frame — mirror sizing, the
     /// focused pane's rect, the cursor-fallback origin — for a layout that
     /// only moves when the user splits, resizes, zooms, or switches windows.
     #[test]
     fn an_unchanged_layout_tiles_once_however_often_it_is_read() {
-        let id = TerminalId::Local { id: 1 };
+        let id = ResourceId::Local { id: 1 };
         let layout = leaf_layout(&id);
         let content = crate::layout::Rect {
             x: 0,
@@ -1256,8 +1256,8 @@ mod tests {
     /// there is no collision that could paint a pane at a stale rect.
     #[test]
     fn every_component_of_the_key_forces_a_retile() {
-        let id = TerminalId::Local { id: 1 };
-        let other = TerminalId::Local { id: 2 };
+        let id = ResourceId::Local { id: 1 };
+        let other = ResourceId::Local { id: 2 };
         let layout = leaf_layout(&id);
         let content = crate::layout::Rect {
             x: 0,
@@ -1301,7 +1301,7 @@ mod tests {
     }
 
     fn published_kernel(
-        terminals: &[TerminalId],
+        terminals: &[ResourceId],
         cols: u16,
         rows: u16,
         replay: &[u8],
@@ -1809,7 +1809,7 @@ mod tests {
         const REAL_COLS: usize = 250;
         const REAL_ROWS: usize = 70;
 
-        let pane = TerminalId::local(1);
+        let pane = ResourceId::local(1);
         let layout = LayoutState {
             tree: Some(LayoutNode::Leaf(pane.clone())),
             focus: Some(pane.clone()),
@@ -1829,7 +1829,7 @@ mod tests {
             }
         }
         let kernel = published_kernel(std::slice::from_ref(&pane), COLS, ROWS, &vt);
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(
             pane.clone(),
             PaneSlot::new_with_size(COLS, ROWS).expect("slot"),
@@ -1878,8 +1878,8 @@ mod tests {
     /// composition contract on the now-injectable sink (phux-549).
     #[test]
     fn paint_full_frame_composites_two_panes_into_sink() {
-        let left = TerminalId::local(1);
-        let right = TerminalId::local(2);
+        let left = ResourceId::local(1);
+        let right = ResourceId::local(2);
         let layout = LayoutState {
             tree: Some(LayoutNode::Split {
                 dir: SplitDir::Horizontal,
@@ -1889,10 +1889,10 @@ mod tests {
             }),
             focus: Some(left.clone()),
         };
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), PaneSlot::new().expect("left slot"));
         panes.insert(right, PaneSlot::new().expect("right slot"));
-        let kernel = published_kernel(&[left.clone(), TerminalId::local(2)], 80, 24, b"");
+        let kernel = published_kernel(&[left.clone(), ResourceId::local(2)], 80, 24, b"");
 
         let mut out: Vec<u8> = Vec::new();
         paint_full_frame(
@@ -1969,7 +1969,7 @@ mod tests {
         fail_sync_end: bool,
         fail_final_flush: bool,
     ) -> StatusBarPaint {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let layout = LayoutState {
             tree: Some(LayoutNode::Leaf(id.clone())),
             focus: Some(id.clone()),
@@ -2042,8 +2042,8 @@ mod tests {
     /// through the block; none of their own flushes reaches the sink.
     #[test]
     fn paint_full_frame_reaches_the_sink_as_one_chunk() {
-        let left = TerminalId::local(1);
-        let right = TerminalId::local(2);
+        let left = ResourceId::local(1);
+        let right = ResourceId::local(2);
         let layout = LayoutState {
             tree: Some(LayoutNode::Split {
                 dir: SplitDir::Horizontal,
@@ -2053,7 +2053,7 @@ mod tests {
             }),
             focus: Some(left.clone()),
         };
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), PaneSlot::new().expect("left slot"));
         panes.insert(right.clone(), PaneSlot::new().expect("right slot"));
         let kernel = published_kernel(&[left.clone(), right], 80, 24, b"hello\r\n");
@@ -2102,7 +2102,7 @@ mod tests {
     /// The chrome-only repaint holds to the same contract (phux-69pq.9).
     #[test]
     fn paint_chrome_in_place_reaches_the_sink_as_one_chunk() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let layout = LayoutState {
             tree: Some(LayoutNode::Leaf(id.clone())),
             focus: Some(id.clone()),
@@ -2242,7 +2242,7 @@ mod tests {
     /// row bytes. Only the (cheap) cursor-restore CUP is written. This is
     /// the steady-state cost reduction: the prior unconditional
     /// `painter.invalidate()` re-emitted the entire bar row on every
-    /// `TERMINAL_OUTPUT` frame.
+    /// `RESOURCE_OUTPUT` frame.
     #[test]
     fn paint_bar_after_pane_skips_unchanged_bar_when_not_clobbered() {
         let mut painter = build_painter();
@@ -2358,7 +2358,7 @@ mod tests {
     /// would clear the screen on every state transition — a full-screen strobe.
     #[test]
     fn paint_chrome_in_place_never_clears_the_viewport_or_repaints_a_pane() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let layout = LayoutState {
             tree: None,
             focus: Some(id.clone()),
@@ -2366,7 +2366,7 @@ mod tests {
         let mut slot = PaneSlot::new_with_size(60, 23).expect("slot");
         // Pane content that a full-frame repaint WOULD re-emit.
         slot.terminal.vt_write(b"PANEBODY");
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), slot);
 
         let mut bar = build_painter();
@@ -2416,12 +2416,12 @@ mod tests {
     /// chrome raise is exactly the cost this path exists to avoid.
     #[test]
     fn paint_chrome_in_place_keeps_the_sidebar_cache() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         let layout = LayoutState {
             tree: None,
             focus: Some(id.clone()),
         };
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(60, 23).expect("slot"));
         let mut bar = build_painter();
         let (mut sidebar_painter, res) = build_sidebar();
@@ -2473,14 +2473,14 @@ mod tests {
     /// transition, until the next pane render (never, for an idle pane).
     #[test]
     fn paint_chrome_in_place_restores_the_cursor_without_a_status_bar() {
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         // A real leaf so the focused pane HAS a rect: with a 20-column left
         // strip and the pane-grid rail its origin is (x = 20, y = 1).
         let layout = LayoutState {
             tree: Some(LayoutNode::Leaf(id.clone())),
             focus: Some(id.clone()),
         };
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(60, 24).expect("slot"));
         let (mut sidebar_painter, res) = build_sidebar();
 
@@ -2542,7 +2542,7 @@ mod tests {
     fn paint_focused_pane_does_not_resize_server_authoritative_mirror() {
         use libghostty_vt::TerminalOptions;
 
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         // Single-pane: no layout tree ⇒ compute_layout yields no rect, so
         // paint_focused_pane falls back to the full pane viewport.
         let layout = LayoutState {
@@ -2558,7 +2558,7 @@ mod tests {
         slot.terminal.vt_write(b"\x1b[?1049h"); // enter alt screen (no reflow)
         slot.terminal
             .vt_write(b"ABCDEFGHIJKLMNOPQRST\r\nABCDEFGHIJKLMNOPQRST");
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), slot);
         let kernel = published_kernel(
             std::slice::from_ref(&id),

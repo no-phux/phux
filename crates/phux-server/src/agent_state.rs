@@ -66,7 +66,7 @@
 
 use std::collections::HashSet;
 
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 
 use crate::agent_detect::record::AgentRecordJson;
 
@@ -149,10 +149,10 @@ impl EvidenceSource {
 pub(crate) struct AgentRecordArbiter {
     /// Terminals whose record was written by an explicit `SET_METADATA` that
     /// SUPPLIED a `state`. The detector stands down for these until `DELETE`.
-    declared: HashSet<WireTerminalId>,
+    declared: HashSet<WireResourceId>,
     /// Terminals whose current record the detector authored — so it may
     /// rewrite or retract it, and only it.
-    detector_owned: HashSet<WireTerminalId>,
+    detector_owned: HashSet<WireResourceId>,
     /// Terminals whose STORED record carries identity a human authored
     /// (`name` / `session` / `attention`).
     ///
@@ -163,7 +163,7 @@ pub(crate) struct AgentRecordArbiter {
     /// whose name the human chose — and using that alone to authorize a
     /// `DELETE` on retract destroys their label. The detector owns the `state`
     /// field; it never owns the identity.
-    explicit_identity: HashSet<WireTerminalId>,
+    explicit_identity: HashSet<WireResourceId>,
     /// Terminals whose STORED record carries a `kind` an explicit writer set.
     ///
     /// Deliberately separate from [`Self::explicit_identity`], which excludes
@@ -174,7 +174,7 @@ pub(crate) struct AgentRecordArbiter {
     /// identity-only declaration, and now that the detector reasserts the
     /// `kind` it authored on every write (I1), an explicitly-set one needs a
     /// bucket of its own or it would be overwritten with the rest.
-    explicit_kind: HashSet<WireTerminalId>,
+    explicit_kind: HashSet<WireResourceId>,
 }
 
 /// Which identity fields of a stored record belong to an explicit writer and
@@ -219,7 +219,7 @@ impl AgentRecordArbiter {
     /// `SET_METADATA` replaces the stored value wholesale, so a later write
     /// that drops those fields drops the mark with them: this tracks what is
     /// IN THE STORE, not what was ever written.
-    pub(crate) fn note_explicit_set(&mut self, terminal: &WireTerminalId, value: &[u8]) {
+    pub(crate) fn note_explicit_set(&mut self, terminal: &WireResourceId, value: &[u8]) {
         self.detector_owned.remove(terminal);
         let record = AgentRecordJson::decode(value);
         let declares_state = record
@@ -257,7 +257,7 @@ impl AgentRecordArbiter {
     /// Note an explicit `DELETE_METADATA`. The declaration is withdrawn, the
     /// human's identity is gone from the store with the rest of the record,
     /// and the detector resumes full ownership.
-    pub(crate) fn note_explicit_delete(&mut self, terminal: &WireTerminalId) {
+    pub(crate) fn note_explicit_delete(&mut self, terminal: &WireResourceId) {
         self.declared.remove(terminal);
         self.detector_owned.remove(terminal);
         self.explicit_identity.remove(terminal);
@@ -276,27 +276,27 @@ impl AgentRecordArbiter {
     ///
     /// Not a deletion, and not a substitution of a derived value — the two
     /// things §3.7 forbids. Losing information only in the honest direction.
-    pub(crate) fn note_declaration_withdrawn(&mut self, terminal: &WireTerminalId) {
+    pub(crate) fn note_declaration_withdrawn(&mut self, terminal: &WireResourceId) {
         self.declared.remove(terminal);
     }
 
     /// Whether the stored record carries identity a human authored, in which
     /// case the detector may withdraw its `state` but must not `DELETE` the
     /// key.
-    pub(crate) fn has_explicit_identity(&self, terminal: &WireTerminalId) -> bool {
+    pub(crate) fn has_explicit_identity(&self, terminal: &WireResourceId) -> bool {
         self.explicit_identity.contains(terminal)
     }
 
     /// Whether the stored record's `kind` was supplied by an explicit writer,
     /// in which case the detector must preserve it rather than reassert its
     /// own (`docs/spec/L3.md` §3.7).
-    pub(crate) fn has_explicit_kind(&self, terminal: &WireTerminalId) -> bool {
+    pub(crate) fn has_explicit_kind(&self, terminal: &WireResourceId) -> bool {
         self.explicit_kind.contains(terminal)
     }
 
     /// The ownership bits for one Terminal, read together so a caller cannot
     /// take them from two different states of the world.
-    pub(crate) fn identity_ownership(&self, terminal: &WireTerminalId) -> IdentityOwnership {
+    pub(crate) fn identity_ownership(&self, terminal: &WireResourceId) -> IdentityOwnership {
         IdentityOwnership {
             name: self.has_explicit_identity(terminal),
             kind: self.has_explicit_kind(terminal),
@@ -305,28 +305,28 @@ impl AgentRecordArbiter {
 
     /// Whether a human has declared this Terminal's state, in which case the
     /// detector must not write.
-    pub(crate) fn is_declared(&self, terminal: &WireTerminalId) -> bool {
+    pub(crate) fn is_declared(&self, terminal: &WireResourceId) -> bool {
         self.declared.contains(terminal)
     }
 
     /// Note that the detector authored this Terminal's current record.
-    pub(crate) fn note_detector_write(&mut self, terminal: &WireTerminalId) {
+    pub(crate) fn note_detector_write(&mut self, terminal: &WireResourceId) {
         self.detector_owned.insert(terminal.clone());
     }
 
     /// Note that the detector retracted this Terminal's record.
-    pub(crate) fn note_detector_retract(&mut self, terminal: &WireTerminalId) {
+    pub(crate) fn note_detector_retract(&mut self, terminal: &WireResourceId) {
         self.detector_owned.remove(terminal);
     }
 
     /// Whether the detector authored the record currently stored, and may
     /// therefore delete it.
-    pub(crate) fn detector_owns(&self, terminal: &WireTerminalId) -> bool {
+    pub(crate) fn detector_owns(&self, terminal: &WireResourceId) -> bool {
         self.detector_owned.contains(terminal)
     }
 
     /// Drop all bookkeeping for a reaped Terminal.
-    pub(crate) fn forget(&mut self, terminal: &WireTerminalId) {
+    pub(crate) fn forget(&mut self, terminal: &WireResourceId) {
         self.declared.remove(terminal);
         self.detector_owned.remove(terminal);
         self.explicit_identity.remove(terminal);
@@ -513,7 +513,7 @@ pub(crate) fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use phux_protocol::ids::TerminalId as WireTerminalId;
+    use phux_protocol::ids::ResourceId as WireResourceId;
 
     use super::{
         AgentRecordArbiter, EvidenceSource, IdentityOwnership, compose,
@@ -522,8 +522,8 @@ mod tests {
     use crate::agent_detect::record::AgentRecordJson;
     use crate::agent_detect::rules::{ManifestSpec, RuleSet};
 
-    fn terminal(id: u32) -> WireTerminalId {
-        WireTerminalId::new(id)
+    fn terminal(id: u32) -> WireResourceId {
+        WireResourceId::new(id)
     }
 
     /// A pane no explicit writer has ever touched: every identity field is

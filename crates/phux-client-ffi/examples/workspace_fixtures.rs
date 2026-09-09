@@ -5,21 +5,21 @@
 
 use phux_client_core::layout::{self, Workspace};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
-use phux_protocol::{SessionId, TerminalId, WindowId};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+use phux_protocol::{ResourceId, SessionId, WindowId};
 use std::{error::Error, path::Path};
 
 fn snapshot(extra: bool) -> SessionSnapshot {
     let mut snapshot =
-        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(7))
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
             .with_sessions(vec![SessionInfo::new(SessionId::new(1), "fixture")])
             .with_windows(vec![WindowInfo::new(
                 WindowId::new(1),
                 SessionId::new(1),
                 "registry",
             )])
-            .with_panes(vec![TerminalInfo::new(
-                TerminalId::local(7),
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(7),
                 WindowId::new(1),
                 80,
                 24,
@@ -33,10 +33,10 @@ fn snapshot(extra: bool) -> SessionSnapshot {
             SessionId::new(2),
             "external",
         ));
-        snapshot.panes.extend([
-            TerminalInfo::new(TerminalId::local(8), WindowId::new(1), 80, 24)
+        snapshot.resources.extend([
+            ResourceInfo::new(ResourceId::local(8), WindowId::new(1), 80, 24)
                 .with_title(Some("unplaced terminal".into())),
-            TerminalInfo::new(TerminalId::local(9), WindowId::new(2), 80, 24),
+            ResourceInfo::new(ResourceId::local(9), WindowId::new(2), 80, 24),
         ]);
         snapshot.focused_session = SessionId::new(2);
     }
@@ -105,8 +105,8 @@ fn cutover_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         snapshot(false),
         Some(b"\xa3\x67version\x02\x67windows\x80\x74focused_window_index\x00".to_vec()),
     )?;
-    let mut topology = Workspace::single(TerminalId::local(7));
-    topology.add_window(String::new(), TerminalId::local(8));
+    let mut topology = Workspace::single(ResourceId::local(7));
+    topology.add_window(String::new(), ResourceId::local(8));
     pair(directory, "workspace_add", 13, 14, true, Some(&topology))
 }
 
@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("output directory required")?;
     let directory = Path::new(&directory);
     std::fs::create_dir_all(directory)?;
-    let mut topology = Workspace::single(TerminalId::local(7));
+    let mut topology = Workspace::single(ResourceId::local(7));
     pair(directory, "workspace_initial", 0, 1, false, None)?;
     pair(directory, "workspace_refresh", 2, 3, true, Some(&topology))?;
     topology.windows[0].name = "renamed".into();
@@ -127,8 +127,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .tree
             .as_ref()
             .ok_or("missing seed tree")?,
-        &TerminalId::local(7),
-        &TerminalId::local(8),
+        &ResourceId::local(7),
+        &ResourceId::local(8),
         layout::SplitDir::Horizontal,
         0.5,
     )?);

@@ -20,13 +20,13 @@
 //! driver reuses two **existing** L3 keys, the same shape phux-foz.8
 //! established for the window picker (ADR-0018): the peer's persisted
 //! `phux.tui.layout/v1/<session>` workspace (its pane tree) and, per
-//! `TerminalId` in that tree, the pane's `phux.agent/v1` record.
+//! `ResourceId` in that tree, the pane's `phux.agent/v1` record.
 //!
 //! phux-k0cw changed HOW those are read. They were a one-shot
 //! `GET_METADATA` sweep at attach — an attach-time photograph that rotted
 //! silently, which was tolerable while peers only appeared inside a modal
 //! the user had just opened. Now each key is also SUBSCRIBED, so peer state
-//! tracks live, and `AgentEvent::PaneSpawned` / `PaneClosed` on the
+//! tracks live, and `AgentEvent::ResourceSpawned` / `ResourceClosed` on the
 //! already-open server-wide event subscription keep the subscribed pane set
 //! current — the enumerate-then-follow shape, with no wildcard scope and no
 //! wire change.
@@ -71,7 +71,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::info::SessionInfo;
 
@@ -115,10 +115,10 @@ pub(super) struct FleetPaneMeta {
 /// through the driver's memoized [`VcsIndex`] so repeated snapshots stay cheap.
 /// dashboard opens and on each live refresh — both human-paced.
 pub(super) fn collect_pane_meta(
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     vcs: &mut VcsIndex,
     agent_sessions: &AgentSessionRows,
-) -> HashMap<TerminalId, FleetPaneMeta> {
+) -> HashMap<ResourceId, FleetPaneMeta> {
     panes
         .iter()
         .map(|(id, slot)| {
@@ -167,10 +167,10 @@ pub(super) fn fleet_items(
     workspace: &Workspace,
     sessions: &[SessionInfo],
     focused_session: Option<SessionId>,
-    agent_meta: &HashMap<TerminalId, AgentRecord>,
-    pane_meta: &HashMap<TerminalId, FleetPaneMeta>,
+    agent_meta: &HashMap<ResourceId, AgentRecord>,
+    pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
     foreign_layouts: &HashMap<SessionId, Workspace>,
-    foreign_agents: &HashMap<TerminalId, AgentRecord>,
+    foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
     let mut ordered: Vec<&SessionInfo> = sessions.iter().collect();
     ordered.sort_by(|a, b| {
@@ -215,8 +215,8 @@ pub(super) fn fleet_items(
 /// committing `focus-pane { window, pane }`.
 fn current_session_pane_rows(
     workspace: &Workspace,
-    agent_meta: &HashMap<TerminalId, AgentRecord>,
-    pane_meta: &HashMap<TerminalId, FleetPaneMeta>,
+    agent_meta: &HashMap<ResourceId, AgentRecord>,
+    pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
 ) -> Vec<SelectItem> {
     let mut rows = Vec::new();
     for (w, window) in workspace.windows.iter().enumerate() {
@@ -375,7 +375,7 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
 fn foreign_session_pane_rows(
     session_name: &str,
     workspace: &Workspace,
-    foreign_agents: &HashMap<TerminalId, AgentRecord>,
+    foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
     let mut rows = Vec::new();
     for (w, window) in workspace.windows.iter().enumerate() {
@@ -485,8 +485,8 @@ mod tests {
     use super::*;
     use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
 
-    fn tid(n: u32) -> TerminalId {
-        TerminalId::local(n)
+    fn tid(n: u32) -> ResourceId {
+        ResourceId::local(n)
     }
 
     fn sinfo(id: u32, name: &str, windows: u16) -> SessionInfo {

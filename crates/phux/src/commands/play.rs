@@ -5,7 +5,7 @@
 //! behind; this one creates a **Terminal in the multiplexer whose PTY is fed
 //! from the cast**. The result is an ordinary pane: attachable, snapshotable
 //! with `phux snapshot`, resizable with `phux resize`, observable over
-//! `ATTACH_TERMINAL` by an agent, shareable with a second client, and
+//! `ATTACH_RESOURCE` by an agent, shareable with a second client, and
 //! killable with `phux kill`. Nothing else can build that, which is the only
 //! reason this verb exists — see ADR-0064 for the boundary and ADR-0060 for
 //! the scope line it moves.
@@ -15,7 +15,7 @@
 //! [`run_play`] runs in one of two modes:
 //!
 //! * **launcher** (what a user invokes) — validate the cast, then
-//!   `SPAWN_TERMINAL` a pane whose *command* is this same binary in writer
+//!   `SPAWN_RESOURCE` a pane whose *command* is this same binary in writer
 //!   mode. It never touches the pane it was pointed at; `TARGET` names where
 //!   the new pane goes, never what gets overwritten.
 //! * **writer** (`--pty-writer`, hidden) — the process running *inside* that
@@ -30,9 +30,9 @@
 //!
 //! # Zero wire change
 //!
-//! `SPAWN_TERMINAL` already carries a `command`, the server already injects
+//! `SPAWN_RESOURCE` already carries a `command`, the server already injects
 //! `PHUX_TERMINAL_ID` + `PHUX_SOCKET` into every spawned pane, and
-//! `TERMINAL_RESIZE` already exists (ADR-0062). Playback therefore adds no
+//! `RESIZE_TERMINAL` already exists (ADR-0062). Playback therefore adds no
 //! frame, no command tag, no `ServerFeature` bit, and no version bump — which
 //! under ADR-0061's hard `major.minor` gate is not a nicety but the
 //! difference between shipping this and breaking every client in the fleet.
@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 use phux_record::cast::{CastEvent, CastHeader, EventCode, read_cast};
 use phux_record::playback::{Speed, due_at, pass_duration};
@@ -167,7 +167,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
     };
 
     let request_id = 1_u32;
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id,
         // v0.1 servers expose the single default group (SPEC L1 §3.1).
         group: phux_protocol::ids::GroupId::new(1),
@@ -217,7 +217,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         _ => {
             eprintln!(
                 "phux: {}",
-                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+                phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
         }
@@ -274,7 +274,7 @@ fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &PlayArgs<'_>) -> V
 /// The id is the payload: everything a caller does next — attach, snapshot,
 /// resize, kill — is addressed by it. The rest is what the caller cannot see
 /// from outside, namely how long this will take at the speed they chose.
-fn report(pane: &TerminalId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) -> ExitCode {
+fn report(pane: &ResourceId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) -> ExitCode {
     let length = pass_duration(&loaded.events, args.speed);
     let name = short_name(file);
     if args.json {
@@ -293,7 +293,7 @@ fn report(pane: &TerminalId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) 
 /// The `phux play --json` result document. Pure, so the shape (including
 /// `schema_version`) is unit-testable without spawning a pane.
 fn play_json(
-    pane: &TerminalId,
+    pane: &ResourceId,
     file: &Path,
     loaded: &Loaded,
     args: &PlayArgs<'_>,
@@ -387,7 +387,7 @@ fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
 fn play_pass(
     rt: &tokio::runtime::Runtime,
     socket: &Path,
-    pane: Option<&TerminalId>,
+    pane: Option<&ResourceId>,
     events: &[CastEvent],
     args: &PlayArgs<'_>,
 ) {
@@ -447,7 +447,7 @@ fn sleep_until(deadline: Instant) {
 fn fit(
     rt: &tokio::runtime::Runtime,
     socket: &Path,
-    pane: Option<&TerminalId>,
+    pane: Option<&ResourceId>,
     header: &CastHeader,
 ) {
     let (Some(pane), Some(cols), Some(rows)) = (
@@ -492,9 +492,9 @@ fn fit(
 /// identifies a Terminal. `None` — someone ran the hidden writer mode by
 /// hand outside a pane — degrades to "play the bytes, resize nothing", which
 /// is the most this process can honestly do.
-fn own_pane() -> Option<TerminalId> {
+fn own_pane() -> Option<ResourceId> {
     let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
-    raw.parse::<u32>().ok().map(TerminalId::local)
+    raw.parse::<u32>().ok().map(ResourceId::local)
 }
 
 /// Stop the tty's line discipline from editing the recording.
@@ -698,7 +698,7 @@ mod tests {
             idle_limit: Some(2.0),
         };
         let spec = args(file, Some(1), Some(2.0));
-        let pane = TerminalId::local(7);
+        let pane = ResourceId::local(7);
         let doc = play_json(&pane, file, &loaded, &spec, 17_198);
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["terminal_id"], 7);

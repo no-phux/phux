@@ -4,9 +4,9 @@ const provider_contract = @import("provider_contract");
 const phux_options = @import("phux_options");
 
 pub const ProviderId = provider_contract.ProviderId;
-pub const LocalTerminalId = provider_contract.LocalTerminalId;
-pub const RemoteTerminalId = provider_contract.RemoteTerminalId;
-pub const TerminalId = provider_contract.TerminalId;
+pub const LocalResourceId = provider_contract.LocalResourceId;
+pub const RemoteResourceId = provider_contract.RemoteResourceId;
+pub const ResourceId = provider_contract.ResourceId;
 pub const TerminalRef = provider_contract.TerminalRef;
 pub const Generation = provider_contract.Generation;
 pub const ReplicaOwner = provider_contract.ReplicaOwner;
@@ -209,7 +209,7 @@ pub fn providerKind(terminal_ref: TerminalRef) ProviderKind {
     return if (terminal_ref.provider_id == .local) .local else .phux;
 }
 
-pub fn localRef(id: LocalTerminalId) TerminalRef {
+pub fn localRef(id: LocalResourceId) TerminalRef {
     return provider_contract.localTerminalRef(id);
 }
 

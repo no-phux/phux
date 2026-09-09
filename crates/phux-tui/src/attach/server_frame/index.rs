@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 
 use crate::attach::pane_state::PaneSlot;
 use phux_client::agent_meta::{AgentRecord, parse_agent_record};
@@ -18,11 +18,11 @@ use phux_client::agent_meta::{AgentRecord, parse_agent_record};
 #[derive(Debug, Default)]
 pub(in crate::attach) struct AgentMetaIndex {
     /// Terminal → its decoded agent record (absent = no declared agent).
-    pub(in crate::attach) records: HashMap<TerminalId, AgentRecord>,
+    pub(in crate::attach) records: HashMap<ResourceId, AgentRecord>,
     /// In-flight `GET_METADATA` request id → the Terminal it targets.
-    pub(in crate::attach) pending: HashMap<u32, TerminalId>,
+    pub(in crate::attach) pending: HashMap<u32, ResourceId>,
     /// Terminals with a live `SUBSCRIBE_METADATA` on the agent key.
-    pub(in crate::attach) subscribed: std::collections::HashSet<TerminalId>,
+    pub(in crate::attach) subscribed: std::collections::HashSet<ResourceId>,
     /// Terminal → when its record last actually changed. The attention
     /// ladder's tiebreak: rows of equal rank sort most-recently-changed
     /// first, so the agent that just flipped to `blocked` sits above one that
@@ -33,7 +33,7 @@ pub(in crate::attach) struct AgentMetaIndex {
     /// sidebar painter's content-cache key, and a timestamp in it would miss
     /// the cache on every frame and repaint the strip forever. This map
     /// influences only the row ORDER.
-    pub(in crate::attach) change_at: HashMap<TerminalId, std::time::Instant>,
+    pub(in crate::attach) change_at: HashMap<ResourceId, std::time::Instant>,
 }
 
 impl AgentMetaIndex {
@@ -45,7 +45,7 @@ impl AgentMetaIndex {
     /// A real change also stamps [`Self::change_at`]; a tombstone clears it,
     /// so a retracted record (the agent exited) leaves nothing behind to sort
     /// by.
-    pub(super) fn apply(&mut self, terminal: &TerminalId, bytes: Option<&[u8]>) -> bool {
+    pub(super) fn apply(&mut self, terminal: &ResourceId, bytes: Option<&[u8]>) -> bool {
         let changed = match bytes.and_then(parse_agent_record) {
             Some(record) => self.records.insert(terminal.clone(), record.clone()) != Some(record),
             None => self.records.remove(terminal).is_some(),
@@ -72,11 +72,11 @@ impl AgentMetaIndex {
 /// that are merely still working. A change on the FOCUSED pane is seen by
 /// definition — the user is watching it happen — so it never re-arms.
 pub(super) fn note_agent_change(
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    focused_pane: Option<&TerminalId>,
-    terminal: &TerminalId,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
+    terminal: &ResourceId,
 ) {
-    if focused_pane == Some(terminal) {
+    if focused_resource == Some(terminal) {
         return;
     }
     if let Some(slot) = panes.get_mut(terminal) {

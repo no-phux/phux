@@ -5,7 +5,7 @@
 //! real PTY-backed pane and asserts the server-side handler accepts it:
 //!
 //!   1. A fixture prints a unique marker AFTER the client has attached.
-//!   2. The client drains `TERMINAL_OUTPUT`, observing the marker exactly
+//!   2. The client drains `RESOURCE_OUTPUT`, observing the marker exactly
 //!      once with a per-consumer monotonic `seq` (SPEC §12.2).
 //!   3. The client sends `FRAME_ACK { terminal_id, seq }` for the
 //!      delivered frame — the new phux-3uv client behavior, exercised
@@ -31,7 +31,7 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -123,7 +123,7 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
         // the seed is waiting on existed.
         std::fs::write(&go, b"go").unwrap();
 
-        // Phase 1: wait for the marker to land as a live TERMINAL_OUTPUT
+        // Phase 1: wait for the marker to land as a live RESOURCE_OUTPUT
         // delta. Capture its terminal_id + seq for the ack, and assert the
         // per-consumer seq is strictly increasing across frames.
         let mut last_seq: Option<u64> = None;
@@ -134,10 +134,10 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             let Ok((tb, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
                 break;
             };
-            if tb != TYPE_TERMINAL_OUTPUT {
+            if tb != TYPE_RESOURCE_OUTPUT {
                 continue;
             }
-            let FrameKind::TerminalOutput {
+            let FrameKind::ResourceOutput {
                 terminal_id,
                 seq,
                 stream_id,
@@ -162,7 +162,7 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
         }
 
         let (ack_terminal, ack_stream, ack_bootstrap, ack_seq) =
-            ack_target.expect("marker must be delivered as a live TERMINAL_OUTPUT delta");
+            ack_target.expect("marker must be delivered as a live RESOURCE_OUTPUT delta");
 
         // Phase 2: ack the delivered frame (the new phux-3uv client
         // behavior). The server routes it through handle_frame_ack ->
@@ -190,8 +190,8 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             let remaining = drain_deadline - tokio::time::Instant::now();
             match timeout(remaining, recv_typed(&mut stream)).await {
                 Ok((tb, frame)) => {
-                    if tb == TYPE_TERMINAL_OUTPUT
-                        && let FrameKind::TerminalOutput { seq, bytes, .. } = frame
+                    if tb == TYPE_RESOURCE_OUTPUT
+                        && let FrameKind::ResourceOutput { seq, bytes, .. } = frame
                     {
                         if let Some(prev) = last_seq {
                             assert!(

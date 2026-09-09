@@ -8,11 +8,11 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::HashMap;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
 use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow};
@@ -69,13 +69,13 @@ const fn take_request_id(ctx: &mut DispatchCtx<'_>) -> u32 {
 pub(super) fn run_action(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     // phux-foz.7: read-only view of the live pane slots. The `agent-fleet`
     // arm snapshots each pane's asked flag / OSC title / cwd from it;
     // every other arm ignores it. Threaded as a parameter (not a ctx
     // field) because the driver also passes `panes` mutably alongside the
     // ctx into `dispatch_input_events`.
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
 ) -> ActionEffects {
     // One event per resolved action the user triggered. Info level: a
     // keybinding firing is a user-lifecycle event a trace reader wants under
@@ -131,17 +131,17 @@ pub(super) fn run_action(
     effects
 }
 
-/// phux-4li.12: `SPAWN_TERMINAL` → server allocates the new
+/// phux-4li.12: `SPAWN_RESOURCE` → server allocates the new
 /// Terminal under `DEFAULT_GROUP_ID` and replies with
-/// `TERMINAL_SPAWNED { request_id, result: Ok(new_id) }`. The
+/// `RESOURCE_SPAWNED { request_id, result: Ok(new_id) }`. The
 /// layout mutation happens in the reply handler — see
-/// `handle_server_frame`'s `TerminalSpawned` arm and
+/// `handle_server_frame`'s `ResourceSpawned` arm and
 /// `apply_spawned_ok`. We park a `PendingSplit` keyed by
 /// request id so the reply knows which leaf to split.
 fn split_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let Some(dir) = split_dir_arg(resolved) else {
@@ -167,7 +167,7 @@ fn split_pane(
     // server pick (typically $HOME). `command = None` invokes
     // the server's default shell; `env = None` inherits the
     // server's environment as-is.
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
@@ -186,7 +186,7 @@ fn split_pane(
 /// phux-4li.12: soft-kill — write `exit\n` as a sequence of
 /// `INPUT_KEY` events to the focused Terminal. When the shell
 /// processes those keystrokes it exits, the PTY closes, and
-/// the server broadcasts `TERMINAL_CLOSED` which we then fold
+/// the server broadcasts `RESOURCE_CLOSED` which we then fold
 /// out of the layout in `handle_server_frame`.
 ///
 /// Caveat: this is softer than tmux's `kill-pane`, which
@@ -194,9 +194,9 @@ fn split_pane(
 /// focused pane has an unresponsive foreground process
 /// (e.g. a stuck `cat` blocked on a non-existent FIFO) the
 /// keystrokes go nowhere. A future ticket may add an
-/// explicit `KILL_TERMINAL` wire frame; for v0.1 this gets
+/// explicit `KILL_RESOURCE` wire frame; for v0.1 this gets
 /// the daily-drive flow working end-to-end.
-fn kill_focused_pane(focused: Option<&TerminalId>, effects: &mut ActionEffects) {
+fn kill_focused_pane(focused: Option<&ResourceId>, effects: &mut ActionEffects) {
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
         effects.bell = true;
@@ -204,7 +204,7 @@ fn kill_focused_pane(focused: Option<&TerminalId>, effects: &mut ActionEffects) 
     };
     effects.kill_frames = soft_kill_input_frames(&focused_id);
     // phux-i0e8.2.2: mark the close as ours so the resulting
-    // TERMINAL_CLOSED does not raise a pane-exit notice.
+    // RESOURCE_CLOSED does not raise a pane-exit notice.
     effects.expected_closes = vec![focused_id];
 }
 
@@ -213,7 +213,7 @@ fn kill_focused_pane(focused: Option<&TerminalId>, effects: &mut ActionEffects) 
 /// the server broadcasts `TerminalControl` so the badge updates.
 fn take_input(
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let Some(focused_id) = focused.cloned() else {
@@ -236,7 +236,7 @@ fn take_input(
 /// input. A no-op server-side if we do not hold it.
 fn give_input(
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let Some(focused_id) = focused.cloned() else {
@@ -259,7 +259,7 @@ fn give_input(
 fn signal_terminal(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let Some(signal) = signal_arg(resolved) else {
@@ -295,7 +295,7 @@ fn signal_terminal(
 fn set_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let Some(mode) = mouse_arg(resolved) else {
@@ -333,7 +333,7 @@ fn set_pane(
 
 /// phux-4li.15: open a new window. Spawn a fresh Terminal
 /// (same SPAWN as a split) and park a `PendingWindow`; the
-/// reply (`handle_server_frame`'s `TerminalSpawned` arm) adds a
+/// reply (`handle_server_frame`'s `ResourceSpawned` arm) adds a
 /// window seeded on the spawned pane and makes it active. The
 /// new pane is a bare leaf — the server files it under the
 /// default Group; the TUI groups it into a window itself
@@ -341,7 +341,7 @@ fn set_pane(
 fn new_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let request_id = take_request_id(ctx);
     let name = ctx.workspace.default_window_name();
-    let frame = FrameKind::SpawnTerminal {
+    let frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
@@ -362,7 +362,7 @@ fn new_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 
 /// phux-4li.15: soft-kill every pane in the active window, the
 /// same `exit\n` mechanism as `kill-pane`. As each
-/// `TERMINAL_CLOSED` lands, `handle_server_frame` folds the pane
+/// `RESOURCE_CLOSED` lands, `handle_server_frame` folds the pane
 /// out; when the window's tree empties it is pruned and the
 /// new layout broadcast. No synchronous window removal here.
 fn kill_active_window(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
@@ -546,7 +546,7 @@ fn push_getting_started(ctx: &mut DispatchCtx<'_>) {
 /// phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
 /// the cursor without extending the selection unless Shift is held;
 /// mouse drag can select and copy in one gesture.
-fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&TerminalId>) {
+fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
     let pane_rect = focused_pane_rect(ctx, focused);
     let overlay = Box::new(crate::render::overlay::CopyModeOverlay::new(
         0,
@@ -561,7 +561,7 @@ fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&TerminalId>) {
 /// the only route for a pane whose app owns the mouse. Anchored
 /// just inside the focused pane's top-left corner so it opens over
 /// the pane it acts on, wherever that pane sits in the layout.
-fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&TerminalId>) {
+fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
     let rect = focused_pane_rect(ctx, focused);
     let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
     let zoomed = ctx.zoomed.is_some();
@@ -624,7 +624,7 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
 /// nothing to list it bells.
 fn push_agent_fleet(
     ctx: &mut DispatchCtx<'_>,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
     let meta = crate::attach::fleet::collect_pane_meta(
@@ -658,8 +658,8 @@ fn push_agent_fleet(
 /// does not arm a return origin.
 fn next_attention(
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
-    panes: &HashMap<TerminalId, PaneSlot>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
     let ordered = ordered_workspace_panes(ctx.workspace);
@@ -691,7 +691,7 @@ fn next_attention(
 ///
 /// Consume first: a pane that disappeared while we were cycling is
 /// a safe bell-no-op, not a sticky origin that can later resolve to
-/// a different pane. `TerminalId` is stable across window reordering,
+/// a different pane. `ResourceId` is stable across window reordering,
 /// so a surviving origin is found in its current window/DFS slot.
 fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let Some(origin) = ctx.attention_navigation.take_origin() else {
@@ -826,7 +826,7 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
 
 /// phux-r82.7: open a plugin manifest `[[panes]]` entry as a
 /// real server-side Terminal running the pane's argv. Routes
-/// through the SAME `SPAWN_TERMINAL` machinery `split-pane` /
+/// through the SAME `SPAWN_RESOURCE` machinery `split-pane` /
 /// `new-window` use (ADR-0017: no plugin-privileged wire
 /// surface) — the manifest supplies the command, the plugin
 /// root the cwd, and `PHUX_PLUGIN_*` the additive env. Placement
@@ -840,7 +840,7 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
 fn plugin_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
-    focused: Option<&TerminalId>,
+    focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
     let (Some(plugin), Some(pane)) = (str_arg(resolved, "plugin"), str_arg(resolved, "pane"))
@@ -922,11 +922,11 @@ fn cycle_pane(
 }
 
 /// One-entry MRU jump-back. The target may be in another window;
-/// locate it by stable `TerminalId`, switch the client-local active
+/// locate it by stable `ResourceId`, switch the client-local active
 /// window, and restore that window's local focus. Applying the
 /// resulting focus change records the pane we jumped from as the
 /// next MRU, so repeated invocations toggle between two panes.
-fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&TerminalId>, effects: &mut ActionEffects) {
+fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &mut ActionEffects) {
     let Some(target) = ctx.focus_history.target(focused, ctx.workspace) else {
         effects.bell = true;
         return;

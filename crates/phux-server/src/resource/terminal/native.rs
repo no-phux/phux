@@ -1090,7 +1090,7 @@ fn fail_native_waiters(
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 struct HistoryFrameId {
     /// Wire terminal identity for this subscription.
-    terminal_id: phux_protocol::ids::TerminalId,
+    terminal_id: phux_protocol::ids::ResourceId,
     /// Logical stream identity.
     stream_id: phux_protocol::ids::StreamId,
     /// Replica generation identity.

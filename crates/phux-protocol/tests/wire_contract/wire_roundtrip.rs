@@ -4,7 +4,7 @@
 //! values. Hand-rolled cases cover known-bad inputs and confirm the decoder
 //! returns `DecodeError` rather than panicking.
 //!
-//! Protocol 0.7 binds `TerminalOutput` to non-zero stream/bootstrap ids; native
+//! Protocol 0.7 binds `ResourceOutput` to non-zero stream/bootstrap ids; native
 //! checkpoint and history frames have focused semantic tests in
 //! `bootstrap_wire.rs`.
 //!
@@ -21,8 +21,8 @@ use phux_protocol::caps::{
     TerminalDefaultColors,
 };
 use phux_protocol::ids::{
-    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind, SessionId,
-    StreamId, TerminalId, WindowId,
+    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind,
+    SessionId, StreamId, WindowId,
 };
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -34,11 +34,11 @@ use phux_protocol::wire::frame::{
     DetachReason, ErrorCode, FileUploadAck, InputMode, MAX_APPEND_BYTES,
     MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
-    MoveResult, ReportedAgentState, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
-    TerminalLifecycle, TerminalSignal, ViewportInfo,
+    MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
+    SpawnResult, StateScope, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
-    AgentFacet, LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
+    AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
 };
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
@@ -100,7 +100,7 @@ fn arb_split_dir() -> impl Strategy<Value = SplitDir> {
 /// Bounded recursion: at most depth 4 keeps prop-test work tractable while
 /// still exercising recursive split-tree encoding/decoding.
 fn arb_layout_node() -> impl Strategy<Value = LayoutNode> {
-    let leaf = any::<u32>().prop_map(|id| LayoutNode::Leaf(TerminalId::local(id)));
+    let leaf = any::<u32>().prop_map(|id| LayoutNode::Leaf(ResourceId::local(id)));
     leaf.prop_recursive(4, 32, 2, |inner| {
         (arb_split_dir(), 0.0001f32..0.9999f32, inner.clone(), inner).prop_map(
             |(dir, ratio, left, right)| LayoutNode::Split {
@@ -149,15 +149,15 @@ fn arb_window_info() -> impl Strategy<Value = WindowInfo> {
         proptest::option::of(any::<u32>()),
         proptest::option::of(arb_layout_node()),
     )
-        .prop_map(|(id, session_id, index, name, active_pane, layout)| {
+        .prop_map(|(id, session_id, index, name, active_resource, layout)| {
             WindowInfo::new(WindowId::new(id), SessionId::new(session_id), name)
                 .with_index(index)
-                .with_active_pane(active_pane.map(TerminalId::local))
+                .with_active_resource(active_resource.map(ResourceId::local))
                 .with_layout(layout)
         })
 }
 
-fn arb_pane_info() -> impl Strategy<Value = TerminalInfo> {
+fn arb_pane_info() -> impl Strategy<Value = ResourceInfo> {
     (
         any::<u32>(),
         any::<u32>(),
@@ -167,7 +167,7 @@ fn arb_pane_info() -> impl Strategy<Value = TerminalInfo> {
         proptest::option::of(".{0,32}"),
     )
         .prop_map(|(id, window_id, cols, rows, title, cwd)| {
-            TerminalInfo::new(TerminalId::local(id), WindowId::new(window_id), cols, rows)
+            ResourceInfo::new(ResourceId::local(id), WindowId::new(window_id), cols, rows)
                 .with_title(title)
                 .with_cwd(cwd)
         })
@@ -190,7 +190,7 @@ fn arb_agent_facet() -> impl Strategy<Value = AgentFacet> {
 /// A snapshot entry carrying resource facets: any kind, an optional parent,
 /// an optional agent facet. Ids are drawn from a small space so a snapshot
 /// of several entries still has distinct ids (the facet join is by id).
-fn arb_resource_info() -> impl Strategy<Value = TerminalInfo> {
+fn arb_resource_info() -> impl Strategy<Value = ResourceInfo> {
     (
         arb_pane_info(),
         arb_resource_kind(),
@@ -212,10 +212,10 @@ fn arb_session_snapshot() -> impl Strategy<Value = SessionSnapshot> {
         any::<u32>(),
     )
         .prop_map(|(sessions, windows, panes, fs, fw, fp)| {
-            SessionSnapshot::new(SessionId::new(fs), WindowId::new(fw), TerminalId::new(fp))
+            SessionSnapshot::new(SessionId::new(fs), WindowId::new(fw), ResourceId::new(fp))
                 .with_sessions(sessions)
                 .with_windows(windows)
-                .with_panes(panes)
+                .with_resources(panes)
         })
 }
 
@@ -271,14 +271,14 @@ fn arb_detach_reason() -> impl Strategy<Value = Option<DetachReason>> {
     ]
 }
 
-/// Strategy producing both `Local` and `Satellite` variants of [`TerminalId`].
+/// Strategy producing both `Local` and `Satellite` variants of [`ResourceId`].
 /// v0.1 servers only emit `Local`, but v0.1 decoders MUST round-trip both
 /// shapes (the dispatch layer is what rejects `Satellite` ids with
 /// `UnsupportedSatelliteRoute`).
-fn arb_terminal_id() -> impl Strategy<Value = TerminalId> {
+fn arb_terminal_id() -> impl Strategy<Value = ResourceId> {
     prop_oneof![
-        any::<u32>().prop_map(TerminalId::local),
-        (".{0,32}", any::<u32>()).prop_map(|(host, id)| TerminalId::satellite(host, id)),
+        any::<u32>().prop_map(ResourceId::local),
+        (".{0,32}", any::<u32>()).prop_map(|(host, id)| ResourceId::satellite(host, id)),
     ]
 }
 
@@ -410,7 +410,7 @@ fn arb_paste_event() -> impl Strategy<Value = PasteEvent> {
 }
 
 /// VT byte stream, capped at 4 KiB for test speed. Empty payloads are
-/// legal — `TERMINAL_OUTPUT` carries whatever the PTY produced, including
+/// legal — `RESOURCE_OUTPUT` carries whatever the PTY produced, including
 /// zero bytes (which the rate-limiter just won't emit, but the codec
 /// must round-trip).
 fn arb_vt_bytes() -> impl Strategy<Value = Vec<u8>> {
@@ -437,7 +437,7 @@ proptest! {
         seq in any::<u64>(),
         bytes in arb_vt_bytes(),
     ) {
-        let frame = FrameKind::TerminalOutput {
+        let frame = FrameKind::ResourceOutput {
             terminal_id,
             stream_id: StreamId::new(1).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
@@ -648,7 +648,7 @@ fn hello_decoder_rejects_unknown_color_support_tag() {
 }
 
 /// Fixed-value fixtures for simple protocol-0.7 PING and bound
-/// `TERMINAL_OUTPUT` frames.
+/// `RESOURCE_OUTPUT` frames.
 #[test]
 fn ping_round_trip() {
     let frame = FrameKind::Ping {
@@ -662,10 +662,10 @@ fn ping_round_trip() {
 
 #[test]
 fn pane_output_round_trip_hello_world() {
-    let frame = FrameKind::TerminalOutput {
+    let frame = FrameKind::ResourceOutput {
         stream_id: StreamId::new(1).unwrap(),
         bootstrap_id: BootstrapId::new(1).unwrap(),
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         seq: 0,
         bytes: bytes::Bytes::from_static(b"hello world\r\n"),
     };
@@ -759,7 +759,7 @@ fn unknown_trailing_field_id_is_skipped_forward_compat() {
     let real = {
         let mut buf = BytesMut::new();
         FrameKind::Bell {
-            terminal_id: TerminalId::local(0x2A),
+            terminal_id: ResourceId::local(0x2A),
         }
         .encode(&mut buf);
         buf.to_vec()
@@ -773,7 +773,7 @@ fn unknown_trailing_field_id_is_skipped_forward_compat() {
     assert_eq!(
         decoded,
         FrameKind::Bell {
-            terminal_id: TerminalId::local(0x2A),
+            terminal_id: ResourceId::local(0x2A),
         },
     );
     assert!(tail.is_empty());
@@ -889,7 +889,7 @@ proptest! {
 
     #[test]
     fn roundtrip_session_info(info in arb_session_info()) {
-        let snap = SessionSnapshot::new(info.id, WindowId::new(0), TerminalId::new(0))
+        let snap = SessionSnapshot::new(info.id, WindowId::new(0), ResourceId::new(0))
             .with_sessions(vec![info]);
         let frame = FrameKind::Attached {
             attach_id: 1,
@@ -905,7 +905,7 @@ proptest! {
 
     #[test]
     fn roundtrip_window_info(info in arb_window_info()) {
-        let snap = SessionSnapshot::new(info.session_id, info.id, TerminalId::new(0))
+        let snap = SessionSnapshot::new(info.session_id, info.id, ResourceId::new(0))
             .with_windows(vec![info]);
         let frame = FrameKind::Attached {
             attach_id: 1,
@@ -922,7 +922,7 @@ proptest! {
     #[test]
     fn roundtrip_pane_info(info in arb_pane_info()) {
         let snap = SessionSnapshot::new(SessionId::new(0), info.window_id, info.id.clone())
-            .with_panes(vec![info]);
+            .with_resources(vec![info]);
         let frame = FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
@@ -945,12 +945,12 @@ proptest! {
         // Dedupe ids: the facet join is by id, so two entries sharing an id
         // would legitimately collapse.
         let mut seen = std::collections::HashSet::new();
-        let panes: Vec<TerminalInfo> = infos
+        let panes: Vec<ResourceInfo> = infos
             .into_iter()
             .filter(|info| seen.insert(info.id.clone()))
             .collect();
-        let snap = SessionSnapshot::new(SessionId::new(0), WindowId::new(0), TerminalId::new(0))
-            .with_panes(panes);
+        let snap = SessionSnapshot::new(SessionId::new(0), WindowId::new(0), ResourceId::new(0))
+            .with_resources(panes);
         let frame = FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
@@ -967,7 +967,7 @@ proptest! {
     fn roundtrip_layout_node(layout in arb_layout_node()) {
         let win = WindowInfo::new(WindowId::new(1), SessionId::new(1), "w")
             .with_layout(Some(layout));
-        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::new(0))
+        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(0))
             .with_windows(vec![win]);
         let frame = FrameKind::Attached {
             attach_id: 1,
@@ -1051,7 +1051,7 @@ fn attach_unknown_target_tag_is_rejected() {
 fn input_focus_unknown_kind_is_rejected() {
     // INPUT_FOCUS (0x14): TERMINAL_ID (id 1) = local{0}, then an EVENT field
     // (id 2) carrying an unknown focus-kind byte (0xAB).
-    let mut term = vec![0x00u8]; // TERMINAL_ID_TAG_LOCAL
+    let mut term = vec![0x00u8]; // RESOURCE_ID_TAG_LOCAL
     term.extend_from_slice(&0u32.to_be_bytes());
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &term); // field::input_focus::TERMINAL_ID
@@ -1147,26 +1147,26 @@ fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
     snap.extend_from_slice(&0u16.to_be_bytes()); // index
     snap.extend_from_slice(&1u32.to_be_bytes()); // name length
     snap.push(b'w'); // name bytes
-    snap.push(0); // active_pane: None
+    snap.push(0); // active_resource: None
     snap.push(1); // layout: Some
     snap.push(1); // LayoutNode::Split
     snap.push(0); // SplitDir::Horizontal
     snap.extend_from_slice(&ratio.to_be_bytes());
-    // Left leaf: LAYOUT_TAG_LEAF=0, then TerminalId::Local { id: 1 }
+    // Left leaf: LAYOUT_TAG_LEAF=0, then ResourceId::Local { id: 1 }
     snap.push(0);
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
+    snap.push(0); // RESOURCE_ID_TAG_LOCAL
     snap.extend_from_slice(&1u32.to_be_bytes());
-    // Right leaf: LAYOUT_TAG_LEAF=0, then TerminalId::Local { id: 2 }
+    // Right leaf: LAYOUT_TAG_LEAF=0, then ResourceId::Local { id: 2 }
     snap.push(0);
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
+    snap.push(0); // RESOURCE_ID_TAG_LOCAL
     snap.extend_from_slice(&2u32.to_be_bytes());
     // panes: empty list
     snap.extend_from_slice(&0u32.to_be_bytes());
-    // focused_session, focused_window, focused_pane (tagged TerminalId)
+    // focused_session, focused_window, focused_resource (tagged ResourceId)
     snap.extend_from_slice(&0u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&0u32.to_be_bytes()); // focused_window
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
-    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_pane id
+    snap.push(0); // RESOURCE_ID_TAG_LOCAL
+    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_resource id
 
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap); // field::attached::SNAPSHOT
@@ -1217,7 +1217,7 @@ fn layout_ratio_bounds_are_enforced_on_decode() {
 
 fn arb_scope() -> impl Strategy<Value = Scope> {
     prop_oneof![
-        arb_terminal_id().prop_map(Scope::Terminal),
+        arb_terminal_id().prop_map(Scope::Resource),
         any::<u32>().prop_map(|id| Scope::Group(GroupId::new(id))),
         Just(Scope::Global),
     ]
@@ -1454,7 +1454,7 @@ proptest! {
         agent_session in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
         initial_size in proptest::option::of((any::<u16>(), any::<u16>())),
     ) {
-        assert_round_trip(&FrameKind::SpawnTerminal {
+        assert_round_trip(&FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(group),
             command,
@@ -1462,7 +1462,7 @@ proptest! {
             env,
             term,
             satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
-            owner_terminal: owner_terminal.map(TerminalId::local),
+            owner_terminal: owner_terminal.map(ResourceId::local),
             agent_session,
             initial_size,
             resource: None,
@@ -1484,7 +1484,7 @@ proptest! {
     ) {
         prop_assume!(provider.len() <= MAX_RESOURCE_PROVIDER_BYTES);
         prop_assume!(native_id.as_ref().is_none_or(|id| id.len() <= MAX_RESOURCE_NATIVE_ID_BYTES));
-        assert_round_trip(&FrameKind::SpawnTerminal {
+        assert_round_trip(&FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(group),
             command: None,
@@ -1510,7 +1510,7 @@ proptest! {
         parent in proptest::option::of(arb_terminal_id()),
         cwd in proptest::option::of(".{0,32}"),
     ) {
-        assert_round_trip(&FrameKind::SpawnTerminal {
+        assert_round_trip(&FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: None,
@@ -1540,7 +1540,7 @@ proptest! {
     ) {
         assert_round_trip(&FrameKind::Event {
             terminal: Some(terminal),
-            event: AgentEvent::PaneSpawned { kind, parent },
+            event: AgentEvent::ResourceSpawned { kind, parent },
         });
     }
 
@@ -1549,10 +1549,10 @@ proptest! {
         request_id in any::<u32>(),
         result in arb_spawn_result(),
     ) {
-        assert_round_trip(&FrameKind::TerminalSpawned { request_id, result });
+        assert_round_trip(&FrameKind::ResourceSpawned { request_id, result });
     }
 
-    /// MOVE_TERMINAL / TERMINAL_MOVED (ADR-0056): both TerminalId fields
+    /// MOVE_RESOURCE / RESOURCE_MOVED (ADR-0056): both ResourceId fields
     /// are required, and the reply's tagged union mirrors SpawnResult.
     #[test]
     fn roundtrip_move_terminal(
@@ -1560,7 +1560,7 @@ proptest! {
         terminal in arb_terminal_id(),
         owner_terminal in arb_terminal_id(),
     ) {
-        assert_round_trip(&FrameKind::MoveTerminal { request_id, terminal, owner_terminal });
+        assert_round_trip(&FrameKind::MoveResource { request_id, terminal, owner_terminal });
     }
 
     #[test]
@@ -1568,7 +1568,7 @@ proptest! {
         request_id in any::<u32>(),
         result in arb_move_result(),
     ) {
-        assert_round_trip(&FrameKind::TerminalMoved { request_id, result });
+        assert_round_trip(&FrameKind::ResourceMoved { request_id, result });
     }
 
     /// `exit_status = None` is the wire encoding for "killed by signal /
@@ -1580,7 +1580,7 @@ proptest! {
         exit_status in proptest::option::of(any::<i32>()),
         reason in arb_close_reason(),
     ) {
-        assert_round_trip(&FrameKind::TerminalClosed { terminal_id, exit_status, reason });
+        assert_round_trip(&FrameKind::ResourceClosed { terminal_id, exit_status, reason });
     }
 
     /// Zero dims are in-range: SPEC §10.2 leaves them implementation-defined
@@ -1591,7 +1591,7 @@ proptest! {
         cols in any::<u16>(),
         rows in any::<u16>(),
     ) {
-        assert_round_trip(&FrameKind::TerminalResize { terminal_id, cols, rows });
+        assert_round_trip(&FrameKind::ResizeTerminal { terminal_id, cols, rows });
     }
 
     #[test]
@@ -1601,7 +1601,7 @@ proptest! {
     ) {
         assert_round_trip(&FrameKind::Command {
             request_id,
-            command: Command::KillTerminal { terminal_id },
+            command: Command::KillResource { terminal_id },
         });
     }
 
@@ -1631,24 +1631,24 @@ fn command_simple_variants_round_trip() {
         Command::Upgrade,
         Command::Shutdown,
         Command::ReleaseInput {
-            terminal_id: TerminalId::local(7),
+            terminal_id: ResourceId::local(7),
         },
         Command::ReportAsked {
-            terminal_id: TerminalId::local(7),
+            terminal_id: ResourceId::local(7),
             id: "q1".to_owned(),
             question: "Deploy to prod?".to_owned(),
             suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
             elapsed_seconds: Some(9),
         },
         Command::ReportAgentState {
-            terminal_id: TerminalId::local(7),
+            terminal_id: ResourceId::local(7),
             state: ReportedAgentState::Done,
         },
         Command::GetPerf { reset: false },
         Command::GetPerf { reset: true },
         Command::Transcribe {
             upload_id: FileUploadId::new([9; 16]).expect("non-zero upload id"),
-            terminal_id: TerminalId::local(7),
+            terminal_id: ResourceId::local(7),
         },
     ] {
         assert_round_trip(&FrameKind::Command {
@@ -1663,12 +1663,12 @@ fn command_attach_detach_terminal_round_trip() {
     // phux-v45.7: the per-Terminal subscription verbs (SPEC §5.1 tags
     // 0x01/0x02) round-trip with both Local and Satellite ids — the
     // Satellite form is what a hub consumer sends for two-hop attach.
-    for terminal_id in [TerminalId::local(7), TerminalId::satellite("devbox", 7)] {
+    for terminal_id in [ResourceId::local(7), ResourceId::satellite("devbox", 7)] {
         for command in [
-            Command::AttachTerminal {
+            Command::AttachResource {
                 terminal_id: terminal_id.clone(),
             },
-            Command::DetachTerminal {
+            Command::DetachResource {
                 terminal_id: terminal_id.clone(),
             },
         ] {
@@ -1687,7 +1687,7 @@ fn command_acquire_input_round_trips() {
         assert_round_trip(&FrameKind::Command {
             request_id: 11,
             command: Command::AcquireInput {
-                terminal_id: TerminalId::local(7),
+                terminal_id: ResourceId::local(7),
                 mode,
                 ttl_ms: 30_000,
             },
@@ -1708,7 +1708,7 @@ fn command_signal_terminal_round_trips() {
         assert_round_trip(&FrameKind::Command {
             request_id: 13,
             command: Command::SignalTerminal {
-                terminal_id: TerminalId::local(3),
+                terminal_id: ResourceId::local(3),
                 signal,
             },
         });
@@ -1717,7 +1717,7 @@ fn command_signal_terminal_round_trips() {
 
 #[test]
 fn command_get_screen_round_trips() {
-    // GET_SCREEN (tag 0x07): TerminalId + a trailing optional<u32>
+    // GET_SCREEN (tag 0x07): ResourceId + a trailing optional<u32>
     // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl).
     // The reply is OK_WITH(JSON(..)) — covered by the generic
     // CommandValue::Json roundtrip. Exercise every scrollback state crossed
@@ -1728,7 +1728,7 @@ fn command_get_screen_round_trips() {
             assert_round_trip(&FrameKind::Command {
                 request_id: 11,
                 command: Command::GetScreen {
-                    terminal_id: TerminalId::local(5),
+                    terminal_id: ResourceId::local(5),
                     request_scrollback,
                     cells,
                 },
@@ -1751,7 +1751,7 @@ fn command_get_screen_decodes_pre_cells_body_as_false() {
     let expected = FrameKind::Command {
         request_id: 7,
         command: Command::GetScreen {
-            terminal_id: TerminalId::local(9),
+            terminal_id: ResourceId::local(9),
             request_scrollback: Some(3),
             cells: false,
         },
@@ -1759,7 +1759,7 @@ fn command_get_screen_decodes_pre_cells_body_as_false() {
 
     // Command::GetScreen positional value, minus the trailing cells byte.
     let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
-    get_screen.push(0x00); // TERMINAL_ID_TAG_LOCAL
+    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
     get_screen.extend_from_slice(&9u32.to_be_bytes());
     get_screen.push(0x01); // request_scrollback = Some
     get_screen.extend_from_slice(&3u32.to_be_bytes());
@@ -1783,7 +1783,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
     // as its `cells`. Under TLV the outer frame is length-delimited and the
     // COMMAND field value is too, so the boundary holds at both levels (phux-8yl).
     let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
-    get_screen.push(0x00); // TERMINAL_ID_TAG_LOCAL
+    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
     get_screen.extend_from_slice(&1u32.to_be_bytes());
     get_screen.push(0x00); // request_scrollback = None
     // no cells byte
@@ -1795,7 +1795,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
     let second = FrameKind::Command {
         request_id: 2,
         command: Command::GetScreen {
-            terminal_id: TerminalId::local(2),
+            terminal_id: ResourceId::local(2),
             request_scrollback: None,
             cells: true,
         },
@@ -1812,7 +1812,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
         FrameKind::Command {
             request_id: 1,
             command: Command::GetScreen {
-                terminal_id: TerminalId::local(1),
+                terminal_id: ResourceId::local(1),
                 request_scrollback: None,
                 cells: false,
             },
@@ -1827,7 +1827,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
 
 #[test]
 fn command_route_input_round_trips() {
-    // ROUTE_INPUT (tag 0x08): TerminalId + an InputEvent tagged union.
+    // ROUTE_INPUT (tag 0x08): ResourceId + an InputEvent tagged union.
     // Exercise all four atom variants so each InputEvent tag round-trips.
     let key = KeyEvent {
         action: KeyAction::Press,
@@ -1858,7 +1858,7 @@ fn command_route_input_round_trips() {
         assert_round_trip(&FrameKind::Command {
             request_id: 21,
             command: Command::RouteInput {
-                terminal_id: TerminalId::local(5),
+                terminal_id: ResourceId::local(5),
                 event,
             },
         });
@@ -1872,7 +1872,7 @@ fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
         request_id: 0x0102_0304,
         command: Command::ApplyInput {
             operation_id,
-            terminal_id: TerminalId::local(5),
+            terminal_id: ResourceId::local(5),
             events: vec![
                 InputEvent::Focus(FocusEvent::Gained),
                 InputEvent::Paste(PasteEvent {
@@ -1910,7 +1910,7 @@ fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
         DecodeError::InvalidInputOperationId
     );
 
-    // Local TerminalId is tag + u32, then u16 count; mutate the first event tag.
+    // Local ResourceId is tag + u32, then u16 count; mutate the first event tag.
     let mut unknown_event = encoded.to_vec();
     unknown_event[id_offset + 16 + 5 + 2] = 0xff;
     assert!(matches!(
@@ -1942,7 +1942,7 @@ fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
         request_id: 1,
         command: Command::ApplyInput {
             operation_id,
-            terminal_id: TerminalId::local(5),
+            terminal_id: ResourceId::local(5),
             events: vec![InputEvent::Paste(PasteEvent {
                 trust: PasteTrust::Trusted,
                 data: vec![b'x'; MAX_APPLY_INPUT_COMMAND_BODY],
@@ -1964,7 +1964,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
         request_id: 0x0a0b_0c0d,
         command: Command::PutFile {
             upload_id,
-            terminal_id: TerminalId::satellite("mini", 5),
+            terminal_id: ResourceId::satellite("mini", 5),
             extension: "png".to_owned(),
             offset: 4,
             data: b"tail".to_vec(),
@@ -2002,7 +2002,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
         request_id: 1,
         command: Command::PutFile {
             upload_id,
-            terminal_id: TerminalId::local(5),
+            terminal_id: ResourceId::local(5),
             extension: "png".to_owned(),
             offset: MAX_FILE_UPLOAD_SIZE,
             data: vec![1],
@@ -2021,7 +2021,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
         request_id: 2,
         command: Command::PutFile {
             upload_id,
-            terminal_id: TerminalId::local(5),
+            terminal_id: ResourceId::local(5),
             extension: "jpg".to_owned(),
             offset: 0,
             data: vec![0; MAX_FILE_UPLOAD_CHUNK + 1],
@@ -2068,23 +2068,23 @@ fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
 
 #[test]
 fn command_kill_terminals_round_trips() {
-    // KILL_TERMINALS (tag 0x09, the slot freed by the v0.3.0 "Option B"
+    // KILL_RESOURCES (tag 0x09, the slot freed by the v0.3.0 "Option B"
     // re-tier that dissolved the L2 lifecycle verbs): a u16-count-prefixed
     // list of tagged TerminalIds. Exercise the empty list, a singleton, and a
     // multi-id group so the count prefix and the per-id tagged encoding both
     // round-trip.
     for ids in [
         Vec::new(),
-        vec![TerminalId::local(7)],
+        vec![ResourceId::local(7)],
         vec![
-            TerminalId::local(1),
-            TerminalId::local(2),
-            TerminalId::satellite("peer-a", 9),
+            ResourceId::local(1),
+            ResourceId::local(2),
+            ResourceId::satellite("peer-a", 9),
         ],
     ] {
         assert_round_trip(&FrameKind::Command {
             request_id: 31,
-            command: Command::KillTerminals { ids },
+            command: Command::KillResources { ids },
         });
     }
 }
@@ -2198,11 +2198,11 @@ fn detach_reason_wire_values_match_spec() {
 /// `COMMAND_RESULT`'s `OkWith` payloads share one wire shape; the table
 /// covers `GET_SCREEN`'s JSON reply, `GET_STATE`'s snapshot reply (the
 /// ATTACHED snapshot shape, so a non-trivial snapshot must survive), and the
-/// `TerminalId` reply.
+/// `ResourceId` reply.
 #[test]
 fn command_result_ok_with_values_round_trip() {
     let info = SessionInfo::new(SessionId::new(1), "work".to_owned());
-    let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
+    let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
         .with_sessions(vec![info]);
     for value in [
         CommandValue::Json(
@@ -2210,7 +2210,7 @@ fn command_result_ok_with_values_round_trip() {
                 .to_owned(),
         ),
         CommandValue::State(snap),
-        CommandValue::TerminalId(TerminalId::local(42)),
+        CommandValue::ResourceId(ResourceId::local(42)),
     ] {
         assert_round_trip(&FrameKind::CommandResult {
             request_id: 12,
@@ -2252,9 +2252,9 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
         ".{0,128}".prop_map(|title| AgentEvent::TitleChanged { title }),
         Just(AgentEvent::Bell),
         (arb_resource_kind(), proptest::option::of(arb_terminal_id()))
-            .prop_map(|(kind, parent)| AgentEvent::PaneSpawned { kind, parent }),
+            .prop_map(|(kind, parent)| AgentEvent::ResourceSpawned { kind, parent }),
         proptest::option::of(any::<i32>())
-            .prop_map(|exit_status| AgentEvent::PaneClosed { exit_status }),
+            .prop_map(|exit_status| AgentEvent::ResourceClosed { exit_status }),
         Just(AgentEvent::Dirty),
         Just(AgentEvent::Idle),
         // ADR-0033 TerminalControl: exercise the full lifecycle × action
@@ -2268,7 +2268,7 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
         )
             .prop_map(
                 |(lc, exit_status, holder, ac, actor)| AgentEvent::TerminalControl {
-                    lifecycle: TerminalLifecycle::from_u8(lc).unwrap(),
+                    lifecycle: ResourceLifecycle::from_u8(lc).unwrap(),
                     exit_status,
                     input_holder: holder.map(ClientId::new),
                     action: ControlAction::from_u8(ac).unwrap(),
@@ -2344,7 +2344,7 @@ fn event_fixture_variants_round_trip() {
             },
         ),
         (
-            Some(TerminalId::local(7)),
+            Some(ResourceId::local(7)),
             AgentEvent::CwdChanged {
                 cwd: "/Users/phall/workspace/phux".to_string(),
             },
@@ -2424,7 +2424,7 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
 
 #[test]
 fn terminal_spawned_unknown_result_tag_is_rejected() {
-    // A `TERMINAL_SPAWNED` whose RESULT field (id 2) carries an unknown
+    // A `RESOURCE_SPAWNED` whose RESULT field (id 2) carries an unknown
     // `SpawnResult` tag MUST surface as `UnknownEnumValue`, not silently coerce.
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::terminal_spawned::REQUEST_ID
@@ -2445,7 +2445,7 @@ fn terminal_spawned_unknown_result_tag_is_rejected() {
 // Resource kinds: the additive spawn / close / snapshot / command shapes.
 // -----------------------------------------------------------------------------
 
-/// Build a `SPAWN_TERMINAL` body by hand from `(field_id, value)` pairs.
+/// Build a `SPAWN_RESOURCE` body by hand from `(field_id, value)` pairs.
 fn spawn_terminal_frame(fields: &[(u32, &[u8])]) -> Vec<u8> {
     let mut body = Vec::new();
     tlv_field(&mut body, 1, &1u32.to_be_bytes()); // request_id
@@ -2456,7 +2456,7 @@ fn spawn_terminal_frame(fields: &[(u32, &[u8])]) -> Vec<u8> {
     framed_tlv(0x22, &body)
 }
 
-/// A local `TerminalId` as positional bytes: tag 0 + u32.
+/// A local `ResourceId` as positional bytes: tag 0 + u32.
 fn local_id_bytes(raw: u32) -> Vec<u8> {
     let mut out = vec![0u8];
     out.extend_from_slice(&raw.to_be_bytes());
@@ -2470,13 +2470,13 @@ fn spawn_terminal_without_kind_field_decodes_as_terminal() {
     // spawn golden pins.
     let bytes = spawn_terminal_frame(&[]);
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
-    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
-        panic!("expected SpawnTerminal");
+    let FrameKind::SpawnResource { resource, .. } = decoded else {
+        panic!("expected SpawnResource");
     };
     assert_eq!(resource, None);
     // Spelling the defaults out is the same spawn: it encodes to the same
     // bytes and decodes back to `None`.
-    let spelled = FrameKind::SpawnTerminal {
+    let spelled = FrameKind::SpawnResource {
         request_id: 1,
         group: GroupId::new(1),
         command: None,
@@ -2495,7 +2495,7 @@ fn spawn_terminal_without_kind_field_decodes_as_terminal() {
     let (decoded, _) = FrameKind::decode(&buf).unwrap();
     assert!(matches!(
         decoded,
-        FrameKind::SpawnTerminal { resource: None, .. }
+        FrameKind::SpawnResource { resource: None, .. }
     ));
 }
 
@@ -2584,21 +2584,21 @@ fn spawn_terminal_kind_rules_are_enforced_per_kind() {
     // The minimal legal AgentSession spawn decodes.
     let bytes = spawn_terminal_frame(&[(11, &[1u8]), (12, &parent), (13, b"claude")]);
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
-    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
-        panic!("expected SpawnTerminal");
+    let FrameKind::SpawnResource { resource, .. } = decoded else {
+        panic!("expected SpawnResource");
     };
     assert_eq!(
         resource.as_deref(),
         Some(&SpawnResource::agent_session(
-            TerminalId::local(42),
+            ResourceId::local(42),
             "claude"
         ))
     );
     // An unknown kind is passed through with whatever fields it carries.
     let bytes = spawn_terminal_frame(&[(11, &[9u8]), (13, b"whatever")]);
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
-    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
-        panic!("expected SpawnTerminal");
+    let FrameKind::SpawnResource { resource, .. } = decoded else {
+        panic!("expected SpawnResource");
     };
     assert_eq!(
         resource.as_deref().map(|r| r.kind),
@@ -2610,7 +2610,7 @@ fn spawn_terminal_kind_rules_are_enforced_per_kind() {
 fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
     // The pre-kind body is empty; it decodes as a root Terminal and a root
     // Terminal re-encodes to the same empty body.
-    let mut event = vec![0x04u8]; // EVENT_TAG_PANE_SPAWNED
+    let mut event = vec![0x04u8]; // EVENT_TAG_RESOURCE_SPAWNED
     event.extend_from_slice(&0u32.to_be_bytes()); // empty body
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &local_id_bytes(0x2A));
@@ -2618,8 +2618,8 @@ fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
     let bytes = framed_tlv(0xB3, &fields);
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
     let expected = FrameKind::Event {
-        terminal: Some(TerminalId::local(0x2A)),
-        event: AgentEvent::PaneSpawned {
+        terminal: Some(ResourceId::local(0x2A)),
+        event: AgentEvent::ResourceSpawned {
             kind: ResourceKind::Terminal,
             parent: None,
         },
@@ -2643,10 +2643,10 @@ fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
     assert_eq!(
         decoded,
         FrameKind::Event {
-            terminal: Some(TerminalId::local(0x2B)),
-            event: AgentEvent::PaneSpawned {
+            terminal: Some(ResourceId::local(0x2B)),
+            event: AgentEvent::ResourceSpawned {
                 kind: ResourceKind::AgentSession,
-                parent: Some(TerminalId::local(7)),
+                parent: Some(ResourceId::local(7)),
             },
         }
     );
@@ -2664,7 +2664,7 @@ fn frame_kind_stays_within_its_size_budget() {
         "FrameKind is {} bytes; keep it at or under 192",
         std::mem::size_of::<FrameKind>()
     );
-    assert_eq!(std::mem::size_of::<TerminalId>(), 24);
+    assert_eq!(std::mem::size_of::<ResourceId>(), 24);
 }
 
 #[test]
@@ -2710,8 +2710,8 @@ fn terminal_closed_reason_is_additive_and_forgiving() {
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
     assert_eq!(
         decoded,
-        FrameKind::TerminalClosed {
-            terminal_id: TerminalId::local(42),
+        FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(42),
             exit_status: None,
             reason: CloseReason::Unknown,
         }
@@ -2723,7 +2723,7 @@ fn terminal_closed_reason_is_additive_and_forgiving() {
     let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
     assert!(matches!(
         decoded,
-        FrameKind::TerminalClosed {
+        FrameKind::ResourceClosed {
             reason: CloseReason::ParentClosed,
             ..
         }
@@ -2736,7 +2736,7 @@ fn terminal_closed_reason_is_additive_and_forgiving() {
     let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
     assert!(matches!(
         decoded,
-        FrameKind::TerminalClosed {
+        FrameKind::ResourceClosed {
             reason: CloseReason::Unknown,
             ..
         }
@@ -2751,14 +2751,14 @@ fn command_append_resource_output_round_trips_and_is_bounded() {
     assert_round_trip(&FrameKind::Command {
         request_id: 5,
         command: Command::AppendResourceOutput {
-            terminal_id: TerminalId::local(0x2B),
+            terminal_id: ResourceId::local(0x2B),
             bytes: b"{\"type\":\"stop\",\"data\":{}}\n".to_vec(),
         },
     });
     assert_round_trip(&FrameKind::Command {
         request_id: 6,
         command: Command::AppendResourceOutput {
-            terminal_id: TerminalId::satellite("devbox", 0x2B),
+            terminal_id: ResourceId::satellite("devbox", 0x2B),
             bytes: vec![b'x'; MAX_APPEND_BYTES],
         },
     });
@@ -2783,10 +2783,10 @@ fn command_append_resource_output_round_trips_and_is_bounded() {
 #[test]
 fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
     // A Terminal-only snapshot writes no trailing facet list: its bytes end
-    // at `focused_pane`, exactly as before the list existed.
-    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
-        .with_panes(vec![TerminalInfo::new(
-            TerminalId::local(1),
+    // at `focused_resource`, exactly as before the list existed.
+    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(1),
             WindowId::new(1),
             80,
             24,
@@ -2798,7 +2798,7 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
     };
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
-    // The SNAPSHOT field value ends with focused_pane = tag 0 + u32 1.
+    // The SNAPSHOT field value ends with focused_resource = tag 0 + u32 1.
     let expected_tail = local_id_bytes(1);
     let field_end = {
         // Fields: 1 SNAPSHOT (first), 2 INITIAL_CLIENT_ID, 3 ATTACH_ID; the
@@ -2831,7 +2831,7 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     snap.extend_from_slice(&pane);
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
-    snap.extend_from_slice(&local_id_bytes(7)); // focused_pane
+    snap.extend_from_slice(&local_id_bytes(7)); // focused_resource
     // Trailing facets: two rows.
     snap.extend_from_slice(&2u32.to_be_bytes());
     // Row for an id with no pane entry: ignored.
@@ -2858,10 +2858,10 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     let FrameKind::Attached { snapshot, .. } = decoded else {
         panic!("expected Attached");
     };
-    assert_eq!(snapshot.panes.len(), 1);
-    let info = &snapshot.panes[0];
+    assert_eq!(snapshot.resources.len(), 1);
+    let info = &snapshot.resources[0];
     assert_eq!(info.kind, ResourceKind::AgentSession);
-    assert_eq!(info.parent, Some(TerminalId::local(3)));
+    assert_eq!(info.parent, Some(ResourceId::local(3)));
     assert_eq!(info.agent, Some(AgentFacet::new("claude", "blocked")));
     assert_eq!(info.window_id, WindowId::new(0));
     assert_eq!((info.cols, info.rows), (0, 0));
@@ -2870,7 +2870,7 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
 #[test]
 fn bootstrap_begin_agent_events_jsonl_v1_round_trips_and_rejects_state_sync() {
     assert_round_trip(&FrameKind::BootstrapBegin {
-        terminal_id: TerminalId::local(0x2B),
+        terminal_id: ResourceId::local(0x2B),
         stream_id: StreamId::new(1).unwrap(),
         bootstrap_id: BootstrapId::new(1).unwrap(),
         profile: BootstrapStreamProfile::AgentEventsJsonlV1,

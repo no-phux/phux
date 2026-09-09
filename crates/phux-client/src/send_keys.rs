@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, Command, CommandResult, CommandValue, StateScope};
@@ -151,12 +151,12 @@ fn is_named_spec(arg: &str) -> bool {
 
 /// Resolve `target` to the Terminal id of its focused pane, against a
 /// `GET_STATE` snapshot. Mirrors the server's own focus rule: a session's
-/// `active_window`, then that window's `active_pane`. For
+/// `active_window`, then that window's `active_resource`. For
 /// [`AttachTarget::Last`] (no name) we defer to the snapshot's
-/// server-wide `focused_pane`.
-fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Option<TerminalId> {
+/// server-wide `focused_resource`.
+fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Option<ResourceId> {
     let session = match target {
-        AttachTarget::Last => return Some(snapshot.focused_pane.clone()),
+        AttachTarget::Last => return Some(snapshot.focused_resource.clone()),
         AttachTarget::ByName(name) | AttachTarget::CreateIfMissing { name, .. } => {
             snapshot.sessions.iter().find(|s| &s.name == name)?
         }
@@ -170,7 +170,7 @@ fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Op
         .windows
         .iter()
         .find(|w| w.id == active_window)
-        .and_then(|w| w.active_pane.clone())
+        .and_then(|w| w.active_resource.clone())
 }
 
 /// Send `keys` to the focused pane of `target` via the side-effect-free
@@ -189,13 +189,13 @@ fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Op
 /// `TARGET` grammar, phux-n95) call [`send_to`] directly and skip this
 /// extra `GET_STATE` round trip.
 ///
-/// Returns the [`TerminalId`] of the focused pane the keys were sent to,
+/// Returns the [`ResourceId`] of the focused pane the keys were sent to,
 /// so callers (e.g. `phux run`) can read back the *same* pane.
 pub async fn send(
     socket: &Path,
     target: AttachTarget,
     keys: &[String],
-) -> Result<TerminalId, AttachError> {
+) -> Result<ResourceId, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     // Resolve the focused pane without attaching (side-effect-free).
     //
@@ -237,7 +237,7 @@ pub async fn send(
 ///
 /// The pane-targeted core of [`send`]: the caller has already resolved a
 /// selector (the CLI's full `TARGET` grammar — `session`, `session:window`,
-/// `session:window.pane`, `@id`; phux-n95) to a concrete [`TerminalId`], so
+/// `session:window.pane`, `@id`; phux-n95) to a concrete [`ResourceId`], so
 /// there is no `GET_STATE` round trip and no focus heuristic — the keys land
 /// on exactly the pane named. Like [`send`], nothing attaches, so the live
 /// pane keeps its dimensions (phux-3j3).
@@ -247,7 +247,7 @@ pub async fn send(
 /// Propagates [`AttachError`] from the connection or the `ROUTE_INPUT`
 /// acks; an unknown pane id surfaces as [`AttachError::Refused`] from the
 /// server.
-pub async fn send_to(socket: &Path, pane: TerminalId, keys: &[String]) -> Result<(), AttachError> {
+pub async fn send_to(socket: &Path, pane: ResourceId, keys: &[String]) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
     route_keys(&mut conn, &pane, keys).await
 }
@@ -276,7 +276,7 @@ pub async fn send_to(socket: &Path, pane: TerminalId, keys: &[String]) -> Result
 /// server.
 pub async fn paste_to(
     socket: &Path,
-    pane: TerminalId,
+    pane: ResourceId,
     data: Vec<u8>,
     trust: PasteTrust,
 ) -> Result<(), AttachError> {
@@ -314,7 +314,7 @@ pub async fn paste_to(
 /// order — no drain race.
 async fn route_keys(
     conn: &mut Connection,
-    pane: &TerminalId,
+    pane: &ResourceId,
     keys: &[String],
 ) -> Result<(), AttachError> {
     for (i, event) in events_for(keys).into_iter().enumerate() {

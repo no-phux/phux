@@ -105,7 +105,7 @@ pub struct DefaultsCfg {
     /// config load and threads the result into every server-owned spawn
     /// path — the pre-seeded session, `--seed-command`,
     /// attach-time `CreateIfMissing`, `SESSION_CREATE_KEY`, and a
-    /// `SPAWN_TERMINAL` whose wire frame carries no `command`. A wire
+    /// `SPAWN_RESOURCE` whose wire frame carries no `command`. A wire
     /// `command` always wins over this default, mirroring the
     /// `defaults.term` precedent.
     #[serde(default)]
@@ -113,7 +113,7 @@ pub struct DefaultsCfg {
 
     /// `TERM` advertised to the inner program of every server-spawned pane
     /// (the seed session, attach-time `CreateIfMissing`, and a
-    /// `SPAWN_TERMINAL` whose wire `env` does not itself carry `TERM`).
+    /// `SPAWN_RESOURCE` whose wire `env` does not itself carry `TERM`).
     ///
     /// Default: `xterm-256color`. The baseline is the
     /// universally-recognised safe value — 256 colours and the standard
@@ -128,7 +128,7 @@ pub struct DefaultsCfg {
     /// htop — the phux-7vx regression app — is unproven, so the shipped
     /// default stays conservative.
     ///
-    /// A per-spawn `SPAWN_TERMINAL.env` entry for `TERM` always wins over
+    /// A per-spawn `SPAWN_RESOURCE.env` entry for `TERM` always wins over
     /// this default — the wire frame is authoritative for the Terminal it
     /// creates; this is only the fallback when the frame is silent.
     #[serde(default = "default_term")]
@@ -208,7 +208,7 @@ pub struct DefaultsCfg {
     /// Default: [`CwdInheritance::InheritFocused`], matching tmux. See
     /// the enum docs for the full set.
     ///
-    /// Wired server-side in `phux-server` (phux-cs6): `SPAWN_TERMINAL`
+    /// Wired server-side in `phux-server` (phux-cs6): `SPAWN_RESOURCE`
     /// reads this policy when the wire frame leaves `cwd` unset.
     /// `inherit-focused` resolves the focused pane's live PTY working
     /// directory via a kernel query on the PTY child; `home` uses
@@ -258,7 +258,7 @@ pub struct DefaultsCfg {
     /// Terminal's geometry by folding this policy across every subscriber's
     /// viewport, on ATTACH and on every `VIEWPORT_RESIZE` (phux-nk07).
     ///
-    /// It governs *views* only. An explicit `TERMINAL_RESIZE` — the frame
+    /// It governs *views* only. An explicit `RESIZE_TERMINAL` — the frame
     /// `phux resize` sends — names a size no viewport reported and applies
     /// regardless; under the three view-derived values the next view event
     /// recomputes over it, and under [`WindowSize::Manual`] nothing ever
@@ -416,7 +416,7 @@ pub enum WindowSize {
     /// Track the most recently resized view's size.
     Latest,
     /// Hold a fixed size, ignoring view geometry. The size is set by an
-    /// explicit `TERMINAL_RESIZE` (`phux resize TARGET COLSxROWS`), which
+    /// explicit `RESIZE_TERMINAL` (`phux resize TARGET COLSxROWS`), which
     /// is the only thing that moves a Terminal's grid under this value —
     /// attaches, detaches, and window resizes never recompute over it.
     /// This is the setting under which a scripted geometry holds

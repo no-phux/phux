@@ -92,7 +92,7 @@ fn colored_burst_settles_under_ceiling() {
 
                 // The burst completed: the settle marker landed. This is
                 // the "client applied the whole colored stream" proof —
-                // the oracle parsed every TERMINAL_OUTPUT through a real
+                // the oracle parsed every RESOURCE_OUTPUT through a real
                 // libghostty Terminal, so a dropped/corrupt frame would
                 // leave the marker missing.
                 assert!(

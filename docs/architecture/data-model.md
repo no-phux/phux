@@ -53,7 +53,7 @@ opaque key, not as a lifecycle entity the server creates, names, or tears
 down; per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
 (option B) the structured grouping that used to be proposed for the wire is a
 consumer-side projection, and the lone irreducible group operation — atomic
-multi-terminal teardown — is a single L1 op (`KILL_TERMINALS`) rather than a
+multi-terminal teardown — is a single L1 op (`KILL_RESOURCES`) rather than a
 tier. `GroupId`'s retention as an opaque grouping key is settled, not a
 remnant awaiting removal (bead phux-0bmc closed as resolved-by-rename).
 
@@ -81,7 +81,7 @@ pub struct ResourceDescriptor {
 }
 pub struct TerminalFacet { dims, cwd, title }
 pub struct AgentFacet    { provider, native_id: Option<String>, state: Option<String> }
-// ResourceId is the slotmap key (still spelled `TerminalId` in phux-core
+// ResourceId is the slotmap key (still spelled `ResourceId` in phux-core
 // until the wire rename lands); location and kind are orthogonal.
 // LayoutNode is a binary split tree of ResourceId leaves; only a Terminal
 // occupies a window slot. Per ADR-0017 the whole tree (LayoutNode + Window
@@ -150,7 +150,7 @@ pub struct AttachedClient {
 
 `ServerState` is shared across tasks behind a single `std::sync` mutex; see
 [threading and I/O](./threading.md) for why a synchronous mutex is safe on
-the current-thread runtime and how `KILL_TERMINALS` applies atomically under
+the current-thread runtime and how `KILL_RESOURCES` applies atomically under
 one acquisition.
 
 The engine side of a resource is `ResourceCore`: kind, parent, wire id, the
@@ -164,14 +164,14 @@ embeds one, keeps its own kind-specific state beside it, and builds the
 — the one place a request aimed at a resource of another kind becomes a
 `WrongResourceKind` error.
 
-Teardown runs under one lock acquisition. `KILL_TERMINALS` resolves every
+Teardown runs under one lock acquisition. `KILL_RESOURCES` resolves every
 wire id and cancels every engine inside a single `with_mut`, so no other
 command interleaves between the first and last removal. A Terminal engine
 that observes PTY EOF fires its exit notification; the exit watcher then
 gathers the subscribers, reaps the domain entity through
 `ServerState::reap_terminal` (cascading to the window and session when they
 empty), and forgets the `ResourceTable` entry, all in the same critical
-section, before the `TERMINAL_CLOSED` sends are awaited.
+section, before the `RESOURCE_CLOSED` sends are awaited.
 
 Session name lookup goes through `Registry::sessions()` rather than a side
 index — it is O(N) in session count, which is fine: session count is small
@@ -182,6 +182,6 @@ have to be kept consistent across cascading deletes.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Server-side cascade close: a parent's teardown closes each child's engine and announces it with `CloseReason::ParentClosed` | The cascade exists in the `Registry` only; no engine other than the Terminal exists, and `TERMINAL_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
-| AgentSession resources on the server (`SPAWN_TERMINAL` kind field, `Registry::new_agent_session` called from the runtime, `AgentFacet.state` derived from the stream) | `new_agent_session` has no caller outside `phux-core`'s tests; `AgentFacet.state` is never written. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6, phux-am9y.9 |
-| `ResourceId` as the key's name everywhere, `KILL_RESOURCES` on the wire | `TerminalId` is the slotmap key and the wire id; `ResourceId` is a `phux-core` alias. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |
+| Server-side cascade close: a parent's teardown closes each child's engine and announces it with `CloseReason::ParentClosed` | The cascade exists in the `Registry` only; no engine other than the Terminal exists, and `RESOURCE_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
+| AgentSession resources on the server (`SPAWN_RESOURCE` kind field, `Registry::new_agent_session` called from the runtime, `AgentFacet.state` derived from the stream) | `new_agent_session` has no caller outside `phux-core`'s tests; `AgentFacet.state` is never written. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6, phux-am9y.9 |
+| `ResourceId` as the key's name everywhere, `KILL_RESOURCES` on the wire | `ResourceId` is the slotmap key and the wire id; `ResourceId` is a `phux-core` alias. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |

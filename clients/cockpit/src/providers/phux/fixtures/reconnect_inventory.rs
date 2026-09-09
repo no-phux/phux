@@ -1,7 +1,7 @@
 //! Generate reconnect inventories from the canonical cockpit_fixture ATTACHED.
 //! Run with phux-protocol and bytes dependencies; arguments are input and output directories.
 use bytes::BytesMut;
-use phux_protocol::{TerminalId, wire::frame::FrameKind};
+use phux_protocol::{ResourceId, wire::frame::FrameKind};
 use std::{error::Error, path::Path};
 
 fn write(input: &Path, output: &Path, name: &str, last: u32) -> Result<(), Box<dyn Error>> {
@@ -13,11 +13,11 @@ fn write(input: &Path, output: &Path, name: &str, last: u32) -> Result<(), Box<d
         frames.push(frame);
         rest = next;
     }
-    let ids: Vec<_> = (7..22).chain([last]).map(TerminalId::local).collect();
+    let ids: Vec<_> = (7..22).chain([last]).map(ResourceId::local).collect();
     let mut attached = frames[0].clone();
     if let FrameKind::Attached { snapshot, .. } = &mut attached {
-        let template = snapshot.panes[0].clone();
-        snapshot.panes = ids
+        let template = snapshot.resources[0].clone();
+        snapshot.resources = ids
             .iter()
             .map(|id| {
                 let mut pane = template.clone();
@@ -41,7 +41,7 @@ fn write(input: &Path, output: &Path, name: &str, last: u32) -> Result<(), Box<d
                 } => {
                     *terminal_id = id.clone();
                     // TITLE arrives before ATTACH_READY and must fit the replacement slot.
-                    if last == 23 && id == &TerminalId::local(23) {
+                    if last == 23 && id == &ResourceId::local(23) {
                         *payload = b"\x1b[2J\x1b[HNEW REPLICA\x1b]2;replacement\x07"
                             .as_slice()
                             .into();

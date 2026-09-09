@@ -7,7 +7,7 @@ use super::{
 };
 use crate::error::{BridgeError, check_struct};
 use crate::{
-    PhuxClient, PhuxClientResult, PhuxTerminalId, bytes_out, terminal_id_out, with_client_mut,
+    PhuxClient, PhuxClientResult, PhuxResourceId, bytes_out, terminal_id_out, with_client_mut,
     with_client_ref,
 };
 use std::mem;
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn phux_client_workspace_node_get(
             terminal_id: node
                 .terminal
                 .as_ref()
-                .map_or_else(PhuxTerminalId::default, terminal_id_out),
+                .map_or_else(PhuxResourceId::default, terminal_id_out),
             first: node.first,
             second: node.second,
             ratio: node.ratio,

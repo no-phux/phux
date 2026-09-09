@@ -24,7 +24,7 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{ClientId, SessionId, TerminalId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -155,26 +155,26 @@ struct PeerCaches {
     /// agent-fleet dashboard shows a peer session's agent glyph/state without
     /// attaching there. Populated lazily: when a peer's layout lands
     /// (`apply_foreign_layout_reply`), the driver fires one `GET_METADATA` per
-    /// `TerminalId` in that workspace on the pane's agent key, correlated
+    /// `ResourceId` in that workspace on the pane's agent key, correlated
     /// through `foreign_agent_pending`. Keyed by foreign terminal id; pruned
     /// to the union of all cached foreign layouts' leaves on each fold so it
     /// stays bounded. No subscription — a one-shot read, same lazy-query
     /// shape as the foreign layouts above (ADR-0018 / ADR-0030).
-    foreign_agents: HashMap<TerminalId, AgentRecord>,
+    foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
-    foreign_agent_pending: HashMap<u32, TerminalId>,
+    foreign_agent_pending: HashMap<u32, ResourceId>,
     /// phux-k0cw: which peer keys this connection has already subscribed to.
     /// Send-once bookkeeping, not teardown: L3 has no `UNSUBSCRIBE_METADATA`
     /// verb, so a subscription lives as long as the connection and re-sending
     /// one would just be noise on the wire.
     foreign_layout_subscribed: HashSet<SessionId>,
     /// The per-pane half of the same send-once bookkeeping.
-    foreign_agent_subscribed: HashSet<TerminalId>,
+    foreign_agent_subscribed: HashSet<ResourceId>,
     /// phux-k0cw: peer panes whose agent has asked for a human (an ADR-0035
     /// `Asked` for a Terminal outside this client's pane set). The local
     /// equivalent is `PaneSlot::attention`, which a foreign pane has no slot
     /// to carry, so the flag lives here and is pruned with the peer records.
-    foreign_attention: HashSet<TerminalId>,
+    foreign_attention: HashSet<ResourceId>,
     /// phux-k0cw.10: the peer sweep owes the first paint its silence. Set at
     /// construction and consumed at the ONE drain in the frame burst, so
     /// bootstrap sends no peer traffic until this session has actually
@@ -315,7 +315,7 @@ const fn fleet_projection_dirty(outcome: &FrameOutcome) -> bool {
 
 /// Every local the attach loop carries across `select!` iterations.
 ///
-/// phux-4li.4: `panes` holds N client-side Terminals keyed by `TerminalId`,
+/// phux-4li.4: `panes` holds N client-side Terminals keyed by `ResourceId`,
 /// not the single Terminal of the wave-A driver. Each pane's metadata slot is
 /// allocated lazily from authoritative bootstrap geometry.
 #[allow(
@@ -347,8 +347,8 @@ pub(super) struct SessionLoop {
     engine_kernel: SessionKernel<GhosttyAdapter>,
     /// Scratch buffer the kernel drains its effects into.
     kernel_effects: KernelEffectBuffer,
-    /// The per-pane mirrors, keyed by `TerminalId`.
-    panes: HashMap<TerminalId, PaneSlot>,
+    /// The per-pane mirrors, keyed by `ResourceId`.
+    panes: HashMap<ResourceId, PaneSlot>,
     /// `Workspace` mirror (initialized as a single window holding one
     /// pane when `ATTACHED` lands; see `handle_server_frame`) is the
     /// source of truth for which leaves are live and where they sit in
@@ -357,7 +357,7 @@ pub(super) struct SessionLoop {
     /// dimension is what gets persisted to L3.
     workspace: Workspace,
     /// The pane keystrokes route to.
-    focused_pane: Option<TerminalId>,
+    focused_resource: Option<ResourceId>,
     /// phux-oih5.4: one-entry focus MRU, local to this attached client. It is
     /// deliberately outside Workspace so layout metadata never persists or
     /// shares focus history (ADR-0019 decision 6).
@@ -370,7 +370,7 @@ pub(super) struct SessionLoop {
     /// ⇒ pane `id` is zoomed to fill the window; render/reflow then run against
     /// `workspace.render_window(zoomed)` (a synthetic single-leaf layout)
     /// instead of the real tiled tree, which is left untouched for mutation.
-    zoomed: Option<TerminalId>,
+    zoomed: Option<ResourceId>,
     /// phux-4li.5: the in-flight layout GET's request id, for L3 correlation.
     layout_get_request_id: Option<u32>,
     /// Shared writes remain fenced until the initial correlated GET succeeds.
@@ -378,21 +378,21 @@ pub(super) struct SessionLoop {
     /// phux-4li.5: request-id allocator for L3 GET correlation.
     next_request_id: u32,
     /// phux-4li.12: in-flight `split-pane` actions parked by request id.
-    /// Populated by `run_action` when it dispatches `SPAWN_TERMINAL`;
-    /// drained by `handle_server_frame`'s `TerminalSpawned` arm when the
+    /// Populated by `run_action` when it dispatches `SPAWN_RESOURCE`;
+    /// drained by `handle_server_frame`'s `ResourceSpawned` arm when the
     /// reply arrives. The map is small (one entry per outstanding
     /// user-triggered split) so a `HashMap` is overkill for cap but
     /// matches the layout-key request-id pattern.
     pending_splits: HashMap<u32, PendingSplit>,
     /// phux-4li.15: in-flight `new-window` actions parked by request id,
-    /// same lifecycle as `pending_splits`. The `TerminalSpawned` arm checks
+    /// same lifecycle as `pending_splits`. The `ResourceSpawned` arm checks
     /// this map first; a hit opens a new window on the spawned pane.
     pending_windows: HashMap<u32, PendingWindow>,
     /// phux-i0e8.2.2: Terminals whose close THIS client requested
     /// (kill-pane / kill-window). The action dispatcher parks ids here at
-    /// the kill seam; the `TerminalClosed` arm drains them to suppress the
+    /// the kill seam; the `ResourceClosed` arm drains them to suppress the
     /// pane-exit notice for a death the user themselves ordered.
-    expected_closes: HashSet<TerminalId>,
+    expected_closes: HashSet<ResourceId>,
     /// ADR-0040 (phux-3ert): the structured agent-identity index. Each pane
     /// gets a one-shot `GET_METADATA` + a live `SUBSCRIBE_METADATA` on
     /// `phux.agent/v1` (see `sync_agent_meta_subscriptions`); decoded records
@@ -440,7 +440,7 @@ pub(super) struct SessionLoop {
     /// whenever the focused pane is opted out — so the host's raw mouse
     /// handling (native selection etc.) returns for that pane alone while
     /// sibling panes keep drag-to-resize. Client-local; nothing on the wire.
-    mouse_optout: HashSet<TerminalId>,
+    mouse_optout: HashSet<ResourceId>,
     /// phux-4h5a: the window sidebar's runtime on/off state, flipped by
     /// `toggle-sidebar`. Only the toggle is carried across a session switch:
     /// the strip's width and edge stay pure config, re-derived per entry.
@@ -468,7 +468,7 @@ pub(super) struct SessionLoop {
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
     /// Predictive local echo (phux-9gw.1). State is updated alongside
-    /// every keystroke and drained on every `TERMINAL_OUTPUT`; when
+    /// every keystroke and drained on every `RESOURCE_OUTPUT`; when
     /// `predict_cfg.enabled == false` every `predict_key` returns
     /// `Disabled` so the overlay never paints.
     predict: PredictionState,
@@ -592,7 +592,7 @@ impl SessionLoop {
             kernel_effects: KernelEffectBuffer::new(),
             panes: HashMap::new(),
             workspace: Workspace::default(),
-            focused_pane: None,
+            focused_resource: None,
             focus_history: crate::attach::focus::FocusHistory::default(),
             own_client_id: None,
             zoomed: None,
@@ -690,7 +690,7 @@ impl SessionLoop {
             &mut self.sidebar_painter,
             &self.workspace,
             &self.panes,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.zoomed.as_ref(),
             self.own_client_id,
             &self.agent_meta,
@@ -743,7 +743,7 @@ impl SessionLoop {
                 out,
                 ls.as_ref(),
                 &self.panes,
-                self.focused_pane.as_ref(),
+                self.focused_resource.as_ref(),
                 self.viewport_dims,
                 self.settings.status_bar.as_mut(),
                 sidebar,
@@ -756,7 +756,7 @@ impl SessionLoop {
                 ls.as_ref(),
                 &mut self.panes,
                 &self.engine_kernel,
-                self.focused_pane.as_ref(),
+                self.focused_resource.as_ref(),
                 self.viewport_dims,
                 self.settings.status_bar.as_mut(),
                 sidebar,
@@ -779,7 +779,7 @@ impl SessionLoop {
             &self.workspace,
             &mut self.panes,
             &self.engine_kernel,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
             self.settings.status_bar.as_mut(),
@@ -806,7 +806,7 @@ impl SessionLoop {
             &self.workspace,
             &mut self.panes,
             &self.engine_kernel,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.zoomed.as_ref(),
             self.own_client_id,
             &self.agent_meta,
@@ -864,7 +864,7 @@ impl SessionLoop {
             frame,
             &mut self.panes,
             &mut self.workspace,
-            &mut self.focused_pane,
+            &mut self.focused_resource,
             &mut self.zoomed,
             &mut self.session_name,
             self.peers.focused_session,
@@ -895,7 +895,7 @@ impl SessionLoop {
     /// `initial_attached` is the `FrameKind::Attached` frame that
     /// `wait_for_attached` already pulled off the wire; we replay it through
     /// `handle_server_frame` so the focused-pane bookkeeping lives in one
-    /// place. Subsequent bootstrap and `TERMINAL_OUTPUT` frames come off the
+    /// place. Subsequent bootstrap and `RESOURCE_OUTPUT` frames come off the
     /// wire as usual. `Some(exit)` ⇒ the replayed frame ended the attach.
     pub(super) async fn bootstrap<W: crate::attach::RenderSink>(
         &mut self,
@@ -967,10 +967,10 @@ impl SessionLoop {
     /// mirror is a row taller than the rect it is clipped into, so the pane's
     /// bottom line is never painted and the bar looks like it overwrote it.
     /// The self-heal users notice — resize, split, toggle the sidebar — is
-    /// just the first reflow that DID emit `TERMINAL_RESIZE`.
+    /// just the first reflow that DID emit `RESIZE_TERMINAL`.
     ///
     /// The server side already defers the off-by-one here in as many words
-    /// ("the client's concern via the post-attach `TERMINAL_RESIZE` reflow
+    /// ("the client's concern via the post-attach `RESIZE_TERMINAL` reflow
     /// path"); this is that path, and until now nothing called it. An empty
     /// The persisted multi-window layout arrives later through its metadata
     /// reply; that adoption path reflows every restored window before its
@@ -1179,7 +1179,7 @@ impl SessionLoop {
             &self.workspace,
             &mut self.panes,
             &self.engine_kernel,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
             self.settings.status_bar.as_mut(),
@@ -1216,7 +1216,7 @@ impl SessionLoop {
         needs_resync: Option<&AtomicBool>,
     ) -> Result<(), AttachError> {
         // phux-npb3: capture follows focus. Closed panes are pruned so a
-        // recycled TerminalId can never inherit a stale opt-out.
+        // recycled ResourceId can never inherit a stale opt-out.
         if !self.mouse_optout.is_empty() {
             self.mouse_optout.retain(|id| self.panes.contains_key(id));
         }
@@ -1228,7 +1228,7 @@ impl SessionLoop {
         // when nothing changed, so the steady-state cost is one bool compare.
         let want_capture = desired_mouse_capture(
             self.settings.mouse_capture,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             &self.mouse_optout,
         );
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
@@ -1269,7 +1269,7 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        if !mark_focused_seen(&mut self.panes, self.focused_pane.as_ref()) {
+        if !mark_focused_seen(&mut self.panes, self.focused_resource.as_ref()) {
             return;
         }
         if self.refresh_chrome() {
@@ -1567,7 +1567,7 @@ impl SessionLoop {
         // paint: a reply is often several frames.
         if expects_reply {
             self.pacer
-                .note_input(self.focused_pane.as_ref(), tokio::time::Instant::now());
+                .note_input(self.focused_resource.as_ref(), tokio::time::Instant::now());
         }
         // phux-4h5a: a `toggle-sidebar` in this batch flipped
         // `sidebar_enabled`. Re-fold it into the reservation so the
@@ -1697,7 +1697,7 @@ impl SessionLoop {
             out,
             conn,
             events,
-            &mut self.focused_pane,
+            &mut self.focused_resource,
             &mut self.detach_pending,
             &mut self.predict,
             &self.overlay,
@@ -1978,17 +1978,17 @@ impl SessionLoop {
     ) -> Result<FrameStep, AttachError> {
         // phux-tnh: snapshot the current per-leaf rects
         // BEFORE the frame may fold (close) or split the
-        // layout, so a TerminalClosed/Spawned can diff
+        // layout, so a ResourceClosed/Spawned can diff
         // against them and resize survivors whose dims
         // changed. Only meaningful in multi-pane mode;
         // skipped (no cost) on the single-pane hot path.
         // phux-x2hm: snapshot the zoom-honoring rects so a
         // close/spawn diffs against what is actually on screen;
-        // a TerminalSpawned-ok un-zooms (sets `zoomed = None`)
+        // a ResourceSpawned-ok un-zooms (sets `zoomed = None`)
         // inside `handle_server_frame`, so the post-frame view
         // below correctly reflows every pane back to its tile.
         let prev_rects = self.leaf_rects(sidebar);
-        let focused_before_frame = self.focused_pane.clone();
+        let focused_before_frame = self.focused_resource.clone();
         let mut outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
         send_terminal_replies(
             conn,
@@ -1996,9 +1996,9 @@ impl SessionLoop {
         )
         .await?;
         self.focus_history
-            .observe(focused_before_frame, self.focused_pane.as_ref());
+            .observe(focused_before_frame, self.focused_resource.as_ref());
         self.focus_history
-            .repair(self.focused_pane.as_ref(), &self.workspace);
+            .repair(self.focused_resource.as_ref(), &self.workspace);
         if outcome.exit {
             let end = outcome
                 .exit_reason
@@ -2029,7 +2029,7 @@ impl SessionLoop {
     fn leaf_rects(
         &self,
         sidebar: Option<SidebarReservation>,
-    ) -> Option<HashMap<TerminalId, crate::layout::Rect>> {
+    ) -> Option<HashMap<ResourceId, crate::layout::Rect>> {
         let ls = self.workspace.render_window(self.zoomed.as_ref())?;
         ls.tree.as_ref().map(|_| {
             crate::attach::multi_pane::compute_layout_in(
@@ -2065,7 +2065,7 @@ impl SessionLoop {
     async fn attach_discovered_panes(
         &mut self,
         conn: &mut Connection,
-        terminal_ids: &[TerminalId],
+        terminal_ids: &[ResourceId],
     ) -> Result<(), AttachError> {
         for terminal_id in terminal_ids {
             let request_id = self.next_request_id;
@@ -2074,7 +2074,7 @@ impl SessionLoop {
                 conn,
                 &FrameKind::Command {
                     request_id,
-                    command: Command::AttachTerminal {
+                    command: Command::AttachResource {
                         terminal_id: terminal_id.clone(),
                     },
                 },
@@ -2132,8 +2132,8 @@ impl SessionLoop {
         outcome: &mut FrameOutcome,
     ) -> Result<(), AttachError> {
         // ADR-0040: the frame may have added panes
-        // (TerminalSpawned, a peer's layout broadcast) or
-        // removed them (TerminalClosed). Re-sweep so every
+        // (ResourceSpawned, a peer's layout broadcast) or
+        // removed them (ResourceClosed). Re-sweep so every
         // live pane has a `phux.agent/v1` watch; the len
         // guard keeps the steady state zero-cost.
         if self.panes.len() != self.agent_meta.subscribed.len() {
@@ -2231,7 +2231,7 @@ impl SessionLoop {
         conn: &mut Connection,
         outcome: &mut FrameOutcome,
         sidebar: Option<SidebarReservation>,
-        prev_rects: Option<&HashMap<TerminalId, crate::layout::Rect>>,
+        prev_rects: Option<&HashMap<ResourceId, crate::layout::Rect>>,
     ) -> Result<(), AttachError> {
         if let Some((terminal_id, stream_id, bootstrap_id, seq)) =
             should_emit_frame_ack(self.wants_state_sync, outcome.ack.take())
@@ -2264,7 +2264,7 @@ impl SessionLoop {
             .await?;
         }
         // phux-4li.12: a layout mutation triggered by a
-        // server frame (TerminalSpawned ok, TerminalClosed)
+        // server frame (ResourceSpawned ok, ResourceClosed)
         // requires the same `SET_METADATA` broadcast as
         // a local action — see `ActionEffects.set_metadata`
         // for the local-action path.
@@ -2316,7 +2316,7 @@ impl SessionLoop {
     /// phux-tnh: a pane close/spawn changed surviving
     /// panes' dimensions. Diff the folded/split layout
     /// against the pre-frame rects and emit a
-    /// `TERMINAL_RESIZE` per changed leaf — same path the
+    /// `RESIZE_TERMINAL` per changed leaf — same path the
     /// SIGWINCH arm uses — so the server reflows each
     /// PTY (TIOCSWINSZ) and the shell redraws to fill.
     /// Without this the survivor of a close keeps its
@@ -2326,7 +2326,7 @@ impl SessionLoop {
     async fn emit_reflow_resizes(
         &self,
         conn: &mut Connection,
-        prev_rects: &HashMap<TerminalId, crate::layout::Rect>,
+        prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
         let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
@@ -2340,7 +2340,7 @@ impl SessionLoop {
         for (terminal_id, new_rect) in &diff.changed {
             send_unless_peer_gone(
                 conn,
-                &FrameKind::TerminalResize {
+                &FrameKind::ResizeTerminal {
                     terminal_id: terminal_id.clone(),
                     cols: new_rect.w,
                     rows: new_rect.h,
@@ -2428,8 +2428,8 @@ impl SessionLoop {
         self.resolve_cross_session_pick();
         self.refresh_chrome();
         // phux-z6wt: this path fires for a peer's layout
-        // broadcast and for the TerminalSpawned/
-        // TerminalClosed reflow — neither goes through
+        // broadcast and for the ResourceSpawned/
+        // ResourceClosed reflow — neither goes through
         // SIGWINCH, so the phux-d26y fan-out never ran
         // for them. A surviving copy-mode overlay would
         // keep clamping against the pane size it opened
@@ -2468,11 +2468,11 @@ impl SessionLoop {
             .active_window()
             .and_then(|ls| ls.focus.clone());
         self.focus_history
-            .transition(&mut self.focused_pane, next_focus);
+            .transition(&mut self.focused_resource, next_focus);
         if let Some(ord) = self.pending_pane.take() {
             self.focus_picked_leaf(idx, ord);
         }
-        if let Some(fid) = self.focused_pane.as_ref() {
+        if let Some(fid) = self.focused_resource.as_ref() {
             reanchor_predict_to_pane(&mut self.predict, &self.panes, fid);
         }
     }
@@ -2500,7 +2500,7 @@ impl SessionLoop {
             ls.focus = Some(leaf.clone());
         }
         self.focus_history
-            .transition(&mut self.focused_pane, Some(leaf));
+            .transition(&mut self.focused_resource, Some(leaf));
     }
 
     /// ADR-0029 §2: the ONE drain. Every loop-level repaint trigger in this
@@ -2555,7 +2555,7 @@ impl SessionLoop {
         if self.overlays.is_active() {
             return;
         }
-        let live: Vec<TerminalId> = owed
+        let live: Vec<ResourceId> = owed
             .into_iter()
             .filter(|id| {
                 self.panes
@@ -2573,7 +2573,7 @@ impl SessionLoop {
                 panes: &mut self.panes,
                 workspace: &self.workspace,
                 zoomed: self.zoomed.as_ref(),
-                focused_pane: self.focused_pane.as_ref(),
+                focused_resource: self.focused_resource.as_ref(),
                 status_bar: self.settings.status_bar.as_mut(),
                 sidebar,
                 viewport_dims: self.viewport_dims,
@@ -2598,7 +2598,7 @@ impl SessionLoop {
             &self.workspace,
             &mut self.panes,
             &self.engine_kernel,
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.zoomed.as_ref(),
             self.viewport_dims,
             self.settings.status_bar.as_mut(),
@@ -2678,7 +2678,7 @@ impl SessionLoop {
         // pane grids resize on the server's resize-ack snapshot, which
         // re-syncs predict again; this just keeps the transient
         let (predict_cols, predict_rows) = self
-            .focused_pane
+            .focused_resource
             .as_ref()
             .and_then(|fid| self.panes.get(fid))
             .map_or((viewport.cols, viewport.rows), |slot| slot.geometry);
@@ -2716,7 +2716,7 @@ impl SessionLoop {
             // dropped is never handed geometry it will not use.
             // Same choke point the `layout_replaced` path uses for
             // the non-SIGWINCH triggers (a peer's layout broadcast,
-            // TerminalSpawned/TerminalClosed reflow).
+            // ResourceSpawned/ResourceClosed reflow).
             self.sync_overlays(sidebar);
             self.paint_overlay(out, sidebar);
         } else {
@@ -2725,7 +2725,7 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// Emit one `TERMINAL_RESIZE` per leaf whose (w, h) actually
+    /// Emit one `RESIZE_TERMINAL` per leaf whose (w, h) actually
     /// changed so the server ioctls TIOCSWINSZ on each PTY. This
     /// covers the single-pane case too — `Workspace::single` seeds
     /// a one-leaf tree, so the `tree.is_some()` guard only skips a
@@ -2766,7 +2766,7 @@ impl SessionLoop {
             );
         }
         for (terminal_id, new_rect) in &diff.changed {
-            conn.send(&FrameKind::TerminalResize {
+            conn.send(&FrameKind::ResizeTerminal {
                 terminal_id: terminal_id.clone(),
                 cols: new_rect.w,
                 rows: new_rect.h,
@@ -2782,7 +2782,7 @@ impl SessionLoop {
             &mut self.overlays,
             &self.workspace,
             self.zoomed.as_ref(),
-            self.focused_pane.as_ref(),
+            self.focused_resource.as_ref(),
             self.viewport_dims,
             self.settings
                 .status_bar
@@ -2815,12 +2815,12 @@ impl SessionLoop {
         // Restore the cursor to wherever the focused pane left it
         // so an idle tick doesn't strand the cursor in the bar.
         let focused_cursor = self
-            .focused_pane
+            .focused_resource
             .as_ref()
             .and_then(|fid| self.panes.get(fid))
             .and_then(|slot| slot.renderer.last_cursor());
         tracing::trace!(
-            focused_pane_set = self.focused_pane.is_some(),
+            focused_pane_set = self.focused_resource.is_some(),
             has_cursor = focused_cursor.is_some(),
             "status_tick: repaint bar"
         );
@@ -2850,12 +2850,12 @@ impl SessionLoop {
     }
 
     /// phux-9xn / phux-gxy: ALWAYS provide a fallback origin. When
-    /// `focused_pane` is None (e.g. ATTACHED hasn't seeded yet) the old code
+    /// `focused_resource` is None (e.g. ATTACHED hasn't seeded yet) the old code
     /// passed None → `paint_bar_after_pane` emitted no CUP → cursor stranded
     /// at the bar's last cell every tick.
     fn bar_fallback_origin(&self, sidebar: Option<SidebarReservation>) -> (u16, u16) {
         let content = self.content(sidebar);
-        self.focused_pane
+        self.focused_resource
             .as_ref()
             .and_then(|fid| {
                 self.workspace

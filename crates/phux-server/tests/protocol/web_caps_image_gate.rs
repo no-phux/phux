@@ -55,7 +55,7 @@ const fn web_profile_caps() -> ClientCapabilities {
 }
 
 /// A deterministic seed command: block on `release` until both clients have
-/// finished attaching (so the burst arrives as live `TERMINAL_OUTPUT`, not
+/// finished attaching (so the burst arrives as live `RESOURCE_OUTPUT`, not
 /// snapshot replay), then print the three image-protocol escapes bracketed
 /// by text markers, then idle so the pane stays alive through teardown.
 ///
@@ -64,8 +64,8 @@ const fn web_profile_caps() -> ClientCapabilities {
 /// full HELLO/ATTACH/bootstrap handshakes can take longer than half a
 /// second, the burst then lands before a client is attached, and its bytes
 /// are folded into that client's opening snapshot instead of arriving as
-/// `TERMINAL_OUTPUT`. `drain_output_until` only accumulates
-/// `TERMINAL_OUTPUT`, so the end marker never appears and the test dies on
+/// `RESOURCE_OUTPUT`. `drain_output_until` only accumulates
+/// `RESOURCE_OUTPUT`, so the end marker never appears and the test dies on
 /// `WIRE_RECV_TIMEOUT` — 15 seconds of nothing, reported as a timeout rather
 /// than as anything about image capabilities.
 ///
@@ -139,14 +139,14 @@ async fn attach_with_caps(
     stream
 }
 
-/// Accumulate `TERMINAL_OUTPUT` bytes until `marker` appears. Each recv is
+/// Accumulate `RESOURCE_OUTPUT` bytes until `marker` appears. Each recv is
 /// bounded by the harness `WIRE_RECV_TIMEOUT`, so a server that never emits
 /// the marker fails loudly instead of hanging.
 async fn drain_output_until(stream: &mut UnixStream, marker: &[u8]) -> Vec<u8> {
     let mut acc = Vec::new();
     while !contains(&acc, marker) {
         let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             acc.extend_from_slice(&bytes);
         }
     }
@@ -166,7 +166,7 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
         );
 
         // Both clients attach before the burst is released, so the escapes
-        // reach them as live TERMINAL_OUTPUT rather than as replayed
+        // reach them as live RESOURCE_OUTPUT rather than as replayed
         // snapshot bytes.
         let mut web = attach_with_caps(
             &socket_path,

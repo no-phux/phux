@@ -180,7 +180,7 @@ mod tests {
     fn optional_markers_match_the_constructors() {
         use phux_server::hooks::HookEvent;
 
-        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let terminal = phux_protocol::ids::ResourceId::local(7);
         let client = phux_server::state::ClientId(3);
         let minimal = [
             HookEvent::after_new_pane(&terminal, None),

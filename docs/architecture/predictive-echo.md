@@ -9,7 +9,7 @@ last-reviewed: 2026-08-16
 **TL;DR.** Predictive echo is implemented as an opt-in client feature. It
 renders a conservative set of likely keystroke results with an underline,
 keeps the libghostty mirror authoritative, and reconciles each prediction when
-real `TERMINAL_OUTPUT` arrives. Contradictions discard the suspect suffix and
+real `RESOURCE_OUTPUT` arrives. Contradictions discard the suspect suffix and
 repeated misses temporarily hide the overlay. On the alternate screen the
 display is confirmation-gated: nothing paints until the app proves it echoes
 ([ADR-0090](../../ADR/0090-confirmation-gated-predictive-echo.md)).
@@ -63,7 +63,7 @@ viewport edges all bias the policy toward skipping a guess.
 ## Reconciliation
 
 Each pending prediction records its target cell, text, width, and kind. When
-`TERMINAL_OUTPUT` updates the focused terminal, the client compares pending
+`RESOURCE_OUTPUT` updates the focused terminal, the client compares pending
 predictions with the freshly rendered authoritative cells and cursor:
 
 | Result | Action |

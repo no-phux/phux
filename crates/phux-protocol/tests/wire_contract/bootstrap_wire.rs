@@ -10,7 +10,7 @@ use phux_protocol::caps::{
     EngineFeature, EngineFeatureSet, MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode,
     ServerCapabilities, select_bootstrap_profile,
 };
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
     FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_HISTORY_CURSOR_BYTES,
@@ -144,7 +144,7 @@ fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
 
 #[test]
 fn every_bootstrap_history_and_generation_frame_round_trips() {
-    let terminal_id = TerminalId::local(42);
+    let terminal_id = ResourceId::local(42);
     let stream_id = stream(7);
     let bootstrap_id = bootstrap(9);
 
@@ -224,7 +224,7 @@ fn every_bootstrap_history_and_generation_frame_round_trips() {
         required_rows: 256,
     });
     round_trip(FrameKind::AttachReady { attach_id: 17 });
-    round_trip(FrameKind::TerminalOutput {
+    round_trip(FrameKind::ResourceOutput {
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
@@ -310,7 +310,7 @@ fn hello_ok_rejects_each_omitted_required_field() {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn every_new_frame_encodes_fields_in_allocated_order() {
-    let terminal_id = TerminalId::local(1);
+    let terminal_id = ResourceId::local(1);
     let stream_id = stream(2);
     let bootstrap_id = bootstrap(3);
     let cases = [
@@ -415,7 +415,7 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
             vec![1, 2, 3, 4, 5, 6, 7],
         ),
         (
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -433,7 +433,7 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
 #[test]
 fn unknown_top_level_fields_are_skipped_without_touching_opaque_bytes() {
     let frame = FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         chunk_seq: 4,
@@ -479,7 +479,7 @@ fn zero_stream_and_bootstrap_ids_are_rejected_before_dispatch() {
 #[test]
 fn history_page_sequence_and_row_count_are_required() {
     let page = FrameKind::HistoryPage {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         page_seq: 1,
@@ -508,7 +508,7 @@ fn history_page_sequence_and_row_count_are_required() {
         DecodeError::InvalidHistoryPageSequence
     );
     let request = FrameKind::HistoryRequest {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         cursor: Bytes::from_static(b"stable-lease"),
@@ -526,7 +526,7 @@ fn history_page_sequence_and_row_count_are_required() {
 #[test]
 fn zero_history_request_limits_decode_for_retryable_rejection() {
     round_trip(FrameKind::HistoryRequest {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         cursor: Bytes::from_static(b"retryable-cursor"),
@@ -549,7 +549,7 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
     ] {
         assert_eq!(reason.as_wire(), tag);
         round_trip(FrameKind::HistoryTombstone {
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
             stream_id: stream(2),
             bootstrap_id: bootstrap(3),
             cursor: Bytes::from_static(b"cursor"),
@@ -563,7 +563,7 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
     ] {
         assert_eq!(reason.as_wire(), tag);
         round_trip(FrameKind::HistoryRejected {
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
             stream_id: stream(2),
             bootstrap_id: bootstrap(3),
             cursor: Bytes::from_static(b"cursor"),
@@ -594,7 +594,7 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
 #[test]
 fn history_status_fields_and_retry_bounds_are_enforced() {
     let tombstone = FrameKind::HistoryTombstone {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         cursor: Bytes::from_static(b"cursor"),
@@ -608,7 +608,7 @@ fn history_status_fields_and_retry_bounds_are_enforced() {
     }
 
     let rejected = FrameKind::HistoryRejected {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
         cursor: Bytes::from_static(b"cursor"),
@@ -638,7 +638,7 @@ fn history_status_fields_and_retry_bounds_are_enforced() {
         ),
     ] {
         let invalid = FrameKind::HistoryRejected {
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
             stream_id: stream(2),
             bootstrap_id: bootstrap(3),
             cursor: Bytes::from_static(b"cursor"),
@@ -655,7 +655,7 @@ fn history_status_fields_and_retry_bounds_are_enforced() {
 #[test]
 fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping() {
     let over_chunk = FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         chunk_seq: 0,
@@ -669,7 +669,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
     );
 
     let over_page = FrameKind::HistoryPage {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         page_seq: 1,
@@ -686,7 +686,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
     );
 
     let over_cursor = FrameKind::BootstrapReady {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         history_cursor: Some(Bytes::from(vec![0; MAX_HISTORY_CURSOR_BYTES + 1])),
@@ -699,7 +699,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
     );
 
     let over_bytes = FrameKind::HistoryRequest {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         cursor: Bytes::from_static(b"cursor"),
@@ -709,7 +709,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
     round_trip(over_bytes);
 
     let over_rows = FrameKind::HistoryRequest {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         cursor: Bytes::from_static(b"cursor"),
@@ -719,7 +719,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
     round_trip(over_rows);
 
     let over_page_rows = FrameKind::HistoryPage {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         page_seq: 1,
@@ -1004,13 +1004,13 @@ fn old_engine_capabilities_fall_back_without_changing_protocol_version() {
             .0,
         BootstrapProfile::SynthesizedVtRaw
     );
-    assert_eq!((PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor), (0, 8));
+    assert_eq!((PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor), (0, 9));
     assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
 }
 
 #[test]
 fn opaque_lifecycle_records_reencode_byte_identically() {
-    let terminal_id = TerminalId::local(44);
+    let terminal_id = ResourceId::local(44);
     let stream_id = stream(45);
     let bootstrap_id = bootstrap(46);
     let future_record = Bytes::from_static(b"\xff\x80\0future-checkpoint-v255\xfe");
@@ -1078,7 +1078,7 @@ fn opaque_lifecycle_records_reencode_byte_identically() {
 fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
     let chunk = FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         chunk_seq: 0,
@@ -1093,7 +1093,7 @@ fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host(
     assert!(FrameKind::decode(&encoded).is_ok());
 
     let page = FrameKind::HistoryPage {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         page_seq: 1,
@@ -1111,7 +1111,7 @@ fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host(
     assert!(FrameKind::decode(&encoded).is_ok());
 
     let request = FrameKind::HistoryRequest {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         cursor: Bytes::from_static(b"cursor"),
@@ -1128,8 +1128,8 @@ fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host(
 #[test]
 fn native_live_bytes_are_codec_opaque_and_round_trip_exactly() {
     let raw = Bytes::from_static(b"\x1b]8;;https://example.invalid\x07link\x1b]8;;\x07\xff");
-    let frame = FrameKind::TerminalOutput {
-        terminal_id: TerminalId::local(8),
+    let frame = FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(8),
         stream_id: stream(8),
         bootstrap_id: bootstrap(8),
         seq: 1,
@@ -1138,7 +1138,7 @@ fn native_live_bytes_are_codec_opaque_and_round_trip_exactly() {
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);
     let (decoded, _) = FrameKind::decode(&encoded).unwrap();
-    let FrameKind::TerminalOutput { bytes, .. } = decoded else {
+    let FrameKind::ResourceOutput { bytes, .. } = decoded else {
         panic!("expected terminal output");
     };
     assert_eq!(bytes, raw);
@@ -1161,7 +1161,7 @@ fn compressed_bootstrap_chunk_round_trips_byte_identically() {
         .flat_map(|cell| [1, 0, 0, 0, 0, 0, 0, 0, b'a' + (cell % 26) as u8, 0, 0, 0])
         .collect();
     let frame = FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(7),
+        terminal_id: ResourceId::local(7),
         stream_id: StreamId::new(3).expect("stream id"),
         bootstrap_id: BootstrapId::new(11).expect("bootstrap id"),
         chunk_seq: 2,
@@ -1208,7 +1208,7 @@ fn small_frames_are_never_wrapped() {
     use phux_protocol::caps::Compression;
 
     let frame = FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: StreamId::new(1).expect("stream id"),
         bootstrap_id: BootstrapId::new(1).expect("bootstrap id"),
         chunk_seq: 0,
@@ -1279,7 +1279,7 @@ fn an_envelope_may_not_declare_more_than_the_negotiated_bounds() {
     // before the bound was ever reached, and would prove nothing.
     let mut framed = BytesMut::new();
     FrameKind::BootstrapChunk {
-        terminal_id: TerminalId::local(1),
+        terminal_id: ResourceId::local(1),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         chunk_seq: 0,

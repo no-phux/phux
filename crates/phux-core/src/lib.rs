@@ -18,7 +18,7 @@ pub mod session_list;
 pub mod terminal;
 pub mod window;
 
-pub use ids::{ResourceId, SessionId, TerminalId, WindowId};
+pub use ids::{ResourceId, SessionId, WindowId};
 pub use registry::{Registry, RegistryError};
 pub use resource::{AgentFacet, ResourceDescriptor, ResourceKind};
 pub use screen::{CursorState, SCHEMA_VERSION, ScreenState};

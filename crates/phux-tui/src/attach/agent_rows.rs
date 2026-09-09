@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use phux_client_core::session::agent_stream::AgentSessionStatus;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 
 use super::pane_state::AttachKernel;
 use phux_client::agent_meta::AgentMetaState;
@@ -18,7 +18,7 @@ use phux_client::agent_meta::AgentMetaState;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AgentSessionRow {
     /// The `AgentSession` resource id.
-    pub id: TerminalId,
+    pub id: ResourceId,
     /// Provider slug (`claude`, `codex`, ...) when the stream or facet named it.
     pub provider: Option<String>,
     /// Opaque provider session id, when known.
@@ -36,7 +36,7 @@ impl AgentSessionRow {
 }
 
 /// `AgentSession` rows grouped by their parent pane.
-pub(super) type AgentSessionRows = HashMap<TerminalId, Vec<AgentSessionRow>>;
+pub(super) type AgentSessionRows = HashMap<ResourceId, Vec<AgentSessionRow>>;
 
 /// Project every live `AgentSession` the kernel holds onto its parent pane.
 ///
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn a_nameless_row_reads_as_agent() {
         let row = AgentSessionRow {
-            id: TerminalId::local(7),
+            id: ResourceId::local(7),
             provider: None,
             native_id: None,
             state: AgentMetaState::Working,

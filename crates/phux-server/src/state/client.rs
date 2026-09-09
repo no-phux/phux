@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use phux_core::ids::{SessionId, TerminalId};
+use phux_core::ids::{ResourceId, SessionId};
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
 };
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -73,12 +73,12 @@ pub struct AttachedClient {
 #[derive(Debug, Clone)]
 pub struct AttachSnapshotPane {
     /// Core pane identifier.
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     /// Cross-task handle: the generic channels plus the Terminal facet
     /// behind [`ResourceHandle::terminal`].
     pub handle: ResourceHandle,
-    /// Stable wire id to use in `TERMINAL_SNAPSHOT` / `TERMINAL_OUTPUT`.
-    pub wire_terminal_id: WireTerminalId,
+    /// Stable wire id to use in `TERMINAL_SNAPSHOT` / `RESOURCE_OUTPUT`.
+    pub wire_terminal_id: WireResourceId,
 }
 
 /// Errors returned by [`super::ServerState::attach`].
@@ -207,7 +207,7 @@ impl ServerState {
         // auto-subscribes it. Subscribing every pane also lets the per-pane
         // actor fan out live output to this client (terminal_actor's
         // subscriber loop), so non-focused panes stay live too.
-        let session_panes: Vec<TerminalId> = self
+        let session_panes: Vec<ResourceId> = self
             .sessions
             .registry
             .session(session_id)
@@ -296,7 +296,7 @@ impl ServerState {
         // detach; this clears both ledgers regardless of those paths
         // running.
         self.leases.release_all_for(client_id);
-        // Cancel every ATTACH_TERMINAL output pump this client owns
+        // Cancel every ATTACH_RESOURCE output pump this client owns
         // (phux-v45.7) so no task keeps streaming into a dead mailbox, then
         // drop it from every subscriber list (empty lists are GC'd so the
         // map doesn't grow unboundedly across attach/detach churn).
@@ -311,7 +311,7 @@ impl ServerState {
         self.clients.metadata_mailboxes.remove(&client_id);
         // The per-Terminal subscription mailbox goes with the subscriptions
         // `drop_client_subscriptions` just cleared (phux-w7z2.56): they are
-        // the two halves of one `ATTACH_TERMINAL` registration, and leaving
+        // the two halves of one `ATTACH_RESOURCE` registration, and leaving
         // the mailbox would keep a dead connection's sender alive in the map.
         self.clients.terminal_mailboxes.remove(&client_id);
         if let Some(keys) = self.clients.session_create_results.remove(&client_id) {
@@ -383,7 +383,7 @@ impl ServerState {
     ///
     /// Unlike [`Self::attached_clients_to_detach`], this remains usable after
     /// the registry has reaped the session and its name can no longer resolve.
-    /// Per-terminal `ATTACH_TERMINAL` consumers are not in [`Self::attached`]
+    /// Per-terminal `ATTACH_RESOURCE` consumers are not in [`Self::attached`]
     /// and are deliberately excluded.
     #[must_use]
     pub fn attached_clients_in_session(

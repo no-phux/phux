@@ -112,7 +112,7 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
 
     gate_tx.send(true).expect("activate live output");
     actor.tick_emit();
-    let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) =
+    let Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. }) =
         outbound_rx.try_recv().expect("first post-barrier delta")
     else {
         panic!("expected terminal output");
@@ -428,7 +428,7 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
 
     actor.vt_write_for_test(b"\r\nafter-cut");
     actor.tick_emit();
-    let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) =
+    let Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. }) =
         outbound_rx.try_recv().expect("post-cut diff")
     else {
         panic!("expected terminal output");
@@ -630,8 +630,8 @@ fn tick_emit_serves_negotiated_state_sync_consumer_with_gate_off() {
     let frame = rx
         .try_recv()
         .expect("state-sync consumer must be served by the tick even with the gate off");
-    let Outbound::Frame(FrameKind::TerminalOutput { seq, .. }) = frame else {
-        panic!("expected a TerminalOutput frame for the state-sync consumer");
+    let Outbound::Frame(FrameKind::ResourceOutput { seq, .. }) = frame else {
+        panic!("expected a ResourceOutput frame for the state-sync consumer");
     };
     assert_eq!(seq, 1, "first tick emission stamps seq=1");
 }
@@ -661,7 +661,7 @@ fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
     assert!(
         matches!(
             sync_rx.try_recv(),
-            Ok(Outbound::Frame(FrameKind::TerminalOutput { .. })),
+            Ok(Outbound::Frame(FrameKind::ResourceOutput { .. })),
         ),
         "state-sync consumer must receive the synthesized delta",
     );
@@ -912,7 +912,7 @@ fn emit_once_default_keeps_no_pending_refs() {
 /// phux-0q8 / phux-q0e.3 / phux-3uv / phux-ia4: with the gate ON for
 /// a SINGLE consumer, `tick_emit` diffs the
 /// dirty seeded grid against the consumer's reference and ships exactly
-/// one `TerminalOutput` carrying the content, stamping `seq = 1`.
+/// one `ResourceOutput` carrying the content, stamping `seq = 1`.
 ///
 /// Emit-once (phux-ia4): the consumer's reference advances on emit, so
 /// a second tick with no further writes is SILENT — the change is
@@ -937,14 +937,14 @@ fn tick_emit_emits_once_when_gate_is_on() {
     let frame = rx
         .try_recv()
         .expect("gate on: first tick must emit the changed grid");
-    let Outbound::Frame(FrameKind::TerminalOutput {
+    let Outbound::Frame(FrameKind::ResourceOutput {
         terminal_id,
         seq,
         bytes,
         ..
     }) = frame
     else {
-        panic!("expected a TerminalOutput frame from tick_emit");
+        panic!("expected a ResourceOutput frame from tick_emit");
     };
     assert_eq!(seq, 1, "first tick emission stamps seq=1");
     assert_eq!(
@@ -973,8 +973,8 @@ fn tick_emit_emits_once_when_gate_is_on() {
     let frame = rx
         .try_recv()
         .expect("gate on: a new write must emit a fresh diff");
-    let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) = frame else {
-        panic!("expected a TerminalOutput frame on the new write");
+    let Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. }) = frame else {
+        panic!("expected a ResourceOutput frame on the new write");
     };
     assert_eq!(seq, 2, "second distinct change stamps seq=2");
     assert!(
@@ -1038,13 +1038,13 @@ fn tick_emit_serves_every_consumer_on_a_shared_pane() {
     actor.vt_write_for_test(b"shared-marker");
     actor.tick_emit();
 
-    // BOTH consumers must receive a TerminalOutput carrying the marker.
+    // BOTH consumers must receive a ResourceOutput carrying the marker.
     let recv_marker = |rx: &mut mpsc::Receiver<Outbound>, who: &str| {
         let frame = rx
             .try_recv()
             .unwrap_or_else(|_| panic!("consumer {who} starved: no frame this tick"));
-        let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) = frame else {
-            panic!("consumer {who}: expected a TerminalOutput frame");
+        let Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. }) = frame else {
+            panic!("consumer {who}: expected a ResourceOutput frame");
         };
         assert_eq!(seq, 1, "consumer {who}: first emission stamps seq=1");
         assert!(
@@ -1075,8 +1075,8 @@ fn tick_emit_serves_every_consumer_on_a_shared_pane() {
     actor.vt_write_for_test(b" again");
     actor.tick_emit();
     let frame = rx_b.try_recv().expect("consumer B: must get the new write");
-    let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) = frame else {
-        panic!("consumer B: expected a TerminalOutput frame");
+    let Outbound::Frame(FrameKind::ResourceOutput { seq, bytes, .. }) = frame else {
+        panic!("consumer B: expected a ResourceOutput frame");
     };
     assert_eq!(seq, 2, "consumer B: second distinct change stamps seq=2");
     assert!(
@@ -1116,8 +1116,8 @@ fn idle_tick_short_circuits_and_emits_nothing() {
     actor.vt_write_for_test(b"hello");
     actor.tick_emit();
     let got = rx.try_recv().expect("write must reach the consumer");
-    let Outbound::Frame(FrameKind::TerminalOutput { bytes, .. }) = got else {
-        panic!("expected TerminalOutput");
+    let Outbound::Frame(FrameKind::ResourceOutput { bytes, .. }) = got else {
+        panic!("expected ResourceOutput");
     };
     assert!(contains_subslice(&bytes, b"hello"));
 
@@ -1195,8 +1195,8 @@ fn new_consumer_served_even_when_terminal_clean() {
     let frame_a = rx_a.try_recv().expect("A gets the new write");
     let frame_b = rx_b.try_recv().expect("B gets the new write");
     for (who, frame) in [("A", frame_a), ("B", frame_b)] {
-        let Outbound::Frame(FrameKind::TerminalOutput { bytes, .. }) = frame else {
-            panic!("{who}: expected TerminalOutput");
+        let Outbound::Frame(FrameKind::ResourceOutput { bytes, .. }) = frame else {
+            panic!("{who}: expected ResourceOutput");
         };
         assert!(
             contains_subslice(&bytes, b"again"),
@@ -1278,13 +1278,13 @@ fn tick_emit_reaps_idle_consumer_with_closed_mailbox() {
     );
 }
 
-/// Drain every `TerminalOutput` currently queued on `rx`, returning the
+/// Drain every `ResourceOutput` currently queued on `rx`, returning the
 /// concatenated payload bytes and the ordered list of `seq`s.
 fn drain_terminal_output(rx: &mut mpsc::Receiver<Outbound>) -> (Vec<u8>, Vec<u64>) {
     let mut bytes = Vec::new();
     let mut seqs = Vec::new();
     while let Ok(frame) = rx.try_recv() {
-        if let Outbound::Frame(FrameKind::TerminalOutput {
+        if let Outbound::Frame(FrameKind::ResourceOutput {
             seq, bytes: body, ..
         }) = frame
         {

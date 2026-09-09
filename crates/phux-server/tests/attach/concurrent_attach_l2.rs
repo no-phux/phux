@@ -81,7 +81,7 @@
 
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
     TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT,
@@ -137,7 +137,7 @@ async fn attach_and_measure(socket_path: &std::path::Path, label: &str) -> (Unix
 async fn get_terminal_state(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
 ) -> String {
     send_frame(
         stream,
@@ -182,7 +182,7 @@ async fn get_terminal_state(
 }
 
 /// Helper: send a `SUBSCRIBE_EVENTS` frame to receive all agent events for a terminal.
-async fn subscribe_to_terminal_events(stream: &mut UnixStream, terminal_id: Option<&TerminalId>) {
+async fn subscribe_to_terminal_events(stream: &mut UnixStream, terminal_id: Option<&ResourceId>) {
     send_frame(
         stream,
         &FrameKind::SubscribeEvents {
@@ -196,7 +196,7 @@ async fn subscribe_to_terminal_events(stream: &mut UnixStream, terminal_id: Opti
 async fn read_terminal_event(
     stream: &mut UnixStream,
     deadline: Instant,
-) -> Option<(Option<TerminalId>, AgentEvent)> {
+) -> Option<(Option<ResourceId>, AgentEvent)> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return None;
@@ -209,12 +209,12 @@ async fn read_terminal_event(
 }
 
 /// Helper: collect all events from a subscription within a deadline.
-/// Skips non-EVENT frames (e.g., TERMINAL_OUTPUT, TERMINAL_SNAPSHOT).
+/// Skips non-EVENT frames (e.g., RESOURCE_OUTPUT, TERMINAL_SNAPSHOT).
 #[allow(dead_code)]
 async fn collect_events_until(
     stream: &mut UnixStream,
     deadline: Instant,
-) -> Vec<(Option<TerminalId>, AgentEvent)> {
+) -> Vec<(Option<ResourceId>, AgentEvent)> {
     let mut events = Vec::new();
     while let Some(event) = read_terminal_event(stream, deadline).await {
         events.push(event);
@@ -269,7 +269,7 @@ fn concurrent_attach_l2_identical_state() {
             let (_type_byte, _snapshot) = recv_typed(&mut stream).await;
 
             let terminal_id = match attached {
-                FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+                FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
                 _ => panic!("expected Attached frame"),
             };
             let latency = start.elapsed().as_millis();
@@ -286,7 +286,7 @@ fn concurrent_attach_l2_identical_state() {
             let (_type_byte, _snapshot) = recv_typed(&mut stream).await;
 
             let terminal_id = match attached {
-                FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+                FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
                 _ => panic!("expected Attached frame"),
             };
             let latency = start.elapsed().as_millis();
@@ -486,7 +486,11 @@ fn concurrent_attach_l1_snapshot_consistency() {
                     snap_b.windows.len(),
                     "window count differs"
                 );
-                assert_eq!(snap_a.panes.len(), snap_b.panes.len(), "pane count differs");
+                assert_eq!(
+                    snap_a.resources.len(),
+                    snap_b.resources.len(),
+                    "pane count differs"
+                );
 
                 // Client IDs should be different (each client gets a fresh allocation)
                 assert_ne!(id_a.get(), id_b.get(), "client IDs should not collide");
@@ -495,7 +499,7 @@ fn concurrent_attach_l1_snapshot_consistency() {
                     "✓ ATTACHED frames consistent: {} sessions, {} windows, {} panes",
                     snap_a.sessions.len(),
                     snap_a.windows.len(),
-                    snap_a.panes.len()
+                    snap_a.resources.len()
                 );
             }
             (a, b) => panic!("expected both Attached frames, got {:?} and {:?}", a, b),

@@ -19,7 +19,7 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::caps::Layer;
-use crate::ids::{GroupId, TerminalId};
+use crate::ids::{GroupId, ResourceId};
 
 /// Identity of a peer at the transport layer.
 ///
@@ -94,7 +94,7 @@ pub struct Capability {
     pub ops: Vec<String>,
     /// Optional restriction to specific terminals. `None` means all
     /// terminals in scope.
-    pub terminals: Option<Vec<TerminalId>>,
+    pub terminals: Option<Vec<ResourceId>>,
     /// Optional restriction to specific groups. `None` means all
     /// groups in scope.
     pub groups: Option<Vec<GroupId>>,

@@ -30,7 +30,7 @@ use std::cell::RefCell;
 use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{
-    AgentEvent, ControlAction, FrameKind, ReportedAgentState, TerminalEventType, TerminalSignal,
+    AgentEvent, ControlAction, FrameKind, ReportedAgentState, ResourceEventType, TerminalSignal,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -115,7 +115,7 @@ pub enum ResyncReason {
 /// Subscribers (the per-attach output pumps in `runtime::attach`) map each
 /// variant to a distinct wire frame:
 ///
-/// * [`PaneOutput::Live`] → `TERMINAL_OUTPUT` — a post-snapshot byte delta.
+/// * [`PaneOutput::Live`] → `RESOURCE_OUTPUT` — a post-snapshot byte delta.
 /// * [`PaneOutput::Resync`] → `TERMINAL_SNAPSHOT` — the full post-reflow
 ///   grid, carrying the new `(cols, rows)` so the client mirror RESIZES to
 ///   them and repaints from authoritative state.
@@ -126,14 +126,14 @@ pub enum ResyncReason {
 /// output) is load-bearing. The client resizes its libghostty mirror ONLY
 /// on `TERMINAL_SNAPSHOT` (ADR-0013 / phux-wurs: the mirror's grid size is
 /// server-authoritative and never guessed from a client-side rect). A
-/// resync delivered as `TERMINAL_OUTPUT` would `vt_write` into a mirror
+/// resync delivered as `RESOURCE_OUTPUT` would `vt_write` into a mirror
 /// still at its old size, so a resize that GROWS a pane — kill-pane reflow
 /// promoting the survivor, or enlarging the outer window — could never fill
 /// the freed space (phux-3ns5). The snapshot path resizes first, then
 /// applies the synthesized grid, so grow and shrink both reconverge.
 #[derive(Clone, Debug)]
 pub enum PaneOutput {
-    /// Live output chunk forwarded as `TERMINAL_OUTPUT`.
+    /// Live output chunk forwarded as `RESOURCE_OUTPUT`.
     Live {
         /// Resource-global, strictly increasing raw output sequence.
         seq: u64,
@@ -173,19 +173,19 @@ pub enum PaneOutput {
 /// A client subscribed to semantic events for a single resource.
 /// Holds the client's outbound mailbox and event type filter.
 #[derive(Clone, Debug)]
-pub struct TerminalEventSubscriber {
+pub struct ResourceEventSubscriber {
     /// Client's outbound frame channel (where Event frames are sent).
     pub outbound: mpsc::Sender<Outbound>,
     /// Event type filter (empty = all types). Only events matching a type
     /// in this list are forwarded; if empty, all events are sent.
-    pub event_types: Vec<TerminalEventType>,
+    pub event_types: Vec<ResourceEventType>,
 }
 
 /// Request to subscribe to a resource's semantic events.
 #[derive(Debug)]
 pub struct SubscribeToEventsRequest {
     /// The new subscriber to register.
-    pub subscriber: TerminalEventSubscriber,
+    pub subscriber: ResourceEventSubscriber,
     /// Wire-level resource id for Event frames (SPEC §7.1).
     /// The runtime passes this when registering.
     pub wire_terminal_id: u32,
@@ -477,7 +477,7 @@ pub struct ResourceCore {
     pub(super) output_tx: broadcast::Sender<PaneOutput>,
     /// Semantic-event subscribers. Added by [`Self::subscribe_events`],
     /// removed by [`Self::unsubscribe_events`].
-    pub(super) event_subscribers: RefCell<Vec<TerminalEventSubscriber>>,
+    pub(super) event_subscribers: RefCell<Vec<ResourceEventSubscriber>>,
     /// One-shot fired when the engine observes its backing exit. `Option`
     /// so it can be `take()`n after firing — sending on a `oneshot::Sender`
     /// is a by-value move. `None` after the first fire.
@@ -606,13 +606,13 @@ impl ResourceCore {
     pub fn fan_out_event(&self, event: &AgentEvent) {
         let subs = self.event_subscribers.borrow();
         for subscriber in subs.iter() {
-            // Map AgentEvent variants to TerminalEventType for filtering.
+            // Map AgentEvent variants to ResourceEventType for filtering.
             let event_type = match event {
-                AgentEvent::CommandStarted => Some(TerminalEventType::CommandStarted),
-                AgentEvent::CommandFinished { .. } => Some(TerminalEventType::CommandEnded),
-                AgentEvent::CwdChanged { .. } => Some(TerminalEventType::CwdChanged),
-                AgentEvent::Dirty => Some(TerminalEventType::GridChanged),
-                AgentEvent::Idle => Some(TerminalEventType::OutputReceived),
+                AgentEvent::CommandStarted => Some(ResourceEventType::CommandStarted),
+                AgentEvent::CommandFinished { .. } => Some(ResourceEventType::CommandEnded),
+                AgentEvent::CwdChanged { .. } => Some(ResourceEventType::CwdChanged),
+                AgentEvent::Dirty => Some(ResourceEventType::GridChanged),
+                AgentEvent::Idle => Some(ResourceEventType::OutputReceived),
                 // Other event types don't map to semantic filters yet
                 _ => None,
             };
@@ -630,7 +630,7 @@ impl ResourceCore {
                     terminal: if self.wire_id == 0 {
                         None
                     } else {
-                        Some(phux_protocol::ids::TerminalId::local(self.wire_id))
+                        Some(phux_protocol::ids::ResourceId::local(self.wire_id))
                     },
                     event: event.clone(),
                 };
@@ -734,16 +734,16 @@ mod tests {
         let (all_tx, mut all_rx) = mpsc::channel(4);
         let (cwd_tx, mut cwd_rx) = mpsc::channel(4);
         core.subscribe_events(SubscribeToEventsRequest {
-            subscriber: TerminalEventSubscriber {
+            subscriber: ResourceEventSubscriber {
                 outbound: all_tx,
                 event_types: Vec::new(),
             },
             wire_terminal_id: 7,
         });
         core.subscribe_events(SubscribeToEventsRequest {
-            subscriber: TerminalEventSubscriber {
+            subscriber: ResourceEventSubscriber {
                 outbound: cwd_tx.clone(),
-                event_types: vec![TerminalEventType::CwdChanged],
+                event_types: vec![ResourceEventType::CwdChanged],
             },
             wire_terminal_id: 7,
         });
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(all.len(), 2, "unfiltered subscriber sees both");
         match &all[0] {
             Outbound::Frame(FrameKind::Event { terminal, .. }) => {
-                assert_eq!(*terminal, Some(phux_protocol::ids::TerminalId::local(7)));
+                assert_eq!(*terminal, Some(phux_protocol::ids::ResourceId::local(7)));
             }
             other => panic!("expected an Event frame, got {other:?}"),
         }

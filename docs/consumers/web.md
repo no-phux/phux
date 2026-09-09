@@ -102,7 +102,7 @@ the one documented in [`../spec/appendix-encoding.md`](../spec/appendix-encoding
    then send `ATTACH` with a client correlation `attach_id`.
 5. Decode matching `BOOTSTRAP_BEGIN` / `BOOTSTRAP_CHUNK` into an invisible
    engine and publish at `BOOTSTRAP_READY`; consume generation-bound
-   `TERMINAL_OUTPUT` from `base_seq + 1`. Native checkpoint and raw live bytes
+   `RESOURCE_OUTPUT` from `base_seq + 1`. Native checkpoint and raw live bytes
    are never rewritten. Raw profiles send no `FRAME_ACK`; only negotiated
    `SynthesizedVtStateSync` acknowledges a transition after applying it.
    Retained history is requested incrementally after READY. A 530 ms interval
@@ -200,7 +200,7 @@ browser's.
 - `phux-vt-web` — `wasm-pack test --node`: drives the real engine, reads the
   grid back, decodes a truecolor cell and the cursor.
 - `phux-web` — `wasm-pack test --node`: generation-bound
-  `TERMINAL_OUTPUT` round-trips through the codec and feeds the engine; native
+  `RESOURCE_OUTPUT` round-trips through the codec and feeds the engine; native
   and synthesized-raw profiles do not ACK.
 - Renderer and full client — `wasm-pack test --headless --chrome`:
   engine-to-grid-to-canvas pixel test, and a live connect-to-server-and-render

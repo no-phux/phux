@@ -13,7 +13,7 @@
 //! Terminal mirror has parsed those modes, a wheel-up `INPUT_MOUSE` must
 //! encode to an SGR scroll report (`ESC [ < 64 ; col ; row M`) and land on
 //! the PTY, where the cooked-mode line discipline echoes it back to us as
-//! `TERMINAL_OUTPUT` (ESC echoes as caret notation, so we assert on the
+//! `RESOURCE_OUTPUT` (ESC echoes as caret notation, so we assert on the
 //! `[<64;` body).
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use phux_protocol::input::key::ModSet;
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_RESOURCE_OUTPUT};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -57,7 +57,7 @@ fn wheel_input_mouse_reaches_a_mouse_tracking_pane() {
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
         let wire_pane_id = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+            FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
             other => panic!("expected ATTACHED, got {other:?}"),
         };
 
@@ -92,8 +92,8 @@ fn wheel_input_mouse_reaches_a_mouse_tracking_pane() {
                 let Some((type_byte, frame)) = maybe else {
                     panic!("server closed the connection while waiting for the wheel echo");
                 };
-                if type_byte == TYPE_TERMINAL_OUTPUT
-                    && let FrameKind::TerminalOutput { bytes, .. } = frame
+                if type_byte == TYPE_RESOURCE_OUTPUT
+                    && let FrameKind::ResourceOutput { bytes, .. } = frame
                 {
                     acc.extend_from_slice(&bytes);
                     if acc.windows(needle.len()).any(|w| w == needle) {

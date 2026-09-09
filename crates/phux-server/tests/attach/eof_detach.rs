@@ -1,4 +1,4 @@
-//! Wire-level integration test for the PTY-EOF → `TERMINAL_CLOSED` path
+//! Wire-level integration test for the PTY-EOF → `RESOURCE_CLOSED` path
 //! (`phux-it8`, reshaped by `phux-4r1`).
 //!
 //! Reproduces the user-visible "type `exit` in the inner shell and the
@@ -10,7 +10,7 @@
 //!
 //! `phux-it8` first closed that hole by having the server send
 //! `FrameKind::Detached` on EOF. `phux-4r1` then reshaped that EOF
-//! signal into the L1 lifecycle event `FrameKind::TerminalClosed`
+//! signal into the L1 lifecycle event `FrameKind::ResourceClosed`
 //! (ADR-0015 L1): the server now reports the *fact* that the PTY exited
 //! (carrying its exit status) and stops deciding detach. The
 //! "no Terminals left in my collection ⇒ detach" policy moved out of
@@ -18,7 +18,7 @@
 //!
 //! This test pins down the server half of that contract from the wire's
 //! point of view: pre-seed with a shell that exits promptly, attach a
-//! client, and assert a `TERMINAL_CLOSED { exit_status: Some(0) }` frame
+//! client, and assert a `RESOURCE_CLOSED { exit_status: Some(0) }` frame
 //! arrives at all. The server MUST NOT send `DETACHED` on EOF anymore.
 //!
 //! What is asserted is arrival, not latency: the drain below is bounded by
@@ -33,7 +33,7 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -71,14 +71,14 @@ fn pick_true_command(release: &std::path::Path) -> CommandBuilder {
     cmd
 }
 
-/// Drain non-`TERMINAL_CLOSED` frames (`ATTACHED`, `TERMINAL_SNAPSHOT`,
-/// late `TERMINAL_OUTPUT`) until a `TERMINAL_CLOSED` frame arrives or
+/// Drain non-`RESOURCE_CLOSED` frames (`ATTACHED`, `TERMINAL_SNAPSHOT`,
+/// late `RESOURCE_OUTPUT`) until a `RESOURCE_CLOSED` frame arrives or
 /// `deadline` elapses. Returns the decoded frame on success.
 ///
 /// We can't just `recv_typed` once and assert: between `ATTACHED` and
-/// the EOF-driven `TERMINAL_CLOSED`, the runtime ships one
+/// the EOF-driven `RESOURCE_CLOSED`, the runtime ships one
 /// `TERMINAL_SNAPSHOT` per pane, and the `TerminalActor`'s PTY pump may
-/// emit a few stray `TERMINAL_OUTPUT` chunks from libghostty's snapshot
+/// emit a few stray `RESOURCE_OUTPUT` chunks from libghostty's snapshot
 /// replay before the EOF fires. Skip those rather than fail on them.
 ///
 /// A `DETACHED` frame during the drain is a hard failure: under
@@ -98,10 +98,10 @@ async fn await_terminal_closed(stream: &mut UnixStream, deadline: Duration) -> O
             type_byte, TYPE_DETACHED,
             "server must NOT send DETACHED on PTY EOF (phux-4r1: detach is consumer policy)",
         );
-        if type_byte == TYPE_TERMINAL_CLOSED {
+        if type_byte == TYPE_RESOURCE_CLOSED {
             assert!(
-                matches!(frame, FrameKind::TerminalClosed { .. }),
-                "TYPE_TERMINAL_CLOSED must decode to FrameKind::TerminalClosed",
+                matches!(frame, FrameKind::ResourceClosed { .. }),
+                "TYPE_RESOURCE_CLOSED must decode to FrameKind::ResourceClosed",
             );
             return Some(frame);
         }
@@ -109,14 +109,14 @@ async fn await_terminal_closed(stream: &mut UnixStream, deadline: Duration) -> O
 }
 
 /// `TerminalActor` PTY EOF (from the seed shell exiting with code 0)
-/// drives the runtime to broadcast `FrameKind::TerminalClosed` — the L1
+/// drives the runtime to broadcast `FrameKind::ResourceClosed` — the L1
 /// lifecycle event — to the attached client, carrying the exit status.
 ///
 /// Before phux-it8, the client would never receive any post-snapshot
 /// frame and this test would time out — exactly the user-facing "client
 /// freezes in alt-screen" symptom. Before phux-4r1 the server reported
 /// the death by sending `DETACHED`; now it sends the structured
-/// `TERMINAL_CLOSED` and leaves the detach decision to the consumer.
+/// `RESOURCE_CLOSED` and leaves the detach decision to the consumer.
 #[test]
 fn pty_eof_drives_terminal_closed_to_attached_client() {
     run_local(async {
@@ -155,7 +155,7 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
             "second server-to-client frame must be TERMINAL_SNAPSHOT",
         );
 
-        // ---- TERMINAL_CLOSED (the contract under test) ----
+        // ---- RESOURCE_CLOSED (the contract under test) ----
         //
         // The bound is the shared `WIRE_RECV_TIMEOUT` rather than a number
         // picked for this test, and the number is not load-bearing: what is
@@ -171,21 +171,21 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         // wolf gets ignored, which is how a real regression ships.
         //
         // Raising it does not weaken the contract. A server that never sends
-        // TERMINAL_CLOSED — the pre-phux-it8 "client freezes in alt-screen"
+        // RESOURCE_CLOSED — the pre-phux-it8 "client freezes in alt-screen"
         // regression — still fails, just at the 15s ceiling instead of 2s,
         // with the same message.
         let closed = await_terminal_closed(&mut stream, WIRE_RECV_TIMEOUT).await;
         let closed = closed
-            .expect("client must receive FrameKind::TerminalClosed after the seed shell's PTY EOF");
+            .expect("client must receive FrameKind::ResourceClosed after the seed shell's PTY EOF");
         match closed {
-            FrameKind::TerminalClosed { exit_status, .. } => {
+            FrameKind::ResourceClosed { exit_status, .. } => {
                 assert_eq!(
                     exit_status,
                     Some(0),
-                    "the seed shell exited with code 0; TERMINAL_CLOSED must carry it",
+                    "the seed shell exited with code 0; RESOURCE_CLOSED must carry it",
                 );
             }
-            other => panic!("expected TerminalClosed, got {other:?}"),
+            other => panic!("expected ResourceClosed, got {other:?}"),
         }
 
         // Clean teardown. The seed shell was the server's only pane, so

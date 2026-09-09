@@ -604,7 +604,7 @@ async fn connect_and_attach(
     relay_addr: SocketAddr,
     pin: &str,
     client_name: &str,
-) -> (Consumer, phux_protocol::ids::TerminalId) {
+) -> (Consumer, phux_protocol::ids::ResourceId) {
     let mut consumer = dial_consumer(relay_addr, pin, CONSUMER_TOKEN).await;
     send_wire(&mut consumer, &hello(client_name)).await;
     send_wire(&mut consumer, &attach_by_name("default")).await;
@@ -613,8 +613,8 @@ async fn connect_and_attach(
     while pane_id.is_none() || !got_snapshot {
         match recv_wire(&mut consumer).await {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-                pane_id = Some(snapshot.panes[0].id.clone());
+                assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+                pane_id = Some(snapshot.resources[0].id.clone());
             }
             FrameKind::BootstrapBegin { cols, rows, .. } => {
                 assert!(cols > 0 && rows > 0, "snapshot has a real grid");
@@ -639,13 +639,13 @@ const fn enter_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` frames until `needle` appears in the accumulated
+/// Drain `RESOURCE_OUTPUT` frames until `needle` appears in the accumulated
 /// VT bytes or the deadline elapses (crib of `input_dispatch::await_echo`).
 async fn await_echo(consumer: &mut Consumer, needle: u8) {
     let mut acc: Vec<u8> = Vec::new();
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        if let FrameKind::TerminalOutput { bytes, .. } = recv_wire(consumer).await {
+        if let FrameKind::ResourceOutput { bytes, .. } = recv_wire(consumer).await {
             acc.extend_from_slice(&bytes);
             if acc.contains(&needle) {
                 return;
@@ -654,7 +654,7 @@ async fn await_echo(consumer: &mut Consumer, needle: u8) {
     }
     panic!(
         "INPUT_KEY must round-trip through relay + tunnel to the PTY and echo back \
-         as TERMINAL_OUTPUT (got {} bytes: {acc:?})",
+         as RESOURCE_OUTPUT (got {} bytes: {acc:?})",
         acc.len()
     );
 }
@@ -713,7 +713,7 @@ fn consumers_attach_through_relay_to_dialed_out_server() {
         );
 
         // Live PTY output (assertion 5): consumer A types 'a' + Enter into
-        // the cat pane; the echo must come back as TERMINAL_OUTPUT frames
+        // the cat pane; the echo must come back as RESOURCE_OUTPUT frames
         // whose byte-identity is then covered by the taps below.
         send_wire(
             &mut consumer_a,

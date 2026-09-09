@@ -6,7 +6,7 @@
 //!
 //! * The actor runs a fixed-rate tick (33 Hz, [`DEFAULT_TICK_INTERVAL`])
 //!   that walks each attached consumer's `SnapshotSynthesizer`, emits a
-//!   `TerminalOutput` frame whenever `synthesize_incremental` returns
+//!   `ResourceOutput` frame whenever `synthesize_incremental` returns
 //!   non-empty bytes, and stamps the frame with a per-consumer monotonic
 //!   `seq` (starting at `1`).
 //! * `FRAME_ACK` is the only thing allowed to call `mark_synced` on a
@@ -69,7 +69,7 @@ use tokio_util::sync::CancellationToken;
 /// fails the run, 30s later, with the same message.
 const ACTOR_EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Wire-terminal id stamped on every `TerminalOutput` frame in this
+/// Wire-terminal id stamped on every `ResourceOutput` frame in this
 /// suite. Arbitrary; chosen to be non-trivial.
 const WIRE_TID: u32 = 7;
 
@@ -182,7 +182,7 @@ fn drain<T>(rx: &mut mpsc::Receiver<T>) -> Vec<T> {
     out
 }
 
-/// Walk an `Outbound` slice and extract the `TerminalOutput` frames'
+/// Walk an `Outbound` slice and extract the `ResourceOutput` frames'
 /// `(terminal_id, seq, bytes_len)`. Bodies are not compared here — the
 /// q0e.1 synthesizer unit tests pin output shape; this suite cares about
 /// routing, ordering, and lifecycle.
@@ -194,7 +194,7 @@ fn terminal_outputs(items: &[Outbound]) -> Vec<(u32, u64, usize)> {
     items
         .iter()
         .filter_map(|item| match item {
-            Outbound::Frame(FrameKind::TerminalOutput {
+            Outbound::Frame(FrameKind::ResourceOutput {
                 terminal_id,
                 seq,
                 bytes,
@@ -342,7 +342,7 @@ async fn detached_consumer_receives_no_emission() {
             let frames = terminal_outputs(&items);
             assert!(
                 frames.is_empty(),
-                "detached consumer must receive zero TerminalOutput frames; got {}: {:?}",
+                "detached consumer must receive zero ResourceOutput frames; got {}: {:?}",
                 frames.len(),
                 frames,
             );

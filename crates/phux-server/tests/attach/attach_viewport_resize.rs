@@ -19,7 +19,7 @@
 //!    just keep polling until we see the post-resize size.
 //! 2. Connect, send `ATTACH { viewport: ViewportInfo::new(120, 40) }`,
 //!    drain `ATTACHED` + `TERMINAL_SNAPSHOT`.
-//! 3. Accumulate `TERMINAL_OUTPUT` frames until we see the byte
+//! 3. Accumulate `RESOURCE_OUTPUT` frames until we see the byte
 //!    sequence `40 120` (matching `stty size`'s `rows cols`
 //!    convention). If the fix is reverted, the loop only ever prints
 //!    `24 80` and the test times out.
@@ -36,7 +36,7 @@
 #![allow(clippy::panic, reason = "tests")]
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
     ViewportInfo,
 };
 use portable_pty::CommandBuilder;
@@ -49,7 +49,7 @@ use phux_server_testkit::{
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// Drain `TERMINAL_OUTPUT` frames until `needle` appears in the
+/// Drain `RESOURCE_OUTPUT` frames until `needle` appears in the
 /// accumulated bytes or [`WIRE_RECV_TIMEOUT`] elapses.
 ///
 /// We accumulate across frames because `stty size`'s output may arrive
@@ -63,11 +63,11 @@ async fn await_output_substring(stream: &mut UnixStream, needle: &[u8]) -> Vec<u
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             // Snapshots / metadata / acks — irrelevant for this assertion.
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             acc.extend_from_slice(&bytes);
             // `windows().any(eq)` is the byte-substring search; standard
             // library has no `slice::contains_slice` yet.

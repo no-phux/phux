@@ -13,7 +13,7 @@ the module-level doc-comment.
 
 ## `screen.rs` — VT oracle for client-render assertions
 
-`Screen` parses the VT bytes the server emits (over `TERMINAL_OUTPUT` or
+`Screen` parses the VT bytes the server emits (over `RESOURCE_OUTPUT` or
 any other stream you care to feed it) into an inspectable grid using a
 fresh `libghostty_vt::Terminal`. Use it whenever a test wants to
 assert "after I sent these keystrokes, the rendered terminal contains
@@ -49,6 +49,6 @@ assertion helper. Tests that want a precise cursor must be tolerant.
 
 `tests/screen_harness_demo.rs` exercises the full pipeline: spin up a
 server with `cat` on a PTY, attach over the wire, send `INPUT_KEY`,
-feed each `TERMINAL_OUTPUT` chunk into `Screen`, assert `screen.contains("a")`.
+feed each `RESOURCE_OUTPUT` chunk into `Screen`, assert `screen.contains("a")`.
 That test is the canonical reference for "how do I use this in a real
 end-to-end check".

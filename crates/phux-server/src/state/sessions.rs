@@ -1,7 +1,7 @@
-use phux_core::ids::{SessionId, TerminalId};
+use phux_core::ids::{ResourceId, SessionId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 
 use super::{RenameOutcome, ServerState};
 
@@ -47,7 +47,7 @@ impl ServerState {
 
     /// Look up the active pane of the active window of `session`, if any.
     #[must_use]
-    pub fn active_pane_of_session(&self, session: SessionId) -> Option<TerminalId> {
+    pub fn active_pane_of_session(&self, session: SessionId) -> Option<ResourceId> {
         self.sessions.active_pane_of(session)
     }
 
@@ -81,7 +81,7 @@ impl ServerState {
     }
 
     /// Seed a session+window+pane. Returns the new
-    /// `(SessionId, WindowId, TerminalId)`.
+    /// `(SessionId, WindowId, ResourceId)`.
     ///
     /// This is the entry point `ServerConfig::pre_seeded_session` uses to
     /// pre-populate the registry before clients connect.
@@ -95,7 +95,7 @@ impl ServerState {
     pub fn seed_session(
         &mut self,
         name: &str,
-    ) -> (SessionId, phux_core::ids::WindowId, TerminalId) {
+    ) -> (SessionId, phux_core::ids::WindowId, ResourceId) {
         self.sessions.seed(name)
     }
 
@@ -113,7 +113,7 @@ impl ServerState {
     /// Returns `None` if `session` is unknown or has no window — unreachable
     /// for a seeded session, which always has at least one window.
     #[must_use]
-    pub fn add_pane_to_session(&mut self, session: SessionId) -> Option<TerminalId> {
+    pub fn add_pane_to_session(&mut self, session: SessionId) -> Option<ResourceId> {
         self.sessions.add_pane(session)
     }
 
@@ -126,7 +126,7 @@ impl ServerState {
     /// Stays on this type: resolving the caller's wire id runs through
     /// `state::id_space` before the session table can name `owner`.
     #[must_use]
-    pub fn add_pane_to_terminal_owner(&mut self, owner: &WireTerminalId) -> Option<TerminalId> {
+    pub fn add_pane_to_terminal_owner(&mut self, owner: &WireResourceId) -> Option<ResourceId> {
         let owner = self.terminal_from_wire(owner)?;
         self.sessions.add_pane_beside(owner)
     }

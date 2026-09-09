@@ -52,13 +52,13 @@ pub use caps::{
     CodecUnavailable, ColorSupport, DEFAULT_BOOTSTRAP_CHUNK_BYTES, DEFAULT_HISTORY_PAGE_BYTES,
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
-    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_TERMINAL, OutputMode, RESOURCE_KINDS,
+    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_RESOURCE, OutputMode, RESOURCE_KINDS,
     ServerFeature, ServerFeatureSet, TERMINAL_REPLY, TerminalColor, TerminalDefaultColors,
     select_bootstrap_profile,
 };
 pub use ids::{
     BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, ResourceId,
-    ResourceKind, SatelliteHost, SessionId, StreamId, TerminalId, WindowId,
+    ResourceKind, SatelliteHost, SessionId, StreamId, WindowId,
 };
 pub use wire::frame::{
     CloseReason, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
@@ -70,15 +70,15 @@ pub use wire::info::AgentFacet;
 
 /// Protocol version this crate implements.
 ///
-/// Bumped from `0.1.0` to `0.2.0` in phux-vp0.4: [`TerminalId`] becomes a
+/// Bumped from `0.1.0` to `0.2.0` in phux-vp0.4: [`ResourceId`] becomes a
 /// tagged union (`Local` / `Satellite`) per ADR-0016, which prepends a
-/// 1-byte tag to every `TerminalId` field on the wire.
+/// 1-byte tag to every `ResourceId` field on the wire.
 ///
 /// Bumped from `0.2.0` to `0.3.0` by the "Option B" wire re-tier
 /// (ADR-0019 / ADR-0027): the L2 collection lifecycle verbs
 /// `CREATE_SESSION` / `KILL_COLLECTION` / `RENAME_SESSION` (command tags
 /// `0x09`..=`0x0b`) are removed and replaced by a single atomic
-/// multi-terminal op, `KILL_TERMINALS` (reusing tag `0x09`); grouping
+/// multi-terminal op, `KILL_RESOURCES` (reusing tag `0x09`); grouping
 /// (membership + names) moves to L3 metadata + client logic. Removing wire
 /// verbs is wire-breaking, so pre-1.0 this bumps the minor.
 ///
@@ -89,7 +89,7 @@ pub use wire::info::AgentFacet;
 /// fields by stable id (start at `1`, contiguous per message) and skip any id
 /// they do not recognise by its declared length; optional / trailing fields
 /// become simply-absent tagged fields. Nested tagged unions and sub-records
-/// (`TerminalId`, `ViewportInfo`, `Command`, `SessionSnapshot`, ...) stay
+/// (`ResourceId`, `ViewportInfo`, `Command`, `SessionSnapshot`, ...) stay
 /// positional inside a field's value. Every body's bytes change, so this is
 /// wire-breaking; pre-1.0 it bumps the minor.
 ///
@@ -113,9 +113,23 @@ pub use wire::info::AgentFacet;
 ///
 /// Bumped from `0.7.0` to `0.8.0` by ADR-0085: `REPORT_AGENT_STATE` adds
 /// capability-gated hook evidence to the server-side detector.
+///
+/// Bumped from `0.8.0` to `0.9.0` by ADR-0102: the substrate is renamed once,
+/// from Terminal to resource. `TerminalId` becomes [`ResourceId`],
+/// `TERMINAL_OUTPUT` becomes `RESOURCE_OUTPUT`, `SPAWN_TERMINAL` becomes
+/// `SPAWN_RESOURCE`, `TERMINAL_SPAWNED` / `TERMINAL_CLOSED` become
+/// `RESOURCE_SPAWNED` / `RESOURCE_CLOSED`, `TERMINAL_RESIZE` becomes
+/// `RESIZE_TERMINAL`, and `MOVE_`, `ATTACH_`, `DETACH_`, `KILL_`, and
+/// `SUBSCRIBE_*_EVENTS` take the resource spelling. Frame types, command
+/// tags, and every field number are byte-identical: no encoder or decoder
+/// changes behavior, so a 0.8 peer and a 0.9 peer put the same bytes on the
+/// wire. The minor still bumps because the names the spec and every
+/// generated binding expose are part of the published surface (ADR-0061),
+/// and because [`ServerFeature::RESOURCE_KINDS`](crate::caps::ServerFeature)
+/// lands with them. Facet frames keep Terminal in their names.
 pub const PROTOCOL_VERSION: Version = Version {
     major: 0,
-    minor: 8,
+    minor: 9,
     patch: 0,
 };
 

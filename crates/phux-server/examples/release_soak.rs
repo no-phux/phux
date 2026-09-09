@@ -21,7 +21,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
 };
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
-use phux_protocol::{BootstrapId, PROTOCOL_VERSION, StreamId, TerminalId};
+use phux_protocol::{BootstrapId, PROTOCOL_VERSION, ResourceId, StreamId};
 use phux_server::{ServerConfig, ServerRuntime};
 use portable_pty::CommandBuilder;
 use serde_json::json;
@@ -78,7 +78,7 @@ enum Event {
 
 #[derive(Debug)]
 struct Generation {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     next_seq: u64,
@@ -577,7 +577,7 @@ async fn connect(client: usize, socket: &Path) -> Result<(UnixStream, Generation
         let (_, frame) = common::recv_typed(&mut stream).await;
         match frame {
             FrameKind::Attached { snapshot, .. } => {
-                terminal = snapshot.panes.first().map(|pane| pane.id.clone());
+                terminal = snapshot.resources.first().map(|pane| pane.id.clone());
             }
             FrameKind::BootstrapBegin {
                 stream_id,
@@ -646,7 +646,7 @@ async fn handle_frame(
     events: &mpsc::UnboundedSender<Event>,
 ) -> Result<(), String> {
     match frame {
-        frame @ FrameKind::TerminalOutput { .. } => {
+        frame @ FrameKind::ResourceOutput { .. } => {
             handle_output_frame(client, state, &frame, events)?;
         }
         frame @ FrameKind::HistoryPage { .. } => {
@@ -730,7 +730,7 @@ fn handle_output_frame(
     frame: &FrameKind,
     events: &mpsc::UnboundedSender<Event>,
 ) -> Result<(), String> {
-    let FrameKind::TerminalOutput {
+    let FrameKind::ResourceOutput {
         stream_id,
         bootstrap_id,
         seq,

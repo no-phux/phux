@@ -1,7 +1,7 @@
 //! Integration tests for [`phux_core::Registry`].
 
 use phux_core::{
-    AgentFacet, LayoutNode, Registry, RegistryError, ResourceKind, SessionId, TerminalId, WindowId,
+    AgentFacet, LayoutNode, Registry, RegistryError, ResourceId, ResourceKind, SessionId, WindowId,
 };
 
 #[test]
@@ -91,7 +91,7 @@ fn remove_terminal_clears_active_when_last() {
 #[test]
 fn remove_terminal_unknown_returns_none() {
     let mut reg = Registry::new();
-    let bogus: TerminalId = TerminalId::default();
+    let bogus: ResourceId = ResourceId::default();
     assert!(reg.remove_resource(bogus).is_none());
 }
 
@@ -151,13 +151,13 @@ fn remove_session_cascades_fully() {
 
 #[test]
 fn ids_are_distinct_across_kinds() {
-    // Compile-time: SessionId/WindowId/TerminalId cannot be mixed up. This test
+    // Compile-time: SessionId/WindowId/ResourceId cannot be mixed up. This test
     // exists to anchor the property in the suite — the assertion is trivial,
     // the value is the *types* of the locals.
     let mut reg = Registry::new();
     let s: SessionId = reg.new_session("s".to_string());
     let w: WindowId = reg.new_window(s).expect("session exists");
-    let p: TerminalId = reg.new_terminal(w).expect("window exists");
+    let p: ResourceId = reg.new_terminal(w).expect("window exists");
     assert_eq!(reg.session_count(), 1);
     assert_eq!(reg.window_count(), 1);
     // Force the IDs to be used so the bindings are not dead code.
@@ -195,7 +195,7 @@ proptest! {
         let mut reg = Registry::new();
         let mut sessions: Vec<SessionId> = Vec::new();
         let mut windows: Vec<WindowId> = Vec::new();
-        let mut panes: Vec<TerminalId> = Vec::new();
+        let mut panes: Vec<ResourceId> = Vec::new();
 
         for op in ops {
             match op {
@@ -240,7 +240,7 @@ proptest! {
             }
 
             // Invariant: every WindowId in a Session.windows resolves and
-            // links back; every TerminalId in a Window.slots resolves and links
+            // links back; every ResourceId in a Window.slots resolves and links
             // back; layout.slots mirrors panes; active references are live.
             let session_ids: Vec<SessionId> = sessions.iter().copied().filter(|id| reg.session(*id).is_some()).collect();
             for sid in session_ids {
@@ -249,7 +249,7 @@ proptest! {
                     let window = reg.window(*wid).expect("session points at live window");
                     prop_assert_eq!(window.session, sid);
                     // Layout leaves match the window's pane set.
-                    let leaves: Vec<phux_core::TerminalId> = window
+                    let leaves: Vec<phux_core::ResourceId> = window
                         .layout
                         .as_ref()
                         .map(LayoutNode::leaves)
@@ -431,7 +431,7 @@ fn move_terminal_rejects_unknown_ends_without_mutating() {
     let mut reg2 = Registry::new();
     let s2 = reg2.new_session("b".to_string());
     let w2 = reg2.new_window(s2).expect("session exists");
-    match reg2.move_terminal(TerminalId::default(), w2) {
+    match reg2.move_terminal(ResourceId::default(), w2) {
         Err(RegistryError::UnknownResource(_)) => {}
         other => panic!("expected UnknownResource, got {other:?}"),
     }
@@ -486,7 +486,7 @@ fn agent_session_requires_a_live_terminal_parent() {
         .new_agent_session(t, agent("claude"))
         .expect("terminal parent");
 
-    let bogus = TerminalId::default();
+    let bogus = ResourceId::default();
     assert_eq!(
         reg.new_agent_session(bogus, agent("claude")),
         Err(RegistryError::UnknownResource(bogus))

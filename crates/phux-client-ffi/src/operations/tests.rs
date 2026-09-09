@@ -8,7 +8,7 @@ use phux_protocol::{
 
 struct Harness(Box<PhuxClient>);
 
-fn history_send(id: TerminalId) -> phux_client_core::session::KernelSend {
+fn history_send(id: ResourceId) -> phux_client_core::session::KernelSend {
     phux_client_core::session::KernelSend::HistoryRequest {
         key: phux_client_core::session::ReplicaKey {
             terminal_id: id,
@@ -25,7 +25,7 @@ fn history_send(id: TerminalId) -> phux_client_core::session::KernelSend {
 #[test]
 fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_request() {
     let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     h.0.inner.outgoing.clear();
     let raw = terminal_id_out(&id);
@@ -43,7 +43,7 @@ fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_reque
     h.0.inner.process_send(history_send(id.clone())).unwrap();
     assert!(
         h.0.inner.outgoing.is_empty(),
-        "pagination overtook DETACH_TERMINAL"
+        "pagination overtook DETACH_RESOURCE"
     );
     assert_eq!(
         h.feed(FrameKind::CommandResult {
@@ -81,7 +81,7 @@ fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_reque
 #[test]
 fn detach_refusal_drops_a_history_request_invalidated_without_generation_change() {
     let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     h.0.inner.outgoing.clear();
     h.0.inner.process_send(history_send(id.clone())).unwrap();
@@ -112,12 +112,12 @@ fn detach_refusal_drops_a_history_request_invalidated_without_generation_change(
 #[test]
 fn closed_initial_participant_drops_deferred_sends_before_detach_refusal() {
     let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     h.0.inner.outgoing.clear();
     h.0.inner.process_send(history_send(id.clone())).unwrap();
     assert_eq!(
-        h.feed(FrameKind::TerminalClosed {
+        h.feed(FrameKind::ResourceClosed {
             terminal_id: id.clone(),
             exit_status: None,
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -144,7 +144,7 @@ fn closed_initial_participant_drops_deferred_sends_before_detach_refusal() {
 fn detach_refusal_never_flushes_retired_generation_and_resumes_only_current_cursor() {
     for replacement in 0..3 {
         let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
-        let id = TerminalId::local(1);
+        let id = ResourceId::local(1);
         assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
         h.0.inner.outgoing.clear();
         h.0.inner.process_send(history_send(id.clone())).unwrap();
@@ -216,7 +216,7 @@ fn detach_refusal_never_flushes_retired_generation_and_resumes_only_current_curs
 fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnect() {
     for disconnect in [false, true] {
         let mut h = Harness::attached();
-        let id = TerminalId::local(2);
+        let id = ResourceId::local(2);
         assert_eq!(h.attach(1, &id), PhuxClientResult::Ok);
         h.bootstrap_with_cursor(id.clone(), Some(bytes::Bytes::from_static(&[42; 32])));
         assert_eq!(
@@ -254,7 +254,7 @@ fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnec
             assert_eq!(h.result(1).status, 3);
         } else {
             assert_eq!(
-                h.feed(FrameKind::TerminalClosed {
+                h.feed(FrameKind::ResourceClosed {
                     terminal_id: id.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -363,12 +363,12 @@ impl Harness {
         let session = phux_protocol::SessionId::new(1);
         let window = phux_protocol::WindowId::new(1);
         let snapshot =
-            phux_protocol::wire::info::SessionSnapshot::new(session, window, TerminalId::local(1))
+            phux_protocol::wire::info::SessionSnapshot::new(session, window, ResourceId::local(1))
                 .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
                     window, session, "main",
                 )])
-                .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
-                    TerminalId::local(1),
+                .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
+                    ResourceId::local(1),
                     window,
                     40,
                     12,
@@ -381,7 +381,7 @@ impl Harness {
             }),
             PhuxClientResult::Ok
         );
-        h.bootstrap_with_cursor(TerminalId::local(1), cursor);
+        h.bootstrap_with_cursor(ResourceId::local(1), cursor);
         assert_eq!(
             h.feed(FrameKind::AttachReady { attach_id: 1 }),
             PhuxClientResult::Ok
@@ -404,31 +404,31 @@ impl Harness {
         }
     }
 
-    fn attach(&mut self, request_id: u32, id: &TerminalId) -> PhuxClientResult {
+    fn attach(&mut self, request_id: u32, id: &ResourceId) -> PhuxClientResult {
         // SAFETY: borrowed ID host remains live for this call.
         unsafe {
-            phux_client_queue_attach_terminal(
+            phux_client_queue_attach_resource(
                 self.ptr(),
-                &PhuxAttachTerminalOptions {
+                &PhuxAttachResourceOptions {
                     request_id,
                     terminal_id: terminal_id_out(id),
-                    ..PhuxAttachTerminalOptions::default()
+                    ..PhuxAttachResourceOptions::default()
                 },
             )
         }
     }
 
-    fn bootstrap(&mut self, terminal_id: TerminalId) {
+    fn bootstrap(&mut self, terminal_id: ResourceId) {
         self.bootstrap_with_cursor(terminal_id, None);
     }
 
-    fn bootstrap_with_cursor(&mut self, terminal_id: TerminalId, cursor: Option<bytes::Bytes>) {
+    fn bootstrap_with_cursor(&mut self, terminal_id: ResourceId, cursor: Option<bytes::Bytes>) {
         self.bootstrap_generation(terminal_id, cursor, 17);
     }
 
     fn bootstrap_generation(
         &mut self,
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         cursor: Option<bytes::Bytes>,
         stream: u64,
     ) {
@@ -462,15 +462,15 @@ impl Harness {
         }
     }
 
-    fn detach(&mut self, request_id: u32, id: &TerminalId) -> PhuxClientResult {
+    fn detach(&mut self, request_id: u32, id: &ResourceId) -> PhuxClientResult {
         // SAFETY: harness owns the client and borrowed options/host.
         unsafe {
-            phux_client_queue_detach_terminal(
+            phux_client_queue_detach_resource(
                 self.ptr(),
-                &PhuxDetachTerminalOptions {
+                &PhuxDetachResourceOptions {
                     request_id,
                     terminal_id: terminal_id_out(id),
-                    ..PhuxDetachTerminalOptions::default()
+                    ..PhuxDetachResourceOptions::default()
                 },
             )
         }
@@ -490,7 +490,7 @@ impl Harness {
 #[test]
 fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reattach() {
     let mut h = Harness::attached();
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     assert!(h.0.inner.session.published(&id).is_some());
     assert_eq!(h.detach(2, &id), PhuxClientResult::InvalidState);
@@ -519,7 +519,7 @@ fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reat
 #[test]
 fn detach_refusal_preserves_replica_and_disconnect_is_unknown_without_replay() {
     let mut h = Harness::attached();
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     assert_eq!(
         h.feed(FrameKind::Error {
@@ -545,21 +545,21 @@ fn detach_refusal_preserves_replica_and_disconnect_is_unknown_without_replay() {
 fn detach_is_available_at_full_dynamic_admission_capacity() {
     let mut h = Harness::attached();
     for id in 2..=u32::try_from(MAX_DYNAMIC_TERMINALS + 1).unwrap() {
-        h.0.inner.operations.dynamic.insert(TerminalId::local(id));
+        h.0.inner.operations.dynamic.insert(ResourceId::local(id));
     }
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);
-    assert_eq!(h.detach(1, &TerminalId::local(2)), PhuxClientResult::Ok);
+    assert_eq!(h.detach(1, &ResourceId::local(2)), PhuxClientResult::Ok);
 }
 
 #[test]
 fn detached_stream_is_unsolicited_and_wrong_reply_does_not_consume_detach() {
     let mut h = Harness::attached();
-    let id = TerminalId::local(1);
+    let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
     assert_eq!(
-        h.feed(FrameKind::TerminalSpawned {
+        h.feed(FrameKind::ResourceSpawned {
             request_id: 1,
-            result: SpawnResult::Ok(TerminalId::local(8))
+            result: SpawnResult::Ok(ResourceId::local(8))
         }),
         PhuxClientResult::ProtocolError
     );
@@ -592,9 +592,9 @@ fn local_spawn_is_correlated_and_admitted_before_bootstrap_without_restarting_at
     let mut h = Harness::attached();
     assert_eq!(h.spawn(10), PhuxClientResult::Ok);
     assert_eq!(
-        h.feed(FrameKind::TerminalSpawned {
+        h.feed(FrameKind::ResourceSpawned {
             request_id: 10,
-            result: SpawnResult::Ok(TerminalId::local(2))
+            result: SpawnResult::Ok(ResourceId::local(2))
         }),
         PhuxClientResult::Ok
     );
@@ -611,22 +611,22 @@ fn local_spawn_is_correlated_and_admitted_before_bootstrap_without_restarting_at
     assert!(
         h.0.inner
             .session
-            .active_attach_contains(&TerminalId::local(1))
+            .active_attach_contains(&ResourceId::local(1))
     );
     assert!(
         !h.0.inner
             .session
-            .active_attach_contains(&TerminalId::local(2))
+            .active_attach_contains(&ResourceId::local(2))
     );
-    h.bootstrap(TerminalId::local(2));
-    assert!(h.0.inner.session.published(&TerminalId::local(2)).is_some());
+    h.bootstrap(ResourceId::local(2));
+    assert!(h.0.inner.session.published(&ResourceId::local(2)).is_some());
     assert_eq!(
-        h.attach(11, &TerminalId::local(2)),
+        h.attach(11, &ResourceId::local(2)),
         PhuxClientResult::InvalidState
     );
     assert!(
         h.0.inner
-            .ensure_participant(&TerminalId::local(99))
+            .ensure_participant(&ResourceId::local(99))
             .is_err()
     );
 }
@@ -644,9 +644,9 @@ fn satellite_spawn_requires_explicit_attach_and_bootstrap_can_precede_ack() {
         unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
         PhuxClientResult::Ok
     );
-    let id = TerminalId::satellite(SatelliteHost::new("remote"), 22);
+    let id = ResourceId::satellite(SatelliteHost::new("remote"), 22);
     assert_eq!(
-        h.feed(FrameKind::TerminalSpawned {
+        h.feed(FrameKind::ResourceSpawned {
             request_id: 10,
             result: SpawnResult::Ok(id.clone())
         }),
@@ -686,7 +686,7 @@ fn refusals_are_scoped_results_and_revoke_only_the_requested_admission() {
     let mut h = Harness::attached();
     assert_eq!(h.spawn(10), PhuxClientResult::Ok);
     assert_eq!(
-        h.feed(FrameKind::TerminalSpawned {
+        h.feed(FrameKind::ResourceSpawned {
             request_id: 10,
             result: SpawnResult::Err(SpawnError::SpawnFailed("no PTY".into()))
         }),
@@ -694,8 +694,8 @@ fn refusals_are_scoped_results_and_revoke_only_the_requested_admission() {
     );
     assert_eq!((h.result(0).status, h.result(0).error_domain), (2, 1));
     assert!(h.0.inner.owned_effects.is_empty());
-    assert_eq!(h.attach(11, &TerminalId::local(2)), PhuxClientResult::Ok);
-    h.bootstrap(TerminalId::local(2));
+    assert_eq!(h.attach(11, &ResourceId::local(2)), PhuxClientResult::Ok);
+    h.bootstrap(ResourceId::local(2));
     assert_eq!(
         h.feed(FrameKind::CommandResult {
             request_id: 11,
@@ -706,9 +706,9 @@ fn refusals_are_scoped_results_and_revoke_only_the_requested_admission() {
         }),
         PhuxClientResult::Ok
     );
-    assert!(!h.0.inner.operations.admitted(&TerminalId::local(2)));
-    assert!(h.0.inner.session.published(&TerminalId::local(2)).is_none());
-    assert!(h.0.inner.session.published(&TerminalId::local(1)).is_some());
+    assert!(!h.0.inner.operations.admitted(&ResourceId::local(2)));
+    assert!(h.0.inner.session.published(&ResourceId::local(2)).is_none());
+    assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
     assert!(
         !h.0.inner
             .owned_effects
@@ -736,29 +736,29 @@ fn malformed_duplicate_and_wrong_kind_results_do_not_consume_pending_requests() 
             request_id: 10,
             result: CommandResult::Ok,
         },
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 11,
-            result: SpawnResult::Ok(TerminalId::local(2)),
+            result: SpawnResult::Ok(ResourceId::local(2)),
         },
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 10,
-            result: SpawnResult::Ok(TerminalId::local(0)),
+            result: SpawnResult::Ok(ResourceId::local(0)),
         },
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 10,
-            result: SpawnResult::Ok(TerminalId::local(1)),
+            result: SpawnResult::Ok(ResourceId::local(1)),
         },
-        FrameKind::TerminalSpawned {
+        FrameKind::ResourceSpawned {
             request_id: 10,
-            result: SpawnResult::Ok(TerminalId::satellite(SatelliteHost::new("other"), 2)),
+            result: SpawnResult::Ok(ResourceId::satellite(SatelliteHost::new("other"), 2)),
         },
     ] {
         assert_eq!(h.feed(frame), PhuxClientResult::ProtocolError);
     }
     assert_eq!(h.0.inner.operations.pending.len(), 1);
-    let ok = FrameKind::TerminalSpawned {
+    let ok = FrameKind::ResourceSpawned {
         request_id: 10,
-        result: SpawnResult::Ok(TerminalId::local(2)),
+        result: SpawnResult::Ok(ResourceId::local(2)),
     };
     assert_eq!(h.feed(ok.clone()), PhuxClientResult::Ok);
     assert_eq!(h.feed(ok), PhuxClientResult::ProtocolError);
@@ -774,7 +774,7 @@ fn malformed_duplicate_and_wrong_kind_results_do_not_consume_pending_requests() 
 fn disconnect_cancels_pending_without_retry_and_retains_opaque_server_identity() {
     let mut h = Harness::attached();
     assert_eq!(h.spawn(10), PhuxClientResult::Ok);
-    assert_eq!(h.attach(11, &TerminalId::local(2)), PhuxClientResult::Ok);
+    assert_eq!(h.attach(11, &ResourceId::local(2)), PhuxClientResult::Ok);
     // SAFETY: harness exclusively owns client.
     assert_eq!(
         unsafe { phux_client_disconnect(h.ptr()) },
@@ -817,7 +817,7 @@ fn pending_plus_results_and_dynamic_admissions_are_bounded() {
     }
     assert_eq!(h.spawn(129), PhuxClientResult::InvalidState);
     assert_eq!(
-        h.feed(FrameKind::TerminalSpawned {
+        h.feed(FrameKind::ResourceSpawned {
             request_id: 1,
             result: SpawnResult::Err(SpawnError::GroupNotFound)
         }),
@@ -834,7 +834,7 @@ fn pending_plus_results_and_dynamic_admissions_are_bounded() {
 
     let mut h = Harness::attached();
     for n in 2..=257 {
-        assert_eq!(h.attach(n, &TerminalId::local(n)), PhuxClientResult::Ok);
+        assert_eq!(h.attach(n, &ResourceId::local(n)), PhuxClientResult::Ok);
         assert_eq!(
             h.feed(FrameKind::CommandResult {
                 request_id: n,
@@ -850,13 +850,13 @@ fn pending_plus_results_and_dynamic_admissions_are_bounded() {
         h.0.inner.outgoing.clear();
     }
     assert_eq!(
-        h.attach(258, &TerminalId::local(258)),
+        h.attach(258, &ResourceId::local(258)),
         PhuxClientResult::InvalidState
     );
     assert_eq!(h.spawn(258), PhuxClientResult::InvalidState);
     assert_eq!(
-        h.feed(FrameKind::TerminalClosed {
-            terminal_id: TerminalId::local(2),
+        h.feed(FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(2),
             exit_status: None,
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }),
@@ -868,7 +868,7 @@ fn pending_plus_results_and_dynamic_admissions_are_bounded() {
 #[test]
 fn spawn_options_are_encoded_exactly_and_validation_is_transactional() {
     let mut h = Harness::attached();
-    let owner = terminal_id_out(&TerminalId::local(1));
+    let owner = terminal_id_out(&ResourceId::local(1));
     let argv = [
         bytes_out(b"/bin/sh"),
         bytes_out(b"-c"),
@@ -892,13 +892,13 @@ fn spawn_options_are_encoded_exactly_and_validation_is_transactional() {
     let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
     assert!(remaining.is_empty());
     assert!(
-        matches!(frame, FrameKind::SpawnTerminal { request_id: 7, owner_terminal: Some(TerminalId::Local { id: 1 }), initial_size: Some((90, 31)), command: Some(ref command), cwd: Some(ref cwd), .. }
+        matches!(frame, FrameKind::SpawnResource { request_id: 7, owner_terminal: Some(ResourceId::Local { id: 1 }), initial_size: Some((90, 31)), command: Some(ref command), cwd: Some(ref cwd), .. }
         if command == &["/bin/sh", "-c", "echo hello"] && cwd == "/workspace")
     );
     for bad in [
         PhuxSpawnOptions {
             request_id: 8,
-            version: 2,
+            version: 3,
             ..options
         },
         PhuxSpawnOptions {
@@ -967,7 +967,7 @@ fn pre_attach_operations_are_rejected_and_result_output_is_sized() {
     h.negotiate();
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);
     assert_eq!(
-        h.attach(1, &TerminalId::local(2)),
+        h.attach(1, &ResourceId::local(2)),
         PhuxClientResult::InvalidState
     );
     let mut result = PhuxOperationResult {
@@ -1018,7 +1018,7 @@ fn completed_results_cannot_hide_an_undrained_outgoing_operation_queue() {
     for request_id in 1..=128 {
         assert_eq!(h.spawn(request_id), PhuxClientResult::Ok);
         assert_eq!(
-            h.feed(FrameKind::TerminalSpawned {
+            h.feed(FrameKind::ResourceSpawned {
                 request_id,
                 result: SpawnResult::Err(SpawnError::GroupNotFound)
             }),
@@ -1038,7 +1038,7 @@ fn completed_results_cannot_hide_an_undrained_outgoing_operation_queue() {
 fn refused_attach_can_be_explicitly_retried_with_or_without_provisional_bootstrap() {
     for provisional in [false, true] {
         let mut h = Harness::attached();
-        let id = TerminalId::satellite(SatelliteHost::new("remote"), 22);
+        let id = ResourceId::satellite(SatelliteHost::new("remote"), 22);
         assert_eq!(h.attach(10, &id), PhuxClientResult::Ok);
         if provisional {
             h.bootstrap(id.clone());
@@ -1064,7 +1064,7 @@ fn refused_attach_can_be_explicitly_retried_with_or_without_provisional_bootstra
             PhuxClientResult::Ok
         );
         assert!(h.0.inner.session.published(&id).is_some());
-        assert!(h.0.inner.session.published(&TerminalId::local(1)).is_some());
+        assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
     }
 }
 
@@ -1073,7 +1073,7 @@ fn dynamic_terminal_churn_releases_kernel_identity_retention() {
     use phux_client_core::session::{InputBlockReason, InputEligibility};
     let mut h = Harness::attached();
     for n in 2..=513 {
-        let id = TerminalId::local(n);
+        let id = ResourceId::local(n);
         assert_eq!(h.attach(n, &id), PhuxClientResult::Ok);
         assert_eq!(
             h.feed(FrameKind::CommandResult {
@@ -1083,7 +1083,7 @@ fn dynamic_terminal_churn_releases_kernel_identity_retention() {
             PhuxClientResult::Ok
         );
         assert_eq!(
-            h.feed(FrameKind::TerminalClosed {
+            h.feed(FrameKind::ResourceClosed {
                 terminal_id: id.clone(),
                 exit_status: None,
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -1110,7 +1110,7 @@ fn outbound_ids_and_aggregate_text_limit_are_validated_before_queue_mutation() {
     let mut h = Harness::attached();
     assert_eq!(h.spawn(0), PhuxClientResult::InvalidArgument);
     assert_eq!(
-        h.attach(1, &TerminalId::local(0)),
+        h.attach(1, &ResourceId::local(0)),
         PhuxClientResult::InvalidArgument
     );
     let text = vec![b'x'; MAX_SPAWN_BYTES];
@@ -1150,10 +1150,10 @@ fn outbound_ids_and_aggregate_text_limit_are_validated_before_queue_mutation() {
 #[test]
 fn closure_before_attach_result_cannot_allow_overlapping_admission_owners() {
     let mut h = Harness::attached();
-    let id = TerminalId::satellite(SatelliteHost::new("remote"), 22);
+    let id = ResourceId::satellite(SatelliteHost::new("remote"), 22);
     assert_eq!(h.attach(10, &id), PhuxClientResult::Ok);
     assert_eq!(
-        h.feed(FrameKind::TerminalClosed {
+        h.feed(FrameKind::ResourceClosed {
             terminal_id: id.clone(),
             exit_status: None,
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -1187,29 +1187,29 @@ fn closure_before_attach_result_cannot_allow_overlapping_admission_owners() {
 #[test]
 fn satellite_owner_requires_exact_explicit_route_and_preserves_wire_identity() {
     for (owner, route, expected) in [
-        (TerminalId::local(1), "", PhuxClientResult::Ok),
+        (ResourceId::local(1), "", PhuxClientResult::Ok),
         (
-            TerminalId::local(1),
+            ResourceId::local(1),
             "remote",
             PhuxClientResult::InvalidArgument,
         ),
         (
-            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            ResourceId::satellite(SatelliteHost::new("remote"), 22),
             "",
             PhuxClientResult::InvalidArgument,
         ),
         (
-            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            ResourceId::satellite(SatelliteHost::new("remote"), 22),
             "other",
             PhuxClientResult::InvalidArgument,
         ),
         (
-            TerminalId::satellite(SatelliteHost::new("remote"), 0),
+            ResourceId::satellite(SatelliteHost::new("remote"), 0),
             "remote",
             PhuxClientResult::InvalidArgument,
         ),
         (
-            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            ResourceId::satellite(SatelliteHost::new("remote"), 22),
             "remote",
             PhuxClientResult::Ok,
         ),
@@ -1237,7 +1237,7 @@ fn satellite_owner_requires_exact_explicit_route_and_preserves_wire_identity() {
         let (frame, remaining) =
             FrameKind::decode(&h.0.inner.outgoing[0]).expect("spawn wire frame");
         assert!(remaining.is_empty());
-        let FrameKind::SpawnTerminal {
+        let FrameKind::SpawnResource {
             owner_terminal,
             satellite,
             initial_size,
@@ -1262,7 +1262,7 @@ fn satellite_owner_requires_exact_explicit_route_and_preserves_wire_identity() {
 fn satellite_owner_host_counts_toward_aggregate_spawn_text_bound() {
     let mut h = Harness::attached();
     let route = "h".repeat(MAX_SPAWN_BYTES / 2);
-    let owner = TerminalId::satellite(SatelliteHost::new(&route), 22);
+    let owner = ResourceId::satellite(SatelliteHost::new(&route), 22);
     let owner_view = terminal_id_out(&owner);
     let mut options = PhuxSpawnOptions {
         request_id: 2,

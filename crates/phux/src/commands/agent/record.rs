@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::agent_meta::{
-    AgentAttention, AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record,
+    AgentAttention, AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record,
 };
 use phux_client::attach::connection::{Answer, Connection};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
@@ -54,8 +54,8 @@ pub(super) fn run_agent_set(
         Box::pin(async move {
             conn.send(&FrameKind::SetMetadata {
                 request_id: 100,
-                scope: Scope::Terminal(pane.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(pane.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
                 value: record.encode(),
             })
             .await?;
@@ -85,8 +85,8 @@ pub(super) fn run_agent_clear(target: Option<&str>, socket: Option<PathBuf>) -> 
         Box::pin(async move {
             conn.send(&FrameKind::DeleteMetadata {
                 request_id: 100,
-                scope: Scope::Terminal(pane.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
+                scope: Scope::Resource(pane.clone()),
+                key: RESOURCE_AGENT_KEY.to_owned(),
             })
             .await?;
             // Same load-bearing confirmation round-trip as `set`.
@@ -113,7 +113,7 @@ pub(super) fn with_target_pane<F>(
 where
     F: for<'c> FnOnce(
         &'c mut Connection,
-        TerminalId,
+        ResourceId,
     ) -> std::pin::Pin<
         Box<dyn Future<Output = Result<(), phux_client::attach::AttachError>> + 'c>,
     >,
@@ -149,7 +149,8 @@ where
             }
         } else {
             let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-            let Some(pane) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+            let Some(pane) =
+                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
                 // `agent set` / `clear` address a Terminal, and `panes` is
                 // the list a federation hub merges. A miss against a hub that
@@ -180,14 +181,14 @@ where
 /// returned.
 async fn get_record(
     conn: &mut Connection,
-    pane: &TerminalId,
+    pane: &ResourceId,
     request_id: u32,
 ) -> Result<Answer<Option<AgentRecord>>, phux_client::attach::AttachError> {
     let (answer, interleaved) = conn
         .request_metadata(
             request_id,
-            Scope::Terminal(pane.clone()),
-            TERMINAL_AGENT_KEY.to_owned(),
+            Scope::Resource(pane.clone()),
+            RESOURCE_AGENT_KEY.to_owned(),
         )
         .await?
         .into_parts();
@@ -199,7 +200,7 @@ async fn get_record(
 
 /// `SELECTOR<TAB>record-json` (or `SELECTOR<TAB>-` for a cleared record) —
 /// one line, machine-splittable, mirroring `phux tag`'s confirmation output.
-fn render_record(pane: &TerminalId, record: Option<&AgentRecord>) -> String {
+fn render_record(pane: &ResourceId, record: Option<&AgentRecord>) -> String {
     let selector = crate::selector::format_terminal_id(pane);
     record.map_or_else(
         || format!("{selector}\t-"),
@@ -212,7 +213,7 @@ fn render_record(pane: &TerminalId, record: Option<&AgentRecord>) -> String {
     )
 }
 
-/// Fetch the `phux.agent/v1` index — `TerminalId` → decoded record — for
+/// Fetch the `phux.agent/v1` index — `ResourceId` → decoded record — for
 /// every pane in `snapshot`, over one fresh connection to `socket_path`.
 ///
 /// One `GET_METADATA` round trip per pane, the same shape as `phux tag`'s
@@ -231,21 +232,21 @@ fn render_record(pane: &TerminalId, record: Option<&AgentRecord>) -> String {
 pub(crate) async fn fetch_agent_index(
     socket_path: &std::path::Path,
     snapshot: &SessionSnapshot,
-) -> std::collections::HashMap<TerminalId, AgentRecord> {
+) -> std::collections::HashMap<ResourceId, AgentRecord> {
     let mut index = std::collections::HashMap::new();
-    if snapshot.panes.is_empty() {
+    if snapshot.resources.is_empty() {
         return index;
     }
     let Ok(mut conn) = Connection::connect(socket_path).await else {
         return index;
     };
-    for (offset, pane) in snapshot.panes.iter().enumerate() {
+    for (offset, pane) in snapshot.resources.iter().enumerate() {
         let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
         let Ok(reply) = conn
             .request_metadata(
                 request_id,
-                Scope::Terminal(pane.id.clone()),
-                TERMINAL_AGENT_KEY.to_owned(),
+                Scope::Resource(pane.id.clone()),
+                RESOURCE_AGENT_KEY.to_owned(),
             )
             .await
         else {
@@ -269,7 +270,7 @@ mod tests {
 
     #[test]
     fn satellite_set_and_clear_confirmations_use_canonical_selector() {
-        let pane = TerminalId::satellite("region/@build", 7);
+        let pane = ResourceId::satellite("region/@build", 7);
         assert_eq!(render_record(&pane, None), "region/@build/@7\t-");
 
         let record = AgentRecord {

@@ -116,11 +116,11 @@ pub enum DecodeError {
     #[error("APPEND_RESOURCE_OUTPUT payload exceeds protocol limits")]
     AppendResourceOutputLimitExceeded,
 
-    /// A `SPAWN_TERMINAL` body carried a field its `kind` forbids, or omitted
+    /// A `SPAWN_RESOURCE` body carried a field its `kind` forbids, or omitted
     /// one its `kind` requires (`docs/spec/L1.md` §3.1). `field` is the
     /// offending field id; `required` says which of the two rules fired.
     #[error(
-        "SPAWN_TERMINAL field {field} violates the field rules for kind {kind} (required: {required})"
+        "SPAWN_RESOURCE field {field} violates the field rules for kind {kind} (required: {required})"
     )]
     InvalidSpawnForKind {
         /// Wire tag of the spawn's `kind`.
@@ -132,9 +132,9 @@ pub enum DecodeError {
         required: bool,
     },
 
-    /// A `SPAWN_TERMINAL` `provider` or `native_id` string was empty or
+    /// A `SPAWN_RESOURCE` `provider` or `native_id` string was empty or
     /// exceeded its byte bound.
-    #[error("SPAWN_TERMINAL agent facet string exceeds protocol limits")]
+    #[error("SPAWN_RESOURCE agent facet string exceeds protocol limits")]
     AgentFacetLimitExceeded,
 
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the

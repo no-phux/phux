@@ -75,7 +75,7 @@ impl Dial {
 /// paths a client cannot avoid, and the frames it emits ahead of the ack are
 /// **never re-sent**:
 ///
-/// - `ATTACH_TERMINAL`: `handle_attach_terminal`
+/// - `ATTACH_RESOURCE`: `handle_attach_terminal`
 ///   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
 ///   bootstrap transcript before the acknowledgement. A caller that drops it
 ///   has no opening screen and no geometry — the exact defect that made every
@@ -86,9 +86,9 @@ impl Dial {
 ///   snapshot the ack carries. A caller that drops it reports a silently
 ///   partial view of the fleet as if it were complete.
 /// - Any command on a connection that also holds a subscription
-///   (`ATTACH_TERMINAL`, `SUBSCRIBE_EVENTS`, an event registration): the
+///   (`ATTACH_RESOURCE`, `SUBSCRIBE_EVENTS`, an event registration): the
 ///   handler's internal `.await` points let the pane actor's `EVENT` and
-///   `TERMINAL_OUTPUT` fanout reach this client's mailbox first.
+///   `RESOURCE_OUTPUT` fanout reach this client's mailbox first.
 ///
 /// Because a consumed frame is gone, `recv` alone cannot express a correct
 /// request/response. [`Connection::request`] is the safe form: it hands back
@@ -757,14 +757,14 @@ impl Connection {
         })
     }
 
-    /// Send one `SPAWN_TERMINAL` and wait for its `TERMINAL_SPAWNED`, keeping
+    /// Send one `SPAWN_RESOURCE` and wait for its `RESOURCE_SPAWNED`, keeping
     /// every frame the peer interleaved ahead of it.
     ///
     /// The correlation id is read out of `frame` rather than passed alongside
     /// it, so the id waited on and the id sent cannot disagree.
     ///
     /// A satellite MAY answer a relayed spawn with a correlated `ERROR`
-    /// instead of `TERMINAL_SPAWNED` — a hub already normalizes exactly that
+    /// instead of `RESOURCE_SPAWNED` — a hub already normalizes exactly that
     /// shape on the return leg (`crates/phux-server/src/hub/relay.rs`,
     /// `handle_inbound`: "a satellite MAY answer a relayed spawn with a
     /// generic correlated ERROR"). This is the same normalization for a
@@ -773,16 +773,16 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// [`AttachError::Protocol`] when `frame` is not a `SPAWN_TERMINAL`;
+    /// [`AttachError::Protocol`] when `frame` is not a `SPAWN_RESOURCE`;
     /// otherwise transport and decode failures from [`Self::send`] /
     /// [`Self::recv`].
     pub async fn request_spawn(
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<SpawnResult>>, AttachError> {
-        let FrameKind::SpawnTerminal { request_id, .. } = frame else {
+        let FrameKind::SpawnResource { request_id, .. } = frame else {
             return Err(AttachError::Protocol(format!(
-                "request_spawn needs a SPAWN_TERMINAL frame, got {frame:?}",
+                "request_spawn needs a SPAWN_RESOURCE frame, got {frame:?}",
             )));
         };
         let request_id = *request_id;
@@ -790,7 +790,7 @@ impl Connection {
         let mut interleaved = Vec::new();
         let result = self
             .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::TerminalSpawned { request_id, result } => {
+                FrameKind::ResourceSpawned { request_id, result } => {
                     Some((*request_id, result.clone()))
                 }
                 _ => None,
@@ -802,7 +802,7 @@ impl Connection {
         })
     }
 
-    /// Send one `MOVE_TERMINAL` and wait for its `TERMINAL_MOVED`, keeping
+    /// Send one `MOVE_RESOURCE` and wait for its `RESOURCE_MOVED`, keeping
     /// every frame the peer interleaved ahead of it (ADR-0056).
     ///
     /// The correlation id is read out of `frame` rather than passed
@@ -811,16 +811,16 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// [`AttachError::Protocol`] when `frame` is not a `MOVE_TERMINAL`;
+    /// [`AttachError::Protocol`] when `frame` is not a `MOVE_RESOURCE`;
     /// otherwise transport and decode failures from [`Self::send`] /
     /// [`Self::recv`].
     pub async fn request_move(
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<MoveResult>>, AttachError> {
-        let FrameKind::MoveTerminal { request_id, .. } = frame else {
+        let FrameKind::MoveResource { request_id, .. } = frame else {
             return Err(AttachError::Protocol(format!(
-                "request_move needs a MOVE_TERMINAL frame, got {frame:?}",
+                "request_move needs a MOVE_RESOURCE frame, got {frame:?}",
             )));
         };
         let request_id = *request_id;
@@ -828,7 +828,7 @@ impl Connection {
         let mut interleaved = Vec::new();
         let result = self
             .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::TerminalMoved { request_id, result } => {
+                FrameKind::ResourceMoved { request_id, result } => {
                     Some((*request_id, result.clone()))
                 }
                 _ => None,
@@ -1484,7 +1484,7 @@ mod tests {
         // A small, cheap-to-build frame with a distinguishing field so the
         // burst-decode test can assert ordering.
         let frame = FrameKind::FrameAck {
-            terminal_id: phux_protocol::ids::TerminalId::Local { id: 1 },
+            terminal_id: phux_protocol::ids::ResourceId::Local { id: 1 },
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
             seq,
@@ -1497,7 +1497,7 @@ mod tests {
     /// A frame carrying `seq`, for ordering assertions.
     fn seq_ack(seq: u64) -> FrameKind {
         FrameKind::FrameAck {
-            terminal_id: phux_protocol::ids::TerminalId::Local { id: 1 },
+            terminal_id: phux_protocol::ids::ResourceId::Local { id: 1 },
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
             bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
             seq,
@@ -1639,7 +1639,7 @@ mod tests {
 
     use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
-    use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
     use tokio::net::UnixStream;
 
@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     fn bootstrap() -> Vec<FrameKind> {
-        let terminal_id = TerminalId::local(1);
+        let terminal_id = ResourceId::local(1);
         let stream_id = StreamId::new(1).expect("stream");
         let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
         vec![
@@ -1797,7 +1797,7 @@ mod tests {
     #[test]
     fn frames_are_returned_in_arrival_order() {
         let bell = FrameKind::Bell {
-            terminal_id: TerminalId::local(1),
+            terminal_id: ResourceId::local(1),
         };
         let mut script = bootstrap();
         script.extend([bell, ack(7)]);
@@ -1811,7 +1811,7 @@ mod tests {
 
     // --- the non-COMMAND pairs (phux-h5hj.12) --------------------------
     //
-    // `GET_METADATA` and `SPAWN_TERMINAL` are their own request frames with
+    // `GET_METADATA` and `SPAWN_RESOURCE` are their own request frames with
     // their own `request_id`, so `Connection::request` never covered them and
     // each grew a hand-rolled wait that matched one reply variant and dropped
     // the rest. Every test below fails by *hanging* against that version,
@@ -1848,7 +1848,7 @@ mod tests {
             let mut client = scripted(script);
             tokio::time::timeout(
                 WEDGE_TIMEOUT,
-                client.request_metadata(7, Scope::Terminal(TerminalId::local(1)), "k".to_owned()),
+                client.request_metadata(7, Scope::Resource(ResourceId::local(1)), "k".to_owned()),
             )
             .await
             .expect("the read must resolve; a timeout here is the wedge itself")
@@ -1856,7 +1856,7 @@ mod tests {
         })
     }
 
-    /// One `SPAWN_TERMINAL` round trip against `script`, same cap.
+    /// One `SPAWN_RESOURCE` round trip against `script`, same cap.
     fn spawn_against(script: Vec<FrameKind>) -> Reply<Answer<SpawnResult>> {
         block_on(async {
             let mut client = scripted(script);
@@ -1967,7 +1967,7 @@ mod tests {
     }
 
     fn spawn_frame(request_id: u32) -> FrameKind {
-        FrameKind::SpawnTerminal {
+        FrameKind::SpawnResource {
             request_id,
             group: phux_protocol::ids::GroupId::new(1),
             command: None,
@@ -1986,7 +1986,7 @@ mod tests {
     fn spawn_refusal_answers_the_request_instead_of_hanging_forever() {
         // `relay.rs`'s `handle_inbound` says a satellite MAY answer a relayed
         // spawn with a generic correlated ERROR. `dispatch_spawn_async`
-        // matched TERMINAL_SPAWNED alone, so `phux spawn --satellite` against
+        // matched RESOURCE_SPAWNED alone, so `phux spawn --satellite` against
         // such a peer never returned.
         let reply = spawn_against(vec![refusal(7)]);
         assert!(
@@ -1998,9 +1998,9 @@ mod tests {
 
     #[test]
     fn spawn_wait_keeps_frames_pushed_ahead_of_the_reply() {
-        let spawned = FrameKind::TerminalSpawned {
+        let spawned = FrameKind::ResourceSpawned {
             request_id: 7,
-            result: SpawnResult::Ok(TerminalId::local(3)),
+            result: SpawnResult::Ok(ResourceId::local(3)),
         };
         let mut script = bootstrap();
         script.push(spawned);

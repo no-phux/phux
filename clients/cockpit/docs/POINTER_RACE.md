@@ -20,7 +20,7 @@ applied to terminal input.
 Useful evidence retained from commit `4f5666e`:
 
 - Transparent retained interaction widgets are globally keyed by stable
-  `TerminalId`, and their laid-out bounds agree with the independently painted
+  `ResourceId`, and their laid-out bounds agree with the independently painted
   terminal frames.
 - Primary selection uses libghostty-vt `SelectionGesture` for cell, word, and
   line behavior. Pointer selection remains separate from Cockpit's keyboard
@@ -68,7 +68,7 @@ Review findings not retained:
   same routed path while a live TUI owns mouse reporting; every raw pointer echo
   is ignored for terminal input.
 - A bounded capture table is keyed by `window_id + pointer_id` and stores
-  `TerminalId + session_generation`. Different pointers coexist; stale edges
+  `ResourceId + session_generation`. Different pointers coexist; stale edges
   cannot cancel or borrow another capture. Reorder and focus changes do not
   change ownership.
 - Web/terminal hiding, detach, close, restart, deactivation, cancel, a second

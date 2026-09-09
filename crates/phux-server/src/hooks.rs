@@ -181,7 +181,7 @@ impl HookEvent {
     /// [`AFTER_NEW_PANE`]: fired right after a pane's actor spawns.
     #[must_use]
     pub fn after_new_pane(
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         session: Option<&str>,
     ) -> Self {
         let mut context = terminal_context(terminal_id);
@@ -195,7 +195,7 @@ impl HookEvent {
     /// `exit-code` is present only when the OS reported a code.
     #[must_use]
     pub fn pane_exit(
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         exit_status: Option<i32>,
     ) -> Self {
         let mut context = terminal_context(terminal_id);
@@ -209,7 +209,7 @@ impl HookEvent {
     /// (an `INPUT_FOCUS` gained event that passed the routing gates).
     #[must_use]
     pub fn focus_changed(
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         client_id: crate::state::ClientId,
     ) -> Self {
         let mut context = terminal_context(terminal_id);
@@ -256,7 +256,7 @@ impl HookEvent {
     /// `to` use the L3 agent-state vocabulary.
     #[must_use]
     pub fn agent_state_changed(
-        terminal_id: &phux_protocol::ids::TerminalId,
+        terminal_id: &phux_protocol::ids::ResourceId,
         kind: &str,
         name: &str,
         from: Option<&str>,
@@ -276,7 +276,7 @@ impl HookEvent {
 }
 
 /// Shared context helper: the pane's wire-local id, when it has one.
-fn terminal_context(terminal_id: &phux_protocol::ids::TerminalId) -> Vec<(String, String)> {
+fn terminal_context(terminal_id: &phux_protocol::ids::ResourceId) -> Vec<(String, String)> {
     terminal_id
         .local_id()
         .map(|id| ("terminal-id".to_owned(), id.to_string()))
@@ -913,7 +913,7 @@ mod tests {
     /// vocab (or vice versa) fails here, not in a user's silent hook.
     #[test]
     fn vocab_context_keys_match_the_event_constructors() {
-        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let terminal = phux_protocol::ids::ResourceId::local(7);
         let client = crate::state::ClientId(3);
         let events = [
             HookEvent::after_new_pane(&terminal, Some("work")),
@@ -1015,7 +1015,7 @@ mod tests {
             );
         }
 
-        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let terminal = phux_protocol::ids::ResourceId::local(7);
         let client = crate::state::ClientId(3);
         let events = [
             HookEvent::after_new_pane(&terminal, Some("work")),

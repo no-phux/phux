@@ -294,13 +294,13 @@ fn corrupt_payload(frame: FrameKind) -> Result<FrameKind, String> {
             payload: flipped(&payload)?,
             rows,
         }),
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
             seq,
             bytes,
-        } => Ok(FrameKind::TerminalOutput {
+        } => Ok(FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
@@ -308,7 +308,7 @@ fn corrupt_payload(frame: FrameKind) -> Result<FrameKind, String> {
             bytes: flipped(&bytes)?,
         }),
         other => Err(format!(
-            "CorruptPayload requires BOOTSTRAP_CHUNK, HISTORY_PAGE, or TERMINAL_OUTPUT; got {}",
+            "CorruptPayload requires BOOTSTRAP_CHUNK, HISTORY_PAGE, or RESOURCE_OUTPUT; got {}",
             frame_label(&other)
         )),
     }
@@ -319,7 +319,7 @@ const fn frame_label(frame: &FrameKind) -> &'static str {
         FrameKind::BootstrapBegin { .. } => "BOOTSTRAP_BEGIN",
         FrameKind::BootstrapChunk { .. } => "BOOTSTRAP_CHUNK",
         FrameKind::BootstrapReady { .. } => "BOOTSTRAP_READY",
-        FrameKind::TerminalOutput { .. } => "TERMINAL_OUTPUT",
+        FrameKind::ResourceOutput { .. } => "RESOURCE_OUTPUT",
         FrameKind::HistoryPage { .. } => "HISTORY_PAGE",
         FrameKind::BootstrapTombstone { .. } => "BOOTSTRAP_TOMBSTONE",
         FrameKind::HistoryTombstone { .. } => "HISTORY_TOMBSTONE",

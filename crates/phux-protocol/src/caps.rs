@@ -436,7 +436,7 @@ pub enum BootstrapCodec {
     /// Newline-delimited JSON agent-event records, grammar version 1: the
     /// bootstrap and live output codec of an `AgentSession` resource.
     /// `BOOTSTRAP_CHUNK`s carry the retained records, live
-    /// `TERMINAL_OUTPUT.bytes` carry one or more complete records, and the
+    /// `RESOURCE_OUTPUT.bytes` carry one or more complete records, and the
     /// stream is always raw (`FRAME_ACK` is forbidden). Gated on
     /// `ServerFeature::ResourceKinds`.
     AgentEventsJsonlV1,
@@ -919,13 +919,13 @@ impl Default for LayerSet {
 pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
 /// Wire bit advertising chunked, acknowledged `Command::PutFile` uploads.
 pub const FILE_UPLOAD: u32 = 0x0000_0020;
-/// Wire bit advertising the `MOVE_TERMINAL` re-parent frame (ADR-0056).
-pub const MOVE_TERMINAL: u32 = 0x0000_0040;
+/// Wire bit advertising the `MOVE_RESOURCE` re-parent frame (ADR-0056).
+pub const MOVE_RESOURCE: u32 = 0x0000_0040;
 /// Wire bit advertising opaque client terminal-emulator PTY replies.
 pub const TERMINAL_REPLY: u32 = 0x0000_0080;
 /// Wire bit advertising the `SHUTDOWN` command (phux-pimp).
 pub const SHUTDOWN: u32 = 0x0000_0100;
-/// Wire bit advertising `SPAWN_TERMINAL.initial_size` (phux-a5xj).
+/// Wire bit advertising `SPAWN_RESOURCE.initial_size` (phux-a5xj).
 pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
 /// Wire bit advertising hook-sourced agent-state evidence.
 pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
@@ -936,7 +936,7 @@ pub const GET_PERF: u32 = 0x0000_0800;
 pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// Wire bit advertising non-Terminal `ResourceKind`s.
 ///
-/// Covers `SPAWN_TERMINAL` fields 11-14, `TERMINAL_CLOSED.reason`, the
+/// Covers `SPAWN_RESOURCE` fields 11-14, `RESOURCE_CLOSED.reason`, the
 /// snapshot resource facets, the `APPEND_RESOURCE_OUTPUT` command, and the
 /// `AgentEventsJsonlV1` codec.
 pub const RESOURCE_KINDS: u32 = 0x0000_4000;
@@ -950,10 +950,10 @@ pub enum ServerFeature {
     AcknowledgedInput = ACKNOWLEDGED_INPUT,
     /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
     FileUpload = FILE_UPLOAD,
-    /// The server accepts `MOVE_TERMINAL` cross-window re-parents
+    /// The server accepts `MOVE_RESOURCE` cross-window re-parents
     /// (ADR-0056). A client MUST see this bit before sending the frame;
     /// an older server would silently drop the unknown discriminant.
-    MoveTerminal = MOVE_TERMINAL,
+    MoveResource = MOVE_RESOURCE,
     /// The server accepts opaque terminal-emulator replies for attached PTYs.
     TerminalReply = TERMINAL_REPLY,
     /// The server accepts `SHUTDOWN`, a local-only request to stop the
@@ -961,14 +961,14 @@ pub enum ServerFeature {
     /// sending the command; an older server would silently drop the unknown
     /// tag, which is indistinguishable from a stop that did not happen.
     Shutdown = SHUTDOWN,
-    /// The server honors `SPAWN_TERMINAL.initial_size` (phux-a5xj) — it
+    /// The server honors `SPAWN_RESOURCE.initial_size` (phux-a5xj) — it
     /// creates the pane's grid and PTY at the requested size instead of at
     /// its own default. Unlike the frame-gating bits above, sending the
     /// field unadvertised is safe: an older server skips the unknown field
     /// id by length and spawns at its default, which is what happened
     /// before the field existed. The bit exists so a layout-owning client
     /// can tell whether the geometry it just asked for was honored, and
-    /// therefore whether its follow-up `TERMINAL_RESIZE` is redundant.
+    /// therefore whether its follow-up `RESIZE_TERMINAL` is redundant.
     SpawnInitialSize = SPAWN_INITIAL_SIZE,
     /// The server accepts `REPORT_AGENT_STATE` hook evidence.
     ReportAgentState = REPORT_AGENT_STATE,
@@ -979,10 +979,10 @@ pub enum ServerFeature {
     /// transcriber on a finished upload and pasting the text.
     Transcribe = TRANSCRIBE,
     /// The server serves more than one `ResourceKind`: it accepts
-    /// `SPAWN_TERMINAL` with `kind = AgentSession` plus its `parent` /
+    /// `SPAWN_RESOURCE` with `kind = AgentSession` plus its `parent` /
     /// `provider` / `native_id` fields, feeds such a resource through
     /// `APPEND_RESOURCE_OUTPUT`, bootstraps it under the
-    /// `AgentEventsJsonlV1` codec, reports `TERMINAL_CLOSED.reason`, and
+    /// `AgentEventsJsonlV1` codec, reports `RESOURCE_CLOSED.reason`, and
     /// carries kind / parent / agent facets in the `ATTACHED` and
     /// `GET_STATE` snapshots. Every one of those shapes is skip-by-length
     /// additive, so sending them unadvertised degrades rather than breaks
@@ -998,7 +998,7 @@ pub struct ServerFeatureSet(u32);
 impl ServerFeatureSet {
     const KNOWN: u32 = (ServerFeature::AcknowledgedInput as u32)
         | (ServerFeature::FileUpload as u32)
-        | (ServerFeature::MoveTerminal as u32)
+        | (ServerFeature::MoveResource as u32)
         | (ServerFeature::TerminalReply as u32)
         | (ServerFeature::Shutdown as u32)
         | (ServerFeature::SpawnInitialSize as u32)
@@ -1689,7 +1689,7 @@ mod tests {
     fn server_feature_bits_are_stable_and_unknown_bits_are_ignored() {
         assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
         assert_eq!(FILE_UPLOAD, 0x0000_0020);
-        assert_eq!(MOVE_TERMINAL, 0x0000_0040);
+        assert_eq!(MOVE_RESOURCE, 0x0000_0040);
         assert_eq!(TERMINAL_REPLY, 0x0000_0080);
         assert_eq!(SHUTDOWN, 0x0000_0100);
         assert_eq!(SPAWN_INITIAL_SIZE, 0x0000_0200);
@@ -1697,18 +1697,18 @@ mod tests {
         let set = ServerFeatureSet::with(&[
             ServerFeature::AcknowledgedInput,
             ServerFeature::FileUpload,
-            ServerFeature::MoveTerminal,
+            ServerFeature::MoveResource,
             ServerFeature::TerminalReply,
         ]);
         assert!(set.contains(ServerFeature::AcknowledgedInput));
         assert!(set.contains(ServerFeature::FileUpload));
-        assert!(set.contains(ServerFeature::MoveTerminal));
+        assert!(set.contains(ServerFeature::MoveResource));
         assert!(set.contains(ServerFeature::TerminalReply));
         assert_eq!(set.as_wire(), 0x0000_00F0);
         let full = ServerFeatureSet::with(&[
             ServerFeature::AcknowledgedInput,
             ServerFeature::FileUpload,
-            ServerFeature::MoveTerminal,
+            ServerFeature::MoveResource,
             ServerFeature::TerminalReply,
             ServerFeature::Shutdown,
             ServerFeature::SpawnInitialSize,

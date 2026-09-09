@@ -51,7 +51,7 @@ fn parse_axis(value: &str, axis: &str) -> Result<NonZeroU16, String> {
 /// `phux resize TARGET COLSxROWS` — set a pane's grid without a TTY.
 ///
 /// Resolves `TARGET` client-side to exactly one pane, then sends the
-/// `TERMINAL_RESIZE` frame the wire has always carried and reads the
+/// `RESIZE_TERMINAL` frame the wire has always carried and reads the
 /// server's own post-resize geometry back. This neither attaches nor
 /// subscribes, so the caller never becomes a view whose 80x24 no-TTY
 /// viewport would fight the size it just asked for.
@@ -110,7 +110,7 @@ pub(crate) fn run_resize(
 /// run"; this one means "the command ran and the server holds a different
 /// size than you asked for", and the size it holds is precisely the thing a
 /// caller needs in order to react.
-fn report(pane: &phux_protocol::ids::TerminalId, outcome: ResizeOutcome, json: bool) -> ExitCode {
+fn report(pane: &phux_protocol::ids::ResourceId, outcome: ResizeOutcome, json: bool) -> ExitCode {
     let (cols, rows) = outcome.applied;
     if json {
         let doc = serde_json::json!({

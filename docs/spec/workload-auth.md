@@ -325,7 +325,7 @@ TERMINAL_SATELLITE(host, id)   = 0x03 || 0x01 || V16(host) || U32(id)
 
 `host` is 1..=255 UTF-8 bytes, contains no NUL or Unicode control scalar, and is
 compared byte-for-byte without case folding or normalization. It is the exact
-federation host key carried by `TerminalId::Satellite`, not an address resolved
+federation host key carried by `ResourceId::Satellite`, not an address resolved
 from DNS. Unknown tags, subtype tags, zero-length hosts, and trailing selector
 bytes are malformed.
 
@@ -469,15 +469,15 @@ Terminal, current Group, owning Host, or Global selector according to §6.
 | `SUBSCRIBE` (unallocated) | default-deny | no selector contract exists |
 | `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY` | `INPUT` | named Terminal |
 | `VIEWPORT_RESIZE` | `BIND` | every currently attached Terminal; zero targets is a no-op |
-| `SPAWN_TERMINAL { satellite: Some, owner_terminal: None }` | `CREATE` | named satellite Host |
-| `SPAWN_TERMINAL { satellite: None, owner_terminal: None }` | `CREATE` | payload Group |
-| `SPAWN_TERMINAL { satellite: None, owner_terminal: Some }` | `CREATE` and `BIND` | CREATE on the owner Terminal's side-effect-free resolved Group and BIND on that Terminal; payload Group MUST equal the resolved Group |
-| `SPAWN_TERMINAL { satellite: Some, owner_terminal: Some }` | default-deny | invalid local/remote ownership combination |
-| `SPAWN_TERMINAL { kind: AGENT_SESSION, satellite: None, parent: Some }` | `CREATE` and `BIND` | CREATE on the parent Terminal's side-effect-free resolved Group and BIND on that parent Terminal; the parent MUST lie within the effective grant; payload Group MUST equal the resolved Group |
-| `SPAWN_TERMINAL { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | `CREATE` and `BIND` | CREATE on the satellite Host H and BIND on the satellite-tagged parent Terminal; a `LOCAL` or different-host parent is default-deny |
-| `SPAWN_TERMINAL { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | default-deny | kind and binding disagree; the decoder's `SPAWN_FAILED` never runs |
-| `TERMINAL_RESIZE` | `BIND` | named Terminal |
-| `MOVE_TERMINAL` | `BIND` | both moved and destination-owner Terminals |
+| `SPAWN_RESOURCE { satellite: Some, owner_terminal: None }` | `CREATE` | named satellite Host |
+| `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | `CREATE` | payload Group |
+| `SPAWN_RESOURCE { satellite: None, owner_terminal: Some }` | `CREATE` and `BIND` | CREATE on the owner Terminal's side-effect-free resolved Group and BIND on that Terminal; payload Group MUST equal the resolved Group |
+| `SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }` | default-deny | invalid local/remote ownership combination |
+| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }` | `CREATE` and `BIND` | CREATE on the parent Terminal's side-effect-free resolved Group and BIND on that parent Terminal; the parent MUST lie within the effective grant; payload Group MUST equal the resolved Group |
+| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | `CREATE` and `BIND` | CREATE on the satellite Host H and BIND on the satellite-tagged parent Terminal; a `LOCAL` or different-host parent is default-deny |
+| `SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | default-deny | kind and binding disagree; the decoder's `SPAWN_FAILED` never runs |
+| `RESIZE_TERMINAL` | `BIND` | named Terminal |
+| `MOVE_RESOURCE` | `BIND` | both moved and destination-owner Terminals |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | `OBSERVE` | named Terminal |
 | `SUBSCRIBE_EVENTS { terminal: None }` | `OBSERVE` | installs a filtered subscription over all observable Terminals; server-global events require Global |
 | `GET_METADATA` | `OBSERVE` | encoded metadata Scope |
@@ -504,18 +504,18 @@ point before any handler or satellite branch:
 
 | Command variant | Required verb | Subject selector |
 |---|---|---|
-| `SPAWN` (unallocated) | default-deny | dedicated `SPAWN_TERMINAL` owns create |
-| `ATTACH_TERMINAL` | `BIND` and `OBSERVE` | named Terminal |
-| `DETACH_TERMINAL` | cleanup-exempt | calling connection's binding only |
-| `KILL_TERMINAL` | `SIGNAL` | named Terminal |
+| `SPAWN` (unallocated) | default-deny | dedicated `SPAWN_RESOURCE` owns create |
+| `ATTACH_RESOURCE` | `BIND` and `OBSERVE` | named Terminal |
+| `DETACH_RESOURCE` | cleanup-exempt | calling connection's binding only |
+| `KILL_RESOURCE` | `SIGNAL` | named Terminal |
 | `GET_SCREEN` | `OBSERVE` | named Terminal |
 | `ROUTE_INPUT`, `APPLY_INPUT` | `INPUT` | named Terminal |
-| `KILL_TERMINALS` | `SIGNAL` | every named Terminal; all-or-nothing |
-| `RESIZE_TERMINAL` (unallocated) | default-deny | dedicated `TERMINAL_RESIZE` owns resize |
+| `KILL_RESOURCES` | `SIGNAL` | every named Terminal; all-or-nothing |
+| `RESIZE_TERMINAL` (unallocated) | default-deny | dedicated `RESIZE_TERMINAL` owns resize |
 | `GET_STATE { SERVER }` | `INVENTORY` | requires at least one Inventory grant; returns only resources matched by those selectors, and server-global data only with Global |
 | `RUN_HOOK` (unallocated) | default-deny | no wire contract exists |
 | `GET_TERMINAL_STATE` | `INVENTORY` | named Terminal |
-| `SUBSCRIBE_TERMINAL_EVENTS` | `OBSERVE` | named Terminal |
+| `SUBSCRIBE_RESOURCE_EVENTS` | `OBSERVE` | named Terminal |
 | `UPGRADE` | `SIGNAL` | Global |
 | `ACQUIRE_INPUT`, `RELEASE_INPUT` | `BIND` | named Terminal |
 | `SIGNAL_TERMINAL` | `SIGNAL` | named Terminal |
@@ -543,7 +543,7 @@ alone, because the child's stream is that parent's agent account of itself
 and a workload allowed to type into a pane is exactly the workload allowed
 to narrate it.
 
-For a metadata `Scope::Terminal`, `Scope::Group`, or `Scope::Global`, the subject
+For a metadata `Scope::Resource`, `Scope::Group`, or `Scope::Global`, the subject
 is respectively that Terminal, Group, or Global. A result assembled from several
 resources SHALL be filtered at the source as well as admission-checked; authority
 to enumerate a container does not disclose members outside the effective set.

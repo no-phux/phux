@@ -27,10 +27,10 @@
     reason = "client_a / client_b are the test's vocabulary"
 )]
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -46,7 +46,7 @@ use phux_server_testkit::{
 /// Attach a fresh socket to `default` and drain the opening
 /// `ATTACHED + TERMINAL_SNAPSHOT` pair. Returns the stream and the pane's
 /// `terminal_id`.
-async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, TerminalId) {
+async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, ResourceId) {
     let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(&mut stream, &attach_by_name("default")).await;
 
@@ -54,8 +54,8 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, TerminalI
     assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
     let terminal_id = match attached {
         FrameKind::Attached { snapshot, .. } => {
-            assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
-            snapshot.panes[0].id.clone()
+            assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
+            snapshot.resources[0].id.clone()
         }
         other => panic!("expected Attached, got {other:?}"),
     };
@@ -68,7 +68,7 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, TerminalI
     (stream, terminal_id)
 }
 
-/// Drain `TERMINAL_OUTPUT` from `stream` into `screen` until the merged
+/// Drain `RESOURCE_OUTPUT` from `stream` into `screen` until the merged
 /// echo line (row 0) contains `needle`, or `WIRE_RECV_TIMEOUT` elapses.
 async fn drain_until_row0(stream: &mut UnixStream, screen: &mut Screen, needle: &str) {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
@@ -80,10 +80,10 @@ async fn drain_until_row0(stream: &mut UnixStream, screen: &mut Screen, needle: 
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             return;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             screen.write(&bytes);
         }
     }

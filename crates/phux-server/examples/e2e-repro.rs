@@ -38,7 +38,7 @@ use libghostty_vt::screen::CellWide;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
     ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerRuntime};
@@ -194,13 +194,13 @@ fn spawn_server(
 }
 
 /// A minimal attached client: a wire stream plus an accumulator of all VT
-/// bytes (snapshot + every `TERMINAL_OUTPUT`). `render()` feeds the
+/// bytes (snapshot + every `RESOURCE_OUTPUT`). `render()` feeds the
 /// accumulator into a fresh libghostty `Terminal` for a text snapshot.
 struct Client {
     stream: UnixStream,
     vt: Vec<u8>,
     client_id: u32,
-    terminal_id: phux_protocol::TerminalId,
+    terminal_id: phux_protocol::ResourceId,
     viewport: ViewportInfo,
 }
 
@@ -228,7 +228,10 @@ impl Client {
                 initial_client_id,
                 snapshot,
             } => {
-                let pane = snapshot.panes.first().expect("attach snapshot has a pane");
+                let pane = snapshot
+                    .resources
+                    .first()
+                    .expect("attach snapshot has a pane");
                 (initial_client_id.get(), pane.id.clone())
             }
             other => panic!("expected Attached, got {other:?}"),
@@ -256,7 +259,7 @@ impl Client {
         }
     }
 
-    /// Drain `TERMINAL_OUTPUT` into the accumulator until `pred` holds on
+    /// Drain `RESOURCE_OUTPUT` into the accumulator until `pred` holds on
     /// the rendered text or the recv timeout elapses.
     async fn drain_until<P: Fn(&str) -> bool>(&mut self, pred: P) {
         if pred(&self.render()) {
@@ -268,8 +271,8 @@ impl Client {
             let Ok((tb, frame)) = timeout(remaining, recv(&mut self.stream)).await else {
                 break;
             };
-            if tb == TYPE_TERMINAL_OUTPUT
-                && let FrameKind::TerminalOutput { bytes, .. } = frame
+            if tb == TYPE_RESOURCE_OUTPUT
+                && let FrameKind::ResourceOutput { bytes, .. } = frame
             {
                 self.vt.extend_from_slice(&bytes);
                 if pred(&self.render()) {
@@ -284,7 +287,7 @@ impl Client {
         let deadline = Instant::now() + Duration::from_millis(400);
         while Instant::now() < deadline {
             match timeout(Duration::from_millis(100), recv(&mut self.stream)).await {
-                Ok((tb, FrameKind::TerminalOutput { bytes, .. })) if tb == TYPE_TERMINAL_OUTPUT => {
+                Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     self.vt.extend_from_slice(&bytes);
                 }
                 Ok(_) => {}

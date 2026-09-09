@@ -3,21 +3,21 @@ use phux_protocol::WindowId;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 fn initial_attached() -> FrameKind {
     FrameKind::Attached {
         attach_id: 1,
         initial_client_id: ClientId::new(1),
-        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
+        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
             .with_sessions(vec![SessionInfo::new(SessionId::new(1), "test")])
             .with_windows(vec![WindowInfo::new(
                 WindowId::new(1),
                 SessionId::new(1),
                 "test",
             )])
-            .with_panes(vec![TerminalInfo::new(
-                TerminalId::local(1),
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(1),
                 WindowId::new(1),
                 80,
                 24,

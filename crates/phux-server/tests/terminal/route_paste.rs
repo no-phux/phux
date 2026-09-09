@@ -72,7 +72,10 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
 }
 
 /// `GET_STATE { Server }` → the focused pane id of the seeded session.
-async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol::ids::TerminalId {
+async fn focused_resource(
+    stream: &mut UnixStream,
+    request_id: u32,
+) -> phux_protocol::ids::ResourceId {
     send_frame(
         stream,
         &FrameKind::Command {
@@ -84,7 +87,7 @@ async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol
     )
     .await;
     match await_command_result(stream, request_id).await {
-        CommandResult::OkWith(CommandValue::State(snap)) => snap.focused_pane,
+        CommandResult::OkWith(CommandValue::State(snap)) => snap.focused_resource,
         other => panic!("expected Ok_With(State(..)), got {other:?}"),
     }
 }
@@ -93,7 +96,7 @@ async fn focused_pane(stream: &mut UnixStream, request_id: u32) -> phux_protocol
 async fn screen_text(
     stream: &mut UnixStream,
     request_id: u32,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) -> String {
     send_frame(
         stream,
@@ -123,7 +126,7 @@ async fn screen_text(
 /// (200 x 25ms = 5s) tolerates a saturated CI runner (phux-dacb history).
 async fn poll_for_text(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     needle: &str,
     attempts: u32,
 ) -> String {
@@ -142,7 +145,7 @@ async fn poll_for_text(
 async fn route_paste(
     stream: &mut UnixStream,
     request_id: u32,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     trust: PasteTrust,
     data: &[u8],
 ) {
@@ -184,7 +187,7 @@ fn routed_paste_is_bracketed_when_pane_enables_dec_2004() {
         );
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
         let ready = poll_for_text(&mut stream, &pane, "BRACKETREADY", 200).await;
         assert!(
             ready.contains("BRACKETREADY"),
@@ -218,7 +221,7 @@ fn routed_paste_is_raw_when_dec_2004_is_off() {
         );
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
         let ready = poll_for_text(&mut stream, &pane, "RAWREADY", 200).await;
         assert!(
             ready.contains("RAWREADY"),
@@ -257,7 +260,7 @@ fn untrusted_unsafe_paste_is_dropped_by_default_policy() {
         );
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        let pane = focused_pane(&mut stream, 1).await;
+        let pane = focused_resource(&mut stream, 1).await;
         let ready = poll_for_text(&mut stream, &pane, "TRUSTREADY", 200).await;
         assert!(
             ready.contains("TRUSTREADY"),

@@ -26,7 +26,7 @@ mode=native → PhuxSessionContainer (src/native-session.ts), one random instanc
 
 The bytes are the **real phux wire** (`phux-protocol`). EdgeSession decodes
 `ATTACH` → replies a `TerminalSnapshot` (the shell's greeting), and `InputKey` →
-runs the keystroke through the curated shell → `TerminalOutput` (VT bytes). See
+runs the keystroke through the curated shell → `ResourceOutput` (VT bytes). See
 `../INFRA.md`.
 
 ## Files

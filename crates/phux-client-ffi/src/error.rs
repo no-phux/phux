@@ -1,6 +1,6 @@
-use phux_protocol::{SatelliteHost, TerminalId};
+use phux_protocol::{ResourceId, SatelliteHost};
 
-use crate::types::{ABI_VERSION, PhuxClientResult, PhuxTerminalId};
+use crate::types::{ABI_VERSION, PhuxClientResult, PhuxResourceId};
 
 #[allow(
     clippy::redundant_pub_crate,
@@ -119,8 +119,8 @@ pub(crate) unsafe fn outbound_bytes_in<'a>(
     reason = "the private error module serves the crate-root C exports"
 )]
 pub(crate) unsafe fn terminal_id_in(
-    value: *const PhuxTerminalId,
-) -> Result<TerminalId, BridgeError> {
+    value: *const PhuxResourceId,
+) -> Result<ResourceId, BridgeError> {
     // SAFETY: pointer validity is checked before dereference.
     let value =
         unsafe { value.as_ref() }.ok_or_else(|| BridgeError::invalid("terminal_id is null"))?;
@@ -131,7 +131,7 @@ pub(crate) unsafe fn terminal_id_in(
                     "local terminal ID must not carry a host",
                 ));
             }
-            Ok(TerminalId::local(value.id))
+            Ok(ResourceId::local(value.id))
         }
         1 => {
             // SAFETY: span is validated by bytes_in.
@@ -142,7 +142,7 @@ pub(crate) unsafe fn terminal_id_in(
             if host.is_empty() {
                 return Err(BridgeError::invalid("satellite host is empty"));
             }
-            Ok(TerminalId::satellite(SatelliteHost::new(host), value.id))
+            Ok(ResourceId::satellite(SatelliteHost::new(host), value.id))
         }
         _ => Err(BridgeError::invalid("unknown terminal ID discriminant")),
     }

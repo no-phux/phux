@@ -1,5 +1,5 @@
 //! `Screen` — a libghostty-backed oracle for asserting on the bytes the
-//! server emits over `TERMINAL_OUTPUT` (or any other VT byte stream).
+//! server emits over `RESOURCE_OUTPUT` (or any other VT byte stream).
 //!
 //! Background: end-to-end tests for `phux attach` collect the rendered VT
 //! bytes that the server fans out to attached clients. Asserting on those

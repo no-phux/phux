@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
 use phux_protocol::ResourceKind;
-use phux_protocol::ids::{ClientId, SessionId, TerminalId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind, Scope,
-    SpawnError, SpawnResult, TerminalLifecycle,
+    AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind,
+    ResourceLifecycle, Scope, SpawnError, SpawnResult,
 };
 
 use crate::attach::actions::{
@@ -23,7 +23,7 @@ use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, LayoutState, Rect, Workspace};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
-use phux_client::agent_meta::TERMINAL_AGENT_KEY;
+use phux_client::agent_meta::RESOURCE_AGENT_KEY;
 use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
 };
@@ -46,16 +46,16 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     /// before this context exists.
     engine_kernel: &'a AttachKernel,
     out: &'a mut W,
-    panes: &'a mut HashMap<TerminalId, PaneSlot>,
+    panes: &'a mut HashMap<ResourceId, PaneSlot>,
     workspace: &'a mut Workspace,
-    focused_pane: &'a mut Option<TerminalId>,
+    focused_resource: &'a mut Option<ResourceId>,
     // phux-x2hm: the driver's pane-zoom state. RENDER/REFLOW geometry reads go
     // through `Workspace::render_window(zoomed)` so a zoomed pane paints to the
     // full window and non-zoomed panes (absent from the synthetic single-leaf
-    // layout) correctly do not paint. A `TerminalSpawned`-ok split clears this
+    // layout) correctly do not paint. A `ResourceSpawned`-ok split clears this
     // (`*zoomed = None`) so a new pane un-zooms, matching tmux. Mutation/input
     // reads (focus reconcile) keep using the REAL `active_window`.
-    zoomed: &'a mut Option<TerminalId>,
+    zoomed: &'a mut Option<ResourceId>,
     session_name: &'a mut String,
     // phux-k0cw: this client's own session, so the layout arm can tell OUR
     // layout broadcast from a peer's. No layout is attributed locally until
@@ -80,10 +80,10 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     pending_splits: &'a mut HashMap<u32, PendingSplit>,
     pending_windows: &'a mut HashMap<u32, PendingWindow>,
     // phux-i0e8.2.2: Terminals whose close THIS client asked for
-    // (kill-pane / kill-window soft-kill dispatch). The `TerminalClosed`
+    // (kill-pane / kill-window soft-kill dispatch). The `ResourceClosed`
     // arm drains the marker and suppresses the pane-exit notice for an
     // expected close — the user killed it; telling them it died is noise.
-    expected_closes: &'a mut HashSet<TerminalId>,
+    expected_closes: &'a mut HashSet<ResourceId>,
     // ADR-0040: the driver-held `phux.agent/v1` index. The MetadataValue /
     // MetadataChanged arms decode agent records into it; the driver reads
     // it when composing window labels.
@@ -111,7 +111,7 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
 impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
     /// Whether the kernel knows `terminal_id` as an `AgentSession` resource:
     /// a record stream with no grid, no pane slot, and no layout leaf.
-    fn is_agent_session(&self, terminal_id: &TerminalId) -> bool {
+    fn is_agent_session(&self, terminal_id: &ResourceId) -> bool {
         matches!(
             self.engine_kernel.resource_kind(terminal_id),
             Some(ResourceKind::AgentSession)
@@ -120,7 +120,7 @@ impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
 
     /// Whether a layout leaf may name `terminal_id`: anything the kernel does
     /// not know to be a non-terminal kind. Peer ids it cannot classify pass.
-    fn may_be_layout_leaf(&self, terminal_id: &TerminalId) -> bool {
+    fn may_be_layout_leaf(&self, terminal_id: &ResourceId) -> bool {
         !matches!(
             self.engine_kernel.resource_kind(terminal_id),
             Some(kind) if kind != ResourceKind::Terminal
@@ -136,7 +136,7 @@ impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
 
 /// The outcome for a frame on an `AgentSession` stream: nothing to paint, but
 /// the chrome projects the stream's state, so it refreshes when the log grew.
-fn agent_stream_outcome(terminal_id: &TerminalId, route: KernelRoute) -> FrameOutcome {
+fn agent_stream_outcome(terminal_id: &ResourceId, route: KernelRoute) -> FrameOutcome {
     FrameOutcome {
         chrome_dirty: route.agent_touched.contains(terminal_id),
         pty_writes: route.pty_writes,
@@ -161,10 +161,10 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     kernel_effects: &mut KernelEffectBuffer,
     out: &mut W,
     frame: FrameKind,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     workspace: &mut Workspace,
-    focused_pane: &mut Option<TerminalId>,
-    zoomed: &mut Option<TerminalId>,
+    focused_resource: &mut Option<ResourceId>,
+    zoomed: &mut Option<ResourceId>,
     session_name: &mut String,
     focused_session: Option<SessionId>,
     status_bar: Option<&mut StatusBarPainter>,
@@ -175,12 +175,12 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     pending_layout_request: Option<u32>,
     pending_splits: &mut HashMap<u32, PendingSplit>,
     pending_windows: &mut HashMap<u32, PendingWindow>,
-    expected_closes: &mut HashSet<TerminalId>,
+    expected_closes: &mut HashSet<ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     overlay_active: bool,
     defer_paint: bool,
 ) -> Result<FrameOutcome, AttachError> {
-    let is_output = matches!(frame, FrameKind::TerminalOutput { .. });
+    let is_output = matches!(frame, FrameKind::ResourceOutput { .. });
     let apply_span = is_output.then(|| tracing::debug_span!("vt_apply"));
     let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
     let apply_timer = is_output.then(|| phux_client::perf::VT_APPLY.timer());
@@ -207,7 +207,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         out,
         panes,
         workspace,
-        focused_pane,
+        focused_resource,
         zoomed,
         session_name,
         focused_session,
@@ -290,7 +290,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         // A record stream has nothing to paint: its READY and its live
         // output only refresh the chrome that projects it.
         FrameKind::BootstrapReady { terminal_id, .. }
-        | FrameKind::TerminalOutput { terminal_id, .. }
+        | FrameKind::ResourceOutput { terminal_id, .. }
             if ctx.is_agent_session(&terminal_id) =>
         {
             Ok(agent_stream_outcome(&terminal_id, route))
@@ -310,7 +310,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             layout_replaced: !route.damaged.is_empty(),
             ..FrameOutcome::default()
         }),
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id: _,
             bootstrap_id: _,
@@ -333,10 +333,10 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::MetadataChanged { scope, key, value } => {
             handle_metadata_changed(ctx, &scope, &key, value)
         }
-        FrameKind::TerminalSpawned { request_id, result } => {
+        FrameKind::ResourceSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
         }
-        FrameKind::TerminalClosed {
+        FrameKind::ResourceClosed {
             terminal_id,
             exit_status,
             reason,
@@ -386,10 +386,10 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             );
             Ok(FrameOutcome::default())
         }
-        FrameKind::TerminalMoved { request_id, .. } => {
+        FrameKind::ResourceMoved { request_id, .. } => {
             tracing::debug!(
                 request_id,
-                "dropping TerminalMoved with no matching pending request"
+                "dropping ResourceMoved with no matching pending request"
             );
             Ok(FrameOutcome::default())
         }
@@ -420,19 +420,19 @@ fn handle_attached<W: crate::attach::RenderSink>(
 ) -> Result<FrameOutcome, AttachError> {
     // Capture the initial focused pane so subsequent INPUT_* frames
     // know where to route.
-    let bootstrap = snapshot.focused_pane.clone();
+    let bootstrap = snapshot.focused_resource.clone();
     tracing::debug!(
         terminal_id = ?bootstrap,
-        "ATTACHED: seeding focused_pane from snapshot"
+        "ATTACHED: seeding focused_resource from snapshot"
     );
-    *ctx.focused_pane = Some(bootstrap.clone());
+    *ctx.focused_resource = Some(bootstrap.clone());
     // phux-4li.4: seed the workspace with a single window holding
     // one leaf so the existing single-pane render path keeps
     // working. The L3 metadata-fetch path replaces this with the
     // server-stored layout (possibly multi-window) when present.
     *ctx.workspace = Workspace::single(bootstrap.clone());
     // Seed client-side mirrors at their server-advertised sizes
-    // before any TERMINAL_OUTPUT can race ahead of the per-pane
+    // before any RESOURCE_OUTPUT can race ahead of the per-pane
     // bootstrap transcript. VT interpretation is geometry-sensitive;
     // starting at 80x24 and resizing later corrupts wraps, clips,
     // and absolute cursor movement for wider/taller viewports.
@@ -440,7 +440,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     // Only Terminal-kind resources get a slot: an AgentSession has no grid
     // (its snapshot entry says 0x0), and a mirror sized from it would be a
     // lie the first paint trips over. Its record stream lives in the kernel.
-    for pane in snapshot.panes.iter().filter(|pane| is_terminal(pane)) {
+    for pane in snapshot.resources.iter().filter(|pane| is_terminal(pane)) {
         if let std::collections::hash_map::Entry::Vacant(v) = ctx.panes.entry(pane.id.clone()) {
             let slot = v.insert(PaneSlot::new_with_size(pane.cols, pane.rows)?);
             // phux-foz.4: seed the pane's cwd from the snapshot (the
@@ -450,8 +450,8 @@ fn handle_attached<W: crate::attach::RenderSink>(
     }
     // phux-p4vp: hand the per-pane cwds up to the driver so the
     // sidebar can derive each window's VCS branch client-side.
-    let pane_cwds: Vec<(TerminalId, String)> = snapshot
-        .panes
+    let pane_cwds: Vec<(ResourceId, String)> = snapshot
+        .resources
         .iter()
         .filter(|pane| is_terminal(pane))
         .filter_map(|p| p.cwd.clone().map(|cwd| (p.id.clone(), cwd)))
@@ -500,7 +500,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
 /// `0x0`), so it seeds nothing.
 fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     cols: u16,
     rows: u16,
 ) -> Result<FrameOutcome, AttachError> {
@@ -522,7 +522,7 @@ fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
 /// themselves are already inside the kernel's staging replica.
 fn record_bootstrap_chunk<W: crate::attach::RenderSink>(
     ctx: &FrameCtx<'_, W>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     payload_len: usize,
     route: KernelRoute,
 ) -> FrameOutcome {
@@ -539,7 +539,7 @@ fn record_bootstrap_chunk<W: crate::attach::RenderSink>(
 /// published, and report the repaint the barrier release permits.
 fn handle_bootstrap_ready<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     route: KernelRoute,
 ) -> Result<FrameOutcome, AttachError> {
     ctx.frame_span
@@ -587,7 +587,7 @@ const fn paint_permitted(
 /// gate — to size a mirror that, on all but the first frame, already existed.
 fn initial_pane_dims<W: crate::attach::RenderSink>(
     ctx: &FrameCtx<'_, W>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     content: Rect,
 ) -> (u16, u16) {
     ctx.workspace
@@ -616,7 +616,7 @@ fn initial_pane_dims<W: crate::attach::RenderSink>(
 /// returns. It tiles no layout, allocates no mirror, and composes no chrome.
 fn handle_terminal_output<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     seq: u64,
     bytes: &[u8],
     route: KernelRoute,
@@ -641,7 +641,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
     crate::attach::render_prof::note_frames(1);
     let walk = published_replica(ctx.engine_kernel, terminal_id).ok_or_else(|| {
         AttachError::Protocol(format!(
-            "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
+            "RESOURCE_OUTPUT targeted unpublished {terminal_id:?}"
         ))
     })?;
     let terminal = walk.terminal;
@@ -687,7 +687,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
             panes: ctx.panes,
             workspace: ctx.workspace,
             zoomed: ctx.zoomed.as_ref(),
-            focused_pane: ctx.focused_pane.as_ref(),
+            focused_resource: ctx.focused_resource.as_ref(),
             status_bar: ctx.status_bar.as_deref_mut(),
             sidebar: ctx.sidebar,
             viewport_dims: ctx.viewport_dims,
@@ -710,18 +710,18 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
 /// Everything one composited output frame paints from.
 ///
 /// Gathered as a struct rather than a positional list because there are two
-/// callers with unrelated shapes: this module's `TERMINAL_OUTPUT` arm, which
+/// callers with unrelated shapes: this module's `RESOURCE_OUTPUT` arm, which
 /// reborrows disjoint [`FrameCtx`] fields, and the driver's frame pacer,
 /// which builds it from [`crate::attach::driver`]-owned state when a withheld
 /// paint's deadline expires.
 pub(in crate::attach) struct OutputFrame<'a, W> {
     pub(in crate::attach) out: &'a mut W,
     pub(in crate::attach) kernel: &'a AttachKernel,
-    pub(in crate::attach) panes: &'a mut HashMap<TerminalId, PaneSlot>,
+    pub(in crate::attach) panes: &'a mut HashMap<ResourceId, PaneSlot>,
     pub(in crate::attach) workspace: &'a Workspace,
     /// phux-x2hm: the pane zoomed to fill the window, if any.
-    pub(in crate::attach) zoomed: Option<&'a TerminalId>,
-    pub(in crate::attach) focused_pane: Option<&'a TerminalId>,
+    pub(in crate::attach) zoomed: Option<&'a ResourceId>,
+    pub(in crate::attach) focused_resource: Option<&'a ResourceId>,
     pub(in crate::attach) status_bar: Option<&'a mut StatusBarPainter>,
     pub(in crate::attach) sidebar: Option<SidebarReservation>,
     pub(in crate::attach) viewport_dims: (u16, u16),
@@ -746,7 +746,7 @@ pub(in crate::attach) struct OutputFrame<'a, W> {
 /// exists to remove, just at a coarser grain.
 pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
     paint: OutputFrame<'_, W>,
-    targets: &[TerminalId],
+    targets: &[ResourceId],
 ) -> StatusBarPaint {
     let OutputFrame {
         out,
@@ -754,7 +754,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
         panes,
         workspace,
         zoomed,
-        focused_pane,
+        focused_resource,
         status_bar,
         sidebar,
         viewport_dims,
@@ -784,7 +784,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
         let Some(walk) = published_replica(kernel, terminal_id) else {
             continue;
         };
-        if focused_pane == Some(terminal_id) {
+        if focused_resource == Some(terminal_id) {
             paint_focused_interior(
                 &mut block,
                 rect.unwrap_or(content),
@@ -806,7 +806,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
         block,
         status_bar,
         &FrameTail {
-            focused_pane,
+            focused_resource,
             panes,
             active_ls,
             content,
@@ -819,8 +819,8 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
 
 /// The chrome-and-cursor tail of a composited frame.
 struct FrameTail<'a> {
-    focused_pane: Option<&'a TerminalId>,
-    panes: &'a HashMap<TerminalId, PaneSlot>,
+    focused_resource: Option<&'a ResourceId>,
+    panes: &'a HashMap<ResourceId, PaneSlot>,
     active_ls: &'a LayoutState,
     content: Rect,
     viewport_dims: (u16, u16),
@@ -836,14 +836,14 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
     tail: &FrameTail<'_>,
 ) -> StatusBarPaint {
     let focused_cursor = tail
-        .focused_pane
+        .focused_resource
         .and_then(|fid| tail.panes.get(fid))
         .and_then(|slot| slot.renderer.last_cursor());
     // phux-9xn: the focused pane's Rect origin parks (and hides) the cursor
     // when `last_cursor` is None, so a frame never strands it at the bar's
     // tail — bottom-right of the host terminal.
     let fallback_origin = tail
-        .focused_pane
+        .focused_resource
         .and_then(|fid| {
             crate::attach::paint::tiled_rect(tail.active_ls, tail.content, tail.viewport_dims, fid)
         })
@@ -871,9 +871,9 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
 fn paint_focused_interior<W: crate::attach::RenderSink>(
     out: &mut W,
     rect: Rect,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
-    fid: &TerminalId,
+    fid: &ResourceId,
     walk: ReplicaWalk<'_, 'static, 'static>,
     predict: &mut PredictionState,
     overlay: &Overlay,
@@ -941,8 +941,8 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
 fn paint_background_interior<W: crate::attach::RenderSink>(
     out: &mut W,
     rect: Rect,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
-    terminal_id: &TerminalId,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    terminal_id: &ResourceId,
     walk: ReplicaWalk<'_, 'static, 'static>,
 ) {
     let Some(slot) = panes.get_mut(terminal_id) else {
@@ -997,7 +997,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
         let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
         if changed {
-            note_agent_change(ctx.panes, ctx.focused_pane.as_ref(), &terminal);
+            note_agent_change(ctx.panes, ctx.focused_resource.as_ref(), &terminal);
         }
         return Ok(FrameOutcome {
             agent_meta_changed: changed,
@@ -1049,7 +1049,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     key: &str,
     value: Option<Vec<u8>>,
 ) -> Result<FrameOutcome, AttachError> {
-    if key == TERMINAL_AGENT_KEY {
+    if key == RESOURCE_AGENT_KEY {
         return Ok(apply_agent_broadcast(ctx, scope, value));
     }
     // phux-foz.5: the config-reload doorbell. Value bytes are an
@@ -1075,7 +1075,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
         // Tombstone: layout reset. Fall back to single-pane
         // bootstrap (or empty if there's no focus to anchor on).
         *ctx.workspace = ctx
-            .focused_pane
+            .focused_resource
             .clone()
             .map_or_else(Workspace::default, Workspace::single);
         return Ok(FrameOutcome {
@@ -1115,7 +1115,7 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     scope: &Scope,
     value: Option<Vec<u8>>,
 ) -> FrameOutcome {
-    let Scope::Terminal(terminal) = scope else {
+    let Scope::Resource(terminal) = scope else {
         return FrameOutcome::default();
     };
     // phux-k0cw: a record for a pane THIS client does not
@@ -1132,7 +1132,7 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     }
     let changed = ctx.agent_meta.apply(terminal, value.as_deref());
     if changed {
-        note_agent_change(ctx.panes, ctx.focused_pane.as_ref(), terminal);
+        note_agent_change(ctx.panes, ctx.focused_resource.as_ref(), terminal);
     }
     FrameOutcome {
         agent_meta_changed: changed,
@@ -1149,11 +1149,12 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
 fn adopt_workspace<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     incoming: Workspace,
-) -> Vec<TerminalId> {
-    let reconciled = reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_pane.as_ref());
+) -> Vec<ResourceId> {
+    let reconciled =
+        reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_resource.as_ref());
     *ctx.workspace = reconciled;
     let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes);
-    *ctx.focused_pane = ctx
+    *ctx.focused_resource = ctx
         .workspace
         .active_window()
         .and_then(|ls| ls.focus.clone());
@@ -1175,7 +1176,7 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
         return handle_window_spawned(
             ctx.out,
             ctx.workspace,
-            ctx.focused_pane,
+            ctx.focused_resource,
             ctx.panes,
             &pending,
             result,
@@ -1184,7 +1185,7 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     let Some(pending) = ctx.pending_splits.remove(&request_id) else {
         tracing::debug!(
             request_id,
-            "stray TerminalSpawned with no matching pending split or window; ignoring",
+            "stray ResourceSpawned with no matching pending split or window; ignoring",
         );
         return Ok(FrameOutcome::default());
     };
@@ -1197,7 +1198,7 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             // us. Log loudly + bell.
             tracing::warn!(
                 request_id,
-                "TerminalSpawned: server reports GroupNotFound for DEFAULT group",
+                "ResourceSpawned: server reports GroupNotFound for DEFAULT group",
             );
             let _ = actions::write_bell(ctx.out);
             Ok(FrameOutcome::default())
@@ -1206,7 +1207,7 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             tracing::warn!(
                 request_id,
                 reason = %reason,
-                "TerminalSpawned: server-side spawn failed",
+                "ResourceSpawned: server-side spawn failed",
             );
             let _ = actions::write_bell(ctx.out);
             Ok(FrameOutcome::default())
@@ -1217,14 +1218,14 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             tracing::warn!(
                 request_id,
                 error = ?other,
-                "TerminalSpawned: unknown spawn error variant",
+                "ResourceSpawned: unknown spawn error variant",
             );
             let _ = actions::write_bell(ctx.out);
             Ok(FrameOutcome::default())
         }
         // SpawnResult is also #[non_exhaustive].
         _ => {
-            tracing::warn!(request_id, "TerminalSpawned: unknown SpawnResult variant");
+            tracing::warn!(request_id, "ResourceSpawned: unknown SpawnResult variant");
             Ok(FrameOutcome::default())
         }
     }
@@ -1234,11 +1235,11 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
 /// intent, seed the new pane's slot, and move focus onto it.
 fn apply_split_spawned<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    new_id: TerminalId,
+    new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
     let Some(active_ls) = ctx.workspace.active_window_mut() else {
-        tracing::warn!("TerminalSpawned: no active window to apply split into");
+        tracing::warn!("ResourceSpawned: no active window to apply split into");
         let _ = actions::write_bell(ctx.out);
         return Ok(FrameOutcome::default());
     };
@@ -1278,7 +1279,7 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
     // Move focus to the freshly spawned pane —
     // tmux-compatible (apply_split already sets
     // focus inside the returned state).
-    ctx.focused_pane.clone_from(
+    ctx.focused_resource.clone_from(
         &ctx.workspace
             .active_window()
             .and_then(|ls| ls.focus.clone()),
@@ -1289,7 +1290,7 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
     // viewport + cursor; a keystroke before the new
     // pane's first snapshot would otherwise echo at
     // the old pane's coordinates (mid-screen ghost).
-    if let Some(fid) = ctx.focused_pane.as_ref() {
+    if let Some(fid) = ctx.focused_resource.as_ref() {
         reanchor_predict_to_pane(ctx.predict, ctx.panes, fid);
     }
     Ok(FrameOutcome {
@@ -1311,7 +1312,7 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
 /// in lockstep.
 fn handle_terminal_closed<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     exit_status: Option<i32>,
     reason: CloseReason,
 ) -> FrameOutcome {
@@ -1319,7 +1320,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
         terminal = ?terminal_id,
         exit_status = ?exit_status,
         ?reason,
-        "TerminalClosed",
+        "ResourceClosed",
     );
     // phux-i0e8.2.2: was this close one WE asked for (kill-pane /
     // kill-window)? Drain the marker unconditionally — every close
@@ -1372,7 +1373,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // windows and keep `active` valid.
     ctx.workspace.prune_empty_windows();
     // phux-4r1: consumer-owned detach policy (ADR-0015 L1).
-    // The server reports the fact (TERMINAL_CLOSED) and stops
+    // The server reports the fact (RESOURCE_CLOSED) and stops
     // there; deciding whether *this* client detaches is the
     // TUI's call. When the last pane closed there is nothing
     // left to render or to route input to, so detach. For
@@ -1382,7 +1383,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // one of several panes folds it out and keeps the attach
     // alive.
     if ctx.workspace.windows.is_empty() {
-        tracing::info!("TerminalClosed folded the last pane; detaching");
+        tracing::info!("ResourceClosed folded the last pane; detaching");
         return FrameOutcome {
             exit: true,
             // phux-i0e8.2.2: carry the dead pane's status up
@@ -1393,11 +1394,11 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         };
     }
-    // Re-anchor `focused_pane` onto the (possibly new)
+    // Re-anchor `focused_resource` onto the (possibly new)
     // active window's focus. `apply_terminal_closed` sets
     // a surviving window's focus to the first DFS leaf;
     // a pruned active window hands focus to its successor.
-    *ctx.focused_pane = ctx
+    *ctx.focused_resource = ctx
         .workspace
         .active_window()
         .and_then(|ls| ls.focus.clone());
@@ -1416,7 +1417,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
 /// and its exit shape. Silent for a clean exit 0 (the user typed `exit`;
 /// nothing is wrong) and for a close this client itself requested.
 fn pane_exit_notices(
-    terminal_id: &TerminalId,
+    terminal_id: &ResourceId,
     exit_status: Option<i32>,
     expected: bool,
 ) -> Vec<Notice> {
@@ -1448,7 +1449,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         // chrome grow its row once the stream publishes.
         FrameKind::Event {
             terminal: Some(terminal),
-            event: AgentEvent::PaneSpawned { .. },
+            event: AgentEvent::ResourceSpawned { .. },
         } if route.declared_agent.as_ref() == Some(&terminal) => FrameOutcome {
             attach_panes: vec![terminal],
             chrome_dirty: true,
@@ -1482,7 +1483,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         // cross-session sidebar inside the existing wire (ADR-0030).
         FrameKind::Event {
             terminal: Some(terminal),
-            event: AgentEvent::PaneSpawned { .. } | AgentEvent::PaneClosed { .. },
+            event: AgentEvent::ResourceSpawned { .. } | AgentEvent::ResourceClosed { .. },
         } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,
@@ -1504,8 +1505,8 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
 /// on subscribe), not a transition, so it stays silent.
 fn fold_terminal_control<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal: &TerminalId,
-    lifecycle: TerminalLifecycle,
+    terminal: &ResourceId,
+    lifecycle: ResourceLifecycle,
     input_holder: Option<ClientId>,
 ) -> FrameOutcome {
     let Some(slot) = ctx.panes.get_mut(terminal) else {
@@ -1519,7 +1520,8 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
     let holder_changed = slot.input_holder != input_holder;
     slot.lifecycle = lifecycle;
     slot.input_holder = input_holder;
-    let announce = holder_changed && !initial_state && ctx.focused_pane.as_ref() == Some(terminal);
+    let announce =
+        holder_changed && !initial_state && ctx.focused_resource.as_ref() == Some(terminal);
     let notices = if announce {
         vec![Notice::info(input_authority_notice(input_holder))]
     } else {
@@ -1541,7 +1543,7 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
 /// already flagged changes nothing, so no repaint is requested for it.
 fn fold_agent_ask<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal: TerminalId,
+    terminal: ResourceId,
 ) -> FrameOutcome {
     let Some(slot) = ctx.panes.get_mut(&terminal) else {
         // phux-k0cw: no slot means either a pane whose snapshot has
@@ -1574,7 +1576,7 @@ fn fold_agent_ask<W: crate::attach::RenderSink>(
 /// refresh itself no-ops for an unfocused pane's change.
 fn fold_cwd_changed<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     cwd: String,
 ) -> FrameOutcome {
     match ctx.panes.get_mut(terminal) {
@@ -1597,7 +1599,7 @@ fn fold_cwd_changed<W: crate::attach::RenderSink>(
 /// widget rather than pinning a stale code.
 fn fold_command_finished<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     exit_code: Option<i32>,
 ) -> FrameOutcome {
     match ctx.panes.get_mut(terminal) {
@@ -1654,18 +1656,18 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
     }
 }
 
-/// phux-4li.15: apply a `TERMINAL_SPAWNED` reply for a parked
+/// phux-4li.15: apply a `RESOURCE_SPAWNED` reply for a parked
 /// `new-window` action. On success it appends a window seeded on the
 /// freshly spawned pane (making it active), seeds the pane's slot, and
-/// re-anchors `focused_pane`. The follow-up flags mirror the split path:
+/// re-anchors `focused_resource`. The follow-up flags mirror the split path:
 /// `layout_replaced` triggers a full repaint, `emit_set_metadata`
 /// broadcasts the new workspace to siblings, and `reflow_panes` sizes the
 /// new full-window pane.
 pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
     out: &mut W,
     workspace: &mut Workspace,
-    focused_pane: &mut Option<TerminalId>,
-    panes: &mut HashMap<TerminalId, PaneSlot>,
+    focused_resource: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
     pending: &PendingWindow,
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
@@ -1675,7 +1677,7 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
             if let std::collections::hash_map::Entry::Vacant(v) = panes.entry(new_id) {
                 v.insert(PaneSlot::new()?);
             }
-            *focused_pane = workspace.active_window().and_then(|ls| ls.focus.clone());
+            *focused_resource = workspace.active_window().and_then(|ls| ls.focus.clone());
             Ok(FrameOutcome {
                 layout_replaced: true,
                 emit_set_metadata: true,
@@ -1748,8 +1750,8 @@ pub(super) fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Layou
 /// without making the surviving topology look foreign.
 pub(super) fn unknown_layout_leaves(
     incoming: &Workspace,
-    panes: &HashMap<TerminalId, PaneSlot>,
-) -> Vec<TerminalId> {
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Vec<ResourceId> {
     incoming
         .windows
         .iter()
@@ -1764,7 +1766,7 @@ pub(super) fn unknown_layout_leaves(
 pub(super) fn reconcile_loaded_workspace(
     mut incoming: Workspace,
     local: &Workspace,
-    bootstrap_focus: Option<&TerminalId>,
+    bootstrap_focus: Option<&ResourceId>,
 ) -> Workspace {
     for window in &mut incoming.windows {
         let local_focus = local
@@ -1782,7 +1784,7 @@ pub(super) fn reconcile_loaded_workspace(
 fn reconciled_active_window(
     incoming: &Workspace,
     local: &Workspace,
-    bootstrap_focus: Option<&TerminalId>,
+    bootstrap_focus: Option<&ResourceId>,
 ) -> usize {
     let active_id = local.windows.get(local.active).map(|window| window.id);
     incoming
@@ -1793,7 +1795,7 @@ fn reconciled_active_window(
         .unwrap_or_else(|| local.active.min(incoming.windows.len().saturating_sub(1)))
 }
 
-fn window_containing_focus(workspace: &Workspace, focus: Option<&TerminalId>) -> Option<usize> {
+fn window_containing_focus(workspace: &Workspace, focus: Option<&ResourceId>) -> Option<usize> {
     let focus = focus?;
     workspace.windows.iter().position(|window| {
         window
@@ -1809,7 +1811,7 @@ fn window_containing_focus(workspace: &Workspace, focus: Option<&TerminalId>) ->
 /// The focus decoded from metadata is deliberately ignored. If this client has
 /// no focus for the window, or its focused leaf disappeared, the first leaf in
 /// depth-first order is the deterministic ADR-0019 fallback.
-pub(super) fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&TerminalId>) {
+pub(super) fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&ResourceId>) {
     let tree_leaves = state
         .tree
         .as_ref()
@@ -1824,11 +1826,11 @@ pub(super) fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Opti
 #[cfg(test)]
 mod session_name_tests {
     use super::focused_session_name;
-    use phux_protocol::ids::{SessionId, TerminalId, WindowId};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 
     fn snapshot_with(sessions: Vec<SessionInfo>, focused: SessionId) -> SessionSnapshot {
-        SessionSnapshot::new(focused, WindowId::new(0), TerminalId::local(0))
+        SessionSnapshot::new(focused, WindowId::new(0), ResourceId::local(0))
             .with_sessions(sessions)
     }
 

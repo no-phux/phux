@@ -7,10 +7,10 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, EngineCodec, EngineFeatureSet,
     ImageProtocolSet,
 };
-use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId};
+use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, ResourceId, WindowId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{AgentFacet, SessionSnapshot, TerminalInfo};
+use phux_protocol::wire::info::{AgentFacet, SessionSnapshot, ResourceInfo};
 use phux_vt_web::{NativeDecodeKind, Vt};
 use phux_web::Session;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -47,11 +47,11 @@ fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
     }
 }
 
-fn attached(terminal_id: TerminalId, cols: u16, rows: u16) -> FrameKind {
+fn attached(terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
     FrameKind::Attached {
         attach_id: 1,
         snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal_id.clone())
-            .with_panes(vec![TerminalInfo::new(
+            .with_resources(vec![ResourceInfo::new(
                 terminal_id,
                 WindowId::new(1),
                 cols,
@@ -62,7 +62,7 @@ fn attached(terminal_id: TerminalId, cols: u16, rows: u16) -> FrameKind {
 }
 
 fn begin(
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     profile: phux_protocol::caps::BootstrapStreamProfile,
@@ -122,7 +122,7 @@ fn ready_offset(vt: &std::rc::Rc<Vt>, bytes: &[u8], limit: usize) -> usize {
 async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 20, 3);
-    let terminal_id = TerminalId::local(1);
+    let terminal_id = ResourceId::local(1);
     let stream_id = stream(1);
     let bootstrap_id = bootstrap(1);
 
@@ -182,7 +182,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
         "input gate rejection is not protocol-fatal"
     );
 
-    let output = session.on_frame(FrameKind::TerminalOutput {
+    let output = session.on_frame(FrameKind::ResourceOutput {
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
@@ -211,7 +211,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
 async fn state_sync_output_acks_the_exact_generation() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(2);
+    let terminal_id = ResourceId::local(2);
     let stream_id = stream(2);
     let bootstrap_id = bootstrap(2);
     session.on_frame(hello_ok(
@@ -243,7 +243,7 @@ async fn state_sync_output_acks_the_exact_generation() {
     });
     session.on_frame(FrameKind::AttachReady { attach_id: 1 });
 
-    let output = session.on_frame(FrameKind::TerminalOutput {
+    let output = session.on_frame(FrameKind::ResourceOutput {
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
@@ -269,7 +269,7 @@ async fn state_sync_output_acks_the_exact_generation() {
 async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(3);
+    let terminal_id = ResourceId::local(3);
     let stream_id = stream(3);
     let bootstrap_id = bootstrap(3);
     let limits = BootstrapLimits::new(1024, 77).expect("valid limits");
@@ -354,7 +354,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
 async fn replacement_stages_without_touching_published_grid() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(4);
+    let terminal_id = ResourceId::local(4);
     let stream_id = stream(4);
     let first_bootstrap = bootstrap(4);
     let second_bootstrap = bootstrap(5);
@@ -433,7 +433,7 @@ async fn replacement_stages_without_touching_published_grid() {
 async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(6);
+    let terminal_id = ResourceId::local(6);
     let stream_id = stream(6);
     let bootstrap_id = bootstrap(7);
     session.on_frame(hello_ok(
@@ -472,7 +472,7 @@ async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
 
     session.on_frame(attached(terminal_id.clone(), 10, 2));
     assert!(!session.render_visible());
-    let closed = session.on_frame(FrameKind::TerminalClosed {
+    let closed = session.on_frame(FrameKind::ResourceClosed {
         terminal_id,
         exit_status: None,
         reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -613,7 +613,7 @@ async fn native_checkpoint_survives_arbitrary_frames_and_progressive_history() {
         "fixture must include progressive history"
     );
 
-    let terminal_id = TerminalId::local(70);
+    let terminal_id = ResourceId::local(70);
     let stream_id = stream(70);
     let bootstrap_id = bootstrap(70);
     let mut session = Session::new(&vt, 80, 24);
@@ -715,7 +715,7 @@ async fn native_checkpoint_survives_arbitrary_frames_and_progressive_history() {
         fragment += 1;
     }
 
-    let live = session.on_frame(FrameKind::TerminalOutput {
+    let live = session.on_frame(FrameKind::ResourceOutput {
         terminal_id,
         stream_id,
         bootstrap_id,
@@ -743,7 +743,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
     );
 
     let limits = BootstrapLimits::new(32, 64).expect("small valid negotiated bounds");
-    let terminal_id = TerminalId::local(71);
+    let terminal_id = ResourceId::local(71);
     let stream_id = stream(71);
     let bootstrap_id = bootstrap(71);
     let mut session = Session::new(&vt, 20, 3);
@@ -778,7 +778,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
 async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(5);
+    let terminal_id = ResourceId::local(5);
     let stream_id = stream(5);
     let bootstrap_id = bootstrap(6);
     session.on_frame(hello_ok(
@@ -810,7 +810,7 @@ async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
     });
     session.on_frame(FrameKind::AttachReady { attach_id: 1 });
 
-    let wrong = FrameKind::TerminalOutput {
+    let wrong = FrameKind::ResourceOutput {
         terminal_id,
         stream_id,
         bootstrap_id: bootstrap(999),
@@ -835,17 +835,17 @@ async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
 /// A focused session holding one terminal pane and one `AgentSession`
 /// resource bound to it, the way a RESOURCE_KINDS server reports them.
 fn attached_with_agent(
-    terminal_id: TerminalId,
-    agent_id: TerminalId,
+    terminal_id: ResourceId,
+    agent_id: ResourceId,
     cols: u16,
     rows: u16,
 ) -> FrameKind {
     FrameKind::Attached {
         attach_id: 1,
         snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal_id.clone())
-            .with_panes(vec![
-                TerminalInfo::new(terminal_id.clone(), WindowId::new(1), cols, rows),
-                TerminalInfo::new(agent_id, WindowId::new(0), 0, 0)
+            .with_resources(vec![
+                ResourceInfo::new(terminal_id.clone(), WindowId::new(1), cols, rows),
+                ResourceInfo::new(agent_id, WindowId::new(0), 0, 0)
                     .with_kind(ResourceKind::AgentSession)
                     .with_parent(Some(terminal_id))
                     .with_agent(Some(AgentFacet::new("claude", "idle"))),
@@ -873,8 +873,8 @@ fn badge_summary(session: &Session) -> Vec<(String, String)> {
 async fn agent_sessions_become_badges_and_never_panes() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 10, 2);
-    let terminal_id = TerminalId::local(8);
-    let agent_id = TerminalId::local(9);
+    let terminal_id = ResourceId::local(8);
+    let agent_id = ResourceId::local(9);
     let stream_id = stream(8);
     let bootstrap_id = bootstrap(8);
     let agent_stream = stream(9);
@@ -966,7 +966,7 @@ async fn agent_sessions_become_badges_and_never_panes() {
         badge_summary(&session),
         vec![("claude".to_owned(), "working".to_owned())]
     );
-    let live = session.on_frame(FrameKind::TerminalOutput {
+    let live = session.on_frame(FrameKind::ResourceOutput {
         terminal_id: agent_id.clone(),
         stream_id: agent_stream,
         bootstrap_id: agent_bootstrap,
@@ -980,7 +980,7 @@ async fn agent_sessions_become_badges_and_never_panes() {
     );
 
     // A malformed record retires the agent generation but never the terminal.
-    let broken = session.on_frame(FrameKind::TerminalOutput {
+    let broken = session.on_frame(FrameKind::ResourceOutput {
         terminal_id: agent_id.clone(),
         stream_id: agent_stream,
         bootstrap_id: agent_bootstrap,
@@ -989,7 +989,7 @@ async fn agent_sessions_become_badges_and_never_panes() {
     });
     assert!(broken.fatal.is_none());
     assert!(!session.is_failed());
-    let output = session.on_frame(FrameKind::TerminalOutput {
+    let output = session.on_frame(FrameKind::ResourceOutput {
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
@@ -1005,7 +1005,7 @@ async fn agent_sessions_become_badges_and_never_panes() {
     assert!(row0.starts_with("pane!"), "row 0 = {row0:?}");
 
     // Closing the agent retracts its badge and leaves the pane alone.
-    let closed = session.on_frame(FrameKind::TerminalClosed {
+    let closed = session.on_frame(FrameKind::ResourceClosed {
         terminal_id: agent_id,
         exit_status: None,
         reason: phux_protocol::wire::frame::CloseReason::ParentClosed,

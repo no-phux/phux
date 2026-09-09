@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use phux_core::ids::{SessionId, TerminalId, WindowId};
+use phux_core::ids::{ResourceId, SessionId, WindowId};
 
 use super::ServerState;
 
@@ -45,7 +45,7 @@ impl ServerState {
     /// first window. The `session-root` policy reads this pane's CWD to
     /// establish the session's creation directory.
     #[must_use]
-    pub fn seed_pane_of_session(&self, session: SessionId) -> Option<TerminalId> {
+    pub fn seed_pane_of_session(&self, session: SessionId) -> Option<ResourceId> {
         self.sessions.seed_pane_of(session)
     }
 }

@@ -109,7 +109,7 @@ pub struct ServerConfig {
     /// `defaults.history-bytes`, SPEC DESIGN.md §4.2). Threaded into every
     /// `TerminalActor`'s scrollback configuration at construction — both the
     /// pre-seeded session and any session created later via
-    /// `AttachTarget::CreateIfMissing` or `SPAWN_TERMINAL`. libghostty prunes
+    /// `AttachTarget::CreateIfMissing` or `SPAWN_RESOURCE`. libghostty prunes
     /// on whichever bound is reached first, and on a wide grid that is
     /// usually the byte bound (ADR-0094). The binary populates this from
     /// `phux_config`; [`Self::with_default_socket`] uses the schema defaults.
@@ -122,7 +122,7 @@ pub struct ServerConfig {
     pub agent_log_bytes: u32,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`, SPEC DESIGN.md). Threaded into
-    /// shared state so `SPAWN_TERMINAL` resolves the new pane's CWD when
+    /// shared state so `SPAWN_RESOURCE` resolves the new pane's CWD when
     /// the wire frame leaves `cwd` unset:
     /// [`phux_config::CwdInheritance::InheritFocused`] reads the spawning
     /// client's focused pane's live PTY working directory via a kernel
@@ -133,8 +133,8 @@ pub struct ServerConfig {
     pub cwd_inheritance: phux_config::CwdInheritance,
     /// `TERM` advertised to the inner program of every server-spawned pane
     /// (`defaults.term`, phux-ign). Threaded into shared state so the seed
-    /// session, attach-time `CreateIfMissing`, and `SPAWN_TERMINAL` apply
-    /// it as the PTY's `TERM` baseline. A per-spawn `SPAWN_TERMINAL.env`
+    /// session, attach-time `CreateIfMissing`, and `SPAWN_RESOURCE` apply
+    /// it as the PTY's `TERM` baseline. A per-spawn `SPAWN_RESOURCE.env`
     /// entry for `TERM` overrides it. The binary populates this from
     /// `phux_config`'s `defaults.term`; [`Self::with_default_socket`] uses
     /// the schema default (`xterm-256color`).
@@ -143,7 +143,7 @@ pub struct ServerConfig {
     /// `defaults.shell` when configured, else `$SHELL`, else `/bin/sh` —
     /// see [`crate::terminal_actor::resolve_shell`]. Threaded into shared
     /// state so the seed session, attach-time `CreateIfMissing`,
-    /// `SESSION_CREATE_KEY`, and a command-less `SPAWN_TERMINAL` all run
+    /// `SESSION_CREATE_KEY`, and a command-less `SPAWN_RESOURCE` all run
     /// it. A wire `command` always wins over this default. The binary
     /// populates this from its single config load;
     /// [`Self::with_default_socket`] resolves with no configured value
@@ -1000,7 +1000,7 @@ async fn adopt_or_bind_listener(
 
 /// Mirror the configured defaults into shared state, so every later pane
 /// spawn site — the seed session, attach-time `CreateIfMissing`,
-/// `SPAWN_TERMINAL` — resolves them from one place.
+/// `SPAWN_RESOURCE` — resolves them from one place.
 fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &SharedState) {
     // `AttachTarget::Last` must resolve an untouched server from this
     // server-owned seed identity, not from a client-side config guess. The
@@ -1023,17 +1023,17 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // even off the default socket path.
     state.with_mut(|s| s.set_server_socket_path(socket_path.to_path_buf()));
     // Mirror `defaults.history-limit` / `defaults.history-bytes` so the
-    // attach-time creation path (`CreateIfMissing`) and `SPAWN_TERMINAL`
+    // attach-time creation path (`CreateIfMissing`) and `SPAWN_RESOURCE`
     // build their panes with the configured bounds.
     state.with_mut(|s| {
         s.set_scrollback_limits(cfg.scrollback);
         s.set_agent_log_bytes(cfg.agent_log_bytes);
     });
-    // Mirror `defaults.cwd-inheritance` so the `SPAWN_TERMINAL` handler
+    // Mirror `defaults.cwd-inheritance` so the `SPAWN_RESOURCE` handler
     // resolves a new pane's working directory from the configured policy.
     state.with_mut(|s| s.set_cwd_inheritance(cfg.cwd_inheritance));
     // Mirror `defaults.term` so the seed session, attach-time
-    // `CreateIfMissing`, and `SPAWN_TERMINAL` apply the configured `TERM`
+    // `CreateIfMissing`, and `SPAWN_RESOURCE` apply the configured `TERM`
     // baseline.
     state.with_mut(|s| s.set_term(cfg.term.clone()));
     // Mirror the resolved default shell (`defaults.shell` → `$SHELL` →
@@ -2150,7 +2150,7 @@ mod tests {
             let (output_tx, _seed_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(8);
             let mut output_rx = output_tx.subscribe();
             let mut output_pumps = JoinSet::new();
-            let terminal_id = phux_protocol::ids::TerminalId::local(42);
+            let terminal_id = phux_protocol::ids::ResourceId::local(42);
 
             let pump_out_tx = out_tx.clone();
             let pump_terminal_id = terminal_id.clone();
@@ -2159,7 +2159,7 @@ mod tests {
                 while let Ok(bytes) = output_rx.recv().await {
                     seq = seq.wrapping_add(1);
                     if pump_out_tx
-                        .send(Outbound::Frame(FrameKind::TerminalOutput {
+                        .send(Outbound::Frame(FrameKind::ResourceOutput {
                             terminal_id: pump_terminal_id.clone(),
                             stream_id: phux_protocol::ids::StreamId::new(1)
                                 .expect("test stream id"),
@@ -2185,7 +2185,7 @@ mod tests {
                 .expect("writer mailbox closed");
             assert!(matches!(
                 first,
-                Outbound::Frame(FrameKind::TerminalOutput { seq: 1, .. })
+                Outbound::Frame(FrameKind::ResourceOutput { seq: 1, .. })
             ));
 
             abort_output_pumps(&mut output_pumps, client_id, "test-detach").await;
@@ -2230,14 +2230,14 @@ mod tests {
     /// this state when it lands; today we just observe the mutation.
     #[test]
     fn viewport_resize_updates_focused_pane_dims() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_core::ids::ResourceId as CoreResourceId;
 
         let state = SharedState::new();
         // Seed a session with a pane, then attach a client. Mirrors what
         // `seed_session_with_actor` does on the real path, minus the
         // TerminalActor spawn (we're not exercising the actor here — just
         // the state-side dim update).
-        let (sid, _wid, pid): (_, _, CoreTerminalId) =
+        let (sid, _wid, pid): (_, _, CoreResourceId) =
             state.with_mut(|s| s.seed_session("test-session"));
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -2272,11 +2272,11 @@ mod tests {
     /// stand up libghostty or a PTY pair.
     #[test]
     fn viewport_resize_sends_to_terminal_actor_resize_channel() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_core::ids::ResourceId as CoreResourceId;
         use tokio::sync::{broadcast, mpsc};
 
         let state = SharedState::new();
-        let (_sid, _wid, pid): (_, _, CoreTerminalId) =
+        let (_sid, _wid, pid): (_, _, CoreResourceId) =
             state.with_mut(|s| s.seed_session("test-session"));
 
         // Build a `TerminalHandle` directly. The actor side is not running;
@@ -2397,7 +2397,7 @@ mod tests {
         reason = "linear setup-then-act-then-assert test body; splitting would obscure the allocation proof"
     )]
     async fn handle_attach_bounds_snapshot_sources_sequentially() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_core::ids::ResourceId as CoreResourceId;
         use tokio::sync::{broadcast, mpsc};
         use tokio::task::LocalSet;
 
@@ -2413,7 +2413,7 @@ mod tests {
                 // Seed one session with one window and N panes.
                 let (sid, wid, _first_pane) = state.with_mut(|s| s.seed_session("multi"));
                 // `seed_session` made one pane already; we want N total.
-                let mut terminal_ids: Vec<CoreTerminalId> = Vec::with_capacity(N);
+                let mut terminal_ids: Vec<CoreResourceId> = Vec::with_capacity(N);
                 state.with_mut(|s| {
                     let session = s.registry().session(sid).cloned().expect("session");
                     let window = s
@@ -2610,7 +2610,7 @@ mod tests {
         reason = "linear setup-attach-observe-detach-observe body; splitting would scatter the lifecycle proof"
     )]
     async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_core::ids::ResourceId as CoreResourceId;
         use tokio::sync::{broadcast, mpsc};
         use tokio::task::LocalSet;
 
@@ -2623,7 +2623,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_sid, _wid, pid): (_, _, CoreTerminalId) =
+                let (_sid, _wid, pid): (_, _, CoreResourceId) =
                     state.with_mut(|s| s.seed_session("lifecycle"));
 
                 let (input_tx, _input_rx) = mpsc::channel(8);
@@ -3165,7 +3165,7 @@ mod tests {
         reason = "end-to-end fatal resync setup keeps the fake actor, publication, and cleanup assertions together"
     )]
     async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_core::ids::ResourceId as CoreResourceId;
         use phux_protocol::caps::{
             BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, EngineCodec,
             EngineFeatureSet,
@@ -3181,7 +3181,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_sid, _wid, terminal): (_, _, CoreTerminalId) =
+                let (_sid, _wid, terminal): (_, _, CoreResourceId) =
                     state.with_mut(|s| s.seed_session("native-fatal"));
                 let (output_tx, _output_seed) = broadcast::channel::<PaneOutput>(8);
                 let (native_bootstrap_tx, mut native_bootstrap_rx) = mpsc::channel(8);
@@ -3358,7 +3358,7 @@ mod tests {
                         .await
                         .expect("live output timed out")
                         .expect("outbound closed"),
-                    Outbound::Frame(FrameKind::TerminalOutput { seq: 1, .. })
+                    Outbound::Frame(FrameKind::ResourceOutput { seq: 1, .. })
                 ));
 
                 output_tx

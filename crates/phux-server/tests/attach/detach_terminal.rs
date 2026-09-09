@@ -1,4 +1,4 @@
-//! `DETACH_TERMINAL` retires any subscription source before acknowledging it.
+//! `DETACH_RESOURCE` retires any subscription source before acknowledging it.
 
 #![allow(
     clippy::future_not_send,
@@ -16,7 +16,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapStreamProfile, ClientCapabilities, EngineCodec,
     EngineFeatureSet, OutputMode,
 };
-use phux_protocol::ids::{GroupId, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::input::{
     InputEvent,
     paste::{PasteEvent, PasteTrust},
@@ -78,7 +78,7 @@ fn assert_no_content(frame: &FrameKind) {
     assert!(
         !matches!(
             frame,
-            FrameKind::TerminalOutput { .. }
+            FrameKind::ResourceOutput { .. }
                 | FrameKind::BootstrapBegin { .. }
                 | FrameKind::BootstrapChunk { .. }
                 | FrameKind::BootstrapReady { .. }
@@ -86,19 +86,19 @@ fn assert_no_content(frame: &FrameKind) {
                 | FrameKind::HistoryTombstone { .. }
                 | FrameKind::HistoryPage { .. }
                 | FrameKind::HistoryRejected { .. }
-                | FrameKind::TerminalClosed { .. }
+                | FrameKind::ResourceClosed { .. }
         ),
-        "unsolicited terminal frame after DETACH_TERMINAL success: {frame:?}"
+        "unsolicited terminal frame after DETACH_RESOURCE success: {frame:?}"
     );
 }
 
-async fn attach_session(stream: &mut UnixStream) -> TerminalId {
+async fn attach_session(stream: &mut UnixStream) -> ResourceId {
     send_frame(stream, &attach_by_name("detach")).await;
     let mut pane = None;
     timeout(WIRE_RECV_TIMEOUT, async {
         loop {
             match recv_typed(stream).await.1 {
-                FrameKind::Attached { snapshot, .. } => pane = Some(snapshot.focused_pane),
+                FrameKind::Attached { snapshot, .. } => pane = Some(snapshot.focused_resource),
                 FrameKind::AttachReady { .. } => return pane.take().expect("attached pane"),
                 _ => {}
             }
@@ -108,10 +108,10 @@ async fn attach_session(stream: &mut UnixStream) -> TerminalId {
     .expect("session ready")
 }
 
-async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> TerminalId {
+async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> ResourceId {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: Some(vec!["/bin/cat".to_owned()]),
@@ -130,7 +130,7 @@ async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> TerminalId {
     timeout(WIRE_RECV_TIMEOUT, async {
         loop {
             match recv_typed(stream).await.1 {
-                FrameKind::TerminalSpawned {
+                FrameKind::ResourceSpawned {
                     result: SpawnResult::Ok(id),
                     ..
                 } => pane = Some(id),
@@ -139,7 +139,7 @@ async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> TerminalId {
                 {
                     return terminal_id;
                 }
-                FrameKind::TerminalSpawned { result, .. } => panic!("spawn failed: {result:?}"),
+                FrameKind::ResourceSpawned { result, .. } => panic!("spawn failed: {result:?}"),
                 _ => {}
             }
         }
@@ -150,14 +150,14 @@ async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> TerminalId {
 
 async fn explicit_attach(
     stream: &mut UnixStream,
-    pane: &TerminalId,
+    pane: &ResourceId,
     request_id: u32,
 ) -> Option<Screen> {
     send_frame(
         stream,
         &FrameKind::Command {
             request_id,
-            command: Command::AttachTerminal {
+            command: Command::AttachResource {
                 terminal_id: pane.clone(),
             },
         },
@@ -198,7 +198,7 @@ async fn explicit_attach(
     screen
 }
 
-async fn write_and_observe(control: &mut UnixStream, pane: &TerminalId, marker: &str) {
+async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: &str) {
     assert_eq!(
         command(
             control,
@@ -244,14 +244,14 @@ async fn write_and_observe(control: &mut UnixStream, pane: &TerminalId, marker: 
 async fn detach_and_check(
     stream: &mut UnixStream,
     control: &mut UnixStream,
-    pane: &TerminalId,
+    pane: &ResourceId,
     marker: &str,
 ) {
     assert_eq!(
         command(
             stream,
             900,
-            Command::DetachTerminal {
+            Command::DetachResource {
                 terminal_id: pane.clone()
             },
             false
@@ -323,8 +323,8 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
             else {
                 panic!("state");
             };
-            explicit_attach(&mut stream, &state.focused_pane, 2).await;
-            state.focused_pane
+            explicit_attach(&mut stream, &state.focused_resource, 2).await;
+            state.focused_resource
         }
     };
     if matches!(source, Source::Spawn) {
@@ -332,7 +332,7 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
             command(
                 &mut stream,
                 3,
-                Command::DetachTerminal {
+                Command::DetachResource {
                     terminal_id: seed.clone()
                 },
                 false
@@ -444,7 +444,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
             command(
                 &mut stream,
                 1,
-                Command::DetachTerminal {
+                Command::DetachResource {
                     terminal_id: terminal_id.clone()
                 },
                 false

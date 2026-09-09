@@ -16,8 +16,8 @@ use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 pub use crate::resource::{
-    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResyncReason, SubscribeToEventsRequest,
-    TerminalEventSubscriber, UnsubscribeFromEventsRequest,
+    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResourceEventSubscriber, ResyncReason,
+    SubscribeToEventsRequest, UnsubscribeFromEventsRequest,
 };
 
 /// Request to register a new consumer with the actor.
@@ -39,12 +39,12 @@ pub struct ConsumerAttachRequest {
     pub client_id: ClientId,
     /// Per-consumer outbound mailbox. The actor stores a clone in the
     /// per-consumer [`super::ConsumerSyncState`] and uses it on every tick
-    /// (phux-q0e.3) to push a `TerminalOutput` frame carrying the
+    /// (phux-q0e.3) to push a `ResourceOutput` frame carrying the
     /// incremental synthesis bytes.
     pub outbound: mpsc::Sender<Outbound>,
     /// Wire-level terminal id (`u32`). The actor stamps it on every
-    /// emitted `TerminalOutput` frame. The runtime owns the mapping
-    /// from the actor's [`phux_core::ids::TerminalId`] to this wire id and
+    /// emitted `ResourceOutput` frame. The runtime owns the mapping
+    /// from the actor's [`phux_core::ids::ResourceId`] to this wire id and
     /// passes the resolved value here at ATTACH time.
     pub wire_terminal_id: u32,
     /// Logical protocol-0.7 subscription identity.
@@ -104,7 +104,7 @@ pub struct StateSyncBootstrap {
 /// Successful outcome of a [`ConsumerAttachRequest`].
 ///
 /// phux-3uv: the runtime needs to know whether this actor will *emit*
-/// `TERMINAL_OUTPUT` for the consumer via the state-sync tick. If so, the
+/// `RESOURCE_OUTPUT` for the consumer via the state-sync tick. If so, the
 /// runtime must suppress its own broadcast pump. State-sync registration also
 /// returns the snapshot captured in the same actor turn as its reference.
 #[derive(Debug)]
@@ -168,7 +168,7 @@ pub struct ConsumerAckRequest {
     /// Replica generation being acknowledged.
     pub bootstrap_id: BootstrapId,
     /// Cumulative ack sequence (per SPEC §12.2): the highest `seq` from
-    /// `TERMINAL_OUTPUT` this consumer has applied. Strictly-monotonic
+    /// `RESOURCE_OUTPUT` this consumer has applied. Strictly-monotonic
     /// against the per-consumer `last_acked_seq` — older/duplicate acks
     /// are silently dropped.
     pub seq: u64,
@@ -398,7 +398,7 @@ pub struct NativePublicationRequest {
     /// Server-local lease owner completing publication.
     pub owner: u64,
     /// Wire terminal identity for the published replica.
-    pub terminal_id: phux_protocol::ids::TerminalId,
+    pub terminal_id: phux_protocol::ids::ResourceId,
     /// Logical stream identity for the published replica.
     pub stream_id: StreamId,
     /// Replica generation whose READY frame was just sent.
@@ -417,7 +417,7 @@ pub struct NativeBootstrapRequest {
     /// Server-local owner identity used for detach and TTL cleanup.
     pub owner: u64,
     /// Wire terminal identity for this subscription.
-    pub terminal_id: phux_protocol::ids::TerminalId,
+    pub terminal_id: phux_protocol::ids::ResourceId,
     /// Logical stream identity.
     pub stream_id: StreamId,
     /// Replica generation identity.
@@ -451,7 +451,7 @@ pub struct NativeHistoryRequest {
     /// Server-local owner identity authenticated against the retained cut.
     pub owner: u64,
     /// Wire terminal identity for this subscription.
-    pub terminal_id: phux_protocol::ids::TerminalId,
+    pub terminal_id: phux_protocol::ids::ResourceId,
     /// Logical stream identity.
     pub stream_id: StreamId,
     /// Replica generation identity.
@@ -559,7 +559,7 @@ pub struct PaneUpgradeHandle {
 
 /// Request for the pane's live current working directory (`phux-cs6`).
 ///
-/// Sent by the `SPAWN_TERMINAL` handler when `defaults.cwd-inheritance`
+/// Sent by the `SPAWN_RESOURCE` handler when `defaults.cwd-inheritance`
 /// is [`phux_config::CwdInheritance::InheritFocused`] and the wire frame
 /// left `cwd` unset: the new pane should open in the focused pane's live
 /// CWD. The actor asks the kernel for its PTY child's working directory
@@ -591,7 +591,7 @@ pub struct PwdRequest {
 /// `true`, the actor re-broadcasts a full grid snapshot after the reflow
 /// so attached clients (whose mirror reflowed independently and may have
 /// dropped rows) reconverge. It is `true` for *live* resizes from an
-/// already-attached client (SIGWINCH → `VIEWPORT_RESIZE`/`TERMINAL_RESIZE`)
+/// already-attached client (SIGWINCH → `VIEWPORT_RESIZE`/`RESIZE_TERMINAL`)
 /// and `false` for the ATTACH-time resize — the attach handshake already
 /// sends an authoritative `TERMINAL_SNAPSHOT`, and a resync broadcast
 /// there would race ahead of it and reorder the handshake.
@@ -607,7 +607,7 @@ pub struct ResizeRequest {
     /// libghostty's pixel dimensions (XTWINOPS size replies, image
     /// protocols). `None` ⇒ no pixel truth in this request; the actor
     /// keeps its last-known cell size so a pixel-less resize (e.g. an
-    /// agent's `TERMINAL_RESIZE`) cannot zero out geometry a real client
+    /// agent's `RESIZE_TERMINAL`) cannot zero out geometry a real client
     /// already established.
     pub cell_px: Option<(u16, u16)>,
     /// Re-broadcast a full snapshot after reflow (live resize) vs stay
@@ -666,7 +666,7 @@ pub struct TerminalHandle {
     /// attaching (`phux-oki`, ADR-0022 §5).
     pub screen: mpsc::Sender<ScreenRequest>,
     /// Sender for working-directory reads (`phux-cs6`). The
-    /// `SPAWN_TERMINAL` handler uses this to resolve
+    /// `SPAWN_RESOURCE` handler uses this to resolve
     /// `defaults.cwd-inheritance = inherit-focused`: it asks the focused
     /// pane's actor for its live CWD (a kernel query against the PTY
     /// child, see [`PwdRequest`]) and seeds the new pane's

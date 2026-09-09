@@ -25,7 +25,7 @@
 //!    (phux-i0e8.3.4).
 //! 4. Pane death surfaces exit status — audited: a dying pane discarded
 //!    its exit status (`server_frame.rs:1169-1216`). Fixed:
-//!    `TERMINAL_CLOSED` carries it and the client prints
+//!    `RESOURCE_CLOSED` carries it and the client prints
 //!    "session ended: the last pane exited N" on teardown (phux-i0e8.2.2).
 //! 5. Server SIGKILL shows the reconnect indicator — audited: a server
 //!    crash was ~10s of blank screen (`attach.rs:272-341`). Fixed: the
@@ -561,7 +561,7 @@ fn last_pane_death_surfaces_its_exit_status() {
     client.wait_until_attached(&server, &iso);
 
     // Kill the seed pane's shell with a distinctive status. The exit code
-    // must ride TERMINAL_CLOSED to the client and come out in the
+    // must ride RESOURCE_CLOSED to the client and come out in the
     // teardown line — not be discarded as it was when audited.
     let (code, _stdout, stderr) =
         run_captured(&mut server.cmd(&iso, &["send-keys", SESSION, "exit 7", "Enter"]));

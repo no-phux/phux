@@ -180,7 +180,7 @@ pub(crate) fn print_sessions_json(
         .map(|pane| crate::selector::format_terminal_id(&pane.id))
         .collect();
     let resources = snapshot
-        .panes
+        .resources
         .iter()
         .map(|pane| ResourceJson {
             id: crate::selector::format_terminal_id(&pane.id),
@@ -210,7 +210,7 @@ pub(crate) fn print_sessions_json(
 #[cfg(test)]
 mod tests {
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-    use phux_protocol::{SessionId, TerminalId, WindowId};
+    use phux_protocol::{ResourceId, SessionId, WindowId};
 
     use super::{EMPTY_STATE, format_session_line, session_lines};
 
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn empty_snapshot_yields_no_lines_and_the_empty_state_names_next_commands() {
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::new(1));
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1));
         assert!(session_lines(&snapshot).is_empty());
 
         // The two-line empty state: what is missing, then the exact commands
@@ -263,19 +263,19 @@ mod tests {
     #[test]
     fn agent_sessions_nest_under_their_pane() {
         use phux_protocol::ids::ResourceKind;
-        use phux_protocol::wire::info::{AgentFacet, TerminalInfo, WindowInfo};
+        use phux_protocol::wire::info::{AgentFacet, ResourceInfo, WindowInfo};
 
         let work = SessionId::new(1);
         let window = WindowId::new(10);
-        let snapshot = SessionSnapshot::new(work, window, TerminalId::local(7))
+        let snapshot = SessionSnapshot::new(work, window, ResourceId::local(7))
             .with_sessions(vec![SessionInfo::new(work, "work").with_window_count(1)])
             .with_windows(vec![WindowInfo::new(window, work, "shell").with_index(0)])
-            .with_panes(vec![
-                TerminalInfo::new(TerminalId::local(7), window, 80, 24),
-                TerminalInfo::new(TerminalId::local(8), window, 80, 24),
-                TerminalInfo::new(TerminalId::local(9), window, 0, 0)
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(7), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(8), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(9), window, 0, 0)
                     .with_kind(ResourceKind::AgentSession)
-                    .with_parent(Some(TerminalId::local(7)))
+                    .with_parent(Some(ResourceId::local(7)))
                     .with_agent(Some(AgentFacet::new("claude", "working"))),
             ]);
         assert_eq!(
@@ -293,22 +293,22 @@ mod tests {
     #[test]
     fn json_splits_terminals_from_resources() {
         use phux_protocol::ids::ResourceKind;
-        use phux_protocol::wire::info::TerminalInfo;
+        use phux_protocol::wire::info::ResourceInfo;
 
         let window = WindowId::new(10);
-        let snapshot = SessionSnapshot::new(SessionId::new(1), window, TerminalId::local(7))
-            .with_panes(vec![
-                TerminalInfo::new(TerminalId::local(7), window, 80, 24),
-                TerminalInfo::new(TerminalId::local(9), window, 0, 0)
+        let snapshot = SessionSnapshot::new(SessionId::new(1), window, ResourceId::local(7))
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(7), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(9), window, 0, 0)
                     .with_kind(ResourceKind::AgentSession)
-                    .with_parent(Some(TerminalId::local(7))),
+                    .with_parent(Some(ResourceId::local(7))),
             ]);
         let terminals: Vec<String> = phux_client::resource::terminals(&snapshot)
             .map(|pane| crate::selector::format_terminal_id(&pane.id))
             .collect();
         assert_eq!(terminals, ["@7"]);
         let resources: Vec<(String, String, Option<String>)> = snapshot
-            .panes
+            .resources
             .iter()
             .map(|pane| {
                 (
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn lines_are_name_sorted() {
         let snapshot =
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::new(1))
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
                 .with_sessions(vec![session("beta", 1, 0), session("alpha", 1, 0)]);
         let lines = session_lines(&snapshot);
         assert_eq!(lines, vec!["alpha: 1 window", "beta: 1 window"]);

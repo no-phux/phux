@@ -9,7 +9,7 @@
 //! seam captures byte-for-byte what the human's glass received, which is the
 //! thing users mean by "record my session": it replays in a fresh libghostty
 //! `Terminal` sized to the viewport with no compositor anywhere in the loop.
-//! A per-pane `TERMINAL_OUTPUT` tap would record one pane's PTY bytes and
+//! A per-pane `RESOURCE_OUTPUT` tap would record one pane's PTY bytes and
 //! lose every piece of chrome.
 //!
 //! The tee also sits deliberately UPSTREAM of

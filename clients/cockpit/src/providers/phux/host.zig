@@ -81,7 +81,7 @@ pub const Error = error{
     NoValue,
 };
 
-const RemoteId = provider.RemoteTerminalId;
+const RemoteId = provider.RemoteResourceId;
 const CanvasStore = presentation_module.CanvasStore;
 pub const ColorPolicy = @import("grid_metadata.zig").Policy;
 pub const FrozenPresentation = @import("frozen_presentation.zig").FrozenPresentation;
@@ -343,13 +343,13 @@ pub const Host = struct {
         _ = try remoteFromC(raw);
         if (remote.id == 0) return error.InvalidIdentity;
         if (host.findTerminal(terminal_ref) == null) try host.reserveTerminalSlot(terminal_ref);
-        const options: c.PhuxAttachTerminalOptions = .{
-            .size = @sizeOf(c.PhuxAttachTerminalOptions),
+        const options: c.PhuxAttachResourceOptions = .{
+            .size = @sizeOf(c.PhuxAttachResourceOptions),
             .version = c.PHUX_CLIENT_ABI_VERSION,
             .request_id = request_id,
             .terminal_id = raw,
         };
-        try resultError(c.phux_client_queue_attach_terminal(host.client, &options));
+        try resultError(c.phux_client_queue_attach_resource(host.client, &options));
         host.operation_ledger.accepted(request_id, host.client_generation, .attach, terminal_ref);
         // Capacity was reserved before queueing. A placeholder counts against
         // the terminal limit but stays invisible until the stream is READY.
@@ -372,13 +372,13 @@ pub const Host = struct {
         const request_id = try host.preflightOperation();
         const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
         if (!terminal.published) return error.InvalidState;
-        const options: c.PhuxDetachTerminalOptions = .{
-            .size = @sizeOf(c.PhuxDetachTerminalOptions),
+        const options: c.PhuxDetachResourceOptions = .{
+            .size = @sizeOf(c.PhuxDetachResourceOptions),
             .version = c.PHUX_CLIENT_ABI_VERSION,
             .request_id = request_id,
             .terminal_id = cId(&terminal.id),
         };
-        try resultError(c.phux_client_queue_detach_terminal(host.client, &options));
+        try resultError(c.phux_client_queue_detach_resource(host.client, &options));
         host.operation_ledger.accepted(request_id, host.client_generation, .detach, terminal_ref);
         host.stageOutgoing() catch host.disconnect();
         return request_id;
@@ -1113,7 +1113,7 @@ pub const Host = struct {
         if (destination == &terminal.pending_title) terminal.pending_title_set = true;
     }
 
-    fn markResync(host: *Host, raw: c.PhuxTerminalId) !void {
+    fn markResync(host: *Host, raw: c.PhuxResourceId) !void {
         if (try host.findTerminalRaw(raw)) |terminal| {
             terminal.phase = .tombstoned;
             return;
@@ -1184,7 +1184,7 @@ pub const Host = struct {
         delta.generation_changed = delta.generation_changed or changed;
     }
 
-    fn copyTerminalCanvas(host: *Host, terminal: *Terminal, id: *const c.PhuxTerminalId, view: *const c.PhuxTerminalGridView) !void {
+    fn copyTerminalCanvas(host: *Host, terminal: *Terminal, id: *const c.PhuxResourceId, view: *const c.PhuxTerminalGridView) !void {
         const returned_id = remoteFromC(view.terminal_id) catch |err| {
             releaseTopAnchor(host.client, id, view.top_anchor);
             return err;
@@ -1222,7 +1222,7 @@ pub const Host = struct {
         });
     }
 
-    fn ensureTerminal(host: *Host, raw: c.PhuxTerminalId) !*Terminal {
+    fn ensureTerminal(host: *Host, raw: c.PhuxResourceId) !*Terminal {
         const id = try remoteFromC(raw);
         for (host.terminals.items) |*terminal| if (terminal.id.eql(id)) return terminal;
         if (host.terminals.items.len == max_terminals) return error.OutOfMemory;
@@ -1230,7 +1230,7 @@ pub const Host = struct {
         return &host.terminals.items[host.terminals.items.len - 1];
     }
 
-    fn findTerminalRaw(host: *Host, raw: c.PhuxTerminalId) !?*Terminal {
+    fn findTerminalRaw(host: *Host, raw: c.PhuxResourceId) !?*Terminal {
         const id = try remoteFromC(raw);
         for (host.terminals.items) |*terminal| if (terminal.id.eql(id)) return terminal;
         return null;
@@ -1265,14 +1265,14 @@ pub const Host = struct {
         return removed;
     }
 
-    fn currentCId(host: *Host, owner_value: provider.ReplicaOwner) !c.PhuxTerminalId {
+    fn currentCId(host: *Host, owner_value: provider.ReplicaOwner) !c.PhuxResourceId {
         if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
         const terminal = host.findTerminal(owner_value.terminal_ref) orelse return error.InvalidState;
         if (terminal.phase != .live or !terminal.owner().eql(owner_value)) return error.InvalidState;
         return cId(&terminal.id);
     }
 
-    fn currentCIdConst(host: *const Host, owner_value: provider.ReplicaOwner) !c.PhuxTerminalId {
+    fn currentCIdConst(host: *const Host, owner_value: provider.ReplicaOwner) !c.PhuxResourceId {
         if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
         const terminal = host.findTerminalConst(owner_value.terminal_ref) orelse return error.InvalidState;
         if (terminal.phase != .live or !terminal.owner().eql(owner_value)) return error.InvalidState;
@@ -1317,12 +1317,12 @@ fn newClient() !*c.PhuxClient {
     return raw orelse error.InvalidState;
 }
 
-fn remoteFromC(raw: c.PhuxTerminalId) !RemoteId {
+fn remoteFromC(raw: c.PhuxResourceId) !RemoteId {
     if (raw.host.len != 0 and raw.host.data == null) return error.InvalidIdentity;
     const host_name: []const u8 = if (raw.host.len == 0) &.{} else raw.host.data[0..raw.host.len];
-    if (raw.kind == c.PHUX_TERMINAL_LOCAL) {
+    if (raw.kind == c.PHUX_RESOURCE_ID_LOCAL) {
         if (host_name.len != 0) return error.InvalidIdentity;
-    } else if (raw.kind == c.PHUX_TERMINAL_SATELLITE) {
+    } else if (raw.kind == c.PHUX_RESOURCE_ID_SATELLITE) {
         if (host_name.len == 0) return error.InvalidIdentity;
         _ = std.unicode.Utf8View.init(host_name) catch return error.InvalidIdentity;
     } else return error.InvalidIdentity;
@@ -1341,7 +1341,7 @@ fn phuxRef(id: RemoteId) provider.TerminalRef {
     return .{ .provider_id = .phux, .terminal_id = .{ .phux = id } };
 }
 
-fn cId(id: *const RemoteId) c.PhuxTerminalId {
+fn cId(id: *const RemoteId) c.PhuxResourceId {
     const host_name = id.host();
     return .{
         .kind = id.kind,
@@ -1379,7 +1379,7 @@ fn toCAnchor(anchor: Anchor) c.PhuxDocumentAnchor {
     return .{ .opaque_id = anchor.opaque_id };
 }
 
-fn releaseTopAnchor(client: *c.PhuxClient, terminal_id: *const c.PhuxTerminalId, anchor: c.PhuxDocumentAnchor) void {
+fn releaseTopAnchor(client: *c.PhuxClient, terminal_id: *const c.PhuxResourceId, anchor: c.PhuxDocumentAnchor) void {
     if (anchor.opaque_id != 0) _ = c.phux_client_anchor_release(client, terminal_id, anchor);
 }
 
@@ -1430,7 +1430,7 @@ test "contains hides terminals until their canvas is published" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 7, "");
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, "");
     try host.terminals.append(host.gpa, .{ .id = id });
     const terminal_ref = phuxRef(id);
 
@@ -1472,7 +1472,7 @@ test "session summaries copy every server field and own their names" {
 
 test "grid damage freezes a published canvas until replacement copy" {
     var published: Terminal = .{
-        .id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 8, ""),
+        .id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 8, ""),
         .phase = .live,
         .published = true,
     };
@@ -1482,7 +1482,7 @@ test "grid damage freezes a published canvas until replacement copy" {
     try std.testing.expect(published.seen_in_attach);
 
     var reconnecting: Terminal = .{
-        .id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 9, ""),
+        .id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 9, ""),
         .phase = .reconnecting,
         .published = true,
     };
@@ -1490,7 +1490,7 @@ test "grid damage freezes a published canvas until replacement copy" {
     try std.testing.expectEqual(provider.Phase.reconnecting, reconnecting.phase);
 
     var unpublished: Terminal = .{
-        .id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 10, ""),
+        .id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 10, ""),
     };
     markGridDirty(&unpublished, true);
     try std.testing.expectEqual(provider.Phase.attaching, unpublished.phase);
@@ -1503,7 +1503,7 @@ test "publish failure after attach freezes an existing canvas" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 10, "");
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 10, "");
     try host.terminals.append(host.gpa, .{
         .id = id,
         .phase = .live,
@@ -1526,7 +1526,7 @@ test "ATTACHED inventory remains pixel-invisible until READY publication" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 21, "");
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 21, "");
     const terminal = try host.ensureTerminal(cId(&id));
     terminal.seen_in_attach = true;
     terminal.dirty = true;
@@ -1557,7 +1557,7 @@ test "generation fences stale completion while sequence progress remains current
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 22, "");
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 22, "");
     try host.terminals.append(host.gpa, .{
         .id = id,
         .generation = .{ .stream_id = 30, .bootstrap_id = 40, .last_seq = 1 },
@@ -1597,8 +1597,8 @@ test "reconnect freezes complete canvases and preserves terminal identities" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const first_id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 31, "");
-    const second_id = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 8, "build-host");
+    const first_id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 31, "");
+    const second_id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 8, "build-host");
     try host.terminals.append(host.gpa, .{
         .id = first_id,
         .generation = .{ .stream_id = 1, .bootstrap_id = 2, .last_seq = 3 },
@@ -1642,7 +1642,7 @@ test "replacement session admits one terminal after sixteen old replicas" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
     for (0..max_terminals) |index| {
-        const id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, @intCast(index + 100), "");
+        const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, @intCast(index + 100), "");
         const terminal = try host.ensureTerminal(cId(&id));
         terminal.published = true;
         terminal.phase = .live;
@@ -1655,7 +1655,7 @@ test "replacement session admits one terminal after sixteen old replicas" {
     // Real captureEffects admits the new terminal before the READY prune.
     try test_support.stageFixture(&bridge, "attached.bin");
     const delta = try host.drainReadiness();
-    const replacement = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 7, "");
+    const replacement = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, "");
     try std.testing.expect(delta.ready_published);
     try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
     try std.testing.expect(host.terminalKnown(phuxRef(replacement)));
@@ -1675,9 +1675,9 @@ test "same-session reconnect replaces one of sixteen replicas before admitting n
     try std.testing.expect((try host.drainReadiness()).ready_published);
     try std.testing.expectEqual(max_terminals, host.terminals.items.len);
     try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
-    const survivor = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 7, ""));
-    const removed = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 22, ""));
-    const replacement = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 23, ""));
+    const survivor = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, ""));
+    const removed = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 22, ""));
+    const replacement = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 23, ""));
     const old_grid = host.presentation(survivor).?.grid.screen_text;
     const frozen = try host.capturePresentation(host.owner(survivor).?);
     defer frozen.destroy();
@@ -1780,7 +1780,7 @@ test "workspace refresh shares spawn IDs and discovers other sessions without re
     try std.testing.expect(host.workspaceSnapshot().revision > old_revision);
     try std.testing.expectEqual(@as(usize, 3), host.catalogTerminals().len);
     try std.testing.expectEqual(replicas, host.terminals.items.len);
-    const external = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 9, ""));
+    const external = phuxRef(try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 9, ""));
     try std.testing.expectEqual(@as(?u32, 2), host.terminalSession(external));
     try std.testing.expect(!host.terminalKnown(external));
     try std.testing.expect(!host.contains(external));
@@ -1930,8 +1930,8 @@ test "reordered remote enumeration retains stable refs and lookup" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
 
-    const first_id = try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 41, "");
-    const second_id = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 41, "satellite");
+    const first_id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 41, "");
+    const second_id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 41, "satellite");
     const first = try host.ensureTerminal(cId(&first_id));
     first.published = true;
     first.phase = .live;
@@ -1961,7 +1961,7 @@ test "every declaration in this module is compiled, not merely reachable" {
 }
 
 test "satellite C identity borrows the exact owning host storage" {
-    const remote = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 41, "satellite-with-exact-host");
+    const remote = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 41, "satellite-with-exact-host");
     const raw = cId(&remote);
     try std.testing.expectEqual(@intFromPtr(remote.host().ptr), @intFromPtr(raw.host.data));
     try std.testing.expectEqualStrings("satellite-with-exact-host", raw.host.data[0..raw.host.len]);
@@ -2048,7 +2048,7 @@ test "satellite spawn requires explicit attach and permits READY before command 
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
     try test_support.attachHost(host);
-    const satellite = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 6, "build-host");
+    const satellite = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 6, "build-host");
     const owner_terminal = try host.ensureTerminal(cId(&satellite));
     owner_terminal.published = true;
     owner_terminal.phase = .live;
@@ -2105,7 +2105,7 @@ test "attach refusal reclaims unpublished capacity and can be retried" {
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
     try test_support.attachHost(host);
-    const remote = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 9, "build-host");
+    const remote = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 9, "build-host");
     _ = try host.requestAttach(phuxRef(remote));
     try test_support.stageFixture(&bridge, "attach-refused.bin");
     _ = try host.drainReadiness();
@@ -2123,7 +2123,7 @@ test "attach refusal after READY removes only the refused terminal" {
     defer host.destroy();
     try test_support.attachHost(host);
     const original_owner = host.terminals.items[0].owner();
-    const remote = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 9, "build-host");
+    const remote = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 9, "build-host");
     const terminal_ref = phuxRef(remote);
     _ = try host.requestAttach(terminal_ref);
     try test_support.stageFixture(&bridge, "satellite-ready.bin");

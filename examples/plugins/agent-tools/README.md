@@ -63,7 +63,7 @@ to customize the fixture.
 
 The phux server injects `PHUX_TERMINAL_ID` into the environment of every
 pane it spawns. Its value is the pane's own local wire id — the number in
-the `@N` client selector (`TerminalId::local(N)`). Because the server sets
+the `@N` client selector (`ResourceId::local(N)`). Because the server sets
 it automatically, a process running inside a pane can address itself on the
 phux wire with zero configuration:
 
@@ -174,7 +174,7 @@ phux **does** ship a launch executor: `phux launch <integration>`
 (phux-ark7, [ADR-0042](../../../ADR/0042-launch-executor.md)) resolves a
 template's `[launch]` command from an enabled plugin, expands
 `${PHUX_PLUGIN_ROOT}` to the absolute plugin root, and spawns a pane
-running it via `SPAWN_TERMINAL`. Because the server injects
+running it via `SPAWN_RESOURCE`. Because the server injects
 `PHUX_TERMINAL_ID` into the spawned pane (phux-w7mj), the wrapper
 self-targets with **zero extra config**:
 

@@ -9,11 +9,11 @@
 //! mutate the active window of the `Workspace`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_TERMINAL` reply.
+//! chord to its remote `SPAWN_RESOURCE` reply.
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -78,11 +78,11 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
     let mut workspace = Workspace::single(tid(1));
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut next_request_id = 1;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -114,7 +114,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     let mut engine_kernel = test_engine_kernel();
@@ -167,7 +167,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         &mut out,
         &mut conn,
         &mut vec![InputEvent::Key(leader), InputEvent::Key(letter)],
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &overlay,
@@ -234,11 +234,11 @@ async fn dispatch_with_passthrough_popup(
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
     let mut workspace = Workspace::single(tid(1));
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut next_request_id = 1;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -248,7 +248,7 @@ async fn dispatch_with_passthrough_popup(
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     let mut engine_kernel = test_engine_kernel();
@@ -301,7 +301,7 @@ async fn dispatch_with_passthrough_popup(
         &mut out,
         &mut conn,
         &mut events,
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &overlay,
@@ -380,8 +380,8 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
 
     fn visible_prefix(
         kernel: &super::super::pane_state::AttachKernel,
-        panes: &mut HashMap<TerminalId, PaneSlot>,
-        id: &TerminalId,
+        panes: &mut HashMap<ResourceId, PaneSlot>,
+        id: &ResourceId,
         row: u16,
     ) -> String {
         let slot = panes.get_mut(id).expect("pane");
@@ -400,7 +400,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
     let mut workspace = Workspace::single(tid(1));
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 8, 4);
     let overlay = Overlay;
@@ -427,7 +427,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     // phux-k0cw: the strip's shape comes from the painted target
@@ -489,7 +489,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         &mut out,
         &mut conn,
         &mut vec![InputEvent::Key(page_up)],
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &overlay,
@@ -669,11 +669,11 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
     let mut workspace = Workspace::single(tid(1));
     workspace.add_window("two".to_owned(), tid(2));
     workspace.select(0);
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut next_request_id = 1;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -684,7 +684,7 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
     let mut zoomed = None;
     let mut sidebar_enabled = true;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let mut reload_request = false;
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
@@ -741,7 +741,7 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
         &mut out,
         &mut conn,
         &mut vec![ev],
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &overlay,
@@ -896,11 +896,11 @@ async fn dispatch_bar_click(
     let mut workspace = Workspace::single(tid(1));
     workspace.add_window("two".to_owned(), tid(2));
     workspace.select(0);
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
-    let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut next_request_id = 1;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -911,7 +911,7 @@ async fn dispatch_bar_click(
     let mut zoomed = None;
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let mut reload_request = false;
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
@@ -966,7 +966,7 @@ async fn dispatch_bar_click(
             &mut out,
             &mut conn,
             &mut vec![ev],
-            &mut focused_pane,
+            &mut focused_resource,
             &mut detach_pending,
             &mut predict,
             &overlay,
@@ -1157,12 +1157,12 @@ fn two_pane_divider_x() -> u16 {
 )]
 async fn dispatch_mouse_two_pane(
     events: Vec<InputEvent>,
-    seed_optout: &[TerminalId],
+    seed_optout: &[ResourceId],
 ) -> (
     Vec<FrameKind>,
     Option<DragGrab>,
-    Option<TerminalId>,
-    std::collections::HashSet<TerminalId>,
+    Option<ResourceId>,
+    std::collections::HashSet<ResourceId>,
 ) {
     dispatch_mouse_two_pane_with(events, seed_optout, &[], (1, 1)).await
 }
@@ -1178,14 +1178,14 @@ async fn dispatch_mouse_two_pane(
 )]
 async fn dispatch_mouse_two_pane_with(
     events: Vec<InputEvent>,
-    seed_optout: &[TerminalId],
-    seed_vt: &[(TerminalId, &[u8])],
+    seed_optout: &[ResourceId],
+    seed_vt: &[(ResourceId, &[u8])],
     cell_px: (u16, u16),
 ) -> (
     Vec<FrameKind>,
     Option<DragGrab>,
-    Option<TerminalId>,
-    std::collections::HashSet<TerminalId>,
+    Option<ResourceId>,
+    std::collections::HashSet<ResourceId>,
 ) {
     let mut overlays = OverlayState::new();
     let (frames, drag, focused, optout, _repaint) =
@@ -1207,14 +1207,14 @@ async fn dispatch_mouse_two_pane_with(
 async fn dispatch_mouse_two_pane_into(
     overlays: &mut OverlayState,
     mut events: Vec<InputEvent>,
-    seed_optout: &[TerminalId],
-    seed_vt: &[(TerminalId, &[u8])],
+    seed_optout: &[ResourceId],
+    seed_vt: &[(ResourceId, &[u8])],
     cell_px: (u16, u16),
 ) -> (
     Vec<FrameKind>,
     Option<DragGrab>,
-    Option<TerminalId>,
-    std::collections::HashSet<TerminalId>,
+    Option<ResourceId>,
+    std::collections::HashSet<ResourceId>,
     bool,
 ) {
     let mut workspace = two_pane_workspace();
@@ -1222,7 +1222,7 @@ async fn dispatch_mouse_two_pane_into(
     let mut conn = Connection::from_stream(a);
     let mut peer = Connection::from_stream(b);
     let mut out: Vec<u8> = Vec::new();
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
@@ -1241,7 +1241,7 @@ async fn dispatch_mouse_two_pane_into(
     let mut zoomed = None;
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> =
+    let mut mouse_optout: std::collections::HashSet<ResourceId> =
         seed_optout.iter().cloned().collect();
     let mut reload_request = false;
     let fleet_agent_meta = HashMap::new();
@@ -1297,7 +1297,7 @@ async fn dispatch_mouse_two_pane_into(
             &mut out,
             &mut conn,
             &mut events,
-            &mut focused_pane,
+            &mut focused_resource,
             &mut detach_pending,
             &mut predict,
             &overlay,
@@ -1323,7 +1323,7 @@ async fn dispatch_mouse_two_pane_into(
             Err(_) => break, // EOF after the writer dropped
         }
     }
-    (received, drag, focused_pane, mouse_optout, repainted)
+    (received, drag, focused_resource, mouse_optout, repainted)
 }
 
 #[tokio::test]
@@ -1815,7 +1815,7 @@ async fn forwarded_input_mouse_scales_cells_to_surface_pixels() {
 fn run_set_pane(
     mouse: Option<toml::Value>,
     workspace: &mut Workspace,
-    mouse_optout: &mut std::collections::HashSet<TerminalId>,
+    mouse_optout: &mut std::collections::HashSet<ResourceId>,
 ) -> ActionEffects {
     let mut next_request_id = 100;
     let mut pending_splits = HashMap::new();
@@ -2045,7 +2045,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
     let mut workspace = Workspace::single(tid(1));
-    let mut focused_pane = Some(tid(1));
+    let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     // Enabled predictor, fresh (un-suspended) — a printable insert at the
     // origin cursor is predictable, so the only thing standing between the
@@ -2068,7 +2068,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
     let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<TerminalId> = std::collections::HashSet::new();
+    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     // phux-k0cw: the strip's shape comes from the painted target
@@ -2124,7 +2124,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         &mut out,
         &mut conn,
         &mut vec![press(PhysicalKey::A, Some("a"))],
-        &mut focused_pane,
+        &mut focused_resource,
         &mut detach_pending,
         &mut predict,
         &overlay,

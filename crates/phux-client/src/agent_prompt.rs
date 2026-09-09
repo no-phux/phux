@@ -63,7 +63,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::{InputOperationId, TerminalId};
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
@@ -71,7 +71,7 @@ use phux_protocol::wire::frame::{
     MAX_APPLY_INPUT_EVENTS, Scope,
 };
 
-use crate::agent_meta::{AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
+use crate::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::agent_wait::{
     AgentWaitResult, DepartureReason, EdgeSource, EdgeTracker, ObservedEdge, Verdict,
     fetch_agent_record,
@@ -534,7 +534,7 @@ pub fn supports_acknowledged_input(conn: &Connection) -> bool {
 /// Propagates [`AttachError`] from the transport.
 pub async fn apply_input_once(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     operation_id: InputOperationId,
     events: Vec<InputEvent>,
     request_id: u32,
@@ -743,14 +743,14 @@ pub fn operation_id_hex(operation_id: &InputOperationId) -> String {
     reason = "the outer Option answers 'is this frame ours', the inner one \
               'record or tombstone'; collapsing them erases the tombstone"
 )]
-fn record_from_frame(frame: &FrameKind, terminal: &TerminalId) -> Option<Option<AgentRecord>> {
+fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
     let FrameKind::MetadataChanged { scope, key, value } = frame else {
         return None;
     };
-    if key != TERMINAL_AGENT_KEY {
+    if key != RESOURCE_AGENT_KEY {
         return None;
     }
-    let Scope::Terminal(id) = scope else {
+    let Scope::Resource(id) = scope else {
         return None;
     };
     if id != terminal {
@@ -769,13 +769,13 @@ fn record_from_frame(frame: &FrameKind, terminal: &TerminalId) -> Option<Option<
 /// arrival order, and later is what "immediately before the write" means here.
 async fn read_pre_submit_record(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
 ) -> Result<Option<AgentRecord>, AttachError> {
     let (answer, interleaved) = conn
         .request_metadata(
             OWNERSHIP_REQUEST_ID,
-            Scope::Terminal(terminal.clone()),
-            TERMINAL_AGENT_KEY.to_owned(),
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_KEY.to_owned(),
         )
         .await?
         .into_parts();
@@ -802,7 +802,7 @@ async fn read_pre_submit_record(
 )]
 async fn verified_occupant(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     verify: &dyn Fn(&AgentRecord) -> Option<String>,
 ) -> Result<AgentRecord, PromptError> {
     let Some(record) = read_pre_submit_record(conn, terminal).await? else {
@@ -833,7 +833,7 @@ struct Submitted {
 /// `RESOURCE_EXHAUSTED` and only under that same id.
 async fn submit_batch(
     conn: &mut Connection,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     operation_id: InputOperationId,
     events: Vec<InputEvent>,
 ) -> Result<Submitted, AttachError> {
@@ -908,7 +908,7 @@ fn occupant_changed(detail: String, hex: &str, delivery: Delivery) -> PromptErro
 /// 4 asks it for.
 fn confirm_occupant(
     interleaved: &[FrameKind],
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     record: &AgentRecord,
     hex: &str,
     delivery: Delivery,
@@ -978,7 +978,7 @@ fn confirm_occupant(
 )]
 pub async fn deliver_acknowledged(
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     operation_id: InputOperationId,
     events: Vec<InputEvent>,
     verify: &dyn Fn(&AgentRecord) -> Option<String>,
@@ -1086,7 +1086,7 @@ pub async fn deliver_acknowledged(
 async fn drive_wait(
     conn: &mut Connection,
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     tracker: EdgeTracker,
     seed: AgentRecord,
     wait: &PromptWait,
@@ -1197,7 +1197,7 @@ async fn drive_wait(
 )]
 pub async fn prompt_agent(
     socket: &Path,
-    terminal: &TerminalId,
+    terminal: &ResourceId,
     text: &str,
     operation_id: InputOperationId,
     verify: &dyn Fn(&AgentRecord) -> Option<String>,
@@ -1573,7 +1573,7 @@ mod tests {
             // A socket path that cannot exist: reaching it would itself be
             // the bug, since the refusal must precede the connect.
             Path::new("/nonexistent/phux-must-not-connect.sock"),
-            &TerminalId::satellite("devbox", 3),
+            &ResourceId::satellite("devbox", 3),
             "ship it",
             op_id(0x22),
             &|_record| None,
@@ -1624,7 +1624,7 @@ mod tests {
             while let Ok((stream, _)) = listener.accept().await {
                 let spec = ScriptSpec::new()
                     .metadata(|_scope, key| {
-                        (key == TERMINAL_AGENT_KEY).then(|| {
+                        (key == RESOURCE_AGENT_KEY).then(|| {
                             br#"{"name":"reviewer","kind":"claude","state":"working"}"#.to_vec()
                         })
                     })
@@ -1637,7 +1637,7 @@ mod tests {
 
         let outcome = prompt_agent(
             &socket,
-            &TerminalId::local(7),
+            &ResourceId::local(7),
             "ship it",
             op_id(0x33),
             &|_record| None,

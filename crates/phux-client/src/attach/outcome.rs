@@ -148,7 +148,7 @@ pub enum AttachEnd {
     /// (phux-4r1) left the session.
     LastPaneClosed {
         /// The dead pane's `_exit(n)` code, or `None` for signal kills /
-        /// unknown causes — the same shape `TERMINAL_CLOSED` carries on
+        /// unknown causes — the same shape `RESOURCE_CLOSED` carries on
         /// the wire.
         exit_status: Option<i32>,
     },
@@ -182,10 +182,10 @@ impl AttachEnd {
     }
 }
 
-/// phux-i0e8.2.2: human phrase for a `TERMINAL_CLOSED` exit status.
+/// phux-i0e8.2.2: human phrase for a `RESOURCE_CLOSED` exit status.
 ///
 /// The wire carries `Some(n)` for a plain `_exit(n)` and `None` for
-/// signal kills / unknown causes (frame.rs `TerminalClosed`). One
+/// signal kills / unknown causes (frame.rs `ResourceClosed`). One
 /// spelling shared by the survivor notice and the last-pane exit
 /// explanation, so both surfaces read as one vocabulary.
 #[must_use]

@@ -646,7 +646,7 @@ fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
             .into_snapshot_ignoring_degradation();
         let ids = crate::commands::resolve_targets(&socket_path, &selector, &snapshot).await;
         ids.iter()
-            .filter_map(phux_protocol::ids::TerminalId::local_id)
+            .filter_map(phux_protocol::ids::ResourceId::local_id)
             .min()
     })
 }

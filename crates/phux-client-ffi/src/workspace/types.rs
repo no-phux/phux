@@ -1,5 +1,5 @@
 //! Sized C records for shared topology and the emulator-free catalog.
-use crate::{ABI_VERSION, PhuxBytes, PhuxTerminalId};
+use crate::{ABI_VERSION, PhuxBytes, PhuxResourceId};
 use std::mem;
 
 /// Current snapshot and latest transaction result; spans expire on mutation.
@@ -37,7 +37,7 @@ pub struct PhuxWorkspaceNode {
     pub size: usize,
     pub version: u32,
     pub kind: u32,
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub first: u32,
     pub second: u32,
     pub ratio: f32,
@@ -49,7 +49,7 @@ pub struct PhuxWorkspaceNode {
 pub struct PhuxCatalogTerminal {
     pub size: usize,
     pub version: u32,
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub session_id: u32,
     pub title: PhuxBytes,
     pub cwd: PhuxBytes,
@@ -66,8 +66,8 @@ pub struct PhuxWorkspaceMutation {
     pub session_id: u32,
     pub kind: u32,
     pub window_id: [u8; 16],
-    pub terminal_id: PhuxTerminalId,
-    pub new_terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
+    pub new_terminal_id: PhuxResourceId,
     pub name: PhuxBytes,
     pub direction: u32,
     pub index: u32,

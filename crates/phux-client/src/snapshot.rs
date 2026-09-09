@@ -31,7 +31,7 @@
 
 use std::path::Path;
 
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
 pub use phux_core::screen::{
@@ -53,7 +53,7 @@ use crate::attach::connection::Connection;
 /// See [`get_screen_scrollback`].
 pub async fn get_screen(
     socket: &Path,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
 ) -> Result<ScreenState, AttachError> {
     get_screen_scrollback(socket, terminal_id, None, false).await
 }
@@ -80,13 +80,13 @@ pub async fn get_screen(
 /// the expected `OK_WITH(JSON(..))` carrying a valid [`ScreenState`].
 pub async fn get_screen_scrollback(
     socket: &Path,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     request_scrollback: Option<u32>,
     cells: bool,
 ) -> Result<ScreenState, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     // Safe to ignore the interleave: this connection is freshly opened and
-    // never subscribes (no ATTACH, no ATTACH_TERMINAL, no SUBSCRIBE_EVENTS),
+    // never subscribes (no ATTACH, no ATTACH_RESOURCE, no SUBSCRIBE_EVENTS),
     // so nothing fans out onto its mailbox, and the server's
     // `handle_get_screen` is a pure projection that emits no frame of its own
     // before the ack — it does not even take the client's `out_tx`.

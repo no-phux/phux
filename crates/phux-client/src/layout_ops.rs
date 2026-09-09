@@ -18,11 +18,11 @@
 //! barrier for the fire-and-forget SET and the value returned to the caller.
 //! Callers should use a dedicated connection: the reads route through
 //! [`Connection::request_metadata`], which hands back anything the server
-//! interleaved, and this module has no consumer for a `TERMINAL_OUTPUT` or an
+//! interleaved, and this module has no consumer for a `RESOURCE_OUTPUT` or an
 //! `EVENT` so it discards them (loudly — see
 //! `Reply::into_result_ignoring_interleaved`).
 
-use phux_protocol::ids::{GroupId, SessionId, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use thiserror::Error;
 
@@ -83,9 +83,9 @@ pub enum LayoutMutation {
     /// Insert `new_pane` beside `target`.
     Split {
         /// Existing pane whose leaf is replaced by a split.
-        target: TerminalId,
+        target: ResourceId,
         /// Already-created pane to insert.
-        new_pane: TerminalId,
+        new_pane: ResourceId,
         /// Split axis.
         dir: SplitDir,
         /// Fraction assigned to the existing target, in `(0, 1)`.
@@ -95,9 +95,9 @@ pub enum LayoutMutation {
     /// Headless spawn placement uses this so it cannot publish shared focus.
     SplitPreservingFocus {
         /// Existing pane whose leaf is replaced by a split.
-        target: TerminalId,
+        target: ResourceId,
         /// Already-created pane to insert.
-        new_pane: TerminalId,
+        new_pane: ResourceId,
         /// Split axis.
         dir: SplitDir,
         /// Fraction assigned to the existing target, in `(0, 1)`.
@@ -107,9 +107,9 @@ pub enum LayoutMutation {
     /// beside `target`.
     Move {
         /// Existing pane to relocate.
-        source: TerminalId,
+        source: ResourceId,
         /// Existing destination pane.
-        target: TerminalId,
+        target: ResourceId,
         /// Destination split axis.
         dir: SplitDir,
         /// Fraction assigned to `target`, in `(0, 1)`.
@@ -118,16 +118,16 @@ pub enum LayoutMutation {
     /// Exchange two leaf positions without changing split geometry.
     Swap {
         /// First existing pane.
-        first: TerminalId,
+        first: ResourceId,
         /// Second existing pane.
-        second: TerminalId,
+        second: ResourceId,
     },
     /// Remove `target`, collapsing its parent split. A one-pane window is
     /// removed; the final pane in the workspace cannot be removed because
     /// this mutation API requires a nonempty workspace.
     Close {
         /// Existing pane to remove.
-        target: TerminalId,
+        target: ResourceId,
     },
 }
 
@@ -151,10 +151,10 @@ pub enum LayoutOpsError {
     MissingLayout,
     /// A mutation named a pane outside this workspace.
     #[error("pane is not in this session layout: {0:?}")]
-    ForeignTarget(TerminalId),
+    ForeignTarget(ResourceId),
     /// A split tried to insert an id already present in the workspace.
     #[error("pane is already in this session layout: {0:?}")]
-    DuplicatePane(TerminalId),
+    DuplicatePane(ResourceId),
     /// A two-target operation named the same pane twice.
     #[error("layout operation requires two distinct panes")]
     SamePane,
@@ -264,7 +264,7 @@ impl<'a> LayoutOps<'a> {
         // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
         // answers with METADATA_VALUE and pushes nothing of its own, and this
         // type documents a dedicated connection — one that never sent
-        // ATTACH_TERMINAL or SUBSCRIBE_EVENTS, so no pane actor can fan out
+        // ATTACH_RESOURCE or SUBSCRIBE_EVENTS, so no pane actor can fan out
         // onto it. Nothing can be interleaved here; if something is, the
         // discard is logged rather than silent.
         reply
@@ -343,7 +343,7 @@ pub fn apply_mutation(
 fn window_tree<'a>(
     workspace: &'a Workspace,
     index: usize,
-    blame: &TerminalId,
+    blame: &ResourceId,
 ) -> Result<&'a LayoutNode, LayoutOpsError> {
     workspace.windows[index]
         .state
@@ -353,7 +353,7 @@ fn window_tree<'a>(
 }
 
 /// The index of the window holding `target`, or [`LayoutOpsError::ForeignTarget`].
-fn require_window(workspace: &Workspace, target: &TerminalId) -> Result<usize, LayoutOpsError> {
+fn require_window(workspace: &Workspace, target: &ResourceId) -> Result<usize, LayoutOpsError> {
     find_window(workspace, target).ok_or_else(|| LayoutOpsError::ForeignTarget(target.clone()))
 }
 
@@ -361,8 +361,8 @@ fn require_window(workspace: &Workspace, target: &TerminalId) -> Result<usize, L
 /// only when `focus_new_pane` is set.
 fn apply_split(
     workspace: &mut Workspace,
-    target: &TerminalId,
-    new_pane: &TerminalId,
+    target: &ResourceId,
+    new_pane: &ResourceId,
     dir: SplitDir,
     ratio: f32,
     focus_new_pane: bool,
@@ -383,8 +383,8 @@ fn apply_split(
 /// Exchange the leaf positions of `first` and `second` across every window.
 fn apply_swap(
     workspace: &mut Workspace,
-    first: &TerminalId,
-    second: &TerminalId,
+    first: &ResourceId,
+    second: &ResourceId,
 ) -> Result<(), LayoutOpsError> {
     if first == second {
         return Err(LayoutOpsError::SamePane);
@@ -401,7 +401,7 @@ fn apply_swap(
 }
 
 /// Remove `target`, refusing to close the workspace's final pane.
-fn apply_close(workspace: &mut Workspace, target: &TerminalId) -> Result<(), LayoutOpsError> {
+fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), LayoutOpsError> {
     if pane_count(workspace) == 1 {
         return Err(LayoutOpsError::LastPane);
     }
@@ -416,8 +416,8 @@ fn apply_close(workspace: &mut Workspace, target: &TerminalId) -> Result<(), Lay
 
 fn apply_move(
     workspace: &mut Workspace,
-    source: &TerminalId,
-    target: &TerminalId,
+    source: &ResourceId,
+    target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
@@ -460,8 +460,8 @@ struct MoveWindows {
 fn move_within_window(
     workspace: &mut Workspace,
     index: usize,
-    source: &TerminalId,
-    target: &TerminalId,
+    source: &ResourceId,
+    target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
@@ -479,8 +479,8 @@ fn move_within_window(
 fn move_across_windows(
     workspace: &mut Workspace,
     windows: MoveWindows,
-    source: &TerminalId,
-    target: &TerminalId,
+    source: &ResourceId,
+    target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
@@ -501,7 +501,7 @@ fn move_across_windows(
     Ok(())
 }
 
-fn find_window(workspace: &Workspace, target: &TerminalId) -> Option<usize> {
+fn find_window(workspace: &Workspace, target: &ResourceId) -> Option<usize> {
     workspace.windows.iter().position(|window| {
         window
             .state
@@ -534,8 +534,8 @@ fn repair_focus(state: &mut crate::layout::LayoutState) {
 
 fn swap_leaves(
     node: &LayoutNode,
-    first: &TerminalId,
-    second: &TerminalId,
+    first: &ResourceId,
+    second: &ResourceId,
 ) -> Result<LayoutNode, LayoutOpsError> {
     match node {
         LayoutNode::Leaf(id) if id == first => Ok(LayoutNode::Leaf(second.clone())),
@@ -563,8 +563,8 @@ mod tests {
     use crate::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::wire::frame::ErrorCode;
 
-    fn tid(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn tid(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     /// phux-k0cw: the family test became a WHOSE test, because a client that

@@ -51,12 +51,12 @@ pub use rasterize::{DividerCell, DividerHit};
 mod tests {
     use super::*;
     use crate::layout::{LayoutNode, LayoutState, Rect, SplitDir, split_at};
-    use phux_protocol::TerminalId;
+    use phux_protocol::ResourceId;
     use phux_protocol::input::key::ModSet;
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 
-    fn t(id: u32) -> TerminalId {
-        TerminalId::local(id)
+    fn t(id: u32) -> ResourceId {
+        ResourceId::local(id)
     }
 
     fn leaf(id: u32) -> LayoutNode {
@@ -365,7 +365,7 @@ mod tests {
 
     /// Render a `PaneLayout` to a `rows × cols` ASCII grid where pane
     /// interiors are filled with the per-pane character (lowercase
-    /// letter derived from the `TerminalId`'s local id) and divider
+    /// letter derived from the `ResourceId`'s local id) and divider
     /// cells carry their resolved box-drawing glyph. Used by the
     /// snapshot tests; pure compute, no VT escapes.
     fn render_layout_to_grid(layout: &PaneLayout, cols: u16, rows: u16) -> String {
@@ -397,19 +397,19 @@ mod tests {
         out
     }
 
-    fn pane_glyph(id: &TerminalId) -> char {
-        // Map TerminalId::Local { id: N } to the lowercase letter a + N
+    fn pane_glyph(id: &ResourceId) -> char {
+        // Map ResourceId::Local { id: N } to the lowercase letter a + N
         // for N < 26; otherwise the digit 0–9. Tests only construct
         // small N so the letter form is always hit.
         match id {
-            TerminalId::Local { id: n } => {
+            ResourceId::Local { id: n } => {
                 if *n < 26 {
                     char::from(b'a' + u8::try_from(*n).unwrap_or(0))
                 } else {
                     char::from(b'0' + u8::try_from(*n % 10).unwrap_or(0))
                 }
             }
-            TerminalId::Satellite { .. } => '?',
+            ResourceId::Satellite { .. } => '?',
         }
     }
 
@@ -869,14 +869,14 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn apply_ops(ops: Vec<Op>) -> LayoutNode {
         let mut next_id: u32 = 1;
-        let first = TerminalId::local(next_id);
+        let first = ResourceId::local(next_id);
         next_id += 1;
         let mut tree = LayoutNode::Leaf(first.clone());
         let mut alive = vec![first];
         for op in ops {
             match op {
                 Op::AddPane(ratio) => {
-                    let new_pane = TerminalId::local(next_id);
+                    let new_pane = ResourceId::local(next_id);
                     next_id += 1;
                     let Some(target) = alive.last().cloned() else {
                         continue;

@@ -80,7 +80,7 @@ fn expectPaletteSemantics(grid: canvas.TerminalGrid, meta: c.PhuxTerminalGridMet
 test "C metadata query is read-only and rejects expired or undersized borrows" {
     const client = try fixture.fixtureClient();
     defer c.phux_client_free(client);
-    var id = std.mem.zeroes(c.PhuxTerminalId);
+    var id = std.mem.zeroes(c.PhuxResourceId);
     id.id = 7;
     var meta = initializedMetadata();
     try testing.expectEqual(c.PHUX_CLIENT_INVALID_STATE, c.phux_client_terminal_grid_metadata(client, &id, &meta));

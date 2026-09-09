@@ -8,7 +8,7 @@
 //! ## No new wire surface (ADR-0017)
 //!
 //! The TUI is not protocol-privileged: a plugin pane opens through the
-//! SAME `SPAWN_TERMINAL` verb the TUI's own `split-pane` / `new-window`
+//! SAME `SPAWN_RESOURCE` verb the TUI's own `split-pane` / `new-window`
 //! actions use, with the manifest's argv as the spawn `command`, the
 //! plugin root as `cwd`, and the `PHUX_PLUGIN_*` identity variables as
 //! additive `env` entries (mirroring the `phux-plugin` action runtime's
@@ -129,7 +129,7 @@ impl PluginPaneEntry {
         ]
     }
 
-    /// Build the `SPAWN_TERMINAL` frame that opens this pane: the
+    /// Build the `SPAWN_RESOURCE` frame that opens this pane: the
     /// manifest argv as the command, the plugin root as the working
     /// directory, and [`spawn_env`](Self::spawn_env) as additive env.
     ///
@@ -138,7 +138,7 @@ impl PluginPaneEntry {
     /// (ADR-0017).
     #[must_use]
     pub fn spawn_frame(&self, request_id: u32) -> FrameKind {
-        FrameKind::SpawnTerminal {
+        FrameKind::SpawnResource {
             request_id,
             group: DEFAULT_GROUP_ID,
             command: Some(self.command.clone()),
@@ -293,7 +293,7 @@ mod tests {
             )],
         );
         let entry = &entries_from_manifests(std::slice::from_ref(&m))[0];
-        let FrameKind::SpawnTerminal {
+        let FrameKind::SpawnResource {
             request_id,
             group,
             command,
@@ -307,7 +307,7 @@ mod tests {
             ..
         } = entry.spawn_frame(7)
         else {
-            panic!("expected SpawnTerminal");
+            panic!("expected SpawnResource");
         };
         assert_eq!(request_id, 7);
         assert_eq!(

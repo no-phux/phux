@@ -33,7 +33,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use phux_core::screen::ScreenState;
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
 use serde::Serialize;
 use tokio::time::Instant;
@@ -173,7 +173,7 @@ pub async fn run(
 ///
 /// The pane-targeted core of [`run`]: the caller has already resolved a
 /// selector (the CLI's full `TARGET` grammar; phux-n95) to a concrete
-/// [`TerminalId`], so the command lands on exactly that pane with no focus
+/// [`ResourceId`], so the command lands on exactly that pane with no focus
 /// heuristic. Submits via the side-effect-free `ROUTE_INPUT` path and polls
 /// the side-effect-free screen read until the `RC` sentinel appears or
 /// `timeout` elapses.
@@ -183,7 +183,7 @@ pub async fn run(
 /// Propagates [`AttachError`] from the input send or the screen reads.
 pub async fn run_in(
     socket: &Path,
-    pane: TerminalId,
+    pane: ResourceId,
     cmd: &str,
     nonce: &str,
     timeout: Option<Duration>,
@@ -199,7 +199,7 @@ pub async fn run_in(
 /// [`run_in`].
 async fn poll_for_rc(
     socket: &Path,
-    pane: TerminalId,
+    pane: ResourceId,
     cmd: &str,
     nonce: &str,
     timeout: Option<Duration>,

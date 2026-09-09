@@ -127,7 +127,7 @@ fn park_until_shutdown() -> CommandBuilder {
 
 /// Drain `EVENT` frames until an `Asked` event is seen, or `deadline`
 /// elapses. Non-`EVENT` frames (`ATTACHED`, `TERMINAL_SNAPSHOT`,
-/// `TERMINAL_OUTPUT`, etc.) are skipped — we assert on the event stream.
+/// `RESOURCE_OUTPUT`, etc.) are skipped — we assert on the event stream.
 async fn collect_until_asked(stream: &mut UnixStream, deadline: Duration) -> Option<AgentEvent> {
     let end = tokio::time::Instant::now() + deadline;
     loop {
@@ -244,7 +244,7 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
             &FrameKind::Command {
                 request_id: 1,
                 command: Command::GetTerminalState {
-                    terminal_id: snapshot.focused_pane,
+                    terminal_id: snapshot.focused_resource,
                     include_scrollback: false,
                     max_scrollback_lines: 0,
                 },
@@ -331,7 +331,7 @@ fn report_asked_command_emits_asked_event() {
             &FrameKind::Command {
                 request_id: 7,
                 command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_pane,
+                    terminal_id: snapshot.focused_resource,
                     id: "hook-q1".to_owned(),
                     question: "Approve release?".to_owned(),
                     suggestions: vec!["Ship".to_owned(), "Hold".to_owned()],
@@ -443,7 +443,7 @@ fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
             &FrameKind::Command {
                 request_id: 1,
                 command: Command::GetTerminalState {
-                    terminal_id: snapshot.focused_pane.clone(),
+                    terminal_id: snapshot.focused_resource.clone(),
                     include_scrollback: false,
                     max_scrollback_lines: 0,
                 },
@@ -471,7 +471,7 @@ fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
             &FrameKind::Command {
                 request_id: 9,
                 command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_pane,
+                    terminal_id: snapshot.focused_resource,
                     id: "q1".to_owned(),
                     question: "Deploy to prod?".to_owned(),
                     suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
@@ -528,7 +528,7 @@ fn report_asked_rejects_empty_question() {
             &FrameKind::Command {
                 request_id: 8,
                 command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_pane,
+                    terminal_id: snapshot.focused_resource,
                     id: "bad".to_owned(),
                     question: "   ".to_owned(),
                     suggestions: Vec::new(),

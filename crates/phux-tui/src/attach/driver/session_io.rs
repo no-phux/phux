@@ -9,7 +9,7 @@ use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature, detect_color_support,
 };
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 
 use crate::attach::connection::Connection;
@@ -19,7 +19,7 @@ use crate::render::chrome::status_bar::Notice;
 
 use super::viewport::current_viewport;
 
-/// Whether to emit a `FRAME_ACK` for an applied `TERMINAL_OUTPUT`.
+/// Whether to emit a `FRAME_ACK` for an applied `RESOURCE_OUTPUT`.
 ///
 /// Acks are load-bearing only for a `StateSync` consumer: the server
 /// folds each into that consumer's per-seq RTT/backpressure accounting
@@ -29,19 +29,19 @@ use super::viewport::current_viewport;
 /// keystrokes during a repaint storm. In raw mode the ack is skipped; in
 /// state-sync mode the `(terminal_id, seq)` flows through unchanged.
 ///
-/// Not `const`: the `(TerminalId, u64)` it threads carries a non-trivial
-/// destructor (the federation `TerminalId::Satellite` variant owns a
+/// Not `const`: the `(ResourceId, u64)` it threads carries a non-trivial
+/// destructor (the federation `ResourceId::Satellite` variant owns a
 /// `String`), which a `const fn` may not drop at compile time.
 pub(super) fn should_emit_frame_ack(
     wants_state_sync: bool,
     ack: Option<(
-        TerminalId,
+        ResourceId,
         phux_protocol::StreamId,
         phux_protocol::BootstrapId,
         u64,
     )>,
 ) -> Option<(
-    TerminalId,
+    ResourceId,
     phux_protocol::StreamId,
     phux_protocol::BootstrapId,
     u64,
@@ -52,7 +52,7 @@ pub(super) fn should_emit_frame_ack(
 pub(super) fn take_terminal_replies(
     outcome: &mut FrameOutcome,
     terminal_reply_supported: bool,
-) -> Vec<(TerminalId, Vec<u8>)> {
+) -> Vec<(ResourceId, Vec<u8>)> {
     // phux-501l (hardening, not the fix — see `peer_gone` for that): an
     // outcome that ends the attach loop should not put another byte on the
     // wire. A terminal reply is addressed to a pane's PTY, and once an outcome
@@ -84,7 +84,7 @@ pub(super) fn take_terminal_replies(
 
 pub(super) async fn send_terminal_replies(
     conn: &mut Connection,
-    replies: Vec<(TerminalId, Vec<u8>)>,
+    replies: Vec<(ResourceId, Vec<u8>)>,
 ) -> Result<(), AttachError> {
     for (terminal_id, bytes) in replies {
         send_unless_peer_gone(
@@ -127,13 +127,13 @@ pub(super) fn peer_gone(err: &AttachError) -> bool {
 /// replaces it with the mechanical symptom.
 ///
 /// Concretely, the bug this fixes: the last pane's shell exits, so the server
-/// emits `TERMINAL_OUTPUT` (the shell's final bytes) immediately followed by
-/// `TERMINAL_CLOSED`, then reaps the now-empty session and exits, closing the
+/// emits `RESOURCE_OUTPUT` (the shell's final bytes) immediately followed by
+/// `RESOURCE_CLOSED`, then reaps the now-empty session and exits, closing the
 /// UDS. The client's next read pulls BOTH frames into one coalesced batch. It
-/// processes the `TERMINAL_OUTPUT` first and answers it with a `FRAME_ACK` — a
+/// processes the `RESOURCE_OUTPUT` first and answers it with a `FRAME_ACK` — a
 /// write, into a socket the server has already closed. That returns EPIPE, `?`
 /// turns it into `AttachError::Io`, and the loop dies **without ever
-/// processing the `TERMINAL_CLOSED` sitting in the same batch**. The user typed
+/// processing the `RESOURCE_CLOSED` sitting in the same batch**. The user typed
 /// `exit 7` and got
 ///     phux: attach failed: attach loop io error: Broken pipe (os error 32)
 /// instead of "session ended: the last pane exited 7".

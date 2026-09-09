@@ -4,7 +4,7 @@
 //! Prior client coverage fed the branch machinery from the client side:
 //! `vcs` tests derive branches from fixture repos given a cwd directly,
 //! and the sidebar tests hand `WindowInfo` a pre-derived branch string.
-//! Nothing proved that a server-populated `TerminalInfo::cwd` actually
+//! Nothing proved that a server-populated `ResourceInfo::cwd` actually
 //! flows through `handle_server_frame` -> `VcsIndex` -> `window_infos`
 //! -> the painted branch row. This test closes that seam with the full
 //! path, one process end to end:

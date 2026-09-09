@@ -992,7 +992,7 @@ impl StatusBarPainter {
         }
         // The widget pipeline is the expensive half of a bar paint, and on
         // the client's hot path almost every call to it was wasted: a
-        // `TERMINAL_OUTPUT` frame changes pane cells, never the bar. Under a
+        // `RESOURCE_OUTPUT` frame changes pane cells, never the bar. Under a
         // burst that meant composing the whole strip — every widget, into a
         // fresh ratatui buffer — hundreds of times a second to produce bytes
         // identical to last frame's.

@@ -2,7 +2,7 @@
 //!
 //! The server brings a fresh consumer up to date with a snapshot
 //! (`vt_replay_bytes`, served by `SnapshotRequest`) and thereafter forwards
-//! every PTY byte over the `TERMINAL_OUTPUT` broadcast. An audit established
+//! every PTY byte over the `RESOURCE_OUTPUT` broadcast. An audit established
 //! the broadcast stream is *complete* (no dropped bytes on the happy path),
 //! but nothing asserted the stronger *totality* property these two channels
 //! are supposed to jointly guarantee:

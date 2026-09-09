@@ -31,7 +31,7 @@ use phux_client::attach::connection::Connection;
 use phux_client::resource;
 use phux_client::selector::Selector;
 use phux_client::state::Degradation;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
@@ -384,10 +384,10 @@ impl Scope {
     }
 
     /// The resource a non-`%name` selector picks, of any kind.
-    async fn pick(&self, socket_path: &Path, selector: &Selector) -> Option<TerminalId> {
+    async fn pick(&self, socket_path: &Path, selector: &Selector) -> Option<ResourceId> {
         let candidates =
             phux_client::state::resolve_targets(socket_path, selector, &self.snapshot).await;
-        crate::selector::pick_target_pane(&candidates, &self.snapshot.focused_pane)
+        crate::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
     }
 
     /// The parent Terminal `open` binds to.
@@ -398,7 +398,7 @@ impl Scope {
         target: &str,
         verb: &str,
         json: bool,
-    ) -> Result<TerminalId, ExitCode> {
+    ) -> Result<ResourceId, ExitCode> {
         let picked = match selector {
             Selector::Agent(name) => {
                 phux_client::state::resolve_agent_target(socket_path, name, &self.snapshot, false)
@@ -435,7 +435,7 @@ impl Scope {
         verb: &str,
         json: bool,
         miss: MissStatus,
-    ) -> Result<TerminalId, ExitCode> {
+    ) -> Result<ResourceId, ExitCode> {
         let session = if let Selector::Agent(name) = selector {
             let resolved =
                 phux_client::state::resolve_agent_target(socket_path, name, &self.snapshot, false)
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn every_library_error_lands_on_its_registered_code_and_exit() {
         let socket = Path::new("/tmp/unused.sock");
-        let at = TerminalId::local(7);
+        let at = ResourceId::local(7);
         for (err, code, exit) in [
             (
                 AgentSessionError::Unsupported,
@@ -670,7 +670,7 @@ mod tests {
             (
                 AgentSessionError::AmbiguousSession {
                     terminal: at.clone(),
-                    candidates: vec![TerminalId::local(9), TerminalId::local(10)],
+                    candidates: vec![ResourceId::local(9), ResourceId::local(10)],
                 },
                 json_err::codes::AGENT_SESSION_AMBIGUOUS,
                 2,

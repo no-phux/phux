@@ -1,26 +1,26 @@
-//! `phux-4li.11` — Server-side SPAWN_TERMINAL handler + TERMINAL_CLOSED
-//! emit + TERMINAL_RESIZE TIOCSWINSZ.
+//! `phux-4li.11` — Server-side SPAWN_RESOURCE handler + RESOURCE_CLOSED
+//! emit + RESIZE_TERMINAL TIOCSWINSZ.
 //!
 //! Four scenarios pin the behavior:
 //!
 //! 1. **Spawn into the default Group.** A client sends
-//!    `SPAWN_TERMINAL { group: DEFAULT, command: Some(/bin/cat) }`.
-//!    The server replies `TERMINAL_SPAWNED { result: Ok(new_id) }`.
+//!    `SPAWN_RESOURCE { group: DEFAULT, command: Some(/bin/cat) }`.
+//!    The server replies `RESOURCE_SPAWNED { result: Ok(new_id) }`.
 //!    A subsequent `INPUT_KEY { terminal_id: new_id, … }` round-trips
 //!    via the freshly-spawned PTY's stdin → stdout, observable as
-//!    `TERMINAL_OUTPUT { terminal_id: new_id, … }`.
+//!    `RESOURCE_OUTPUT { terminal_id: new_id, … }`.
 //!
 //! 2. **Spawn into an unknown Group.** A client sends
-//!    `SPAWN_TERMINAL { group: GroupId::new(99999), … }`.
-//!    The server replies `TERMINAL_SPAWNED { result:
+//!    `SPAWN_RESOURCE { group: GroupId::new(99999), … }`.
+//!    The server replies `RESOURCE_SPAWNED { result:
 //!    Err(GroupNotFound) }`.
 //!
-//! 3. **TERMINAL_CLOSED on PTY exit.** Spawn a Terminal running
+//! 3. **RESOURCE_CLOSED on PTY exit.** Spawn a Terminal running
 //!    `sh -c 'exit 42'`. The PTY exits; the server emits
-//!    `TERMINAL_CLOSED { terminal_id, exit_status: Some(42) }` to the
+//!    `RESOURCE_CLOSED { terminal_id, exit_status: Some(42) }` to the
 //!    subscribed (spawning) client.
 //!
-//! 4. **TERMINAL_RESIZE.** Spawn a Terminal, send `TERMINAL_RESIZE {
+//! 4. **RESIZE_TERMINAL.** Spawn a Terminal, send `RESIZE_TERMINAL {
 //!    terminal_id, cols: 120, rows: 40 }`. Detach + reattach via a
 //!    second connection; the new `TERMINAL_SNAPSHOT` for the same
 //!    pane reports the post-resize dims. Verifying via re-attach
@@ -33,7 +33,7 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(
     clippy::doc_markdown,
-    reason = "test-only file; the module/comment narrative uses bare wire-frame names (SPAWN_TERMINAL, TERMINAL_CLOSED, …) the way the integration tests above do for symmetry"
+    reason = "test-only file; the module/comment narrative uses bare wire-frame names (SPAWN_RESOURCE, RESOURCE_CLOSED, …) the way the integration tests above do for symmetry"
 )]
 
 use std::time::Duration;
@@ -41,9 +41,9 @@ use std::time::Duration;
 use phux_protocol::ids::GroupId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, Scope, SpawnError, SpawnResult, StateScope,
-    TERMINAL_AGENT_SESSION_KEY, TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_METADATA_VALUE,
-    TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SPAWNED,
+    Command, CommandResult, CommandValue, FrameKind, RESOURCE_AGENT_SESSION_KEY, Scope, SpawnError,
+    SpawnResult, StateScope, TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_METADATA_VALUE,
+    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
@@ -57,8 +57,8 @@ use phux_server_testkit::{
     spawn_server_with_seed_cmd_and_cwd_mode, wait_for_socket,
 };
 
-/// Drain frames until a `TERMINAL_SPAWNED` arrives whose `request_id`
-/// matches `request_id`. Other frames (TERMINAL_OUTPUT bursts from the
+/// Drain frames until a `RESOURCE_SPAWNED` arrives whose `request_id`
+/// matches `request_id`. Other frames (RESOURCE_OUTPUT bursts from the
 /// fresh PTY, METADATA_CHANGED noise, etc.) are silently consumed.
 async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> SpawnResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
@@ -67,10 +67,10 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_SPAWNED {
+        if type_byte != TYPE_RESOURCE_SPAWNED {
             continue;
         }
-        if let FrameKind::TerminalSpawned {
+        if let FrameKind::ResourceSpawned {
             request_id: got,
             result,
         } = frame
@@ -79,7 +79,7 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
             return result;
         }
     }
-    panic!("timed out waiting for TERMINAL_SPAWNED request_id={request_id}");
+    panic!("timed out waiting for RESOURCE_SPAWNED request_id={request_id}");
 }
 
 async fn await_metadata_value(stream: &mut UnixStream, request_id: u32) -> Option<Vec<u8>> {
@@ -104,12 +104,12 @@ async fn await_metadata_value(stream: &mut UnixStream, request_id: u32) -> Optio
     panic!("timed out waiting for METADATA_VALUE request_id={request_id}");
 }
 
-/// Drain until the accumulated TERMINAL_OUTPUT bytes for `pane`
+/// Drain until the accumulated RESOURCE_OUTPUT bytes for `pane`
 /// contain `needle`, or the timeout fires. Mirrors `input_dispatch.rs`'s
 /// `await_echo` but pane-scoped so other panes' output is ignored.
 async fn await_echo_on(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     needle: u8,
 ) -> Vec<u8> {
     let mut acc: Vec<u8> = Vec::new();
@@ -119,10 +119,10 @@ async fn await_echo_on(
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput {
+        if let FrameKind::ResourceOutput {
             terminal_id, bytes, ..
         } = frame
             && &terminal_id == pane
@@ -136,11 +136,11 @@ async fn await_echo_on(
     acc
 }
 
-/// Drain until a `TERMINAL_CLOSED` for `pane` arrives, or the timeout
+/// Drain until a `RESOURCE_CLOSED` for `pane` arrives, or the timeout
 /// fires. Other frames are ignored.
 async fn await_terminal_closed(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
 ) -> Option<i32> {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -148,10 +148,10 @@ async fn await_terminal_closed(
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_CLOSED {
+        if type_byte != TYPE_RESOURCE_CLOSED {
             continue;
         }
-        if let FrameKind::TerminalClosed {
+        if let FrameKind::ResourceClosed {
             terminal_id,
             exit_status,
             ..
@@ -161,7 +161,7 @@ async fn await_terminal_closed(
             return exit_status;
         }
     }
-    panic!("timed out waiting for TERMINAL_CLOSED for {pane:?}");
+    panic!("timed out waiting for RESOURCE_CLOSED for {pane:?}");
 }
 
 /// Enter key — no `text`, libghostty's encoder synthesizes the CR.
@@ -182,7 +182,7 @@ const fn enter_key() -> KeyEvent {
 /// consumed by `await_terminal_spawned`.
 async fn release_spawned_child(
     stream: &mut UnixStream,
-    terminal_id: &phux_protocol::ids::TerminalId,
+    terminal_id: &phux_protocol::ids::ResourceId,
 ) {
     send_frame(
         stream,
@@ -196,9 +196,9 @@ async fn release_spawned_child(
 
 /// Build an `ATTACH { CreateIfMissing(name) }` frame so the test client
 /// gets attached state (and thus an outbound mailbox) before sending
-/// SPAWN_TERMINAL. Without an attached slot the auto-subscribe path in
+/// SPAWN_RESOURCE. Without an attached slot the auto-subscribe path in
 /// `handle_spawn_terminal` skips the new pane, the spawning client
-/// would not receive its own TERMINAL_OUTPUT, and the round-trip
+/// would not receive its own RESOURCE_OUTPUT, and the round-trip
 /// assertion in scenario 1 could not be made.
 fn attach_create_if_missing(name: &str) -> FrameKind {
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
@@ -254,12 +254,12 @@ fn spawn_terminal_in_default_group_round_trips_input() {
             br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
                 .to_vec();
 
-        // SPAWN_TERMINAL with /bin/cat — cooked-mode echo fixture from
+        // SPAWN_RESOURCE with /bin/cat — cooked-mode echo fixture from
         // input_dispatch.rs. cat echoes the input back through the PTY
         // so we can prove the spawning client is wired to the new pane.
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 42,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/cat".to_owned()]),
@@ -275,7 +275,7 @@ fn spawn_terminal_in_default_group_round_trips_input() {
         )
         .await;
 
-        // Reply must carry our request_id and an Ok TerminalId.
+        // Reply must carry our request_id and an Ok ResourceId.
         let result = await_terminal_spawned(&mut stream, 42).await;
         let new_id = match result {
             SpawnResult::Ok(id) => id,
@@ -284,22 +284,22 @@ fn spawn_terminal_in_default_group_round_trips_input() {
         };
         assert!(
             new_id.is_local(),
-            "freshly spawned TerminalId must be LOCAL (got {new_id:?})",
+            "freshly spawned ResourceId must be LOCAL (got {new_id:?})",
         );
 
         send_frame(
             &mut stream,
             &FrameKind::GetMetadata {
                 request_id: 43,
-                scope: Scope::Terminal(new_id.clone()),
-                key: TERMINAL_AGENT_SESSION_KEY.to_owned(),
+                scope: Scope::Resource(new_id.clone()),
+                key: RESOURCE_AGENT_SESSION_KEY.to_owned(),
             },
         )
         .await;
         assert_eq!(
             await_metadata_value(&mut stream, 43).await,
             Some(agent_session),
-            "SPAWN_TERMINAL must publish native resume provenance with the new pane",
+            "SPAWN_RESOURCE must publish native resume provenance with the new pane",
         );
 
         // INPUT_KEY('a') + Enter through the new pane.
@@ -321,7 +321,7 @@ fn spawn_terminal_in_default_group_round_trips_input() {
         .await;
 
         // cat echoes the typed byte back through the PTY → broadcast →
-        // outbound pump → TERMINAL_OUTPUT for `new_id`.
+        // outbound pump → RESOURCE_OUTPUT for `new_id`.
         let acc = await_echo_on(&mut stream, &new_id, b'a').await;
         assert!(
             acc.contains(&b'a'),
@@ -350,7 +350,7 @@ fn spawn_terminal_rejects_invalid_agent_session_provenance() {
         for (request_id, agent_session) in [(50, Vec::new()), (51, vec![b'x'; 4097])] {
             send_frame(
                 &mut stream,
-                &FrameKind::SpawnTerminal {
+                &FrameKind::SpawnResource {
                     request_id,
                     group: DEFAULT_GROUP_ID,
                     command: Some(vec!["/bin/cat".to_owned()]),
@@ -394,7 +394,7 @@ fn failed_actor_build_reaps_atomic_agent_session_provenance() {
             spawn_and_attach(&tmp, "build-failure").await;
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 60,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/definitely/not/a/phux-test-program".to_owned()]),
@@ -432,7 +432,7 @@ fn failed_actor_build_reaps_atomic_agent_session_provenance() {
             other => panic!("expected state after failed spawn, got {other:?}"),
         };
         assert_eq!(
-            snapshot.panes.len(),
+            snapshot.resources.len(),
             1,
             "failed spawn must not leave an actorless Terminal or its metadata",
         );
@@ -461,7 +461,7 @@ fn explicit_owner_terminal_selects_exact_session_window() {
         let (kind, attached) = recv_typed(&mut first).await;
         assert_eq!(kind, TYPE_ATTACHED);
         let owner = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.focused_pane,
+            FrameKind::Attached { snapshot, .. } => snapshot.focused_resource,
             other => panic!("expected Attached, got {other:?}"),
         };
         assert_eq!(recv_typed(&mut first).await.0, TYPE_BOOTSTRAP_BEGIN);
@@ -474,7 +474,7 @@ fn explicit_owner_terminal_selects_exact_session_window() {
         let mut headless = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
             &mut headless,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 50,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/cat".to_owned()]),
@@ -508,13 +508,13 @@ fn explicit_owner_terminal_selects_exact_session_window() {
             other => panic!("expected state, got {other:?}"),
         };
         let owner_window = snapshot
-            .panes
+            .resources
             .iter()
             .find(|p| p.id == owner)
             .unwrap()
             .window_id;
         let spawned_window = snapshot
-            .panes
+            .resources
             .iter()
             .find(|p| p.id == spawned)
             .unwrap()
@@ -557,7 +557,7 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
     panic!("no COMMAND_RESULT for request_id {request_id} within deadline");
 }
 
-/// phux-i9zl: a split (`SPAWN_TERMINAL` from an attached client) must land
+/// phux-i9zl: a split (`SPAWN_RESOURCE` from an attached client) must land
 /// the new pane in the client's CURRENT session's window — NOT a fresh
 /// `spawn-N` session. Regression guard for the live bug where `phux ls`
 /// showed two sessions after one split (and the split pane was orphaned in
@@ -570,7 +570,7 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 7,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/cat".to_owned()]),
@@ -612,12 +612,12 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
                 );
                 assert_eq!(names, vec!["default"], "the one session is still 'default'");
                 assert_eq!(
-                    snapshot.panes.len(),
+                    snapshot.resources.len(),
                     2,
                     "the seed pane + the spawned pane both live in the session",
                 );
                 assert!(
-                    snapshot.panes.iter().any(|p| p.id == new_id),
+                    snapshot.resources.iter().any(|p| p.id == new_id),
                     "the spawned pane id must appear in the session snapshot",
                 );
             }
@@ -634,14 +634,14 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
     });
 }
 
-/// phux-ign Part 2: a `SPAWN_TERMINAL` whose wire `env` carries a `TERM`
+/// phux-ign Part 2: a `SPAWN_RESOURCE` whose wire `env` carries a `TERM`
 /// entry MUST have that value reach the spawned PTY, overriding the
 /// server's `defaults.term` baseline. The wire frame is authoritative for
 /// the Terminal it creates.
 ///
 /// After the spawn reply, the test releases the command to print `$TERM`;
 /// this avoids racing an immediate PTY output frame against
-/// `TERMINAL_SPAWNED`.
+/// `RESOURCE_SPAWNED`.
 #[test]
 fn spawn_terminal_env_term_overrides_default() {
     run_local(async {
@@ -650,13 +650,13 @@ fn spawn_terminal_env_term_overrides_default() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 7,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
                     "/bin/sh".to_owned(),
                     "-c".to_owned(),
-                    // Wait until the test has received TERMINAL_SPAWNED so
+                    // Wait until the test has received RESOURCE_SPAWNED so
                     // the TERM output cannot be consumed while finding it.
                     "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
                 ]),
@@ -674,7 +674,7 @@ fn spawn_terminal_env_term_overrides_default() {
 
         let new_id = match await_terminal_spawned(&mut stream, 7).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -696,7 +696,7 @@ fn spawn_terminal_env_term_overrides_default() {
     });
 }
 
-/// phux-ign Part 2: a `SPAWN_TERMINAL` whose wire `env` does NOT carry
+/// phux-ign Part 2: a `SPAWN_RESOURCE` whose wire `env` does NOT carry
 /// `TERM` (here `env = None`) falls back to the server's `defaults.term`.
 /// The test server runs with the schema default, so the spawned pane sees
 /// `TERM=xterm-256color` (the safe baseline, phux-7vx). This is the
@@ -711,7 +711,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 8,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -733,7 +733,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
 
         let new_id = match await_terminal_spawned(&mut stream, 8).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -756,7 +756,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
     });
 }
 
-/// phux-ign: the first-class `SPAWN_TERMINAL.term` field overrides the
+/// phux-ign: the first-class `SPAWN_RESOURCE.term` field overrides the
 /// server's `defaults.term` baseline, reaching the spawned PTY's `TERM`.
 /// This is the typed per-spawn knob — distinct from hand-rolling a `TERM`
 /// env pair. The sentinel value can't match any real terminfo entry, so
@@ -769,7 +769,7 @@ fn spawn_terminal_term_field_overrides_default() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 21,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -791,7 +791,7 @@ fn spawn_terminal_term_field_overrides_default() {
 
         let new_id = match await_terminal_spawned(&mut stream, 21).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -825,7 +825,7 @@ fn spawn_terminal_env_term_beats_term_field() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 22,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -847,7 +847,7 @@ fn spawn_terminal_env_term_beats_term_field() {
 
         let new_id = match await_terminal_spawned(&mut stream, 22).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -880,7 +880,7 @@ fn spawn_terminal_unknown_group_returns_group_not_found() {
         // note and the wire frame's doc.
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 7,
                 group: GroupId::new(99_999),
                 command: None,
@@ -923,11 +923,11 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
         let tmp = TempDir::new().unwrap();
         let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
 
-        // The child waits until TERMINAL_SPAWNED has arrived, then exits
+        // The child waits until RESOURCE_SPAWNED has arrived, then exits
         // with a deterministic status portable across BSD, Linux, and macOS.
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 1,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -956,12 +956,12 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
         release_spawned_child(&mut stream, &new_id).await;
 
         // Releasing the child drives the PTY EOF watcher, whose exit_notify
-        // oneshot produces TERMINAL_CLOSED.
+        // oneshot produces RESOURCE_CLOSED.
         let exit_status = await_terminal_closed(&mut stream, &new_id).await;
         assert_eq!(
             exit_status,
             Some(42),
-            "TERMINAL_CLOSED exit_status must be Some(42) for `sh -c 'exit 42'`",
+            "RESOURCE_CLOSED exit_status must be Some(42) for `sh -c 'exit 42'`",
         );
 
         drop(stream);
@@ -996,10 +996,10 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
         // Use /bin/cat so the actor stays alive for the duration of the
         // resize round-trip. A short-lived command would race with the
         // resize ioctl (the actor could already be tearing down by the
-        // time TERMINAL_RESIZE arrives).
+        // time RESIZE_TERMINAL arrives).
         send_frame(
             &mut stream_a,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 99,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/cat".to_owned()]),
@@ -1021,12 +1021,12 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
             other => panic!("unexpected SpawnResult variant: {other:?}"),
         };
 
-        // Send TERMINAL_RESIZE with non-default dims (the spawn defaults
+        // Send RESIZE_TERMINAL with non-default dims (the spawn defaults
         // to 80x24; assert the resize is observable as the *changed*
         // dims, not the original).
         send_frame(
             &mut stream_a,
-            &FrameKind::TerminalResize {
+            &FrameKind::ResizeTerminal {
                 terminal_id: new_id.clone(),
                 cols: 120,
                 rows: 40,
@@ -1063,13 +1063,13 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
             type_byte, TYPE_ATTACHED,
             "second client must see ATTACHED for resize-test session",
         );
-        // `SessionSnapshot.panes` aggregates panes across ALL sessions
+        // `SessionSnapshot.resources` aggregates panes across ALL sessions
         // (resize-test session in this test), so filter by the
         // spawned terminal id rather than asserting on the slice's
         // length. The id is what the client correlates across the wire
         // in any case.
         let panes = match attached {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes,
+            FrameKind::Attached { snapshot, .. } => snapshot.resources,
             other => panic!("expected Attached, got {other:?}"),
         };
         let spawned = panes.iter().find(|p| p.id == new_id).unwrap_or_else(|| {
@@ -1111,7 +1111,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
 /// chunk and any live byte for that generation).
 async fn await_bootstrap_dims(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
 ) -> (u16, u16) {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -1146,7 +1146,7 @@ async fn await_bootstrap_dims(
 async fn await_pane_dims(
     stream: &mut UnixStream,
     request_id: u32,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
 ) -> (u16, u16) {
     send_frame(
         stream,
@@ -1161,7 +1161,7 @@ async fn await_pane_dims(
     match await_command_result(stream, request_id).await {
         CommandResult::OkWith(CommandValue::State(snapshot)) => {
             let info = snapshot
-                .panes
+                .resources
                 .iter()
                 .find(|p| &p.id == pane)
                 .unwrap_or_else(|| panic!("pane {pane:?} missing from GET_STATE snapshot"));
@@ -1171,12 +1171,12 @@ async fn await_pane_dims(
     }
 }
 
-/// phux-a5xj: a `SPAWN_TERMINAL` carrying `initial_size` must build the
+/// phux-a5xj: a `SPAWN_RESOURCE` carrying `initial_size` must build the
 /// pane's grid, PTY, and FIRST bootstrap generation at that geometry.
 ///
 /// Before this, every spawn bootstrapped at the server's 80x24 default and
 /// the attaching client's real tile arrived afterwards as a
-/// `TERMINAL_RESIZE`, which invalidated the generation that had just been
+/// `RESIZE_TERMINAL`, which invalidated the generation that had just been
 /// captured — a full capture computed, published, and immediately thrown
 /// away on every single pane creation.
 ///
@@ -1195,7 +1195,7 @@ fn spawn_initial_size_builds_the_first_bootstrap_at_the_requested_grid() {
         // server before the assertions run.
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 11,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/cat".to_owned()]),
@@ -1256,7 +1256,7 @@ fn spawn_without_initial_size_and_with_a_zero_axis_keep_the_default_grid() {
         for (request_id, initial_size) in [(21u32, None), (23, Some((0u16, 43u16)))] {
             send_frame(
                 &mut stream,
-                &FrameKind::SpawnTerminal {
+                &FrameKind::SpawnResource {
                     request_id,
                     group: DEFAULT_GROUP_ID,
                     command: Some(vec!["/bin/cat".to_owned()]),
@@ -1292,12 +1292,12 @@ fn spawn_without_initial_size_and_with_a_zero_axis_keep_the_default_grid() {
     });
 }
 
-/// Drain until the accumulated TERMINAL_OUTPUT bytes for `pane` contain
+/// Drain until the accumulated RESOURCE_OUTPUT bytes for `pane` contain
 /// `needle` (a byte sequence), or the timeout fires. Mirrors
 /// `await_echo_on` but matches a multi-byte subsequence.
 async fn await_output_contains(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     needle: &[u8],
 ) -> Vec<u8> {
     let mut acc: Vec<u8> = Vec::new();
@@ -1307,10 +1307,10 @@ async fn await_output_contains(
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput {
+        if let FrameKind::ResourceOutput {
             terminal_id, bytes, ..
         } = frame
             && &terminal_id == pane
@@ -1325,13 +1325,13 @@ async fn await_output_contains(
 }
 
 /// Drain until the accumulated bytes for `pane` contain `needle`, scanning
-/// BOTH `TERMINAL_OUTPUT` (live deltas) and `TERMINAL_SNAPSHOT`
+/// BOTH `RESOURCE_OUTPUT` (live deltas) and `TERMINAL_SNAPSHOT`
 /// (`vt_replay_bytes` — the rendered grid). A seed pane that printed before
 /// the client attached surfaces its output in the snapshot replay rather
 /// than a live delta, so a test observing a pre-attach print must read both.
 async fn await_snapshot_or_output_contains(
     stream: &mut UnixStream,
-    pane: &phux_protocol::ids::TerminalId,
+    pane: &phux_protocol::ids::ResourceId,
     needle: &[u8],
 ) -> Vec<u8> {
     let mut acc: Vec<u8> = Vec::new();
@@ -1342,7 +1342,7 @@ async fn await_snapshot_or_output_contains(
             break;
         };
         match frame {
-            FrameKind::TerminalOutput {
+            FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
             } if &terminal_id == pane => acc.extend_from_slice(&bytes),
             FrameKind::BootstrapChunk {
@@ -1360,10 +1360,10 @@ async fn await_snapshot_or_output_contains(
 }
 
 /// phux-w7mj: the server injects `PHUX_TERMINAL_ID` (the pane's own local
-/// wire id) into every SPAWN_TERMINAL child, so an in-pane process — e.g.
+/// wire id) into every SPAWN_RESOURCE child, so an in-pane process — e.g.
 /// the agent-record wrapper — self-targets on the wire with zero config.
 /// A child that echoes `$PHUX_TERMINAL_ID` MUST report exactly the local id
-/// the `TERMINAL_SPAWNED` reply carried. This is the split-into-session
+/// the `RESOURCE_SPAWNED` reply carried. This is the split-into-session
 /// (`spawn_pane_with_pty`) path.
 #[test]
 fn spawn_terminal_injects_matching_terminal_id_env() {
@@ -1373,7 +1373,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 55,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -1381,7 +1381,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
                     "-c".to_owned(),
                     // Trailing `.` so `PTID=1.` can't match a prefix of a
                     // longer id (`PTID=12`). The first read prevents output
-                    // from racing TERMINAL_SPAWNED; the second keeps it alive.
+                    // from racing RESOURCE_SPAWNED; the second keeps it alive.
                     "read _; printf 'PTID=%s.\\n' \"$PHUX_TERMINAL_ID\"; read _".to_owned(),
                 ]),
                 cwd: None,
@@ -1398,7 +1398,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
 
         let new_id = match await_terminal_spawned(&mut stream, 55).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
         let local = new_id
@@ -1465,8 +1465,8 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
         assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
         let seed_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "attach-create seeds one pane");
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1, "attach-create seeds one pane");
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected Attached, got {other:?}"),
         };
@@ -1493,7 +1493,7 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
 }
 
 /// phux-cufw: the server injects `PHUX_SOCKET` (its own listening UDS
-/// path) into every SPAWN_TERMINAL child, so an in-pane `phux` verb
+/// path) into every SPAWN_RESOURCE child, so an in-pane `phux` verb
 /// targets the pane's own server rather than resolving the default
 /// socket path. The child compares `$PHUX_SOCKET` against the server's
 /// actual socket and prints a short verdict token — comparing in-pane
@@ -1513,7 +1513,7 @@ fn spawn_terminal_injects_server_socket_env() {
         );
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 56,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), probe]),
@@ -1531,7 +1531,7 @@ fn spawn_terminal_injects_server_socket_env() {
 
         let new_id = match await_terminal_spawned(&mut stream, 56).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
         let acc = await_output_contains(&mut stream, &new_id, b"SOCK").await;
@@ -1590,8 +1590,8 @@ fn attach_create_seed_pane_injects_server_socket_env() {
         assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
         let seed_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "attach-create seeds one pane");
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1, "attach-create seeds one pane");
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected Attached, got {other:?}"),
         };
@@ -1614,13 +1614,13 @@ fn attach_create_seed_pane_injects_server_socket_env() {
 }
 
 /// phux-cs6 acceptance: with `defaults.cwd-inheritance = inherit-focused`
-/// (the schema default the test server runs with), a `SPAWN_TERMINAL`
+/// (the schema default the test server runs with), a `SPAWN_RESOURCE`
 /// that leaves `cwd` unset opens the new pane in the *focused* pane's
 /// live working directory.
 ///
 /// The focused (pre-seeded) pane is a shell that `cd`s into a fresh temp
 /// dir and then blocks. The spawned pane runs `pwd`, whose stdout — the
-/// inherited directory — comes back as TERMINAL_OUTPUT. This is the wire-
+/// inherited directory — comes back as RESOURCE_OUTPUT. This is the wire-
 /// level proof of the `C-a |` cd-to-/tmp scenario in the bead.
 #[test]
 fn spawn_terminal_inherits_focused_pane_live_cwd() {
@@ -1664,19 +1664,19 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
         // returns, and the cd is its first command.
         tokio::time::sleep(Duration::from_millis(75)).await;
 
-        // SPAWN_TERMINAL with cwd UNSET and a command that prints its
+        // SPAWN_RESOURCE with cwd UNSET and a command that prints its
         // CWD. With inherit-focused, the server seeds the new pane's
         // CommandBuilder.cwd from the focused pane's live directory.
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 1,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
                     "/bin/sh".to_owned(),
                     "-c".to_owned(),
                     // The first read prevents output from racing
-                    // TERMINAL_SPAWNED; the second keeps the pane alive.
+                    // RESOURCE_SPAWNED; the second keeps the pane alive.
                     "read _; pwd; read _".to_owned(),
                 ]),
                 cwd: None,
@@ -1693,7 +1693,7 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
 
         let new_id = match await_terminal_spawned(&mut stream, 1).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -1768,8 +1768,8 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
         assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
         let seed_id = match attached {
             FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1, "attach-create seeds one pane");
-                snapshot.panes[0].id.clone()
+                assert_eq!(snapshot.resources.len(), 1, "attach-create seeds one pane");
+                snapshot.resources[0].id.clone()
             }
             other => panic!("expected Attached, got {other:?}"),
         };
@@ -1796,7 +1796,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
 }
 
 /// phux-nyx acceptance: with `defaults.cwd-inheritance = session-root`, a
-/// `SPAWN_TERMINAL` with `cwd` unset opens the new pane in the *session's
+/// `SPAWN_RESOURCE` with `cwd` unset opens the new pane in the *session's
 /// seed-pane* directory.
 ///
 /// The seed pane sits in `root_dir` and blocks. A spawn under session-root
@@ -1840,12 +1840,12 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
         // Give the seed shell a beat to run its `cd` (75ms: see above).
         tokio::time::sleep(Duration::from_millis(75)).await;
 
-        // SPAWN_TERMINAL, cwd unset, command prints its CWD. Under
+        // SPAWN_RESOURCE, cwd unset, command prints its CWD. Under
         // session-root the server seeds the new pane from the seed pane's
         // directory (root_path).
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 1,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -1867,7 +1867,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
 
         let new_id = match await_terminal_spawned(&mut stream, 1).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 
@@ -1891,7 +1891,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
 }
 
 /// phux-nyx acceptance: with `defaults.cwd-inheritance = last-cwd-per-window`,
-/// a `SPAWN_TERMINAL` with `cwd` unset opens the new pane in the most-recent
+/// a `SPAWN_RESOURCE` with `cwd` unset opens the new pane in the most-recent
 /// working directory observed for the spawning client's active window — the
 /// active pane's live CWD.
 ///
@@ -1935,7 +1935,7 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
 
         send_frame(
             &mut stream,
-            &FrameKind::SpawnTerminal {
+            &FrameKind::SpawnResource {
                 request_id: 1,
                 group: DEFAULT_GROUP_ID,
                 command: Some(vec![
@@ -1957,7 +1957,7 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
 
         let new_id = match await_terminal_spawned(&mut stream, 1).await {
             SpawnResult::Ok(id) => id,
-            other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
+            other => panic!("SPAWN_RESOURCE did not succeed: {other:?}"),
         };
         release_spawned_child(&mut stream, &new_id).await;
 

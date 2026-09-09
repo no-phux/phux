@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use phux_client::ask::AskedPayload;
 use phux_client::attach::AttachError;
 use phux_client::selector::format_terminal_id;
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -55,7 +55,7 @@ pub(crate) fn run_ask(
     })
 }
 
-fn print_success(pane: &TerminalId, payload: &AskedPayload, json: bool) -> ExitCode {
+fn print_success(pane: &ResourceId, payload: &AskedPayload, json: bool) -> ExitCode {
     if json {
         match serde_json::to_string_pretty(&success_json(pane, payload)) {
             Ok(line) => outln!("{line}"),
@@ -70,7 +70,7 @@ fn print_success(pane: &TerminalId, payload: &AskedPayload, json: bool) -> ExitC
     ExitCode::SUCCESS
 }
 
-fn success_json(pane: &TerminalId, payload: &AskedPayload) -> serde_json::Value {
+fn success_json(pane: &ResourceId, payload: &AskedPayload) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "event": "asked",
@@ -82,7 +82,7 @@ fn success_json(pane: &TerminalId, payload: &AskedPayload) -> serde_json::Value 
     })
 }
 
-fn success_text(pane: &TerminalId, payload: &AskedPayload) -> String {
+fn success_text(pane: &ResourceId, payload: &AskedPayload) -> String {
     format!(
         "reported ask {} to {}",
         payload.id,
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn satellite_success_outputs_canonical_selector() {
-        let pane = TerminalId::satellite("region/@build", 7);
+        let pane = ResourceId::satellite("region/@build", 7);
         let payload = AskedPayload {
             id: "q1".to_owned(),
             question: "Continue?".to_owned(),

@@ -195,7 +195,7 @@ test "confirmed shared metadata places members independently from discovered ter
         var expected: [3]app.TerminalRef = undefined;
         for (&expected, 7..) |*ref, id| ref.* = .{
             .provider_id = .phux,
-            .terminal_id = .{ .phux = try app.RemoteTerminalId.fromPhux(0, @intCast(id), "") },
+            .terminal_id = .{ .phux = try app.RemoteResourceId.fromPhux(0, @intCast(id), "") },
         };
 
         model.reconcileRemoteTerminals();
@@ -236,7 +236,7 @@ test "catalog-only identities cannot exhaust UI slots needed by the live replica
     for (&model.remote_ui, catalog[1..], 100..) |*state, *entry, id| {
         const ref: app.TerminalRef = .{
             .provider_id = .phux,
-            .terminal_id = .{ .phux = try app.RemoteTerminalId.fromPhux(0, @intCast(id), "") },
+            .terminal_id = .{ .phux = try app.RemoteResourceId.fromPhux(0, @intCast(id), "") },
         };
         entry.* = .{ .terminal_ref = ref, .session_id = 1 };
         state.* = .{ .terminal_ref = ref };

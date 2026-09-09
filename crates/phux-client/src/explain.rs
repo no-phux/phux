@@ -35,7 +35,7 @@ pub fn explain_unexpected(verb: &str, result: &CommandResult) -> String {
 /// The sentence for a reply kind this client cannot interpret at all.
 ///
 /// For the sites where the unexpected value is not a [`CommandResult`] —
-/// a `SPAWN_TERMINAL` answer, a handshake frame — but the diagnosis is the
+/// a `SPAWN_RESOURCE` answer, a handshake frame — but the diagnosis is the
 /// same: the server spoke a vocabulary this client does not have, so the
 /// versions likely differ. Names `phux doctor` and this client's protocol
 /// triple so the user can compare without guessing.
@@ -124,7 +124,7 @@ mod tests {
         for sentence in [
             explain_unexpected("ROUTE_INPUT", &unexpected),
             explain_unexpected("ROUTE_INPUT", &CommandResult::Ok),
-            unexpected_reply("SPAWN_TERMINAL"),
+            unexpected_reply("SPAWN_RESOURCE"),
             unexpected_reply("HELLO"),
         ] {
             assert!(!sentence.contains('{'), "{sentence}");

@@ -1566,7 +1566,7 @@ const fn ascii_letter_to_key_const(b: u8) -> PhysicalKey {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use phux_protocol::ids::TerminalId;
+    use phux_protocol::ids::ResourceId;
     use phux_protocol::wire::frame::FrameKind;
 
     use super::*;
@@ -2019,10 +2019,10 @@ mod tests {
             text: Some("a".to_owned()),
             unshifted_codepoint: Some(u32::from('a')),
         };
-        let frame = InputEvent::Key(key).into_frame(TerminalId::local(42));
+        let frame = InputEvent::Key(key).into_frame(ResourceId::local(42));
         match frame {
             FrameKind::InputKey { terminal_id, .. } => {
-                assert_eq!(terminal_id, TerminalId::local(42));
+                assert_eq!(terminal_id, ResourceId::local(42));
             }
             other => panic!("expected InputKey, got {other:?}"),
         }
@@ -2060,10 +2060,10 @@ mod tests {
 
     #[test]
     fn focus_event_into_frame_carries_terminal_id() {
-        let frame = InputEvent::Focus(FocusEvent::Gained).into_frame(TerminalId::new(7));
+        let frame = InputEvent::Focus(FocusEvent::Gained).into_frame(ResourceId::new(7));
         match frame {
             FrameKind::InputFocus { terminal_id, event } => {
-                assert_eq!(terminal_id, TerminalId::new(7));
+                assert_eq!(terminal_id, ResourceId::new(7));
                 assert_eq!(event, FocusEvent::Gained);
             }
             other => panic!("expected InputFocus, got {other:?}"),
@@ -2190,10 +2190,10 @@ mod tests {
             x: 1.0,
             y: 2.0,
         };
-        let frame = InputEvent::Mouse(ev).into_frame(TerminalId::new(99));
+        let frame = InputEvent::Mouse(ev).into_frame(ResourceId::new(99));
         match frame {
             FrameKind::InputMouse { terminal_id, .. } => {
-                assert_eq!(terminal_id, TerminalId::new(99));
+                assert_eq!(terminal_id, ResourceId::new(99));
             }
             other => panic!("expected InputMouse, got {other:?}"),
         }
@@ -2433,10 +2433,10 @@ mod tests {
             trust: PasteTrust::Trusted,
             data: b"x".to_vec(),
         })
-        .into_frame(TerminalId::new(11));
+        .into_frame(ResourceId::new(11));
         match frame {
             FrameKind::InputPaste { terminal_id, event } => {
-                assert_eq!(terminal_id, TerminalId::new(11));
+                assert_eq!(terminal_id, ResourceId::new(11));
                 assert_eq!(event.data, b"x");
             }
             other => panic!("expected InputPaste, got {other:?}"),

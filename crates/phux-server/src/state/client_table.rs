@@ -62,7 +62,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use phux_core::ids::SessionId;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
-use phux_protocol::ids::TerminalId as WireTerminalId;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use tokio::sync::mpsc;
 
@@ -128,20 +128,20 @@ pub(super) struct ClientTable {
     /// back here, so there is exactly one delivery per client either way.
     /// Cleared on detach alongside the subscription triples.
     pub(super) metadata_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
-    /// Outbound mailbox of every client holding an `ATTACH_TERMINAL`
+    /// Outbound mailbox of every client holding an `ATTACH_RESOURCE`
     /// subscription, for exactly the same reason
     /// [`Self::event_subscriptions`] and [`Self::metadata_mailboxes`] carry
-    /// one: `ATTACH_TERMINAL` is a per-Terminal subscription that does
+    /// one: `ATTACH_RESOURCE` is a per-Terminal subscription that does
     /// **not** require a session-scoped `ATTACH` (L1 §5.1, "a session-scoped
     /// `ATTACH` is not required"), so such a consumer has no
     /// [`Self::attached`] entry and cannot be reached through it.
     ///
     /// Terminal *content* still reaches it — the per-`(client, terminal)`
     /// output pump owns its own clone of the mailbox — but the server's
-    /// out-of-band terminal-scoped fanout (`TERMINAL_CLOSED`, L1 §3.1: "the
+    /// out-of-band terminal-scoped fanout (`RESOURCE_CLOSED`, L1 §3.1: "the
     /// server MUST emit it to every client subscribed to the Terminal")
     /// resolves mailboxes from the subscriber list, and every subscriber
-    /// that only ever sent `ATTACH_TERMINAL` was silently filtered out.
+    /// that only ever sent `ATTACH_RESOURCE` was silently filtered out.
     /// An agent watching one pane then never learned the pane died; it just
     /// stopped receiving output, which is indistinguishable from an idle
     /// pane (phux-w7z2.56).
@@ -255,7 +255,7 @@ impl ClientTable {
     /// Collect the `(client, outbound mailbox)` pairs of every client
     /// attached to `session`, by its stable id.
     ///
-    /// Per-terminal `ATTACH_TERMINAL` consumers are not in
+    /// Per-terminal `ATTACH_RESOURCE` consumers are not in
     /// [`Self::attached`] and are deliberately excluded.
     #[must_use]
     pub(super) fn attached_in_session(
@@ -273,7 +273,7 @@ impl ClientTable {
 
     /// Remember `client`'s outbound mailbox for terminal-scoped fanout.
     ///
-    /// Called from the `ATTACH_TERMINAL` handler, in the same critical
+    /// Called from the `ATTACH_RESOURCE` handler, in the same critical
     /// section that appends `client` to the Terminal's subscriber list, so
     /// the mailbox is never missing for a client the list already names.
     /// Re-attaching overwrites with the same sender (a connection's tx is
@@ -320,7 +320,7 @@ impl ClientTable {
     pub(super) fn subscribe_events(
         &mut self,
         client: ClientId,
-        terminal: Option<WireTerminalId>,
+        terminal: Option<WireResourceId>,
         tx: mpsc::Sender<Outbound>,
     ) {
         let scope = terminal.map_or(EventScope::Server, EventScope::Terminal);
@@ -346,10 +346,10 @@ impl ClientTable {
     #[must_use]
     pub(super) fn event_targets(
         &self,
-        terminal: Option<&WireTerminalId>,
-        parent: Option<&WireTerminalId>,
+        terminal: Option<&WireResourceId>,
+        parent: Option<&WireResourceId>,
     ) -> Vec<mpsc::Sender<Outbound>> {
-        let watches = |sub: &EventSubscription, id: Option<&WireTerminalId>| {
+        let watches = |sub: &EventSubscription, id: Option<&WireResourceId>| {
             id.is_some_and(|tid| sub.scopes.contains(&EventScope::Terminal(tid.clone())))
         };
         self.event_subscriptions
@@ -364,10 +364,10 @@ impl ClientTable {
     }
 
     /// Drop `client`'s per-terminal agent-event subscription for `wire`
-    /// (`DETACH_TERMINAL`, phux-v45.7). Server-wide subscriptions and
+    /// (`DETACH_RESOURCE`, phux-v45.7). Server-wide subscriptions and
     /// other terminals' scopes are untouched; an empty scope set drops
     /// the whole entry so the map stays bounded.
-    pub(super) fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireTerminalId) {
+    pub(super) fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
         if let Some(sub) = self.event_subscriptions.get_mut(&client) {
             sub.scopes.remove(&EventScope::Terminal(wire.clone()));
             if sub.scopes.is_empty() {

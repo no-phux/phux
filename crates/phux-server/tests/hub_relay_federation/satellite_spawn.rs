@@ -7,12 +7,12 @@ use phux_protocol::wire::info::SessionSnapshot;
 async fn spawn_split(
     stream: &mut UnixStream,
     request_id: u32,
-    owner_terminal: Option<TerminalId>,
+    owner_terminal: Option<ResourceId>,
     agent_session: Option<Vec<u8>>,
 ) -> SpawnResult {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: Some(vec!["/bin/cat".to_owned()]),
@@ -31,7 +31,7 @@ async fn spawn_split(
         loop {
             if let (
                 _,
-                FrameKind::TerminalSpawned {
+                FrameKind::ResourceSpawned {
                     request_id: got,
                     result,
                 },
@@ -55,7 +55,7 @@ async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
     snapshot
 }
 
-async fn create_other_session(stream: &mut UnixStream) -> TerminalId {
+async fn create_other_session(stream: &mut UnixStream) -> ResourceId {
     let mut attach = phux_server_testkit::attach_by_name("other");
     let FrameKind::Attach { ref mut target, .. } = attach else {
         panic!("attach fixture");
@@ -69,7 +69,7 @@ async fn create_other_session(stream: &mut UnixStream) -> TerminalId {
     tokio::time::timeout(STEP_DEADLINE, async {
         loop {
             if let (_, FrameKind::Attached { snapshot, .. }) = recv_typed(stream).await {
-                return snapshot.focused_pane;
+                return snapshot.focused_resource;
             }
         }
     })
@@ -99,25 +99,25 @@ fn exact_owner_satellite_spawn_preserves_window_and_initial_size() {
         let result = spawn_split(
             &mut hub,
             7000,
-            Some(TerminalId::satellite("sat", seed)),
+            Some(ResourceId::satellite("sat", seed)),
             None,
         )
         .await;
-        let SpawnResult::Ok(TerminalId::Satellite { host, id }) = result else {
+        let SpawnResult::Ok(ResourceId::Satellite { host, id }) = result else {
             panic!("exact-owner spawn must succeed: {result:?}");
         };
         assert_eq!(host.as_str(), "sat");
         let state = snapshot(&mut satellite, 7001).await;
         let owner = state
-            .panes
+            .resources
             .iter()
-            .find(|p| p.id == TerminalId::local(seed))
+            .find(|p| p.id == ResourceId::local(seed))
             .unwrap();
-        let other = state.panes.iter().find(|p| p.id == other).unwrap();
+        let other = state.resources.iter().find(|p| p.id == other).unwrap();
         let spawned = state
-            .panes
+            .resources
             .iter()
-            .find(|p| p.id == TerminalId::local(id))
+            .find(|p| p.id == ResourceId::local(id))
             .unwrap();
         assert_ne!(owner.window_id, other.window_id, "distinct hosting windows");
         assert_eq!(
@@ -126,7 +126,7 @@ fn exact_owner_satellite_spawn_preserves_window_and_initial_size() {
         );
         assert_eq!((spawned.cols, spawned.rows), (132, 43));
         let CommandResult::OkWith(CommandValue::Json(screen)) =
-            get_screen_via_hub(&mut hub, 7002, TerminalId::satellite("sat", id)).await
+            get_screen_via_hub(&mut hub, 7002, ResourceId::satellite("sat", id)).await
         else {
             panic!("new terminal must route immediately");
         };
@@ -136,14 +136,14 @@ fn exact_owner_satellite_spawn_preserves_window_and_initial_size() {
 
         // Legacy owner-less spawns still work, including caller-supplied geometry.
         let result = spawn_split(&mut hub, 7003, None, None).await;
-        let SpawnResult::Ok(TerminalId::Satellite { id, .. }) = result else {
+        let SpawnResult::Ok(ResourceId::Satellite { id, .. }) = result else {
             panic!("owner-less spawn must succeed: {result:?}");
         };
         let state = snapshot(&mut satellite, 7004).await;
         let spawned = state
-            .panes
+            .resources
             .iter()
-            .find(|p| p.id == TerminalId::local(id))
+            .find(|p| p.id == ResourceId::local(id))
             .unwrap();
         assert_eq!((spawned.cols, spawned.rows), (132, 43));
 
@@ -174,38 +174,38 @@ fn satellite_spawn_refuses_wrong_owners_and_provenance_without_creating_panes() 
         let before = snapshot(&mut hub, 7100).await;
         // Hub GET_STATE aggregates satellite panes. Pin that premise so this
         // before/after check cannot accidentally cover only the hub's state.
-        assert_eq!(before.panes.len(), 2);
+        assert_eq!(before.resources.len(), 2);
         assert!(
             before
-                .panes
+                .resources
                 .iter()
-                .any(|p| p.id == TerminalId::satellite("sat", seed))
+                .any(|p| p.id == ResourceId::satellite("sat", seed))
         );
         assert!(
             before
-                .panes
+                .resources
                 .iter()
-                .any(|p| matches!(p.id, TerminalId::Local { .. }))
+                .any(|p| matches!(p.id, ResourceId::Local { .. }))
         );
         let cases = [
             (
-                Some(TerminalId::local(seed)),
+                Some(ResourceId::local(seed)),
                 None,
                 "requested satellite host",
             ),
             (
-                Some(TerminalId::satellite("different", seed)),
+                Some(ResourceId::satellite("different", seed)),
                 None,
                 "requested satellite host",
             ),
             (
-                Some(TerminalId::satellite("sat", u32::MAX)),
+                Some(ResourceId::satellite("sat", u32::MAX)),
                 None,
                 "not found",
             ),
             (None, Some(vec![]), "agent-session provenance is local-only"),
             (
-                Some(TerminalId::satellite("sat", seed)),
+                Some(ResourceId::satellite("sat", seed)),
                 Some(vec![1]),
                 "agent-session provenance is local-only",
             ),
@@ -222,8 +222,8 @@ fn satellite_spawn_refuses_wrong_owners_and_provenance_without_creating_panes() 
         }
         let after = snapshot(&mut hub, 7102).await;
         assert_eq!(
-            after.panes.len(),
-            before.panes.len(),
+            after.resources.len(),
+            before.resources.len(),
             "no local or satellite fallback spawns"
         );
         assert_eq!(after.sessions, before.sessions);

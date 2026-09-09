@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{
-    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceKind, StreamId, TerminalId,
+    BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, ResourceKind, StreamId,
 };
 
 use agent_stream::{
@@ -59,7 +59,7 @@ pub enum HistoryRejectionReason {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReplicaKey {
     /// Protocol terminal identifier.
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     /// Connection-scoped logical subscription.
     pub stream_id: StreamId,
     /// Replaceable replica generation.
@@ -93,7 +93,7 @@ pub enum KernelInput<'a> {
         /// Client-chosen attach correlation identifier.
         attach_id: u32,
         /// Complete ordered terminal inventory for this attach.
-        terminals: &'a [TerminalId],
+        terminals: &'a [ResourceId],
     },
     /// Release the aggregate first-damage barrier.
     AttachReady {
@@ -103,7 +103,7 @@ pub enum KernelInput<'a> {
     /// Begin staging a replacement replica.
     BootstrapBegin {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replacement generation.
@@ -118,7 +118,7 @@ pub enum KernelInput<'a> {
     /// Apply one borrowed bootstrap fragment.
     BootstrapChunk {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation.
@@ -131,7 +131,7 @@ pub enum KernelInput<'a> {
     /// Mark the protocol half of the dual READY fence.
     BootstrapReady {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation.
@@ -142,7 +142,7 @@ pub enum KernelInput<'a> {
     /// Apply one borrowed post-publication native history page.
     HistoryPage {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Published replica generation.
@@ -161,7 +161,7 @@ pub enum KernelInput<'a> {
     /// Invalidate only one progressive-history cursor.
     HistoryTombstone {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Published replica generation.
@@ -174,7 +174,7 @@ pub enum KernelInput<'a> {
     /// Reject one request without advancing or invalidating its cursor.
     HistoryRejected {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Published replica generation.
@@ -189,9 +189,9 @@ pub enum KernelInput<'a> {
         required_rows: u32,
     },
     /// Apply one borrowed live output fragment.
-    TerminalOutput {
+    ResourceOutput {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Published replica generation.
@@ -204,7 +204,7 @@ pub enum KernelInput<'a> {
     /// Permanently retire one replica generation.
     Tombstone {
         /// Target terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Invalidated generation.
@@ -215,9 +215,9 @@ pub enum KernelInput<'a> {
         last_valid_seq: u64,
     },
     /// Resolve an attach participant by terminal closure.
-    TerminalClosed {
+    ResourceClosed {
         /// Closed terminal.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
     },
     /// Register one `AgentSession` resource ahead of its record stream.
     AgentSessionDeclared(AgentSessionDeclaration<'a>),
@@ -234,9 +234,9 @@ pub enum KernelInput<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct AgentSessionDeclaration<'a> {
     /// The resource being declared.
-    pub terminal_id: &'a TerminalId,
+    pub terminal_id: &'a ResourceId,
     /// The Terminal-kind parent the session is bound to.
-    pub parent: Option<&'a TerminalId>,
+    pub parent: Option<&'a ResourceId>,
     /// Provider slug from the facet, if any.
     pub provider: Option<&'a str>,
     /// Opaque provider session id from the facet, if any.
@@ -251,7 +251,7 @@ pub enum KernelAction<'a> {
     /// Send one structured input atom to an explicitly eligible terminal.
     Input {
         /// Target terminal selected by the frontend.
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         /// Borrowed protocol input atom.
         event: &'a InputEvent,
     },
@@ -295,21 +295,21 @@ pub enum KernelSend {
     /// Send one structured protocol input atom.
     Input {
         /// Explicit target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Owned atom ready for transport framing outside the kernel.
         event: InputEvent,
     },
     /// Write a terminal-engine response to the owning PTY.
     PtyWrite {
         /// Terminal whose engine generated the response.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// One response payload; batching and encoding remain outside.
         bytes: Vec<u8>,
     },
     /// Acknowledge one successfully applied `StateSync` live frame.
     FrameAck {
         /// Terminal whose reference advanced.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical `StateSync` subscription.
         stream_id: StreamId,
         /// Published replica generation.
@@ -334,7 +334,7 @@ pub enum KernelSend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelDamage {
     /// Damaged terminal.
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     /// Kind of terminal damage.
     pub kind: KernelDamageKind,
 }
@@ -368,7 +368,7 @@ pub enum KernelStatus {
     /// The named generation was invalidated and requires a fresh bootstrap.
     ResyncRequired {
         /// Terminal requiring replacement.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Invalid logical subscription.
         stream_id: StreamId,
         /// Invalid replica generation.
@@ -419,7 +419,7 @@ pub enum KernelEffect {
     /// reach a frontend.
     AgentRecords {
         /// The `AgentSession` resource.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// The records this update appended.
         records: Vec<AgentEventRecord>,
     },
@@ -643,10 +643,10 @@ pub enum KernelError<E> {
     },
     /// The attach inventory named a terminal more than once.
     #[error("attach inventory contains duplicate terminal {0}")]
-    DuplicateAttachTerminal(TerminalId),
+    DuplicateAttachResource(ResourceId),
     /// An event named a permanently closed terminal.
     #[error("terminal {0} is closed")]
-    ClosedTerminal(TerminalId),
+    ClosedTerminal(ResourceId),
     /// `ATTACH_READY` did not match the active attach.
     #[error("ATTACH_READY {actual} does not match active attach {expected:?}")]
     AttachIdMismatch {
@@ -663,12 +663,12 @@ pub enum KernelError<E> {
     },
     /// No state exists for the target terminal.
     #[error("unknown terminal {0}")]
-    UnknownTerminal(TerminalId),
+    UnknownTerminal(ResourceId),
     /// The exact stream/bootstrap generation is not current.
     #[error("generation ({stream_id}, {bootstrap_id}) is not current for {terminal_id}")]
     GenerationMismatch {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Received logical subscription.
         stream_id: StreamId,
         /// Received generation.
@@ -678,7 +678,7 @@ pub enum KernelError<E> {
     #[error("generation ({stream_id}, {bootstrap_id}) is retired for {terminal_id}")]
     RetiredGeneration {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Retired logical subscription.
         stream_id: StreamId,
         /// Retired generation.
@@ -709,7 +709,7 @@ pub enum KernelError<E> {
     #[error("generation ({stream_id}, {bootstrap_id}) already exists for {terminal_id}")]
     DuplicateGeneration {
         /// Target terminal.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
         /// Replica generation.
@@ -717,7 +717,7 @@ pub enum KernelError<E> {
     },
     /// A publication fence was reached without its staging replica.
     #[error("terminal {0} has no staging replica to publish")]
-    MissingStaging(TerminalId),
+    MissingStaging(ResourceId),
     /// A bootstrap chunk repeated or moved backward.
     #[error("duplicate bootstrap chunk {actual}; expected {expected}")]
     DuplicateChunk {
@@ -769,7 +769,7 @@ pub enum KernelError<E> {
     #[error("input is not eligible for {terminal_id}: {reason:?}")]
     InputIneligible {
         /// Explicit input target.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Deterministic gate reason.
         reason: InputBlockReason,
     },
@@ -780,7 +780,7 @@ pub enum KernelError<E> {
     #[error("resource {terminal_id} is {declared:?}, frame implies {incoming:?}")]
     KindMismatch {
         /// Target resource.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// Kind the resource was declared or bootstrapped as.
         declared: ResourceKind,
         /// Kind the rejected frame implies.
@@ -790,7 +790,7 @@ pub enum KernelError<E> {
     #[error("resource {terminal_id} has unsupported kind {kind:?}")]
     UnsupportedKind {
         /// Target resource.
-        terminal_id: TerminalId,
+        terminal_id: ResourceId,
         /// The declared kind.
         kind: ResourceKind,
     },
@@ -864,7 +864,7 @@ impl<E> HistoryPageRejection<E> {
 /// One inbound progressive-history page, as it arrives on the wire.
 struct HistoryPageInput<'a> {
     /// Target terminal.
-    terminal_id: &'a TerminalId,
+    terminal_id: &'a ResourceId,
     /// Published replica generation the page belongs to.
     generation: GenerationId,
     /// Non-zero cursor-local page sequence.
@@ -880,7 +880,7 @@ struct HistoryPageInput<'a> {
 }
 
 struct AttachParticipant {
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
     resolved: bool,
     pending_removal: bool,
 }
@@ -902,7 +902,7 @@ struct AgentStaging {
 
 /// Kernel state for one `AgentSession` resource: no replica, a record log.
 struct AgentStream {
-    parent: Option<TerminalId>,
+    parent: Option<ResourceId>,
     /// Identity and state as declared before any record arrived; the
     /// baseline every published generation folds its records onto.
     declared: AgentSessionState,
@@ -917,9 +917,9 @@ struct AgentStream {
 #[derive(Debug, Clone, Copy)]
 pub struct AgentSessionView<'a> {
     /// The `AgentSession` resource.
-    pub terminal_id: &'a TerminalId,
+    pub terminal_id: &'a ResourceId,
     /// Its Terminal-kind parent, when declared.
-    pub parent: Option<&'a TerminalId>,
+    pub parent: Option<&'a ResourceId>,
     /// Identity and lifecycle folded from the declaration and every record.
     pub state: &'a AgentSessionState,
     /// The retained record log, oldest first.
@@ -939,14 +939,14 @@ struct AttachState {
 pub struct SessionKernel<E: EngineAdapter> {
     adapter: E,
     selected_profile: BootstrapProfile,
-    terminals: HashMap<TerminalId, TerminalState<E::Replica>>,
+    terminals: HashMap<ResourceId, TerminalState<E::Replica>>,
     /// Kind per resource, from the attach inventory, a declaration, or the
     /// first bootstrap profile. Survives closure so a close can still be
     /// classified; released with the resource.
-    kinds: HashMap<TerminalId, ResourceKind>,
+    kinds: HashMap<ResourceId, ResourceKind>,
     /// `AgentSession` resources: record streams without replicas.
-    agents: HashMap<TerminalId, AgentStream>,
-    closed: HashSet<TerminalId>,
+    agents: HashMap<ResourceId, AgentStream>,
+    closed: HashSet<ResourceId>,
     attach: Option<AttachState>,
     engine_effects: EngineEffectBuffer,
     history_config: HistoryCacheConfig,
@@ -1018,7 +1018,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Whether the active ATTACH inventory authorizes one open terminal.
     #[must_use]
-    pub fn active_attach_contains(&self, terminal_id: &TerminalId) -> bool {
+    pub fn active_attach_contains(&self, terminal_id: &ResourceId) -> bool {
         !self.closed.contains(terminal_id)
             && self.attach.as_ref().is_some_and(|attach| {
                 attach
@@ -1039,7 +1039,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// never marks durable work closed and permits a later explicit reattach.
     /// Returns false without mutation while the initial barrier is outstanding.
     #[must_use]
-    pub fn detach_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+    pub fn detach_terminal(&mut self, terminal_id: &ResourceId) -> bool {
         if let Some(attach) = self.attach.as_mut() {
             if !attach.released {
                 return false;
@@ -1063,7 +1063,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// inventory, including closed participants, preserving its aggregate barrier.
     /// Returns `true` otherwise, including for an already released terminal.
     #[must_use]
-    pub fn release_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+    pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
         if self.attach.as_ref().is_some_and(|attach| {
             attach
                 .terminals
@@ -1082,13 +1082,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// The kind of one resource this kernel has seen, closed ones included.
     #[must_use]
-    pub fn resource_kind(&self, terminal_id: &TerminalId) -> Option<ResourceKind> {
+    pub fn resource_kind(&self, terminal_id: &ResourceId) -> Option<ResourceKind> {
         self.kinds.get(terminal_id).copied()
     }
 
     /// Borrow one open `AgentSession` resource.
     #[must_use]
-    pub fn agent_session(&self, terminal_id: &TerminalId) -> Option<AgentSessionView<'_>> {
+    pub fn agent_session(&self, terminal_id: &ResourceId) -> Option<AgentSessionView<'_>> {
         let (terminal_id, stream) = self.agents.get_key_value(terminal_id)?;
         Some(Self::agent_view(terminal_id, stream))
     }
@@ -1101,7 +1101,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     const fn agent_view<'a>(
-        terminal_id: &'a TerminalId,
+        terminal_id: &'a ResourceId,
         stream: &'a AgentStream,
     ) -> AgentSessionView<'a> {
         AgentSessionView {
@@ -1115,7 +1115,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Borrow the published replica for one terminal.
     #[must_use]
-    pub fn published(&self, terminal_id: &TerminalId) -> Option<PublishedReplica<'_, E>> {
+    pub fn published(&self, terminal_id: &ResourceId) -> Option<PublishedReplica<'_, E>> {
         let replica = self.terminals.get(terminal_id)?.published.as_ref()?;
         Some(PublishedReplica {
             key: &replica.key,
@@ -1127,7 +1127,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
     /// Borrow the published engine replica directly for frontend projection.
     #[must_use]
-    pub fn published_engine(&self, terminal_id: &TerminalId) -> Option<&E::Replica> {
+    pub fn published_engine(&self, terminal_id: &ResourceId) -> Option<&E::Replica> {
         Some(&self.terminals.get(terminal_id)?.published.as_ref()?.engine)
     }
 
@@ -1137,7 +1137,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// [`Self::update`]. This is only for adapter-owned viewport controls that
     /// do not alter protocol sequencing.
     #[must_use]
-    pub fn published_engine_mut(&mut self, terminal_id: &TerminalId) -> Option<&mut E::Replica> {
+    pub fn published_engine_mut(&mut self, terminal_id: &ResourceId) -> Option<&mut E::Replica> {
         Some(
             &mut self
                 .terminals
@@ -1152,7 +1152,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// and live sequence survive; in-flight older pages can no longer reappear.
     pub fn clear_presentation(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
     ) -> Result<(), KernelError<E::Error>>
     where
         E: EnginePresentationAdapter,
@@ -1172,7 +1172,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Borrow one published generation's progressive history cache.
     #[must_use]
-    pub fn history_cache(&self, terminal_id: &TerminalId) -> Option<&HistoryCache> {
+    pub fn history_cache(&self, terminal_id: &ResourceId) -> Option<&HistoryCache> {
         Some(&self.terminals.get(terminal_id)?.published.as_ref()?.history)
     }
 
@@ -1182,7 +1182,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// idempotent while that exact cursor is in flight.
     pub fn prefetch_history(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         rows_from_oldest: usize,
         effects: &mut EffectBuffer,
     ) -> bool {
@@ -1216,7 +1216,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Borrow the unpublished staging replica for one terminal.
     #[must_use]
-    pub fn staging(&self, terminal_id: &TerminalId) -> Option<StagingReplica<'_, E>> {
+    pub fn staging(&self, terminal_id: &ResourceId) -> Option<StagingReplica<'_, E>> {
         let staging = self.terminals.get(terminal_id)?.staging.as_ref()?;
         Some(StagingReplica {
             key: &staging.key,
@@ -1231,7 +1231,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     #[must_use]
     pub fn tombstone(
         &self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
     ) -> Option<TombstoneRecord> {
@@ -1247,7 +1247,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Compute explicit input eligibility without producing effects.
     #[must_use]
-    pub fn input_eligibility(&self, terminal_id: &TerminalId) -> InputEligibility {
+    pub fn input_eligibility(&self, terminal_id: &ResourceId) -> InputEligibility {
         if self.closed.contains(terminal_id) {
             return InputEligibility::Ineligible(InputBlockReason::Closed);
         }
@@ -1425,7 +1425,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 required_rows,
                 effects,
             ),
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1434,7 +1434,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             } if self.agents.contains_key(terminal_id) => {
                 self.agent_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects)
             }
-            KernelInput::TerminalOutput {
+            KernelInput::ResourceOutput {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1465,7 +1465,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 );
                 Ok(())
             }
-            KernelInput::TerminalClosed { terminal_id } => {
+            KernelInput::ResourceClosed { terminal_id } => {
                 self.terminal_closed(terminal_id, effects);
                 Ok(())
             }
@@ -1480,7 +1480,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// other than the one already known.
     fn expect_kind(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         kind: ResourceKind,
     ) -> Result<(), KernelError<E::Error>> {
         match self.kinds.get(terminal_id) {
@@ -1544,7 +1544,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn agent_bootstrap_begin(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         profile: BootstrapStreamProfile,
@@ -1612,7 +1612,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// and ask the frontend for a fresh stream.
     fn retire_agent_generation(
         stream: &mut AgentStream,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         generation: GenerationId,
         last_valid_seq: u64,
         effects: &mut EffectBuffer,
@@ -1648,7 +1648,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn agent_bootstrap_chunk(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         chunk_seq: u32,
@@ -1703,7 +1703,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn agent_bootstrap_ready(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         effects: &mut EffectBuffer,
@@ -1761,7 +1761,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn agent_output(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         seq: u64,
@@ -1830,7 +1830,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     fn attach_started(
         &mut self,
         attach_id: u32,
-        terminal_ids: &[TerminalId],
+        terminal_ids: &[ResourceId],
     ) -> Result<(), KernelError<E::Error>> {
         if let Some(attach) = self.attach.as_ref()
             && !attach.released
@@ -1844,7 +1844,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 return Err(KernelError::ClosedTerminal(terminal_id.clone()));
             }
             if terminal_ids[..index].contains(terminal_id) {
-                return Err(KernelError::DuplicateAttachTerminal(terminal_id.clone()));
+                return Err(KernelError::DuplicateAttachResource(terminal_id.clone()));
             }
         }
 
@@ -1939,7 +1939,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     #[allow(clippy::too_many_arguments)]
     fn bootstrap_begin(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         profile: BootstrapStreamProfile,
@@ -2040,7 +2040,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn bootstrap_chunk(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         chunk_seq: u32,
@@ -2118,7 +2118,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn bootstrap_ready(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         history_cursor: Option<&[u8]>,
@@ -2205,7 +2205,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn publish(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         let history_config = self.history_config;
@@ -2296,8 +2296,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// says why it cannot accept the frame: the generation is retired,
     /// the terminal is unknown, or another generation is published.
     fn published_replica<'a>(
-        terminals: &'a mut HashMap<TerminalId, TerminalState<E::Replica>>,
-        terminal_id: &TerminalId,
+        terminals: &'a mut HashMap<ResourceId, TerminalState<E::Replica>>,
+        terminal_id: &ResourceId,
         generation: GenerationId,
     ) -> Result<&'a mut Replica<E::Replica>, KernelError<E::Error>> {
         let state = terminals
@@ -2412,7 +2412,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// frontend for a resync.
     fn retire_after_codec_failure(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         generation: GenerationId,
         last_valid_seq: u64,
         effects: &mut EffectBuffer,
@@ -2461,7 +2461,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn terminal_output(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         seq: u64,
@@ -2592,7 +2592,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// imported page produces.
     fn finish_history_page(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         replica_key: ReplicaKey,
         history_status: HistoryStatus,
         next_request: Option<HistoryCursor>,
@@ -2684,7 +2684,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn history_tombstone(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         cursor: &[u8],
@@ -2743,7 +2743,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     #[allow(clippy::too_many_arguments)]
     fn history_rejected(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         cursor: &[u8],
@@ -2805,7 +2805,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
-    fn buffer_bootstrap_effects(&mut self, terminal_id: &TerminalId, generation: GenerationId) {
+    fn buffer_bootstrap_effects(&mut self, terminal_id: &ResourceId, generation: GenerationId) {
         let mut captured = std::mem::take(&mut self.engine_effects);
         let staging = self
             .terminals
@@ -2871,7 +2871,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     fn tombstone_generation(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         record: TombstoneRecord,
@@ -2909,7 +2909,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    fn terminal_closed(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
+    fn terminal_closed(&mut self, terminal_id: &ResourceId, effects: &mut EffectBuffer) {
         self.perf_echo.forget(terminal_id);
         self.agents.remove(terminal_id);
         let damage_blocked = self.attach_blocks(terminal_id);
@@ -2955,7 +2955,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    fn ensure_open(&self, terminal_id: &TerminalId) -> Result<(), KernelError<E::Error>> {
+    fn ensure_open(&self, terminal_id: &ResourceId) -> Result<(), KernelError<E::Error>> {
         if self.closed.contains(terminal_id) {
             Err(KernelError::ClosedTerminal(terminal_id.clone()))
         } else {
@@ -2963,7 +2963,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    fn attach_blocks(&self, terminal_id: &TerminalId) -> bool {
+    fn attach_blocks(&self, terminal_id: &ResourceId) -> bool {
         self.attach.as_ref().is_some_and(|attach| {
             !attach.released
                 && attach
@@ -2973,7 +2973,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         })
     }
 
-    fn mark_attach_resolved(&mut self, terminal_id: &TerminalId) {
+    fn mark_attach_resolved(&mut self, terminal_id: &ResourceId) {
         if let Some(participant) = self.attach.as_mut().and_then(|attach| {
             attach
                 .terminals
@@ -2985,7 +2985,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    fn mark_attach_unresolved(&mut self, terminal_id: &TerminalId, pending_removal: bool) {
+    fn mark_attach_unresolved(&mut self, terminal_id: &ResourceId, pending_removal: bool) {
         if let Some(participant) = self.attach.as_mut().and_then(|attach| {
             attach
                 .terminals
@@ -2997,7 +2997,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    fn mark_attach_closed(&mut self, terminal_id: &TerminalId, pending_removal: bool) {
+    fn mark_attach_closed(&mut self, terminal_id: &ResourceId, pending_removal: bool) {
         if let Some(participant) = self.attach.as_mut().and_then(|attach| {
             attach
                 .terminals
@@ -3016,7 +3016,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// This never resizes the canonical terminal replica.
     pub fn project_history(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         width: u16,
         max_rows: usize,
     ) -> Result<EngineHistoryProjection, KernelError<E::Error>> {
@@ -3055,7 +3055,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Create one engine-owned anchor in the published document.
     pub fn track_document_anchor(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         point: DocumentPoint,
     ) -> Result<DocumentAnchorId, KernelError<E::Error>> {
         let replica = self
@@ -3077,7 +3077,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Resolve an engine-owned anchor after output, reflow, or history import.
     pub fn document_anchor_point(
         &self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: DocumentAnchorId,
         space: DocumentSpace,
     ) -> Result<Option<DocumentPoint>, KernelError<E::Error>> {
@@ -3094,7 +3094,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Pin the client viewport to a valid engine-owned document anchor.
     pub fn pin_history_viewport(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: DocumentAnchorId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
@@ -3119,7 +3119,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Resume following the live tail without resizing canonical state.
     pub fn follow_history_tail(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
             .terminals
@@ -3133,7 +3133,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Release one engine-owned anchor.
     pub fn release_document_anchor(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         anchor: DocumentAnchorId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
@@ -3150,7 +3150,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Search only state already loaded into the engine.
     pub fn search_loaded_history(
         &mut self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         needle: &str,
         max_matches: usize,
     ) -> Result<Vec<EngineSearchMatch>, KernelError<E::Error>> {
@@ -3192,7 +3192,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     /// Format a selection through the engine's canonical text semantics.
     pub fn format_document_selection(
         &self,
-        terminal_id: &TerminalId,
+        terminal_id: &ResourceId,
         selection: EngineDocumentSelection,
     ) -> Result<Option<String>, KernelError<E::Error>> {
         let replica = self
@@ -3213,7 +3213,7 @@ const fn generation_of(key: &ReplicaKey) -> GenerationId {
     }
 }
 
-fn mismatch_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> KernelError<E> {
+fn mismatch_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> KernelError<E> {
     KernelError::GenerationMismatch {
         terminal_id: terminal_id.clone(),
         stream_id: generation.stream_id,
@@ -3221,7 +3221,7 @@ fn mismatch_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> Kern
     }
 }
 
-fn retired_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> KernelError<E> {
+fn retired_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> KernelError<E> {
     KernelError::RetiredGeneration {
         terminal_id: terminal_id.clone(),
         stream_id: generation.stream_id,

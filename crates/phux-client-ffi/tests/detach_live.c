@@ -66,19 +66,19 @@ static int pump(int timeout_ms) {
     return 1;
 }
 
-static PhuxTerminalId completion(uint32_t request, uint32_t kind) {
+static PhuxResourceId completion(uint32_t request, uint32_t kind) {
     while (phux_client_operation_count(client) == 0) assert(pump(5000));
     PhuxOperationResult result = {.size = sizeof(result), .version = PHUX_CLIENT_ABI_VERSION};
     checked(phux_client_operation_get(client, 0, &result));
     assert(result.request_id == request && result.kind == kind);
     assert(result.status == PHUX_OPERATION_SUCCESS);
-    assert(result.terminal_id.kind == PHUX_TERMINAL_LOCAL);
-    PhuxTerminalId id = result.terminal_id;
+    assert(result.terminal_id.kind == PHUX_RESOURCE_ID_LOCAL);
+    PhuxResourceId id = result.terminal_id;
     checked(phux_client_operation_clear(client));
     return id;
 }
 
-static void wait_grid(PhuxTerminalId id) {
+static void wait_grid(PhuxResourceId id) {
     PhuxTerminalGridView view;
     PhuxClientResult result;
     while ((result = phux_client_terminal_grid(client, &id, &view)) != PHUX_CLIENT_OK) {
@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
     };
     checked(phux_client_queue_attach(client, &attach));
     while (phux_client_state(client) != PHUX_CLIENT_STATE_ATTACHED) assert(pump(5000));
-    PhuxTerminalId first = {0};
+    PhuxResourceId first = {0};
     for (uint32_t n = 0; n < 20; ++n) {
         PhuxBytes command[] = {text("/bin/sh"), text("-c"),
             text("i=0; while :; do i=$((i+1)); printf '\\rDETACHED-WORK-ALIVE-%s' \"$i\"; sleep 0.05; done")};
@@ -122,26 +122,26 @@ int main(int argc, char **argv) {
             .request_id = 2 * n + 1, .argv = command, .argc = 3, .cols = 80, .rows = 24,
         };
         checked(phux_client_queue_spawn(client, &spawn));
-        PhuxTerminalId id = completion(spawn.request_id, PHUX_OPERATION_SPAWN);
+        PhuxResourceId id = completion(spawn.request_id, PHUX_OPERATION_SPAWN);
         if (n == 0) first = id;
         wait_grid(id);
-        PhuxDetachTerminalOptions detach = {
+        PhuxDetachResourceOptions detach = {
             .size = sizeof(detach), .version = PHUX_CLIENT_ABI_VERSION,
             .request_id = 2 * n + 2, .terminal_id = id,
         };
-        checked(phux_client_queue_detach_terminal(client, &detach));
-        assert(completion(detach.request_id, PHUX_OPERATION_DETACH_TERMINAL).id == id.id);
+        checked(phux_client_queue_detach_resource(client, &detach));
+        assert(completion(detach.request_id, PHUX_OPERATION_DETACH_RESOURCE).id == id.id);
         PhuxTerminalGridView removed;
         assert(phux_client_terminal_grid(client, &id, &removed) == PHUX_CLIENT_INVALID_STATE);
         /* Observe the next output tick: leaked pumps fail unsolicited admission. */
         while (pump(100)) {}
     }
-    PhuxAttachTerminalOptions reattach = {
+    PhuxAttachResourceOptions reattach = {
         .size = sizeof(reattach), .version = PHUX_CLIENT_ABI_VERSION,
         .request_id = 41, .terminal_id = first,
     };
-    checked(phux_client_queue_attach_terminal(client, &reattach));
-    assert(completion(41, PHUX_OPERATION_ATTACH_TERMINAL).id == first.id);
+    checked(phux_client_queue_attach_resource(client, &reattach));
+    assert(completion(41, PHUX_OPERATION_ATTACH_RESOURCE).id == first.id);
     wait_grid(first);
     PhuxTerminalGridView before;
     checked(phux_client_terminal_grid(client, &first, &before));

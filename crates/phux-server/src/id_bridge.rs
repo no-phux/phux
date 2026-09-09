@@ -26,7 +26,7 @@
 //! Minting is the only per-space difference and it lives behind the
 //! [`WireId`] trait, which is the single place that decides how a raw `u32`
 //! becomes a wire id. That matters most for
-//! [`phux_protocol::ids::TerminalId`], which is an enum: see its [`WireId`]
+//! [`phux_protocol::ids::ResourceId`], which is an enum: see its [`WireId`]
 //! impl for the Local-only minting invariant.
 //!
 //! # Allocation model
@@ -70,7 +70,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use phux_protocol::ids::{
-    SessionId as WireSessionId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+    ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
 
 /// A `phux-protocol` identifier an [`IdBridge`] can mint from a raw `u32`.
@@ -105,18 +105,18 @@ impl WireId for WireWindowId {
     }
 }
 
-/// Load-bearing: `TerminalId` is an enum, not a `u32` newtype, and this impl
+/// Load-bearing: `ResourceId` is an enum, not a `u32` newtype, and this impl
 /// is the single place that decides which variant a bridge mints.
 ///
-/// It mints [`TerminalId::Local`](phux_protocol::ids::TerminalId::Local) and
+/// It mints [`ResourceId::Local`](phux_protocol::ids::ResourceId::Local) and
 /// only that. A satellite terminal
-/// ([`TerminalId::Satellite`](phux_protocol::ids::TerminalId::Satellite)) is
+/// ([`ResourceId::Satellite`](phux_protocol::ids::ResourceId::Satellite)) is
 /// owned by a federation peer and addressed straight off the wire id by
 /// federation routing (ADR-0007); it never enters a bridge's tables. So
 /// [`IdBridge::resolve`] returns `None` for a satellite id **by design**, not
 /// by omission, and that stays true for as long as this impl calls
-/// `TerminalId::local`.
-impl WireId for WireTerminalId {
+/// `ResourceId::local`.
+impl WireId for WireResourceId {
     const SPACE: &'static str = "terminal";
 
     fn from_raw(raw: u32) -> Self {
@@ -207,7 +207,7 @@ where
     /// never been interned.
     ///
     /// Borrows rather than returning an owned id: not every wire id is
-    /// `Copy` (`TerminalId::Satellite` carries a host string). Callers whose
+    /// `Copy` (`ResourceId::Satellite` carries a host string). Callers whose
     /// space is `Copy` can `.copied()`.
     #[must_use]
     pub fn wire(&self, core: C) -> Option<&W> {
@@ -278,8 +278,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_core::ids::ResourceId as CoreResourceId;
     use phux_core::ids::SessionId as CoreSessionId;
-    use phux_core::ids::TerminalId as CoreTerminalId;
     use phux_core::registry::Registry;
 
     /// The session-space instantiation, which these tests exercise.
@@ -293,7 +293,7 @@ mod tests {
         (reg, ids)
     }
 
-    fn fresh_core_terminal() -> (Registry, CoreTerminalId) {
+    fn fresh_core_terminal() -> (Registry, CoreResourceId) {
         let mut reg = Registry::new();
         let session = reg.new_session("s".to_owned());
         let window = reg.new_window(session).expect("new window");
@@ -406,21 +406,21 @@ mod tests {
     #[test]
     fn terminal_bridge_mints_only_local_ids() {
         let (_reg, terminal) = fresh_core_terminal();
-        let mut bridge: IdBridge<CoreTerminalId, WireTerminalId> = IdBridge::new();
+        let mut bridge: IdBridge<CoreResourceId, WireResourceId> = IdBridge::new();
         let wire = bridge.intern(terminal);
-        assert_eq!(wire, WireTerminalId::local(1));
+        assert_eq!(wire, WireResourceId::local(1));
         assert!(wire.is_local(), "a bridge must never mint a Satellite id");
     }
 
     #[test]
     fn resolve_is_none_for_a_satellite_id() {
         let (_reg, terminal) = fresh_core_terminal();
-        let mut bridge: IdBridge<CoreTerminalId, WireTerminalId> = IdBridge::new();
+        let mut bridge: IdBridge<CoreResourceId, WireResourceId> = IdBridge::new();
         let wire = bridge.intern(terminal);
         let raw = wire.local_id().expect("minted id is Local");
         // Same raw id, satellite-tagged: federation routing owns it, the
         // bridge never does.
-        let satellite = WireTerminalId::satellite("peer", raw);
+        let satellite = WireResourceId::satellite("peer", raw);
         assert!(bridge.resolve(&satellite).is_none());
         assert_eq!(bridge.resolve(&wire), Some(terminal));
     }

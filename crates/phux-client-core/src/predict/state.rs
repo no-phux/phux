@@ -47,7 +47,7 @@ impl PredictiveConfig {
 
 /// One in-flight prediction: a single-cell visual edit guessed from a
 /// keystroke that has been sent upstream but not yet confirmed by a
-/// `TerminalOutput` frame.
+/// `ResourceOutput` frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prediction {
     /// Row of the cell, 0-indexed from the top of the viewport.
@@ -134,7 +134,7 @@ pub enum PredictionOutcome {
 ///   `INPUT_KEY` frame is sent. It either enqueues a prediction (and
 ///   advances the cursor estimate) or returns [`PredictionOutcome::Skipped`].
 /// - [`super::reconcile_terminal_output_per_cell`] is called on the
-///   server-frame path when a `TerminalOutput` arrives. It confirms,
+///   server-frame path when a `ResourceOutput` arrives. It confirms,
 ///   keeps, or drops predictions cell by cell and resyncs the cursor
 ///   estimate from authoritative state once the queue drains.
 #[derive(Debug, Default)]
@@ -336,7 +336,7 @@ impl PredictionState {
     }
 
     /// Re-anchor the cursor estimate from authoritative state. Called
-    /// from the reconcile path after a `TerminalOutput` has been
+    /// from the reconcile path after a `ResourceOutput` has been
     /// applied to the libghostty Terminal — the renderer's `RenderState`
     /// has the post-apply cursor, and we copy it here.
     pub fn set_cursor(&mut self, row: u16, col: u16) {

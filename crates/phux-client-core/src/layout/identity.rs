@@ -1,16 +1,16 @@
 use sha2::{Digest, Sha256};
 
-use super::{LayoutDecodeError, LayoutNode, LayoutState, TerminalId, WindowState, leaves};
+use super::{LayoutDecodeError, LayoutNode, LayoutState, ResourceId, WindowState, leaves};
 
-pub(super) fn terminal_id(terminal: &TerminalId) -> [u8; 16] {
+pub(super) fn terminal_id(terminal: &ResourceId) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(b"phux.layout.window-id/v1\0");
     match terminal {
-        TerminalId::Local { id } => {
+        ResourceId::Local { id } => {
             hash.update([0]);
             hash.update(id.to_be_bytes());
         }
-        TerminalId::Satellite { host, id } => {
+        ResourceId::Satellite { host, id } => {
             hash.update([1]);
             hash.update(host.as_str().as_bytes());
             hash.update([0]);
@@ -32,7 +32,7 @@ pub(super) fn seed_id(state: &LayoutState) -> [u8; 16] {
 }
 
 /// Reusing a removed seed must not reuse the surviving window's identity.
-pub(super) fn fresh_id(seed: &TerminalId, windows: &[WindowState]) -> [u8; 16] {
+pub(super) fn fresh_id(seed: &ResourceId, windows: &[WindowState]) -> [u8; 16] {
     let mut id = terminal_id(seed);
     while id == [0; 16] || windows.iter().any(|window| window.id == id) {
         let mut hash = Sha256::new();
@@ -63,12 +63,12 @@ mod tests {
     use crate::layout::{self, SplitDir, Workspace};
 
     fn split() -> Workspace {
-        let mut ws = Workspace::single(TerminalId::local(1));
+        let mut ws = Workspace::single(ResourceId::local(1));
         ws.windows[0].state.tree = Some(
             layout::split_at(
                 ws.windows[0].state.tree.as_ref().unwrap(),
-                &TerminalId::local(1),
-                &TerminalId::local(2),
+                &ResourceId::local(1),
+                &ResourceId::local(2),
                 SplitDir::Horizontal,
                 0.5,
             )
@@ -81,9 +81,9 @@ mod tests {
     fn identity_survives_seed_removal_rename_reorder_and_roundtrip() {
         let mut ws = split();
         let id = ws.windows[0].id;
-        ws.windows[0].state = LayoutState::single(TerminalId::local(2));
+        ws.windows[0].state = LayoutState::single(ResourceId::local(2));
         ws.windows[0].name = "renamed".into();
-        ws.add_window("other".into(), TerminalId::local(3));
+        ws.add_window("other".into(), ResourceId::local(3));
         ws.windows.swap(0, 1);
         let decoded = Workspace::decode_cbor(&ws.encode_cbor().unwrap()).unwrap();
         assert_eq!(decoded.windows[1].id, id);
@@ -94,8 +94,8 @@ mod tests {
     fn removed_seed_can_form_a_new_window_without_reusing_retained_identity() {
         let mut ws = split();
         let retained = ws.windows[0].id;
-        ws.windows[0].state = LayoutState::single(TerminalId::local(2));
-        ws.add_window("reused seed".into(), TerminalId::local(1));
+        ws.windows[0].state = LayoutState::single(ResourceId::local(2));
+        ws.add_window("reused seed".into(), ResourceId::local(1));
         assert_eq!(ws.windows[0].id, retained);
         assert_ne!(ws.windows[1].id, retained);
         assert_eq!(
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn zero_duplicate_and_missing_ids_are_refused() {
         let mut ws = split();
-        ws.add_window("two".into(), TerminalId::local(3));
+        ws.add_window("two".into(), ResourceId::local(3));
         let bytes = ws.encode_cbor().unwrap();
         for invalid in [[0; 16], ws.windows[0].id] {
             let mut envelope: CborWorkspaceEnvelope =
@@ -145,12 +145,12 @@ mod tests {
     #[test]
     fn satellite_and_local_seed_domains_are_distinct() {
         assert_ne!(
-            terminal_id(&TerminalId::local(1)),
-            terminal_id(&TerminalId::satellite("peer", 1))
+            terminal_id(&ResourceId::local(1)),
+            terminal_id(&ResourceId::satellite("peer", 1))
         );
         assert_ne!(
-            terminal_id(&TerminalId::satellite("peer", 1)),
-            terminal_id(&TerminalId::satellite("other", 1))
+            terminal_id(&ResourceId::satellite("peer", 1)),
+            terminal_id(&ResourceId::satellite("other", 1))
         );
     }
 }

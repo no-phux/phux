@@ -2,9 +2,9 @@
 //!
 //! End-to-end test for the SPEC §7.3 / §13 detach-then-reattach lifecycle
 //! from the user-visible perspective: a single client drives a real PTY
-//! through input, observes echoed `TERMINAL_OUTPUT`, drops the stream
+//! through input, observes echoed `RESOURCE_OUTPUT`, drops the stream
 //! mid-conversation, then a fresh client re-attaches and sees a usable
-//! protocol-0.7 bootstrap followed by resumed `TERMINAL_OUTPUT` once the PTY
+//! protocol-0.7 bootstrap followed by resumed `RESOURCE_OUTPUT` once the PTY
 //! produces more bytes.
 //!
 //! This test also absorbs the server-side cleanup assertions that used to
@@ -19,7 +19,7 @@
 //!
 //! AC mapping (salvaged from the `phux-a87` epic):
 //!   * Reconnect after detach with a fresh protocol-0.7 bootstrap.
-//!   * Subsequent `TERMINAL_OUTPUT` lands on the new client.
+//!   * Subsequent `RESOURCE_OUTPUT` lands on the new client.
 //!   * Cross-platform smoke teardown: the socket file MUST be unlinked
 //!     after the server shuts down (`TempDir` cleanup is independent).
 
@@ -35,7 +35,7 @@
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     DetachReason, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED,
-    TYPE_TERMINAL_OUTPUT,
+    TYPE_RESOURCE_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -61,7 +61,7 @@ const fn enter_key() -> KeyEvent {
     }
 }
 
-/// Drain `TERMINAL_OUTPUT` frames into `screen` until `needle` appears in
+/// Drain `RESOURCE_OUTPUT` frames into `screen` until `needle` appears in
 /// the rendered grid or `WIRE_RECV_TIMEOUT` elapses. Mirrors
 /// `screen_harness_demo::drain_into_screen` — kept private here so the
 /// reconnect test reads as a single self-contained scenario.
@@ -73,10 +73,10 @@ async fn drain_into_screen(stream: &mut UnixStream, screen: &mut Screen, needle:
         let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             break;
         };
-        if type_byte != TYPE_TERMINAL_OUTPUT {
+        if type_byte != TYPE_RESOURCE_OUTPUT {
             continue;
         }
-        if let FrameKind::TerminalOutput { bytes, .. } = frame {
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
             total += bytes.len();
             screen.write(&bytes);
             if screen.contains(needle) {
@@ -116,7 +116,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
                 snapshot,
                 initial_client_id,
                 ..
-            } => (snapshot.panes[0].id.clone(), initial_client_id.get()),
+            } => (snapshot.resources[0].id.clone(), initial_client_id.get()),
             other => panic!("client A: expected Attached, got {other:?}"),
         };
         // Folded from `byc_6_3_detach_clean_shutdown`: the id must be a
@@ -161,7 +161,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         // Clean DETACH so the server runs the explicit detach path
         // (vs. an EOF-only implicit detach, which is covered in
-        // eof_detach.rs). In-flight TERMINAL_OUTPUT
+        // eof_detach.rs). In-flight RESOURCE_OUTPUT
         // from the pre-detach 'a' echo may still arrive before the
         // server processes the DETACH command — drain past them.
         send_frame(&mut client_a, &FrameKind::Detach).await;
@@ -171,7 +171,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
             let (type_byte, frame) = timeout(remaining, recv_typed(&mut client_a))
                 .await
                 .expect("client A: DETACHED never arrived");
-            if type_byte == TYPE_TERMINAL_OUTPUT {
+            if type_byte == TYPE_RESOURCE_OUTPUT {
                 continue; // pre-detach echo still draining
             }
             assert_eq!(type_byte, TYPE_DETACHED, "client A: DETACHED reply");
@@ -193,7 +193,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         // Phase 2 — client B reconnects to the same session. MUST get:
         //   (a) fresh ATTACHED whose snapshot still shows the pane,
         //   (b) fresh bootstrap (proves the actor survived),
-        //   (c) on new keystrokes, fresh TERMINAL_OUTPUT carrying the
+        //   (c) on new keystrokes, fresh RESOURCE_OUTPUT carrying the
         //       PTY echo (proves the subscriber rewire actually streams).
         // ============================================================
         let mut client_b = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -210,8 +210,12 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
                 assert_eq!(snapshot.sessions.len(), 1, "client B: one session");
                 assert_eq!(snapshot.sessions[0].name, "default");
                 assert_eq!(snapshot.windows.len(), 1, "client B: one window");
-                assert_eq!(snapshot.panes.len(), 1, "client B: one pane (actor alive)");
-                (snapshot.panes[0].id.clone(), initial_client_id.get())
+                assert_eq!(
+                    snapshot.resources.len(),
+                    1,
+                    "client B: one pane (actor alive)"
+                );
+                (snapshot.resources[0].id.clone(), initial_client_id.get())
             }
             other => panic!("client B: expected Attached, got {other:?}"),
         };
@@ -233,7 +237,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         // The fresh bootstrap is the resume-from-snapshot half of SPEC §13:
         // the client must be able to reconstruct the pre-reconnect grid
-        // without any backfilled TERMINAL_OUTPUT.
+        // without any backfilled RESOURCE_OUTPUT.
         let (type_byte, begin_b) = recv_typed(&mut client_b).await;
         assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
         let (snap_cols, snap_rows) = match begin_b {
@@ -263,7 +267,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         );
 
         // Build a fresh Screen from the snapshot bytes — this is what a
-        // reconnecting client renders before any live TERMINAL_OUTPUT
+        // reconnecting client renders before any live RESOURCE_OUTPUT
         // arrives. We do NOT assert the pre-detach 'a' echo is visible
         // in the snapshot replay (cat strips it once it scrolls / the
         // synthesiser may not emit pure echo lines) — instead we prove
@@ -272,7 +276,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         screen_b.write(&snap_bytes);
 
         // Drive a *new* keystroke through the reconnected client. The
-        // TERMINAL_OUTPUT must reach screen_b, proving the post-reconnect
+        // RESOURCE_OUTPUT must reach screen_b, proving the post-reconnect
         // subscription is wired and the actor is alive.
         send_frame(
             &mut client_b,
@@ -295,7 +299,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         assert!(
             screen_b.contains("z"),
             "client B: post-reconnect 'z' must round-trip through PTY into \
-             a fresh TERMINAL_OUTPUT stream. bytes={bytes_b}, screen=\n{}",
+             a fresh RESOURCE_OUTPUT stream. bytes={bytes_b}, screen=\n{}",
             screen_b.snapshot_text(),
         );
 

@@ -34,7 +34,7 @@ use bytes::BytesMut;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
 
-use phux_client::agent_meta::{AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY};
+use phux_client::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY};
 use phux_client::agent_prompt::{
     Delivery, MAX_PROMPT_BYTES, PromptError, PromptWait, Refusal, deliver_acknowledged,
     prompt_agent,
@@ -44,7 +44,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, ServerCapabilities, ServerFeature, ServerFeatureSet,
     select_bootstrap_profile,
 };
-use phux_protocol::ids::{InputOperationId, TerminalId};
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, Scope};
 
 /// A frame link speaking the same length-prefixed framing `Connection` does.
@@ -174,7 +174,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
             FrameKind::GetMetadata {
                 request_id, key, ..
             } => {
-                let value = (key == TERMINAL_AGENT_KEY)
+                let value = (key == RESOURCE_AGENT_KEY)
                     .then(|| script.record.clone())
                     .flatten();
                 link.send(&FrameKind::MetadataValue { request_id, value })
@@ -203,8 +203,8 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                 // which a transition may satisfy `prompt --wait`.
                 for value in script.post_result.clone() {
                     link.send(&FrameKind::MetadataChanged {
-                        scope: Scope::Terminal(terminal_id.clone()),
-                        key: TERMINAL_AGENT_KEY.to_owned(),
+                        scope: Scope::Resource(terminal_id.clone()),
+                        key: RESOURCE_AGENT_KEY.to_owned(),
                         value,
                     })
                     .await;
@@ -260,7 +260,7 @@ async fn a_verified_pane_takes_one_batch_and_reports_the_receipt() {
     let (_dir, socket, seen) = serve(Script::new(Some(record("working"))));
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x31),
         &always_ok,
@@ -294,7 +294,7 @@ async fn a_resource_exhausted_retry_reuses_the_same_operation_id() {
     let (_dir, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x42),
         &always_ok,
@@ -323,7 +323,7 @@ async fn a_lane_that_never_frees_fails_without_writing_anything() {
     let (_dir, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x43),
         &always_ok,
@@ -353,7 +353,7 @@ async fn input_delivery_unknown_is_reported_once_and_never_retried() {
     let (_dir, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x44),
         &always_ok,
@@ -386,7 +386,7 @@ async fn input_not_written_is_reported_distinctly_and_not_auto_retried() {
     let (_dir, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x46),
         &always_ok,
@@ -417,7 +417,7 @@ async fn a_canonical_limit_refusal_is_not_retried() {
     let (_dir, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x45),
         &always_ok,
@@ -445,7 +445,7 @@ async fn a_mismatched_occupant_refuses_before_any_byte_is_written() {
     let (_dir, socket, seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x46),
         &|found| Some(format!("'{}', not 'builder'", found.name)),
@@ -471,7 +471,7 @@ async fn a_pane_with_no_record_is_refused_before_the_submit() {
     let (_dir, socket, seen) = serve(Script::new(None));
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x47),
         &always_ok,
@@ -494,7 +494,7 @@ async fn an_oversized_prompt_never_reaches_the_wire() {
     let (_dir, socket, seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         &"x".repeat(MAX_PROMPT_BYTES + 1),
         op_id(0x48),
         &always_ok,
@@ -529,7 +529,7 @@ async fn a_post_result_transition_satisfies_prompt_wait() {
     let (_dir, socket, _seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x49),
         &always_ok,
@@ -560,7 +560,7 @@ async fn a_resting_level_never_satisfies_prompt_wait() {
     let (_dir, socket, _seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x4a),
         &always_ok,
@@ -607,7 +607,7 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
 
     let outcome = deliver_acknowledged(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         op_id(0x4c),
         events,
         &always_ok,
@@ -634,7 +634,7 @@ async fn a_tombstone_after_the_write_is_a_departure_not_a_completion() {
     let (_dir, socket, _seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
-        &TerminalId::local(7),
+        &ResourceId::local(7),
         "ship it",
         op_id(0x4b),
         &always_ok,

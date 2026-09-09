@@ -2,9 +2,9 @@ use super::*;
 
 /// Copy the borrowed grid immediately and release its tracked top anchor.
 fn grid(client: *mut PhuxClient) -> (PhuxTerminalGridView, String) {
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 1,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     let mut view = PhuxTerminalGridView::default();
     // SAFETY: this fixture owns the live client and every output span.
@@ -28,8 +28,8 @@ fn output(client: *mut PhuxClient, seq: u64, payload: &'static [u8]) {
     assert_eq!(
         feed_kind(
             client,
-            &FrameKind::TerminalOutput {
-                terminal_id: phux_protocol::TerminalId::local(1),
+            &FrameKind::ResourceOutput {
+                terminal_id: phux_protocol::ResourceId::local(1),
                 stream_id: phux_protocol::StreamId::new(7).unwrap(),
                 bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
                 seq,
@@ -42,9 +42,9 @@ fn output(client: *mut PhuxClient, seq: u64, payload: &'static [u8]) {
 
 #[test]
 fn clear_erases_only_local_presentation_and_keeps_next_output_live() {
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 1,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     let client = client_with_searchable_scrollback();
     let peer = client_with_searchable_scrollback();
@@ -56,7 +56,7 @@ fn clear_erases_only_local_presentation_and_keeps_next_output_live() {
     unsafe {
         (*client)
             .inner
-            .search(&phux_protocol::TerminalId::local(1), b"OFFSCREEN", true)
+            .search(&phux_protocol::ResourceId::local(1), b"OFFSCREEN", true)
             .unwrap();
         let found = (&(*client).inner.search_results)[0];
         assert_eq!(
@@ -82,7 +82,7 @@ fn clear_erases_only_local_presentation_and_keeps_next_output_live() {
         assert_eq!(
             (*client)
                 .inner
-                .terminal(&phux_protocol::TerminalId::local(1))
+                .terminal(&phux_protocol::ResourceId::local(1))
                 .unwrap()
                 .title()
                 .unwrap(),
@@ -91,7 +91,7 @@ fn clear_erases_only_local_presentation_and_keeps_next_output_live() {
         assert!(
             (*client)
                 .inner
-                .terminal(&phux_protocol::TerminalId::local(1))
+                .terminal(&phux_protocol::ResourceId::local(1))
                 .unwrap()
                 .mode(libghostty_vt::terminal::Mode::BRACKETED_PASTE)
                 .unwrap()
@@ -129,9 +129,9 @@ fn clear_erases_only_local_presentation_and_keeps_next_output_live() {
 
 #[test]
 fn clear_refuses_stale_generations_and_disconnected_clients_without_mutation() {
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 1,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     let client = client_with_searchable_scrollback();
     let (before, text) = grid(client);
@@ -169,7 +169,7 @@ fn clear_preserves_partial_csi_and_its_rendition() {
         unsafe {
             let engine = (*client)
                 .inner
-                .terminal(&phux_protocol::TerminalId::local(1))
+                .terminal(&phux_protocol::ResourceId::local(1))
                 .unwrap();
             let cell = engine
                 .grid_ref(libghostty_vt::terminal::Point::Active(
@@ -186,9 +186,9 @@ fn clear_preserves_partial_csi_and_its_rendition() {
 }
 
 fn clear_then_resume(client: *mut PhuxClient, seq: u64, suffix: &'static [u8], text: &str) {
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 1,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     let (before, _) = grid(client);
     // SAFETY: this fixture owns the client and uses its exact live generation.
@@ -224,7 +224,7 @@ fn clear_preserves_partial_osc_and_its_title() {
             assert_eq!(
                 (*client)
                     .inner
-                    .terminal(&phux_protocol::TerminalId::local(1))
+                    .terminal(&phux_protocol::ResourceId::local(1))
                     .unwrap()
                     .title()
                     .unwrap(),
@@ -297,7 +297,7 @@ fn native_capture(pending: &[u8]) -> (Vec<u8>, Vec<u8>, u32) {
 }
 
 fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8]) {
-    let terminal_id = phux_protocol::TerminalId::local(1);
+    let terminal_id = phux_protocol::ResourceId::local(1);
     let stream_id = phux_protocol::StreamId::new(7).unwrap();
     let bootstrap_id = phux_protocol::BootstrapId::new(bootstrap_id).unwrap();
     for frame in [
@@ -357,7 +357,7 @@ fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
         inner,
         _not_send_sync: std::marker::PhantomData,
     }));
-    let terminal = phux_protocol::TerminalId::local(1);
+    let terminal = phux_protocol::ResourceId::local(1);
     let window = phux_protocol::WindowId::new(1);
     let session = SessionId::new(1);
     let snapshot =
@@ -365,7 +365,7 @@ fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
             .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
                 window, session, "native",
             )])
-            .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
+            .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
                 terminal, window, 40, 12,
             )]);
     assert_eq!(
@@ -389,7 +389,7 @@ fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
 
 fn history_page(bootstrap_id: u64, bytes: &[u8], rows: u32) -> FrameKind {
     FrameKind::HistoryPage {
-        terminal_id: phux_protocol::TerminalId::local(1),
+        terminal_id: phux_protocol::ResourceId::local(1),
         stream_id: phux_protocol::StreamId::new(7).unwrap(),
         bootstrap_id: phux_protocol::BootstrapId::new(bootstrap_id).unwrap(),
         cursor: bytes::Bytes::from_static(b"older"),
@@ -404,9 +404,9 @@ fn history_page(bootstrap_id: u64, bytes: &[u8], rows: u32) -> FrameKind {
 fn clear_cancels_native_history_without_retiring_live_or_replacement_generations() {
     let (bootstrap, history, rows) = native_capture(b"");
     let client = native_client(&bootstrap);
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 1,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     assert!(grid(client).0.history_loading);
     // SAFETY: this test owns the live client and uses its exact generation.

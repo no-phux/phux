@@ -7,7 +7,7 @@ use std::os::fd::AsFd;
 
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
@@ -28,10 +28,10 @@ use crate::layout::{LayoutState, Workspace};
 /// the complete input, so a hit is exact.
 pub(super) fn view_rects(
     workspace: &Workspace,
-    zoomed: Option<&TerminalId>,
+    zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
     viewport_dims: (u16, u16),
-) -> HashMap<TerminalId, crate::layout::Rect> {
+) -> HashMap<ResourceId, crate::layout::Rect> {
     workspace
         .render_window(zoomed)
         .filter(|ls| ls.tree.is_some())
@@ -43,7 +43,7 @@ pub(super) fn view_rects(
         .unwrap_or_default()
 }
 
-/// Emit one `TERMINAL_RESIZE` per pane whose dimensions differ between
+/// Emit one `RESIZE_TERMINAL` per pane whose dimensions differ between
 /// `prev_rects` and the new content view. Reuses the close/SIGWINCH reflow
 /// path so each PTY's winsize tracks the on-screen geometry. Sent before
 /// repainting, mirroring the other reflow sites.
@@ -52,8 +52,8 @@ pub(super) fn view_rects(
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
     workspace: &Workspace,
-    zoomed: Option<&TerminalId>,
-    prev_rects: &HashMap<TerminalId, crate::layout::Rect>,
+    zoomed: Option<&ResourceId>,
+    prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
 ) -> Result<(), AttachError> {
     let Some(ls) = workspace.render_window(zoomed) else {
@@ -85,12 +85,12 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
 async fn emit_layout_reflow(
     conn: &mut Connection,
     layout: &LayoutState,
-    prev_rects: &HashMap<TerminalId, crate::layout::Rect>,
+    prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
 ) -> Result<(), AttachError> {
     let diff = crate::attach::reflow::compute_reflow(layout, prev_rects, content);
     for (terminal_id, new_rect) in &diff.changed {
-        conn.send(&FrameKind::TerminalResize {
+        conn.send(&FrameKind::ResizeTerminal {
             terminal_id: terminal_id.clone(),
             cols: new_rect.w,
             rows: new_rect.h,
@@ -184,8 +184,8 @@ mod tests {
     /// later window switch doing a corrective resize.
     #[tokio::test]
     async fn restored_workspace_reflow_sizes_panes_in_every_window() {
-        let first = TerminalId::local(1);
-        let second = TerminalId::local(2);
+        let first = ResourceId::local(1);
+        let second = ResourceId::local(2);
         let mut workspace = Workspace::single(first);
         workspace.add_window("2".to_owned(), second.clone());
         workspace.select(0);
@@ -214,7 +214,7 @@ mod tests {
         let resized: std::collections::HashSet<_> = received
             .into_iter()
             .map(|frame| match frame {
-                FrameKind::TerminalResize {
+                FrameKind::ResizeTerminal {
                     terminal_id,
                     cols: 100,
                     rows: 30,
@@ -224,7 +224,7 @@ mod tests {
             .collect();
         assert_eq!(
             resized,
-            [TerminalId::local(1), second].into_iter().collect()
+            [ResourceId::local(1), second].into_iter().collect()
         );
     }
 

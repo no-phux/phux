@@ -1,9 +1,9 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use phux_protocol::TerminalId;
+use phux_protocol::ResourceId;
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 pub const CELL_BOLD: u32 = 1 << 0;
 pub const CELL_ITALIC: u32 = 1 << 1;
 pub const CELL_FAINT: u32 = 1 << 2;
@@ -86,7 +86,7 @@ impl Default for PhuxBytes {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct PhuxTerminalId {
+pub struct PhuxResourceId {
     pub kind: u32,
     pub id: u32,
     pub host: PhuxBytes,
@@ -114,9 +114,9 @@ pub struct PhuxSessionInfo {
 pub struct PhuxResourceInfo {
     pub size: usize,
     pub version: u32,
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub kind: u32,
-    pub parent: *const PhuxTerminalId,
+    pub parent: *const PhuxResourceId,
     pub provider: PhuxBytes,
     pub native_id: PhuxBytes,
     pub state: PhuxBytes,
@@ -127,7 +127,7 @@ impl Default for PhuxResourceInfo {
         Self {
             size: std::mem::size_of::<Self>(),
             version: ABI_VERSION,
-            terminal_id: PhuxTerminalId::default(),
+            terminal_id: PhuxResourceId::default(),
             kind: RESOURCE_KIND_TERMINAL,
             parent: ptr::null(),
             provider: PhuxBytes::default(),
@@ -202,7 +202,7 @@ pub struct PhuxClientEffect {
     pub kind: u32,
     pub detail: u32,
     pub status_code: u32,
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub stream_id: u64,
     pub bootstrap_id: u64,
     pub seq: u64,
@@ -252,7 +252,7 @@ pub struct PhuxTerminalCell {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxTerminalGridView {
-    pub terminal_id: PhuxTerminalId,
+    pub terminal_id: PhuxResourceId,
     pub stream_id: u64,
     pub bootstrap_id: u64,
     pub last_seq: u64,
@@ -280,7 +280,7 @@ pub struct PhuxTerminalGridView {
 impl Default for PhuxTerminalGridView {
     fn default() -> Self {
         Self {
-            terminal_id: PhuxTerminalId::default(),
+            terminal_id: PhuxResourceId::default(),
             stream_id: 0,
             bootstrap_id: 0,
             last_seq: 0,
@@ -347,7 +347,7 @@ pub struct OwnedEffect {
     pub status_code: u32,
     pub kind: u32,
     pub detail: u32,
-    pub terminal_id: TerminalId,
+    pub terminal_id: ResourceId,
     pub stream_id: u64,
     pub bootstrap_id: u64,
     pub seq: u64,
@@ -358,7 +358,7 @@ pub struct OwnedEffect {
 
 impl OwnedEffect {
     #[must_use]
-    pub const fn simple(kind: u32, detail: u32, terminal_id: TerminalId) -> Self {
+    pub const fn simple(kind: u32, detail: u32, terminal_id: ResourceId) -> Self {
         Self {
             kind,
             detail,
@@ -387,14 +387,14 @@ pub const fn bytes_out(data: &[u8]) -> PhuxBytes {
 }
 
 #[must_use]
-pub fn terminal_id_out(value: &TerminalId) -> PhuxTerminalId {
+pub fn terminal_id_out(value: &ResourceId) -> PhuxResourceId {
     match value {
-        TerminalId::Local { id } => PhuxTerminalId {
+        ResourceId::Local { id } => PhuxResourceId {
             kind: 0,
             id: *id,
             host: PhuxBytes::default(),
         },
-        TerminalId::Satellite { host, id } => PhuxTerminalId {
+        ResourceId::Satellite { host, id } => PhuxResourceId {
             kind: 1,
             id: *id,
             host: bytes_out(host.as_str().as_bytes()),

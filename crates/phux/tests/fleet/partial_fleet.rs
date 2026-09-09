@@ -37,8 +37,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
-use phux_protocol::ids::{SessionId, TerminalId, WindowId};
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 /// One satellite's worth of prose, in the shape `hub::relay` writes it.
 const OUTAGE: &str = "satellite build-box is unreachable: link is down";
@@ -49,13 +49,13 @@ const OUTAGE: &str = "satellite build-box is unreachable: link is down";
 fn fleet() -> SessionSnapshot {
     let session = SessionId::new(1);
     let window = WindowId::new(10);
-    SessionSnapshot::new(session, window, TerminalId::local(100))
+    SessionSnapshot::new(session, window, ResourceId::local(100))
         .with_sessions(vec![SessionInfo::new(session, "work")])
         .with_windows(vec![
             WindowInfo::new(window, session, "shell").with_index(0),
         ])
-        .with_panes(vec![TerminalInfo::new(
-            TerminalId::local(100),
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(100),
             window,
             80,
             24,

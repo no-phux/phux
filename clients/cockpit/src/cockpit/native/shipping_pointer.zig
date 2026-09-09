@@ -474,7 +474,7 @@ pub fn localCaptured(model: *const Model, raw: Raw) bool {
     };
 }
 
-const LocalTarget = struct { id: support.LocalTerminalId, generation: u64, frame: Rect };
+const LocalTarget = struct { id: support.LocalResourceId, generation: u64, frame: Rect };
 
 fn localHit(model: *Model, raw: Raw) ?LocalTarget {
     const ref = pointer.terminalRefAtPoint(model, raw.x, raw.y) orelse return null;

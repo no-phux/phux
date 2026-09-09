@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{LayoutNode, SplitDir, Workspace};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
-use phux_protocol::ids::{GroupId, SessionId, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -104,23 +104,23 @@ impl ServerGuard {
             .unwrap_or_else(|err| panic!("invalid JSON for {args:?}: {err}: {stdout}"))
     }
 
-    fn seed_pane(&self) -> TerminalId {
+    fn seed_pane(&self) -> ResourceId {
         let snapshot = self.json(&["snapshot", "--json", SESSION]);
-        TerminalId::local(
+        ResourceId::local(
             u32::try_from(snapshot["pane"].as_u64().expect("snapshot pane id"))
                 .expect("pane id fits u32"),
         )
     }
 
-    fn spawn_pane(&self) -> TerminalId {
+    fn spawn_pane(&self) -> ResourceId {
         let spawned = self.json(&["spawn", "--json"]);
-        TerminalId::local(
+        ResourceId::local(
             u32::try_from(spawned["terminal_id"].as_u64().expect("spawn terminal id"))
                 .expect("terminal id fits u32"),
         )
     }
 
-    fn seed_layout(&self, pane: &TerminalId) {
+    fn seed_layout(&self, pane: &ResourceId) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -182,7 +182,7 @@ impl ServerGuard {
         panic!("attached client did not seed layout metadata");
     }
 
-    fn pane_contains(&self, pane: &TerminalId, marker: &str) -> bool {
+    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
         let selector = format!("@{}", pane.local_id().expect("local pane"));
         let snapshot = self.json(&["snapshot", "--json", &selector]);
         snapshot["lines"]
@@ -193,7 +193,7 @@ impl ServerGuard {
             .any(|line| line.contains(marker))
     }
 
-    fn wait_for_marker(&self, pane: &TerminalId, marker: &str) {
+    fn wait_for_marker(&self, pane: &ResourceId, marker: &str) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if self.pane_contains(pane, marker) {
@@ -280,7 +280,7 @@ impl AttachedClient {
     }
 }
 
-fn leaf(id: &TerminalId) -> LayoutNode {
+fn leaf(id: &ResourceId) -> LayoutNode {
     LayoutNode::Leaf(id.clone())
 }
 

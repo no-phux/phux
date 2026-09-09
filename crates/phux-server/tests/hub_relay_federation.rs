@@ -5,7 +5,7 @@
 //! on a loopback WebSocket, and a *hub* whose `[[satellites]]` registry
 //! points at it. A consumer speaks the ordinary wire protocol to the hub
 //! over UDS and addresses the satellite's terminal as
-//! `TerminalId::Satellite { host: "sat", id }`:
+//! `ResourceId::Satellite { host: "sat", id }`:
 //!
 //! * `command_round_trip_and_stream_retagging` — a satellite-tagged
 //!   `GET_SCREEN` round-trips through the hub (outbound id rewrite +
@@ -21,11 +21,11 @@
 //!   `UnsupportedSatelliteRoute`.
 //! * `two_hop_attach_snapshot_output_input_ack_and_detach` (phux-v45.7) —
 //!   interactive attach to a satellite terminal through the hub:
-//!   `ATTACH_TERMINAL` relays, the authoritative `TERMINAL_SNAPSHOT`
+//!   `ATTACH_RESOURCE` relays, the authoritative `TERMINAL_SNAPSHOT`
 //!   arrives (re-tagged, before any output delta), `INPUT_KEY` echoes
-//!   back as re-tagged `TERMINAL_OUTPUT` from the satellite's PTY,
+//!   back as re-tagged `RESOURCE_OUTPUT` from the satellite's PTY,
 //!   `FRAME_ACK` relays without stalling the stream, and
-//!   `DETACH_TERMINAL` + re-attach cycle cleanly.
+//!   `DETACH_RESOURCE` + re-attach cycle cleanly.
 //! * `satellite_input_lease_excludes_other_hub_consumers` (phux-v45.7) —
 //!   the hub-side lease ledger: consumer A's cooperative `ACQUIRE_INPUT`
 //!   over a satellite terminal excludes consumer B's `ACQUIRE_INPUT` /
@@ -68,7 +68,7 @@ use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::ids::{GroupId, SatelliteHost, TerminalId};
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
@@ -309,7 +309,7 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
         } = frame
         {
             return snapshot
-                .focused_pane
+                .focused_resource
                 .local_id()
                 .expect("seeded pane is local on the satellite");
         }
@@ -321,7 +321,7 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
 async fn get_screen_via_hub(
     hub: &mut UnixStream,
     request_id: u32,
-    terminal_id: TerminalId,
+    terminal_id: ResourceId,
 ) -> CommandResult {
     send_frame(
         hub,
@@ -355,7 +355,7 @@ async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResu
     let mut request_id = 1000;
     loop {
         let result =
-            get_screen_via_hub(hub, request_id, TerminalId::satellite("sat", sat_pane)).await;
+            get_screen_via_hub(hub, request_id, ResourceId::satellite("sat", sat_pane)).await;
         match result {
             CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
@@ -387,7 +387,7 @@ fn command_round_trip_and_stream_retagging() {
         // Learn the satellite's seeded pane id directly (LIST aggregation
         // through the hub is phux-v45.5; this test scopes to relay).
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let sat_id = TerminalId::satellite("sat", sat_pane);
+        let sat_id = ResourceId::satellite("sat", sat_pane);
 
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
@@ -561,8 +561,8 @@ async fn get_state_via_hub(
     }
 }
 
-/// Issue one `SPAWN_TERMINAL` (optionally satellite-addressed) and return
-/// the correlated `TERMINAL_SPAWNED.result`.
+/// Issue one `SPAWN_RESOURCE` (optionally satellite-addressed) and return
+/// the correlated `RESOURCE_SPAWNED.result`.
 async fn spawn_via_stream(
     stream: &mut UnixStream,
     request_id: u32,
@@ -571,7 +571,7 @@ async fn spawn_via_stream(
 ) -> SpawnResult {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command,
@@ -588,7 +588,7 @@ async fn spawn_via_stream(
     .await;
     loop {
         let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::TerminalSpawned {
+        if let FrameKind::ResourceSpawned {
             request_id: got,
             result,
         } = frame
@@ -642,7 +642,7 @@ fn satellite_targeted_spawn_round_trips_and_routes() {
             }
         };
         // The returned id is re-tagged with the registry host.
-        let TerminalId::Satellite { ref host, id } = spawned_id else {
+        let ResourceId::Satellite { ref host, id } = spawned_id else {
             panic!("satellite spawn must return a Satellite-tagged id, got {spawned_id:?}");
         };
         assert_eq!(host.as_str(), "sat");
@@ -665,9 +665,9 @@ fn satellite_targeted_spawn_round_trips_and_routes() {
         };
         assert!(
             snapshot
-                .panes
+                .resources
                 .iter()
-                .any(|p| p.id == TerminalId::satellite("sat", id)),
+                .any(|p| p.id == ResourceId::satellite("sat", id)),
             "spawned satellite pane must appear in the aggregate: {snapshot:?}"
         );
 
@@ -758,7 +758,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         );
 
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let sat_id = TerminalId::satellite("sat", sat_pane);
+        let sat_id = ResourceId::satellite("sat", sat_pane);
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
         // Retry until the live link is up and its pane appears in the
@@ -772,7 +772,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
             let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
                 panic!("aggregated GET_STATE must never fail, got {result:?}");
             };
-            if snapshot.panes.iter().any(|p| p.id == sat_id) {
+            if snapshot.resources.iter().any(|p| p.id == sat_id) {
                 break (snapshot, errors);
             }
             assert!(
@@ -786,15 +786,15 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         // Local terminals are present and stay Local-tagged.
         assert!(
             snapshot
-                .panes
+                .resources
                 .iter()
-                .any(|p| matches!(p.id, TerminalId::Local { .. })),
+                .any(|p| matches!(p.id, ResourceId::Local { .. })),
             "hub's own seeded pane must stay in the aggregate: {snapshot:?}"
         );
         // The satellite pane is re-tagged and its shape relayed verbatim
         // (the satellite's seeded no-PTY pane is 80x24).
         let sat_info = snapshot
-            .panes
+            .resources
             .iter()
             .find(|p| p.id == sat_id)
             .expect("satellite pane in aggregate");
@@ -806,7 +806,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         // The dead satellite contributes nothing...
         assert!(
             !snapshot
-                .panes
+                .resources
                 .iter()
                 .any(|p| p.id.host().is_some_and(|h| h.as_str() == "down")),
             "dead satellite must contribute no panes: {snapshot:?}"
@@ -977,7 +977,7 @@ fn ssh_stub_link_relays_commands_end_to_end() {
                 "commands to the dead ssh satellite never failed with SatelliteUnreachable"
             );
             let result =
-                get_screen_via_hub(&mut hub, request_id, TerminalId::satellite("sat", sat_pane))
+                get_screen_via_hub(&mut hub, request_id, ResourceId::satellite("sat", sat_pane))
                     .await;
             if matches!(
                 result,
@@ -1014,7 +1014,7 @@ fn down_satellite_fails_fast_with_typed_error() {
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
         let started = Instant::now();
-        let result = get_screen_via_hub(&mut hub, 1, TerminalId::satellite("sat", 1)).await;
+        let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("sat", 1)).await;
         assert!(
             matches!(
                 result,
@@ -1037,7 +1037,7 @@ fn down_satellite_fails_fast_with_typed_error() {
 
 /// Send `command` through `hub` and await the correlated result,
 /// collecting every satellite-tagged `TERMINAL_SNAPSHOT` /
-/// `TERMINAL_OUTPUT` frame that interleaves before it (SPEC §5 allows
+/// `RESOURCE_OUTPUT` frame that interleaves before it (SPEC §5 allows
 /// command-triggered stream frames to precede `COMMAND_RESULT`).
 async fn command_via_hub(
     hub: &mut UnixStream,
@@ -1065,17 +1065,17 @@ async fn command_via_hub(
     }
 }
 
-/// Keep issuing `ATTACH_TERMINAL` for the satellite pane until the link
+/// Keep issuing `ATTACH_RESOURCE` for the satellite pane until the link
 /// is up and the command succeeds; returns the frames that interleaved
 /// before the successful `Ok`.
-async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &TerminalId) -> Vec<FrameKind> {
+async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &ResourceId) -> Vec<FrameKind> {
     let deadline = Instant::now() + STEP_DEADLINE;
     let mut request_id = 5000;
     loop {
         let (result, frames) = command_via_hub(
             hub,
             request_id,
-            Command::AttachTerminal {
+            Command::AttachResource {
                 terminal_id: sat_id.clone(),
             },
         )
@@ -1089,14 +1089,14 @@ async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &TerminalId) -> 
                 request_id += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            other => panic!("ATTACH_TERMINAL through the hub must succeed, got {other:?}"),
+            other => panic!("ATTACH_RESOURCE through the hub must succeed, got {other:?}"),
         }
     }
 }
 
 /// Send one ASCII key + Enter to `sat_id` over `hub` (cooked-mode PTYs
 /// are line-buffered, so the Enter flushes `cat`'s echo).
-async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &TerminalId, c: char) {
+async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &ResourceId, c: char) {
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
     let key = match c {
         'a' => PhysicalKey::A,
@@ -1137,11 +1137,11 @@ async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &TerminalId, c: char) 
     .await;
 }
 
-/// Drain re-tagged `TERMINAL_OUTPUT` frames for `sat_id` until `needle`
+/// Drain re-tagged `RESOURCE_OUTPUT` frames for `sat_id` until `needle`
 /// appears, returning the stream/generation identity and last `seq`.
 async fn await_satellite_echo(
     hub: &mut UnixStream,
-    sat_id: &TerminalId,
+    sat_id: &ResourceId,
     needle: u8,
 ) -> (
     phux_protocol::ids::StreamId,
@@ -1152,7 +1152,7 @@ async fn await_satellite_echo(
     let deadline = Instant::now() + STEP_DEADLINE;
     while Instant::now() < deadline {
         let (_, frame) = recv_typed(hub).await;
-        if let FrameKind::TerminalOutput {
+        if let FrameKind::ResourceOutput {
             terminal_id,
             seq,
             stream_id,
@@ -1193,19 +1193,19 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
             vec![satellite_entry("sat", ws_port)],
         );
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let sat_id = TerminalId::satellite("sat", sat_pane);
+        let sat_id = ResourceId::satellite("sat", sat_pane);
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
-        // 1. ATTACH_TERMINAL relays through the hub, and the ADR-0007 §4
+        // 1. ATTACH_RESOURCE relays through the hub, and the ADR-0007 §4
         //    snapshot-on-attach invariant holds across both hops: an
         //    authoritative TERMINAL_SNAPSHOT — re-tagged to the id the
         //    consumer used, with the satellite as the byte authority —
-        //    arrives, and no TERMINAL_OUTPUT delta precedes it.
+        //    arrives, and no RESOURCE_OUTPUT delta precedes it.
         let frames = attach_terminal_until_ok(&mut hub, &sat_id).await;
         let snapshot_pos = frames
             .iter()
             .position(|f| matches!(f, FrameKind::BootstrapBegin { .. }))
-            .expect("ATTACH_TERMINAL must deliver a TERMINAL_SNAPSHOT");
+            .expect("ATTACH_RESOURCE must deliver a TERMINAL_SNAPSHOT");
         if let FrameKind::BootstrapBegin {
             terminal_id,
             cols,
@@ -1222,14 +1222,14 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         assert!(
             !frames[..snapshot_pos]
                 .iter()
-                .any(|f| matches!(f, FrameKind::TerminalOutput { .. })),
+                .any(|f| matches!(f, FrameKind::ResourceOutput { .. })),
             "no output delta may precede the attach snapshot"
         );
 
         // 2. Interactive input over two hops: INPUT_KEY frames relayed
         //    over the link pass the satellite's subscription gate (the
-        //    link consumer holds an ATTACH_TERMINAL subscription) and
-        //    `cat` echoes back as re-tagged TERMINAL_OUTPUT.
+        //    link consumer holds an ATTACH_RESOURCE subscription) and
+        //    `cat` echoes back as re-tagged RESOURCE_OUTPUT.
         send_key_and_enter(&mut hub, &sat_id, 'a').await;
         let (stream_id, bootstrap_id, seq) = await_satellite_echo(&mut hub, &sat_id, b'a').await;
 
@@ -1249,17 +1249,17 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         send_key_and_enter(&mut hub, &sat_id, 'b').await;
         let _ = await_satellite_echo(&mut hub, &sat_id, b'b').await;
 
-        // 4. DETACH_TERMINAL resolves hub-side (idempotent Ok), and a
+        // 4. DETACH_RESOURCE resolves hub-side (idempotent Ok), and a
         //    re-attach delivers a fresh snapshot — the lifecycle cycles.
         let (result, _) = command_via_hub(
             &mut hub,
             7000,
-            Command::DetachTerminal {
+            Command::DetachResource {
                 terminal_id: sat_id.clone(),
             },
         )
         .await;
-        assert_eq!(result, CommandResult::Ok, "DETACH_TERMINAL acks Ok");
+        assert_eq!(result, CommandResult::Ok, "DETACH_RESOURCE acks Ok");
         let frames = attach_terminal_until_ok(&mut hub, &sat_id).await;
         assert!(
             frames
@@ -1286,14 +1286,14 @@ fn satellite_input_lease_excludes_other_hub_consumers() {
             vec![satellite_entry("sat", ws_port)],
         );
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let sat_id = TerminalId::satellite("sat", sat_pane);
+        let sat_id = ResourceId::satellite("sat", sat_pane);
         let mut a = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
         let mut b = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
         // Wait for the link (any relayed command succeeding proves it).
         let _ = get_screen_until_ok(&mut a, sat_pane).await;
 
-        let acquire = |terminal_id: TerminalId| Command::AcquireInput {
+        let acquire = |terminal_id: ResourceId| Command::AcquireInput {
             terminal_id,
             mode: phux_protocol::wire::frame::InputMode::Cooperative,
             ttl_ms: 0,
@@ -1402,7 +1402,7 @@ fn satellite_seize_takeover_notifies_evicted_hub_consumer() {
             vec![satellite_entry("sat", ws_port)],
         );
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let sat_id = TerminalId::satellite("sat", sat_pane);
+        let sat_id = ResourceId::satellite("sat", sat_pane);
         let mut a = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
         let mut b = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
@@ -1518,7 +1518,7 @@ fn acquire_and_release_input_off_hub_are_unsupported_routes() {
             (
                 1,
                 Command::AcquireInput {
-                    terminal_id: TerminalId::satellite("sat", 1),
+                    terminal_id: ResourceId::satellite("sat", 1),
                     mode: phux_protocol::wire::frame::InputMode::Cooperative,
                     ttl_ms: 0,
                 },
@@ -1526,7 +1526,7 @@ fn acquire_and_release_input_off_hub_are_unsupported_routes() {
             (
                 2,
                 Command::ReleaseInput {
-                    terminal_id: TerminalId::satellite("sat", 1),
+                    terminal_id: ResourceId::satellite("sat", 1),
                 },
             ),
         ] {
@@ -1557,7 +1557,7 @@ fn unknown_satellite_host_is_unsupported_route() {
             vec![satellite_entry("sat", free_port())],
         );
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
-        let result = get_screen_via_hub(&mut hub, 1, TerminalId::satellite("nowhere", 1)).await;
+        let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("nowhere", 1)).await;
         assert!(
             matches!(
                 result,
@@ -1576,7 +1576,7 @@ fn unknown_satellite_host_is_unsupported_route() {
         let (shutdown, task) =
             phux_server_testkit::spawn_server(tmp.path().join("plain.sock"), Some("s"));
         let mut plain = wait_for_socket(&tmp.path().join("plain.sock"), STEP_DEADLINE).await;
-        let result = get_screen_via_hub(&mut plain, 2, TerminalId::satellite("sat", 1)).await;
+        let result = get_screen_via_hub(&mut plain, 2, ResourceId::satellite("sat", 1)).await;
         assert!(
             matches!(
                 result,
@@ -1602,12 +1602,12 @@ fn unknown_satellite_host_is_unsupported_route() {
 async fn spawn_agent_session(
     stream: &mut UnixStream,
     request_id: u32,
-    parent: TerminalId,
+    parent: ResourceId,
     provider: &str,
 ) -> SpawnResult {
     send_frame(
         stream,
-        &FrameKind::SpawnTerminal {
+        &FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: None,
@@ -1626,7 +1626,7 @@ async fn spawn_agent_session(
     .await;
     loop {
         let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::TerminalSpawned {
+        if let FrameKind::ResourceSpawned {
             request_id: got,
             result,
         } = frame
@@ -1666,7 +1666,7 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
         let sat_pane = discover_satellite_pane(ws_port).await;
         let mut sat = wait_for_socket(&sat_sock, STEP_DEADLINE).await;
         let sat_session =
-            match spawn_agent_session(&mut sat, 1, TerminalId::local(sat_pane), "claude").await {
+            match spawn_agent_session(&mut sat, 1, ResourceId::local(sat_pane), "claude").await {
                 SpawnResult::Ok(id) => id.local_id().expect("the satellite names it locally"),
                 other => panic!("the satellite must spawn its own session: {other:?}"),
             };
@@ -1675,8 +1675,8 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
             "the session is its own resource on the satellite"
         );
 
-        let hub_pane = TerminalId::satellite("sat", sat_pane);
-        let hub_session = TerminalId::satellite("sat", sat_session);
+        let hub_pane = ResourceId::satellite("sat", sat_pane);
+        let hub_session = ResourceId::satellite("sat", sat_session);
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 
         // Retry until the link is up and the session has reached the
@@ -1688,7 +1688,7 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
             let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
                 panic!("aggregated GET_STATE must never fail, got {result:?}");
             };
-            if snapshot.panes.iter().any(|pane| pane.id == hub_session) {
+            if snapshot.resources.iter().any(|pane| pane.id == hub_session) {
                 break snapshot;
             }
             assert!(
@@ -1700,7 +1700,7 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
         };
 
         let listed = snapshot
-            .panes
+            .resources
             .iter()
             .find(|pane| pane.id == hub_session)
             .expect("the session in the aggregate");
@@ -1722,7 +1722,7 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
 
         // The satellite pane is still a parentless Terminal beside it.
         let parent = snapshot
-            .panes
+            .resources
             .iter()
             .find(|pane| pane.id == hub_pane)
             .expect("the satellite pane in the aggregate");
@@ -1732,9 +1732,9 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
         // And the hub's own local pane is untouched by the retagging rule.
         assert!(
             snapshot
-                .panes
+                .resources
                 .iter()
-                .any(|pane| matches!(pane.id, TerminalId::Local { .. })),
+                .any(|pane| matches!(pane.id, ResourceId::Local { .. })),
             "the hub's seeded pane must survive the merge: {snapshot:?}"
         );
 

@@ -156,7 +156,7 @@ async fn subscribe_then_release(stream: &mut UnixStream, request_id: u32, releas
 
 /// Drain `EVENT` frames until `complete(&seen)` says every event the caller
 /// is waiting on has arrived, or `deadline` elapses. Non-`EVENT` frames
-/// (`ATTACHED`, `TERMINAL_SNAPSHOT`, `TERMINAL_OUTPUT`, `TERMINAL_CLOSED`,
+/// (`ATTACHED`, `TERMINAL_SNAPSHOT`, `RESOURCE_OUTPUT`, `RESOURCE_CLOSED`,
 /// etc.) are skipped — we assert on the event stream specifically.
 ///
 /// The stop condition is the caller's, not a hardcoded title+bell+closed
@@ -234,7 +234,7 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
                 && seen.iter().any(|e| matches!(e, AgentEvent::Bell))
                 && seen
                     .iter()
-                    .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+                    .any(|e| matches!(e, AgentEvent::ResourceClosed { .. }))
         })
         .await;
 
@@ -250,7 +250,7 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
         );
         assert!(
             events.iter().any(
-                |e| matches!(e, AgentEvent::PaneClosed { exit_status } if *exit_status == Some(0))
+                |e| matches!(e, AgentEvent::ResourceClosed { exit_status } if *exit_status == Some(0))
             ),
             "expected a pane_closed event with exit_status Some(0); got {events:?}",
         );
@@ -298,13 +298,13 @@ fn unattached_subscriber_receives_events() {
         // instead of sitting out the full deadline.
         let events = collect_events(&mut stream, WIRE_RECV_TIMEOUT, |seen| {
             seen.iter()
-                .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+                .any(|e| matches!(e, AgentEvent::ResourceClosed { .. }))
         })
         .await;
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AgentEvent::PaneClosed { .. })),
+                .any(|e| matches!(e, AgentEvent::ResourceClosed { .. })),
             "an unattached subscriber must still receive pane_closed; got {events:?}",
         );
 
@@ -380,7 +380,7 @@ fn subscribed_client_receives_command_and_cwd_events() {
             saw_all
                 || seen
                     .iter()
-                    .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+                    .any(|e| matches!(e, AgentEvent::ResourceClosed { .. }))
         })
         .await;
 

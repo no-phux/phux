@@ -2,9 +2,9 @@
 //!
 //! The pane's output broadcast is bounded, so a consumer the server cannot
 //! drain fast enough eventually takes a `RecvError::Lagged` and its pump misses
-//! a window of `TERMINAL_OUTPUT`. What the pump sends *next* is the whole
+//! a window of `RESOURCE_OUTPUT`. What the pump sends *next* is the whole
 //! story: the session kernel applies live output strictly in sequence, so a
-//! `TERMINAL_OUTPUT` whose `seq` skips the dropped window is a protocol error,
+//! `RESOURCE_OUTPUT` whose `seq` skips the dropped window is a protocol error,
 //! not a hiccup. The real client detaches on it — "live sequence gap at N;
 //! expected M" — and the pane goes dark for good. That is what a remote
 //! WebSocket attach hit on `seq 1 300000`.
@@ -21,7 +21,7 @@
 //! a deliberately slow consumer, forces the lag, and asserts the two things
 //! that separate "recovers" from "never comes back":
 //!
-//! * every `TERMINAL_OUTPUT` it receives is exactly the next `seq` its
+//! * every `RESOURCE_OUTPUT` it receives is exactly the next `seq` its
 //!   generation expects — the same rule `phux-client-core`'s kernel enforces,
 //!   so "no gap here" means "the real client would not have detached"; and
 //! * it ends up holding the pane's *current* screen, reached through a
@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
@@ -71,11 +71,11 @@ const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
 /// Identity of one bootstrap generation on the wire.
-type Generation = (TerminalId, StreamId, BootstrapId);
+type Generation = (ResourceId, StreamId, BootstrapId);
 
 /// Per-generation live-sequence expectation, mirroring the client kernel's
 /// `expect_next_seq`: a bootstrap sets the base, and every subsequent
-/// `TERMINAL_OUTPUT` on that generation must be the very next sequence.
+/// `RESOURCE_OUTPUT` on that generation must be the very next sequence.
 #[derive(Default)]
 struct SequenceOracle {
     next: HashMap<Generation, u64>,
@@ -91,7 +91,7 @@ impl SequenceOracle {
     /// Panics with the diagnosis the real client would have printed.
     fn observe(&mut self, key: &Generation, seq: u64) {
         let expected = self.next.get_mut(key).unwrap_or_else(|| {
-            panic!("TERMINAL_OUTPUT seq={seq} names a generation that was never opened")
+            panic!("RESOURCE_OUTPUT seq={seq} names a generation that was never opened")
         });
         assert_eq!(
             seq, *expected,
@@ -129,7 +129,7 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
             Applied::Other
         }
         FrameKind::BootstrapReady { .. } => Applied::BootstrapReady,
-        FrameKind::TerminalOutput {
+        FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,

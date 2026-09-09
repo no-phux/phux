@@ -326,7 +326,7 @@ impl TerminalActor {
     ///
     /// The synthesized bytes from [`SnapshotSynthesizer::synthesize`] open
     /// with a `DECSTR + ED2 + home` reset preamble, so feeding them to the
-    /// client mirror via the ordinary `TERMINAL_OUTPUT` → `vt_write` path
+    /// client mirror via the ordinary `RESOURCE_OUTPUT` → `vt_write` path
     /// resets that mirror and repaints it from authoritative state. We
     /// reuse the existing output broadcast rather than the per-consumer
     /// state-sync path (`consumer_states`) because the runtime drives the
@@ -378,7 +378,7 @@ impl TerminalActor {
     /// leave the child alone (it might still be alive doing something
     /// odd; the shutdown path will deal with it).
     ///
-    /// Returns the exit status in the shape the `TERMINAL_CLOSED` wire
+    /// Returns the exit status in the shape the `RESOURCE_CLOSED` wire
     /// frame wants (phux-4li.11): `Some(code)` for a normal `_exit(n)`,
     /// `None` for signal-killed children or otherwise-unknown exits.
     /// `portable_pty::ExitStatus.signal` is the discriminator — a
@@ -391,7 +391,7 @@ impl TerminalActor {
         // the moment the last slave fd closes, which can be a hair before
         // the kernel marks the process reapable. A single `try_wait` here
         // reported `exit_status: None` for children that exited cleanly
-        // microseconds later, so TERMINAL_CLOSED lied to agents reading
+        // microseconds later, so RESOURCE_CLOSED lied to agents reading
         // exit codes. Retry briefly. The blocking sleep is deliberate:
         // this runs on the single current-thread runtime, but only once
         // per pane lifetime, and the budget is small; an async retry would
@@ -421,7 +421,7 @@ impl TerminalActor {
     }
 
     /// React to PTY EOF (the child went away): detach the PTY-read branch
-    /// and notify the runtime so it can broadcast `TERMINAL_CLOSED`.
+    /// and notify the runtime so it can broadcast `RESOURCE_CLOSED`.
     ///
     /// Dropping `pty_rx` parks the pump's `select!` arm forever, but the
     /// actor deliberately stays alive — it must remain reachable for

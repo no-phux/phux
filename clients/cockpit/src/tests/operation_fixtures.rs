@@ -5,7 +5,7 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
 use phux_protocol::{
-    BootstrapId, BootstrapStreamProfile, GroupId, SatelliteHost, StreamId, TerminalId,
+    BootstrapId, BootstrapStreamProfile, GroupId, SatelliteHost, StreamId, ResourceId,
 };
 use std::{error::Error, path::Path};
 
@@ -18,7 +18,7 @@ fn write(dir: &Path, name: &str, frames: Vec<FrameKind>) -> Result<(), Box<dyn E
     Ok(())
 }
 
-fn bootstrap(id: TerminalId) -> Vec<FrameKind> {
+fn bootstrap(id: ResourceId) -> Vec<FrameKind> {
     let stream_id = StreamId::new(17).unwrap();
     let bootstrap_id = BootstrapId::new(1).unwrap();
     vec![
@@ -52,8 +52,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dir = Path::new(&out);
     write(dir, "search-resize.bin", search_resize())?;
     for seq in 1..=4 {
-        write(dir, &format!("remote-bell-{seq}.bin"), vec![FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(7),
+        write(dir, &format!("remote-bell-{seq}.bin"), vec![FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(7).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
             seq,
@@ -65,8 +65,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "detach-request.bin",
         vec![FrameKind::Command {
             request_id: 1,
-            command: Command::DetachTerminal {
-                terminal_id: TerminalId::local(7),
+            command: Command::DetachResource {
+                terminal_id: ResourceId::local(7),
             },
         }],
     )?;
@@ -83,8 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "reattach-request.bin",
         vec![FrameKind::Command {
             request_id: 2,
-            command: Command::AttachTerminal {
-                terminal_id: TerminalId::local(7),
+            command: Command::AttachResource {
+                terminal_id: ResourceId::local(7),
             },
         }],
     )?;
@@ -96,11 +96,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             result: CommandResult::Ok,
         }],
     )?;
-    write(dir, "reattach-ready.bin", bootstrap(TerminalId::local(7)))?;
+    write(dir, "reattach-ready.bin", bootstrap(ResourceId::local(7)))?;
     let mut churn = Vec::new();
     for n in 0..20 {
-        let id = TerminalId::local(100 + n);
-        churn.push(FrameKind::TerminalSpawned {
+        let id = ResourceId::local(100 + n);
+        churn.push(FrameKind::ResourceSpawned {
             request_id: 2 * n + 1,
             result: SpawnResult::Ok(id.clone()),
         });
@@ -115,19 +115,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("clear-parser-prefix.bin", 1, b"\x1b[3".as_slice()),
         ("clear-parser-suffix.bin", 2, b"1mX".as_slice()),
     ] {
-        write(dir, name, vec![FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(7),
+        write(dir, name, vec![FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(7).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
             seq,
             bytes: Bytes::copy_from_slice(bytes),
         }])?;
     }
-    let local = TerminalId::local(8);
+    let local = ResourceId::local(8);
     write(
         dir,
         "spawned-terminal-closed.bin",
-        vec![FrameKind::TerminalClosed {
+        vec![FrameKind::ResourceClosed {
             terminal_id: local.clone(),
             exit_status: Some(0),
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
@@ -136,36 +136,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(
         dir,
         "remote-title.bin",
-        vec![FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(7),
+        vec![FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(7).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
             seq: 1,
             bytes: Bytes::from_static(b"\x1b]2;remote-title-review\x07"),
         }],
     )?;
-    let satellite = TerminalId::satellite(SatelliteHost::new("build-host"), 9);
+    let satellite = ResourceId::satellite(SatelliteHost::new("build-host"), 9);
     write(
         dir,
         "initial-terminal-closed.bin",
-        vec![FrameKind::TerminalClosed {
-            terminal_id: TerminalId::local(7),
+        vec![FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(7),
             exit_status: Some(0),
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
         }],
     )?;
     for (name, host, owner) in [
-        ("spawn-owner-request.bin", None, Some(TerminalId::local(7))),
+        ("spawn-owner-request.bin", None, Some(ResourceId::local(7))),
         (
             "spawn-satellite-request.bin",
             Some(SatelliteHost::new("build-host")),
-            Some(TerminalId::satellite(SatelliteHost::new("build-host"), 6)),
+            Some(ResourceId::satellite(SatelliteHost::new("build-host"), 6)),
         ),
     ] {
         write(
             dir,
             name,
-            vec![FrameKind::SpawnTerminal {
+            vec![FrameKind::SpawnResource {
                 request_id: 1,
                 group: GroupId::new(1),
                 command: None,
@@ -185,7 +185,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "attach-satellite-request.bin",
         vec![FrameKind::Command {
             request_id: 2,
-            command: Command::AttachTerminal {
+            command: Command::AttachResource {
                 terminal_id: satellite.clone(),
             },
         }],
@@ -193,7 +193,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(
         dir,
         "spawn-local.bin",
-        vec![FrameKind::TerminalSpawned {
+        vec![FrameKind::ResourceSpawned {
             request_id: 1,
             result: SpawnResult::Ok(local.clone()),
         }],
@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(
         dir,
         "spawn-satellite.bin",
-        vec![FrameKind::TerminalSpawned {
+        vec![FrameKind::ResourceSpawned {
             request_id: 1,
             result: SpawnResult::Ok(satellite.clone()),
         }],
@@ -209,7 +209,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(
         dir,
         "spawn-refused.bin",
-        vec![FrameKind::TerminalSpawned {
+        vec![FrameKind::ResourceSpawned {
             request_id: 1,
             result: SpawnResult::Err(SpawnError::SpawnFailed("fixture refusal".into())),
         }],
@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "attach-local-request.bin",
         vec![FrameKind::Command {
             request_id: 1,
-            command: Command::AttachTerminal {
+            command: Command::AttachResource {
                 terminal_id: local.clone(),
             },
         }],
@@ -257,7 +257,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn search_resize() -> Vec<FrameKind> {
-    let terminal_id = TerminalId::local(7);
+    let terminal_id = ResourceId::local(7);
     let stream_id = StreamId::new(7).unwrap();
     let bootstrap_id = BootstrapId::new(2).unwrap();
     vec![

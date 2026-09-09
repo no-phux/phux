@@ -15,7 +15,7 @@ use std::{error::Error, mem::size_of, path::PathBuf, ptr, slice};
 use bytes::{Bytes, BytesMut};
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientOptions, PhuxClientResult,
-    PhuxClientState, PhuxKeyEvent, PhuxTerminalGridView, PhuxTerminalId,
+    PhuxClientState, PhuxKeyEvent, PhuxResourceId, PhuxTerminalGridView,
     phux_client_anchor_release, phux_client_feed_frame, phux_client_free, phux_client_new,
     phux_client_outgoing_clear, phux_client_outgoing_count, phux_client_outgoing_get,
     phux_client_queue_attach, phux_client_queue_hello, phux_client_send_focus,
@@ -28,10 +28,10 @@ use phux_protocol::input::{
     key::{KeyAction, PhysicalKey},
 };
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientId,
-    PROTOCOL_VERSION, ServerFeature, ServerFeatureSet, SessionId, StreamId, TerminalId, WindowId,
+    PROTOCOL_VERSION, ResourceId, ServerFeature, ServerFeatureSet, SessionId, StreamId, WindowId,
 };
 
 const MARKER: &[u8] = b"COCKPIT FIXTURE";
@@ -52,7 +52,7 @@ fn hello() -> FrameKind {
 }
 
 fn attached() -> [FrameKind; 5] {
-    let terminal_id = TerminalId::local(7);
+    let terminal_id = ResourceId::local(7);
     let session_id = SessionId::new(1);
     let window_id = WindowId::new(1);
     let stream_id = StreamId::new(7).expect("nonzero stream");
@@ -60,7 +60,7 @@ fn attached() -> [FrameKind; 5] {
     let snapshot = SessionSnapshot::new(session_id, window_id, terminal_id.clone())
         .with_sessions(vec![SessionInfo::new(session_id, "fixture")])
         .with_windows(vec![WindowInfo::new(window_id, session_id, "fixture")])
-        .with_panes(vec![TerminalInfo::new(
+        .with_resources(vec![ResourceInfo::new(
             terminal_id.clone(),
             window_id,
             80,
@@ -216,7 +216,7 @@ impl Client {
         }
     }
 
-    fn verify_grid(&self, terminal: &PhuxTerminalId) {
+    fn verify_grid(&self, terminal: &PhuxResourceId) {
         let mut grid = PhuxTerminalGridView::default();
         // SAFETY: handle, terminal and output are valid; read borrowed cells/text
         // before releasing the anchor or making any mutating call.
@@ -252,7 +252,7 @@ impl Client {
         }
     }
 
-    fn verify_input(&self, terminal: &PhuxTerminalId) {
+    fn verify_input(&self, terminal: &PhuxResourceId) {
         let key = PhuxKeyEvent {
             size: size_of::<PhuxKeyEvent>(),
             version: ABI_VERSION,
@@ -274,7 +274,7 @@ impl Client {
             );
             assert!(
                 matches!(self.take_outgoing(), FrameKind::InputKey { terminal_id, event }
-                if terminal_id == TerminalId::local(7) && event.text.as_deref() == Some("a"))
+                if terminal_id == ResourceId::local(7) && event.text.as_deref() == Some("a"))
             );
             assert_eq!(
                 phux_client_send_paste(self.0, terminal, b"paste".as_ptr(), 5, false),
@@ -282,7 +282,7 @@ impl Client {
             );
             assert!(
                 matches!(self.take_outgoing(), FrameKind::InputPaste { terminal_id, event }
-                if terminal_id == TerminalId::local(7) && event.data == b"paste")
+                if terminal_id == ResourceId::local(7) && event.data == b"paste")
             );
             assert_eq!(
                 phux_client_send_focus(self.0, terminal, true),
@@ -290,15 +290,15 @@ impl Client {
             );
             assert!(
                 matches!(self.take_outgoing(), FrameKind::InputFocus { terminal_id, event: FocusEvent::Gained }
-                if terminal_id == TerminalId::local(7))
+                if terminal_id == ResourceId::local(7))
             );
             assert_eq!(
                 phux_client_terminal_resize(self.0, terminal, 100, 30),
                 PhuxClientResult::Ok
             );
             assert!(
-                matches!(self.take_outgoing(), FrameKind::TerminalResize { terminal_id, cols: 100, rows: 30 }
-                if terminal_id == TerminalId::local(7))
+                matches!(self.take_outgoing(), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30 }
+                if terminal_id == ResourceId::local(7))
             );
         }
     }
@@ -316,9 +316,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let attached = encode(&attached());
     let client = Client::new();
     client.negotiate_and_attach(&hello, &attached);
-    let terminal = PhuxTerminalId {
+    let terminal = PhuxResourceId {
         id: 7,
-        ..PhuxTerminalId::default()
+        ..PhuxResourceId::default()
     };
     client.verify_grid(&terminal);
     client.verify_input(&terminal);
