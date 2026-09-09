@@ -51,6 +51,21 @@ const DisabledAgentSession = struct {
     parent: ?RemoteResourceId = null,
     provider_name: []const u8 = "",
     native_id: []const u8 = "",
+    catalog_state: DisabledAgentState = .unknown,
+    stream_state: ?DisabledAgentState = null,
+    generation: ?Generation = null,
+    latest_evidence: ?struct {
+        seq: ?u64 = null,
+        ts_ms: ?u64 = null,
+        record_type: []const u8 = "",
+        reason: struct {
+            truncated: bool = false,
+
+            pub fn slice(_: *const @This()) []const u8 {
+                return "";
+            }
+        } = .{},
+    } = null,
 
     pub fn state(_: *const DisabledAgentSession) DisabledAgentState {
         return .unknown;
