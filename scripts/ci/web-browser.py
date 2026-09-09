@@ -6,6 +6,7 @@ CHROMEDRIVER and CHROME select a matching local browser/driver pair. The
 standalone client's cwd, Cargo.lock, and .cargo/config.toml remain authoritative.
 """
 
+import json
 import os
 from pathlib import Path
 import re
@@ -25,19 +26,30 @@ REQUIRED_TESTS = (
 )
 
 
-def stop(process):
-    """SIGINT lets the server drain PTYs; bound teardown even on a regression."""
-    if process.poll() is not None:
-        return
+def signal_group(group, signum):
+    """Signal only the session/process group that this runner created."""
     try:
-        os.killpg(process.pid, signal.SIGINT)
+        os.killpg(group, signum)
     except ProcessLookupError:
-        return  # The child exited between poll and signal.
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
+        return False
+    return True
+
+
+def stop(process):
+    """Drain the owned group, even when its leader exited before its children."""
+    signal_group(process.pid, signal.SIGINT)
+    # Reap the leader while checking the whole group, rather than taking the
+    # leader's exit as proof that Chrome/driver/compiler descendants exited.
+    for _ in range(100):
+        process.poll()
+        if not signal_group(process.pid, 0):
+            process.wait(timeout=5)
+            return
+        time.sleep(0.1)
+    # A descendant can ignore SIGINT. Escalate the same owned group after the
+    # bounded grace, including when process.wait() would already have returned.
+    signal_group(process.pid, signal.SIGKILL)
+    process.wait(timeout=5)
 
 
 def run(command, *, cwd, env, timeout, log):
@@ -90,13 +102,38 @@ def require_browser_tests(output):
     print(f"Chrome execution verified: {len(REQUIRED_TESTS)} required browser tests passed")
 
 
+def webdriver_environment(env, directory, cwd):
+    """Merge the chosen binary into capabilities understood by wasm-bindgen."""
+    key = "WASM_BINDGEN_TEST_WEBDRIVER_JSON"
+    source = cwd / env.get(key, "webdriver.json")
+    capabilities = {}
+    if source.exists() or key in env:
+        capabilities = json.loads(source.read_text())
+    if env.get("CHROME"):
+        capabilities.setdefault("goog:chromeOptions", {})["binary"] = env["CHROME"]
+    destination = directory / "webdriver.json"
+    destination.write_text(json.dumps(capabilities))
+    return dict(env, **{key: str(destination)})
+
+
+def run_chrome(command, env, logs):
+    cwd = ROOT / "clients/phux-web"
+    # Preserve user capabilities without modifying their file, and keep this
+    # copy alive until wasm-bindgen has finished both browser test binaries.
+    with tempfile.TemporaryDirectory(prefix="phux-webdriver-", dir=env.get("TMPDIR")) as scratch:
+        web_env = webdriver_environment(env, Path(scratch), cwd)
+        web_env["CARGO_TARGET_DIR"] = str(cwd / "target")
+        with (logs / "chrome.log").open("w") as log:
+            run(command, cwd=cwd, env=web_env, timeout=600, log=log)
+
+
 def browser_tests(env, logs):
     port = unused_port()
     env["PHUX_WS_ADDR"] = f"127.0.0.1:{port}"
     env["PHUX_TEST_WS_URL"] = f"ws://127.0.0.1:{port}/"
     command = ["wasm-pack", "test", "--headless", "--chrome", "--locked",
                "--test", "render", "--test", "e2e_browser"]
-    # wasm-pack accepts an explicit driver; wasm-bindgen reads CHROME itself.
+    # wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
     if env.get("CHROMEDRIVER"):
         command[4:4] = ["--chromedriver", env["CHROMEDRIVER"]]
     server_bin = Path(env["CARGO_TARGET_DIR"]) / "debug/examples/ws_demo_server"
@@ -107,10 +144,7 @@ def browser_tests(env, logs):
         try:
             wait_ready(server, port)
             # Do not reuse the native target or override the standalone rustflags.
-            web_env = dict(env, CARGO_TARGET_DIR=str(ROOT / "clients/phux-web/target"))
-            with (logs / "chrome.log").open("w") as log:
-                run(command, cwd=ROOT / "clients/phux-web", env=web_env,
-                    timeout=600, log=log)
+            run_chrome(command, env, logs)
             require_browser_tests((logs / "chrome.log").read_text())
         finally:
             stop(server)
