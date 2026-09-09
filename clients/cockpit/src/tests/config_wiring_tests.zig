@@ -59,7 +59,6 @@ test "font-size drives the terminal cell box and leaves the chrome alone" {
 // At 26 the mono cell is 15.6 x 36 and the two states are far apart.
 const metric_test_font_size: f32 = 26;
 
-// GUARD: unmeasured-cell-is-null
 test "a pane proposes no viewport until its cell box has been measured" {
     const gpa = testing.allocator;
     const size = geometry.SizeF.init(1301, 807);
@@ -126,7 +125,6 @@ test "a pane proposes no viewport until its cell box has been measured" {
     }
 }
 
-// GUARD: remote-pane-mono-metrics
 test "a pane sized without a text-measure provider uses the mono cell, not a sans estimate" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
@@ -392,7 +390,6 @@ test "a new tab and a split start in the focused pane's directory" {
     try testing.expectEqualSlices([]const u8, app.paneArgv(0), state.model.provider.slots[3].argv);
 }
 
-// GUARD: scrollback-limit-reaches-emulator
 test "scrollback-limit reaches the emulator instead of being stored and ignored" {
     // The regression this pins: `scrollback_bytes` parsed and stored, while
     // the session was built from a comptime const that merely HAPPENED to

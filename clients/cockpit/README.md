@@ -410,6 +410,16 @@ change look right in the actual app". `zig build run` starts a bare binary that
 shares the installed app's identity and state file; the script does not. See
 [Running a local build beside the installed app](#running-a-local-build-beside-the-installed-app).
 
+### Regression testing
+
+Ordinary behavioral tests gate PRs through `just cockpit-test` from the
+repository root. Bug fixes include one-time evidence that the named test fails
+against the actual defect and passes with the fix. Automatic mutation scans
+are separate, opt-in and diff-scoped; their reports guide assertion improvements
+without permanent patches or a 100% kill quota. See the
+[mutation testing policy](../../docs/TESTING_MUTATIONS.md) and the
+[historical guard retirement note](docs/GUARDS.md).
+
 ### Reading the result of `zig build test`
 
 Two things have to be true for a test run to mean anything: it has to have

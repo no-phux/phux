@@ -279,7 +279,6 @@ test "any shell exit closes its pane; only a failed spawn keeps it for Restart" 
     try testing.expect(app_state.model.selectedTerminalRef().?.eql(app.initialTerminalRef(0)));
 }
 
-// GUARD: ended-pane-closes-at-any-status
 test "a non-zero exit closes its pane too, and the sibling reclaims the rect" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = surface });

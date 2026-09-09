@@ -8,7 +8,6 @@ const metadata_module = @import("grid_metadata.zig");
 const CanvasStore = @import("presentation.zig").CanvasStore;
 const rgb = metadata_module.rgb;
 
-// GUARD: remote-grid-metadata
 test "C grid metadata restores local color provenance and cursor semantics" {
     const client = try fixture.fixtureClient();
     var live = true;

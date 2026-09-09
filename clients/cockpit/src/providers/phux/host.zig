@@ -1534,7 +1534,6 @@ test "every declaration in this module is compiled, not merely reachable" {
     @import("phux_ref").refAllDeclsRecursive(@This());
 }
 
-// GUARD: satellite-cid-borrow
 test "satellite C identity borrows the exact owning host storage" {
     const remote = try RemoteId.fromPhux(c.PHUX_TERMINAL_SATELLITE, 41, "satellite-with-exact-host");
     const raw = cId(&remote);
@@ -1727,7 +1726,6 @@ test "queued spawn keeps its request id when transport staging fails" {
     try std.testing.expectError(error.InvalidState, host.drainReadiness());
 }
 
-// GUARD: operation-resize-identity
 test "resize viewport follows identity when effects remove an earlier terminal" {
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
@@ -1878,7 +1876,6 @@ fn expectPartialStagingCannotReplay(caller: PartialStagingCaller) !void {
     try std.testing.expectEqual(@as(usize, 0), c.phux_client_operation_count(host.client));
 }
 
-// GUARD: partial-outgoing-no-replay
 test "key partial outgoing staging cannot replay after allocator recovery" {
     try expectPartialStagingCannotReplay(.key);
 }

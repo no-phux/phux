@@ -25,7 +25,6 @@ const typeCanvasText = support.typeCanvasText;
 const pressCanvasKey = support.pressCanvasKey;
 const releaseCanvasKey = support.releaseCanvasKey;
 
-// GUARD: sdk-pty-capacity
 test "the SDK PTY table covers Cockpit's bounded terminal registry" {
     try testing.expect(local.max_live_shells >= app.max_terminals);
 }
@@ -227,7 +226,6 @@ test "the registry mints unique terminals up to the shells it can back" {
     try testing.expectEqual(app.max_tabs, state.model.ws().tab_count);
 }
 
-// GUARD: split-close-preserves-tab-refusal
 test "closing one pane of a full tab does not clear tab admission refusal" {
     const harness = try native_sdk.TestHarness().create(testing.allocator, .{});
     defer harness.destroy(testing.allocator);

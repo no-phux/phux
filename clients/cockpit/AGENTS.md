@@ -88,27 +88,25 @@ installed app — three days of bug reports once went to a build a week older
 than `main` exactly that way. `./scripts/dev-isolation-check.sh` is the proof
 and README explains the mechanisms.
 
-## Regression Tests Must Be Shown Failing
+## Regression Tests and Mutation Testing
 
-A test that claims to guard a fix must be watched failing WITHOUT that fix,
-before it is committed. This is not a formality. A regression test here once
-passed against the exact bug it was written to catch — it allowed "a few more
-frames" to settle, and the broken code needed exactly four for four panes,
-inside the allowance. Reading it revealed nothing; only disabling the fix did.
+Ordinary behavioral regression tests gate PRs. For a bug fix, show the named
+test failing against the actual buggy behavior once, then passing with the fix.
+Record the revision, command, expected assertion failure and restored green
+result in the PR or Beads evidence. Compilation errors and unrelated failures
+do not establish that the test catches the defect. Contract tests without a
+historical bug do not need an invented counterfactual.
 
-So: remove the fix, run
+Keep useful defect explanations beside the test. Historical RED evidence stays
+historical; refactoring does not require maintaining or re-proving a permanent
+patch. The `.guard` files, source markers and patch-applicability gate are
+retired.
 
-```sh
-scripts/guard-red-run.sh --record <name> --test "the zig test name" <path>
-```
-
-mark the test with `// GUARD: <name>` on the line above it, and say so in the
-commit message. The script refuses to record anything it did not watch fail,
-and it distinguishes a genuine red from a break that merely stopped the tree
-compiling. `zig build test` then keeps the bookkeeping honest on every run.
-
-Read [docs/GUARDS.md](docs/GUARDS.md) for the ritual, the two scripts, and —
-more usefully — what the mechanism still does not prove.
+Automatic mutation scans are separate, opt-in and diff-scoped. Use their reports
+to investigate missing assertions; survivors need judgment, not a permanent
+patch or a 100% kill quota. See the repository's
+[mutation testing policy](../../docs/TESTING_MUTATIONS.md) for the workflow and
+[guard retirement note](docs/GUARDS.md) for historical context.
 
 ## Quality Bar
 
@@ -257,8 +255,8 @@ instance returns an empty widget tree instead of an error. Assert
 fatal inside a wait loop and quietly wrong outside one.
 
 **Measure constants, never pick them**, and keep the deriving command beside the
-number. **Show every regression test failing first**: disable the fix, watch
-red, restore, watch green, and report what you disabled.
+number. For bug-fix RED/GREEN evidence, follow
+[Regression Tests and Mutation Testing](#regression-tests-and-mutation-testing).
 
 Settled questions live in [docs/DECISIONS.md](docs/DECISIONS.md); reopen one by
 adding information, not by re-litigating it.

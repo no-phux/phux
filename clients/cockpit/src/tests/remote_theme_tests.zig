@@ -12,7 +12,6 @@ fn frame(remote: *app.PhuxProvider, comptime name: []const u8) !void {
     _ = try remote.drainReadiness();
 }
 
-// GUARD: remote-theme-paint
 test "shipping painter applies configured remote theme on every paint without frames" {
     if (comptime !app.phux_enabled) return error.SkipZigTest;
     const remote = try app.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/unused-theme" }, null, "theme");

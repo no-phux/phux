@@ -16,7 +16,6 @@ fn remoteRef(id: u32) !contract.TerminalRef {
     return .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteTerminalId.fromPhux(0, id, "") } };
 }
 
-// GUARD: durable-mixed-attachments
 test "v5 mixed attachments round trip without allocating remote shells" {
     const session = try createDefaultSession();
     var model = app.initialModel(session);
@@ -105,7 +104,6 @@ test "restored contexts fence reused IDs and never infer satellite incarnation" 
     try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
 }
 
-// GUARD: durable-attachment-fingerprint
 test "attachment fingerprint includes full provider host ID and context" {
     const session = try createDefaultSession();
     var model = app.initialModel(session);

@@ -53,7 +53,6 @@ pub fn fixtureGrid(client: *c.PhuxClient) !c.PhuxTerminalGridView {
     return view;
 }
 
-// GUARD: remote-cell-styles
 test "canonical C grid preserves remote styles in owned canvas cells" {
     const client = try fixtureClient();
     var client_live = true;
@@ -171,7 +170,6 @@ test "frozen canvas deep owns styles clusters hyperlinks and source color proven
     try testing.expectEqualStrings("A", owned.rows.items[0].cells[0].cluster);
 }
 
-// GUARD: remote-cell-hyperlinks
 test "remote URI and cluster admission is bounded before replacing owned state" {
     var raw = [_]c.PhuxTerminalCell{std.mem.zeroes(c.PhuxTerminalCell)};
     var arena = [_]u8{ 'X', 'u', 'r', 'i' };
@@ -229,7 +227,6 @@ test "remote URI and cluster admission is bounded before replacing owned state" 
     try testing.expect(store.hyperlinkAt(0, 0) == null);
 }
 
-// GUARD: remote-cursor-hollow
 test "remote cursor projection retains ABI-provided hollow shape" {
     var raw = std.mem.zeroes(c.PhuxTerminalCell);
     var view = std.mem.zeroes(c.PhuxTerminalGridView);

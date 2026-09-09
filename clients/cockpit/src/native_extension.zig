@@ -794,7 +794,6 @@ const test_windows = [_]native_sdk.ShellWindow{.{
 }};
 const test_scene: native_sdk.ShellConfig = .{ .windows = &test_windows };
 
-// GUARD: ts-terminal-fonts
 test "shipping TypeScript graph registers the terminal family and Cockpit token ids" {
     var options: Adapter.Options = .{
         .name = "phux-cockpit",
@@ -1040,7 +1039,6 @@ const Rig = struct {
     }
 };
 
-// GUARD: ts-engine-boot
 test "the core boots from the engine's snapshot, not from its own defaults" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1052,7 +1050,6 @@ test "the core boots from the engine's snapshot, not from its own defaults" {
     try std.testing.expectEqual(@as(i64, 1), model.engineRevision.lo);
 }
 
-// GUARD: ts-phux-provider-lifecycle
 test "configured Phux attachment starts native provider lifecycle without replacing the ephemeral local terminal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.startWithPhux(true);
@@ -1080,7 +1077,6 @@ test "configured Phux attachment starts native provider lifecycle without replac
     try std.testing.expectEqual(@as(usize, 0), engine.model.remote_inventory_count);
 }
 
-// GUARD: ts-configured-startup
 test "TypeScript engine startup restores topology and cwd while applying config and tab precedence" {
     const root = ".zig-cache/ts-configured-startup-test";
     const state_path = root ++ "/workspace.state";
@@ -1142,7 +1138,6 @@ test "TypeScript engine startup restores topology and cwd while applying config 
     try std.testing.expectEqual(.top, overridden.model.tab_placement);
 }
 
-// GUARD: ts-engine-intent
 test "an intent moves the engine and the core resyncs to the new revision" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1163,7 +1158,6 @@ test "an intent moves the engine and the core resyncs to the new revision" {
     try std.testing.expect(model.tabs[0].id != model.tabs[1].id);
 }
 
-// GUARD: ts-native-command-parity
 test "native menu commands split and close the focused pane through the engine seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1183,7 +1177,6 @@ test "native menu commands split and close the focused pane through the engine s
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
-// GUARD: ts-topology-persistence
 test "TypeScript topology changes use the shipping debounce and file effect" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1221,7 +1214,6 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try std.testing.expect(!engine.model.state.pending);
 }
 
-// GUARD: ts-remote-close
 test "shipping close detaches a Phux pane without destroying a local terminal" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1239,7 +1231,6 @@ test "shipping close detaches a Phux pane without destroying a local terminal" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.primary.tab_count);
 }
 
-// GUARD: ts-final-pane-close
 test "shipping final pane close retires main while a secondary keeps running" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1261,7 +1252,6 @@ test "shipping final pane close retires main while a secondary keeps running" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
-// GUARD: ts-clipboard-owner
 test "shipping clipboard completion belongs to its requesting replica after focus moves" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -1287,7 +1277,6 @@ test "shipping clipboard completion belongs to its requesting replica after focu
     try std.testing.expect(other.selecting);
 }
 
-// GUARD: ts-remote-input
 test "shipping Phux callbacks emit structured key text paste and focus frames" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1333,7 +1322,6 @@ fn expectOutgoingKey(remote: anytype, physical: u32, modifiers: u16) !void {
     try std.testing.expectEqual(modifiers, std.mem.readInt(u16, frame[24..26], .big));
 }
 
-// GUARD: ts-remote-control
 test "shipping Phux control keys remain terminal input" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1348,7 +1336,6 @@ test "shipping Phux control keys remain terminal input" {
     try std.testing.expect(!bridge.engine.?.model.paste_inflight);
 }
 
-// GUARD: ts-remote-composition
 test "shipping Phux committed text consumes composition modifiers" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1359,13 +1346,11 @@ test "shipping Phux committed text consumes composition modifiers" {
     try expectOutgoingKey(bridge.engine.?.model.phux().?, 0, 0);
 }
 
-// GUARD: ts-control-f
 test "shipping Control F is terminal input rather than a fullscreen shortcut" {
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }) == null);
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
 }
 
-// GUARD: ts-overlay-focus
 test "shipping overlay frame suspends remote focus and input until dismissal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1384,7 +1369,6 @@ test "shipping overlay frame suspends remote focus and input until dismissal" {
     try expectOutgoingTag(remote, 0x14);
 }
 
-// GUARD: ts-remote-natural-keys
 test "shipping Phux macOS editing gestures target word and line bindings" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1415,7 +1399,6 @@ test "shipping Phux macOS editing gestures target word and line bindings" {
     try expectOutgoingKey(remote, 76, 0);
 }
 
-// GUARD: ts-search-key-owner
 test "shipping search text cannot leak a key release after search closes" {
     const engine = try engineWithText("\x1b[>3u");
     defer engine.destroy();
@@ -1431,7 +1414,6 @@ test "shipping search text cannot leak a key release after search closes" {
     try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
 }
 
-// GUARD: ts-shell-exit-focus
 test "shipping shell exit transfers focus to the revealed Phux terminal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1450,7 +1432,6 @@ test "shipping shell exit transfers focus to the revealed Phux terminal" {
     try expectOutgoingTag(remote, 0x14);
 }
 
-// GUARD: ts-remote-viewport
 test "shipping frame resizes a published Phux viewport once" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1475,7 +1456,6 @@ test "shipping frame resizes a published Phux viewport once" {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-pending-viewport
 test "pending attachment cannot propose a viewport for a reused remote identity" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1492,7 +1472,6 @@ test "pending attachment cannot propose a viewport for a reused remote identity"
     try std.testing.expectEqual(@as(usize, 0), after.slice().len);
 }
 
-// GUARD: ts-pending-grid
 test "pending attachment hides the published grid of a reused remote identity" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -1513,7 +1492,6 @@ test "pending attachment hides the published grid of a reused remote identity" {
     try std.testing.expect(visible > builder.displayList().commands.len);
 }
 
-// GUARD: ts-native-divider-drag
 test "native divider drag updates engine geometry without crossing the TypeScript seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1564,7 +1542,6 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
     } });
 }
 
-// GUARD: ts-engine-fence
 test "a stale intent is refused, announced, and surfaced instead of applied" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1597,7 +1574,6 @@ test "a stale intent is refused, announced, and surfaced instead of applied" {
     try std.testing.expectEqual(core.TabPlacement.side, rig.app_state.model.tabPlacement);
 }
 
-// GUARD: ts-engine-keys
 test "unclaimed keys and text reach the focused pane's outbound ring and never the core" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1638,7 +1614,6 @@ test "unclaimed keys and text reach the focused pane's outbound ring and never t
     try std.testing.expectEqual(@as(usize, 3), pane.outbound_len);
 }
 
-// GUARD: ts-engine-shells
 test "every registered pane gets exactly one shell request and a closed tab kills its own" {
     const SpawnRecorder = struct {
         pub fn cancel(_: *@This(), _: u64) void {}
@@ -1745,62 +1720,50 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
 }
 
 // ------------------------------------------------------ parity harness
-// GUARD: ts-durable-tab
 test "shipping durable tab waits for exact publication and keeps its original window" {
     try cockpit.durable_tests.tabPublication();
 }
 
-// GUARD: ts-durable-split
 test "shipping durable split does not follow a different selected tab" {
     try cockpit.durable_tests.splitDestination();
 }
 
-// GUARD: ts-durable-window-epoch
 test "shipping durable completion cannot acquire a reopened window slot" {
     try cockpit.durable_tests.windowEpoch();
 }
 
-// GUARD: ts-durable-unknown
 test "shipping disconnected creation stays unknown and never retries as a local shell" {
     try cockpit.durable_tests.unknownOutcome();
 }
 
-// GUARD: ts-recovery-incarnation
 test "shipping attachment recovery resolves only the saved coordinator incarnation" {
     try cockpit.durable_tests.incarnationRecovery();
 }
 
-// GUARD: ts-recovery-acceptance
 test "shipping restored subscription waits for both exact bootstrap and command acceptance" {
     try cockpit.durable_tests.restoredSubscription();
 }
 
-// GUARD: ts-remote-frozen-display
 test "shipping proven display survives disconnect without admitting a reused incarnation" {
     try cockpit.durable_tests.frozenPaintRecovery();
 }
 
-// GUARD: ts-durable-tab-capacity
 test "shipping pending spawns reserve destination tab capacity" {
     try cockpit.durable_tests.destinationReservations();
 }
 
-// GUARD: ts-durable-split-capacity
 test "shipping pending spawns reserve split capacity" {
     try cockpit.durable_tests.splitReservations();
 }
 
-// GUARD: ts-durable-window-refusal
 test "shipping refused creation retires its still-empty reserved window" {
     try cockpit.durable_tests.windowRefusal();
 }
 
-// GUARD: ts-durable-empty-restore
 test "shipping empty persisted Phux workspace does not spawn a synthetic local shell" {
     try cockpit.durable_tests.restoredEmptyWorkspace();
 }
 
-// GUARD: ts-reconnect-announcement
 test "shipping failed reconnect publishes the retired pending window" {
     try cockpit.durable_tests.reconnectClosePublishes();
 }
@@ -1887,7 +1850,6 @@ fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, dens
     return issues.total;
 }
 
-// GUARD: ts-chrome-parity
 test "the markup chrome passes the layout audit at every declared size, density and state" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1905,7 +1867,6 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
-// GUARD: ts-overlay-switcher
 test "the switcher filters the engine's tabs by position or title and selects through the seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1931,7 +1892,6 @@ test "the switcher filters the engine's tabs by position or title and selects th
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.selectedTab);
 }
 
-// GUARD: ts-cwd-invalidation
 test "the switcher receives the focused split pane's cwd without polling terminal bytes" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1956,7 +1916,6 @@ test "the switcher receives the focused split pane's cwd without polling termina
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.paletteRows.len);
 }
 
-// GUARD: ts-overlay-settings
 test "the settings surface shows the engine's theme catalog and saves through the seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2036,7 +1995,6 @@ fn engineWithText(text: []const u8) !*Engine {
     return engine;
 }
 
-// GUARD: ts-remote-bell
 test "shipping remote bell uses native notifications and owner fenced attention" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2077,7 +2035,6 @@ test "shipping remote bell uses native notifications and owner fenced attention"
     try std.testing.expect(!remote.bellRung(ref));
 }
 
-// GUARD: ts-remote-status
 test "shipping snapshot exposes focused terminal history and fenced recovery" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2101,7 +2058,6 @@ test "shipping snapshot exposes focused terminal history and fenced recovery" {
     try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0 }, snapshot[snapshot.len - 5 ..]);
 }
 
-// GUARD: ts-engine-bell
 test "a bell while the app is deactivated notifies once, on its rising edge" {
     const engine = try engineWithText("prompt$ ");
     defer engine.destroy();
@@ -2126,7 +2082,6 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     try std.testing.expectEqual(@as(usize, 0), quiet.notifications);
 }
 
-// GUARD: ts-engine-copy
 test "select all and cmd+C put the scrollback on the clipboard through the seam" {
     const engine = try engineWithText("hello world\r\n");
     defer engine.destroy();
@@ -2152,7 +2107,6 @@ fn remotePresentationCommand(engine: *cockpit.Engine, value: protocol.NativeComm
     return engine.applyIntent(&intent, fx);
 }
 
-// GUARD: ts-remote-presentation-select-all
 test "remote presentation menu select all copies provider history without child input" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2172,7 +2126,6 @@ test "remote presentation menu select all copies provider history without child 
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-remote-presentation-search
 test "remote presentation search owns shipping chord text navigation clipboard and paint" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2218,7 +2171,6 @@ test "remote presentation search owns shipping chord text navigation clipboard a
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-// GUARD: ts-remote-clear-parser
 test "shipping remote Clear preserves an incomplete VT sequence" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2240,7 +2192,6 @@ test "shipping remote Clear preserves an incomplete VT sequence" {
     try std.testing.expectEqualStrings("X", std.mem.trim(u8, text, " \r\n"));
 }
 
-// GUARD: ts-remote-presentation-clear
 test "remote presentation Clear blanks the current replica without execution input" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2290,7 +2241,6 @@ fn expectSearchPaint(engine: *cockpit.Engine, needle: []const u8, status: []cons
     try std.testing.expect(found_status);
 }
 
-// GUARD: ts-remote-presentation-owner
 test "remote presentation search consumes controls and rejects stale clipboard owners" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2336,7 +2286,6 @@ test "remote presentation search consumes controls and rejects stale clipboard o
     try std.testing.expect(engine.model.remoteUi(ref).?.search.open);
 }
 
-// GUARD: ts-remote-find-rebootstrap
 test "remote Find survives staged resize rebootstrap and reruns only on READY" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2462,7 +2411,6 @@ test "remote Find inheritance requires matching nonempty durable attachment evid
     try std.testing.expect(model.remoteUiConst(ref) == null);
 }
 
-// GUARD: ts-remote-frozen-find
 test "remote Find presentation survives frozen publication without admitting commands" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2491,7 +2439,6 @@ test "remote Find presentation survives frozen publication without admitting com
     try std.testing.expect(model.remoteUiConst(ref) == null);
 }
 
-// GUARD: ts-engine-search
 test "cmd+F opens the scrollback search, typing feeds the needle, Escape closes it" {
     const engine = try engineWithText("alpha\r\nbeta\r\n");
     defer engine.destroy();
@@ -2507,7 +2454,6 @@ test "cmd+F opens the scrollback search, typing feeds the needle, Escape closes 
     try std.testing.expect(!pane.session.search.open);
 }
 
-// GUARD: ts-engine-pointer
 test "a drag across the grid through the raw surface input selects text" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2527,7 +2473,6 @@ test "a drag across the grid through the raw surface input selects text" {
     try std.testing.expect(pane.session.selectionActive());
 }
 
-// GUARD: ts-finder-drop
 test "Finder drops stay native and enter the focused pane as bracketed paste" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2548,7 +2493,6 @@ test "Finder drops stay native and enter the focused pane as bracketed paste" {
     try std.testing.expect(std.mem.endsWith(u8, queued, "\x1b[201~"));
 }
 
-// GUARD: ts-selection-autoscroll
 test "selection edge drag autoscrolls through the TypeScript host timer" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2603,7 +2547,6 @@ test "selection edge drag autoscrolls through the TypeScript host timer" {
     try std.testing.expect(!pointer_host.selection_autoscroll_timer_active);
 }
 
-// GUARD: ts-engine-windows
 test "a new window opens a second workspace with its own shell and closes whole through the seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2660,7 +2603,6 @@ fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []
     return false;
 }
 
-// GUARD: ts-shipping-chrome-space
 test "shipping terminal rows fit between the compiled header and status" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2685,7 +2627,6 @@ test "shipping terminal rows fit between the compiled header and status" {
     try std.testing.expect(content.y + content.height <= status_top);
 }
 
-// GUARD: ts-shipping-geometry-cache
 test "shipping unchanged GPU frames reuse compiled terminal geometry" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2765,7 +2706,6 @@ fn expectShippingInteraction(rig: *Rig, index: usize, size: native_sdk.geometry.
     try std.testing.expectEqual(count, terminals);
 }
 
-// GUARD: ts-shipping-window-space
 test "shipping geometry follows each window markup through placement resize and search" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2788,7 +2728,6 @@ test "shipping geometry follows each window markup through placement resize and 
     }
 }
 
-// GUARD: ts-shipping-remote-row-zero
 test "shipping compiled chrome leaves remote row zero visible and selectable" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -2830,7 +2769,6 @@ test "shipping compiled chrome leaves remote row zero visible and selectable" {
     try std.testing.expectEqualStrings("COCKPIT", text);
 }
 
-// GUARD: ts-secondary-snapshot-primary
 test "a focused secondary snapshot keeps main and secondary projections distinct" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2863,7 +2801,6 @@ test "a focused secondary snapshot keeps main and secondary projections distinct
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.window1Tabs.len);
 }
 
-// GUARD: ts-secondary-overlay-scope
 test "a secondary-window switcher is scoped to the focused window" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2897,7 +2834,6 @@ fn navigationIntentBytes(revision: u64, index: u16) [12]u8 {
     return bytes;
 }
 
-// GUARD: ts-navigation-completion-isolation
 test "navigation bridge preserves independently pending catalog and snapshot completions" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -2922,7 +2858,6 @@ test "navigation bridge preserves independently pending catalog and snapshot com
     try std.testing.expect(!Bridge.hasPending(&service));
 }
 
-// GUARD: ts-snapshot-commit-fence
 test "navigation waits for snapshot commit before advancing positional fences" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2959,7 +2894,6 @@ test "navigation selects an exact split pane across windows through the shipping
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
 }
 
-// GUARD: ts-navigation-placement-recovery
 test "navigation activates available remote identity and stable session id including reconnect" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -3005,7 +2939,6 @@ test "navigation activates available remote identity and stable session id inclu
     try std.testing.expectEqual(@as(usize, 2), recorder.navigation_restarts);
 }
 
-// GUARD: ts-navigation-snapshot-budget
 test "navigation snapshots preserve full window inventory within the host payload limit" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -3035,7 +2968,6 @@ test "navigation snapshots preserve full window inventory within the host payloa
     try std.testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, page[13..15], .little));
 }
 
-// GUARD: ts-durable-terminal-detach
 test "shipping remote close retires replica and navigation explicitly reattaches catalog identity" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -3099,7 +3031,6 @@ test "shipping remote close retires replica and navigation explicitly reattaches
     try std.testing.expect(engine.model.locateTerminal(ref) != null);
 }
 
-// GUARD: ts-detach-refused-close-progress
 test "shipping close window makes bounded progress when remote detach is locally refused" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -3129,7 +3060,6 @@ test "shipping close window makes bounded progress when remote detach is locally
     try std.testing.expect(!engine.applyIntent(&retry_window, &recorder));
 }
 
-// GUARD: ts-offline-remote-close
 test "shipping offline remote close stays absent after reconnect without outbound work" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const ChannelFx = struct {
@@ -3199,22 +3129,18 @@ const NavigationConnectionRecorder = struct {
     }
 };
 
-// GUARD: ts-direct-reconnect-fence
 test "shipping direct reconnect fences attachments and retires pending creation on open failure" {
     try cockpit.durable_tests.directReconnectFences();
 }
 
-// GUARD: ts-durable-early-death
 test "shipping coalesced spawn publication and terminal death retire the reserved window" {
     try cockpit.durable_tests.earlyTerminalDeath();
 }
 
-// GUARD: ts-remote-title-announcement
 test "shipping remote title-only output invalidates the chrome snapshot" {
     try cockpit.durable_tests.titleAnnouncement();
 }
 
-// GUARD: ts-remote-empty-title
 test "shipping empty replacement title clears the previously published remote title" {
     try cockpit.durable_tests.emptyTitleReconnect();
 }
@@ -3245,7 +3171,6 @@ test "navigation reconnect waits for a live channel close and reopens an already
     try std.testing.expectEqual(.offline, cockpit.engine.navigation.connection(engine.model));
 }
 
-// GUARD: ts-navigation-refresh-highlight
 test "navigation retains keyboard highlight through a metadata snapshot refresh" {
     var rig = try Rig.start();
     defer rig.stop();
