@@ -700,7 +700,9 @@ const PointerHost = struct {
             .source = inner.source,
             .source_fn = if (inner.source_fn != null) source else null,
             .scene_fn = if (inner.scene_fn != null) scene else null,
-            .start_fn = if (inner.start_fn != null) start else null,
+            // The adapter starts through its event callback; our timer still
+            // needs its own start hook even when the inner hook is absent.
+            .start_fn = start,
             .event_fn = if (inner.event_fn != null) event else null,
             .stop_fn = if (inner.stop_fn != null) stop else null,
             .replay_fn = if (inner.replay_fn != null) replay else null,
@@ -830,6 +832,15 @@ pub fn app(app_state: *Adapter.App) native_sdk.App {
 
 // ------------------------------------------------------------------ tests
 
+test "shared workspace refresh timer starts with the shipping event-only adapter" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    const timer = rig.harness.null_platform.startedTimer(PointerHost.workspace_timer_id) orelse return error.TestExpectedWorkspaceTimer;
+    try std.testing.expectEqual(std.time.ns_per_s, timer.interval_ns);
+    try std.testing.expect(timer.repeats);
+}
+
 const test_views = [_]native_sdk.ShellView{
     .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .gpu_backend = .metal },
 };
@@ -883,6 +894,22 @@ const WindowView1 = canvas.CompiledMarkupImports(core.Model, core.Msg, "phux-win
 const WindowView2 = canvas.CompiledMarkupImports(core.Model, core.Msg, "phux-window-2.native", &window_sources);
 const WindowView3 = canvas.CompiledMarkupImports(core.Model, core.Msg, "phux-window-3.native", &window_sources);
 const WindowView4 = canvas.CompiledMarkupImports(core.Model, core.Msg, "phux-window-4.native", &window_sources);
+
+test "secondary fragments build through the live markup interpreter" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    inline for (.{ WindowView1, WindowView2, WindowView3, WindowView4 }) |View| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var ui = Adapter.Ui.init(arena.allocator());
+        var view = canvas.MarkupView(core.Model, core.Msg).fromDocument(View.document);
+        const root = try view.build(&ui, &rig.app_state.model);
+        _ = try ui.finalize(root);
+    }
+}
 
 fn testWindowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) Adapter.Ui.Node {
     if (std.mem.eql(u8, label, "phux-window-1")) return WindowView1.build(ui, model);

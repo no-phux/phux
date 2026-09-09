@@ -1,4 +1,4 @@
-<template name="cockpit-window" args="tabs width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect settingsopen themes configexists confignotice">
+<template name="cockpit-window" args="tabs width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect">
   <stack>
     <column>
       <row height="50" padding="4" gap="4" cross="center" background="surface">
@@ -53,6 +53,12 @@
         </panel>
       </row>
     </if>
+    <slot />
+  </stack>
+</template>
+
+<template name="cockpit-settings" args="settingsopen themes configexists confignotice">
+  <stack>
     <if test="{settingsopen}">
       <row main="end">
         <panel width="400" padding="12">
