@@ -4,6 +4,10 @@ export const PROTOCOL_VERSION = 1;
 const STATE_INVALIDATED = 1;
 const SNAPSHOT = 2;
 const INVALIDATION_LENGTH = 18;
+/// `ts_snapshot.ExtensionKind.agent_rows`.
+const EXTENSION_AGENT_ROWS = 1;
+
+const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 
 export interface WireU64 {
   readonly hi: number;
@@ -13,6 +17,18 @@ export interface WireU64 {
 export interface Invalidation {
   readonly sequence: WireU64;
   readonly revision: WireU64;
+}
+
+/// One agent session running under a terminal, addressed by the tab it hangs
+/// under. The session's own identity never crosses this seam: it addresses no
+/// surface, and the core draws it as a child of a terminal it already has.
+export interface SnapshotAgentRow {
+  readonly window: number;
+  readonly tab: number;
+  /// 0 unknown, 1 working, 2 blocked, 3 done, 4 gone (agent_sessions.State).
+  readonly state: number;
+  readonly attention: boolean;
+  readonly provider: Uint8Array;
 }
 
 export interface SnapshotTab {
@@ -63,6 +79,9 @@ export interface EngineSnapshot extends Invalidation {
   readonly configProbed: boolean;
   readonly configPath: Uint8Array;
   readonly secondary: readonly SecondaryWindow[];
+  /// The agent rows the `agent_rows` extension record carried, empty when the
+  /// snapshot carried none (which is also what an absent record means).
+  readonly agents: readonly SnapshotAgentRow[];
 }
 
 function readU32(bytes: Uint8Array, at: number): number {
@@ -205,6 +224,62 @@ function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
 interface SecondaryRecords {
   readonly windows: readonly SecondaryWindow[];
   readonly terminalStates: Uint8Array;
+  readonly agents: readonly SnapshotAgentRow[];
+}
+
+/// The `agent_rows` payload: a row count, then `[window][tab][state][flags]
+/// [provider length][provider]` per row.
+function readAgentRows(bytes: Uint8Array, start: number, length: number): readonly SnapshotAgentRow[] | null {
+  const end = start + length;
+  if (length < 1 || end > bytes.length) return null;
+  const count = bytes[start];
+  if (!(count >= 0 && count <= 24)) return null;
+  const rows: SnapshotAgentRow[] = [];
+  let at = start + 1;
+  for (let index = 0; index < count; index += 1) {
+    if (at + 5 > end) return null;
+    const window = bytes[at];
+    const tab = bytes[at + 1];
+    const state = bytes[at + 2];
+    const flags = bytes[at + 3];
+    const providerLength = bytes[at + 4];
+    if (!(window >= 0 && window <= 4)) return null;
+    if (!(tab >= 0 && tab <= 31)) return null;
+    if (!(state >= 0 && state <= 4)) return null;
+    if (!(flags >= 0 && flags <= 1)) return null;
+    if (!(providerLength >= 0 && providerLength <= 255) || at + 5 + providerLength > end) return null;
+    rows.push({
+      window: Math.trunc(window),
+      tab: Math.trunc(tab),
+      state: Math.trunc(state),
+      attention: flags !== 0,
+      provider: bytes.subarray(at + 5, at + 5 + providerLength),
+    });
+    at += 5 + providerLength;
+  }
+  return at === end ? rows : null;
+}
+
+/// Extension records close the snapshot: a kind byte, a `u16` length, then
+/// that many payload bytes. A kind this build does not know is stepped over
+/// by its length rather than read as whatever follows it, so the seam grows
+/// by adding kinds and never by moving bytes anybody already parses.
+function readExtensions(bytes: Uint8Array, start: number): readonly SnapshotAgentRow[] | null {
+  let agents: readonly SnapshotAgentRow[] = NO_AGENTS;
+  let at = start;
+  while (at < bytes.length) {
+    if (at + 3 > bytes.length) return null;
+    const kind = bytes[at];
+    const length = bytes[at + 1] + bytes[at + 2] * 256;
+    if (!(length >= 0 && length <= 4096) || at + 3 + length > bytes.length) return null;
+    if (kind === EXTENSION_AGENT_ROWS) {
+      const rows = readAgentRows(bytes, at + 3, length);
+      if (rows === null) return null;
+      agents = rows;
+    }
+    at += 3 + length;
+  }
+  return agents;
 }
 
 function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | null {
@@ -222,11 +297,13 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
     for (const tab of section.tabs) at += 7 + tab.title.length + tab.cwd.length;
   }
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5) };
-  if (at + 5 !== bytes.length) return null;
-  const terminalStates = bytes.subarray(at);
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS };
+  if (at + 5 > bytes.length) return null;
+  const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
-  return { windows: secondary, terminalStates };
+  const agents = readExtensions(bytes, at + 5);
+  if (agents === null) return null;
+  return { windows: secondary, terminalStates, agents };
 }
 
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
@@ -267,6 +344,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     runCount: bytes[25],
     tabWidth: bytes[26] + bytes[27] * 256,
     tabs: main.tabs,
+    agents: secondary.agents,
   };
 }
 

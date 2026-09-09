@@ -38,13 +38,23 @@
           <button size="sm" variant="ghost" icon="plus" label="New terminal" on-press="new_terminal" />
         </row>
         <list grow="1" gap="4">
-          <for each="visibleTabs" key="id" as="tab">
-            <list-item
-              icon="terminal"
-              role="tab"
-              selected="{tab.selected}"
-              on-press="select_tab:{tab.index}"
-            >{tab.title}</list-item>
+          <for each="railRows" key="id" as="row">
+            <if test="{row.agent}">
+              <row gap="4" cross="center">
+                <spacer width="20" />
+                <text overflow="ellipsis" foreground="text_muted">{row.label}</text>
+                <text grow="1" overflow="ellipsis" foreground="text_muted">{row.state}</text>
+                <text foreground="text_muted">{row.mark}</text>
+              </row>
+            </if>
+            <else>
+              <list-item
+                icon="terminal"
+                role="tab"
+                selected="{row.selected}"
+                on-press="select_tab:{row.index}"
+              >{row.label}</list-item>
+            </else>
           </for>
           <if test="{hasOverflow}">
             <text label="Tabs not shown">{overflowLabel}</text>
