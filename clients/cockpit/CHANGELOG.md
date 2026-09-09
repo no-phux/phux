@@ -3,6 +3,30 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/no-phux/phux/compare/cockpit-v0.18.0...cockpit-v0.19.0) (2026-09-09)
+
+
+### Features
+
+* **cockpit:** project confirmed shared Phux workspaces ([#559](https://github.com/no-phux/phux/issues/559)) ([81d78df](https://github.com/no-phux/phux/commit/81d78dff6e855ce5e147e71458307444233522cd))
+* **ffi:** expose resource kinds and agent session records to hosts ([8b58a6c](https://github.com/no-phux/phux/commit/8b58a6c95925f5e70489d4c857744089e0f5105f))
+
+
+### Bug Fixes
+
+* **cockpit:** restore terminal focus and contain crowded tabs ([#555](https://github.com/no-phux/phux/issues/555)) ([66ef0b7](https://github.com/no-phux/phux/commit/66ef0b7e0d97e132b77e434ed038bc62e579d4e4))
+* **cockpit:** stub updater callbacks in raster harness ([e24f6c2](https://github.com/no-phux/phux/commit/e24f6c2560fd9d9de397791721648172b76f58b7))
+
+
+### Performance
+
+* **ci:** route validation and reuse verified build artifacts ([#554](https://github.com/no-phux/phux/issues/554)) ([27928a4](https://github.com/no-phux/phux/commit/27928a418858dfb9deb0f122919ec3a002fae441))
+
+
+### Documentation
+
+* **cockpit:** use the Native SDK live development loop ([#556](https://github.com/no-phux/phux/issues/556)) ([3b01d69](https://github.com/no-phux/phux/commit/3b01d69190306de12c3d8d563ee70bbb2e7ab2a1))
+
 ## [0.18.0](https://github.com/no-phux/phux/compare/cockpit-v0.17.0...cockpit-v0.18.0) (2026-09-09)
 
 

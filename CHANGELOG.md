@@ -9,6 +9,52 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.29.0](https://github.com/no-phux/phux/compare/v0.28.0...v0.29.0) (2026-09-09)
+
+
+### Features
+
+* **agent:** the Claude shim reads hook payloads and feeds the agent session stream ([73ced89](https://github.com/no-phux/phux/commit/73ced893adbfa7102f20066ef35dbb44293cae44))
+* **cli:** agent session verbs and kind-aware listing ([962ca0f](https://github.com/no-phux/phux/commit/962ca0f579ea5cfe16f5328ace358faa1051d84b))
+* **cockpit:** project confirmed shared Phux workspaces ([#559](https://github.com/no-phux/phux/issues/559)) ([81d78df](https://github.com/no-phux/phux/commit/81d78dff6e855ce5e147e71458307444233522cd))
+* **ffi:** expose resource kinds and agent session records to hosts ([8b58a6c](https://github.com/no-phux/phux/commit/8b58a6c95925f5e70489d4c857744089e0f5105f))
+* **protocol:** additive resource kinds, facets, bindings, and producer-fed output ([eb03ded](https://github.com/no-phux/phux/commit/eb03dedaee056bf0faf51e8e9bc117fc6fd8a525))
+* **server:** stream evidence outranks the screen detector ([b028664](https://github.com/no-phux/phux/commit/b028664e05b13fff301d102412dfa1861c65ffae))
+* **site:** make the live demo fast and release-aware ([#558](https://github.com/no-phux/phux/issues/558)) ([e871e0d](https://github.com/no-phux/phux/commit/e871e0d08377c0da0b234fe4a069226d75eb7b52))
+* **tui:** kind-aware kernel; agent sessions in the sidebar and fleet ([0b2ed35](https://github.com/no-phux/phux/commit/0b2ed3512def52c2d86ba9fb694c45a9594c2d7d))
+
+
+### Bug Fixes
+
+* **beads:** remove a rebase conflict marker ([842fa2e](https://github.com/no-phux/phux/commit/842fa2ef62f831bd92c7a416da5607bb1b410d8d))
+* **cockpit:** restore terminal focus and contain crowded tabs ([#555](https://github.com/no-phux/phux/issues/555)) ([66ef0b7](https://github.com/no-phux/phux/commit/66ef0b7e0d97e132b77e434ed038bc62e579d4e4))
+* **protocol:** derive resource kind default ([65d5d77](https://github.com/no-phux/phux/commit/65d5d774afae22b6409da145ca1c375059a5433b))
+
+
+### Performance
+
+* **ci:** route validation and reuse verified build artifacts ([#554](https://github.com/no-phux/phux/issues/554)) ([27928a4](https://github.com/no-phux/phux/commit/27928a418858dfb9deb0f122919ec3a002fae441))
+
+
+### Refactors
+
+* **server:** resolve resources through one local-or-relayed seam ([2828dcc](https://github.com/no-phux/phux/commit/2828dccc6de6d2282e65081486b0ac4763723831))
+* **server:** split the generic resource core from the terminal engine ([58e96ed](https://github.com/no-phux/phux/commit/58e96ed4549233b5cc5d6750ec7a48cb300524a1))
+
+
+### Documentation
+
+* **adr:** add the decisions-in-force view and its sync gate ([9c42c17](https://github.com/no-phux/phux/commit/9c42c17e5eac13d94995b8e53347dd9f3045e71c))
+* **adr:** propose the resource model (ADR-0102, 0103, 0104) ([848120a](https://github.com/no-phux/phux/commit/848120a7f3705360d36410226ddf752d8546f138))
+* **adr:** supersede instead of amend; enforce the ADR length cap ([f71dc2d](https://github.com/no-phux/phux/commit/f71dc2dea54e4c5344ffbf672a4865a76fc8e29e))
+* **architecture:** describe the resource core and the terminal engine ([cd43211](https://github.com/no-phux/phux/commit/cd43211f49998fac168e3fcad17395c548540a50))
+* **cockpit:** use the Native SDK live development loop ([#556](https://github.com/no-phux/phux/issues/556)) ([3b01d69](https://github.com/no-phux/phux/commit/3b01d69190306de12c3d8d563ee70bbb2e7ab2a1))
+* **concepts:** describe phux as a substrate for resources, not terminals ([fe3cfe8](https://github.com/no-phux/phux/commit/fe3cfe8c5cb0040c19c99eab7dd4b500d54ee647))
+* **consumers:** document agent session resources and the all-work positioning ([8cee330](https://github.com/no-phux/phux/commit/8cee3304b199e58389ad1f3b29d8d6374f1a5659))
+* **consumers:** mark the MCP agent session tools partial ([120d3d8](https://github.com/no-phux/phux/commit/120d3d87c1f0799be1248610e4ea371ccdfe043e))
+* **spec:** mark resource kinds partial now that phux-core carries them ([164b9cf](https://github.com/no-phux/phux/commit/164b9cf10f3b174abff08ba8a95d622b658b96de))
+* **spec:** specify resource kinds, parent bindings, and producer-fed streams ([e5b6d96](https://github.com/no-phux/phux/commit/e5b6d965e125b4cb1caee4feaae10b37653c849d))
+
 ## [0.28.0](https://github.com/no-phux/phux/compare/v0.27.1...v0.28.0) (2026-09-09)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.3.1...claude-plugin-v0.4.0) (2026-09-09)
+
+
+### Features
+
+* **agent:** the Claude shim reads hook payloads and feeds the agent session stream ([73ced89](https://github.com/no-phux/phux/commit/73ced893adbfa7102f20066ef35dbb44293cae44))
+
 ## [0.3.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.3.0...claude-plugin-v0.3.1) (2026-09-07)
 
 
