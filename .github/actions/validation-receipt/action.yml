@@ -1,0 +1,37 @@
+name: Validation receipt
+description: Record or find successful validation of the exact Git tree and workflow
+inputs:
+  mode:
+    description: check for a successful run, or write a receipt after checks
+    required: true
+  workflow:
+    description: Repository-relative workflow path
+    required: true
+  coverage:
+    description: Routed coverage signature; receipts never substitute a differently scoped run
+    required: true
+outputs:
+  validated:
+    description: Whether an identical tree already passed this workflow
+    value: ${{ steps.receipt.outputs.validated }}
+runs:
+  using: composite
+  steps:
+    - id: receipt
+      shell: bash
+      env:
+        RECEIPT_MODE: ${{ inputs.mode }}
+        RECEIPT_WORKFLOW: ${{ inputs.workflow }}
+        VALIDATION_COVERAGE: ${{ inputs.coverage }}
+        GH_TOKEN: ${{ github.token }}
+      run: python3 scripts/ci/validation_receipt.py "$RECEIPT_MODE" "$RECEIPT_WORKFLOW"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      if: inputs.mode == 'write'
+      with:
+        name: ${{ steps.receipt.outputs.name }}
+        path: target/validation-receipt/receipt.json
+        # A rerun shares its run ID and tree with the previous attempt. Replace
+        # that attempt's metadata only after these checks have passed again.
+        overwrite: true
+        retention-days: 7
+        if-no-files-found: error

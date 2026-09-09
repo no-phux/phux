@@ -6,8 +6,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  merge_group:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -21,6 +23,7 @@ jobs:
     outputs:
       web_needed: ${{ steps.changes.outputs.web_needed }}
       web_engine_needed: ${{ steps.changes.outputs.web_engine_needed }}
+      validated: ${{ steps.receipt.outputs.validated }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -28,10 +31,16 @@ jobs:
           persist-credentials: false
       - id: changes
         uses: ./.github/actions/classify-changes
+      - id: receipt
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: check
+          workflow: .github/workflows/web-check.yml
+          coverage: web=${{ steps.changes.outputs.web_needed }},engine=${{ steps.changes.outputs.web_engine_needed }}
 
   engine-and-adapters:
     needs: classify
-    if: needs.classify.outputs.web_needed == 'true'
+    if: needs.classify.outputs.web_needed == 'true' && needs.classify.outputs.validated != 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
@@ -70,3 +79,9 @@ jobs:
         run: nix develop ../.. -c wasm-pack build --target web --release --out-dir pkg --locked
       - name: Headless Chrome canvas and live-server tests
         run: nix develop .#browser -c python3 scripts/ci/web-browser.py
+      - name: Record successful browser validation
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: write
+          workflow: .github/workflows/web-check.yml
+          coverage: web=${{ needs.classify.outputs.web_needed }},engine=${{ needs.classify.outputs.web_engine_needed }}

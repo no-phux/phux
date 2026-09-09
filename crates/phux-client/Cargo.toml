@@ -103,7 +103,7 @@ regex = "1"
 uuid = { workspace = true }
 
 [dev-dependencies]
-# The dial round-trip tests (tests/quic_dial.rs, tests/ws_dial.rs) stand up
+# The dial round-trip tests (tests/connection/{quic_dial,ws_dial}.rs) stand up
 # the *server* side of the transports the production code establishes
 # through phux-dial: a real `ServerRuntime` on a tempdir UDS, a rustls TLS 1.3
 # config for the mock quinn listener, and a tungstenite `accept_async`

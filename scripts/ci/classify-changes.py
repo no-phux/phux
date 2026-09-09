@@ -21,6 +21,7 @@ ZIG = SHARED | {"web_engine"}
 ROUTES = (
     (("skills/*",), RUST),
     (("clients/cockpit/*",), {"cockpit"}),
+    (("scripts/ci/cockpit_artifacts.py", "scripts/ci/test_cockpit_artifacts.py"), {"cockpit"}),
     (("clients/phux-web/*", "clients/phux-vt-web/*", "scripts/ci/web-browser.py",
       "scripts/ci/test_web_browser.py"), {"web"}),
     (("clients/phux-vt-web/vendor/*", "scripts/build-vt-wasm.sh",
@@ -28,13 +29,20 @@ ROUTES = (
     (("integrations/*", ".claude-plugin/*",
       "scripts/check-agent-integration-versions.mjs", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),
-    (("crates/phux-protocol/*", "crates/phux-client-core/*",
-      "crates/phux-perf/*"), {"web"}),
+    # Browser Rust consumers plus the live demo-server example's dependency
+    # closure (including its Cargo dev dependencies). The fixture checks this
+    # against manifests so a new local dependency cannot silently lose coverage.
+    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
+      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
+      "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
+      "crates/phux-server/*", "crates/phux-server-testkit/*",
+      "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
     (("Cargo.toml", "rust-toolchain.toml", ".cargo/*",
       "scripts/setup-rust.sh", "scripts/doctor.sh", "scripts/test-dev-setup.sh"), SHARED),
-    (("Cargo.lock", "scripts/native-smoke.sh"), RUST | {"native"}),
+    (("Cargo.lock",), SHARED),
+    (("scripts/native-smoke.sh",), RUST | {"native"}),
     ((".config/zig-toolchain.json", "scripts/install-zig.sh",
       "scripts/lib/dev-toolchain.sh"), ZIG),
     (("flake.nix", "flake.lock"), RUST | {"web"}),
@@ -45,6 +53,8 @@ WORKFLOWS = (
     ".github/actions/*", ".github/actionlint.yaml", ".github/dependabot.yml",
     "scripts/ci/classify-changes*", "scripts/ci/check-classify-changes.sh",
     "scripts/ci/detect-changes.py",
+    "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
+    "scripts/ci/wait_validation.py", "scripts/ci/test_wait_validation.py",
 )
 
 

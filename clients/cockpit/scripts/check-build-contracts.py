@@ -186,7 +186,7 @@ printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/ffi-dev/phux"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unwind FFI profile", result.stderr)
 
-    def test_producer_aligns_engine_and_preserves_staticlib_only(self):
+    def test_producer_preserves_measured_staticlib_and_cli_sequence(self):
         with tempfile.TemporaryDirectory(prefix="cockpit-producer-contract-") as directory:
             repo = Path(directory)
             scripts = repo / "clients/cockpit/scripts"
@@ -215,7 +215,7 @@ cli.chmod(0o755)
             actual = [json.loads(line) for line in capture.read_text().splitlines()]
             common = ["--locked", "--manifest-path", str(repo / "Cargo.toml"), "--profile", "ffi-release"]
             self.assertEqual(actual, [
-                [str(repo / "target"), "rustc", *common, "-p", "phux-client-ffi", "--lib", "--crate-type", "staticlib", "--features", "phux-protocol/server"],
+                [str(repo / "target"), "rustc", *common, "-p", "phux-client-ffi", "--lib", "--crate-type", "staticlib"],
                 [str(repo / "target"), "build", *common, "-p", "phux"],
             ])
 

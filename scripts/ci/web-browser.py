@@ -162,9 +162,10 @@ def main():
     for name in ("build.log", "chrome.log", "server.log"):
         (logs / name).unlink(missing_ok=True)
     env = dict(os.environ)
-    chromium = shutil.which("chromium")
-    if chromium:
-        env.setdefault("CHROME", chromium)
+    for variable, binary in (("CHROME", "chromium"), ("CHROMEDRIVER", "chromedriver")):
+        executable = shutil.which(binary)
+        if executable:
+            env.setdefault(variable, executable)
     env.setdefault("CARGO_BUILD_JOBS", "2")
     env["CARGO_TARGET_DIR"] = str(Path(env.get("CARGO_TARGET_DIR", ROOT / "target/web-native")).resolve())
     try:

@@ -54,9 +54,8 @@ is kept out of `just ci` deliberately (it spawns real PTY-backed servers, so a
 for that coverage. See CONTRIBUTING.md §"Bar for any change" for the
 gate-by-gate map.
 
-`commitlint` lints **every commit in the PR**, not just the title. It is intended
-to be required; the 2026-09-03 live-ruleset audit found only `check` and `test`,
-so verify that `commitlint` has been added before relying on the merge gate.
+`commitlint` lints **every commit in the PR**, not just the title. The live
+ruleset verified on 2026-09-09 requires `ci` and `commitlint`.
 
 ## How work reaches `main`
 
@@ -64,13 +63,13 @@ so verify that `commitlint` has been added before relying on the merge gate.
 
 | Ruleset | Rules | Bypass |
 |---|---|---|
-| `main` | deletion, non-fast-forward, linear history, pull request, required `check` / `test` | organization admin and the release App, always |
+| `main` | deletion, non-fast-forward, linear history, pull request, required `ci` / `commitlint` | organization admin and the release App, always |
 
 Ordinary maintainers cannot push directly. An organization administrator can
 use the bypass, including for the one-time Cockpit history import documented in
 `docs/RELEASING.md`; use a non-force fast-forward even when bypass is available.
-The live ruleset must also add `commitlint` before it can enforce the full
-documented conventional-commit contract.
+The aggregate `ci` check covers compile-free guards and the routed product
+lanes; raw `check` and `test` jobs remain visible.
 
 An administrator bypass never replaces validation: run `just ci-full` and use a
 PR for review and hosted checks before any exceptional fast-forward. Normal

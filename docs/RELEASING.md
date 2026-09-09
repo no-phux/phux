@@ -54,7 +54,7 @@ tap build.
 | Revalidate an integration tag without publishing | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=true` |
 | Finish an integration release that stalled in draft | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=false` |
 | Re-build or finish a Cockpit release | Dispatch **Actions -> Release Cockpit** with `tag=cockpit-vX.Y.Z` |
-| Check Cockpit locally before its release PR merges | `just cockpit-test`, then `clients/cockpit/scripts/package-macos.sh` after `just cockpit-ffi` |
+| Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with the tag, `stage=building`, then again with `stage=released` |
 | Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
@@ -63,11 +63,13 @@ tap build.
 
 | Flow | Trigger | What it does |
 |---|---|---|
-| Pull request CI | `pull_request` | Docs, Rust, OpenCode V2, Pi, and Claude package gates plus fast real-PTY e2e unless the change is docs-only. Draft PRs skip all of it until marked ready. |
-| Cockpit CI | relevant pull request or `main` path | Builds the same-checkout FFI, tests both Cockpit graphs, and compiles the AppKit app on free arm64 `macos-26`. Draft PRs allocate no runner; ZIP/DMG packaging and the three-cycle soak run only on `main` or manual dispatch. |
-| Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title against `commitlint.config.mjs`. It must be required by main's ruleset; the 2026-09-03 audit found that live setting missing. |
-| Main CI | push to `main` | Same gates as PR CI and refreshes warm caches; a narrowly identified release-only merge skips the duplicate compile because its exact tree already passed required PR CI. |
-| release-please | push to `main` | Maintains the release PR; on merge, tags `vX.Y.Z`, creates a draft GitHub release, and calls `release.yml`. |
+| Pull request CI | `pull_request`, `merge_group` | Compile-free guards always run; Rust and Node integration lanes run for their dependency inputs. Draft PRs skip until ready. |
+| Cockpit CI | shared classifier on PR/main | Builds same-checkout FFI and coordinator, tests Cockpit, and compiles the canonical shipping app on arm64 macOS. ZIP/DMG packaging and the three-cycle soak run on `main` or manual dispatch. |
+| Browser CI | shared classifier on PR/main, manual | Node adapters/session tests, shipping package, and three real Chrome canvas/live-server tests. Only engine inputs reproduce the committed WASM binary. |
+| Native setup | setup inputs, weekly, manual | Uncached native setup/linker assurance; ordinary Rust source changes use the product lanes. |
+| Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title. Live rules require `ci` and `commitlint` (verified 2026-09-09). |
+| Main CI | push to `main` | Reuses successful same-repository validation only for an identical tree, workflow and routed coverage; otherwise runs the normal lanes. Cheap guards always run. |
+| release-please | push to `main` | Maintains the release PR; creates tags/drafts, waits for validation of each emitted tag's exact commit, then calls artifact workflows. |
 | Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Cockpit release | called by release-please, or manual dispatch | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
 | Cockpit SDK head | source-repository dispatch, manual, or Monday 07:17 UTC | Builds Cockpit against the exact SDK ref supplied by the fork; the weekly run catches missed dispatches. |
@@ -79,24 +81,53 @@ tap build.
 
 ### Monorepo CI routing
 
-The root workflow always emits its required `check` and `test` contexts, but
-its classifier skips both jobs before runner allocation for a positively
-identified Cockpit-only diff. Unknown paths fail closed into the root lanes.
+`scripts/ci/classify-changes.py` owns the product dependency routes;
+`scripts/ci/detect-changes.py` resolves PR merge-base, push and merge-group
+events. All four consumers use `.github/actions/classify-changes` without
+duplicated outer path filters. Unknown paths, unavailable history and empty
+diffs request every surface. The required `ci` aggregate rejects failed or
+cancelled lanes and retains the visible `check`/`test` job names.
 
-| Change | Root Phux CI | Cockpit macOS CI |
-|---|---|---|
-| `clients/cockpit/**` only | skipped | full tests + app build |
-| Cockpit release metadata (`clients/cockpit/**` plus the shared release manifest) | skipped | full tests + app build |
-| Root/crate/integration only | full | not triggered |
-| `phux-client-core`, `phux-client-ffi`, `phux-perf`, `phux-protocol`, Cargo manifests/lockfile, Rust toolchain, or root Cockpit recipes | full | full tests + app build |
-| Draft PR | skipped until ready | skipped until ready |
-| Cockpit path on `main` | skipped | tests + app build + package + three-cycle soak |
+| Change | Product validation |
+|---|---|
+| Handwritten docs, including Cockpit README | Compile-free guards |
+| Workflow/action-only changes | Compile-free workflow/contract guards |
+| `integrations/**` | Node integration gates |
+| `clients/cockpit/**` source | Cockpit tests + shipping app |
+| Browser source | Node/WASM package + Chrome/live-server tests |
+| Root crates | Rust + Cockpit coordinator coverage; browser also runs for its Rust/demo-server dependency closure |
+| Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
+| `.config/zig-toolchain.json`, engine source/vendor/installer | Affected products plus byte-identical engine reproduction |
+| Embedded `skills/**` | Rust + Cockpit; these Markdown files are compiled product inputs |
 
-`scripts/ci/classify-changes.sh` owns the root decision and
-`scripts/ci/check-classify-changes.sh` locks its truth table. Keep Cockpit's
-workflow `paths` list aligned with the transitive in-repo dependency closure of
-`phux-client-ffi`; otherwise a shared ABI input can change without rebuilding
-the app that consumes it.
+`bash scripts/ci/check-classify-changes.sh` exercises routes and actual event
+diffs, including cross-surface renames and the browser server's manifest closure.
+The browser shell is opt-in: `nix develop .#browser -c python3 scripts/ci/web-browser.py`.
+
+### Validation and artifact reuse
+
+PR validation is latest-wins. Root and Cockpit main runs are keyed by SHA so a
+later push cannot cancel validation that an immutable release tag needs. Root
+and browser main checks first look for a seven-day validation receipt. Reuse requires a
+successful run in this repository, the same workflow path, identical routed
+coverage, and the source run's Git tree independently resolved through GitHub's
+Git database. PR head and tested merge trees must agree. Missing, expired,
+untrusted, differently scoped or unavailable evidence runs normal validation.
+
+Cockpit main still performs packaging and lifecycle verification, which exceed
+PR coverage. Its successful main run saves the two final Rust outputs in an
+exact-key cache: clean source tree, compiler versions and Zig executable hash,
+platform/CPU, Xcode/SDK, profile and build flags (including native-engine
+optimization). Unversioned Ghostty source/system-directory overrides cannot
+reuse this cache. Release orchestration waits for that tagged commit's
+validation before restoring them. The manifest verifies both artifact hashes;
+a miss rebuilds from the tagged checkout. Only successful main validation saves
+the shared entry. Dependency caches remain best-effort accelerators.
+
+Signing, packaging, downloaded-byte verification and release lifecycle checks
+remain release-owned. The aborting root `release` profile and unwinding Cockpit
+`ffi-release` profile are distinct; their binaries are never interchanged.
+Historical tags retain their legacy build path when the new helpers are absent.
 
 Required secrets:
 
@@ -243,8 +274,9 @@ components do not mirror the Rust workspace version.
 conventional-commit log and writes it into `[workspace.package].version` on the
 release PR (via a TOML jsonpath updater configured in
 `release-please-config.json`). The `sync-lockfile` job then runs
-`cargo update --workspace` on the same PR so `Cargo.lock` matches; release-please
-cannot update a lockfile itself.
+`cargo update --workspace` in the root and standalone browser workspace on the
+same PR so both lockfiles record the new internal package versions while
+retaining external pins; release-please cannot update those lockfiles itself.
 
 Pre-1.0 bump rules, set in `release-please-config.json`:
 
@@ -307,7 +339,7 @@ minimum distro. Before this existed the check was a `grep` for `/nix/store` in
 `otool -L` output — macOS only, one failure mode, and nothing whatsoever on
 Linux.
 
-Those tarballs are pinned by SHA-256 in `release.yml`, one digest per target,
+Those tarballs are pinned by SHA-256 in `.config/zig-toolchain.json`, one digest per target,
 and the digests are hand-written on purpose — a checksum fetched at build time
 would verify nothing about the server that served the tarball. **Bumping
 `ZIG_VERSION` means re-pinning all three digests in the same commit.** Missing

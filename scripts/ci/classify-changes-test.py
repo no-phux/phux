@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,15 +39,15 @@ class RoutingTests(unittest.TestCase):
             (["integrations/pi/src/index.ts"], {"integrations"}),
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),
             ([".claude-plugin/marketplace.json"], {"integrations"}),
-            (["crates/phux-server/src/lib.rs"], {"phux", "cockpit"}),
+            (["crates/phux-server/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux-protocol/Cargo.toml"], {"phux", "cockpit", "web", "native"}),
             (["crates/phux-protocol/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux-client-core/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux-perf/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "cockpit"}),
+            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux/build.rs"], {"phux", "cockpit", "native"}),
             (["Cargo.toml"], {"phux", "cockpit", "web", "native"}),
-            (["Cargo.lock"], {"phux", "cockpit", "native"}),
+            (["Cargo.lock"], {"phux", "cockpit", "web", "native"}),
             ([".cargo/config.toml"], {"phux", "cockpit", "web", "native"}),
             ([".config/zig-toolchain.json"], {"phux", "cockpit", "web", "web_engine", "native"}),
             (["scripts/install-zig.sh"], {"phux", "cockpit", "web", "web_engine", "native"}),
@@ -55,6 +56,9 @@ class RoutingTests(unittest.TestCase):
             ([".github/workflows/native-setup.yml"], set()),
             ([".github/actions/setup-rust-lane/action.yml"], set()),
             (["scripts/ci/classify-changes.sh"], set()),
+            (["scripts/ci/validation_receipt.py"], set()),
+            (["scripts/ci/wait_validation.py"], set()),
+            (["scripts/ci/cockpit_artifacts.py"], {"cockpit"}),
             (["clients/cockpit/src/main.zig", "integrations/pi/src/index.ts"], {"cockpit", "integrations"}),
             (["docs/SETUP.md", "clients/phux-web/src/lib.rs"], {"web"}),
         ]
@@ -89,6 +93,25 @@ class RoutingTests(unittest.TestCase):
                 output = classify(paths)
                 self.assertEqual(output["docs_only"], docs)
                 self.assertEqual(output["workflow_only"], workflows)
+
+    def test_browser_native_server_dependency_closure(self):
+        manifests = {path.parent.name: tomllib.loads(path.read_text())
+                     for path in (ROOT / "crates").glob("*/Cargo.toml")}
+        visited = set()
+        pending = ["phux-server", "phux-client-core", "phux-protocol"]
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            manifest = manifests[name]
+            tables = [manifest, *manifest.get("target", {}).values()]
+            dependencies = {dependency for table in tables
+                            for key in ("dependencies", "dev-dependencies", "build-dependencies")
+                            for dependency in table.get(key, {})}
+            pending.extend(dependencies & manifests.keys() - visited)
+            with self.subTest(crate=name):
+                self.assertEqual(classify([f"crates/{name}/src/lib.rs"])["web_needed"], "true")
 
 
 class EventTests(unittest.TestCase):
@@ -198,7 +221,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 2)
 
     def test_shared_detection_has_no_outer_path_filter(self):
-        for name in ("ci", "native-setup"):
+        for name in ("ci", "native-setup", "cockpit-ci", "web-check"):
             workflow = (ROOT / f".github/workflows/{name}.yml").read_text()
             triggers = workflow.split("concurrency:")[0]
             with self.subTest(workflow=name):
@@ -210,7 +233,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_aggregate_rejects_failed_and_cancelled_new_lanes(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        javascript = workflow.split("node -e '", 1)[1].rsplit("'", 1)[0]
+        javascript = workflow.split("node -e '", 1)[1].split("\n          '\n", 1)[0]
         baseline = {name: {"result": "skipped"} for name in ("check", "test", "integrations")}
         baseline.update({name: {"result": "success"} for name in ("changes", "workflow-gate")})
         for job, result, expected in [

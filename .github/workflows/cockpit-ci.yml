@@ -6,13 +6,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cockpit-ci-${{ github.ref }}
-  # Latest-wins validation; publication has its own release-identity group.
+  # A newer main push cannot cancel validation/artifacts needed by a release.
+  group: cockpit-ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -113,7 +114,7 @@ jobs:
           ./scripts/host-raster-check.sh --min-solid 4179
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
-        run: bash clients/cockpit/scripts/build-phux-artifacts.sh
+        uses: ./.github/actions/cockpit-rust-artifacts
 
       - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit
@@ -122,12 +123,12 @@ jobs:
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.
       - name: Build the production macOS app
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: clients/cockpit
         run: bash ./scripts/build-shipping-app.sh --summary all
 
       - name: Package and verify the arm64 macOS app
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: |
           set -euo pipefail
           VERSION="$(< clients/cockpit/version.txt)"
@@ -151,6 +152,12 @@ jobs:
       # Save last so a failed build never poisons the cache with a partial
       # compile, only from main so PRs never write (see above), and only on
       # a miss — cache/save errors when the key already exists.
+      - name: Save validated same-tree Rust artifacts for release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: ./.github/actions/cockpit-rust-artifacts
+        with:
+          mode: save
+
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.ref == 'refs/heads/main' && steps.zig-cache.outputs.cache-hit != 'true'
         with:

@@ -1614,7 +1614,7 @@ mod tests {
     /// terminal unknown, and the post-result edge gate — needs a server that
     /// advertises the capability *and* can script an `APPLY_INPUT` refusal,
     /// neither of which the shared harness expresses. It lives in
-    /// `tests/agent_prompt_wire.rs`.
+    /// `tests/connection/agent_prompt_wire.rs`.
     #[tokio::test]
     async fn a_server_without_acknowledged_input_is_refused_not_downgraded() {
         let dir = tempfile::tempdir().expect("temp dir");

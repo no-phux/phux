@@ -11,7 +11,8 @@ and release, plus executable/test artifacts that the caches do not retain.
 Three release platforms are legitimate distribution targets. Rebuilding the
 same application graph at several lifecycle stages is the stronger optimization
 opportunity. This audit maps the boundaries, measures representative jobs, and
-identifies changes that need experiments before claiming savings.
+identifies changes that need experiments before claiming savings. The baseline
+below remains historical; implementation evidence is recorded at the end.
 
 ## Evidence and scope
 
@@ -444,3 +445,102 @@ not sufficient to diagnose the Blacksmith cache: the API returned no current
 `cockpit-zig-`/`v0-rust-cockpit-` keys even though the completed logs prove cache
 restores. No claim of current cache eviction or cache-backend billing is made
 from that discrepancy.
+
+## Implementation evidence (2026-09-09)
+
+The follow-up changes preserve the baseline above and change the ownership
+boundaries described in [the release guide](../docs/RELEASING.md#monorepo-ci-routing).
+
+| Boundary | Implemented change | Acceptance evidence |
+|---|---|---|
+| Routing | One shared classifier/event resolver; separate cheap, Node and Rust jobs; native setup only on setup inputs plus weekly/manual | Historical routing produced 46 assertion failures and four missing-output errors; replacement passes event/route fixtures including coordinator and browser-server dependency closure |
+| Browser | Engine reproduction only on engine inputs; real Chrome canvas/native-checkpoint/fallback coverage | Four adapter and 16 session Node tests; three Chrome tests; shipping WASM package; official-Zig reproduction byte-identical on macOS arm64 and Linux x86_64 |
+| Rust test targets | 28 small integration roots grouped into eight suites | 96 → 76 workspace test binaries; 4,449 test cases including 85 ignored preserved exactly after module-name normalization; 363 affected nextest cases and all 315 moved libtest cases passed |
+| Cockpit shipping | One explicit ReleaseSafe/aarch64-macos app configuration; main packaging owns the shipping compile | Real shipping build, package/signature/ZIP/mounted-DMG verification and three-cycle packaged lifecycle soak passed during the experiment; final producer retains the original Rust feature sequence |
+| Main validation | Root/browser exact-tree receipts replace subject-based release skipping | Reject failed, expired, foreign-repository, wrong-workflow, wrong-source-tree and differently scoped evidence; missing evidence runs normal validation |
+| Release handoff | Resolve each emitted tag independently; wait for that commit's validation; retain final Cockpit Rust outputs | Cache identity includes source tree, compiler, CPU/platform, SDK/Xcode, profile and build flags; byte hashes checked on restore and nonmutating CLI staging |
+| Compiler pins | Data manifest owns official compiler version/archive hashes | Scoped setup tests, official-index comparison for all three platforms, and historical-tag fallback exercised for all three hosts with checksum-failure rejection |
+
+Independent review found and corrected explicit Chrome selection and surviving
+process-group descendants. Both descendant-survival regressions failed against
+the actual first implementation, then passed after correction. An explicitly
+selected browser wrapper recorded both browser-test launches. Review also caught
+receipt provenance, tag-vs-trigger SHA confusion, cancellation stranding release
+drafts, historical-tag compatibility, and a potential static-library write during
+concurrent Zig linking. The final verifier reads current output hashes without
+rewriting files; pre-build restore publishes complete files atomically. Native
+engine optimization is part of the key, external engine source/system overrides
+are rejected, and the Zig executable hash distinguishes compiler builds that
+report the same version. Release lock synchronization now includes the standalone
+browser's three internal path-package versions; an offline historical-lock probe
+verified their refresh without changing any external dependency entry.
+
+PR runs remain latest-wins. Root and Cockpit main validation instead use
+per-SHA concurrency, because those successful runs can be prerequisites of
+immutable releases. This is an intentional correction to the initial blanket
+latest-wins recommendation. Root and Cockpit releases retain independent
+validation/publication dependencies.
+
+The named complexity skill was unavailable. Radon/Lizard and manual baseline
+counts were used instead: classifier maximum CCN 13 → 10; event resolver
+7 → maximum 4; new receipt/release helpers remain at or below 8. The browser
+cleanup entry point moved 4 → 3, with small named process-group helpers.
+No hosted-runner or billing savings are inferred from these local checks.
+
+### Rust test-target experiment
+
+The same private target directory was used before and after grouping. Each
+sample cleaned all 18 workspace packages while retaining dependencies, with
+`CARGO_INCREMENTAL=0` and `CARGO_BUILD_JOBS=2`. Test/helper bodies and both
+Proptest corpus seeds were preserved; designated e2e/stress/performance and
+process-environment/allocator/snapshot boundaries stayed separate.
+
+| Measure | Before | After |
+|---|---:|---:|
+| Test executables | 96 | 76 |
+| Integration executables | 77 | 57 |
+| Rebuilt Cargo artifacts | 124 | 104 |
+| Selected integration executable bytes | 98.75 MiB | 49.83 MiB |
+| Paired workspace rebuild wall time | 521.4s | 339.0s |
+
+CPU contention changed substantially across the wall-time samples, so the
+observed 35% reduction is **not** a stable CI speedup estimate. Executable count,
+byte size and normalized test inventory are the stronger acceptance evidence.
+Source-only independent review found no lost process isolation or test selection;
+the release interoperability gate still selects its original one WSS and five
+QUIC cases through the new `connection` suite. Seven affected packages passed
+all-targets/all-features Clippy with warnings denied.
+
+### Cockpit producer experiments and selection
+
+Three serialized cold builds used the same Rust source inputs, Rust 1.90.0,
+Zig 0.16.0, M4 Pro/Xcode 26.6 host and two Cargo jobs. Each had its own fresh
+target and Zig cache. An earlier sample that overlapped Clippy was discarded.
+
+| Producer | Cold wall time | Compiled units | Later CLI staging |
+|---|---:|---:|---|
+| Original staticlib-only FFI, then CLI | 277.9s | 357 | Already uses the producer's final CLI command |
+| Combined Cargo package selection | 287.1s | 322 | 134 packages rebuilt, 161.8s |
+| Staticlib sequence with protocol/server feature alignment | 309.0s | 353 | Zero rebuilds, 0.17s |
+
+**Neither feature-unification experiment is adopted.** Combined selection emits
+additional FFI formats and changes dependency LTO units; it is slower cold and
+invalidates the later CLI-only freshness invocation. Narrower native-engine
+alignment preserves staticlib output and avoids that LTO mismatch, but is also
+slower cold than the original sequence. Reducing Ghostty builds from two to one
+does not establish a net win when the resulting feature set costs more elsewhere.
+The shared producer therefore retains the original staticlib-only FFI and CLI
+commands, with one worktree-owned target directory and unwind-safe profiles.
+
+During the aligned experiment, all 47 exported FFI symbols matched, the optimized
+panic-containment test passed, and the Debug/null graph reported 536 passed and
+two skipped cases. The canonical shipping build and final package succeeded;
+the warm package graph reused its app-code and executable compilation, completed
+34/34 steps, and passed three lifecycle-soak cycles. These are experiment checks;
+final integrated CI validates the retained original FFI feature configuration.
+
+The adopted savings are the single shipping configuration, removal of main's
+redundant standalone app step, and exact-input final-artifact reuse. No cold Rust
+wall-time improvement is claimed. FFI-only developer test recipes still avoid
+building an unused CLI; app/developer-run entry points prepare the complete pair
+before starting the Zig graph.
