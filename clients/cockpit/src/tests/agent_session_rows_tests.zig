@@ -14,6 +14,7 @@ const engine_module = @import("../cockpit/native/ts_engine.zig");
 const model_module = @import("../cockpit/model.zig");
 const projection = @import("../cockpit/native/workspace_projection.zig");
 const ts_snapshot = @import("../cockpit/native/ts_snapshot.zig");
+const ts_agents = @import("../cockpit/native/ts_agents.zig");
 const support = @import("../cockpit/phux_support.zig");
 
 const testing = std.testing;
@@ -177,9 +178,33 @@ test "the snapshot carries agent rows as an extension record the TS core decodes
     // `agent_sessions.State`, which `AGENT_STATE_WORDS` in core.ts indexes.
     const payload = [_]u8{ 2, 0, tab, 1, 0, 6 } ++ "claude".* ++ [_]u8{ 0, tab, 2, 1, 5 } ++ "codex".*;
     const record = [_]u8{ @intFromEnum(ts_snapshot.ExtensionKind.agent_rows), payload.len, 0 } ++ payload;
-    // Additive navigation context may follow the agent extension.
+    // Later extension records (navigation context, identity rows) follow the
+    // agent extension, so the payload is found by content, not by position.
     try testing.expect(std.mem.indexOf(u8, bytes, &record) != null);
-    try testing.expectEqual(quiet_len + record.len, bytes.len);
+    // The identity-bound parent rows travel as their own kind-5 record after
+    // the shared sections. Walk the trailing records by their framed lengths
+    // instead of assuming the parent rows close the snapshot.
+    var identity: ?[]const u8 = null;
+    var at = quiet_len;
+    while (at + 3 <= bytes.len) {
+        const kind = bytes[at];
+        const len = std.mem.readInt(u16, bytes[at + 1 ..][0..2], .little);
+        if (at + 3 + len > bytes.len) return error.TestTruncatedExtension;
+        if (kind == @intFromEnum(ts_snapshot.ExtensionKind.parent_agent_rows)) {
+            identity = bytes[at..][0 .. 3 + @as(usize, len)];
+            break;
+        }
+        at += 3 + @as(usize, len);
+    }
+    const rows = identity orelse return error.TestExpectedParentAgentRows;
+    try testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, rows[3..5], .little));
+    try testing.expectEqual(@as(u8, 2), rows[5]);
+    try testing.expectEqual(tab, rows[7]);
+    try testing.expect(std.mem.indexOf(u8, rows, "phux:0:9001@") != null);
+    try testing.expect(std.mem.indexOf(u8, rows, "phux:0:9002@") != null);
+    const target = std.mem.readInt(u16, rows[8..10], .little);
+    const resolved = engine_module.navigation.resolve(model, engine.revision, engine.revision, target).?;
+    try testing.expect(resolved.placed_terminal.terminal_ref.eql(parent.ref));
 
     // The parent terminal asks for attention because one of its rows does.
     try testing.expect(projection.terminalNeedsAttention(model, parent.ref));
@@ -189,4 +214,78 @@ test "the snapshot carries agent rows as an extension record the TS core decodes
     try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9001, .closed, ""));
     const closed = try engine.snapshot(&buffer);
     try testing.expectEqual(quiet_len, closed.len);
+}
+
+fn agentRequest(revision: u64, offset: u16) [13]u8 {
+    var request = [_]u8{0} ** 13;
+    request[0] = 1;
+    request[1] = 5;
+    std.mem.writeInt(u64, request[2..10], revision, .little);
+    std.mem.writeInt(u16, request[10..12], offset, .little);
+    return request;
+}
+
+test "agent inspection reaches every overflow row with catalog and producer evidence" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    var entries: [30]fixture.AgentSessionFixture = undefined;
+    for (&entries, 0..) |*entry, i| entry.* = .{ .id = @intCast(9000 + i), .parent = parent.id, .provider_name = "claude", .native_id = "producer-session", .state = "working" };
+    try fixture.adoptAgentSessions(model.phux().?.host, &entries);
+    try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9029, .live, "{\"seq\":1,\"ts_ms\":70,\"type\":\"ask\",\"data\":{\"question\":\"run it?\"}}\n"));
+    var compact: [6]u8 = undefined;
+    try testing.expectEqual(@as(usize, 6), try ts_agents.snapshot(model, &compact, 0));
+    try testing.expectEqual(@as(u16, 30), std.mem.readInt(u16, compact[3..5], .little));
+    try testing.expectEqual(@as(u8, 0), compact[5]);
+    var buffer: [4096]u8 = undefined;
+    for (0..30) |i| {
+        const request = agentRequest(engine.revision, @intCast(i));
+        const page = try engine.navigationSnapshot(&request, &buffer);
+        try testing.expectEqual(@as(u16, 30), std.mem.readInt(u16, page[13..15], .little));
+        try testing.expectEqual(@as(u8, 1), page[15]);
+        var expected: [64]u8 = undefined;
+        const resource = try std.fmt.bufPrint(&expected, "phux:0:{d}@", .{9000 + i});
+        try testing.expect(std.mem.indexOf(u8, page, resource) != null);
+        try testing.expect(std.mem.indexOf(u8, page, "producer-session") != null);
+        if (i == 29) try testing.expect(std.mem.indexOf(u8, page, "Catalog: working; records: blocked") != null);
+    }
+    const stale = agentRequest(engine.revision - 1, 29);
+    try testing.expectError(error.StaleRevision, engine.navigationSnapshot(&stale, &buffer));
+    try testing.expect(try fixture.feedAgentRecords(model.phux().?.host, 9029, .closed, ""));
+    const request = agentRequest(engine.revision, 29);
+    const empty = try engine.navigationSnapshot(&request, &buffer);
+    try testing.expectEqual(@as(u8, 0), empty[15]);
+}
+
+test "agent parent navigation distinguishes a nonfocused split and survives placement changes" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    const other: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, 4242, "") } };
+    const workspace = model.ws();
+    const tab = workspace.tabOfTerminal(parent.ref).?;
+    const tree = workspace.tree(tab).?;
+    _ = try tree.split(tree.focus, .horizontal, other);
+    try fixture.adoptAgentSessions(model.phux().?.host, &.{
+        .{ .id = 9001, .parent = parent.id, .provider_name = "claude", .state = "blocked" },
+        .{ .id = 9002, .parent = 4242, .provider_name = "codex", .state = "working" },
+    });
+    const first = ts_agents.parentTarget(model, parent.ref);
+    const second = ts_agents.parentTarget(model, other);
+    try testing.expect(first.index != second.index);
+    try testing.expectEqual(first.tab, second.tab);
+    try testing.expect(projection.terminalNeedsAttention(model, parent.ref));
+    const resolved = engine_module.navigation.resolve(model, engine.revision, engine.revision, first.index).?;
+    try testing.expect(resolved.placed_terminal.terminal_ref.eql(parent.ref));
+    try testing.expect(engine_module.navigation.resolve(model, engine.revision + 1, engine.revision, first.index) == null);
+    // Move presentation to another window without changing either resource.
+    model.openWindow(1).?.* = model.primary;
+    model.primary = .{};
+    const moved = ts_agents.parentTarget(model, parent.ref);
+    try testing.expectEqual(@as(u8, 1), moved.window);
+    try testing.expect(model.phux().?.agentSessions()[0].parentRef().?.eql(parent.ref));
 }

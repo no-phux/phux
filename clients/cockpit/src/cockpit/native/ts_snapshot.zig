@@ -29,19 +29,17 @@ pub const Error = error{BufferTooSmall};
 /// follows as something it is not, so a later kind costs the seam nothing.
 /// `empty_session` (empty_session.zig): which windows show the Empty session
 /// state, written only when one does.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4 };
+/// `parent_agent_rows` (ts_agents.zig): identity-bound inspection rows. Kinds 3
+/// and 4 were claimed upstream by navigation context and empty sessions while
+/// this lane was unlanded, so the identity rows take the next free value.
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, parent_agent_rows = 5 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
 const navigation_context_bytes = 6 + max_session_bytes + max_endpoint_bytes + max_connection_detail_bytes;
 
-/// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
-/// what keeps the record inside `max_bytes` beside a full workspace; the
-/// comptime assert below is the proof, not this comment.
-pub const max_provider_bytes: usize = 12;
-pub const max_agent_rows: usize = 24;
-const agent_row_bytes: usize = 5 + max_provider_bytes;
-const agent_record_bytes: usize = 4 + max_agent_rows * agent_row_bytes;
+// Identity rows consume only remaining capacity; always reserve their total.
+const agent_record_bytes: usize = 6;
 
 pub const TabRun = struct {
     first: u8 = 0,
@@ -105,6 +103,7 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeAgentRows(model, out, written);
     written = try encodeNavigationContext(model, out, written);
     written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
+    written = @import("ts_agents.zig").snapshot(model, out[0..@min(out.len, max_bytes)], written) catch return error.BufferTooSmall;
     return out[0..written];
 }
 

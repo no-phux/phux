@@ -5,4 +5,5 @@
   <use template="cockpit-directory" diropen="{window4DirOpen}" />
   <use template="cockpit-rename" renameopen="{window4RenameOpen}" />
   <use template="cockpit-empty" emptyopen="{window4EmptyOpen}" />
+  <use template="cockpit-agents" open="{window4AgentsOpen}" rows="{paletteRows}" notice="{paletteNotice}" previous="{palettePrevious}" next="{paletteNext}" status="{window4Status}" />
 </use>

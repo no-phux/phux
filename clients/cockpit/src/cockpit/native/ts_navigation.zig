@@ -389,6 +389,9 @@ fn collectPage(model: *const Model, request: Request) Error!Page {
 }
 
 pub fn encode(model: *const Model, revision: u64, request: []const u8, out: []u8) Error![]const u8 {
+    // Agent inspection owns kind 5: upstream kind 4 now carries scoped
+    // navigation requests, so the identity-bound roster moved off it.
+    if (request.len >= 2 and request[1] == 5) return @import("ts_agents.zig").encode(model, revision, request, out);
     const parsed = try validateRequest(revision, request);
     const page = try collectPage(model, parsed);
     if (out.len < request.len + 3) return error.BufferTooSmall;
