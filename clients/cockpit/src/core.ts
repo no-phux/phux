@@ -2244,9 +2244,14 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "empty_failed":
       return { ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") };
     case "window_closed": {
-      const window = msg.window;
-      if (!(window >= 1 && window <= 4)) return model;
-      return [model, Cmd.host("cockpit.intent", intent(9, model.engineRevision, 0, Math.trunc(window)))];
+      // Native retirement already matched the actual OS window incarnation.
+      // Withdraw its declaration before the SDK rebuilds; this label never
+      // authorizes a second lifecycle mutation against a recycled slot.
+      // Replace pending snapshots with the post-close disposition. A refused
+      // rehome restores the same work in a new native presentation.
+      return [forgetClosedWindow(model, msg.window), Cmd.request("cockpit.snapshot", NO_BYTES, {
+        key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
+      })];
     }
     case "toggle_tab_placement": {
       const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
@@ -2519,5 +2524,15 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     default:
       return model;
+  }
+}
+
+function forgetClosedWindow(model: Model, window: number): Model {
+  switch (window) {
+    case 1: return { ...model, window1Open: false };
+    case 2: return { ...model, window2Open: false };
+    case 3: return { ...model, window3Open: false };
+    case 4: return { ...model, window4Open: false };
+    default: return model;
   }
 }

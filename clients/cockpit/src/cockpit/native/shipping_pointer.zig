@@ -98,6 +98,10 @@ pub const State = struct {
         return null;
     }
 
+    pub fn hasCapture(self: *const State, raw: Raw) bool {
+        return self.captureIndex(raw) != null;
+    }
+
     fn freeIndex(self: *const State) ?usize {
         for (self.captures, 0..) |slot, index| if (slot == null) return index;
         return null;
@@ -167,6 +171,13 @@ pub const State = struct {
     pub fn cancelAll(self: *State, model: *Model) void {
         if (comptime !support.phux_enabled) return;
         for (0..self.captures.len) |index| self.finish(model, index);
+    }
+
+    pub fn cancelWindow(self: *State, model: *Model, window_id: sdk.platform.WindowId) void {
+        for (self.captures, 0..) |slot, index| {
+            const capture = slot orelse continue;
+            if (capture.window_id == window_id) self.finish(model, index);
+        }
     }
 
     pub fn autoscrollActive(self: *const State, model: *const Model) bool {
@@ -465,6 +476,18 @@ pub fn cancelLocal(model: *Model, fx: anytype, raw: Raw) void {
         .frame = previous.frame,
         .modifiers = previous.modifiers,
     });
+}
+
+pub fn cancelLocalWindow(model: *Model, fx: anytype, window_id: sdk.platform.WindowId) void {
+    for (model.pointer_captures) |capture| {
+        if (!capture.active or capture.window_id != window_id) continue;
+        cancelLocal(model, fx, .{
+            .window_id = window_id,
+            .label = "",
+            .kind = .pointer_cancel,
+            .pointer_id = capture.pointer_id,
+        });
+    }
 }
 
 pub fn localCaptured(model: *const Model, raw: Raw) bool {

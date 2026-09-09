@@ -859,10 +859,10 @@ fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (event.phase == .key_up) return null;
     const key = event.key;
     const palette = bridge.interaction_mode == .palette;
-    if (std.mem.eql(u8, key, "Escape")) return if (palette) .palette_close else .settings_close;
-    if (std.mem.eql(u8, key, "ArrowDown")) return if (palette) .{ .palette_move = 1 } else .{ .settings_move = 1 };
-    if (std.mem.eql(u8, key, "ArrowUp")) return if (palette) .{ .palette_move = -1 } else .{ .settings_move = -1 };
-    if (std.mem.eql(u8, key, "Enter") and !palette) return .settings_commit;
+    if (std.ascii.eqlIgnoreCase(key, "Escape")) return if (palette) .palette_close else .settings_close;
+    if (std.ascii.eqlIgnoreCase(key, "ArrowDown")) return if (palette) .{ .palette_move = 1 } else .{ .settings_move = 1 };
+    if (std.ascii.eqlIgnoreCase(key, "ArrowUp")) return if (palette) .{ .palette_move = -1 } else .{ .settings_move = -1 };
+    if (std.ascii.eqlIgnoreCase(key, "Enter") and !palette) return .settings_commit;
     return null;
 }
 
@@ -1172,11 +1172,13 @@ pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void 
 /// inner app afterwards.
 const PointerHost = struct {
     const workspace_timer_id = std.hash.Wyhash.hash(0, "phux-workspace-refresh");
+    const maintenance_timer_id = std.hash.Wyhash.hash(0, "phux-local-maintenance");
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
+    maintenance_timer_active: bool = false,
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
-        self.inner = inner;
+        self.* = .{ .inner = inner };
         return .{
             .context = self,
             .name = inner.name,
@@ -1187,7 +1189,7 @@ const PointerHost = struct {
             // needs its own start hook even when the inner hook is absent.
             .start_fn = start,
             .event_fn = if (inner.event_fn != null) event else null,
-            .stop_fn = if (inner.stop_fn != null) stop else null,
+            .stop_fn = stop,
             .replay_fn = if (inner.replay_fn != null) replay else null,
         };
     }
@@ -1208,13 +1210,14 @@ const PointerHost = struct {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         defer _ = bridge.replayInteraction();
         defer self.syncSelectionAutoscrollTimer(runtime) catch {};
+        defer self.syncMaintenanceTimer(runtime) catch {};
         const engine = bridge.engine;
         const before = if (engine) |current| current.beginPublication() else null;
-        if (value == .timer and value.timer.id == workspace_timer_id and !bridge.replayInteraction()) {
-            if (engine) |current| current.refreshWorkspace();
-        }
+        if (value == .timer) onTimer(runtime, value.timer.id);
         routeNativeInput(value);
-        try self.inner.event(runtime, value);
+        closeNativeWindow(value);
+        try self.inner.event(runtime, modalInputEvent(value));
+        syncWindowIds(runtime);
         if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
         if (engine) |current| {
             if (current.finishPublication(before.?)) bridge.announce(current);
@@ -1227,7 +1230,57 @@ const PointerHost = struct {
             runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
             self.selection_autoscroll_timer_active = false;
         }
+        if (self.maintenance_timer_active) {
+            runtime.cancelTimer(maintenance_timer_id) catch {};
+            self.maintenance_timer_active = false;
+        }
         try self.inner.stop(runtime);
+    }
+
+    fn onTimer(runtime: *native_sdk.Runtime, id: u64) void {
+        if (bridge.replayInteraction()) return;
+        const engine = bridge.engine orelse return;
+        if (id == workspace_timer_id) return engine.refreshWorkspace();
+        if (id != maintenance_timer_id) return;
+        const fx = engineFx() orelse return;
+        if (engine.maintain(fx)) bridge.announce(engine);
+        runtime.invalidate();
+    }
+
+    fn syncWindowIds(runtime: *native_sdk.Runtime) void {
+        if (bridge.replayInteraction()) return;
+        const engine = bridge.engine orelse return;
+        var windows: [native_sdk.platform.max_windows]native_sdk.platform.WindowInfo = undefined;
+        for (runtime.listWindows(&windows)) |window| engine.noteNativeWindow(window);
+    }
+
+    fn closeNativeWindow(value: native_sdk.Event) void {
+        if (value != .window_closed) return;
+        if (bridge.replayInteraction()) return;
+        const engine = bridge.engine orelse return;
+        const fx = engineFx() orelse return;
+        if (engine.closeNativeWindow(fx, value.window_closed.window_id)) {
+            engine.noteTopologyChange(fx, topologyTimer);
+            bridge.announce(engine);
+        }
+        // The SDK still owns slot/tree cleanup and dispatches the core's
+        // presentation-only close message. Native identity owns retirement.
+    }
+
+    fn modalInputEvent(value: native_sdk.Event) native_sdk.Event {
+        if (value != .canvas_widget_keyboard or bridge.interaction_mode != .palette) return value;
+        var routed = value.canvas_widget_keyboard;
+        const target = routed.target orelse return value;
+        if (target.kind != .input) return value;
+        if (!std.meta.eql(routed.keyboard.modifiers, canvas.WidgetKeyboardModifiers{})) return value;
+        if (overlayKey(routed.keyboard) == null) return value;
+        // The palette owns bare Escape/Up/Down even while its query editor is
+        // focused. Route those through the adapter's public app-key fallback;
+        // text, Enter/on-submit, modified editing and buttons keep their owner.
+        routed.target = null;
+        routed.route = &.{};
+        routed.keyboard.edit = null;
+        return .{ .canvas_widget_keyboard = routed };
     }
 
     fn focusTerminalAfterTabClick(self: *PointerHost, runtime: *native_sdk.Runtime, routed: native_sdk.runtime.CanvasWidgetPointerEvent) !void {
@@ -1263,42 +1316,71 @@ const PointerHost = struct {
         }
         self.selection_autoscroll_timer_active = needed;
     }
+
+    fn syncMaintenanceTimer(self: *PointerHost, runtime: *native_sdk.Runtime) !void {
+        const engine = bridge.engine orelse return;
+        const needed = !bridge.replayInteraction() and engine.maintenancePending();
+        if (needed == self.maintenance_timer_active) return;
+        if (needed) {
+            // Reuse the shipping native interaction cadence; maintenance has
+            // no idle heartbeat and no dependency on an occluded GPU surface.
+            try runtime.startTimer(maintenance_timer_id, cockpit.selection_autoscroll_interval_ns, true);
+        } else {
+            try runtime.cancelTimer(maintenance_timer_id);
+        }
+        self.maintenance_timer_active = needed;
+    }
 };
 
 fn routeNativeInput(value: native_sdk.Event) void {
     if (bridge.replayInteraction()) return;
     const engine = bridge.engine orelse return;
     const fx = engineFx() orelse return;
+    dispatchNativeInput(engine, fx, value);
+}
+
+fn dispatchNativeInput(engine: *Engine, fx: EngineFx, value: native_sdk.Event) void {
     switch (value) {
         .command => |command| engine.adoptFocusedWindow(command.window_id),
         // A routed key names the window it was typed in: adopt it before the
         // key fallback resolves the focused pane, as CockpitHost adopts a
         // routed event's window. The raw echo is left to the pointer kinds.
         .canvas_widget_keyboard => |routed| {
-            const index = Engine.windowIndexForCanvas(routed.view_label) orelse return;
-            if (engine.model.windowOpen(index)) engine.model.active_window = index;
+            adoptCanvasWindow(engine, routed.window_id, routed.view_label);
         },
-        .gpu_surface_input => |raw| {
-            switch (raw.kind) {
-                .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
-                else => return,
-            }
-            const index = Engine.windowIndexForCanvas(raw.label) orelse return;
-            if (bridge.interaction_mode != .terminal) return;
-            if (!engine.model.windowOpen(index)) return;
-            // A press in any window's grid makes that window the active one
-            // before the pane under it is resolved, as CockpitHost adopts
-            // the routed event's window.
-            engine.model.active_window = index;
-            if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
-            engine.noteTopologyChange(fx, topologyTimer);
+        .canvas_widget_pointer => |routed| {
+            // Adopt chrome's origin in the same transition as its command.
+            // The earlier raw down must not stale this click's own revision.
+            if (bridge.interaction_mode == .terminal and activatedControl(routed)) adoptCanvasWindow(engine, routed.window_id, routed.view_label);
         },
+        .gpu_surface_input => |raw| routeSurfacePointer(engine, fx, raw),
         .files_dropped => |drop| _ = engine.onDrop(fx, drop),
         .timer => |timer| if (timer.id == cockpit.selection_autoscroll_timer_id) {
             engine.selectionAutoscroll(fx);
         },
         else => {},
     }
+}
+
+fn adoptCanvasWindow(engine: *Engine, window_id: native_sdk.platform.WindowId, label: []const u8) void {
+    const index = Engine.windowIndexForCanvas(label) orelse return;
+    if (engine.matchesNativeWindow(index, window_id)) engine.model.active_window = index;
+}
+
+fn routeSurfacePointer(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
+    if (bridge.interaction_mode != .terminal) return;
+    switch (raw.kind) {
+        .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
+        else => return,
+    }
+    if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
+    engine.noteTopologyChange(fx, topologyTimer);
+}
+
+fn activatedControl(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    const target = routed.press_target orelse return false;
+    return routed.pointer.phase == .up and routed.pointer.button == 0 and
+        routed.pointer.captured_id == target.id and target.bounds.normalized().containsPoint(routed.pointer.point);
 }
 
 var pointer_host = PointerHost{};
@@ -2623,6 +2705,96 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
     } });
 }
 
+fn beginShippingDividerDrag(rig: *Rig) !cockpit.layout.Divider {
+    const engine = bridge.engine.?;
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    var dividers: [cockpit.layout.max_panes - 1]cockpit.layout.Divider = undefined;
+    const count = tree.dividers(chrome.content, cockpit.projection.split_divider_width, cockpit.projection.split_pane_min_width, cockpit.projection.split_pane_min_height, &dividers);
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const divider = dividers[0];
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = workspace.window_id,
+        .label = cockpit.scene.canvasLabelFor(engine.model.active_window),
+        .kind = .pointer_down,
+        .pointer_id = 7,
+        .x = divider.rect.x + divider.rect.width / 2,
+        .y = divider.rect.y + divider.rect.height / 2,
+    } });
+    return divider;
+}
+
+fn moveShippingDivider(rig: *Rig, divider: cockpit.layout.Divider) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .pointer_id = 7,
+        .x = divider.bounds.x + (divider.bounds.width - cockpit.projection.split_divider_width) * 0.7,
+        .y = divider.rect.y + divider.rect.height / 2,
+    } });
+}
+
+test "shipping local divider capture cannot follow a new selected tab" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const divider = try beginShippingDividerDrag(&rig);
+    try rig.dispatch(.new_terminal);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const replacement = engine.model.selectedTree().?;
+    const before = replacement.node(replacement.root).fraction;
+    try moveShippingDivider(&rig, divider);
+    try std.testing.expectEqual(before, replacement.node(replacement.root).fraction);
+    try std.testing.expect(engine.split_drag == null);
+}
+
+test "shipping blur cancels local divider capture" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const divider = try beginShippingDividerDrag(&rig);
+    _ = onLifecycle(.deactivate);
+    try std.testing.expect(engine.split_drag == null);
+    const tree = engine.model.selectedTree().?;
+    const before = tree.node(tree.root).fraction;
+    try moveShippingDivider(&rig, divider);
+    try std.testing.expectEqual(before, tree.node(tree.root).fraction);
+}
+
+test "shipping unrelated pointer down preserves the captured divider" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    _ = try beginShippingDividerDrag(&rig);
+    const engine = bridge.engine.?;
+    try std.testing.expect(engine.split_drag != null);
+    var raw: native_sdk.platform.GpuSurfaceInputEvent = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .pointer_id = 8,
+        .x = 2,
+        .y = 2,
+    };
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = raw });
+    try std.testing.expect(engine.split_drag != null);
+    raw.pointer_id = 7;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = raw });
+    try std.testing.expect(engine.split_drag == null);
+}
+
 test "painting speculative placement cannot bypass a refused intent" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2739,6 +2911,352 @@ test "changing placement preserves the adopted secondary window" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
     try rig.settle(2, "READY");
     try std.testing.expectEqual(core.TabPlacement.side, rig.app_state.model.tabPlacement);
+}
+
+test "automation batched create hands typing to the new terminal" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var button: u64 = 0;
+    for (layout.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.widget.id;
+    }
+    try std.testing.expect(button != 0);
+    var command: [128]u8 = undefined;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-click {s} {d}", .{ canvas_label, button }));
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .text = "probe",
+    } });
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    try std.testing.expectEqual(@as(usize, 5), pane.outbound_len);
+}
+
+test "shipping Settings probe preserves the originating secondary workspace" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const origin = engine.model.active_window;
+    const terminal = engine.model.focusedTerminalRef().?;
+    try std.testing.expect(origin != 0);
+    try rig.dispatch(.settings_open);
+    try std.testing.expect(engine.config_probe.probed);
+    try std.testing.expect(engine.input_suspended);
+    try std.testing.expectEqual(origin, engine.model.active_window);
+    try std.testing.expect(terminal.eql(engine.model.focusedTerminalRef().?));
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+}
+
+/// Deliver only timers the shipping host actually armed, without GPU frames or
+/// child output. A missing scheduler must fail on behavior, not a made-up timer.
+fn fireScheduledTimers(rig: *Rig, ticks: usize) !void {
+    for (0..ticks) |tick| {
+        const platform = &rig.harness.null_platform;
+        const timers = platform.timers;
+        for (timers[0..platform.timer_count]) |timer| {
+            if (platform.fireTimer(timer.id, @intCast((tick + 1) * std.time.ns_per_s))) |event|
+                try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, event);
+        }
+    }
+}
+
+fn maintenanceArmed(rig: *const Rig) bool {
+    const timer = rig.harness.null_platform.startedTimer(PointerHost.maintenance_timer_id) orelse return false;
+    return timer.active;
+}
+
+test "shipping quiet local input retries when PTY capacity returns without frames" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    bridge.shells = true;
+    try std.testing.expect(!maintenanceArmed(&rig));
+    const executor = rig.app_state.effects.executor;
+    rig.app_state.effects.executor = .fake;
+    bridge.spawnShells(engine, engineFx().?);
+    rig.app_state.effects.executor = executor;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    rig.app_state.effects.fake_pty_write_full = true;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .text = "quiet-input",
+    } });
+    try std.testing.expectEqual(@as(usize, 11), pane.outbound_len);
+    try std.testing.expect(maintenanceArmed(&rig));
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.effects.ptyWrittenBytes(pane.pty_key).len);
+    rig.app_state.effects.fake_pty_write_full = false;
+    try fireScheduledTimers(&rig, 8);
+    try std.testing.expectEqualStrings("quiet-input", rig.app_state.effects.ptyWrittenBytes(pane.pty_key));
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try std.testing.expect(!maintenanceArmed(&rig));
+}
+
+test "shipping failed local pane rejects execution keys and disposes queued input" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .text = "queued",
+    } });
+    _ = shellEvent(.{ .key = pane.pty_key, .kind = .exit, .reason = .spawn_failed });
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try std.testing.expectEqual(@as(u64, 6), pane.outbound_dropped);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Enter",
+    } });
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.{ .native_command = 14 });
+    try std.testing.expect(pane.session.search.open);
+}
+
+test "shipping scheduled maintenance preserves a query reply behind a full input ring" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    bridge.shells = true;
+    const executor = rig.app_state.effects.executor;
+    rig.app_state.effects.executor = .fake;
+    bridge.spawnShells(engine, engineFx().?);
+    rig.app_state.effects.executor = executor;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    rig.app_state.effects.fake_pty_write_full = true;
+    @memset(&pane.outbound_buffer, 'x');
+    pane.outbound_len = pane.outbound_buffer.len;
+    _ = shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b[5n" });
+    try std.testing.expectEqualStrings("\x1b[0n", pane.session.pendingResponses());
+    // A real platform wake arms demand-driven work after the callback.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    try std.testing.expect(maintenanceArmed(&rig));
+    rig.app_state.effects.fake_pty_write_full = false;
+    try fireScheduledTimers(&rig, 8);
+    // The SDK inspection capture retains only the last 4096 bytes; it is not
+    // the delivery queue. Its suffix must contain input then the whole reply.
+    const written = rig.app_state.effects.ptyWrittenBytes(pane.pty_key);
+    try std.testing.expect(written.len > 4);
+    for (written[0 .. written.len - 4]) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
+    try std.testing.expectEqualStrings("\x1b[0n", written[written.len - 4 ..]);
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try std.testing.expectEqual(@as(usize, 0), pane.session.pendingResponses().len);
+    try std.testing.expectEqual(@as(u64, 0), pane.outbound_dropped);
+    try std.testing.expect(!maintenanceArmed(&rig));
+}
+
+test "shipping SDK text and Enter adopt their main window after secondary creation" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const main = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const secondary = engine.model.focusedTerminalRef().?;
+    try std.testing.expect(!main.eql(secondary));
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas x main-only");
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
+    const pane = engine.model.provider.terminal(main).?;
+    try std.testing.expectEqualStrings("main-only\r", pane.outbound_buffer[0..pane.outbound_len]);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.provider.terminal(secondary).?.outbound_len);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+}
+
+test "shipping toolbar creation belongs to the clicked secondary window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = engine.model.wsAt(1).?.window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    // Real input in the main view establishes another current window before
+    // the secondary toolbar click; SDK focusView alone is not native adoption.
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas escape");
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    const id = engine.model.wsAt(1).?.window_id;
+    const tree = try rig.harness.runtime.canvasWidgetLayout(id, "phux-cockpit-canvas-1");
+    var button: u64 = 0;
+    for (tree.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.widget.id;
+    }
+    try std.testing.expect(button != 0);
+    var command: [128]u8 = undefined;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-click phux-cockpit-canvas-1 {d}", .{button}));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsAt(0).?.tab_count);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsAt(1).?.tab_count);
+    try std.testing.expect(!engine.intent_refused);
+}
+
+test "shipping failed pane rejects a remembered kitty key release" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("\x1b[>3u");
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas a a");
+    // Remember another press without its release before the exit arrives.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .key = "a",
+        .text = "a",
+    } });
+    _ = shellEvent(.{ .key = pane.pty_key, .kind = .exit, .reason = .spawn_failed });
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_up,
+        .key = "a",
+    } });
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+}
+
+test "shipping quiet search completes on scheduled timers without frames" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    for (0..20000) |_| pane.session.feed("row NEEDLE here\r\n");
+    try rig.dispatch(.{ .native_command = 14 });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .text = "NEEDLE",
+    } });
+    try std.testing.expect(pane.session.searchPending());
+    const initial = pane.session.searchMatchCount();
+    try fireScheduledTimers(&rig, 1);
+    try std.testing.expect(pane.session.searchPending());
+    try std.testing.expect(pane.session.searchMatchCount() > initial);
+    try fireScheduledTimers(&rig, 32);
+    try std.testing.expect(!pane.session.searchPending());
+    try std.testing.expect(pane.session.searchMatchCount() > initial);
+    try std.testing.expectEqual(@as(usize, 20000), pane.session.searchMatchCount());
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    try std.testing.expect(!maintenanceArmed(&rig));
+}
+
+test "shipping maintenance is cancelled by search close and suppressed during replay" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    for (0..4000) |_| pane.session.feed("row NEEDLE here\r\n");
+    try rig.dispatch(.{ .native_command = 14 });
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas n NEEDLE");
+    try std.testing.expect(maintenanceArmed(&rig));
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas escape");
+    try std.testing.expect(!pane.session.search.open);
+    try std.testing.expect(!maintenanceArmed(&rig));
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas a a");
+    try std.testing.expect(maintenanceArmed(&rig));
+    const queued = pane.outbound_len;
+    try rig.decorated.replayControl(.arm);
+    try fireScheduledTimers(&rig, 1);
+    try std.testing.expect(!maintenanceArmed(&rig));
+    try std.testing.expectEqual(queued, pane.outbound_len);
+}
+
+test "shipping focused palette editor dismisses and moves by keyboard" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_terminal);
+    try rig.settle(1, "READY");
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var editor: u64 = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .input and std.mem.eql(u8, node.widget.semantics.label, "Find terminal or session")) editor = node.widget.id;
+    }
+    try std.testing.expect(editor != 0);
+    try std.testing.expectEqual(editor, rig.harness.runtime.views[0].canvas_widget_focused_id);
+    const before = rig.app_state.model.paletteCursor;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    try std.testing.expect(rig.app_state.model.paletteCursor != before);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas escape");
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas a absent");
+    try rig.settleNavigation();
+    try std.testing.expectEqualStrings("absent", rig.app_state.model.paletteQuery);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas super+a");
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas 1 1");
+    try rig.settleNavigation();
+    try std.testing.expectEqualStrings("1", rig.app_state.model.paletteQuery);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+}
+
+test "shipping agent inspector arrows and Enter navigate the exact parent" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const local = engine.model.focusedTerminalRef().?;
+    const parent = try rig.attachFixture();
+    const tree = engine.model.ws().selectedTree().?;
+    _ = try tree.split(tree.focus, .horizontal, local);
+    const remote = engine.model.phux().?;
+    try @TypeOf(remote.*).test_support.adoptAgentSessions(remote.host, &.{
+        .{ .id = 9001, .parent = 9999, .provider_name = "claude", .state = "blocked" },
+        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .state = "blocked" },
+    });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.agents_open);
+    try rig.settleNavigation();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    try rig.settleNavigation();
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteOffset);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expect(parent.eql(engine.model.focusedTerminalRef().?));
 }
 
 test "clicking the selected tab returns Enter to its focused split pane in strip and rail" {
@@ -3036,6 +3554,15 @@ const parity_states = [_]ChromeState{
 };
 
 fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, density: canvas.Density, label: []const u8) !usize {
+    return auditWindowChromeAt(model, size, density, label, 0);
+}
+
+fn chromeViewAt(ui: *Adapter.Ui, model: *const core.Model, window: usize) Adapter.Ui.Node {
+    const labels = [_][]const u8{ "", "phux-window-1", "phux-window-2", "phux-window-3", "phux-window-4" };
+    return if (window == 0) mainView(ui, model) else windowView(ui, model, labels[window]);
+}
+
+fn auditWindowChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, density: canvas.Density, label: []const u8, window: usize) !usize {
     const arena_bytes = try std.testing.allocator.alloc(u8, 1 << 20);
     defer std.testing.allocator.free(arena_bytes);
     var fixed = std.heap.FixedBufferAllocator.init(arena_bytes);
@@ -3043,7 +3570,7 @@ fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, dens
 
     var tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
     tokens.density = density;
-    const node = mainView(&ui, model);
+    const node = chromeViewAt(&ui, model, window);
     const tree = try ui.finalizeWithTokens(node, tokens);
 
     const nodes = try std.testing.allocator.alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
@@ -3088,6 +3615,82 @@ test "the markup chrome passes the layout audit at every declared size, density 
         }
     }
     try std.testing.expectEqual(@as(usize, 0), total);
+}
+
+fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool) !void {
+    const fields = .{ "mainAgentsOpen", "window1AgentsOpen", "window2AgentsOpen", "window3AgentsOpen", "window4AgentsOpen" };
+    inline for (fields, 0..) |field, window| {
+        var scoped = model;
+        inline for (fields) |other| @field(scoped, other) = false;
+        @field(scoped, field) = true;
+        try std.testing.expect(try compiledViewHasLabel(&scoped, window, "Close agent inspector"));
+        try std.testing.expectEqual(loaded, try compiledViewHasLabel(&scoped, window, "Agent resource identity"));
+        for (parity_sizes) |size| {
+            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+                try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&scoped, size, density, state, window));
+            }
+        }
+    }
+}
+
+test "shipping agent inspection markup handles paging and catalog states in all windows" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const parent = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const fixture = @TypeOf(remote.*).test_support;
+    // 256 UTF-8 bytes is the actual native-id bound, not an ASCII-only proxy.
+    const native_id = "é" ** 128;
+    try fixture.adoptAgentSessions(remote.host, &.{
+        .{ .id = 9001, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .native_id = native_id, .state = "working" },
+        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "codex", .native_id = native_id, .state = "blocked" },
+        .{ .id = 9003, .parent = 9999, .provider_name = "claude", .native_id = native_id, .state = "done" },
+    });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    var snapshot_bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
+    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&snapshot_bytes) });
+    try rig.dispatch(.toggle_tab_placement);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    var agent_rows: usize = 0;
+    for (rig.app_state.model.railRows) |row| {
+        if (row.agent) agent_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), agent_rows);
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+            try std.testing.expectEqual(@as(usize, 0), try auditChromeAt(&rig.app_state.model, size, density, "populated agent rail"));
+        }
+    }
+    try rig.dispatch(.toggle_tab_placement);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.agents_open);
+    try auditInspectorEveryWindow(rig.app_state.model, "agents loading", false);
+    try rig.settleNavigation();
+    try auditInspectorEveryWindow(rig.app_state.model, "agents first page", true);
+    var boundary = rig.app_state.model;
+    var boundary_row = boundary.paletteRows[0].*;
+    boundary_row.resource = "phux:1:4294967295@" ++ "s" ** 253;
+    boundary_row.parent = "phux:1:4294967294@" ++ "s" ** 253;
+    const boundary_rows = [_]*const core.SwitcherRow{&boundary_row};
+    boundary.paletteRows = &boundary_rows;
+    try auditInspectorEveryWindow(boundary, "maximum satellite identities", true);
+    try rig.dispatch(.palette_next);
+    try rig.settleNavigation();
+    try auditInspectorEveryWindow(rig.app_state.model, "agents middle page", true);
+    try rig.dispatch(.palette_next);
+    try rig.settleNavigation();
+    try auditInspectorEveryWindow(rig.app_state.model, "agents absent parent last page", true);
+    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
+    try rig.dispatch(.{ .navigation_failed = "fixture unavailable" });
+    try auditInspectorEveryWindow(rig.app_state.model, "agents unavailable", false);
+    try fixture.adoptAgentSessions(remote.host, &.{});
+    try rig.dispatch(.palette_retry);
+    try rig.settleNavigation();
+    try auditInspectorEveryWindow(rig.app_state.model, "agents empty", false);
 }
 
 test "crowded tab strip keeps every tab and overflow cue inside its allocated chrome slot" {
@@ -3894,24 +4497,203 @@ test "a new window opens a second workspace with its own shell and closes whole 
     // A tab intent from the second window's chrome names that window.
     try std.testing.expectEqual(@as(i64, 32), rig.app_state.model.window1Tabs[0].slot);
 
-    // The OS close button arrives as the declared command; the engine
-    // retires the slot and its shell, and the descriptor goes with it.
+    // The OS incarnation retires native ownership; the SDK's descriptor close
+    // message withdraws presentation while its retained slot is forgotten.
     before = rig.app_state.model.engineSequence.lo;
-    try rig.dispatch(.{ .window_closed = 1 });
+    const close = rig.harness.null_platform.userCloseWindow(engine.model.wsAt(1).?.window_id) orelse return error.TestExpectedWindowClose;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
     try rig.settle(before + 1, "READY");
     try std.testing.expect(!engine.model.windowOpen(1));
     try std.testing.expect(!rig.app_state.model.window1Open);
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.windows(frame).len);
 }
 
+test "shipping OS close cancels an actually captured pre-close snapshot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var windows: [native_sdk.platform.max_windows]native_sdk.platform.WindowInfo = undefined;
+    var id: native_sdk.platform.WindowId = 0;
+    for (rig.harness.runtime.listWindows(&windows)) |window| {
+        if (std.mem.eql(u8, window.label, "phux-window-1")) id = window.id;
+    }
+    try std.testing.expect(id != 0);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    _ = shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b]2;title churn\x07" });
+    try std.testing.expect(engine.revision != @as(u64, @intCast(rig.app_state.model.engineRevision.lo)));
+    // Dispatch the real invalidation through the SDK, capturing its host
+    // request before the OS close. Merely posting the channel event leaves
+    // the request uncaptured and cannot exercise a stale completion.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    try std.testing.expect(bridge.pending);
+    const errors = rig.harness.runtime.dispatchErrorTotal();
+    const close = rig.harness.null_platform.userCloseWindow(id) orelse return error.TestExpectedWindowClose;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
+    try std.testing.expect(!engine.model.windowOpen(1));
+    // Assert each SDK completion boundary, not just eventual convergence:
+    // an old reply must never materialize a replacement native window.
+    for (0..8) |_| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        try std.testing.expect(!rig.app_state.model.window1Open);
+        for (rig.harness.runtime.listWindows(&windows)) |window| {
+            try std.testing.expect(!window.open or !std.mem.eql(u8, window.label, "phux-window-1"));
+        }
+    }
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(!rig.app_state.model.window1Open);
+    try std.testing.expectEqual(errors, rig.harness.runtime.dispatchErrorTotal());
+}
+
+test "shipping OS close capacity refusal recovers a new native incarnation without losing shared work" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const model = engine.model;
+    // Fill the destination with distinct shared identities. Closing the
+    // secondary cannot rehome its tab, so production refuses TabCapacity.
+    for (1..model.primary.tabs.len) |index| {
+        var ref = model.focusedTerminalRef().?;
+        ref.terminal_id.phux.id = @intCast(100 + index);
+        try std.testing.expect(model.primary.admitTab(ref));
+        model.primary.shared_ids[index] = @splat(@intCast(index + 1));
+    }
+    const secondary = model.openWindow(1).?;
+    var retained = model.focusedTerminalRef().?;
+    retained.terminal_id.phux.id = 200;
+    try std.testing.expect(secondary.admitTab(retained));
+    secondary.shared_ids[0] = @splat(100);
+    const tree = secondary.selectedTree().?;
+    var peer = retained;
+    peer.terminal_id.phux.id = 201;
+    _ = try tree.split(tree.root, .horizontal, peer);
+    try std.testing.expect(tree.focusTerminal(retained));
+    model.active_window = 1;
+    engine.sequence += 1;
+    engine.revision += 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const old_id = secondary.window_id;
+    try std.testing.expect(old_id != 0);
+    const divider = try beginShippingDividerDrag(&rig);
+    try std.testing.expect(engine.split_drag != null);
+    const revision = engine.revision;
+    const errors = rig.harness.runtime.dispatchErrorTotal();
+    const close = rig.harness.null_platform.userCloseWindow(old_id) orelse return error.TestExpectedWindowClose;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
+    try std.testing.expect(engine.split_drag == null);
+    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
+    try std.testing.expect(model.windowOpen(1));
+    try std.testing.expect(rig.app_state.model.window1Open);
+    try std.testing.expect(secondary.window_id != 0 and secondary.window_id != old_id);
+    try std.testing.expect(engine.revision > revision);
+    try std.testing.expect(retained.eql(secondary.selectedTree().?.focusedTerminal().?));
+    try std.testing.expectEqual(model.primary.tabs.len, model.primary.tab_count);
+    try std.testing.expectEqual(@as(usize, 1), secondary.tab_count);
+    const fraction = tree.node(divider.node).fraction;
+    // Deliver directly to the shipping wrapper, as a delayed host callback;
+    // SDK widget filtering cannot shield the native pre-dispatch input path.
+    try rig.decorated.event(&rig.harness.runtime, .{ .gpu_surface_input = .{
+        .window_id = old_id,
+        .label = "phux-cockpit-canvas-1",
+        .kind = .pointer_drag,
+        .pointer_id = 7,
+        .x = divider.bounds.x + divider.bounds.width * 0.8,
+        .y = divider.rect.y + divider.rect.height / 2,
+    } });
+    try std.testing.expectEqual(fraction, tree.node(divider.node).fraction);
+    const fx = engineFx().?;
+    try std.testing.expectEqual(.ignored, engine.onPointer(fx, .{
+        .window_id = old_id,
+        .label = "phux-cockpit-canvas-1",
+        .kind = .pointer_down,
+        .x = divider.rect.x,
+        .y = divider.rect.y,
+    }));
+    try std.testing.expectEqual(errors, rig.harness.runtime.dispatchErrorTotal());
+}
+
+test "shipping OS close before first secondary frame retires its incarnation" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const id = engine.model.wsAt(1).?.window_id;
+    try std.testing.expect(id != 0);
+    const errors = rig.harness.runtime.dispatchErrorTotal();
+    const close = rig.harness.null_platform.userCloseWindow(id) orelse return error.TestExpectedWindowClose;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(!engine.model.windowOpen(1));
+    try std.testing.expectEqual(errors, rig.harness.runtime.dispatchErrorTotal());
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(engine.model.wsAt(1).?.window_id != id);
+}
+
+test "shipping burst creation retains revision fence and reports refusal" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_terminal);
+    try rig.dispatch(.new_terminal);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    try std.testing.expect(engine.intent_refused);
+    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
+}
+
+test "shipping delayed OS close cannot retire a recycled window slot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const old_id = engine.model.wsAt(1).?.window_id;
+    const close = rig.harness.null_platform.userCloseWindow(old_id) orelse return error.TestExpectedWindowClose;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const replacement = engine.model.focusedTerminalRef().?;
+    try rig.decorated.event(&rig.harness.runtime, .{ .window_closed = .{ .window_id = old_id, .label = "phux-window-1" } });
+    try std.testing.expect(engine.model.windowOpen(1));
+    try std.testing.expect(replacement.eql(engine.model.wsAt(1).?.selectedTree().?.focusedTerminal().?));
+}
+
+test "shipping config probe survives title-only churn without adopting a window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    _ = shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b]2;title churn\x07" });
+    try rig.dispatch(.settings_open);
+    try std.testing.expect(engine.config_probe.probed);
+    try std.testing.expect(!engine.intent_refused);
+}
+
 fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []const u8) !bool {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ui = Adapter.Ui.init(arena.allocator());
-    const node = if (window_index == 0)
-        mainView(&ui, model)
-    else
-        windowView(&ui, model, "phux-window-1");
+    const node = chromeViewAt(&ui, model, window_index);
     const tree = try ui.finalizeWithTokens(node, cockpit.projection.cockpitTokens(bridge.engine.?.model));
     const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
     const layout_tree = try canvas.layoutWidgetTreeWithTokens(

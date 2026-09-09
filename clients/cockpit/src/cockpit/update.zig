@@ -306,10 +306,7 @@ fn drainEveryPane(model: *Model, fx: *Fx) void {
     for (0..max_terminals) |index| {
         if (model.provider.states[index] != .active) continue;
         const pane = model.provider.slot(index);
-        flushOutbound(pane, fx);
-        // The drain may have freed room for query replies a full ring left
-        // retained in the emulator's buffer.
-        moveResponsesToOutbound(pane, fx);
+        runtime.drainPane(pane, fx);
     }
 }
 
@@ -458,18 +455,8 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
                     moveResponsesToOutbound(pane, fx);
                 },
                 .exit => {
-                    pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
-                    pane.exit_code = event.code;
-                    pane.exit_signal = event.signal;
-                    pane.exit_reason = event.reason;
+                    runtime.finishSession(pane, event);
                     endCapturesForTerminal(model, fx, pane.id);
-                    pane.native_delivery_failures = event.dropped_writes -| pane.write_refusals_total;
-                    pane.write_refusals = 0;
-                    pane.outbound_dropped += pane.outbound_len;
-                    pane.outbound_dropped += pane.session.pendingResponses().len;
-                    pane.outbound_head = 0;
-                    pane.outbound_len = 0;
-                    pane.session.clearResponses();
                     // A shell that ENDED means the pane is done, whatever its
                     // status. Exit code is the child's answer about the last
                     // command it ran, not a claim about whether this pane is
@@ -643,13 +630,10 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             for (0..model_module.max_terminals) |index| {
                 if (model.provider.states[index] != .active) continue;
                 const pane = model.provider.slot(index);
-                _ = pane.session.searchPump(grid.Session.search_frame_slice_steps);
+                runtime.maintainPane(pane, fx);
             }
-            // Outbound is drained here for the same reason the viewport arm
-            // drains it: this message can be the only one the pump returns for
-            // many consecutive frames, and a search must not starve a pane's
-            // pending writes.
-            drainEveryPane(model, fx);
+            // The shared per-pane maintenance slice also drains outbound, so
+            // search cannot starve a quiet child's retained writes/replies.
         },
         .flush_outbound => drainEveryPane(model, fx),
         .selection_autoscroll => handleSelectionAutoscroll(model, fx),
