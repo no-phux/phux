@@ -18,6 +18,8 @@ working before it sends you into configuration or protocol reference.
 On a Homebrew-supported macOS or Linux machine:
 
 ```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
 brew install no-phux/tap/phux
 ```
 

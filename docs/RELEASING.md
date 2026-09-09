@@ -163,6 +163,8 @@ Post-release verification:
 
 ```sh
 scripts/install.sh --dry-run --version vX.Y.Z
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
 brew fetch --formula no-phux/tap/phux
 cargo search phux-protocol --limit 1
 npm view @phux/opencode version

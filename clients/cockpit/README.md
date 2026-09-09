@@ -260,6 +260,8 @@ saying so.
 Install with Homebrew:
 
 ```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
 brew install --cask no-phux/tap/phux-cockpit
 ```
 

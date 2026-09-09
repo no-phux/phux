@@ -35,11 +35,14 @@ crates.io package is `phux-protocol`, not the CLI.
 Install from the published tap:
 
 ```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
 brew install no-phux/tap/phux
 ```
 
-This installs both `phux` and `phux-mcp`. Use a source build if the Formula has
-not reached your target yet.
+Homebrew 6 requires the explicit trust decision for a third-party tap; earlier
+Homebrew releases do not need that command. This installs both `phux` and
+`phux-mcp`. Use a source build if the Formula has not reached your target yet.
 
 The Formula ships arm64 macOS, x86_64 Linux, and arm64 Linux. On an Intel Mac it
 refuses with "The arm64 architecture is required for this software" rather than

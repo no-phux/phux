@@ -45,6 +45,8 @@ into, read from, and wait on.
 ## Quick start
 
 ```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
 brew install no-phux/tap/phux
 phux
 ```

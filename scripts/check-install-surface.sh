@@ -36,6 +36,7 @@ require_regex() {
 # truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
 # and cargo-install caveats are gated on docs/INSTALL.md below.
 require_fixed README.md "Quick start"
+require_fixed README.md "brew trust --tap no-phux/tap"
 require_fixed README.md "brew install no-phux/tap/phux"
 forbid_fixed README.md "brew install phall1/phux/phux"
 forbid_fixed README.md "brew install phall1/tap/phux"
@@ -54,6 +55,7 @@ forbid_fixed docs/RELEASING.md "v0.0.3"
 require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
 require_fixed docs/INSTALL.md "Homebrew"
+require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
 require_fixed docs/INSTALL.md "Curl installer"
 require_fixed docs/INSTALL.md "Release tarball"
 require_fixed docs/INSTALL.md "From source"
