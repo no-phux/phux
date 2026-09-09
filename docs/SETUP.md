@@ -238,6 +238,53 @@ available through Node. See [Cockpit's guide](../clients/cockpit/README.md) for
 the isolated development app and the distinction between headless tests and
 actual host-rendering evidence.
 
+#### Native SDK live development
+
+Use the SDK's [native dev](https://native-sdk.dev/docs/cli/dev) loop for UI
+iteration. Cockpit uses the fork pinned in `clients/cockpit/build.zig.zon`;
+build its matching CLI once rather than using an unrelated npm CLI:
+
+```sh
+just cockpit-ffi
+cd clients/cockpit
+eval "$(./scripts/build-automation-cli.sh --export)"
+export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-global-cache"
+mkdir -p .dev-run/native-real
+touch .dev-run/native-real/config
+export PHUX_COCKPIT_CONFIG="$PWD/.dev-run/native-real/config"
+export PHUX_COCKPIT_STATE="$PWD/.dev-run/native-real/layout.json"
+export PHUX_SOCKET="/tmp/phux-$USER/phux.sock"
+"$NATIVE" dev -Dautomation=true -Dphux-enabled=true \
+  -Dphux-client-ffi-profile=ffi-dev \
+  -Dphux-client-ffi-include-dir="$PWD/../../crates/phux-client-ffi/include" \
+  -Dphux-client-ffi-lib-dir="$PWD/../../target/ffi-dev"
+```
+
+Set `PHUX_SOCKET` to the endpoint reported by your running server's
+`phux status --json`; the example uses the normal local endpoint when
+`XDG_RUNTIME_DIR` is unset. Set `PHUX_SESSION` to select a particular session.
+For an isolated server, use its socket and a separate config/layout pair.
+These settings choose the connection without restarting the server.
+
+Keep the working directory at `clients/cockpit`: registered fragment paths
+start with `src/`. Native's Debug default enables their hot-reload watcher;
+ReleaseSafe disables it. Markup edits reload in the running window. TypeScript,
+Zig, and FFI changes need a rebuild/relaunch; rerun the command, rebuilding
+`cockpit-ffi` first if Rust changed. Zig reuses unchanged build steps. To run
+the existing binary without a build, execute `./zig-out/bin/phux-cockpit` from
+this same directory and environment. At the current pin, `native dev --binary`
+is the WebView frontend workflow and refuses Cockpit with `MissingFrontend`.
+
+In a second shell at the same app root, use the matching CLI's
+[`automate`](https://native-sdk.dev/docs/automation) commands: `snapshot`,
+`assert`, and `profile on`. Verify `publisher_pid` against the launched process
+and `markup_watch=armed` before live editing. The SDK also provides `provenance`
+and `edit`, but Cockpit's composed toolbar currently reports `authored=zig`,
+so source write-back is unavailable there; edit the `.native` source directly.
+This direct SDK run uses the ordinary app name; distinguish it by executable
+path and PID. The separate-name bundled runner remains available for
+release-mode acceptance.
+
 ### Mutation testing
 
 Mutation tools are optional and separate from contributor and ordinary CI
