@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
+use crate::common;
 
 use phux_relay::{
     AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, RECLAIMED_CODE,

@@ -8,8 +8,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_relay::{DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};

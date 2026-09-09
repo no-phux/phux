@@ -4,7 +4,7 @@ use tempfile::TempDir;
 
 use phux_config::{Config, parse_str, plugin};
 
-mod common;
+use crate::common;
 use common::{manifest, write_manifest};
 
 #[test]
