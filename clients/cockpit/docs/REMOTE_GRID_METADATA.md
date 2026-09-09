@@ -99,8 +99,8 @@ Host publication, including OSC reset/reverse and frozen reconnect. The separate
 `remote_theme_tests.zig` calls the shipping painter twice around a config change
 with no frames. Both assert explicit RGB remains explicit. The named tests
 were proved red by restoring `copyClient`'s default-only policy and by removing
-the painter hookup, respectively. The painter guard now records the equivalent
-missing forwarding in its small helper so it survives parent painter refactors.
+the painter hookup, respectively. The historical painter guard recorded the
+equivalent missing forwarding in its small helper to survive painter refactors.
 
 Independent review confirmed ownership, lifetime, publication and recoloring
 semantics. Its requested invariant comment/assert was added: captured source
@@ -136,10 +136,14 @@ These are structural tests against source-confirmed local palette/cursor
 semantics. They make no AppKit/CoreText raster or animation claim. Live host
 comparison remains a separate serial acceptance step.
 
-`scripts/guards/remote-grid-metadata.guard` records the named metadata test
-failing when publication returns to the existing legacy v1-only copy. The
-moved `remote-cell-styles` and `remote-cursor-hollow` guards were also re-run
-against their new helper locations. All breaks are restored after proof.
+### Historical RED evidence
+
+The former `scripts/guards/remote-grid-metadata.guard` recorded the named
+metadata test failing when publication returned to the legacy v1-only copy.
+The moved `remote-cell-styles` and `remote-cursor-hollow` guards were also
+re-run against their new helper locations. All breaks were restored after
+proof. These are historical results; the permanent ledger is retired. See
+the current [mutation testing policy](../../../docs/TESTING_MUTATIONS.md).
 
 ## Review and complexity
 

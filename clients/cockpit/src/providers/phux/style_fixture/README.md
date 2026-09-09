@@ -92,8 +92,10 @@ inverse/default-underline cells to verify the values actually supplied by the
 ABI are preserved. Metadata-aware admission now also validates visible cursor
 coordinates before copying.
 
-Recorded regressions live in `scripts/guards/remote-cell-styles.guard`,
-`remote-cell-hyperlinks.guard`, and `remote-cursor-hollow.guard`. Their breaks
-restore the corresponding omissions from the pre-fix projection. Each was
+Historical RED evidence was recorded in the former `remote-cell-styles`,
+`remote-cell-hyperlinks`, and `remote-cursor-hollow` guard files. Their breaks
+restored the corresponding omissions from the pre-fix projection. Each was
 run through `guard-red-run.sh` against its named test and the Phux-enabled
-graph, with this worktree's FFI archive and private Zig cache.
+graph, with that worktree's FFI archive and private Zig cache. The ordinary
+regression tests remain; the permanent ledger is retired. See the current
+[mutation testing policy](../../../../../../docs/TESTING_MUTATIONS.md).

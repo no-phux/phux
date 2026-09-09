@@ -10,9 +10,10 @@ intents, snapshots and invalidations; the engine now also owns the PTY spawn,
 output, key encoding, committed text and the resize pump, through the same
 `terminal_runtime.zig` the shipping app uses (made generic over the effects
 type). No terminal byte enters the compiled core: shell events are consumed in
-the pty event constructor and the core receives a void `engine_wake`. Guards
-under the extension prove boot, resync, the revision fence, key routing and
-shell ownership red-then-green (`zig build test -Dplatform=null`). The phase 2
+the pty event constructor and the core receives a void `engine_wake`. Regression
+tests under the extension verify boot, resync, the revision fence, key routing
+and shell ownership. They were observed red-then-green during migration
+(`zig build test -Dplatform=null`). The phase 2
 parity harness remains authoritative: `ts-chrome-parity` solves the
 compiled `app.native` at every declared window size and density, in every
 chrome state the core can reach, and runs the toolkit's layout audit on it,
@@ -175,8 +176,8 @@ emulator state):
    scratch app target. Exit criterion: a TS-core binary runs and snapshots via
    the automation harness.
 1. **Seam contracts.** Land (2) above behind tests, in the Zig app, using the
-   channel pattern that already exists. No product change. Guards prove the
-   4096-byte chunking and ordering invariants.
+   channel pattern that already exists. No product change. Regression tests
+   verify the 4096-byte chunking and ordering invariants.
 2. **Parity harness.** `ts-chrome-parity` drives the real compiled core and
    audits solved markup trees against the register ladder at every declared
    window size and reachable chrome state.

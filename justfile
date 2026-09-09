@@ -118,6 +118,23 @@ cockpit-test: cockpit-ffi
     cd clients/cockpit && ./scripts/lib/measure_test.sh
     cd clients/cockpit && ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
+# Optional bounded mutation scans; arguments are passed to the language runner.
+# These are independent of cockpit-test and the ordinary Rust test gates.
+[positional-arguments]
+mutation-zig *args:
+    bash scripts/mutation/zig.sh "$@"
+
+[positional-arguments]
+mutation-rust *args:
+    bash scripts/mutation/rust.sh "$@"
+
+# Real-tool adapter acceptance in disposable fixtures (requires the pinned tool).
+mutation-rust-check:
+    python3 scripts/mutation/rust_check.py
+
+mutation-zig-check:
+    PHUX_ZIG_MUTATION_INTEGRATION=1 python3 -B -m unittest discover -s scripts/mutation -p test_zig.py -v
+
 # Build only Cockpit's static archive, with fast unwind-safe development codegen.
 cockpit-ffi:
     cargo rustc --locked --profile ffi-dev -p phux-client-ffi --lib --crate-type staticlib
@@ -382,6 +399,7 @@ shellcheck:
 # truth table, and the SHA-pin policy for action references.
 workflow-check:
     actionlint .github/workflows/*.yml
+    python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
     node --test scripts/test-vt-wasm.mjs
     bash scripts/ci/check-classify-changes.sh

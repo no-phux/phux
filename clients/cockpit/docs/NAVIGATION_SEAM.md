@@ -145,7 +145,11 @@ all 44 shipping extension tests. Its verdict names this worktree's source root
 and `target/ffi-release` archive. The focused navigation gate and eight JS
 behavior tests also pass.
 
-## Regression evidence
+## Historical regression evidence
+
+The guard names and runner below describe the original RED/GREEN runs.
+The permanent ledger is retired; current work follows the repository's
+[mutation testing policy](../../../docs/TESTING_MUTATIONS.md).
 
 The snapshot regression was observed failing at `encodeTabs` with
 `BufferTooSmall` after restoring the original 128-byte title/CWD allowances.
