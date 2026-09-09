@@ -4,7 +4,7 @@
 //! libghostty-free. Under the `server` feature it converts to/from libghostty's
 //! `focus::Event`.
 //!
-//! [ADR-0024]: https://github.com/phall1/phux/blob/main/ADR/0024-wire-owns-input-atoms.md
+//! [ADR-0024]: https://github.com/no-phux/phux/blob/main/ADR/0024-wire-owns-input-atoms.md
 
 /// Host-window focus change reported by a client.
 #[repr(u8)]

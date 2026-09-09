@@ -25,7 +25,7 @@
 //! not a sanitiser, and unknown sequences must reach the client
 //! byte-for-byte.
 //!
-//! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, ImageProtocol, KeyboardProtocol};
 

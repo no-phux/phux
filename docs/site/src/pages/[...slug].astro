@@ -31,7 +31,7 @@ const toc: TOCItemType[] = headings.filter((heading) => heading.depth >= 2 && he
   url: `#${heading.slug}`,
 }));
 
-const sourceUrl = `https://github.com/phall1/phux/blob/${page.data.sourceRevision}/${page.data.sourcePath}`;
+const sourceUrl = `https://github.com/no-phux/phux/blob/${page.data.sourceRevision}/${page.data.sourcePath}`;
 const title = `phux — ${page.data.title}`;
 const description = page.data.description || SITE.description;
 // Static `format: file` builds render this route as `/wire.html`; the public

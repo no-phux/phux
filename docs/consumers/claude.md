@@ -17,7 +17,7 @@ Install `phux` and `phux-mcp` first, then register and install the marketplace
 plugin:
 
 ```sh
-claude plugin marketplace add phall1/phux
+claude plugin marketplace add no-phux/phux
 claude plugin install phux@phux
 ```
 

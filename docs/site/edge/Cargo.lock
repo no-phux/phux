@@ -236,7 +236,7 @@ dependencies = [
 [[package]]
 name = "phux-protocol"
 version = "0.28.0"
-source = "git+https://github.com/phall1/phux.git?branch=main#27928a418858dfb9deb0f122919ec3a002fae441"
+source = "git+https://github.com/no-phux/phux.git?branch=main#27928a418858dfb9deb0f122919ec3a002fae441"
 dependencies = [
  "bitflags",
  "bytes",

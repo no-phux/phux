@@ -3,7 +3,7 @@
 ## Status
 
 This document defines Cockpit's side of the durable-work boundary. Phux
-[ADR-0092](https://github.com/phall1/phux/blob/main/ADR/0092-durable-work-coordinator-authority.md)
+[ADR-0092](https://github.com/no-phux/phux/blob/main/ADR/0092-durable-work-coordinator-authority.md)
 is the proposed coordinator-side decision. Until that ADR and its contracts are
 implemented, Cockpit makes no durable-work claim.
 

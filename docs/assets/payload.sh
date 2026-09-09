@@ -88,7 +88,7 @@ printf '\n'
 printf '\033[1mbold\033[0m  \033[3mitalic\033[0m  '
 printf '\033[4:3m\033[58;2;255;80;80mcurly underline\033[0m  '
 printf '\033[9mstrikethrough\033[0m  '
-printf '\033]8;;https://github.com/phall1/phux\033\\phall1/phux\033]8;;\033\\\n\n'
+printf '\033]8;;https://github.com/no-phux/phux\033\\no-phux/phux\033]8;;\033\\\n\n'
 
 emit_kitty_png "$PNG_B64"
 printf '\n\n'

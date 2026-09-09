@@ -11,7 +11,7 @@ ARG GHOSTTY_REVISION=fdbf9ff3a31d7531b691cb49c98fc465a1a503a0
 ARG GHOSTTY_SOURCE_SHA256=dcc4ef2a369c7eac13038572c9ce3ab46457dc7a9dbb371710039ed480afbebc
 
 ADD --checksum=sha256:307dcf49b621e5c93d9cfb4f616985481930cca488cec3b6d2b607d6aec61d86 \
-    https://github.com/phall1/phux/archive/1f2501f979be972886a1adb805bb598b9189e2f9.tar.gz /tmp/phux.tar.gz
+    https://github.com/no-phux/phux/archive/1f2501f979be972886a1adb805bb598b9189e2f9.tar.gz /tmp/phux.tar.gz
 ADD --checksum=sha256:02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239 \
     https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz /tmp/zig.tar.xz
 ADD --checksum=sha256:ff2ce1932aa798dbb827f93a51c69648750fe35651b629eeb576d470b7e20575 \

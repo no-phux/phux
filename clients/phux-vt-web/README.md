@@ -6,7 +6,7 @@ compiled to WebAssembly** (`ghostty-vt.wasm`).
 It does one thing: load the engine module and give Rust a small, safe surface
 over its C ABI — make a terminal, write VT bytes into it, read the styled grid
 (cells + fg/bg + cursor) back out. No networking, no protocol, no DOM. It is the
-engine half of the [phux](https://github.com/phall1/phux) browser client; the
+engine half of the [phux](https://github.com/no-phux/phux) browser client; the
 client half is [`phux-web`](../phux-web).
 
 ```text
