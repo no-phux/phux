@@ -715,7 +715,7 @@ impl ServerGuard {
 /// of red. Once the bit is advertised, the guard is a no-op and the body
 /// runs in full.
 #[test]
-#[ignore = "needs phux agent session verbs (phux-am9y.12); spawns a real phux server. Run via `just e2e`."]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 #[allow(clippy::too_many_lines, reason = "one linear hook-by-hook scenario")]
 #[allow(
     clippy::print_stderr,
@@ -794,7 +794,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let records = server.await_record(&target, "session_start", DETECT_DEADLINE);
     assert_eq!(records[0]["type"], "session_start", "{records:?}");
     let shown = server.agent_show(&target);
-    let session = &shown["agents"][0]["session"];
+    let session = &shown["agents"][0]["agent_session"];
     assert_eq!(session["provider"], "claude", "{shown}");
     assert_eq!(session["native_id"], SESSION_ID, "{shown}");
 
@@ -907,7 +907,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let end = Instant::now() + DETECT_DEADLINE;
     loop {
         let shown = server.agent_show(&target);
-        let session_gone = shown["agents"][0]["session"].is_null();
+        let session_gone = shown["agents"][0]["agent_session"].is_null();
         let record_gone = shown["agents"][0]["sources"]
             .as_array()
             .is_some_and(|sources| sources.iter().all(|s| s["kind"] != "agent_record"));
