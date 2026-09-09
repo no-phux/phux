@@ -427,10 +427,13 @@ pub const RESOURCE_KIND_TAG_AGENT_SESSION: u8 = 1;
 /// - [`AgentSession`](Self::AgentSession): an agent harness's structured
 ///   event stream, fed by a producer through `APPEND_RESOURCE_OUTPUT` and
 ///   always bound to a Terminal parent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[non_exhaustive]
 pub enum ResourceKind {
     /// A PTY-backed terminal (wire tag = 0).
+    #[default]
     Terminal,
     /// A producer-fed agent session stream (wire tag = 1).
     AgentSession,
@@ -479,12 +482,6 @@ impl ResourceKind {
             Self::AgentSession => "agent_session",
             Self::Unknown { .. } => "unknown",
         }
-    }
-}
-
-impl Default for ResourceKind {
-    fn default() -> Self {
-        Self::Terminal
     }
 }
 
