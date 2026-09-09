@@ -5,28 +5,17 @@ use super::{
 };
 
 /// Minimal envelope shape used to peek the `version` byte before
-/// committing to a full decode (the version selects the v1 vs v2 shape).
+/// committing to a full decode of the current schema.
 #[derive(Debug, Deserialize)]
 pub(super) struct VersionProbe {
-    /// The envelope schema version (`1` legacy single-window, `2` workspace).
+    /// The envelope schema version (`3` workspace with required stable IDs).
     pub version: u8,
 }
 
-/// The legacy v1 single-window envelope.
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct CborEnvelope {
-    /// Envelope schema version (`1`).
-    pub version: u8,
-    /// The window's binary split tree.
-    pub root: CborLayoutNode,
-    /// The focused leaf at encode time.
-    pub focus: CborTerminalId,
-}
-
-/// The v2 multi-window envelope (docs/spec/L3.md §3.2).
+/// The v3 multi-window envelope (docs/spec/L3.md §3.2).
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct CborWorkspaceEnvelope {
-    /// Envelope schema version (`2`).
+    /// Envelope schema version (`3`).
     pub version: u8,
     /// The workspace's windows, in order.
     pub windows: Vec<CborWindow>,
@@ -37,6 +26,8 @@ pub(super) struct CborWorkspaceEnvelope {
 /// One window inside [`CborWorkspaceEnvelope`].
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct CborWindow {
+    /// Required, nonzero stable layout identity.
+    pub id: [u8; 16],
     /// The window's display name.
     pub name: String,
     /// The window's binary split tree.

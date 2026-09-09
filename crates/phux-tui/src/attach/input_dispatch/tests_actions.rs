@@ -124,13 +124,13 @@ fn focused_pane_rect_tracks_rendered_pane_bounds() {
     )
     .unwrap();
     let workspace = Workspace {
-        windows: vec![WindowState {
-            name: "1".to_owned(),
-            state: LayoutState {
+        windows: vec![WindowState::new(
+            "1".to_owned(),
+            LayoutState {
                 tree: Some(tree),
                 focus: Some(tid(2)),
             },
-        }],
+        )],
         active: 0,
     };
 
@@ -233,6 +233,7 @@ fn run_with_last_and_spawn_size(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: last_focused.map_or_else(FocusHistory::default, FocusHistory::with_previous),
@@ -317,13 +318,13 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
     .unwrap();
     let tree = split_at(&tree, &tid(2), &tid(3), SplitDir::Vertical, 0.5).unwrap();
     let mut workspace = Workspace {
-        windows: vec![WindowState {
-            name: "1".to_owned(),
-            state: LayoutState {
+        windows: vec![WindowState::new(
+            "1".to_owned(),
+            LayoutState {
                 tree: Some(tree),
                 focus: Some(tid(1)),
             },
-        }],
+        )],
         active: 0,
     };
     let effects = run(&bare_action("kill-window"), &mut workspace);
@@ -529,13 +530,13 @@ fn toggle_zoom_on_multi_pane_window_requests_toggle() {
     )
     .unwrap();
     let mut workspace = Workspace {
-        windows: vec![WindowState {
-            name: "1".to_owned(),
-            state: LayoutState {
+        windows: vec![WindowState::new(
+            "1".to_owned(),
+            LayoutState {
                 tree: Some(tree),
                 focus: Some(tid(1)),
             },
-        }],
+        )],
         active: 0,
     };
     let effects = run(&bare_action("toggle-zoom"), &mut workspace);
@@ -579,13 +580,13 @@ fn two_pane_workspace_with_ratio(ratio: f32) -> Workspace {
     )
     .unwrap();
     Workspace {
-        windows: vec![WindowState {
-            name: "1".to_owned(),
-            state: LayoutState {
+        windows: vec![WindowState::new(
+            "1".to_owned(),
+            LayoutState {
                 tree: Some(tree),
                 focus: Some(tid(1)),
             },
-        }],
+        )],
         active: 0,
     }
 }
@@ -782,6 +783,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -858,6 +860,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -969,6 +972,7 @@ fn run_capturing_with_sessions(
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
@@ -1144,6 +1148,7 @@ fn run_with_panes(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -1616,6 +1621,7 @@ fn run_attention(
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         workspace,
@@ -1849,17 +1855,14 @@ fn fleet_workspace() -> Workspace {
     .unwrap();
     Workspace {
         windows: vec![
-            WindowState {
-                name: "main".to_owned(),
-                state: LayoutState {
+            WindowState::new(
+                "main".to_owned(),
+                LayoutState {
                     tree: Some(tree),
                     focus: Some(tid(1)),
                 },
-            },
-            WindowState {
-                name: "logs".to_owned(),
-                state: LayoutState::single(tid(3)),
-            },
+            ),
+            WindowState::new("logs".to_owned(), LayoutState::single(tid(3))),
         ],
         active: 1,
     }
@@ -2106,6 +2109,7 @@ fn detach_action_requests_detach_effect() {
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut ctx = DispatchCtx {
+        layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
         focus_history: FocusHistory::default(),
@@ -2203,6 +2207,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),

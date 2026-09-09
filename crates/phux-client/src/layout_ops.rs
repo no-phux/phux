@@ -1,9 +1,9 @@
 //! Shared headless operations over the persisted TUI layout.
 //!
 //! CLI commands and MCP tools use this module to read a session's
-//! `phux.tui.layout/v1/<session>` value, decode either the legacy v1 envelope
-//! or the current v2 [`Workspace`] envelope, apply a mutation using the
-//! existing `phux-client-core` layout types, and write a v2 envelope back with
+//! `phux.tui.layout/v1/<session>` value, decode the current v3 [`Workspace`]
+//! envelope, apply a mutation using the
+//! existing `phux-client-core` layout types, and write a v3 envelope back with
 //! `SET_METADATA`. No layout vocabulary is added to the wire protocol.
 //!
 //! This module deliberately exposes no headless focus mutation. Per ADR-0049,
@@ -123,8 +123,8 @@ pub enum LayoutMutation {
         second: TerminalId,
     },
     /// Remove `target`, collapsing its parent split. A one-pane window is
-    /// removed; the final pane in the workspace cannot be removed because a
-    /// v2 envelope cannot encode an empty workspace.
+    /// removed; the final pane in the workspace cannot be removed because
+    /// this mutation API requires a nonempty workspace.
     Close {
         /// Existing pane to remove.
         target: TerminalId,
@@ -140,7 +140,7 @@ pub enum LayoutOpsError {
     /// The stored envelope was malformed or unsupported.
     #[error(transparent)]
     Decode(#[from] LayoutDecodeError),
-    /// The rewritten v2 envelope could not be encoded.
+    /// The rewritten v3 envelope could not be encoded.
     #[error(transparent)]
     Encode(#[from] LayoutEncodeError),
     /// An existing tree operation rejected the request.
@@ -204,7 +204,7 @@ impl<'a> LayoutOps<'a> {
         }
     }
 
-    /// Read and decode this session's layout, accepting v1 and v2 envelopes.
+    /// Read and decode this session's current v3 layout. Earlier schemas refuse.
     ///
     /// # Errors
     ///
@@ -216,7 +216,7 @@ impl<'a> LayoutOps<'a> {
         Workspace::decode_cbor(&bytes).map_err(Into::into)
     }
 
-    /// Read, mutate, encode as v2, SET, then read back the winning value.
+    /// Read, mutate, encode as v3, SET, then read back the winning value.
     ///
     /// This is deliberately last-write-wins rather than compare-and-set. The
     /// returned workspace is the trailing GET's value, which can differ from
@@ -605,24 +605,21 @@ mod tests {
     fn two_window_workspace() -> Workspace {
         Workspace {
             windows: vec![
-                WindowState {
-                    name: "editor".to_owned(),
-                    state: LayoutState {
+                WindowState::new(
+                    "editor".to_owned(),
+                    LayoutState {
                         tree: Some(split(1, 2, SplitDir::Horizontal, 0.6)),
                         focus: Some(tid(1)),
                     },
-                },
-                WindowState {
-                    name: "tests".to_owned(),
-                    state: LayoutState::single(tid(3)),
-                },
+                ),
+                WindowState::new("tests".to_owned(), LayoutState::single(tid(3))),
             ],
             active: 0,
         }
     }
 
     // Fixed bytes emitted by the pre-window v1 encoder. Keeping this literal
-    // prevents a current encoder change from silently changing the back-compat
+    // prevents a current encoder change from weakening the old-schema refusal
     // fixture along with the decoder under test.
     const LEGACY_V1_FIXTURE: &[u8] = &[
         163, 103, 118, 101, 114, 115, 105, 111, 110, 1, 100, 114, 111, 111, 116, 165, 100, 107,
@@ -636,30 +633,15 @@ mod tests {
     ];
 
     #[test]
-    fn fixed_v1_fixture_decodes_and_reencodes_as_v2() {
-        let mut workspace = Workspace::decode_cbor(LEGACY_V1_FIXTURE).unwrap();
-        assert_eq!(workspace.windows.len(), 1);
-        assert_eq!(
-            leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
-            vec![tid(1), tid(2)]
-        );
-        apply_mutation(
-            &mut workspace,
-            &LayoutMutation::Split {
-                target: tid(1),
-                new_pane: tid(4),
-                dir: SplitDir::Horizontal,
-                ratio: 0.5,
-            },
-        )
-        .unwrap();
-        let v2 = workspace.encode_cbor().unwrap();
-        assert_eq!(Workspace::decode_cbor(&v2).unwrap(), workspace);
-        assert_ne!(LEGACY_V1_FIXTURE, v2, "every write migrates to v2");
+    fn fixed_v1_fixture_is_refused_without_implicit_rewrite() {
+        assert!(matches!(
+            Workspace::decode_cbor(LEGACY_V1_FIXTURE),
+            Err(LayoutDecodeError::UnsupportedVersion(1))
+        ));
     }
 
     #[test]
-    fn v2_fixture_supports_split_and_swap() {
+    fn current_fixture_supports_split_and_swap() {
         let fixture = two_window_workspace().encode_cbor().unwrap();
         let mut workspace = Workspace::decode_cbor(&fixture).unwrap();
 
@@ -728,13 +710,13 @@ mod tests {
             right: Box::new(LayoutNode::Leaf(tid(3))),
         };
         let mut workspace = Workspace {
-            windows: vec![WindowState {
-                name: "1".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "1".to_owned(),
+                LayoutState {
                     tree: Some(nested),
                     focus: Some(tid(2)),
                 },
-            }],
+            )],
             active: 0,
         };
         apply_mutation(&mut workspace, &LayoutMutation::Close { target: tid(2) }).unwrap();

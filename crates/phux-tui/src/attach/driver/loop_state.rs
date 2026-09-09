@@ -58,6 +58,7 @@ use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{mark_focused_seen, peer_inputs, refresh_window_chrome};
+
 use super::config_ui::{
     apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
 };
@@ -86,6 +87,10 @@ use super::viewport::{
     emit_bootstrap_workspace_reflow, emit_view_reflow, host_cell_px, view_rects,
     viewport_resize_frame,
 };
+
+#[cfg(test)]
+#[path = "loop_state_tests.rs"]
+mod tests;
 
 /// Window before a parser-pending bare ESC is interpreted as the Escape
 /// key, anchored to when the ESC became pending (see
@@ -368,6 +373,8 @@ pub(super) struct SessionLoop {
     zoomed: Option<TerminalId>,
     /// phux-4li.5: the in-flight layout GET's request id, for L3 correlation.
     layout_get_request_id: Option<u32>,
+    /// Shared writes remain fenced until the initial correlated GET succeeds.
+    layout_read_complete: bool,
     /// phux-4li.5: request-id allocator for L3 GET correlation.
     next_request_id: u32,
     /// phux-4li.12: in-flight `split-pane` actions parked by request id.
@@ -590,6 +597,7 @@ impl SessionLoop {
             own_client_id: None,
             zoomed: None,
             layout_get_request_id: None,
+            layout_read_complete: false,
             next_request_id: 1,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
@@ -849,7 +857,7 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         defer_paint: bool,
     ) -> Result<FrameOutcome, AttachError> {
-        handle_server_frame(
+        let outcome = handle_server_frame(
             &mut self.engine_kernel,
             &mut self.kernel_effects,
             out,
@@ -872,7 +880,12 @@ impl SessionLoop {
             &mut self.agent_meta,
             self.overlays.is_active(),
             defer_paint,
-        )
+        )?;
+        if outcome.layout_get_answered {
+            self.layout_read_complete = true;
+            self.layout_get_request_id = None;
+        }
+        Ok(outcome)
     }
 
     // ---- bootstrap ----------------------------------------------------
@@ -1009,6 +1022,7 @@ impl SessionLoop {
             let key = layout_key(session);
             let req_id = self.next_request_id;
             self.layout_get_request_id = Some(req_id);
+            self.layout_read_complete = false;
             self.next_request_id = self.next_request_id.wrapping_add(1);
             conn.send(&FrameKind::GetMetadata {
                 request_id: req_id,
@@ -1639,6 +1653,7 @@ impl SessionLoop {
             resolver: self.settings.resolver.as_mut(),
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,
+            layout_read_complete: self.layout_read_complete,
             viewport: self.viewport_dims,
             cell_px: self.cell_px_dims,
             next_request_id: &mut self.next_request_id,
@@ -2275,6 +2290,9 @@ impl SessionLoop {
     /// Broadcast the local workspace on the session's layout key so sibling
     /// clients reconcile.
     async fn broadcast_layout(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        if !self.layout_read_complete {
+            return Ok(());
+        }
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
@@ -2344,7 +2362,7 @@ impl SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) {
         if outcome.layout_replaced {
-            self.on_layout_replaced(outcome.layout_get_answered, sidebar, repaint);
+            self.on_layout_replaced(sidebar, repaint);
         }
         // ADR-0040: a `phux.agent/v1` record changed (GET
         // reply or subscribed broadcast). The window labels
@@ -2404,7 +2422,6 @@ impl SessionLoop {
     /// `paint_full_frame`, and the libghostty mirror is already updated.
     fn on_layout_replaced(
         &mut self,
-        layout_get_answered: bool,
         sidebar: Option<SidebarReservation>,
         repaint: &mut RepaintAccumulator,
     ) {
@@ -2426,15 +2443,6 @@ impl SessionLoop {
         // coherent base. ADR-0029: raise, drain once.
         if !self.overlays.is_active() {
             repaint.raise_full();
-        }
-        // The GET reply is single-use; clear the pending
-        // request id so a stray late MetadataValue can't
-        // trample state. Gated on `layout_get_answered`,
-        // NOT on `layout_replaced`: the latter is also
-        // raised for pane damage during bootstrap, and
-        // clearing on that dropped the real reply.
-        if layout_get_answered {
-            self.layout_get_request_id = None;
         }
     }
 

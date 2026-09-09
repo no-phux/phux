@@ -126,48 +126,39 @@ test "keyboard session activation keeps the highlighted id across catalog rebuil
         defer state.deinit();
         state.effects.executor = .fake;
 
-        try remote.host.sessions.append(testing.allocator, .{
-            .id = 71,
-            .name = try testing.allocator.dupe(u8, "build"),
-            .created_at_unix_secs = 1,
-            .window_count = 2,
-            .attached_client_count = 1,
-            .focused = false,
-        });
-        try remote.host.sessions.append(testing.allocator, .{
-            .id = 72,
-            .name = try testing.allocator.dupe(u8, "tests"),
-            .created_at_unix_secs = 2,
-            .window_count = 1,
-            .attached_client_count = 3,
-            .focused = false,
-        });
+        try app.PhuxProvider.test_support.attachHost(remote.host);
+        _ = try remote.requestWorkspaceRefresh();
+        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_metadata.bin");
+        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_state.bin");
+        _ = try remote.drainReadiness();
+        state.model.reconcileRemoteTerminals();
+        try testing.expect(try state.model.shared_workspace.apply(&state.model, remote.workspaceSnapshot(), remote.connectionEpoch()));
 
-        // One placed local terminal precedes the two sessions, so two steps
-        // highlight session 72. This is the identity the painted row carries.
+        // One placed and two available terminals precede the two sessions.
+        // Four steps highlight the stable session 2 identity painted in the row.
         app.update(&state.model, .palette_open, &state.effects);
-        app.update(&state.model, .{ .palette_step = 2 }, &state.effects);
+        app.update(&state.model, .{ .palette_step = 4 }, &state.effects);
         switch (state.model.ws().palette.highlighted orelse return error.TestExpectedSession) {
-            .session => |id| try testing.expectEqual(@as(u32, 72), id),
+            .session => |id| try testing.expectEqual(@as(u32, 2), id),
             else => return error.TestExpectedSession,
         }
 
-        // Removal leaves session 71 occupying the last live catalog slot. An
+        // Removal leaves session 1 occupying the last live catalog slot. An
         // index-based Enter clamps to that row and switches to the wrong ID;
-        // the fenced payload instead reports 72 unavailable by selecting none.
+        // the fenced payload instead leaves the actual attached session alone.
         const removed = remote.host.sessions.orderedRemove(1);
         app.update(&state.model, .{ .key = .{
             .key = "enter",
             .phase = .key_down,
         } }, &state.effects);
-        try testing.expectEqual(@as(?u32, null), remote.session_id);
+        try testing.expectEqual(@as(?u32, 1), remote.session_id);
 
-        // Restore the catalog, highlight 72 again, then reorder after the
-        // highlight was projected. Enter must still activate 72, not the 71
+        // Restore the catalog, highlight 2 again, then reorder after the
+        // highlight was projected. Enter must still activate 2, not the 1
         // that moved into its old index.
         try remote.host.sessions.append(testing.allocator, removed);
         app.update(&state.model, .palette_open, &state.effects);
-        app.update(&state.model, .{ .palette_step = 2 }, &state.effects);
+        app.update(&state.model, .{ .palette_step = 4 }, &state.effects);
         std.mem.swap(
             @TypeOf(remote.host.sessions.items[0]),
             &remote.host.sessions.items[0],
@@ -177,13 +168,13 @@ test "keyboard session activation keeps the highlighted id across catalog rebuil
             .key = "enter",
             .phase = .key_down,
         } }, &state.effects);
-        try testing.expectEqual(@as(?u32, 72), remote.session_id);
+        try testing.expectEqual(@as(?u32, 2), remote.session_id);
     } else {
         return error.SkipZigTest;
     }
 }
 
-test "attach-ready admission selects exactly one current remote terminal" {
+test "confirmed shared metadata places members independently from discovered terminals" {
     if (comptime app.phux_enabled) {
         const remote = try app.PhuxProvider.create(
             testing.allocator,
@@ -196,36 +187,67 @@ test "attach-ready admission selects exactly one current remote terminal" {
         var model = app.initialModelWithPhux(session, remote);
         defer app.deinitModel(&model);
 
+        try app.PhuxProvider.test_support.attachHost(remote.host);
+        _ = try remote.requestWorkspaceRefresh();
+        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_metadata.bin");
+        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_state.bin");
+        _ = try remote.drainReadiness();
         var expected: [3]app.TerminalRef = undefined;
-        for (&expected, 0..) |*terminal_ref, index| {
-            const remote_id = try app.RemoteTerminalId.fromPhux(
-                @intCast(index),
-                51,
-                if (index == 0) "local" else "satellite",
-            );
-            try remote.host.terminals.append(testing.allocator, .{
-                .id = remote_id,
-                .phase = .live,
-                .published = true,
-            });
-            terminal_ref.* = .{
-                .provider_id = .phux,
-                .terminal_id = .{ .phux = remote_id },
-            };
-        }
+        for (&expected, 7..) |*ref, id| ref.* = .{
+            .provider_id = .phux,
+            .terminal_id = .{ .phux = try app.RemoteTerminalId.fromPhux(0, @intCast(id), "") },
+        };
 
         model.reconcileRemoteTerminals();
         try testing.expectEqual(@as(usize, 3), model.remoteTerminalRefs().len);
         try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
         for (expected) |terminal_ref| try testing.expect(model.locateTerminal(terminal_ref) == null);
-        for (expected) |terminal_ref| try testing.expect(model.remoteUiConst(terminal_ref) != null);
+        try testing.expect(model.remoteUiConst(expected[0]) != null);
+        for (expected[1..]) |terminal_ref| {
+            try testing.expect(model.remoteUiConst(terminal_ref) == null);
+            try testing.expect(!remote.terminalKnown(terminal_ref));
+        }
 
-        try testing.expect(model.admitAndSelectCurrentRemoteTerminal());
-        try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
+        try testing.expect(try model.shared_workspace.apply(&model, remote.workspaceSnapshot(), remote.connectionEpoch()));
+        try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
         try testing.expect(model.selectedTerminalRef().?.eql(expected[0]));
         try testing.expect(model.locateTerminal(expected[1]) == null);
         try testing.expect(model.locateTerminal(expected[2]) == null);
     } else {
         return error.SkipZigTest;
     }
+}
+
+test "catalog-only identities cannot exhaust UI slots needed by the live replica" {
+    if (comptime !app.phux_enabled) return error.SkipZigTest;
+    const remote = try app.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/unused" }, null, "ui-churn");
+    const session = try createSession(80, 24);
+    var model = app.initialModelWithPhux(session, remote);
+    defer app.deinitModel(&model);
+    try app.PhuxProvider.test_support.attachHost(remote.host);
+    const live = remote.catalogTerminals()[0].terminal_ref;
+    const replica_count = remote.host.terminals.items.len;
+
+    // Model the last UI state after cycling through more identities than can
+    // have live replicas. Keep every retired identity in the owned catalog:
+    // catalog membership must not pin presentation-only storage forever.
+    const catalog = try testing.allocator.alloc(@import("provider_contract").workspace.CatalogTerminal, model.remote_ui.len + 1);
+    catalog[0] = remote.catalogTerminals()[0];
+    for (&model.remote_ui, catalog[1..], 100..) |*state, *entry, id| {
+        const ref: app.TerminalRef = .{
+            .provider_id = .phux,
+            .terminal_id = .{ .phux = try app.RemoteTerminalId.fromPhux(0, @intCast(id), "") },
+        };
+        entry.* = .{ .terminal_ref = ref, .session_id = 1 };
+        state.* = .{ .terminal_ref = ref };
+        try testing.expect(!remote.terminalKnown(ref));
+    }
+    testing.allocator.free(remote.host.workspace_store.catalog);
+    remote.host.workspace_store.catalog = catalog;
+    try testing.expect(model.remoteUiConst(live) == null);
+    model.reconcileRemoteTerminals();
+    try testing.expect(model.remoteUiConst(live) != null);
+    try testing.expectEqual(catalog.len, model.remoteTerminalRefs().len);
+    try testing.expectEqual(replica_count, remote.host.terminals.items.len);
+    for (catalog[1..]) |entry| try testing.expect(model.remoteUiConst(entry.terminal_ref) == null);
 }

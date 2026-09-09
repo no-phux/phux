@@ -51,13 +51,13 @@ pub(super) fn two_pane_workspace() -> Workspace {
     )
     .unwrap();
     Workspace {
-        windows: vec![WindowState {
-            name: "1".to_owned(),
-            state: LayoutState {
+        windows: vec![WindowState::new(
+            "1".to_owned(),
+            LayoutState {
                 tree: Some(tree),
                 focus: Some(tid(1)),
             },
-        }],
+        )],
         active: 0,
     }
 }

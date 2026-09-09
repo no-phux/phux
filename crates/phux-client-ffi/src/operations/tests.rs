@@ -1142,7 +1142,7 @@ fn outbound_ids_and_aggregate_text_limit_are_validated_before_queue_mutation() {
         PhuxClientResult::InvalidArgument
     );
     assert_eq!(h.0.inner.outgoing.len(), 1);
-    assert_eq!(h.spawn(u32::MAX), PhuxClientResult::Ok);
+    assert_eq!(h.spawn(0x7fff_ffff), PhuxClientResult::Ok);
     assert_eq!(h.spawn(u32::MAX), PhuxClientResult::InvalidArgument);
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidArgument);
 }

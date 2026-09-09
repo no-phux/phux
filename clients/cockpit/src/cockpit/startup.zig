@@ -392,7 +392,7 @@ pub const WorkspaceStateProvenance = enum {
 };
 
 const InitialWorkspace = struct {
-    model: Model,
+    model: *Model,
     provenance: WorkspaceStateProvenance,
     rejected_state_path: ?[]const u8 = null,
 };
@@ -404,29 +404,24 @@ fn loadInitialWorkspace(
     restored_snapshot: *TopologySnapshot,
     max_scrollback_bytes: usize,
 ) !InitialWorkspace {
+    const model = try std.heap.page_allocator.create(Model);
+    errdefer std.heap.page_allocator.destroy(model);
     const outcome: WorkspaceRestore = if (state_path) |path|
         try restoreWorkspace(gpa, io, path, restored_snapshot, max_scrollback_bytes)
     else
         .missing;
-    return switch (outcome) {
-        .missing => .{
-            .model = try freshWorkspace(gpa, io, max_scrollback_bytes),
-            .provenance = .missing,
+    model.* = switch (outcome) {
+        .restored => |saved| saved orelse try freshWorkspace(gpa, io, max_scrollback_bytes),
+        else => try freshWorkspace(gpa, io, max_scrollback_bytes),
+    };
+    return .{
+        .model = model,
+        .provenance = switch (outcome) {
+            .missing => .missing,
+            .restored => .restored,
+            .rejected_existing => .rejected_existing,
         },
-        .rejected_existing => |path| .{
-            .model = try freshWorkspace(gpa, io, max_scrollback_bytes),
-            .provenance = .rejected_existing,
-            .rejected_state_path = path,
-        },
-        .restored => |saved| restored: {
-            if (saved) |model| {
-                break :restored .{ .model = model, .provenance = .restored };
-            }
-            break :restored .{
-                .model = try freshWorkspace(gpa, io, max_scrollback_bytes),
-                .provenance = .restored,
-            };
-        },
+        .rejected_state_path = if (outcome == .rejected_existing) outcome.rejected_existing else null,
     };
 }
 
@@ -479,7 +474,9 @@ fn reportConfigDiagnostics(user_config: *const Config) void {
 }
 
 pub const InitializedModel = struct {
-    model: Model,
+    /// Final storage is allocated before configuration. Passing this owner
+    /// through startup must not copy the large runtime model onto each frame.
+    model: *Model,
     restored_snapshot: TopologySnapshot = .{},
     provenance: WorkspaceStateProvenance,
 };
@@ -508,8 +505,9 @@ pub fn initializeResolvedModel(
         &restored_snapshot,
         max_scrollback_bytes,
     );
-    var model = loaded.model;
-    errdefer model_module.deinitModel(&model);
+    const model = loaded.model;
+    errdefer std.heap.page_allocator.destroy(model);
+    errdefer model_module.deinitModel(model);
     model.provider.max_scrollback_bytes = max_scrollback_bytes;
     if (user_config.shell.slice().len != 0 and !model.provider.setShellCommand(user_config.shell.slice())) {
         std.log.warn(
@@ -517,7 +515,7 @@ pub fn initializeResolvedModel(
             .{},
         );
     }
-    initializeStatePersistence(&model, state_path, loaded.rejected_state_path);
+    initializeStatePersistence(model, state_path, loaded.rejected_state_path);
     model.config = user_config;
     model.config_file.setPath(config_path orelse "");
     model.tab_placement = switch (model.config.tab_placement) {
@@ -558,16 +556,17 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
         .user = init.environ_map.get("USER"),
     });
     reportConfigDiagnostics(&user_config);
-    var initialized = try initializeResolvedModel(
+    const initialized = try initializeResolvedModel(
         gpa,
         init.io,
         user_config,
         loaded_config.path(),
-        state_path,
+        if (phux_enabled) null else state_path,
         init.environ_map.get("PHUX_COCKPIT_TABS"),
     );
-    errdefer model_module.deinitModel(&initialized.model);
+    errdefer std.heap.page_allocator.destroy(initialized.model);
+    errdefer model_module.deinitModel(initialized.model);
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
-    attachPhuxProvider(&initialized.model, remote_provider);
+    attachPhuxProvider(initialized.model, remote_provider);
     return initialized;
 }

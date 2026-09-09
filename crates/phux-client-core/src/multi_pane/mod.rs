@@ -691,13 +691,13 @@ mod tests {
         use crate::layout::{WindowState, Workspace};
         let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
         let workspace = Workspace {
-            windows: vec![WindowState {
-                name: "1".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "1".to_owned(),
+                LayoutState {
                     tree: Some(tree),
                     focus: Some(t(1)),
                 },
-            }],
+            )],
             active: 0,
         };
         // In the real tiled tree pane t(2) owns the right half; a click

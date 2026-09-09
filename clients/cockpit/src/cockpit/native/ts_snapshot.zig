@@ -115,7 +115,7 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
     for (0..workspace.tab_count) |index| {
         const terminal = workspace.tabTerminal(index) orelse continue;
         var title_buffer: [512]u8 = undefined;
-        const title = projection.terminalTitleInto(model, terminal, &title_buffer);
+        const title = projection.tabTitleInto(model, workspace, index, &title_buffer);
         var title_display: [max_title_bytes]u8 = undefined;
         const bounded = navigation.displayText(title, &title_display);
         const cwd_all = if (model.provider.terminalConst(terminal)) |pane| pane.pwd() else "";

@@ -74,7 +74,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// pending request was answered. See [`Self::layout_get_answered`].
     pub(in crate::attach) layout_replaced: bool,
     /// `true` ⇒ this frame WAS the `MetadataValue` answer to the driver's
-    /// pending layout `GET_METADATA`, and the workspace has adopted it.
+    /// pending layout `GET_METADATA`, and the workspace has adopted it or
+    /// confirmed that no persisted metadata exists. This releases the write fence.
     ///
     /// Split out from [`Self::layout_replaced`] because that flag is also
     /// raised for pane damage during bootstrap. The driver keyed

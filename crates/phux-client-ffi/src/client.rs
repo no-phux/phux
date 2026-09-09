@@ -31,7 +31,7 @@ use crate::types::{
     terminal_id_out,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(
     clippy::redundant_pub_crate,
     reason = "the private module's session summaries are populated by the crate-root frame dispatcher"
@@ -271,6 +271,7 @@ pub(crate) struct Client {
     /// keyed by resource id.
     pub agent_streams: HashMap<TerminalId, AgentStream>,
     pub operations: crate::operations::Operations,
+    pub workspace: crate::workspace::SharedWorkspace,
     pub server_id: Vec<u8>,
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
@@ -323,6 +324,7 @@ impl Client {
             resources: Vec::new(),
             agent_streams: HashMap::new(),
             operations: crate::operations::Operations::default(),
+            workspace: crate::workspace::SharedWorkspace::default(),
             server_id: Vec::new(),
             last_error: Vec::new(),
             limits,
@@ -454,6 +456,7 @@ impl Client {
     pub(crate) fn detach(&mut self) {
         self.reset_gestures();
         self.operations.disconnect();
+        self.workspace.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();

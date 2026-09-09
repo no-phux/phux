@@ -25,7 +25,6 @@ const interaction = @import("../terminal_interaction.zig");
 const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
-const attachment_recovery = @import("../attachment_recovery.zig");
 const pointer_input = @import("../pointer_input.zig");
 const update_module = @import("../update.zig");
 const provider_contract = @import("provider_contract");
@@ -73,6 +72,58 @@ pub const NoShells = struct {
 
 pub const PointerOutcome = enum { ignored, consumed, geometry_changed };
 
+test "shared deferred selection is superseded by keyboard and routed window focus" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const pending: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 900 } } };
+    try std.testing.expect(engine.newTerminal());
+    engine.model.shared_workspace.desired_terminal = pending;
+    try std.testing.expect(engine.tabCommand(.next_tab));
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal == null);
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    engine.model.shared_workspace.desired_terminal = pending;
+    try std.testing.expect(engine.paneFocusCommand(.next_pane));
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal == null);
+    _ = engine.model.openWindow(1).?;
+    engine.model.shared_workspace.desired_terminal = pending;
+    engine.model.active_window = 1; // applyIntent has already routed this window.
+    try std.testing.expect(engine.focusWindow(1));
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal == null);
+    engine.model.shared_workspace.desired_terminal = pending;
+    engine.setInputSuspended(&NoShells{}, true);
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal == null);
+}
+
+test "shared divider preview rolls back when an overlay suspends input" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    const id: [16]u8 = @splat(1);
+    workspace.shared_ids[workspace.selected_tab] = id;
+    engine.model.shared_workspace.revision = 10;
+    const drag: SplitDrag = .{
+        .window_id = 0,
+        .pointer_id = 1,
+        .window_index = 0,
+        .node = tree.root,
+        .orientation = .horizontal,
+        .bounds = .{ .x = 0, .y = 0, .width = 800, .height = 600 },
+        .shared_id = id,
+        .shared_revision = 10,
+        .window_epoch = engine.model.window_epochs[0],
+        .original_fraction = tree.node(tree.root).fraction,
+    };
+    engine.split_drag = drag;
+    try std.testing.expect(engine.moveSplitDrag(drag, .{ .x = 600, .y = 0 }));
+    try std.testing.expect(tree.node(tree.root).fraction != drag.original_fraction);
+    engine.setInputSuspended(&NoShells{}, true);
+    try std.testing.expectEqual(drag.original_fraction, tree.node(tree.root).fraction);
+    try std.testing.expect(engine.split_drag == null);
+    try std.testing.expectEqual(@as(u64, 0), engine.model.shared_mutations.next_ticket);
+}
+
 const SplitDrag = struct {
     window_id: platform.WindowId,
     pointer_id: u64,
@@ -80,6 +131,10 @@ const SplitDrag = struct {
     node: layout.NodeId,
     orientation: layout.Orientation,
     bounds: geometry.RectF,
+    shared_id: ?[16]u8 = null,
+    shared_revision: u64 = 0,
+    window_epoch: u64 = 0,
+    original_fraction: f32 = 0.5,
 };
 
 /// Snapshot flag bit reserved for the engine: the last intent was refused
@@ -113,7 +168,7 @@ pub const Engine = struct {
     remote_natural_keys_held: u8 = 0,
     input_suspended: bool = false,
     creation: durable_creation.Creation = .{},
-    recovery: attachment_recovery.Recovery = .{},
+    last_workspace_refresh: ?std.Io.Timestamp = null,
     remote_pointer: @import("shipping_pointer.zig").State = .{},
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
@@ -163,26 +218,32 @@ pub const Engine = struct {
     /// Consume the fully resolved startup model and establish its final storage.
     pub fn createFromInitialized(initialized_value: startup.InitializedModel) !*Engine {
         var initialized = initialized_value;
-        errdefer model_module.deinitModel(&initialized.model);
-        const model = try std.heap.page_allocator.create(Model);
+        const model = initialized.model;
         errdefer std.heap.page_allocator.destroy(model);
-        model.* = initialized.model;
+        errdefer model_module.deinitModel(model);
         if (initialized.provenance == .restored) {
             model_module.applyRestoredWorkingDirectories(model, &initialized.restored_snapshot);
-            if (model.saved_attachments.count != 0) model.phux_admit_on_ready = false;
         }
-        const synthetic_seed = initialized.provenance != .restored or initialized.restored_snapshot.tab_count == 0;
-        if (synthetic_seed and model.phux() != null) {
-            // Fresh configured launches await coordinator-owned work. The
-            // unspawned local seed is only for the explicit ephemeral path.
-            if (model.focusedTerminalRef()) |ref| {
-                _ = model.provider.destroyTerminal(ref);
-                model.dropTab(0);
-            }
-        }
+        if (model.phux() != null) initializeSharedPresentation(model);
         const engine = try std.heap.page_allocator.create(Engine);
         engine.* = .{ .model = model };
         return engine;
+    }
+
+    fn initializeSharedPresentation(model: *Model) void {
+        // Configuration chooses either Phux-backed work or the explicit local
+        // scratch path. Old local layout files cannot restore competing remote
+        // topology, or start hidden scratch PTYs behind a shared workspace.
+        var refs: [max_terminals]TerminalRef = undefined;
+        const count = model.provider.terminalRefs(&refs);
+        for (refs[0..count]) |ref| _ = model.provider.destroyTerminal(ref);
+        for (1..model_module.max_windows) |index| model.closeWindow(index);
+        model.primary = .{};
+        model.primary_open = true;
+        model.active_window = 0;
+        model.saved_attachments = .{};
+        model.pending_attachments = @splat(false);
+        model.state.setPath(null);
     }
 
     pub fn destroy(self: *Engine) void {
@@ -315,17 +376,14 @@ pub const Engine = struct {
     fn applyReadiness(self: *Engine, delta: support.SyncDelta) bool {
         const model = self.model;
         var changed = self.pumpOperations() or delta.metadata_changed;
+        model.reconcileRemoteTerminals();
         if (delta.ready_published) {
             changed = model.phux_connection_unavailable or changed;
             model.phux_connection_unavailable = false;
         }
-        if (delta.ready_published or delta.added_count != 0 or delta.removed_count != 0) {
-            model.reconcileRemoteTerminals();
-            changed = true;
-        }
-        if (delta.ready_published and model.phux_admit_on_ready) {
-            model.phux_admit_on_ready = false;
-            changed = model.admitAndSelectCurrentRemoteTerminal() or changed;
+        if (model.phux()) |remote| {
+            const workspace = remote.workspaceSnapshot();
+            if (workspace.state != .unavailable) return self.synchronizeSharedWorkspace() or changed;
         }
         return changed;
     }
@@ -335,17 +393,87 @@ pub const Engine = struct {
         const remote = model.phux() orelse return false;
         var changed = false;
         while (remote.takeOperationResult()) |result| {
-            if (!self.creation.complete(model, result)) self.recovery.complete(model, result);
+            if (model.shared_workspace.completeSubscription(result, remote.workspaceSnapshot().request_id)) {
+                changed = true;
+                continue;
+            }
+            _ = self.creation.complete(model, result);
             changed = true;
         }
-        changed = self.recovery.pump(model) or changed;
-        return self.creation.pump(model) or changed;
+        return changed;
+    }
+
+    fn synchronizeSharedWorkspace(self: *Engine) bool {
+        const model = self.model;
+        const remote = model.phux() orelse return false;
+        self.sharedContext() catch return self.refuseSharedWorkspace();
+        var changed = model.shared_mutations.pump(model);
+        changed = self.creation.pump(model) or changed;
+        const generation = model.shared_workspace.projection_generation;
+        const applied = model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch()) catch
+            return self.refuseSharedWorkspace();
+        if (generation != model.shared_workspace.projection_generation) self.split_drag = null;
+        changed = model.shared_workspace.selectDesired(model) or changed;
+        self.admitDesiredTerminal();
+        if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
+        model.shared_workspace.subscribe(model);
+        return applied or changed;
+    }
+
+    fn admitDesiredTerminal(self: *Engine) void {
+        const model = self.model;
+        const ref = model.shared_workspace.desired_terminal orelse return;
+        if (model.locateTerminal(ref) != null or self.creation.hasPendingTerminal(ref)) return;
+        const remote = model.phux() orelse return;
+        if (remote.terminalSession(ref) != remote.selectedSessionId()) return;
+        self.creation.requestAttach(model, ref) catch {
+            model.shared_workspace.desired_terminal = null;
+            model.terminal_limit_refused = true;
+        };
+    }
+
+    fn sharedContext(self: *Engine) !void {
+        const model = self.model;
+        const remote = model.phux() orelse return error.NoProvider;
+        const server = remote.serverId() orelse return error.MissingServerIdentity;
+        const session = remote.selectedSessionId() orelse return error.MissingSession;
+        const endpoint = switch (remote.endpointDescriptor()) {
+            .unix => |path| path,
+            else => return error.UnsupportedEndpoint,
+        };
+        var hash = std.hash.Wyhash.init(0);
+        hash.update(endpoint);
+        hash.update(server);
+        model.shared_workspace.setContext(hash.final());
+        try model.setAttachmentContext(endpoint, server, session);
+    }
+
+    fn refuseSharedWorkspace(self: *Engine) bool {
+        const changed = !self.model.shared_workspace.refused;
+        self.model.shared_workspace.refused = true;
+        return changed;
+    }
+
+    /// The real runtime timer and explicit navigation share a bounded refresh;
+    /// UI invalidations cannot turn it into a request/reply spin loop.
+    pub fn refreshWorkspace(self: *Engine) void {
+        const remote = self.model.phux() orelse return;
+        if (remote.state() != .attached) return;
+        const now = std.Io.Clock.awake.now(self.model.provider.io);
+        if (self.last_workspace_refresh) |last| {
+            if (last.durationTo(now).toMilliseconds() < 1000) return;
+        }
+        const request = remote.requestWorkspaceRefresh() catch return;
+        if (request != null) self.last_workspace_refresh = now;
     }
 
     fn providerDisconnected(self: *Engine) void {
+        self.cancelSplitDrag();
         self.model.captureRemotePaint();
-        self.recovery.disconnect(self.model);
+        self.model.rejectAttachmentContext();
         self.creation.disconnect(self.model);
+        self.model.shared_mutations.disconnect(self.model);
+        self.last_workspace_refresh = null;
     }
 
     pub fn onPointerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) void {
@@ -481,7 +609,7 @@ pub const Engine = struct {
 
     fn applyModelIntent(self: *Engine, intent: protocol.Intent, fx: anytype) bool {
         return switch (intent.kind) {
-            .select_tab => self.model.selectTab(intent.argument),
+            .select_tab => self.selectTab(intent.argument),
             .new_terminal => self.newTerminal(),
             .close_tab => self.closeTab(intent.argument, fx),
             .set_tab_placement => self.setPlacement(intent.argument),
@@ -514,17 +642,30 @@ pub const Engine = struct {
         return true;
     }
 
-    pub fn navigationSnapshot(self: *const Engine, request: []const u8, out: []u8) navigation.Error![]const u8 {
+    pub fn navigationSnapshot(self: *Engine, request: []const u8, out: []u8) navigation.Error![]const u8 {
+        self.refreshWorkspace();
         return navigation.encode(self.model, self.revision, request, out);
     }
 
     fn selectNavigation(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
         const destination = navigation.resolve(self.model, self.revision, intent.expected_revision, intent.index) orelse return false;
+        self.supersedeSelection();
         return switch (destination) {
             .placed_terminal => |placed| self.selectPlacedNavigation(placed, fx),
             .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
             .session => |id| self.selectSessionNavigation(id, fx),
         };
+    }
+
+    fn selectTab(self: *Engine, index: u8) bool {
+        if (!self.model.selectTab(index)) return false;
+        self.supersedeSelection();
+        return true;
+    }
+
+    fn supersedeSelection(self: *Engine) void {
+        self.model.shared_workspace.desired_terminal = null;
+        self.creation.supersedeFocus();
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -549,24 +690,19 @@ pub const Engine = struct {
     fn selectAvailableNavigation(self: *Engine, ref: TerminalRef, fx: anytype) bool {
         const model = self.model;
         if (support.providerKind(ref) != .phux) return false;
+        if (self.selectCatalogSession(ref, fx)) |accepted| return accepted;
         if (self.creation.hasPendingTerminal(ref)) return false;
-        if (!model.containsTerminal(ref)) {
-            self.creation.requestAttach(model, ref) catch {
-                model.terminal_limit_refused = true;
-                return false;
-            };
-            return true;
-        }
-        const remote = model.phux() orelse return false;
-        const owner = remote.owner(ref) orelse return false;
-        if (!remote.ownerIsCurrent(owner)) return false;
-        if (!model.admitTab(ref)) {
-            model.ws().tab_limit_refused = true;
-            return false;
-        }
-        if (!model.selectTerminal(ref)) return false;
-        model.ws().tab_limit_refused = false;
-        pointer_input.endHiddenCaptures(model, fx);
+        self.creation.requestAttach(model, ref) catch return false;
+        model.shared_workspace.desired_terminal = ref;
+        return true;
+    }
+
+    fn selectCatalogSession(self: *Engine, ref: TerminalRef, fx: anytype) ?bool {
+        const remote = self.model.phux() orelse return false;
+        const session = remote.terminalSession(ref) orelse return false;
+        if (session == remote.selectedSessionId()) return null;
+        if (!self.selectSessionNavigation(session, fx)) return false;
+        self.model.shared_workspace.desired_terminal = ref;
         return true;
     }
 
@@ -574,11 +710,18 @@ pub const Engine = struct {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPhux")) return false;
         const remote = self.model.phux() orelse return false;
+        const previous = remote.selectedSessionId() orelse return false;
         const changed = remote.selectSession(id) catch return false;
         // Selecting the current session is an accepted idempotent action;
         // acknowledge it without restarting the connection or flashing refusal.
-        if (!changed) return true;
-        self.model.phux_admit_on_ready = true;
+        if (!changed) {
+            self.refreshWorkspace();
+            return true;
+        }
+        self.model.shared_workspace.leaveSession(self.model) catch {
+            _ = remote.selectSession(previous) catch {};
+            return false;
+        };
         return fx.restartPhux(self);
     }
 
@@ -646,6 +789,14 @@ pub const Engine = struct {
 
     /// Closing the last leaf retires its window; remote execution stays live.
     fn closeTab(self: *Engine, index: u8, fx: anytype) bool {
+        const model = self.model;
+        if (model.phux() != null) {
+            if (index >= model.ws().tab_count) return false;
+            const id = model.ws().shared_ids[index] orelse return false;
+            model.shared_mutations.requestRemoveWindow(model, id) catch return false;
+            self.supersedeSelection();
+            return true;
+        }
         return lifecycle.closeTab(self.model, fx, self.model.active_window, index);
     }
 
@@ -721,14 +872,24 @@ pub const Engine = struct {
 
     /// Local processes end; coordinator-owned terminals detach presentation.
     fn closeWindow(self: *Engine, index: u8, fx: anytype) bool {
+        if (self.model.phux() != null) return self.closeSharedWindow(index, fx);
         return lifecycle.closeWindow(self.model, fx, index);
+    }
+
+    fn closeSharedWindow(self: *Engine, index: u8, fx: anytype) bool {
+        @import("../shared_workspace.zig").closeNativeWindow(self.model, index) catch return false;
+        self.supersedeSelection();
+        pointer_input.endHiddenCaptures(self.model, fx);
+        if (index == 0) fx.closeWindow(scene.main_window_label);
+        if (self.model.openWindowCount() == 0) fx.quitApp();
+        return true;
     }
 
     fn focusWindow(self: *Engine, index: u8) bool {
         const model = self.model;
         if (!model.windowOpen(index)) return false;
-        if (model.active_window == index) return false;
         model.active_window = index;
+        self.supersedeSelection();
         return true;
     }
 
@@ -762,14 +923,31 @@ pub const Engine = struct {
                 const count: i32 = @intCast(workspace.tab_count);
                 const selected: i32 = @intCast(workspace.selected_tab);
                 workspace.selected_tab = @intCast(@mod(selected + delta, count));
+                self.supersedeSelection();
             },
             .move_tab_left, .move_tab_right => {
+                if (model.phux() != null) return self.moveSharedTab(command == .move_tab_right);
                 const terminal = workspace.tabTerminal(workspace.selected_tab) orelse return false;
                 if (!model.moveTerminal(terminal, if (command == .move_tab_right) 1 else -1)) return false;
             },
             else => unreachable,
         }
         return true;
+    }
+
+    fn moveSharedTab(self: *Engine, right: bool) bool {
+        const model = self.model;
+        const id = model.ws().shared_ids[model.ws().selected_tab] orelse return false;
+        const remote = model.phux() orelse return false;
+        const windows = remote.workspaceSnapshot().windows;
+        for (windows, 0..) |window, index| {
+            if (!std.mem.eql(u8, &window.id, &id)) continue;
+            if ((!right and index == 0) or (right and index + 1 == windows.len)) return false;
+            const target = if (right) index + 1 else index - 1;
+            model.shared_mutations.requestReorder(model, id, @intCast(target)) catch return false;
+            return true;
+        }
+        return false;
     }
 
     fn clipboardCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
@@ -844,6 +1022,7 @@ pub const Engine = struct {
         } orelse return false;
         if (next == tree.focus) return false;
         tree.focus = next;
+        self.supersedeSelection();
         return true;
     }
 
@@ -862,6 +1041,7 @@ pub const Engine = struct {
         const next = tree.focusDirection(chrome.content, projection.split_divider_width, projection.split_pane_min_width, projection.split_pane_min_height, direction) orelse return false;
         if (next == tree.focus) return false;
         tree.focus = next;
+        self.supersedeSelection();
         return true;
     }
 
@@ -899,10 +1079,16 @@ pub const Engine = struct {
 
     fn closeFocusedPane(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
+        if (self.model.phux() != null) {
+            self.model.shared_mutations.requestRemove(self.model, ref) catch return false;
+            self.supersedeSelection();
+            return true;
+        }
         return lifecycle.closePane(self.model, fx, ref, true);
     }
 
     fn createDurable(self: *Engine, kind: durable_creation.Kind) bool {
+        self.supersedeSelection();
         self.creation.request(self.model, kind) catch {
             self.model.terminal_limit_refused = true;
             return false;
@@ -1290,6 +1476,7 @@ pub const Engine = struct {
         const model = self.model;
         const phase = shipping_pointer.phase(raw) orelse return .ignored;
         if (phase == .down) {
+            self.supersedeSelection();
             shipping_pointer.cancelLocal(model, fx, raw);
             self.remote_pointer.cancelPointer(model, raw);
         }
@@ -1319,42 +1506,70 @@ pub const Engine = struct {
     fn routeSplitDrag(self: *Engine, raw: platform.GpuSurfaceInputEvent, point: geometry.PointF) ?bool {
         if (self.split_drag) |drag| {
             if (drag.window_id != raw.window_id or drag.pointer_id != raw.pointer_id) return null;
-            switch (raw.kind) {
-                .pointer_drag, .pointer_move => {
-                    const available = switch (drag.orientation) {
-                        .horizontal => @max(1, drag.bounds.width - projection.split_divider_width),
-                        .vertical => @max(1, drag.bounds.height - projection.split_divider_width),
-                    };
-                    const offset = switch (drag.orientation) {
-                        .horizontal => point.x - drag.bounds.x,
-                        .vertical => point.y - drag.bounds.y,
-                    };
-                    const workspace = self.model.wsAt(drag.window_index) orelse {
-                        self.split_drag = null;
-                        return false;
-                    };
-                    const tree = workspace.selectedTree() orelse {
-                        self.split_drag = null;
-                        return false;
-                    };
-                    const before = tree.node(drag.node).fraction;
-                    tree.setFraction(drag.node, offset / available);
-                    const changed = tree.node(drag.node).fraction != before;
-                    if (changed) {
-                        self.sequence +%= 1;
-                        self.revision +%= 1;
-                        self.intent_refused = false;
-                    }
-                    return changed;
-                },
-                .pointer_up, .pointer_cancel => {
-                    self.split_drag = null;
-                    return false;
-                },
+            return switch (raw.kind) {
+                .pointer_drag, .pointer_move => self.moveSplitDrag(drag, point),
+                .pointer_up, .pointer_cancel => self.finishSplitDrag(drag, raw.kind == .pointer_up),
                 else => return false,
-            }
+            };
         }
         if (raw.kind != .pointer_down) return null;
+        return self.beginSplitDrag(raw, point);
+    }
+
+    fn splitDragTree(self: *Engine, drag: SplitDrag) ?*layout.Tree {
+        const workspace = self.model.wsAt(drag.window_index) orelse return null;
+        const id = drag.shared_id orelse return workspace.selectedTree();
+        if (self.model.window_epochs[drag.window_index] != drag.window_epoch) return null;
+        if (self.model.shared_workspace.revision != drag.shared_revision) return null;
+        for (workspace.shared_ids[0..workspace.tab_count], 0..) |candidate, index| {
+            const known = candidate orelse continue;
+            if (std.mem.eql(u8, &known, &id)) return &workspace.tabs[index];
+        }
+        return null;
+    }
+
+    fn moveSplitDrag(self: *Engine, drag: SplitDrag, point: geometry.PointF) bool {
+        const tree = self.splitDragTree(drag) orelse {
+            self.split_drag = null;
+            return false;
+        };
+        const available = switch (drag.orientation) {
+            .horizontal => @max(1, drag.bounds.width - projection.split_divider_width),
+            .vertical => @max(1, drag.bounds.height - projection.split_divider_width),
+        };
+        const offset = switch (drag.orientation) {
+            .horizontal => point.x - drag.bounds.x,
+            .vertical => point.y - drag.bounds.y,
+        };
+        const before = tree.node(drag.node).fraction;
+        tree.setFraction(drag.node, offset / available);
+        if (tree.node(drag.node).fraction == before) return false;
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
+    }
+
+    fn finishSplitDrag(self: *Engine, drag: SplitDrag, commit: bool) bool {
+        self.split_drag = null;
+        const id = drag.shared_id orelse return false;
+        const tree = self.splitDragTree(drag) orelse return false;
+        const ratio = tree.node(drag.node).fraction;
+        tree.setFraction(drag.node, drag.original_fraction);
+        if (!commit or ratio == drag.original_fraction) return ratio != drag.original_fraction;
+        const path = @import("../shared_workspace.zig").splitPath(tree, drag.node) catch return false;
+        self.model.shared_mutations.requestResize(self.model, id, path.bits, path.len, ratio) catch {
+            self.model.shared_workspace.refused = true;
+        };
+        return true;
+    }
+
+    fn cancelSplitDrag(self: *Engine) void {
+        const drag = self.split_drag orelse return;
+        _ = self.finishSplitDrag(drag, false);
+    }
+
+    fn beginSplitDrag(self: *Engine, raw: platform.GpuSurfaceInputEvent, point: geometry.PointF) ?bool {
         const window_index = windowIndexForCanvas(raw.label) orelse return null;
         const workspace = self.model.wsAt(window_index) orelse return null;
         const tree = workspace.selectedTree() orelse return null;
@@ -1378,6 +1593,10 @@ pub const Engine = struct {
                 .node = divider.node,
                 .orientation = divider.orientation,
                 .bounds = divider.bounds,
+                .shared_id = workspace.shared_ids[workspace.selected_tab],
+                .shared_revision = self.model.shared_workspace.revision,
+                .window_epoch = self.model.window_epochs[window_index],
+                .original_fraction = tree.node(divider.node).fraction,
             };
             return false;
         }
@@ -1462,11 +1681,8 @@ pub const Engine = struct {
     }
 
     fn syncRemoteFocus(self: *Engine) void {
-        const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
-        if (comptime support.phux_enabled) {
-            if (ref) |value| if (self.model.phux()) |remote| remote.acknowledgeBell(value);
-        }
-        const next = if (ref) |value| self.model.terminalOwner(value) else null;
+        self.creation.observeFocus(self.model);
+        const next = self.currentRemoteFocusOwner();
         if (support.optOwnerEql(self.remote_focus_owner, next)) return;
         const remote = self.model.phux() orelse return;
         if (self.remote_focus_owner) |previous| remote.sendFocus(previous, false) catch {};
@@ -1474,12 +1690,21 @@ pub const Engine = struct {
         if (next) |owner| remote.sendFocus(owner, true) catch {};
     }
 
+    fn currentRemoteFocusOwner(self: *Engine) ?support.ReplicaOwner {
+        const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
+        if (comptime support.phux_enabled) {
+            if (ref) |value| if (self.model.phux()) |remote| remote.acknowledgeBell(value);
+        }
+        return if (ref) |value| self.model.terminalOwner(value) else null;
+    }
+
     pub fn setInputSuspended(self: *Engine, fx: anytype, suspended: bool) void {
         if (self.input_suspended == suspended) return;
         self.input_suspended = suspended;
         if (suspended) {
+            self.supersedeSelection();
             self.remote_pointer.cancelAll(self.model);
-            self.split_drag = null;
+            self.cancelSplitDrag();
             self.last_click_count = 0;
             self.remote_natural_keys_held = 0;
             for (&self.model.held_terminal_keys) |*held| held.* = .{};

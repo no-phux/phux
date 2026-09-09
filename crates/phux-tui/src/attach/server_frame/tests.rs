@@ -836,10 +836,7 @@ fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
 /// A single-window workspace wrapping `state`, for the reconcile tests.
 fn ws1(state: LayoutState) -> Workspace {
     Workspace {
-        windows: vec![crate::layout::WindowState {
-            name: "1".to_owned(),
-            state,
-        }],
+        windows: vec![crate::layout::WindowState::new("1".to_owned(), state)],
         active: 0,
     }
 }
@@ -854,23 +851,20 @@ fn window_leaves(ws: &Workspace, idx: usize) -> Vec<TerminalId> {
         .unwrap_or_default()
 }
 
-/// phux-jy4t: a freshly created session reads the group-shared layout
-/// metadata, which holds a DIFFERENT session's tree. When this session's
-/// real ATTACHED pane is not a leaf of ANY window, the whole loaded
-/// workspace is foreign and must be discarded for a clean single pane — not
-/// rendered as the old layout with dead/empty panes.
 #[test]
-fn reconcile_discards_a_foreign_session_layout() {
-    let foreign = ws1(split2(1, 2, 1)); // leaves {1, 2}, from another session
+fn reconcile_accepts_authorized_replacement_without_terminal_overlap() {
+    let mut replacement = ws1(split2(1, 2, 1));
     let local = Workspace::single(tid(9));
-    let out = super::reconcile_loaded_workspace(foreign, &local, Some(&tid(9)), &HashMap::new());
+    replacement.windows[0].id = local.windows[0].id;
+    let out = super::reconcile_loaded_workspace(replacement, &local, Some(&tid(9)));
     assert_eq!(out.windows.len(), 1);
     assert_eq!(
         window_leaves(&out, 0),
-        vec![tid(9)],
-        "foreign layout discarded → clean single pane of the real terminal"
+        vec![tid(1), tid(2)],
+        "session authority does not depend on currently admitted replicas"
     );
-    assert_eq!(out.windows[0].state.focus, Some(tid(9)));
+    assert_eq!(out.windows[0].state.focus, Some(tid(1)));
+    assert_eq!(out.windows[0].id, local.windows[0].id);
 }
 
 #[test]
@@ -879,7 +873,7 @@ fn reconcile_keeps_a_layout_that_contains_the_session_pane() {
     // multi-pane tree is preserved (not discarded).
     let own = ws1(split2(1, 2, 1));
     let local = Workspace::single(tid(1));
-    let out = super::reconcile_loaded_workspace(own, &local, Some(&tid(1)), &HashMap::new());
+    let out = super::reconcile_loaded_workspace(own, &local, Some(&tid(1)));
     let leaves = window_leaves(&out, 0);
     assert!(
         leaves.contains(&tid(1)) && leaves.contains(&tid(2)),
@@ -891,7 +885,7 @@ fn reconcile_keeps_a_layout_that_contains_the_session_pane() {
 fn reconcile_without_bootstrap_focus_keeps_the_tree() {
     // No ATTACHED focus to validate against ⇒ don't discard.
     let tree = ws1(split2(1, 2, 1));
-    let out = super::reconcile_loaded_workspace(tree, &Workspace::default(), None, &HashMap::new());
+    let out = super::reconcile_loaded_workspace(tree, &Workspace::default(), None);
     assert_eq!(
         window_leaves(&out, 0).len(),
         2,
@@ -909,20 +903,14 @@ fn reconcile_without_bootstrap_focus_keeps_the_tree() {
 fn reconcile_multi_window_does_not_alias_non_active_windows() {
     let ws = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: LayoutState::single(tid(1)),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: LayoutState::single(tid(2)),
-            },
+            crate::layout::WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
+            crate::layout::WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 0,
     };
     // Focus is on window 0's pane (tid 1); window 1 (tid 2) is non-active.
     let local = ws.clone();
-    let out = super::reconcile_loaded_workspace(ws, &local, Some(&tid(1)), &HashMap::new());
+    let out = super::reconcile_loaded_workspace(ws, &local, Some(&tid(1)));
     assert_eq!(out.windows.len(), 2, "both windows survive");
     assert_eq!(window_leaves(&out, 0), vec![tid(1)]);
     assert_eq!(
@@ -1121,14 +1109,8 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
 
     let mut local = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "local-one".to_owned(),
-                state: split2(1, 2, 2),
-            },
-            crate::layout::WindowState {
-                name: "local-two".to_owned(),
-                state: split2(3, 4, 4),
-            },
+            crate::layout::WindowState::new("local-one".to_owned(), split2(1, 2, 2)),
+            crate::layout::WindowState::new("local-two".to_owned(), split2(3, 4, 4)),
         ],
         active: 1,
     };
@@ -1167,6 +1149,75 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
         local.windows[1].state.tree,
         Some(LayoutNode::Split { ratio, .. }) if (ratio - 0.7).abs() < f32::EPSILON
     ));
+}
+
+#[test]
+fn old_layout_schema_refuses_attach_and_broadcast_without_resetting_metadata() {
+    let bytes = b"\xa1\x67version\x02".to_vec();
+    let mut workspace = Workspace::single(tid(1));
+    let before = workspace.clone();
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1)]);
+    for frame in [
+        FrameKind::MetadataValue {
+            request_id: 42,
+            value: Some(bytes.clone()),
+        },
+        FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            value: Some(bytes),
+        },
+    ] {
+        let error =
+            try_drive_layout_frame(frame, Some(42), &mut workspace, &mut focused, &mut panes)
+                .expect_err("unsupported metadata must not seed a replacement write");
+        assert!(
+            matches!(error, AttachError::Protocol(message) if message.contains("stored metadata was preserved"))
+        );
+        assert_eq!(workspace, before);
+        assert_eq!(focused, Some(tid(1)));
+    }
+}
+
+#[test]
+fn shared_window_identity_preserves_focus_on_reorder_and_empty_is_authoritative() {
+    let mut local = Workspace::single(tid(1));
+    local.add_window("two".into(), tid(2));
+    let active_id = local.windows[1].id;
+    let mut incoming = local.clone();
+    incoming.windows.swap(0, 1);
+    incoming.active = 1;
+    let mut focused = Some(tid(2));
+    let mut panes = panes_for(&[&tid(1), &tid(2)]);
+    for topology in [incoming, Workspace::new()] {
+        let empty = topology.windows.is_empty();
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+                key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+                value: Some(topology.encode_topology_cbor().expect("topology")),
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+        assert!(outcome.layout_replaced);
+        if empty {
+            assert!(local.windows.is_empty());
+            assert_eq!(focused, None);
+            assert_eq!(
+                panes.len(),
+                2,
+                "presentation removal retains durable replicas"
+            );
+        } else {
+            assert_eq!(local.active, 0);
+            assert_eq!(local.windows[local.active].id, active_id);
+            assert_eq!(focused, Some(tid(2)));
+        }
+    }
 }
 
 /// phux-k0cw, THE guard this stage exists for: once a client subscribes
@@ -1233,11 +1284,8 @@ fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
     assert_eq!(outcome.foreign_layout, Some((SessionId::new(2), None)));
 }
 
-/// The bare legacy key predates per-session keying, so it can only be
-/// ours and must still be adopted — the guard tightens attribution
-/// without breaking a config written by an older client.
 #[test]
-fn the_bare_legacy_layout_key_is_still_adopted() {
+fn an_unscoped_layout_key_has_no_session_authority() {
     use phux_protocol::wire::frame::Scope;
 
     let mut local = Workspace::single(tid(1));
@@ -1258,8 +1306,9 @@ fn the_bare_legacy_layout_key_is_still_adopted() {
         &mut panes,
     );
 
-    assert!(outcome.layout_replaced, "the legacy key is ours");
+    assert!(!outcome.layout_replaced);
     assert!(outcome.foreign_layout.is_none());
+    assert_eq!(window_leaves(&local, 0), vec![tid(1)]);
 }
 
 /// phux-k0cw: a `phux.agent/v1` push for a pane we hold no slot for is a
@@ -1311,7 +1360,7 @@ fn rejected_cross_session_layout_emits_no_attach_panes() {
     let outcome = drive_layout_frame(
         FrameKind::MetadataChanged {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
-            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            key: phux_client::layout_ops::layout_key(SessionId::new(2)),
             value: Some(bytes),
         },
         None,
@@ -1323,6 +1372,33 @@ fn rejected_cross_session_layout_emits_no_attach_panes() {
     assert!(outcome.attach_panes.is_empty());
     assert_eq!(window_leaves(&local, 0), vec![tid(9)]);
     assert_eq!(focused, Some(tid(9)));
+}
+
+#[test]
+fn session_keyed_replacement_keeps_stable_window_with_all_new_leaves() {
+    let mut local = ws1(split2(1, 2, 2));
+    let stable_id = local.windows[0].id;
+    let mut replacement = ws1(split2(5, 6, 6));
+    replacement.windows[0].id = stable_id;
+    let mut focused = Some(tid(2));
+    let mut panes = panes_for(&[&tid(1), &tid(2)]);
+    let outcome = drive_layout_frame(
+        FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
+            key: phux_client::layout_ops::layout_key(SessionId::new(1)),
+            value: Some(replacement.encode_cbor().unwrap()),
+        },
+        None,
+        &mut local,
+        &mut focused,
+        &mut panes,
+    );
+    assert_eq!(local.windows[0].id, stable_id);
+    assert_eq!(window_leaves(&local, 0), vec![tid(5), tid(6)]);
+    assert_eq!(focused, Some(tid(5)));
+    assert_eq!(outcome.attach_panes, vec![tid(5), tid(6)]);
+    assert!(!outcome.emit_set_metadata);
+    assert_eq!(panes.len(), 2);
 }
 
 #[test]
@@ -1395,20 +1471,12 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
     local.add_window("3".to_owned(), tid(9));
     let incoming = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: split2(1, 4, 4),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: split2(2, 3, 3),
-            },
+            crate::layout::WindowState::new("1".to_owned(), split2(1, 4, 4)),
+            crate::layout::WindowState::new("2".to_owned(), split2(2, 3, 3)),
         ],
         active: 0,
     };
-    let panes = panes_for(&[&tid(1), &tid(2), &tid(3), &tid(4), &tid(9)]);
-
-    let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)), &panes);
+    let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)));
 
     assert_eq!(out.active, 1, "removed local index clamps to last window");
     assert_eq!(out.windows[0].state.focus, Some(tid(1)));
@@ -1423,14 +1491,8 @@ fn layout_tombstone_resets_to_local_focused_pane() {
 
     let mut local = Workspace {
         windows: vec![
-            crate::layout::WindowState {
-                name: "1".to_owned(),
-                state: LayoutState::single(tid(1)),
-            },
-            crate::layout::WindowState {
-                name: "2".to_owned(),
-                state: LayoutState::single(tid(2)),
-            },
+            crate::layout::WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
+            crate::layout::WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 1,
     };
@@ -1468,10 +1530,7 @@ fn two_pane_workspace(left: &TerminalId, right: &TerminalId, focus: &TerminalId)
         focus: Some(focus.clone()),
     };
     Workspace {
-        windows: vec![crate::layout::WindowState {
-            name: "1".to_owned(),
-            state,
-        }],
+        windows: vec![crate::layout::WindowState::new("1".to_owned(), state)],
         active: 0,
     }
 }
@@ -4214,15 +4273,8 @@ fn a_layout_naming_an_agent_session_is_refused() {
         &mut workspace,
         &mut focused,
     )
-    .expect("broadcast");
-    assert!(
-        !outcome.layout_replaced,
-        "the envelope is refused, not adopted"
-    );
-    assert!(
-        outcome.attach_panes.is_empty(),
-        "nothing tries to attach the stream as a pane"
-    );
+    .expect_err("non-terminal layout must be explicitly refused");
+    assert!(outcome.to_string().contains("is not a terminal resource"));
     assert_eq!(
         crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
         vec![pane],

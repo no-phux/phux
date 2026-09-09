@@ -18,6 +18,7 @@ pub const RemoteTerminalId = @import("provider_contract").RemoteTerminalId;
 pub const measured = @import("tests/measured.zig");
 pub const Engine = engine.Engine;
 pub const durable_tests = @import("cockpit/durable_creation_tests.zig");
+pub const shared_mutation_tests = @import("cockpit/shared_mutations_test.zig");
 pub const NoShells = engine.NoShells;
 pub const selection_autoscroll_timer_id: u64 = @import("cockpit/app_types.zig").selection_autoscroll_timer_id;
 pub const selection_autoscroll_interval_ns: u64 = 15 * std.time.ns_per_ms;

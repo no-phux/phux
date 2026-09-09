@@ -165,9 +165,12 @@
         //   touching the destination, preserve final symlink entries, retain
         //   confinement through verified parent handles, and stream special
         //   files through the exact no-follow-opened handle.
+        // Composed watched fragments retain per-window source provenance on
+        // their first frame and reload. Checked CLI write-back distinguishes
+        // each resolver root so secondary edits cannot alias another file.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/07a3303b0f89a31584caea86f042676e940fddb1.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQn8OtQLWR60zMq7a_E5rKO__ZYSTzZdRPYz3-paa",
+            .url = "https://github.com/phall1/native/archive/c188459a09ba59989c405946554addd64f53b6c0.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQgp4tQKqIHXRd0RruFCbjhJiq_kzDzv4taSwVcHB",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

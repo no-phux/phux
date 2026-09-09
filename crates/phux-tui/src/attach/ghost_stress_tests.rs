@@ -419,13 +419,10 @@ impl Rig {
 fn two_window_workspace(p: &TerminalId, q: &TerminalId, r: &TerminalId) -> Workspace {
     Workspace {
         windows: vec![
-            WindowState {
-                name: "one".to_owned(),
-                state: LayoutState::single(p.clone()),
-            },
-            WindowState {
-                name: "two".to_owned(),
-                state: LayoutState {
+            WindowState::new("one".to_owned(), LayoutState::single(p.clone())),
+            WindowState::new(
+                "two".to_owned(),
+                LayoutState {
                     tree: Some(LayoutNode::Split {
                         dir: SplitDir::Horizontal,
                         ratio: 0.5,
@@ -434,7 +431,7 @@ fn two_window_workspace(p: &TerminalId, q: &TerminalId, r: &TerminalId) -> Works
                     }),
                     focus: Some(q.clone()),
                 },
-            },
+            ),
         ],
         active: 0,
     }
@@ -450,10 +447,10 @@ fn snapshot_resync_of_undersized_mirror_letterboxes_like_the_full_frame() {
     let p = tid(1);
     let mut rig = Rig::new(
         Workspace {
-            windows: vec![WindowState {
-                name: "one".to_owned(),
-                state: LayoutState::single(p.clone()),
-            }],
+            windows: vec![WindowState::new(
+                "one".to_owned(),
+                LayoutState::single(p.clone()),
+            )],
             active: 0,
         },
         (80, 24),
@@ -477,9 +474,9 @@ fn non_focused_snapshot_resync_letterboxes_like_the_full_frame() {
     let r = tid(3);
     let mut rig = Rig::new(
         Workspace {
-            windows: vec![WindowState {
-                name: "two".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "two".to_owned(),
+                LayoutState {
                     tree: Some(LayoutNode::Split {
                         dir: SplitDir::Horizontal,
                         ratio: 0.5,
@@ -488,7 +485,7 @@ fn non_focused_snapshot_resync_letterboxes_like_the_full_frame() {
                     }),
                     focus: Some(q.clone()),
                 },
-            }],
+            )],
             active: 0,
         },
         (80, 24),
@@ -513,9 +510,9 @@ fn non_focused_output_letterboxes_like_the_full_frame() {
     let r = tid(3);
     let mut rig = Rig::new(
         Workspace {
-            windows: vec![WindowState {
-                name: "two".to_owned(),
-                state: LayoutState {
+            windows: vec![WindowState::new(
+                "two".to_owned(),
+                LayoutState {
                     tree: Some(LayoutNode::Split {
                         dir: SplitDir::Horizontal,
                         ratio: 0.5,
@@ -524,7 +521,7 @@ fn non_focused_output_letterboxes_like_the_full_frame() {
                     }),
                     focus: Some(q.clone()),
                 },
-            }],
+            )],
             active: 0,
         },
         (80, 24),

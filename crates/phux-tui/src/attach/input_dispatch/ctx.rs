@@ -43,6 +43,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// active window ([`Workspace::active_window_mut`]); the whole
     /// workspace is what gets serialized to L3 on a `SET_METADATA`.
     pub workspace: &'a mut Workspace,
+    /// A correlated initial layout GET confirmed valid metadata or absence.
+    pub layout_read_complete: bool,
     /// Outer-viewport `(cols, rows)`. Used by `apply_resize` to convert
     /// `amount` (cells) to a ratio delta.
     pub viewport: (u16, u16),

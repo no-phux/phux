@@ -373,7 +373,6 @@ fn activateSessionDestination(model: *Model, fx: *Fx, session_id: u32) void {
     const remote = model.phux() orelse return;
     const changed = remote.selectSession(session_id) catch return;
     if (!changed) return;
-    model.phux_admit_on_ready = true;
     model.phux_reconnect_after_close = true;
     remote.stop();
     fx.closeChannel(phux_channel_key);
@@ -508,10 +507,10 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
                     const terminal_set_changed =
                         delta.ready_published or delta.added_count != 0 or delta.removed_count != 0;
                     if (terminal_set_changed) model.reconcileRemoteTerminals();
-                    if (delta.ready_published and model.phux_admit_on_ready) {
-                        model.phux_admit_on_ready = false;
-                        _ = model.admitAndSelectCurrentRemoteTerminal();
-                    }
+                    _ = model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch()) catch {
+                        model.shared_workspace.refused = true;
+                        return;
+                    };
                 },
                 .closed, .rejected => {
                     std.log.warn("Phux provider channel {t} (state {t})", .{ event.kind, remote.state() });

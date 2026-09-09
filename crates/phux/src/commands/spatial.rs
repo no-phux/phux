@@ -1091,13 +1091,13 @@ mod tests {
             right: Box::new(LayoutNode::Leaf(moved.clone())),
         };
         let workspace = Workspace {
-            windows: vec![phux_client::layout::WindowState {
-                name: "1".to_owned(),
-                state: phux_client::layout::LayoutState {
+            windows: vec![phux_client::layout::WindowState::new(
+                "1".to_owned(),
+                phux_client::layout::LayoutState {
                     tree: Some(expected),
                     focus: Some(moved.clone()),
                 },
-            }],
+            )],
             active: 0,
         };
 

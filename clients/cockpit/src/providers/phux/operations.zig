@@ -19,7 +19,13 @@ pub fn Ledger(comptime capacity: usize) type {
 
         pub fn nextId(self: *const Self) !u32 {
             if (self.len == capacity) return error.OperationCapacity;
-            return std.math.add(u32, self.last_id, 1) catch error.RequestIdExhausted;
+            return self.nextRequestId();
+        }
+
+        /// Workspace requests share correlation IDs, not completion slots.
+        pub fn nextRequestId(self: *const Self) !u32 {
+            if (self.last_id >= 0x7fff_ffff) return error.RequestIdExhausted;
+            return self.last_id + 1;
         }
 
         pub fn accepted(self: *Self, id: u32, epoch: u64, kind: types.Kind, terminal_ref: ?provider.TerminalRef) void {
@@ -95,4 +101,17 @@ test "completed and pending operations share capacity and epoch correlation" {
     try std.testing.expectEqual(@as(u64, 8), unknown.connection_epoch);
     try std.testing.expectEqual(@as(u32, 3), try ledger.nextId());
     try std.testing.expect(ledger.take() == null);
+}
+
+test "workspace requests share bounded IDs without terminal completion slots" {
+    var ledger: Ledger(1) = .{};
+    ledger.accepted(try ledger.nextId(), 1, .spawn, null);
+    try std.testing.expectError(error.OperationCapacity, ledger.nextId());
+    ledger.last_id = try ledger.nextRequestId();
+    try std.testing.expectEqual(@as(u32, 2), ledger.last_id);
+    try std.testing.expectEqual(@as(usize, 1), ledger.len);
+    ledger.last_id = 0x7fff_fffe;
+    try std.testing.expectEqual(@as(u32, 0x7fff_ffff), try ledger.nextRequestId());
+    ledger.last_id = 0x7fff_ffff;
+    try std.testing.expectError(error.RequestIdExhausted, ledger.nextRequestId());
 }

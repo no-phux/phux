@@ -366,6 +366,7 @@ function connectionLabel(state: number): Uint8Array {
   if (state === 0) return asciiBytes("Local terminals");
   if (state === 1) return asciiBytes("Phux connecting...");
   if (state === 2) return asciiBytes("Phux connected");
+  if (state === 4) return asciiBytes("Phux connected / Shared workspace unavailable");
   return asciiBytes("Phux offline");
 }
 

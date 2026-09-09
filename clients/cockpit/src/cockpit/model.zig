@@ -444,6 +444,8 @@ pub const Workspace = struct {
     /// Process-local projection identities. Positions move and focused panes
     /// change, so neither can safely key the TypeScript tab list.
     tab_ids: [max_tabs]u32 = [_]u32{0} ** max_tabs,
+    /// Durable Phux layout identity, distinct from the process-local chrome key.
+    shared_ids: [max_tabs]?[16]u8 = @splat(null),
     next_tab_id: u32 = 1,
     /// The summoned working-set index. Presentational plus a keyboard mode,
     /// and deliberately NOT part of `topologySnapshot`: an open index is not a
@@ -596,10 +598,12 @@ pub const Workspace = struct {
         while (cursor + 1 < workspace.tab_count) : (cursor += 1) {
             workspace.tabs[cursor] = workspace.tabs[cursor + 1];
             workspace.tab_ids[cursor] = workspace.tab_ids[cursor + 1];
+            workspace.shared_ids[cursor] = workspace.shared_ids[cursor + 1];
         }
         workspace.tab_count -= 1;
         workspace.tabs[workspace.tab_count] = .{};
         workspace.tab_ids[workspace.tab_count] = 0;
+        workspace.shared_ids[workspace.tab_count] = null;
         if (workspace.tab_count == 0) {
             workspace.selected_tab = 0;
             return;
@@ -635,6 +639,7 @@ pub const Workspace = struct {
         const target: usize = @intCast(target_signed);
         std.mem.swap(layout.Tree, &workspace.tabs[current], &workspace.tabs[target]);
         std.mem.swap(u32, &workspace.tab_ids[current], &workspace.tab_ids[target]);
+        std.mem.swap(?[16]u8, &workspace.shared_ids[current], &workspace.shared_ids[target]);
         if (workspace.selected_tab == current) {
             workspace.selected_tab = target;
         } else if (workspace.selected_tab == target) {
@@ -706,11 +711,11 @@ pub const Model = struct {
     /// before reusing its effect key. Opening immediately races the close and
     /// the runtime correctly rejects the duplicate key.
     phux_reconnect_after_close: bool = false,
-    /// Initial attach and an explicit session pick admit and select one
-    /// current terminal. Ordinary publications leave presentation and focus
-    /// alone.
-    phux_admit_on_ready: bool = true,
-    remote_ui: [max_remote_terminals]RemoteUiState = [_]RemoteUiState{.{}} ** max_remote_terminals,
+    /// Shared topology is a projection of confirmed provider snapshots.
+    shared_workspace: @import("shared_workspace.zig").State = .{},
+    shared_mutations: @import("shared_mutations.zig").Coordinator = .{},
+    /// Selection/search belong to live replicas, not the whole-server catalog.
+    remote_ui: [max_terminals]RemoteUiState = [_]RemoteUiState{.{}} ** max_terminals,
     /// Display evidence belongs to the placement, not the current connection.
     frozen_paint: [topology.max_terminals]?FrozenPaint = @splat(null),
 
@@ -1125,9 +1130,15 @@ pub const Model = struct {
     fn pruneRemotePaint(model: *Model) void {
         for (model.frozen_paint) |entry| {
             const frozen = entry orelse continue;
-            if (model.locateTerminal(frozen.reference.terminal_ref) != null) continue;
+            const ref = frozen.reference.terminal_ref;
+            if (model.locateTerminal(ref) != null and !model.hasLiveRemotePaint(ref)) continue;
             model.releaseRemotePaint(frozen.reference.terminal_ref);
         }
+    }
+
+    fn hasLiveRemotePaint(model: *const Model, ref: TerminalRef) bool {
+        const presentation = model.remotePresentation(ref) orelse return false;
+        return presentation.phase == .live;
     }
 
     fn clearRemotePaint(model: *Model) void {
@@ -1144,6 +1155,9 @@ pub const Model = struct {
             if (state.terminal_ref) |known| {
                 if (!known.eql(terminal_ref)) continue;
                 if (!state.owner.eql(current_owner)) state.replaceOwner(current_owner, model.attachment_context);
+                // READY can precede the first metadata read. Bind UI created
+                // in that interval once this same replica's session is proven.
+                if (state.attachment_context.session_id == 0) state.attachment_context = model.attachment_context;
                 return state;
             }
             if (vacant == null) vacant = state;
@@ -1411,6 +1425,9 @@ pub const Model = struct {
     /// retired terminal has to leave whichever window's tree happened to hold
     /// it, not only the one that is in front.
     pub fn normalizeTopology(model: *Model) void {
+        // A missing replica is not a removed shared leaf. The authoritative
+        // workspace snapshot, rather than stream readiness, retires those panes.
+        if (model.phuxConst() != null) return;
         for (0..max_windows) |window_index| {
             const workspace = model.wsAt(window_index) orelse continue;
             var index: usize = 0;
@@ -1449,29 +1466,11 @@ pub const Model = struct {
             published[0..published_count],
         );
 
-        // Remote panes whose terminal the coordinator retired leave every
-        // window; terminals that merely lack a Cockpit leaf stay in inventory.
-        model.normalizeTopology();
         for (&model.remote_ui) |*state| {
             const known = state.terminal_ref orelse continue;
-            var retained = false;
-            for (model.remoteTerminalRefs()) |terminal_ref| {
-                if (!known.eql(terminal_ref)) continue;
-                retained = true;
-                break;
-            }
-            if (!retained) state.* = .{};
+            if (!remote.terminalKnown(known) and model.locateTerminal(known) == null) state.* = .{};
         }
         for (model.remoteTerminalRefs()) |terminal_ref| _ = model.remoteUi(terminal_ref);
-    }
-
-    /// Initial ATTACH_READY and an explicit session switch admit exactly one
-    /// current terminal. Later inventory publications never call this.
-    pub fn admitAndSelectCurrentRemoteTerminal(model: *Model) bool {
-        const refs = model.remoteTerminalRefs();
-        if (refs.len == 0) return false;
-        if (!model.admitTab(refs[0])) return false;
-        return model.selectTerminal(refs[0]);
     }
 
     /// Whether the config band is up: there is something to say and nobody has
@@ -1520,6 +1519,9 @@ pub const Model = struct {
 
     pub fn topologySnapshot(model: *const Model) !TopologySnapshot {
         var snapshot: TopologySnapshot = .{ .tab_placement = model.tab_placement };
+        // Remote topology has one persisted authority: Phux layout metadata.
+        // Older local files are superseded at the first shared publication.
+        if (model.shared_workspace.session != 0) return snapshot;
         var written: u8 = 0;
         var windows: u8 = 0;
         // Windows are written in INDEX order and renumbered densely, because
@@ -1997,6 +1999,7 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalTerminalId) !void {
 }
 
 pub fn deinitModel(model: *Model) void {
+    model.shared_workspace.deinit();
     model.clearRemotePaint();
     if (comptime support.phux_enabled) {
         if (model.pointer_state) |pointer_state| {
