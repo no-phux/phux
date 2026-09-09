@@ -1028,11 +1028,76 @@ fn distinctStringCount(values: []const []const u8) usize {
 
 pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     if (model.provider.terminalConst(id)) |pane| return paneNeedsAttention(model, pane);
+    // Stream-derived attention sits beside the bell rather than replacing it.
+    // A terminal is worth a marker if it rang, if its replica is in trouble,
+    // OR if an agent running under it is waiting on an answer.
+    if (model.agentAttention(id)) return true;
     if (comptime support.phux_enabled) {
         if (model.phuxConst()) |remote| if (remote.bellRung(id)) return true;
     }
     const presentation = model.remotePresentation(id) orelse return true;
     return presentation.phase == .failed or presentation.phase == .tombstoned;
+}
+
+/// One agent session, projected as a row under the terminal that owns it.
+///
+/// Rows are LIVE and never persisted: `topology.zig` stores presentation shape
+/// that must survive a restart, and an agent session is provider state that
+/// the resource catalog republishes on every attach. Persisting one would be
+/// the app guessing at durable identity, which is the coordinator's
+/// (docs/DURABLE_WORK_ARCHITECTURE.md, "Persistence").
+pub const AgentRow = struct {
+    /// The terminal the row hangs under.
+    parent: TerminalRef,
+    /// The agent session's own identity. It addresses no surface: nothing may
+    /// pass this to a presentation, an input, or a pane placement.
+    resource: TerminalRef,
+    /// Provider slug, e.g. `claude`. Empty when the catalog named none.
+    provider_name: []const u8,
+    native_id: []const u8,
+    state: support.AgentState,
+
+    /// Whether this row is the reason its terminal is asking for attention.
+    pub fn needsAttention(row: AgentRow) bool {
+        return row.state.needsAttention();
+    }
+};
+
+/// The agent rows under one terminal, in catalog order, bounded by `out`.
+/// Borrowed text is valid until the next provider drain, like every other
+/// projection in this file.
+pub fn agentRowsUnder(model: *const Model, id: TerminalRef, out: []AgentRow) usize {
+    if (comptime !support.phux_enabled) return 0;
+    var sessions: [model_module.max_agent_sessions]*const model_module.AgentSession = undefined;
+    const limit = @min(out.len, sessions.len);
+    if (limit == 0) return 0;
+    const count = model.agentSessionsUnder(id, sessions[0..limit]);
+    for (sessions[0..count], out[0..count]) |session, *row| {
+        row.* = .{
+            .parent = id,
+            .resource = session.ref(),
+            .provider_name = session.provider_name,
+            .native_id = session.native_id,
+            .state = session.state(),
+        };
+    }
+    return count;
+}
+
+/// Every agent row under one tab's terminals, in pane order then catalog
+/// order. This is the sidebar/topology shape: a tab, then the agents running
+/// inside it, each stated with its provider and its state.
+pub fn tabAgentRows(model: *const Model, workspace: *const Workspace, index: usize, out: []AgentRow) usize {
+    if (comptime !support.phux_enabled) return 0;
+    const current = workspace.treeConst(index) orelse return 0;
+    var refs: [layout.max_panes]TerminalRef = undefined;
+    const pane_count = current.terminals(&refs);
+    var written: usize = 0;
+    for (refs[0..pane_count]) |ref| {
+        if (written == out.len) break;
+        written += agentRowsUnder(model, ref, out[written..]);
+    }
+    return written;
 }
 
 pub fn selectedTerminalCanClose(model: *const Model) bool {

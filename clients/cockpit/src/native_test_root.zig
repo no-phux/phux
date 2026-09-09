@@ -574,4 +574,5 @@ test {
     _ = @import("tests/tab_identity_tests.zig");
     _ = @import("tests/ts_snapshot_tests.zig");
     _ = @import("tests/scrollback_search_tests.zig");
+    _ = @import("tests/agent_session_rows_tests.zig");
 }

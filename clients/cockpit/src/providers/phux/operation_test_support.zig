@@ -1,5 +1,50 @@
 //! Tests load canonical Rust-generated frames through the production queues.
 const std = @import("std");
+const provider = @import("provider_contract");
+const agent_sessions = @import("agent_sessions.zig");
+
+/// Rows one hand-built resource-catalog fixture may carry. Deliberately far
+/// below the roster ceiling: this array is a local, and a 256-row one would be
+/// 150 KB of stack for a fixture that never needs more than a handful.
+pub const max_agent_fixture_rows: usize = 16;
+
+/// One agent row of a hand-built resource catalog, in the terms the ABI
+/// publishes them (`PhuxResourceInfo`): a local resource id, its parent's, and
+/// the three UTF-8 spans.
+pub const AgentSessionFixture = struct {
+    id: u32,
+    parent: ?u32 = null,
+    provider_name: []const u8 = "",
+    native_id: []const u8 = "",
+    state: []const u8 = "",
+};
+
+/// Adopt a hand-built resource catalog, exactly as an attach snapshot does.
+///
+/// There is no wire fixture to stage and none to regenerate: the resource
+/// catalog is an ABI READ (`phux_client_resource_count` / `_get`) rather than a
+/// frame, so the fixture IS the record array. The decode from
+/// `c.PhuxResourceInfo` is covered by host.zig's own catalog test.
+pub fn adoptAgentSessions(host: anytype, rows: []const AgentSessionFixture) !void {
+    std.debug.assert(rows.len <= max_agent_fixture_rows);
+    var entries: [max_agent_fixture_rows]agent_sessions.Entry = undefined;
+    for (rows, entries[0..rows.len]) |row, *entry| {
+        entry.* = .{
+            .id = try provider.RemoteResourceId.fromPhux(0, row.id, ""),
+            .parent = if (row.parent) |parent| try provider.RemoteResourceId.fromPhux(0, parent, "") else null,
+            .provider_name = row.provider_name,
+            .native_id = row.native_id,
+            .state = row.state,
+        };
+    }
+    try host.agents.adopt(host.gpa, entries[0..rows.len]);
+}
+
+/// Fold one hand-built AGENT_RECORDS batch, exactly as `captureEffects` does.
+pub fn feedAgentRecords(host: anytype, id: u32, kind: agent_sessions.RecordsKind, payload: []const u8) !bool {
+    const resource = try provider.RemoteResourceId.fromPhux(0, id, "");
+    return host.agents.applyRecords(host.gpa, resource, kind, payload);
+}
 
 pub fn readFixture(name: []const u8) ![]u8 {
     const path = try std.fmt.allocPrint(std.testing.allocator, "src/tests/fixtures/{s}", .{name});
