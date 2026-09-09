@@ -136,6 +136,9 @@ not a summary: the TL;DR lives in the ADR.
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted |
 | [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (builds on [0020](./0020-layered-render.md)) |
 | [0101](./0101-the-settings-page-edits-the-file.md) | The settings page edits the file | Accepted (builds on [0023](./0023-config-ux-philosophy.md)) |
+| [0102](./0102-resources-the-server-serves-kinds.md) | Resources: the server serves kinds; Terminal is the first | Proposed (supersedes [0016](./0016-terminal-id-as-wire-primary.md)) |
+| [0103](./0103-agent-session-resource-and-producer-fed-streams.md) | Agent session resource and producer-fed streams | Proposed (amends [0040](./0040-agent-identity-metadata.md)) |
+| [0104](./0104-parent-bindings-are-l1-lifecycle.md) | Parent bindings are L1 lifecycle | Proposed (builds on [0102](./0102-resources-the-server-serves-kinds.md)) |
 
 ## When to write an ADR
 
