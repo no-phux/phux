@@ -1033,6 +1033,18 @@ fn distinctStringCount(values: []const []const u8) usize {
     return total;
 }
 
+/// A tab summarizes all of its splits, including a quiet focused leaf's
+/// blocked sibling. Use the same terminal predicate for every placement.
+pub fn tabNeedsAttention(model: *const Model, workspace: *const Workspace, index: usize) bool {
+    const tree = workspace.treeConst(index) orelse return false;
+    var refs: [layout.max_panes]TerminalRef = undefined;
+    const count = tree.terminals(&refs);
+    for (refs[0..count]) |ref| {
+        if (terminalNeedsAttention(model, ref)) return true;
+    }
+    return false;
+}
+
 pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     if (model.provider.terminalConst(id)) |pane| return paneNeedsAttention(model, pane);
     // Stream-derived attention sits beside the bell rather than replacing it.
