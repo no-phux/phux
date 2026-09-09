@@ -637,3 +637,44 @@ fn satellite_inventory_withdrawal_allows_same_agent_to_return_with_a_fresh_gener
         phux_client_free(client);
     }
 }
+
+#[test]
+fn discovered_agent_delivers_multi_record_live_batch_at_its_final_sequence() {
+    let client = attached_resource_client(snapshot(false));
+    answer_read(client, snapshot(false));
+    refresh(client, 1, snapshot(true));
+    subscription(client);
+    let agent = ResourceId::local(MIXED_AGENT);
+    bootstrap_agent(client, &agent, AGENT_BOOTSTRAP, 1, "prompt");
+    // SAFETY: fixture owns this client and effects through final free.
+    unsafe {
+        assert_eq!(phux_client_effect_clear(client), PhuxClientResult::Ok);
+        let payload = record(2, "ask", "{}") + &record(3, "stop", "{}");
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::ResourceOutput {
+                    terminal_id: agent,
+                    stream_id: phux_protocol::StreamId::new(AGENT_STREAM).unwrap(),
+                    bootstrap_id: phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).unwrap(),
+                    seq: 3,
+                    bytes: bytes::Bytes::from(payload),
+                }
+            ),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(phux_client_effect_count(client), 1);
+        let effect = effect_at(client, 0);
+        assert_eq!((effect.detail, effect.seq), (AGENT_RECORDS_LIVE, 3));
+        let records: Vec<serde_json::Value> = effect_bytes(&effect)
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["seq"], 2);
+        assert_eq!(records[1]["seq"], 3);
+        assert_eq!(records[1]["type"], "stop");
+        phux_client_free(client);
+    }
+}

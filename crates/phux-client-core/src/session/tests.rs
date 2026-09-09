@@ -2922,7 +2922,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     assert_eq!(view.log.len(), 2);
 
     // Live output appends and re-derives.
-    let live = agent_line(3, "stop", "{}");
+    let live = agent_line(6, "stop", "{}");
     kernel
         .update(
             KernelInput::ResourceOutput {
@@ -2937,11 +2937,11 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((agent.clone(), vec![3]))
+        Some((agent.clone(), vec![6]))
     );
     let view = kernel.agent_session(&agent).expect("live");
     assert_eq!(view.state.status, AgentSessionStatus::Done);
-    assert_eq!(view.log.last().map(|record| record.seq), Some(3));
+    assert_eq!(view.log.last().map(|record| record.seq), Some(6));
 
     // Sequencing stays exact.
     assert!(matches!(
@@ -2951,7 +2951,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
                 stream_id,
                 bootstrap_id,
                 seq: 8,
-                payload: live.as_bytes(),
+                payload: agent_line(8, "stop", "{}").as_bytes(),
             },
             &mut effects,
         ),
@@ -3237,4 +3237,214 @@ fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
                 .is_err(),
         "the replaced generation is retired"
     );
+}
+
+fn published_agent_for_batches(base_seq: u64) -> SessionKernel<FakeAdapter> {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    let agent = terminal(2);
+    declare_agent(&mut kernel, &agent, &terminal(1), &mut effects);
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(4),
+        base_seq,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &agent,
+                stream_id: stream(3),
+                bootstrap_id: bootstrap(4),
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+}
+
+fn batch_payload(records: &[(u64, &str)]) -> String {
+    use std::fmt::Write;
+    let mut payload = String::new();
+    for (seq, kind) in records {
+        writeln!(
+            payload,
+            "{{\"seq\":{seq},\"ts_ms\":1,\"type\":\"{kind}\",\"data\":{{}}}}"
+        )
+        .unwrap();
+    }
+    payload
+}
+
+fn apply_agent_batch(
+    kernel: &mut SessionKernel<FakeAdapter>,
+    effects: &mut EffectBuffer,
+    seq: u64,
+    records: &[(u64, &str)],
+) -> Result<(), KernelError<FakeError>> {
+    kernel.update(
+        KernelInput::ResourceOutput {
+            terminal_id: &terminal(2),
+            stream_id: stream(3),
+            bootstrap_id: bootstrap(4),
+            seq,
+            payload: batch_payload(records).as_bytes(),
+        },
+        effects,
+    )
+}
+
+#[test]
+fn agent_live_batches_advance_by_the_last_record_sequence() {
+    let mut kernel = published_agent_for_batches(0);
+    let mut effects = EffectBuffer::new();
+    // The server stamps each record, then emits one frame with the last seq.
+    apply_agent_batch(
+        &mut kernel,
+        &mut effects,
+        3,
+        &[(1, "prompt"), (2, "ask"), (3, "stop")],
+    )
+    .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((terminal(2), vec![1, 2, 3]))
+    );
+    let agent = terminal(2);
+    let view = kernel.agent_session(&agent).unwrap();
+    assert_eq!(view.state.status, AgentSessionStatus::Done);
+    assert_eq!(view.log.len(), 3);
+    apply_agent_batch(&mut kernel, &mut effects, 5, &[(4, "prompt"), (5, "ask")]).unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![4, 5]))
+    );
+    assert_eq!(
+        kernel.agent_session(&agent).unwrap().state.status,
+        AgentSessionStatus::Blocked
+    );
+}
+
+#[test]
+fn agent_live_batch_record_gaps_duplicates_and_envelope_mismatch_publish_nothing() {
+    for (seq, records) in [
+        (3, vec![(1, "ask"), (3, "stop")]),
+        (2, vec![(1, "ask"), (1, "stop")]),
+        (3, vec![(2, "ask"), (3, "stop")]),
+        (1, vec![(1, "ask"), (2, "stop")]),
+        (3, vec![(1, "ask"), (2, "stop")]),
+        (1, vec![]),
+    ] {
+        let mut kernel = published_agent_for_batches(0);
+        let mut effects = EffectBuffer::new();
+        assert!(
+            apply_agent_batch(&mut kernel, &mut effects, seq, &records).is_err(),
+            "invalid batch {records:?} with envelope {seq}"
+        );
+        assert!(
+            effects.is_empty(),
+            "no partial publication on invalid batch"
+        );
+        let agent = terminal(2);
+        let view = kernel.agent_session(&agent).unwrap();
+        assert!(view.log.is_empty());
+        assert_eq!(view.state.status, AgentSessionStatus::Working);
+        apply_agent_batch(&mut kernel, &mut effects, 1, &[(1, "stop")]).unwrap();
+        assert_eq!(
+            kernel.agent_session(&agent).unwrap().state.status,
+            AgentSessionStatus::Done
+        );
+    }
+}
+
+#[test]
+fn agent_live_batches_preserve_duplicate_and_generation_fences() {
+    let mut kernel = published_agent_for_batches(0);
+    let mut effects = EffectBuffer::new();
+    let records = [(1, "prompt"), (2, "ask")];
+    apply_agent_batch(&mut kernel, &mut effects, 2, &records).unwrap();
+    assert!(matches!(
+        apply_agent_batch(&mut kernel, &mut effects, 2, &records),
+        Err(KernelError::DuplicateSequence { .. })
+    ));
+    assert!(effects.is_empty());
+    assert!(matches!(
+        kernel.update(
+            KernelInput::ResourceOutput {
+                terminal_id: &terminal(2),
+                stream_id: stream(3),
+                bootstrap_id: bootstrap(99),
+                seq: 4,
+                payload: batch_payload(&[(3, "prompt"), (4, "stop")]).as_bytes(),
+            },
+            &mut effects
+        ),
+        Err(KernelError::GenerationMismatch { .. })
+    ));
+    assert!(effects.is_empty());
+    assert_eq!(
+        kernel.agent_session(&terminal(2)).unwrap().state.status,
+        AgentSessionStatus::Blocked
+    );
+    apply_agent_batch(&mut kernel, &mut effects, 4, &[(3, "prompt"), (4, "stop")]).unwrap();
+}
+
+#[test]
+fn agent_live_batches_reach_sequence_exhaustion_without_wrapping() {
+    let mut kernel = published_agent_for_batches(u64::MAX - 2);
+    let mut effects = EffectBuffer::new();
+    apply_agent_batch(
+        &mut kernel,
+        &mut effects,
+        u64::MAX,
+        &[(u64::MAX - 1, "prompt"), (u64::MAX, "stop")],
+    )
+    .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((terminal(2), vec![u64::MAX - 1, u64::MAX]))
+    );
+    assert!(matches!(
+        apply_agent_batch(&mut kernel, &mut effects, 0, &[(0, "ask")]),
+        Err(KernelError::SequenceExhausted)
+    ));
+    assert!(effects.is_empty());
+    assert_eq!(
+        kernel.agent_session(&terminal(2)).unwrap().state.status,
+        AgentSessionStatus::Done
+    );
+}
+
+#[test]
+fn malformed_later_agent_batch_record_retires_without_partial_publication() {
+    let mut kernel = published_agent_for_batches(0);
+    let mut effects = EffectBuffer::new();
+    let payload = batch_payload(&[(1, "ask")]) + "{malformed}\n";
+    let result = kernel.update(
+        KernelInput::ResourceOutput {
+            terminal_id: &terminal(2),
+            stream_id: stream(3),
+            bootstrap_id: bootstrap(4),
+            seq: 2,
+            payload: payload.as_bytes(),
+        },
+        &mut effects,
+    );
+    assert!(matches!(result, Err(KernelError::AgentRecord(_))));
+    assert!(agent_records_effect(&effects).is_none());
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::ResyncRequired {
+            reason: TombstoneReason::CodecFailure,
+            ..
+        })
+    )));
+    assert!(matches!(
+        apply_agent_batch(&mut kernel, &mut effects, 1, &[(1, "stop")]),
+        Err(KernelError::RetiredGeneration { .. })
+    ));
 }
