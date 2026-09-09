@@ -32,6 +32,7 @@ import tempfile
 import time
 
 from lib import dev_diagnostics as identity
+from lib.agent_attention import AgentAcceptance
 from lib.input_roundtrip import (
     ROOT, AppKit, Failure, Launcher, added_terminal, find_widget, fixture_widgets,
     child_stopped, persisted_state_effect, require, require_owner, run, terminal_ids, wait_for,
@@ -263,6 +264,7 @@ class Probe:
         self.window_groups.append([secondary])
         self.roundtrip("paste-text", secondary, second, "paste")
         self.roundtrip("paste-text-newline", secondary, second, "paste-newline")
+        AgentAcceptance(self, created, split, main).run()
         self.restart()
         self.evidence["source_at_finish"] = identity.source_identity(ROOT)
 

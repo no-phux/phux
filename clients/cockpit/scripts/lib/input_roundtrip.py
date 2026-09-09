@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parents[2]
 VIEW = r"@w\d+/phux-cockpit-canvas(?:-\d+)?"
 WIDGET = re.compile(
     rf'^    widget (?P<view>{VIEW})#(?P<id>\d+) role=(?P<role>\w+) '
-    r'name="(?P<name>[^"\r\n]*)" bounds=\([^\r\n]*?\) '
-    r'focused=(?P<focused>true|false) enabled=(?P<enabled>true|false)(?: .*)?$'
+    r'name="(?P<name>[^"\r]*)" bounds=\([^\r\n]*?\) '
+    r'focused=(?P<focused>true|false) enabled=(?P<enabled>true|false)(?: [^\r\n]*)?$', re.MULTILINE
 )
 
 
@@ -51,15 +51,32 @@ def wait_for(check, description, timeout=20):
     raise WaitTimeout(f"timeout: {description}")
 
 
-def terminal_ids(report):
+def local_ids(ids):
+    require(all(re.fullmatch(r"@[1-9][0-9]*", i) for i in ids), "nonlocal or invalid ResourceId")
+    require(len(set(ids)) == len(ids), "duplicate ResourceId")
+    return set(ids)
+
+
+def resource_inventory(report):
+    """Validate the complete catalog before selecting any resource facet."""
     require(report["unreachable"] == [], "partial coordinator inventory")
     resources = report["resources"]
-    require(all(r["kind"] == "terminal" for r in resources), "non-terminal fixture resource")
-    ids = [r["id"] for r in resources]
-    require(all(re.fullmatch(r"@[1-9]\d*", i) for i in ids), "nonlocal or invalid ResourceId")
-    require(len(set(ids)) == len(ids), "duplicate ResourceId")
-    require(set(ids) == set(report["terminals"]), "inconsistent resource inventory")
-    return set(ids)
+    local_ids([r["id"] for r in resources])
+    terminals = {r["id"] for r in resources if r["kind"] == "terminal"}
+    require(terminals == local_ids(report["terminals"]), "inconsistent resource inventory")
+    return {r["id"]: resource_identity(r) for r in resources}
+
+
+def resource_identity(resource):
+    require(resource["kind"] in ("terminal", "agent_session"), "unknown resource kind")
+    parent = resource.get("parent")
+    if parent is not None:
+        local_ids([parent])
+    return {"kind": resource["kind"], "parent": parent}
+
+
+def terminal_ids(report):
+    return {i for i, resource in resource_inventory(report).items() if resource["kind"] == "terminal"}
 
 
 def added_terminal(before, after):
@@ -71,8 +88,9 @@ def added_terminal(before, after):
 
 def fixture_widgets(raw):
     """In-memory controlled-fixture parser, never a provenance/sanitizing API."""
-    return [match.groupdict() for line in raw.decode().splitlines()
-            if (match := WIDGET.fullmatch(line))]
+    # The SDK emits literal newlines in text labels. Only this controlled
+    # fixture reader accepts them; diagnostic header-only privacy is unchanged.
+    return [match.groupdict() for match in WIDGET.finditer(raw.decode())]
 
 
 def in_view(widget, view):
