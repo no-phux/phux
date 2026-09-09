@@ -9,8 +9,10 @@
 )]
 #![allow(clippy::print_stderr, reason = "Drop cannot return cleanup failures")]
 
-use std::path::PathBuf;
+use std::io::BufRead as _;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const SERVER_IDLE_LIMIT_SECS: &str = "600";
@@ -252,6 +254,127 @@ pub fn strip_terminal_controls(bytes: &[u8]) -> String {
         }
     }
     String::from_utf8_lossy(&printable).into_owned()
+}
+
+/// A live `phux watch --json` child whose NDJSON stdout is captured
+/// off-thread.
+///
+/// A watch is the one surface that has to already be RUNNING when the thing
+/// it observes happens, so it cannot be a one-shot `output()` call like every
+/// other verb — and a state edge that a server publishes and then supersedes
+/// milliseconds later is observable *only* here, never by polling a reporting
+/// verb. The reader thread owns the pipe; the test reads the accumulated
+/// lines under the mutex.
+///
+/// Lives here rather than in one suite because two suites now need it: the
+/// agent-session lane and the Claude-shim scenario in `agent_record_e2e`.
+pub struct WatchChild {
+    child: Child,
+    lines: Arc<Mutex<Vec<serde_json::Value>>>,
+    label: String,
+    poll: Duration,
+    deadline: Duration,
+}
+
+impl WatchChild {
+    /// Start `phux --socket <socket> watch TARGET --json <extra...>`.
+    ///
+    /// `--socket` precedes the verb: it is the root global (ADR-0065), so
+    /// this form is safe even for verbs whose trailing positional would
+    /// otherwise swallow it.
+    pub fn start(
+        phux: &Path,
+        socket: &Path,
+        target: &str,
+        extra: &[&str],
+        poll: Duration,
+        deadline: Duration,
+    ) -> Self {
+        let mut child = Command::new(phux)
+            .arg("--socket")
+            .arg(socket)
+            .args(["watch", target, "--json"])
+            .args(extra)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn phux watch");
+        let stdout = child.stdout.take().expect("piped watch stdout");
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                    sink.lock().expect("watch line sink").push(value);
+                }
+            }
+        });
+        Self {
+            child,
+            lines,
+            label: format!("phux watch {target} {extra:?}"),
+            poll,
+            deadline,
+        }
+    }
+
+    /// Every line captured so far.
+    pub fn seen(&self) -> Vec<serde_json::Value> {
+        self.lines.lock().expect("watch line sink").clone()
+    }
+
+    /// Block until some captured line satisfies `want`, and return the whole
+    /// transcript up to and including it. Panics with what it did see.
+    pub fn await_line(
+        &self,
+        what: &str,
+        want: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        let end = Instant::now() + self.deadline;
+        loop {
+            let seen = self.seen();
+            if seen.iter().any(&want) {
+                return seen;
+            }
+            assert!(
+                Instant::now() < end,
+                "`{}` never printed {what} within {:?}; saw: {seen:?}",
+                self.label,
+                self.deadline
+            );
+            std::thread::sleep(self.poll);
+        }
+    }
+
+    /// Block until an `agent_state` line reports `state`, and return the
+    /// transcript. The identity of the surface matters: this is the ONLY way
+    /// to observe a state the arbiter publishes and then supersedes on its
+    /// next tick.
+    pub fn await_agent_state(&self, state: &str) -> Vec<serde_json::Value> {
+        self.await_line(&format!("agent_state {state}"), |line| {
+            line["event"] == "agent_state" && line["state"] == state
+        })
+    }
+}
+
+impl Drop for WatchChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The index of the first captured line satisfying `want`, for asserting the
+/// ORDER two observations arrived in rather than merely that both did.
+pub fn first_index(
+    lines: &[serde_json::Value],
+    want: impl Fn(&serde_json::Value) -> bool,
+) -> Option<usize> {
+    lines.iter().position(want)
 }
 
 #[cfg(test)]

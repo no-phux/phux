@@ -50,6 +50,9 @@
 //! * `satellite_spawn` — exact-owner spawns select the owner's window across
 //!   sessions and preserve initial dimensions; invalid owners and agent-session
 //!   provenance are refused without creating local or satellite panes.
+//! * `hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent`
+//!   (phux-am9y.17) — the aggregate carries a satellite's second resource
+//!   kind, with its id AND its `parent` both re-tagged (ADR-0104 §6).
 //! * `detach_fence` — twenty continuously writing remote PTYs survive two
 //!   consumers' detach/reattach cycles, with no post-success proxy output and
 //!   no interruption to a still-subscribed peer.
@@ -1586,5 +1589,159 @@ fn unknown_satellite_host_is_unsupported_route() {
         );
         drop(shutdown);
         task.await.unwrap().unwrap();
+    });
+}
+
+/// Spawn an `AgentSession` resource under `parent`, on whichever server
+/// `stream` is connected to.
+///
+/// Sent to the satellite directly rather than through the hub: what has to
+/// be proven about a satellite's second resource kind is that the
+/// *aggregation* re-tags it, and a session the satellite created for itself
+/// is the harder case — nothing in the hub's id space ever touched it.
+async fn spawn_agent_session(
+    stream: &mut UnixStream,
+    request_id: u32,
+    parent: TerminalId,
+    provider: &str,
+) -> SpawnResult {
+    send_frame(
+        stream,
+        &FrameKind::SpawnTerminal {
+            request_id,
+            group: GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::agent_session(parent, provider),
+            )),
+        },
+    )
+    .await;
+    loop {
+        let (_, frame) = recv_typed(stream).await;
+        if let FrameKind::TerminalSpawned {
+            request_id: got,
+            result,
+        } = frame
+            && got == request_id
+        {
+            return result;
+        }
+    }
+}
+
+/// phux-am9y.17: the hub's aggregate inventory carries a satellite's
+/// `AgentSession` as a first-class resource, with BOTH its own id and its
+/// `parent` re-tagged into the hub's id space (ADR-0104 §6).
+///
+/// The parent is the half worth a test of its own. A satellite names both
+/// resources `Local { id }`, so re-tagging only the child would leave the
+/// session pointing at whatever hub-local pane happens to hold the same
+/// integer — a binding that is not merely stale but actively wrong, and
+/// silently so. The assertion is therefore not "the session is listed" but
+/// "the session is listed pointing at the satellite pane it actually hangs
+/// off", which can only hold if both ids went through the same rule.
+#[test]
+fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
+    phux_server_testkit::run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let ws_port = free_port();
+        let sat_sock = tmp.path().join("sat.sock");
+        let (sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone(), ws_port);
+        let (hub_shutdown, hub_task) = spawn_hub_with_session(
+            tmp.path().join("hub.sock"),
+            vec![satellite_entry("sat", ws_port)],
+            Some("hub-session"),
+        );
+
+        // The satellite's own seeded pane, and a session bound under it,
+        // both created on the satellite over its own UDS.
+        let sat_pane = discover_satellite_pane(ws_port).await;
+        let mut sat = wait_for_socket(&sat_sock, STEP_DEADLINE).await;
+        let sat_session =
+            match spawn_agent_session(&mut sat, 1, TerminalId::local(sat_pane), "claude").await {
+                SpawnResult::Ok(id) => id.local_id().expect("the satellite names it locally"),
+                other => panic!("the satellite must spawn its own session: {other:?}"),
+            };
+        assert_ne!(
+            sat_session, sat_pane,
+            "the session is its own resource on the satellite"
+        );
+
+        let hub_pane = TerminalId::satellite("sat", sat_pane);
+        let hub_session = TerminalId::satellite("sat", sat_session);
+        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+
+        // Retry until the link is up and the session has reached the
+        // aggregate: the dialer backs off while the satellite boots.
+        let deadline = Instant::now() + STEP_DEADLINE;
+        let mut request_id = 4000;
+        let snapshot = loop {
+            let (result, _errors) = get_state_via_hub(&mut hub, request_id).await;
+            let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+                panic!("aggregated GET_STATE must never fail, got {result:?}");
+            };
+            if snapshot.panes.iter().any(|pane| pane.id == hub_session) {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the satellite's agent session never reached the hub: {snapshot:?}"
+            );
+            request_id += 1;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        let listed = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.id == hub_session)
+            .expect("the session in the aggregate");
+        assert_eq!(
+            listed.kind,
+            phux_protocol::ids::ResourceKind::AgentSession,
+            "the kind crosses the link intact: {listed:?}"
+        );
+        assert_eq!(
+            listed.parent.as_ref(),
+            Some(&hub_pane),
+            "the parent must be re-tagged into the hub's id space, not left Local: {listed:?}"
+        );
+        assert_eq!(
+            listed.agent.as_ref().map(|facet| facet.provider.as_str()),
+            Some("claude"),
+            "the agent facet relays with the resource: {listed:?}"
+        );
+
+        // The satellite pane is still a parentless Terminal beside it.
+        let parent = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.id == hub_pane)
+            .expect("the satellite pane in the aggregate");
+        assert_eq!(parent.kind, phux_protocol::ids::ResourceKind::Terminal);
+        assert_eq!(parent.parent, None, "a Terminal has no parent: {parent:?}");
+
+        // And the hub's own local pane is untouched by the retagging rule.
+        assert!(
+            snapshot
+                .panes
+                .iter()
+                .any(|pane| matches!(pane.id, TerminalId::Local { .. })),
+            "the hub's seeded pane must survive the merge: {snapshot:?}"
+        );
+
+        drop(sat);
+        drop(sat_shutdown);
+        sat_task.await.unwrap().unwrap();
+        drop(hub_shutdown);
+        hub_task.await.unwrap().unwrap();
     });
 }
