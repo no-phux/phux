@@ -8,7 +8,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use rustix::process::{Pid, Signal, WaitId, WaitidOptions};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const REAP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -49,7 +49,7 @@ impl Helpers {
     fn finish(&mut self) -> io::Result<std::process::ExitStatus> {
         let mut child = self.child.take().ok_or_else(cancelled)?;
         if let Some(pid) = child_pid(&child) {
-            let _ = rustix::process::kill_process_group(pid, Signal::Kill);
+            let _ = rustix::process::kill_process_group(pid, Signal::KILL);
         }
         // Also target the owned handle if the executable changed its group.
         let _ = child.kill();
@@ -204,7 +204,7 @@ fn wait_for_helper(helpers: &Mutex<Helpers>) -> io::Result<std::process::ExitSta
                 .ok_or_else(cancelled)?;
             if rustix::process::waitid(
                 WaitId::Pid(pid),
-                WaitidOptions::EXITED | WaitidOptions::NOHANG | WaitidOptions::NOWAIT,
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
             )?
             .is_some()
             {

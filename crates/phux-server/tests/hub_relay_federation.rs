@@ -279,7 +279,8 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: ClientCapabilities::default(),
         })
-        .to_vec(),
+        .to_vec()
+        .into(),
     ))
     .await
     .unwrap();
@@ -289,7 +290,7 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
             scope: phux_protocol::wire::frame::StateScope::Server,
         },
     };
-    ws.send(Message::Binary(encode_frame(&get_state).to_vec()))
+    ws.send(Message::Binary(encode_frame(&get_state).to_vec().into()))
         .await
         .unwrap();
     let deadline = Instant::now() + STEP_DEADLINE;

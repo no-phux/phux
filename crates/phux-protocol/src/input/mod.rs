@@ -20,7 +20,7 @@ use paste::PasteEvent;
 /// The tagged union of client-to-server input events.
 ///
 /// These atoms are carried by the `INPUT_KEY` / `INPUT_MOUSE` / `INPUT_FOCUS`
-/// / `INPUT_PASTE` frames ([`docs/spec/input.md`]).
+/// / `INPUT_PASTE` frames (`docs/spec/input.md`).
 /// Bundling them lets a single command carry an already-built input event
 /// without one frame variant per atom — used by `ROUTE_INPUT` (L1.md §5.1),
 /// the side-effect-free input route that feeds a pane without an attach.

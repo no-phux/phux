@@ -665,7 +665,7 @@ fn rotate_credential_at(
         }
     }
     let mut secret = [0u8; TOKEN_LEN];
-    getrandom::getrandom(&mut secret)?;
+    getrandom::fill(&mut secret)?;
     let generation = latest.generation.saturating_add(1);
     file.credentials.push(CredentialRecord {
         id: id.to_owned(),
@@ -758,8 +758,8 @@ fn load_file_for_update(path: &Path) -> Result<CredentialFile, AuthError> {
 fn random_identity_and_secret() -> Result<(String, [u8; TOKEN_LEN]), AuthError> {
     let mut id = [0u8; 16];
     let mut secret = [0u8; TOKEN_LEN];
-    getrandom::getrandom(&mut id)?;
-    getrandom::getrandom(&mut secret)?;
+    getrandom::fill(&mut id)?;
+    getrandom::fill(&mut secret)?;
     Ok((hex::encode(id), secret))
 }
 
@@ -993,7 +993,7 @@ fn atomic_write_with_fault(
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let mut suffix = [0u8; 8];
-    getrandom::getrandom(&mut suffix)?;
+    getrandom::fill(&mut suffix)?;
     let tmp = parent.join(format!(
         ".{}.{}.tmp",
         path.file_name()

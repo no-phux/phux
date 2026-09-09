@@ -1,7 +1,7 @@
 {
   "name": "@phux/opencode",
   "version": "0.2.2",
-  "description": "OpenCode V2 tools and fleet context for shared phux terminals",
+  "description": "OpenCode tools and fleet context for shared phux terminals",
   "type": "module",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -36,12 +36,12 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17430"
+    "@opencode-ai/plugin": "1.18.30"
   },
   "devDependencies": {
-    "@types/node": "24.12.2",
+    "@types/node": "26.5.0",
     "tsup": "8.5.1",
-    "typescript": "5.9.2"
+    "typescript": "6.0.3"
   },
   "engines": {
     "node": ">=22"

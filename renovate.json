@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "packageRules": [
+    {
+      "matchManagers": ["cargo"],
+      "groupName": "Rust dependencies"
+    },
+    {
+      "matchManagers": ["npm", "bun"],
+      "groupName": "JavaScript dependencies"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchManagers": ["nix"],
+      "groupName": "Nix inputs"
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "groupName": "Container images"
+    },
+    {
+      "matchManagers": ["mise"],
+      "matchDepNames": ["rust", "zig"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["npm", "bun"],
+      "matchPackageNames": ["typescript"],
+      "matchFileNames": ["docs/site/package.json", "integrations/opencode/package.json"],
+      "allowedVersions": "/^6\\./"
+    }
+  ]
+}

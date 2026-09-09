@@ -54,7 +54,7 @@ png = { workspace = true, optional = true }
 # The net effect versus upstream's defaults is exactly the one intended:
 # `color_quant` is gone, and `cargo tree` shows `weezl` as the only
 # transitive dependency.
-gif = { version = "0.13", default-features = false, features = [
+gif = { version = "0.14", default-features = false, features = [
   "std",
   "raii_no_panic",
 ], optional = true }

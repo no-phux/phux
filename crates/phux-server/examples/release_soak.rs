@@ -29,7 +29,7 @@ use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep, timeout};
 
-const DAY: Duration = Duration::from_secs(86_400);
+const DAY: Duration = Duration::from_hours(24);
 const CLIENTS: usize = 8;
 const STALLED: usize = 7;
 const HISTORY_LINES: u32 = 50_000;

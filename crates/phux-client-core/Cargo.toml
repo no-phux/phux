@@ -44,7 +44,7 @@ ciborium = "0.2"
 # near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
 serde = { workspace = true }
 thiserror.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libghostty-vt = { workspace = true, optional = true }

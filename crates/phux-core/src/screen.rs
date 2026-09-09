@@ -627,7 +627,7 @@ mod tests {
             screen.scrollback.is_empty(),
             "missing scrollback key defaults to empty",
         );
-        assert!(screen.cells.is_none(), "missing cells key defaults to None",);
+        assert!(screen.cells.is_none(), "missing cells key defaults to None");
         assert!(
             !screen.has_soft_wrap_info(),
             "an older payload reports no wrap information, and that is detectable",

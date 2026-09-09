@@ -1,4 +1,10 @@
-import { Plugin, type PluginOptions } from "@opencode-ai/plugin";
+import {
+  tool,
+  type Plugin,
+  type PluginOptions,
+  type ToolContext as OpenCodeToolContext,
+  type ToolDefinition as OpenCodeToolDefinition,
+} from "@opencode-ai/plugin";
 
 import { PhuxCli, type PhuxCliOptions } from "../../pi/src/adapter.js";
 import {
@@ -11,7 +17,7 @@ import {
   OpenCodeLifecycle,
   type OpenCodeLifecycleEvent,
 } from "./lifecycle.js";
-import { createPhuxTools } from "./tools.js";
+import { createPhuxTools, type PhuxToolDefinition, type ToolContext } from "./tools.js";
 
 export { PhuxCli } from "../../pi/src/adapter.js";
 export {
@@ -70,121 +76,146 @@ export interface PhuxOpenCodeOptions {
   readonly onLifecycleError?: (error: unknown) => void;
 }
 
-/** Build a V2 plugin with optional test-only defaults. */
-export function createPhuxPlugin(defaults: PhuxOpenCodeOptions = {}): Plugin.Plugin {
-  return Plugin.define({
-    id: "phux.terminal",
-    setup: async (context) => {
-      const options = mergeOptions(defaults, context.options);
-      const environment = options.env ?? process.env;
-      const environmentTarget = readEnvironmentTarget(environment.PHUX_TARGET);
-      const cli = options.cli ?? new PhuxCli(cliOptions(options, environment));
-      let selectedTarget: string | undefined;
-      const currentTarget = (): string | undefined => selectedTarget ?? environmentTarget;
-      const lifecycle = new OpenCodeLifecycle({
-        cli,
-        target: currentTarget,
-        ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
-        ...(options.onLifecycleError === undefined ? {} : { onError: options.onLifecycleError }),
-      });
-      const awareness = new PhuxContextAwareness(cli, {
-        enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
-        ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
-      });
-      const latestContext = new Map<string, string>();
-      const contextIdentity = () => {
-        const self = normalizeTerminalIdentity(environment.PHUX_TERMINAL_ID);
-        const selected = currentTarget();
-        return {
-          ...(self === null ? {} : { self }),
-          ...(selected === undefined ? {} : { selected }),
-        };
+/** Build an OpenCode plugin with optional test-only defaults. */
+export function createPhuxPlugin(defaults: PhuxOpenCodeOptions = {}): Plugin {
+  return async (_input, configured) => {
+    const options = mergeOptions(defaults, configured ?? {});
+    const environment = options.env ?? process.env;
+    const environmentTarget = readEnvironmentTarget(environment.PHUX_TARGET);
+    const cli = options.cli ?? new PhuxCli(cliOptions(options, environment));
+    let selectedTarget: string | undefined;
+    const currentTarget = (): string | undefined => selectedTarget ?? environmentTarget;
+    const lifecycle = new OpenCodeLifecycle({
+      cli,
+      target: currentTarget,
+      ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
+      ...(options.onLifecycleError === undefined ? {} : { onError: options.onLifecycleError }),
+    });
+    const awareness = new PhuxContextAwareness(cli, {
+      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
+      ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
+    });
+    const latestContext = new Map<string, string>();
+    const contextIdentity = () => {
+      const self = normalizeTerminalIdentity(environment.PHUX_TERMINAL_ID);
+      const selected = currentTarget();
+      return {
+        ...(self === null ? {} : { self }),
+        ...(selected === undefined ? {} : { selected }),
       };
+    };
 
-      const tools = createPhuxTools({
-        cli,
-        ...(environmentTarget === undefined ? {} : { environmentTarget }),
-        getSelectedTarget: () => selectedTarget,
-        selectTarget: (target) => {
-          selectedTarget = target;
-        },
-        targetSelected: (toolContext) => {
-          void lifecycle.targetSelected(toolContext.sessionID);
-        },
-      });
+    const tools = createPhuxTools({
+      cli,
+      ...(environmentTarget === undefined ? {} : { environmentTarget }),
+      getSelectedTarget: () => selectedTarget,
+      selectTarget: (target) => {
+        selectedTarget = target;
+      },
+      targetSelected: (toolContext) => {
+        void lifecycle.targetSelected(toolContext.sessionID);
+      },
+    });
 
-      const toolRegistration = await context.tool.transform((draft) => {
-        for (const tool of Object.values(tools)) draft.add(tool);
-      });
-      const contextRegistration = await context.session.hook("context", async (event) => {
-        const emission = await awareness.next(event.sessionID, contextIdentity());
-        if (emission !== null) latestContext.set(event.sessionID, emission.text);
-        const text = latestContext.get(event.sessionID);
+    return {
+      tool: openCodeTools(tools),
+      "experimental.chat.system.transform": async (input, output) => {
+        if (input.sessionID === undefined) return;
+        const emission = await awareness.next(input.sessionID, contextIdentity());
+        if (emission !== null) latestContext.set(input.sessionID, emission.text);
+        const text = latestContext.get(input.sessionID);
         if (text === undefined) return;
-        event.system.push({
-          type: "text",
-          text,
-          metadata: { phuxContext: true },
-        });
-      });
-
-      const controller = new AbortController();
-      const eventTask = consumeEvents(
-        context.event.subscribe({ signal: controller.signal }),
-        lifecycle,
-        awareness,
-        latestContext,
-        options.onLifecycleError,
-      );
-
-      return async () => {
-        controller.abort();
-        await Promise.all([
-          toolRegistration.dispose(),
-          contextRegistration.dispose(),
-          eventTask,
-          lifecycle.dispose(),
-        ]);
-      };
-    },
-  });
+        output.system.push(text);
+      },
+      event: async ({ event }) => {
+        if (!isLifecycleEvent(event)) return;
+        await handleLifecycleEvent(lifecycle, event);
+        if (event.type !== "session.deleted") return;
+        const info = event.properties.info;
+        const sessionID = info !== null && typeof info === "object" ? (info as { readonly id?: unknown }).id : undefined;
+        if (typeof sessionID !== "string") return;
+        awareness.delete(sessionID);
+        latestContext.delete(sessionID);
+      },
+      dispose: async () => lifecycle.dispose(),
+    };
+  };
 }
 
 export const PhuxPlugin = createPhuxPlugin();
 export default PhuxPlugin;
 
-async function consumeEvents(
-  events: AsyncIterable<unknown>,
-  lifecycle: OpenCodeLifecycle,
-  awareness: PhuxContextAwareness,
-  latestContext: Map<string, string>,
-  onError: ((error: unknown) => void) | undefined,
-): Promise<void> {
-  try {
-    for await (const event of events) {
-      if (!isLifecycleEvent(event)) continue;
-      await handleLifecycleEvent(lifecycle, event);
-      if (event.type === "session.deleted") {
-        const info = event.properties.info;
-        const sessionID = info !== null && typeof info === "object" ? (info as { readonly id?: unknown }).id : undefined;
-        if (typeof sessionID !== "string") continue;
-        awareness.delete(sessionID);
-        latestContext.delete(sessionID);
-      }
-    }
-  } catch (error) {
-    if (!isAbortError(error)) onError?.(error);
-  }
+const z = tool.schema;
+const localTimeoutArgument = () => z.number().int().min(1).max(3_600_000).optional();
+const targetArgument = () => nonBlankString(512).optional();
+
+function nonBlankString(maxLength: number) {
+  return z.string().min(1).max(maxLength).regex(/\S/);
+}
+
+function openCodeTools(tools: Record<string, PhuxToolDefinition<any>>): Record<string, OpenCodeToolDefinition> {
+  return {
+    phux_list: adaptTool(tools.phux_list!, { local_timeout_ms: localTimeoutArgument() }),
+    phux_create: adaptTool(tools.phux_create!, {
+      name: nonBlankString(255),
+      cwd: nonBlankString(4096).optional(),
+      command: z.array(z.string().max(65_536)).min(1).max(256).optional(),
+      local_timeout_ms: localTimeoutArgument(),
+    }),
+    phux_snapshot: adaptTool(tools.phux_snapshot!, {
+      target: targetArgument(),
+      scrollback: z.number().int().min(0).max(100_000).optional(),
+      cells: z.boolean().optional(),
+      local_timeout_ms: localTimeoutArgument(),
+    }),
+    phux_send_keys: adaptTool(tools.phux_send_keys!, {
+      target: targetArgument(),
+      keys: z.array(nonBlankString(65_536)).min(1).max(256),
+      local_timeout_ms: localTimeoutArgument(),
+    }),
+    phux_run: adaptTool(tools.phux_run!, {
+      target: targetArgument(),
+      command: nonBlankString(65_536),
+      timeout_seconds: z.number().int().min(0).max(86_400).optional(),
+      local_timeout_ms: localTimeoutArgument(),
+    }),
+    phux_wait: adaptTool(tools.phux_wait!, {
+      target: targetArgument(),
+      until: nonBlankString(4096).optional(),
+      idle_ms: z.number().int().min(0).max(86_400_000).optional(),
+      timeout_seconds: z.number().int().min(1).max(86_400).optional(),
+      local_timeout_ms: localTimeoutArgument(),
+    }),
+  };
+}
+
+function adaptTool(
+  definition: PhuxToolDefinition<any>,
+  args: Parameters<typeof tool>[0]["args"],
+): OpenCodeToolDefinition {
+  return tool({
+    description: definition.description,
+    args,
+    execute: async (input, context) => {
+      const result = await definition.execute(input, phuxToolContext(context));
+      return { output: result.content, metadata: result.metadata };
+    },
+  });
+}
+
+function phuxToolContext(context: OpenCodeToolContext): ToolContext {
+  return {
+    sessionID: context.sessionID,
+    messageID: context.messageID,
+    agent: context.agent,
+    id: context.messageID,
+  };
 }
 
 function isLifecycleEvent(value: unknown): value is OpenCodeLifecycleEvent {
   if (value === null || typeof value !== "object") return false;
   const candidate = value as { readonly type?: unknown; readonly properties?: unknown };
   return typeof candidate.type === "string" && candidate.properties !== null && typeof candidate.properties === "object";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function mergeOptions(defaults: PhuxOpenCodeOptions, configured: PluginOptions): PhuxOpenCodeOptions {

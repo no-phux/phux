@@ -12,7 +12,7 @@
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
-    "types": ["@cloudflare/workers-types/2023-07-01"],
+    "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,

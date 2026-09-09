@@ -73,8 +73,8 @@ pub(super) enum WorkspaceLayoutNode {
     Split {
         dir: WorkspaceSplitDir,
         ratio: f32,
-        left: Box<WorkspaceLayoutNode>,
-        right: Box<WorkspaceLayoutNode>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
 }
 

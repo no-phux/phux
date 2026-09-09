@@ -11,7 +11,7 @@ exclude = ["clients"]
 [workspace.package]
 version = "0.28.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/phall1/phux"
 authors = ["Phil Hall <phallsignup@gmail.com>"]
@@ -84,7 +84,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 bytes = "1"
 slotmap = "1"
-smallvec = "1.15"
+smallvec = "1.16"
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
@@ -183,7 +183,7 @@ toml = "1"
 # commands need to toggle/add/remove `[[plugins]]` entries without flattening a
 # hand-written config into a generated document; `toml_edit` is the maintained
 # mutable-document companion to the TOML stack.
-toml_edit = "0.23"
+toml_edit = "0.25"
 # The config schema already rejects unknown keys (`deny_unknown_fields`),
 # but serde's error names only the leaf field — `unknown field \`wich-key\``,
 # with no parent table — which is ambiguous the moment two tables share a

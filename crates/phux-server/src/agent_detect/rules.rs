@@ -125,11 +125,11 @@ pub(crate) enum PredicateSpec {
     /// Regex that must match at least one whole line of the region.
     LineRegex(String),
     /// Every child must match.
-    All(Vec<PredicateSpec>),
+    All(Vec<Self>),
     /// At least one child must match.
-    Any(Vec<PredicateSpec>),
+    Any(Vec<Self>),
     /// The child must not match.
-    Not(Box<PredicateSpec>),
+    Not(Box<Self>),
 }
 
 /// One rule, as written in TOML.
@@ -221,11 +221,11 @@ pub(crate) enum Predicate {
     /// Matched against each line of the region until one hits.
     LineRegex(Regex),
     /// Conjunction.
-    All(Vec<Predicate>),
+    All(Vec<Self>),
     /// Disjunction.
-    Any(Vec<Predicate>),
+    Any(Vec<Self>),
     /// Negation.
-    Not(Box<Predicate>),
+    Not(Box<Self>),
 }
 
 /// The load-time work budget one manifest is allowed to spend, carried down
@@ -397,7 +397,7 @@ pub(crate) struct PredicateTrace {
     /// Whether this node matched.
     pub(crate) matched: bool,
     /// Child nodes, for a combinator.
-    pub(crate) children: Vec<PredicateTrace>,
+    pub(crate) children: Vec<Self>,
 }
 
 /// One rule's outcome on one screen, with its evidence.

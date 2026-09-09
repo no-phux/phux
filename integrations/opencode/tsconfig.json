@@ -8,6 +8,7 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
+    "ignoreDeprecations": "6.0",
     "skipLibCheck": true,
     "types": ["node"]
   },

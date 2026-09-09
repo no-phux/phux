@@ -10,7 +10,7 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
-use rustix::event::{PollFd, PollFlags};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
 use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex, Termios};
 
@@ -95,12 +95,11 @@ fn wait_readable<Fd: AsFd>(tty: &Fd, deadline: Instant) -> Option<bool> {
         if remaining.is_zero() {
             return Some(false);
         }
-        // `poll` takes whole milliseconds; round any live remainder up so a
-        // sub-millisecond tail still waits rather than spinning to the
-        // deadline.
-        let timeout = i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX);
+        // Rustix 1 takes a precise `Timespec`; retain the old round-up so a
+        // sub-millisecond tail still waits rather than spinning to deadline.
+        let timeout = Timespec::try_from(remaining.max(Duration::from_millis(1))).ok()?;
         let mut fds = [PollFd::new(tty, PollFlags::IN)];
-        match rustix::event::poll(&mut fds, timeout) {
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
             Ok(0) => return Some(false),
             Ok(_) => return Some(true),
             Err(Errno::INTR) => {}

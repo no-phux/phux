@@ -29,11 +29,11 @@ rustls.workspace = true
 # TLS-over-TCP for `wss://` dialing; same features as the server side.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 # Native WebSocket client handshake; one binary message per phux frame.
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # SHA-256 of the server's leaf certificate, matched against the
 # out-of-band fingerprint pin `phux pair` prints.
-sha2 = "0.10"
+sha2 = "0.11"
 # Decode the pairing token (hex) into the raw bytes the QUIC preamble carries.
 hex = "0.4"
 # Mints the persisted self-signed certificate whose fingerprint this crate's
@@ -42,7 +42,7 @@ hex = "0.4"
 # for the copy of the generator they used to keep privately. Optional so a
 # build that only *dials* -- phux-client -- never pulls a certificate
 # generator it has no use for.
-rcgen = { version = "0.13", default-features = false, features = [
+rcgen = { version = "0.14", default-features = false, features = [
     "ring",
     "pem",
 ], optional = true }

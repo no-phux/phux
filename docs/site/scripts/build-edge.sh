@@ -6,7 +6,7 @@
 # the output. We commit the built artifact (worker/edge/) so `wrangler deploy`
 # and CI don't need the Rust/wasm toolchain.
 #
-# Requires the phux nix devshell (rust 1.90 + wasm-pack), or a local
+# Requires the phux nix devshell (rust 1.98 + wasm-pack), or a local
 # rustup + wasm-pack. Re-run when edge/ changes.
 set -euo pipefail
 

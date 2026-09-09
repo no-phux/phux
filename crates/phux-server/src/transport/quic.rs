@@ -203,6 +203,10 @@ impl FrameWriter for QuicWriter {
         self.send.write_all(batch).await.map_err(io::Error::other)
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "FrameWriter requires an async close operation, while Quinn's finish is synchronous"
+    )]
     async fn close(&mut self) -> io::Result<()> {
         self.send.finish().map_err(io::Error::other)
     }

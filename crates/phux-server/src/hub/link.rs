@@ -1308,7 +1308,7 @@ impl LinkConn for NetLinkConn {
                 .map_err(|err| format!("write to satellite: {err}")),
             Self::Ws { ws, .. } => futures_util::SinkExt::send(
                 ws.as_mut(),
-                tokio_tungstenite::tungstenite::Message::Binary(frame.to_vec()),
+                tokio_tungstenite::tungstenite::Message::Binary(frame.to_vec().into()),
             )
             .await
             .map_err(|err| format!("write to satellite: {err}")),
@@ -1385,7 +1385,7 @@ impl LinkConn for NetLinkConn {
                                     {
                                         break 'framing violation;
                                     }
-                                    return Ok(Some(data));
+                                    return Ok(Some(data.to_vec()));
                                 }
                                 // Control frames (ping/pong): reading them is
                                 // what answers pings; skip and keep reading.
@@ -1462,7 +1462,7 @@ impl LinkConn for NetLinkConn {
                 // resetting `last_inbound`; a partitioned one cannot.
                 futures_util::SinkExt::send(
                     ws.as_mut(),
-                    tokio_tungstenite::tungstenite::Message::Ping(Vec::new()),
+                    tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into()),
                 )
                 .await
                 .map_err(|err| format!("keepalive ping to satellite: {err}"))
@@ -1960,7 +1960,8 @@ mod tests {
 
         #[allow(
             clippy::future_not_send,
-            reason = "test transport is Rc-scripted and driven on a LocalSet"
+            clippy::unused_async_trait_impl,
+            reason = "test transport is Rc-scripted and driven on a LocalSet; its trait methods remain async to match production"
         )]
         async fn connect(
             &self,
@@ -1976,6 +1977,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the scripted test connection implements the production async transport trait without I/O"
+    )]
     impl LinkConn for ScriptConn {
         async fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
             Ok(())
@@ -2367,7 +2372,14 @@ mod tests {
     #[test]
     fn ws_idle_error_trips_only_at_the_limit() {
         assert!(ws_idle_error(Duration::ZERO).is_none());
-        assert!(ws_idle_error(LINK_IDLE_TIMEOUT - Duration::from_secs(1)).is_none());
+        assert!(
+            ws_idle_error(
+                LINK_IDLE_TIMEOUT
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("idle timeout exceeds one second"),
+            )
+            .is_none()
+        );
         let reason = ws_idle_error(LINK_IDLE_TIMEOUT).expect("at the limit");
         assert!(reason.contains("idle limit 30s"), "{reason}");
         assert!(ws_idle_error(LINK_IDLE_TIMEOUT * 2).is_some());
@@ -2435,7 +2447,7 @@ mod tests {
                     let hello_ok = synthesized_hello_ok();
                     futures_util::SinkExt::send(
                         &mut ws,
-                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok),
+                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok.into()),
                     )
                     .await
                     .expect("send HELLO_OK");

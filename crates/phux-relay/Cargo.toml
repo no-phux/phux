@@ -42,7 +42,7 @@ phux-dial = { workspace = true, features = ["provision"] }
 # `RelayError::Rcgen` carries `rcgen::Error` in the public error surface, so
 # the type is still named here even though phux-dial now does the generating.
 # Same version/features phux-dial declares, so it is the same type.
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 # Hex encode/decode of route-bound enrollment tokens.
 hex = "0.4"
 # Constant-time token comparison so the route-token store leaks no
@@ -51,7 +51,7 @@ subtle = "2"
 # OS CSPRNG for enrollment-token minting. `std` so its Error implements
 # `std::error::Error` (phux-server gets this via feature unification;
 # declared explicitly here so the relay stands alone).
-getrandom = { version = "0.2", features = ["std"] }
+getrandom = { version = "0.4", features = ["std"] }
 
 [dev-dependencies]
 tempfile.workspace = true

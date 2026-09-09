@@ -215,7 +215,7 @@ pub fn extract_match(terminal: &GhosttyTerminal<'_, '_>, m: Match) -> Result<Str
 /// [`screen_state_with_scrollback`](crate::grid::SnapshotSynthesizer::screen_state_with_scrollback)
 /// built. For [`Scope::AllHistory`] that window is every retained row
 /// (`start = 0`), so `row` *is* the absolute [`Point::History`] `y`. For
-/// [`Scope::RecentHistory(n)`] the window is the most-recent `n` rows, the
+/// [`Scope::RecentHistory`] with `n` the window is the most-recent `n` rows, the
 /// slice `[total - min(n, total), total)`, so the absolute `y` is
 /// `start + row`. Both starts mirror the
 /// [`SnapshotSynthesizer`](crate::grid::SnapshotSynthesizer) scrollback walk

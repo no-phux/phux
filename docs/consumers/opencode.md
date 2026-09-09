@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-08-14
+last-reviewed: 2026-09-09
 ---
 
 # OpenCode integration
@@ -16,7 +16,7 @@ to remote phux transports.
 
 ## Requirements
 
-The package requires Node.js 22 or newer, OpenCode V2, a compatible external
+The package requires Node.js 22 or newer, OpenCode, a compatible external
 `phux` executable, and a running local phux server. It does not bundle or start
 phux. The current adapter targets `phux 0.16.0` and its versioned CLI shapes:
 
@@ -24,10 +24,9 @@ phux. The current adapter targets `phux 0.16.0` and its versioned CLI shapes:
 phux --version
 ```
 
-The package uses the public OpenCode V2 Promise API and pins the exact
-`@opencode-ai/plugin` prerelease it is tested against. V2 remains beta, so each
-dependency update must pass the package gates and packed-artifact smoke before
-release.
+The package uses OpenCode's public plugin API and pins the exact
+`@opencode-ai/plugin` release it is tested against. Each dependency update must
+pass the package gates and packed-artifact smoke before release.
 
 ## Install and load
 
@@ -137,11 +136,11 @@ to a configured npm entry. An automatically discovered local shim should use
 
 ## Automatic fleet context
 
-Before each OpenCode V2 model dispatch, the public session-context hook reads
-the phux agent inventory. The first observation is a bounded checkpoint; later
-changes become sequenced deltas. When the inventory is unchanged, the plugin
-reuses the exact same system suffix, preserving the static prompt and tool
-prefix for provider caching.
+Before each model dispatch, the public `experimental.chat.system.transform`
+hook reads the phux agent inventory. The first observation is a bounded
+checkpoint; later changes become sequenced deltas. When the inventory is
+unchanged, the plugin reuses the exact same system suffix, preserving the static
+prompt and tool prefix for provider caching.
 
 A checkpoint carries OpenCode's inherited Terminal id, the selected target, and
 up to 64 sorted pane records: canonical Terminal/session/window identity,
@@ -248,7 +247,7 @@ The source reuses the host-independent `PhuxCli` adapter maintained with the
 [Pi integration](./pi.md). The OpenCode build bundles that adapter, its schema
 validation, and the tool runtime into the artifact. The packed runtime has no
 dependency on `@phux/pi`; it retains an exact production dependency on the
-public OpenCode V2 plugin API and still executes the external phux CLI. This
+public OpenCode plugin API and still executes the external phux CLI. This
 shared implementation boundary does not
 make Pi target persistence, commands, or lifecycle behavior part of the
 OpenCode contract.

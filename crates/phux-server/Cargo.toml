@@ -105,7 +105,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 # outlives the reap budget would otherwise stay a zombie for the life of the
 # server. Enabling a feature on a crate already in the build adds no new
 # dependency.
-nix = { version = "0.29", default-features = false, features = [
+nix = { version = "0.31", default-features = false, features = [
     "signal",
     "term",
     "fs",
@@ -134,7 +134,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # speaks the identical length-prefixed FrameKind wire inside binary messages.
 # default-features off avoids pulling a TLS stack — ws:// is terminated locally
 # (dev) or at an edge proxy; the daemon only performs the server handshake.
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Remote-consumer auth + encryption (ADR-0031). These are the vetted-crypto
 # substrate the "no homegrown crypto" rule (CONTRIBUTING.md) mandates; none was
 # in the tree before. rustls/tokio-rustls terminate TLS 1.3 on the WebSocket
@@ -149,8 +149,8 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["h
 rustls.workspace = true
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 subtle = "2"
-getrandom = "0.2"
-sha2 = "0.10"
+getrandom = "0.4"
+sha2 = "0.11"
 hex = "0.4"
 # rcgen generates the persisted self-signed certificate so a remote
 # (non-loopback) WebSocket listener provisions TLS with zero operator setup —
@@ -160,7 +160,7 @@ hex = "0.4"
 # shared with phux-relay); what still needs the crate named here is
 # `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
 # Same version/features phux-dial declares, so it is the same type.
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 # QUIC transport (phux-y8v6, ADR-0007). quinn is the QUIC stack ADR-0007
 # names by name ("a future QUIC impl ... via `quinn`"); it gives connection
 # migration, 0-RTT resumption, and mandatory TLS 1.3 — the Mosh-class UX
@@ -206,7 +206,7 @@ phux-dial = { workspace = true, features = ["provision"] }
 # the handshake, auth gating, and wire echo could not be tested honestly
 # without a browser in the loop. wtransport's spawned driver tasks are Send
 # futures, compatible with the current-thread runtime (ADR-0003).
-wtransport = { version = "0.7.1", optional = true, default-features = false, features = ["ring"] }
+wtransport = { version = "0.7.2", optional = true, default-features = false, features = ["ring"] }
 # Optional: opt-in via the `tokio-console` feature. See the feature
 # comment above for the build incantation.
 console-subscriber = { version = "0.5", optional = true }
@@ -221,7 +221,7 @@ portable-pty-adopt.workspace = true
 # descriptors the re-exec'd image inherits (`rustix::io` fcntl), and carry the
 # handoff blob in an anonymous temp file (`tempfile`). `rustix` is libc-free
 # and cross-platform, unlike this crate's macOS-gated `libc`.
-rustix = { version = "0.38", default-features = false, features = ["std", "fs", "process"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
 
 # libghostty-vt is workspace-pinned (see workspace Cargo.toml). It remains the
@@ -272,7 +272,7 @@ phux-server-testkit.workspace = true
 # `dangerous-configuration` unlocks `with_no_cert_validation` so the test
 # client trusts the throwaway self-signed leaf (the TLS handshake and full
 # HTTP/3 CONNECT are still exercised end-to-end). Test builds only.
-wtransport = { version = "0.7.1", default-features = false, features = ["ring", "dangerous-configuration"] }
+wtransport = { version = "0.7.2", default-features = false, features = ["ring", "dangerous-configuration"] }
 
 # Native capture tests inject allocator failures through libghostty's safe
 # allocator API to prove checkpoint cleanup. Keep those test-only features off

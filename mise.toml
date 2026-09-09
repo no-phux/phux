@@ -1,0 +1,8 @@
+[tools]
+# Rust and Zig are duplicated only because their native manifests are consumed
+# by Cargo/rustup and the verified Zig installer. `just toolchain-check` keeps
+# these convenience pins synchronized with those authoritative inputs.
+rust = "1.98.1"
+zig = "0.16.0"
+node = "24"
+bun = "1.4.0"

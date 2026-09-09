@@ -1,7 +1,7 @@
 //! Shared SGR (Select Graphic Rendition) byte encoder.
 //!
-//! The server's snapshot synthesizer ([`phux-server`]'s `grid::synthesizer`)
-//! and the client's pane renderer ([`phux-client`]'s `attach::render`) both
+//! The server's snapshot synthesizer (`phux-server`'s `grid::synthesizer`)
+//! and the client's pane renderer (`phux-client`'s `attach::render`) both
 //! reconstruct a libghostty [`Style`] plus its resolved foreground/background
 //! as an SGR escape sequence. They are near-identical byte emitters, and they
 //! drifted in lockstep: both dropped underline and overline entirely, so every

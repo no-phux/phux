@@ -111,7 +111,7 @@ uuid = { workspace = true }
 phux-server.workspace = true
 tempfile.workspace = true
 rustls = { workspace = true }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `agent_prompt`'s unit tests run the wait loop on a paused clock
 # (`Builder::start_paused`), which needs tokio's `test-util`. The feature used
 # to arrive through the TUI's dev-dependency graph; now that the TUI is its

@@ -61,7 +61,7 @@ try {
     sources.some((source) => source?.info?.plugins?.includes(pluginUrl)),
     `OpenCode did not accept the isolated plugin spec: ${JSON.stringify(sources)}\n${diagnostics}`,
   );
-  process.stdout.write(`OpenCode V2 accepted ${pluginUrl} in an isolated server config.\n`);
+  process.stdout.write(`OpenCode accepted ${pluginUrl} in an isolated server config.\n`);
 } finally {
   if (child !== undefined && child.exitCode === null) {
     child.kill("SIGTERM");

@@ -200,7 +200,7 @@ pub fn mint_route_token(path: &Path, route: &str) -> Result<String, RelayError> 
     let kept = lines_not_enrolling(&existing, route)?;
 
     let mut token = [0u8; TOKEN_LEN];
-    getrandom::getrandom(&mut token)?;
+    getrandom::fill(&mut token)?;
     let encoded = hex::encode(token);
 
     let contents = render_store(&kept, &encoded, route);
@@ -305,7 +305,7 @@ fn create_exclusive_sibling(store: &Path) -> Result<(PathBuf, fs::File), RelayEr
         .map_or_else(|| "relay-tokens".into(), |n| n.to_string_lossy());
     for _ in 0..ATTEMPTS {
         let mut suffix = [0u8; 8];
-        getrandom::getrandom(&mut suffix)?;
+        getrandom::fill(&mut suffix)?;
         let candidate = dir.join(format!(".{base}.{}.tmp", hex::encode(suffix)));
         match OpenOptions::new()
             .create_new(true)

@@ -574,9 +574,8 @@ fn write_rc(rc: &Path, bytes: &[u8]) -> Result<(), String> {
     } else {
         rc.to_path_buf()
     };
-    let mode = std::fs::metadata(&target)
-        .map(|metadata| metadata.permissions().mode() & 0o777)
-        .unwrap_or(0o600);
+    let mode =
+        std::fs::metadata(&target).map_or(0o600, |metadata| metadata.permissions().mode() & 0o777);
     atomic_write(&target, bytes, mode)
 }
 

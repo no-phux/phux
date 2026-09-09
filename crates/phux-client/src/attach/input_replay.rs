@@ -59,7 +59,7 @@ use crate::agent_prompt::operation_id_hex;
 /// former: a resend after the server may have evicted the id-to-outcome
 /// record is indistinguishable from a first send, which is the double-write
 /// this journal exists to prevent.
-pub const INPUT_RETRY_HORIZON: Duration = Duration::from_secs(10 * 60);
+pub const INPUT_RETRY_HORIZON: Duration = Duration::from_mins(10);
 
 /// `HELLO_OK.server_id` length the protocol defines. Anything else is a peer
 /// this journal must not trust with idempotency (mirrors the mobile bridge's

@@ -31,7 +31,7 @@ const MAX_RECORDS: usize = 64;
 pub const CRASH_LOOP_THRESHOLD: usize = 5;
 
 /// The window over which restarts are counted.
-pub const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(60 * 60);
+pub const CRASH_LOOP_WINDOW: Duration = Duration::from_hours(1);
 
 /// One server generation.
 #[derive(Debug, Clone, PartialEq, Eq)]

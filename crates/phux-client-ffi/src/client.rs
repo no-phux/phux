@@ -805,8 +805,8 @@ impl Client {
         inputs: &GridViewInputs,
         top_anchor: PhuxDocumentAnchor,
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
-        let terminal =
-            self.terminal(terminal_id)? as *const libghostty_vt::Terminal<'static, 'static>;
+        let terminal: *const libghostty_vt::Terminal<'static, 'static> =
+            ptr::from_ref(self.terminal(terminal_id)?);
         let cache = match self.render.entry(terminal_id.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(RenderCache::new()?),

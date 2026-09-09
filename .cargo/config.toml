@@ -3,6 +3,14 @@
 [net]
 git-fetch-with-cli = true
 
+# The libghostty-vt build script selects Zig Debug mode whenever Cargo enables
+# debug assertions. That turns realistic PTY bursts into multi-second blocking
+# parses, starving the current-thread terminal actor and making async tests
+# time out. The Rust test harness retains its assertions; only the vendored
+# terminal engine uses the same optimized mode as the production binary.
+[env]
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"
+
 # Fast linker on Linux. `mold` replaces the bottleneck link step of
 # incremental dev/test builds (every `cargo check --all-targets` /
 # `nextest run` relinks dozens of test binaries); it routinely cuts link

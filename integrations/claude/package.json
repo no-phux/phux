@@ -19,6 +19,6 @@
     "gates": "npm run check && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-code": "2.1.232"
+    "@anthropic-ai/claude-code": "2.1.266"
   }
 }

@@ -185,7 +185,7 @@ Inference (`list`/`show`/`explain`) reports the agent phux infers is running in 
 Usage: phux agent [OPTIONS] <COMMAND>
 
 Commands:
-  list              List every pane's detected or declared agent and current state [aliases: ls]
+  list              List every pane's detected or declared agent and current state [alias: ls]
   show              Show inferred state for one pane
   explain           Explain the evidence behind one pane's state
   set               Declare the agent identity and state associated with a pane
@@ -1038,8 +1038,8 @@ Usage: phux host [OPTIONS] <COMMAND>
 Commands:
   add     Register a machine, or replace an entry with the same name
   enroll  Set up a machine over ssh, end to end, and register it
-  ls      List registered machines from both registries [aliases: list]
-  rm      Remove a registered machine. Its token file is left in place [aliases: remove]
+  ls      List registered machines from both registries [alias: list]
+  rm      Remove a registered machine. Its token file is left in place [alias: remove]
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1302,7 +1302,7 @@ Options:
       --print
           Resolve and print the launch argv (and cwd) without spawning a pane — a server-free dry run
 
-          [aliases: --dry-run]
+          [alias: --dry-run]
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
@@ -1718,7 +1718,7 @@ This is a client-local config operation: it validates `phux-plugin.toml` manifes
 Usage: phux plugin [OPTIONS] <COMMAND>
 
 Commands:
-  list      List configured plugin manifests [aliases: ls]
+  list      List configured plugin manifests [alias: ls]
   link      Add or update a manifest entry in `config.toml`
   install   Fetch, build, validate, and link a plugin package
   update    Re-fetch, rebuild, and revalidate installed plugins
@@ -2606,9 +2606,9 @@ Tags are freeform strings attached to panes. Once a pane is tagged, the `#tag` s
 Usage: phux tag [OPTIONS] <COMMAND>
 
 Commands:
-  ls    List the tags on each pane a selector resolves to [aliases: list]
+  ls    List the tags on each pane a selector resolves to [alias: list]
   add   Add one or more tags to each pane a selector resolves to
-  rm    Remove one or more tags from each pane a selector resolves to [aliases: remove]
+  rm    Remove one or more tags from each pane a selector resolves to [alias: remove]
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2959,10 +2959,10 @@ Each worktree binds to one session whose name is derived from the worktree's dir
 Usage: phux worktree [OPTIONS] <COMMAND>
 
 Commands:
-  list    List the repository's worktrees and their bound sessions [aliases: ls]
+  list    List the repository's worktrees and their bound sessions [alias: ls]
   new     Create a worktree and a session rooted in it
   open    Open the session bound to an existing worktree, creating it if absent
-  remove  Remove a worktree, killing the session bound to it first [aliases: rm]
+  remove  Remove a worktree, killing the session bound to it first [alias: rm]
   help    Print this message or the help of the given subcommand(s)
 
 Options:

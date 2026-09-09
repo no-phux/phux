@@ -156,7 +156,7 @@ fn handle_csi(input: &[u8], start: usize, support: ColorSupport, out: &mut Vec<u
 /// OSC/DCS/APC/SOS/PM sequence starting at `input[start]`. Returns the
 /// position one past the terminator. If no terminator is found the
 /// sequence runs to EOF.
-fn scan_string_terminated(input: &[u8], start: usize) -> usize {
+const fn scan_string_terminated(input: &[u8], start: usize) -> usize {
     let mut j = start + 2;
     while j < input.len() {
         if input[j] == BEL {
