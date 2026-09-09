@@ -87,7 +87,8 @@ production never builds (the ADR-0030 demotion cascade).
    were read, so they are listed. **Verbs and flags:** `agent list` / `show` /
    `explain` (`--file`, `--kind`, `--title`, `--format`) / `set` (`--name`,
    `--kind`, `--state`, `--attention`, `--session`) / `clear` /
-   `install-claude`; `agent wait
+   `install-claude`; `agent report-state TARGET STATE` with
+   `working|blocked|done` evidence (no `--json` or MCP tool); `agent wait
    [TARGET] --until STATE... --timeout SECS --json`, `--until` spelling exactly
    `idle|working|blocked|done` with `unknown` deliberately unspellable and
    `idle,blocked,done` the default set; `agent send-keys TARGET KEYS...
@@ -141,13 +142,16 @@ production never builds (the ADR-0030 demotion cascade).
    single-file vocabulary advertised to consumers. (b) The former `phux_agent`
    action multiplexer is frozen as ten distinct tools: `phux_agent_list`,
    `show`, `explain`, `set`, `clear`, `wait`, `send_keys`, `prompt`, `answer`,
-   and `start` (each with the full prefix). (c) Anything ratified out
-   of [ADR-0075](./0075-agent-name-addressing.md) (the `%` sigil),
+   and `start` (each with the full prefix). (c) Any ADR that adds consumer
+   surface amends this freeze in the same PR that ships it; agent additions
+   belong in point 6. This includes
+   [ADR-0075](./0075-agent-name-addressing.md) (the `%` sigil),
    [ADR-0076](./0076-agent-prompt-and-lifecycle-wait.md) (`agent prompt`, its
    `--wait`, and its receipt document) and
    [ADR-0078](./0078-alternate-screen-history.md) (`snapshot --transcript` and
-   its `transcript` payload) is carved in by amending point 6 in the same PR
-   that ships it. No agent verb is discovered post-freeze.
+   its `transcript` payload), and later consumer-surface ADRs such as
+   [ADR-0085](./0085-hook-sourced-agent-state.md). No agent verb is discovered
+   post-freeze.
 
 ## Why
 
