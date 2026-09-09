@@ -24,6 +24,10 @@
 #                           unless listed in ADR/.length-baseline, and a
 #                           listed ADR that fits the cap is removed from
 #                           the baseline (entries may only be removed)
+#   - adr-in-force-sync   : every Proposed/Accepted ADR is linked exactly
+#                           once in ADR/IN-FORCE.md, no Superseded or
+#                           Deprecated ADR is linked, and every link
+#                           resolves to its file
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
 #                           with phux-protocol's PROTOCOL_VERSION
 #                           (skipped while the SPEC split is in flight)
@@ -55,6 +59,7 @@ ALL_GATES=(
     adr-number-unique
     adr-index-sync
     adr-length
+    adr-in-force-sync
     spec-version-sync
     impl-status
 )
@@ -746,6 +751,114 @@ gate_adr_length() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 5e: adr-in-force-sync
+# ---------------------------------------------------------------------------
+
+# ADR/IN-FORCE.md is the topic-ordered view of the decisions currently in
+# force: one `[NNNN](./NNNN-slug.md)` line per live ADR under the topic it
+# governs, with Proposed ADRs in a trailing block. The view is hand-curated,
+# so it drifts unless it is checked against the corpus. Three checks,
+# bidirectional:
+#
+#   1. every ADR whose Status is Proposed, Accepted, or
+#      Accepted (forward-compat) is linked exactly once
+#   2. every Superseded or Deprecated ADR is linked zero times
+#   3. every `[NNNN](./...)` link resolves to a real file whose name
+#      starts with the link's number
+#
+# A malformed `Status:` line is adr-status's finding; this gate skips it.
+
+# Echoes the first `Status:` line outside the frontmatter of an ADR file,
+# with the `Status:` prefix and surrounding whitespace removed.
+adr_status_value() {
+    local file="$1"
+    local close
+    close="$(frontmatter_close_line "$file" || true)"
+    local start=1
+    [[ -n "$close" ]] && start=$((close + 1))
+    awk -v start="$start" '
+        NR < start { next }
+        /^Status:/ {
+            sub(/\r$/, "")
+            sub(/^Status:[[:space:]]*/, "")
+            sub(/[[:space:]]+$/, "")
+            print
+            exit
+        }
+    ' "$file" || true
+}
+
+gate_adr_in_force_sync() {
+    if [[ ! -d "$ROOT/ADR" ]]; then
+        return
+    fi
+    local view="$ROOT/ADR/IN-FORCE.md"
+    if [[ ! -f "$view" ]]; then
+        violate adr-in-force-sync "$view" \
+            "ADR/IN-FORCE.md not found — the decisions-in-force view is required"
+        return
+    fi
+
+    # Collect links: every `[NNNN](./target)` occurrence, one per grep -o
+    # match, so a line carrying two links counts both.
+    local link num index target
+    local -a link_count=()
+    local -a link_target=()
+    local link_re='^\[([0-9]{4})\]\(\./([^)#]+)'
+    while IFS= read -r link; do
+        [[ "$link" =~ $link_re ]] || continue
+        num="${BASH_REMATCH[1]}"
+        index=$((10#$num))
+        target="${BASH_REMATCH[2]}"
+        link_count[$index]=$(( ${link_count[$index]:-0} + 1 ))
+        link_target[$index]="$target"
+
+        if [[ ! -f "$ROOT/ADR/$target" ]]; then
+            violate adr-in-force-sync "$view" \
+                "link $num points at ./$target, which does not exist"
+        elif [[ "$target" != "$num-"* ]]; then
+            violate adr-in-force-sync "$view" \
+                "link $num points at ./$target, whose filename does not start with $num-"
+        fi
+    done < <(grep -oE '\[[0-9]{4}\]\(\./[^)]+\)' "$view" 2>/dev/null || true)
+
+    # Reverse direction: each ADR file's Status decides whether it must
+    # appear exactly once or must not appear at all.
+    local file base status count
+    while IFS= read -r file; do
+        base="$(basename "$file")"
+        # Reads the number out of the name; `adr_files` decides membership.
+        [[ "$base" =~ ^([0-9]{4})- ]] || continue
+        num="${BASH_REMATCH[1]}"
+        index=$((10#$num))
+        count="${link_count[$index]:-0}"
+        status="$(adr_status_value "$file")"
+        case "$status" in
+            Proposed|Accepted|"Accepted (forward-compat)")
+                if (( count == 0 )); then
+                    violate adr-in-force-sync "$file" \
+                        "no link in ADR/IN-FORCE.md for ADR $num (Status: $status) — add one line under the topic it governs, or under Proposed"
+                elif (( count > 1 )); then
+                    violate adr-in-force-sync "$view" \
+                        "ADR $num is linked $count times — every in-force ADR appears exactly once"
+                elif [[ "${link_target[$index]}" != "$base" ]]; then
+                    violate adr-in-force-sync "$file" \
+                        "ADR/IN-FORCE.md links $num to ./${link_target[$index]}, not to this file — two files are claiming the same ADR number, or the link was not updated with a rename"
+                fi
+                ;;
+            "Superseded by ADR-"*|Deprecated)
+                if (( count > 0 )); then
+                    violate adr-in-force-sync "$view" \
+                        "ADR $num is '$status' but still linked — remove its line; only Proposed and Accepted ADRs appear in the in-force view"
+                fi
+                ;;
+            *)
+                ;;
+        esac
+    done < <(adr_files)
+}
+
+# ---------------------------------------------------------------------------
 # Gate 6: spec-version-sync
 # ---------------------------------------------------------------------------
 
@@ -1078,6 +1191,7 @@ run_gate() {
         adr-number-unique)   gate_adr_number_unique   ;;
         adr-index-sync)      gate_adr_index_sync      ;;
         adr-length)          gate_adr_length          ;;
+        adr-in-force-sync)   gate_adr_in_force_sync   ;;
         spec-version-sync)   gate_spec_version_sync   ;;
         impl-status)         gate_impl_status         ;;
         *) echo "internal error: unknown gate '$gate'" >&2; exit 2 ;;
