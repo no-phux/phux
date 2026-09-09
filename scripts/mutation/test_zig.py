@@ -2,10 +2,12 @@
 """Runner contracts; PHUX_ZIG_MUTATION_INTEGRATION=1 also exercises pinned Zig/Zentinel."""
 
 import argparse
+import copy
 import importlib.util
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -22,6 +24,159 @@ INSTALLER_SPEC = importlib.util.spec_from_file_location("zig_installer", Path(__
 installer = importlib.util.module_from_spec(INSTALLER_SPEC)
 INSTALLER_SPEC.loader.exec_module(installer)
 MODULE = "clients/cockpit/src/cockpit/native/ts_protocol.zig"
+
+
+def preserve_evidence(workspace, artifacts):
+    artifacts.mkdir(parents=True, exist_ok=True)
+    tool_log = workspace / "tool-install.log"
+    if tool_log.is_file():
+        shutil.copy2(tool_log, artifacts / tool_log.name)
+    # Only first-level report directories and project configs: never recurse
+    # through compiler caches, generated executables or the installed tool.
+    for directory in workspace.glob("*-out"):
+        destination = artifacts / directory.name
+        destination.mkdir(exist_ok=True)
+        for source in directory.iterdir():
+            if source.is_file() and source.suffix in (".json", ".log", ".toml"):
+                shutil.copy2(source, destination / source.name)
+    for config in workspace.glob("*/zentinel.toml"):
+        destination = artifacts / config.parent.name
+        destination.mkdir(exist_ok=True)
+        shutil.copy2(config, destination / config.name)
+
+
+def finish_workspace(workspace, artifacts):
+    try:
+        preserve_evidence(Path(workspace.name), artifacts)
+    finally:
+        workspace.cleanup()
+
+
+class RetainedEvidenceTests(unittest.TestCase):
+    def test_failed_assertion_preserves_reports_but_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            workspace = tempfile.TemporaryDirectory(dir=temporary)
+            root = Path(workspace.name)
+            out = root / "fixture-out"
+            out.mkdir()
+            (out / "mutant-001.json").write_text('{"result":"failure evidence"}')
+            (out / "mutant-001.log").write_text("stdout/stderr evidence")
+            (out / "test-binary").write_bytes(b"not an artifact")
+            project = root / "fixture"
+            project.mkdir()
+            (project / "zentinel.toml").write_text("[project]\n")
+            (project / ".zig-cache").mkdir()
+            (project / ".zig-cache/compiler-object").write_bytes(b"not an artifact")
+
+            class FailingCase(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls):
+                    cls.addClassCleanup(finish_workspace, workspace, artifacts)
+
+                def test_deliberate_failure(self):
+                    self.fail("deliberate failure proves teardown retention")
+
+            result = unittest.TextTestRunner(stream=io.StringIO()).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(FailingCase))
+            self.assertEqual(len(result.failures), 1)
+            self.assertFalse(root.exists())
+            self.assertEqual((artifacts / "fixture-out/mutant-001.json").read_text(),
+                             '{"result":"failure evidence"}')
+            self.assertEqual((artifacts / "fixture-out/mutant-001.log").read_text(), "stdout/stderr evidence")
+            self.assertTrue((artifacts / "fixture/zentinel.toml").is_file())
+            self.assertEqual(sorted(str(path.relative_to(artifacts)) for path in artifacts.rglob("*")
+                                    if path.is_file()),
+                             ["fixture-out/mutant-001.json", "fixture-out/mutant-001.log", "fixture/zentinel.toml"])
+
+
+class ReportContractTests(unittest.TestCase):
+    def valid_report(self, status="killed"):
+        return {
+            "schema_version": "zentinel.report.v1",
+            "run": {"status": "completed", "error": None},
+            "baseline": {"status": "passed"},
+            "mutants": [{"id": "selected-id", "result": {"status": status}}],
+            "summary": {"total": 1, "killed": 0, "survived": 0, "compile_error": 0,
+                        "timeout": 0, "invalid": 0, "compiler_crash": 0, "skipped": 0},
+        }
+
+    def execute_report(self, report, rejected=True):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            out = stage / "artifacts"
+            out.mkdir()
+            raw = json.dumps(report)
+
+            def publish(*args):
+                path = stage / ".zig-cache/report/mutant-001.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(raw)
+                return 0
+
+            with patch.object(runner, "run_command", side_effect=publish):
+                if rejected:
+                    with self.assertRaises(ValueError):
+                        runner.execute_mutant("zentinel", stage, {"id": "selected-id"}, 1, 5, out, {})
+                else:
+                    runner.execute_mutant("zentinel", stage, {"id": "selected-id"}, 1, 5, out, {})
+            self.assertEqual((out / "mutant-001.json").read_text(), raw)
+
+    def test_only_diagnostic_outcomes_are_accepted(self):
+        for status in ["killed", "survived", "compile_error", "timeout"]:
+            with self.subTest(status=status):
+                report = self.valid_report(status)
+                report["summary"][status] = 1
+                self.execute_report(report, rejected=False)
+        for status in ["invalid", "compiler_crash", "skipped", "unknown", None, [], 0]:
+            with self.subTest(status=status):
+                report = self.valid_report(status)
+                if status in ("invalid", "compiler_crash", "skipped"):
+                    report["summary"][status] = 1
+                self.execute_report(report)
+
+    def test_malformed_or_inconsistent_reports_are_rejected(self):
+        missing = object()
+        cases = [
+            (("schema_version",), missing), (("schema_version",), "zentinel.report.v2"),
+            (("run",), None), (("run", "status"), missing), (("run", "status"), "error"),
+            (("run", "error"), missing), (("run", "error"), "unexpected failure"),
+            (("baseline",), None), (("baseline", "status"), missing),
+            (("mutants",), missing), (("mutants",), None), (("mutants",), []),
+            (("mutants",), [{"id": "selected-id", "result": {"status": "killed"}}] * 2),
+            (("mutants", 0), None), (("mutants", 0, "id"), missing),
+            (("mutants", 0, "id"), "different-id"), (("mutants", 0, "result"), None),
+            (("mutants", 0, "result", "status"), missing),
+            (("summary",), None), (("summary", "total"), missing),
+            (("summary", "total"), 0), (("summary", "total"), True),
+            (("summary", "killed"), 0), (("summary", "killed"), True),
+            (("summary", "survived"), 1), (("summary", "invalid"), -1),
+            (("summary", "compiler_crash"), missing), (("summary", "timeout"), "0"),
+        ]
+        for path, value in cases:
+            with self.subTest(path=path, value=value):
+                report = self.valid_report()
+                report["summary"]["killed"] = 1
+                container = report
+                for component in path[:-1]:
+                    container = container[component]
+                if value is missing:
+                    del container[path[-1]]
+                else:
+                    container[path[-1]] = copy.deepcopy(value)
+                self.execute_report(report)
+        self.execute_report([])
+
+    def test_aggregate_cannot_complete_with_missing_or_extra_results(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            entry = self.valid_report()["mutants"][0]
+            for entries in ([], [entry, entry]):
+                with (self.subTest(entries=entries),
+                      patch.object(runner, "list_candidates", return_value=[{"id": "selected-id"}]),
+                      patch.object(runner, "execute_mutant", return_value={"mutants": entries}),
+                      self.assertRaises(ValueError)):
+                    runner.execute_project("zentinel", stage, stage, 1, 5)
 
 
 class InstallerTests(unittest.TestCase):
@@ -137,13 +292,15 @@ class CleanupTests(unittest.TestCase):
 class RealToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        parent = runner.ROOT / "target/mutation"
+        parent.mkdir(parents=True, exist_ok=True)
+        cls.artifacts = Path(tempfile.mkdtemp(prefix="zig-check-", dir=parent))
         cls.workspace = tempfile.TemporaryDirectory(prefix="phux-zig-proof-")
         cls.root = Path(cls.workspace.name)
+        # Class cleanups run after failed assertions AND failed setUpClass.
+        cls.addClassCleanup(finish_workspace, cls.workspace, cls.artifacts)
+        print(f"Zig mutation acceptance artifacts: {cls.artifacts}", file=sys.stderr)
         cls.binary = runner.tool_binary(cls.root)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.workspace.cleanup()
 
     def project(self, name, source, operators, timeout=10):
         stage = self.root / name
@@ -202,6 +359,34 @@ test "broken baseline" { try std.testing.expect(!value()); }
         stage, out = self.project("bad-baseline", source, ["boolean_literal"])
         with self.assertRaisesRegex(ValueError, "baseline failed"):
             runner.execute_project(self.binary, stage, out, 1, 10)
+
+    def test_real_tool_unmatched_id_is_rejected_with_raw_report(self):
+        stage, out = self.project("unmatched-id", "fn enabled() bool { return true; }\n", ["boolean_literal"])
+        with self.assertRaises(ValueError):
+            runner.execute_mutant(self.binary, stage, {"id": "m_nonexistent"}, 1, 10, out,
+                                  dict(os.environ, ZIG_GLOBAL_CACHE_DIR=".zig-cache/global"))
+        report = json.loads((out / "mutant-001.json").read_text())
+        self.assertEqual(report["baseline"]["status"], "passed")
+        self.assertEqual(report["run"]["status"], "completed")
+        self.assertEqual(report["mutants"], [])
+
+    def test_real_tool_invalid_workspace_cannot_complete_scan(self):
+        stage, out = self.project("invalid-workspace", "fn enabled() bool { return true; }\n", ["boolean_literal"])
+        (stage / "baseline.py").write_text(
+            "import shutil\nfrom pathlib import Path\n"
+            "p = Path('.zig-cache/zentinel/workspaces')\n"
+            "if p.is_dir(): shutil.rmtree(p)\n"
+            "p.parent.mkdir(parents=True,exist_ok=True)\np.write_text('not a directory')\n")
+        config = stage / "zentinel.toml"
+        config.write_text(config.read_text().replace('commands = ["zig test fixture.zig"]',
+                                                    'commands = ["python3 baseline.py"]'))
+        with self.assertRaises(ValueError):
+            runner.execute_project(self.binary, stage, out, 1, 10)
+        report = json.loads((out / "mutant-001.json").read_text())
+        self.assertEqual(report["baseline"]["status"], "passed")
+        result = report["mutants"][0]["result"]
+        self.assertEqual(result["status"], "invalid")
+        self.assertIn("workspace could not be created", result["evidence"]["failure_summary"])
 
     def test_real_cli_sigterm_removes_staging_tree(self):
         temporary = self.root / "cli-temporary"

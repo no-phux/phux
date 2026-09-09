@@ -22,6 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PILOT = ROOT / "clients/cockpit/mutation/pilot.json"
+DIAGNOSTIC_OUTCOMES = ("killed", "survived", "compile_error", "timeout")
+REPORT_OUTCOMES = (*DIAGNOSTIC_OUTCOMES, "invalid", "compiler_crash", "skipped")
 
 
 def write_json(path, data):
@@ -235,6 +237,62 @@ def list_candidates(binary, stage, out, env):
     return json.loads(log.read_text())["mutants"]
 
 
+def report_object(value, label):
+    if not isinstance(value, dict):
+        raise TypeError(f"Zentinel {label} must be an object")
+    return value
+
+
+def validate_report_header(report):
+    report_object(report, "report")
+    if report.get("schema_version") != "zentinel.report.v1":
+        raise ValueError("unsupported or missing Zentinel report schema")
+    baseline = report_object(report.get("baseline"), "baseline")
+    if baseline.get("status") != "passed":
+        raise ValueError("baseline failed or missing")
+    run = report_object(report.get("run"), "run")
+    if run.get("status") != "completed":
+        raise ValueError("Zentinel run did not complete")
+    if run.get("error", "missing") is not None:
+        raise ValueError("Zentinel completed run must have a null error")
+
+
+def selected_outcome(report, mutant_id):
+    entries = report.get("mutants")
+    if not isinstance(entries, list) or len(entries) != 1:
+        raise ValueError("Zentinel must report exactly one selected mutant")
+    entry = report_object(entries[0], "mutant")
+    if entry.get("id") != mutant_id:
+        raise ValueError(f"Zentinel report does not match selected mutant {mutant_id}")
+    result = report_object(entry.get("result"), "mutant result")
+    status = result.get("status")
+    if status not in DIAGNOSTIC_OUTCOMES:
+        raise ValueError(f"non-diagnostic or missing Zentinel outcome: {status!r}")
+    return status
+
+
+def validate_report_summary(report, status):
+    summary = report_object(report.get("summary"), "summary")
+    expected = dict.fromkeys(REPORT_OUTCOMES, 0)
+    expected.update(total=1)
+    expected[status] = 1
+    if any(type(count) is not int for count in summary.values()):
+        raise ValueError("Zentinel summary counts must be integers")
+    if summary != expected:
+        raise ValueError("Zentinel summary must account exactly for the selected mutant")
+
+
+def validate_report(report, mutant_id, report_path):
+    # Validate the pinned outcome contract before accepting an exit-0 run. The
+    # upstream tool also exits 0 for operational failures and unmatched IDs.
+    try:
+        validate_report_header(report)
+        status = selected_outcome(report, mutant_id)
+        validate_report_summary(report, status)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{error}; see {report_path}") from error
+
+
 def execute_mutant(binary, stage, mutant, index, timeout, out, env):
     report_path = out / f"mutant-{index:03d}.json"
     relative_report = f".zig-cache/report/mutant-{index:03d}.json"
@@ -246,11 +304,17 @@ def execute_mutant(binary, stage, mutant, index, timeout, out, env):
     if not report_path.is_file():
         raise ValueError(f"Zentinel exited {code} without report for {mutant['id']}")
     report = json.loads(report_path.read_text())
-    if report["baseline"]["status"] != "passed":
-        raise ValueError(f"baseline failed; see {report_path}")
+    validate_report(report, mutant["id"], report_path)
     if code:
         raise ValueError(f"Zentinel failed ({code}); see {report_path}")
     return report
+
+
+def aggregate_outcomes(reports, selected_count):
+    outcomes = Counter(item["result"]["status"] for report in reports for item in report["mutants"])
+    if sum(outcomes.values()) != selected_count:
+        raise ValueError("Zentinel outcome count does not match selected mutant count")
+    return dict(outcomes)
 
 
 def execute_project(binary, stage, out, maximum, timeout, list_only=False):
@@ -260,12 +324,13 @@ def execute_project(binary, stage, out, maximum, timeout, list_only=False):
     candidates = list_candidates(binary, stage, out, env)
     if list_only:
         return {"status": "listed", "candidates": len(candidates), "outcomes": {}}
+    selected = candidates[:maximum]
     reports = []
-    for index, mutant in enumerate(candidates[:maximum], 1):
+    for index, mutant in enumerate(selected, 1):
         reports.append(execute_mutant(binary, stage, mutant, index, timeout, out, env))
-    outcomes = Counter(item["result"]["status"] for report in reports for item in report["mutants"])
+    outcomes = aggregate_outcomes(reports, len(selected))
     return {"status": "complete" if candidates else "no_mutants", "candidates": len(candidates),
-            "selected": min(maximum, len(candidates)), "outcomes": dict(outcomes)}
+            "selected": len(selected), "outcomes": outcomes}
 
 
 def main():
