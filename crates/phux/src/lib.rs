@@ -2355,6 +2355,9 @@ mod tests {
             "phux server --resume",
             // `phux play`'s in-pane writer half.
             "phux play --pty-writer",
+            // The Claude shim's stdin JSON reader: invoked only by the
+            // generated wrapper, one line of shell-safe tokens out.
+            "phux agent hook-payload",
         ];
 
         /// Collect every hidden row of the tree under `path`: hidden long

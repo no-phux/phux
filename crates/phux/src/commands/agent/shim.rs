@@ -39,15 +39,45 @@ const MANIFEST: &str = "claude-install.json";
 ///   fires per hook but reaches only `phux ask` (ADR-0035/0036), which writes
 ///   nothing to the record. Hooks that would now write nothing are not wired
 ///   at all.
+/// * **4** — per-turn hooks feed `working`/`blocked`/`done` to the detector
+///   through `phux agent report-state` (ADR-0085): evidence, not a
+///   declaration, so the detector keeps correcting.
+/// * **5** — reads each hook's stdin payload and, when the server serves
+///   `AgentSession` resources (`resource_kinds` in `phux status --json`),
+///   opens a session child under the pane at `SessionStart` and appends
+///   `session_start`/`prompt`/`tool_start`/`tool_end`/`ask`/`notification`/
+///   `stop`/`session_end` records with `phux agent emit`; `PreToolUse` and
+///   `PostToolUse` are newly wired. Against an older server every arm runs
+///   the schema-4 calls unchanged.
 ///
 /// `pub(crate)` because `phux doctor` compares it against what is actually on
 /// disk (phux-w7z2.46): upgrading the binary does not rewrite an installed
 /// shim, so the mismatch is real, silent, and behavioral.
-pub(crate) const SHIM_SCHEMA: u32 = 4;
+pub(crate) const SHIM_SCHEMA: u32 = 5;
 
 /// Prefix of the wrapper's schema stamp line. A `#` comment, so it is inert
 /// to `/bin/sh` and greppable without executing anything.
 const SCHEMA_MARKER: &str = "# phux-shim-schema: ";
+
+/// The Claude Code hooks the installer registers: `(event, matcher, arm)`.
+/// Each becomes `<shim> --phux-hook <arm>` in the generated settings file,
+/// and every arm must be handled by the wrapper's `stream_state`
+/// (`render_wrapper` pins that). `PreToolUse`/`PostToolUse` are stream-only
+/// producers: the legacy path has nothing to report for them.
+const HOOKS: &[(&str, &str, &str)] = &[
+    ("SessionStart", "", "start"),
+    ("UserPromptSubmit", "", "working"),
+    ("PreToolUse", "", "tool-start"),
+    ("PostToolUse", "", "tool-end"),
+    ("PermissionRequest", "", "blocked"),
+    (
+        "Notification",
+        "permission_prompt|idle_prompt|elicitation_dialog",
+        "blocked",
+    ),
+    ("Stop", "", "done"),
+    ("SessionEnd", "", "clear"),
+];
 
 pub(super) fn run_install_claude(shell: Option<&str>, real: Option<&Path>) -> ExitCode {
     let shell = shell.map_or_else(detected_shell, str::to_owned);
@@ -66,10 +96,17 @@ pub(super) fn run_install_claude(shell: Option<&str>, real: Option<&Path>) -> Ex
                     let was = if prior <= 1 {
                         "declared an agent state on every Claude hook, which stood the \
                          server-side detector down for the whole session"
-                    } else {
+                    } else if prior == 2 {
                         "rewrote the agent record on every Claude hook, which reset the \
                          detected state at the end of every turn and made `phux agent wait` \
                          report the agent as departed"
+                    } else if prior == 3 {
+                        "left lifecycle timing to screen detection and could not publish \
+                         the Claude Stop hook's exact `done` edge"
+                    } else {
+                        "reported lifecycle edges to the detector but never read the hook \
+                         payload, so it could not open or feed the pane's agent session \
+                         stream"
                     };
                     outln!(
                         "schema {prior} {was}; a Claude already running picks the new shim up \
@@ -172,23 +209,18 @@ fn install_claude_into(
     std::fs::create_dir_all(&shim_dir)
         .map_err(|err| format!("could not create {}: {err}", shim_dir.display()))?;
 
-    let hook_command = |state: &str| format!("{} --phux-hook {state}", sh_quote_path(&shim));
-    let command_hook = |state: &str, matcher: &str| {
-        serde_json::json!({
-            "matcher": matcher,
-            "hooks": [{ "type": "command", "command": hook_command(state) }]
+    let hook_command = |arm: &str| format!("{} --phux-hook {arm}", sh_quote_path(&shim));
+    let hooks: serde_json::Map<String, serde_json::Value> = HOOKS
+        .iter()
+        .map(|(event, matcher, arm)| {
+            let entry = serde_json::json!([{
+                "matcher": matcher,
+                "hooks": [{ "type": "command", "command": hook_command(arm) }]
+            }]);
+            ((*event).to_owned(), entry)
         })
-    };
-    let hook_settings = serde_json::json!({
-        "hooks": {
-            "SessionStart": [command_hook("start", "")],
-            "UserPromptSubmit": [command_hook("working", "")],
-            "PermissionRequest": [command_hook("blocked", "")],
-            "Notification": [command_hook("blocked", "permission_prompt|idle_prompt|elicitation_dialog")],
-            "Stop": [command_hook("done", "")],
-            "SessionEnd": [command_hook("clear", "")]
-        }
-    });
+        .collect();
+    let hook_settings = serde_json::json!({ "hooks": hooks });
     let settings_bytes = serde_json::to_vec_pretty(&hook_settings)
         .map_err(|err| format!("could not render Claude hook settings: {err}"))?;
     atomic_write(&settings, &settings_bytes, 0o600)?;
@@ -360,18 +392,46 @@ fn read_manifest(path: &Path) -> Result<Option<serde_json::Value>, String> {
 
 /// Render the `/bin/sh` wrapper installed as `claude`.
 ///
-/// Its `set_state` announces WHO occupies the pane and never WHAT that
-/// occupant is doing. An explicit `state` outranks the server's derivation for
-/// the life of the record (`docs/spec/L3.md` §3.7), so the schema-1 wrapper —
-/// which declared one on every lifecycle hook — stood the detector down on the
-/// very integration phux ships its deepest manifest for, and left a dead
-/// Claude wearing a live `working` badge with no path back to truth
-/// (phux-w7z2.26, phux-w7z2.13). Identity-only leaves the detector deriving
-/// `state` around the name and kind, which is the useful half of the feature.
+/// Every `--phux-hook` arm reads Claude's stdin payload through
+/// `phux agent hook-payload`, then runs three things in order:
 ///
-/// The `phux ask` call on the blocked hook is deliberately kept: it feeds the
-/// attention ladder (ADR-0035/0036), a path the screen cannot reconstruct and
-/// one the record arbitration never touched.
+/// 1. **Identity, on every server.** `start` writes the pane's record once
+///    (`--name`/`--kind`, never `--state`). An explicit `state` outranks the
+///    server's derivation for the life of the record (`docs/spec/L3.md`
+///    §3.7), which is why no arm anywhere declares one (phux-w7z2.26,
+///    phux-w7z2.13).
+/// 2. **One of two lifecycle paths**, chosen by a `phux status --json` probe
+///    that runs at most once per wrapper process:
+///    * the server serves `AgentSession` resources (`resource_kinds` among its
+///      `features`): `start` opens a session child under the pane
+///      (`--provider claude`, `--native-id` = Claude's `session_id`) and the
+///      arms append records to its stream with `phux agent emit`. The
+///      server derives lifecycle state from those records and the detector
+///      keeps owning idle and departure. `clear` appends `session_end` —
+///      terminal: nothing is emitted after it from the same process — and
+///      closes the session;
+///    * anything older: the per-turn arms feed the detector with
+///      `report-state` (ADR-0085), exactly as schema 4 did.
+/// 3. **Attention and cleanup, on every server.** `blocked` calls `phux ask`
+///    (ADR-0035/0036: the attention ladder, which neither the record nor the
+///    stream replaces) and `clear` deletes the record.
+///
+/// A session is opened at most once per wrapper process, and never for a
+/// `compact`-sourced `SessionStart`, which Claude fires without a preceding
+/// `SessionEnd` and would otherwise open a second child. The launch path and
+/// the exit trap have no payload, so they never open; the trap does close.
+///
+/// Payload privacy is structural, not a filter: the only payload bytes that
+/// can reach a command line are the tokens `hook-payload` prints (session
+/// id, event name, tool name, notification type, prompt *length*, end
+/// reason, start source), and it never prints prompt text, `tool_input`,
+/// `tool_response`, or the transcript path. `PHUX_AGENT_EMIT_RAW=1` opts the
+/// whole payload into a `provider_raw` record, fed from the wrapper's own
+/// stdin copy.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one shell script, rendered as one literal so it reads as the script it is"
+)]
 fn render_wrapper(
     real: &Path,
     phux: &Path,
@@ -397,25 +457,163 @@ run_phux() {{
   "$phux" "$@" >/dev/null 2>&1 || true
 }}
 
-# Identity stays detector-owned; per-turn hooks feed evidence into it.
+# Does the server serve AgentSession resources? `phux status --json` lists
+# `resource_kinds` under `features` when it does. Probed at most once per
+# wrapper process: the launching wrapper lives for the whole Claude session,
+# and each hook is its own short process.
+streams=
+server_streams() {{
+  if [ -z "$streams" ]; then
+    streams=no
+    case $("$phux" status --json 2>/dev/null) in
+      *'"resource_kinds"'*) streams=yes ;;
+    esac
+  fi
+  [ "$streams" = yes ]
+}}
+
+# Fields of the hook payload on stdin, exactly as `phux agent hook-payload`
+# prints them: one line of shell-safe tokens, `-` when absent. Callers with
+# no payload (the launch path, the exit trap) see every field absent.
+hook_session=-
+hook_event=-
+hook_tool=-
+hook_kind=-
+hook_chars=0
+hook_reason=-
+hook_source=-
+payload=
+read_payload() {{
+  [ ! -t 0 ] || return 0
+  payload=$(mktemp 2>/dev/null) || {{ payload=; return 0; }}
+  cat > "$payload" 2>/dev/null || :
+  fields=$("$phux" agent hook-payload < "$payload" 2>/dev/null) || fields=
+  [ -n "$fields" ] || return 0
+  # shellcheck disable=SC2086 # the helper prints tokens with no IFS or glob characters
+  set -- $fields
+  [ "$#" -eq 7 ] || return 0
+  hook_session=$1
+  hook_event=$2
+  hook_tool=$3
+  hook_kind=$4
+  hook_chars=$5
+  hook_reason=$6
+  hook_source=$7
+  case "$hook_chars" in *[!0-9]*) hook_chars=0 ;; esac
+}}
+
+emit() {{
+  if [ "$#" -gt 1 ]; then
+    run_phux agent emit "$target" --type "$1" --data "$2"
+  else
+    run_phux agent emit "$target" --type "$1"
+  fi
+}}
+
+emit_tool() {{
+  if [ "$hook_tool" != - ]; then
+    emit "$1" "{{\"tool_name\":\"$hook_tool\"}}"
+  else
+    emit "$1"
+  fi
+}}
+
+# The whole hook payload, only when the user opted in. Never after
+# `session_end`: the `clear` arm calls this before it ends the session.
+emit_raw() {{
+  if [ "${{PHUX_AGENT_EMIT_RAW:-0}}" = 1 ] && [ -n "$payload" ] && [ -s "$payload" ]; then
+    run_phux agent emit "$target" --type provider_raw --data - < "$payload"
+  fi
+}}
+
+# The session-stream arms. Record data never carries prompt text or tool
+# input: `prompt` is a character count; `tool_*` name the tool.
+opened=false
+stream_state() {{
+  case "$1" in
+    start)
+      if [ "$hook_session" != - ] && [ "$hook_source" != compact ] && [ "$opened" = false ]; then
+        opened=true
+        run_phux agent session open "$target" --provider claude --native-id="$hook_session"
+        emit session_start
+      fi
+      emit_raw
+      ;;
+    working)
+      emit prompt "{{\"chars\":$hook_chars}}"
+      emit_raw
+      ;;
+    tool-start)
+      emit_tool tool_start
+      emit_raw
+      ;;
+    tool-end)
+      emit_tool tool_end
+      emit_raw
+      ;;
+    blocked)
+      if [ "$hook_event" = Notification ]; then
+        case "$hook_kind" in
+          permission_prompt) kind=permission ;;
+          elicitation_dialog|elicitation_url_dialog) kind=elicitation ;;
+          idle_prompt) kind=idle ;;
+          *) kind=$hook_kind ;;
+        esac
+        emit notification "{{\"kind\":\"$kind\"}}"
+      else
+        emit ask
+      fi
+      emit_raw
+      ;;
+    done)
+      emit stop
+      emit_raw
+      ;;
+    clear)
+      emit_raw
+      if [ "$hook_reason" != - ]; then
+        emit session_end "{{\"reason\":\"$hook_reason\"}}"
+      else
+        emit session_end
+      fi
+      run_phux agent session close "$target"
+      ;;
+  esac
+}}
+
+# Servers without AgentSession resources: the per-turn arms feed the
+# detector directly (ADR-0085), and the tool arms have nothing to report.
+legacy_state() {{
+  case "$1" in
+    working|done) run_phux agent report-state "$target" "$1" ;;
+    blocked) run_phux agent report-state "$target" blocked ;;
+  esac
+}}
+
 set_state() {{
-  state=$1
   [ -n "${{PHUX_TERMINAL_ID:-}}" ] || return 0
   target="@$PHUX_TERMINAL_ID"
-  case "$state" in
-    clear) run_phux agent clear "$target" ;;
+  # Identity is written once, at start, on every server.
+  case "$1" in
     start) run_phux agent set "$target" --name claude --kind claude ;;
-    working|done) run_phux agent report-state "$target" "$state" ;;
-    blocked)
-      run_phux agent report-state "$target" blocked
-      run_phux ask "$target" "Claude needs attention"
-      ;;
+  esac
+  if server_streams; then
+    stream_state "$1"
+  else
+    legacy_state "$1"
+  fi
+  # The attention ladder and the record cleanup run on every server.
+  case "$1" in
+    blocked) run_phux ask "$target" "Claude needs attention" ;;
+    clear) run_phux agent clear "$target" ;;
   esac
 }}
 
 if [ "${{1:-}}" = "--phux-hook" ]; then
   [ "$#" -eq 2 ] || exit 2
+  read_payload
   set_state "$2"
+  [ -z "$payload" ] || rm -f "$payload"
   exit 0
 fi
 
@@ -447,7 +645,15 @@ fi
 
 if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ]; then
   set_state start
-  cleanup() {{ set_state clear; }}
+  # Runs once: INT/TERM/HUP re-enter through EXIT, and `session_end` is
+  # terminal for the stream this process may have opened.
+  ended=false
+  # shellcheck disable=SC2329 # invoked through the EXIT trap below
+  cleanup() {{
+    [ "$ended" = false ] || return 0
+    ended=true
+    set_state clear
+  }}
   trap 'cleanup' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -614,12 +820,130 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_BEGIN, BLOCK_END, SCHEMA_MARKER, SHIM_SCHEMA, install_claude_into, install_rc_block,
-        installed_shim_schema, render_wrapper, sh_quote_path, shell_activation,
+        BLOCK_BEGIN, BLOCK_END, HOOKS, SCHEMA_MARKER, SHIM_SCHEMA, install_claude_into,
+        install_rc_block, installed_shim_schema, render_wrapper, sh_quote_path, shell_activation,
         uninstall_claude_from, without_managed_block,
     };
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
+
+    /// The wrapper with fixed placeholder paths, for the text assertions.
+    fn rendered() -> String {
+        render_wrapper(
+            Path::new("/real/claude"),
+            Path::new("/bin/phux"),
+            Path::new("/data/phux/shims/claude"),
+            Path::new("/data/phux/shims/claude-hooks.json"),
+        )
+        .unwrap()
+    }
+
+    /// A fake `phux` that logs every argv line to `$FAKE_LOG`, answers the
+    /// capability probe from `$FAKE_FEATURES`, stands in for
+    /// `agent hook-payload` with the canned `$FAKE_FIELDS` line (the real
+    /// helper is pinned by `hook_payload.rs`), and logs whatever an
+    /// `emit --data -` fed it on stdin — so a test can see exactly which
+    /// bytes of a hook payload ever reached a `phux` process.
+    const FAKE_PHUX: &str = concat!(
+        "#!/bin/sh\n",
+        "printf '%s\\n' \"$*\" >> \"$FAKE_LOG\"\n",
+        "case \"$1 ${2:-}\" in\n",
+        "  \"status --json\") printf '{\"running\":true,\"features\":%s}\\n' \"$FAKE_FEATURES\"; exit 0 ;;\n",
+        "  \"agent hook-payload\") cat > /dev/null; printf '%s\\n' \"$FAKE_FIELDS\"; exit 0 ;;\n",
+        "esac\n",
+        "case \"$*\" in *\"--data -\") printf 'stdin:%s\\n' \"$(cat)\" >> \"$FAKE_LOG\" ;; esac\n",
+        "exit 0\n",
+    );
+
+    /// A rendered wrapper plus the fake `phux` it dispatches to, on disk.
+    struct Harness {
+        _dir: tempfile::TempDir,
+        wrapper: std::path::PathBuf,
+        log: std::path::PathBuf,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("scratch dir");
+            let fake_phux = dir.path().join("fake-phux");
+            let wrapper = dir.path().join("claude");
+            let settings = dir.path().join("claude-hooks.json");
+            std::fs::write(&fake_phux, FAKE_PHUX).unwrap();
+            std::fs::set_permissions(&fake_phux, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let text =
+                render_wrapper(Path::new("/real/claude"), &fake_phux, &wrapper, &settings).unwrap();
+            std::fs::write(&wrapper, text).unwrap();
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self {
+                _dir: dir,
+                wrapper,
+                log: dir_log(&fake_phux),
+            }
+        }
+
+        /// Run `<wrapper> --phux-hook <arm>` with `payload` on stdin, the
+        /// probe answering `features`, the helper answering `fields`, and
+        /// return every `phux` argv line the fake logged, in order.
+        fn hook(
+            &self,
+            arm: &str,
+            payload: &str,
+            features: &str,
+            fields: &str,
+            raw: bool,
+        ) -> Vec<String> {
+            use std::io::Write as _;
+            use std::process::{Command, Stdio};
+
+            let _ = std::fs::remove_file(&self.log);
+            let mut cmd = Command::new(&self.wrapper);
+            cmd.args(["--phux-hook", arm])
+                .env_remove("PHUX_AGENT_PHUX_BIN")
+                .env("PHUX_TERMINAL_ID", "42")
+                .env("FAKE_LOG", &self.log)
+                .env("FAKE_FEATURES", features)
+                .env("FAKE_FIELDS", fields)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if raw {
+                cmd.env("PHUX_AGENT_EMIT_RAW", "1");
+            } else {
+                cmd.env_remove("PHUX_AGENT_EMIT_RAW");
+            }
+            let mut child = cmd.spawn().expect("spawn the wrapper");
+            child
+                .stdin
+                .take()
+                .expect("piped stdin")
+                .write_all(payload.as_bytes())
+                .unwrap();
+            let out = child.wait_with_output().expect("wrapper exit");
+            assert!(
+                out.status.success(),
+                "hook {arm} exited {:?}: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "a hook must print nothing to Claude: {:?}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+    }
+
+    fn dir_log(fake_phux: &Path) -> std::path::PathBuf {
+        fake_phux.with_file_name("fake-phux.log")
+    }
+
+    const STREAMING: &str = "[\"report_agent_state\",\"resource_kinds\"]";
+    const LEGACY: &str = "[\"report_agent_state\"]";
 
     #[test]
     fn rc_block_removal_preserves_every_user_owned_byte() {
@@ -662,13 +986,7 @@ mod tests {
     /// the name and kind below.
     #[test]
     fn wrapper_routes_outer_interactive_claude_and_declares_inner_identity_only() {
-        let wrapper = render_wrapper(
-            Path::new("/real/claude"),
-            Path::new("/bin/phux"),
-            Path::new("/data/phux/shims/claude"),
-            Path::new("/data/phux/shims/claude-hooks.json"),
-        )
-        .unwrap();
+        let wrapper = rendered();
         assert!(wrapper.contains("\"$phux\" new -c \"$cwd\" -- \"$shim\" --phux-inner"));
         assert!(wrapper.contains("agent set \"$target\" --name claude --kind claude"));
         assert!(
@@ -687,26 +1005,55 @@ mod tests {
         assert!(wrapper.contains("run_phux agent clear \"$target\""));
     }
 
-    /// Every lifecycle hook still reaches `set_state`; what changed is what
-    /// `set_state` writes. Guards against "fixing" w7z2.26 by unwiring the
-    /// hooks, which would also take the `clear` on `SessionEnd` and the
-    /// `ask` on `blocked` with it.
+    /// Every hook the installer registers has an arm in the wrapper's
+    /// stream path, and every arm the legacy path handles is one the
+    /// installer registers. Guards against "fixing" a hook by unwiring it,
+    /// which would also take the `clear` on `SessionEnd` and the `ask` on
+    /// `blocked` with it — and against a registered arm that the wrapper
+    /// silently ignores.
     #[test]
-    fn every_lifecycle_hook_the_installer_wires_is_still_handled() {
-        let wrapper = render_wrapper(
-            Path::new("/real/claude"),
-            Path::new("/bin/phux"),
-            Path::new("/data/phux/shims/claude"),
-            Path::new("/data/phux/shims/claude-hooks.json"),
-        )
-        .unwrap();
-        for state in ["clear", "start", "working", "blocked", "done"] {
+    fn every_registered_hook_arm_is_handled_and_vice_versa() {
+        let wrapper = rendered();
+        let stream = section(&wrapper, "stream_state() {", "legacy_state() {");
+        // `legacy_state` plus `set_state`: the fallback arms and the
+        // every-server identity / ask / clear around them.
+        let legacy = section(&wrapper, "legacy_state() {", "= \"--phux-hook\" ]; then");
+        for (event, _, arm) in HOOKS {
             assert!(
-                wrapper.contains(state),
-                "hook state `{state}` is wired by the installer but unhandled by set_state",
+                stream.contains(&format!("{arm})")),
+                "{event} is registered as `--phux-hook {arm}` but stream_state has no `{arm})` arm",
             );
         }
-        assert!(wrapper.contains("run_phux agent set \"$target\""));
+        for arm in ["clear", "start", "working", "blocked", "done"] {
+            assert!(
+                legacy.contains(&format!("{arm})")) || legacy.contains(&format!("{arm}|")),
+                "the non-stream path must keep handling `{arm}`"
+            );
+            assert!(
+                HOOKS.iter().any(|(_, _, registered)| registered == &arm),
+                "arm `{arm}` is not registered by the installer"
+            );
+        }
+        assert!(legacy.contains("run_phux agent set \"$target\""));
+        assert!(legacy.contains("run_phux ask \"$target\""));
+        assert!(legacy.contains("run_phux agent clear \"$target\""));
+        // Identity, ask, and clear sit OUTSIDE both lifecycle paths.
+        assert!(!stream.contains("agent set") && !stream.contains("agent clear"));
+        let fallback_only = section(&wrapper, "legacy_state() {", "set_state() {");
+        assert!(!fallback_only.contains("agent set") && !fallback_only.contains("agent clear"));
+        assert!(!fallback_only.contains("run_phux ask"));
+    }
+
+    /// The text of `wrapper` between the first occurrence of `from` and
+    /// the next occurrence of `to`.
+    fn section<'a>(wrapper: &'a str, from: &str, to: &str) -> &'a str {
+        let start = wrapper
+            .find(from)
+            .unwrap_or_else(|| panic!("no `{from}` in wrapper"));
+        let end = wrapper[start..]
+            .find(to)
+            .unwrap_or_else(|| panic!("no `{to}` after `{from}`"));
+        &wrapper[start..start + end]
     }
 
     /// w7z2.37: the record is written exactly ONCE, at `start`.
@@ -724,13 +1071,7 @@ mod tests {
     /// `agent set`; per-turn arms reach `report-state`, never metadata writes.
     #[test]
     fn only_the_start_arm_writes_the_record() {
-        let wrapper = render_wrapper(
-            Path::new("/real/claude"),
-            Path::new("/bin/phux"),
-            Path::new("/data/phux/shims/claude"),
-            Path::new("/data/phux/shims/claude-hooks.json"),
-        )
-        .unwrap();
+        let wrapper = rendered();
 
         let writes: Vec<&str> = wrapper
             .lines()
@@ -747,11 +1088,442 @@ mod tests {
             writes[0]
         );
 
-        assert!(
-            wrapper.contains("working|done) run_phux agent report-state \"$target\" \"$state\"")
-        );
+        assert!(wrapper.contains("working|done) run_phux agent report-state \"$target\" \"$1\""));
         assert!(wrapper.contains("run_phux agent report-state \"$target\" blocked"));
         assert!(wrapper.contains("run_phux ask \"$target\""));
+    }
+
+    /// Against a server that serves `AgentSession` resources, each arm's
+    /// exact `phux` command lines: the session is opened once with Claude's
+    /// own session id, records carry only counts, tool names, and kinds,
+    /// `blocked` still feeds the attention ladder, and `clear` ends and
+    /// closes the session. Pinned as argv so a change here is a change to
+    /// the producer contract, visibly.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of arms, each pinned as argv"
+    )]
+    fn stream_arms_emit_exactly_these_command_lines() {
+        let h = Harness::new();
+        let fields =
+            |event: &str, tool: &str, kind: &str, chars: &str, reason: &str, source: &str| {
+                format!("sess-1 {event} {tool} {kind} {chars} {reason} {source}")
+            };
+        let cases: Vec<(&str, String, Vec<&str>)> = vec![
+            (
+                "start",
+                fields("SessionStart", "-", "-", "0", "-", "startup"),
+                vec![
+                    "agent hook-payload",
+                    "agent set @42 --name claude --kind claude",
+                    "status --json",
+                    "agent session open @42 --provider claude --native-id=sess-1",
+                    "agent emit @42 --type session_start",
+                ],
+            ),
+            (
+                "working",
+                fields("UserPromptSubmit", "-", "-", "18", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type prompt --data {\"chars\":18}",
+                ],
+            ),
+            (
+                "tool-start",
+                fields("PreToolUse", "Bash", "-", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type tool_start --data {\"tool_name\":\"Bash\"}",
+                ],
+            ),
+            (
+                "tool-end",
+                fields("PostToolUse", "mcp__phux__phux_ls", "-", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type tool_end --data {\"tool_name\":\"mcp__phux__phux_ls\"}",
+                ],
+            ),
+            (
+                "blocked",
+                fields("PermissionRequest", "Bash", "-", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type ask",
+                    "ask @42 Claude needs attention",
+                ],
+            ),
+            (
+                "blocked",
+                fields("Notification", "-", "permission_prompt", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type notification --data {\"kind\":\"permission\"}",
+                    "ask @42 Claude needs attention",
+                ],
+            ),
+            (
+                "blocked",
+                fields("Notification", "-", "elicitation_dialog", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type notification --data {\"kind\":\"elicitation\"}",
+                    "ask @42 Claude needs attention",
+                ],
+            ),
+            (
+                "blocked",
+                fields("Notification", "-", "idle_prompt", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type notification --data {\"kind\":\"idle\"}",
+                    "ask @42 Claude needs attention",
+                ],
+            ),
+            (
+                "done",
+                fields("Stop", "-", "-", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type stop",
+                ],
+            ),
+            (
+                "clear",
+                fields("SessionEnd", "-", "-", "0", "prompt_input_exit", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type session_end --data {\"reason\":\"prompt_input_exit\"}",
+                    "agent session close @42",
+                    "agent clear @42",
+                ],
+            ),
+        ];
+        for (arm, fields, want) in cases {
+            let log = h.hook(arm, "{}", STREAMING, &fields, false);
+            assert_eq!(log, want, "arm `{arm}` with fields `{fields}`");
+        }
+
+        // With no session id (a payload-less start, or a helper that could
+        // not parse), `start` writes identity and opens nothing: the native
+        // id is the join key, and a second open would create a second
+        // session.
+        let log = h.hook("start", "", STREAMING, "- - - - 0 - -", false);
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "agent set @42 --name claude --kind claude",
+                "status --json",
+            ]
+        );
+        // A `compact`-sourced SessionStart arrives with no SessionEnd before
+        // it, so opening here would leave two live sessions under the pane.
+        let log = h.hook(
+            "start",
+            "",
+            STREAMING,
+            "sess-1 SessionStart - - 0 - compact",
+            false,
+        );
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "agent set @42 --name claude --kind claude",
+                "status --json",
+            ]
+        );
+        // `clear` still ends, closes, and clears without a reason.
+        let log = h.hook("clear", "", STREAMING, "- - - - 0 - -", false);
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "status --json",
+                "agent emit @42 --type session_end",
+                "agent session close @42",
+                "agent clear @42",
+            ]
+        );
+    }
+
+    /// Against a server without `resource_kinds`, every arm runs exactly the
+    /// schema-4 command lines — identity once, detector evidence per turn,
+    /// `ask` on blocked, `clear` at the end — and the tool arms run nothing.
+    /// The fallback is today's behavior, not an approximation of it.
+    #[test]
+    fn legacy_arms_are_the_schema_four_command_lines() {
+        let h = Harness::new();
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "start",
+                &[
+                    "agent hook-payload",
+                    "agent set @42 --name claude --kind claude",
+                    "status --json",
+                ],
+            ),
+            (
+                "working",
+                &[
+                    "agent hook-payload",
+                    "status --json",
+                    "agent report-state @42 working",
+                ],
+            ),
+            ("tool-start", &["agent hook-payload", "status --json"]),
+            ("tool-end", &["agent hook-payload", "status --json"]),
+            (
+                "blocked",
+                &[
+                    "agent hook-payload",
+                    "status --json",
+                    "agent report-state @42 blocked",
+                    "ask @42 Claude needs attention",
+                ],
+            ),
+            (
+                "done",
+                &[
+                    "agent hook-payload",
+                    "status --json",
+                    "agent report-state @42 done",
+                ],
+            ),
+            (
+                "clear",
+                &["agent hook-payload", "status --json", "agent clear @42"],
+            ),
+        ];
+        for (arm, want) in cases {
+            let log = h.hook(
+                arm,
+                "{}",
+                LEGACY,
+                "sess-1 X Bash permission_prompt 9 clear startup",
+                false,
+            );
+            assert_eq!(log, *want, "legacy arm `{arm}`");
+            assert!(
+                log.iter()
+                    .all(|line| !line.contains("emit") && !line.contains("session")),
+                "the legacy path must never touch the stream verbs: {log:?}"
+            );
+        }
+    }
+
+    /// No byte of the hook payload reaches a `phux` command line except
+    /// through the helper's six tokens: the prompt text, `tool_input`, and
+    /// `tool_response` markers never appear in any argv, on either path, and
+    /// the whole payload is forwarded only under `PHUX_AGENT_EMIT_RAW=1`, only
+    /// on stdin of a `provider_raw` emit.
+    #[test]
+    fn payload_text_never_reaches_a_command_line_unless_raw_is_opted_in() {
+        let wrapper = rendered();
+        for forbidden in [
+            "tool_input",
+            "tool_response",
+            "transcript",
+            "$prompt",
+            "\"$payload\" |",
+        ] {
+            assert!(
+                !wrapper.contains(forbidden),
+                "the wrapper text must not reference `{forbidden}`:\n{wrapper}"
+            );
+        }
+
+        let h = Harness::new();
+        let payload = r#"{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Bash","prompt":"PROMPT-MARKER","tool_input":{"command":"INPUT-MARKER"}}"#;
+        for features in [STREAMING, LEGACY] {
+            for arm in [
+                "start",
+                "working",
+                "tool-start",
+                "tool-end",
+                "blocked",
+                "done",
+                "clear",
+            ] {
+                let log = h.hook(
+                    arm,
+                    payload,
+                    features,
+                    "sess-1 PreToolUse Bash - 13 - -",
+                    false,
+                );
+                assert!(
+                    log.iter().all(|line| !line.contains("MARKER")),
+                    "arm `{arm}` leaked payload text: {log:?}"
+                );
+            }
+        }
+
+        let log = h.hook(
+            "tool-start",
+            payload,
+            STREAMING,
+            "sess-1 PreToolUse Bash - 13 - -",
+            true,
+        );
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "status --json",
+                "agent emit @42 --type tool_start --data {\"tool_name\":\"Bash\"}",
+                "agent emit @42 --type provider_raw --data -",
+                &format!("stdin:{payload}"),
+            ],
+            "raw opt-in forwards the payload once, on stdin, after the typed record"
+        );
+        // `session_end` is terminal, so on `clear` the raw record goes first.
+        let log = h.hook(
+            "clear",
+            payload,
+            STREAMING,
+            "sess-1 SessionEnd - - 0 other -",
+            true,
+        );
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "status --json",
+                "agent emit @42 --type provider_raw --data -",
+                &format!("stdin:{payload}"),
+                "agent emit @42 --type session_end --data {\"reason\":\"other\"}",
+                "agent session close @42",
+                "agent clear @42",
+            ],
+            "nothing may be emitted after session_end"
+        );
+        let log = h.hook(
+            "tool-start",
+            payload,
+            LEGACY,
+            "sess-1 PreToolUse Bash - 13 - -",
+            true,
+        );
+        assert!(
+            !log.iter().any(|line| line.contains("provider_raw")),
+            "raw opt-in has nowhere to go without a session stream: {log:?}"
+        );
+    }
+
+    /// The capability probe runs at most once per wrapper process: the
+    /// `start` arm makes two `phux` calls behind one `status --json`.
+    #[test]
+    fn the_capability_probe_runs_once_per_process() {
+        let h = Harness::new();
+        let log = h.hook(
+            "start",
+            "{}",
+            STREAMING,
+            "sess-1 SessionStart - - 0 - startup",
+            false,
+        );
+        assert_eq!(
+            log.iter().filter(|line| *line == "status --json").count(),
+            1,
+            "{log:?}"
+        );
+        assert_eq!(log.len(), 5, "{log:?}");
+    }
+
+    /// The launch path's exit trap runs `clear` at most once, however the
+    /// wrapper leaves: INT/TERM/HUP re-enter through EXIT, and the stream's
+    /// `session_end` is terminal.
+    #[test]
+    fn the_exit_trap_is_idempotent() {
+        let wrapper = rendered();
+        let trap = section(&wrapper, "  ended=false", "  trap 'cleanup' EXIT");
+        assert!(
+            trap.contains("[ \"$ended\" = false ] || return 0"),
+            "{trap}"
+        );
+        assert!(trap.contains("ended=true"), "{trap}");
+        assert!(wrapper.contains("trap 'exit 130' INT"));
+        assert!(wrapper.contains("trap 'exit 143' TERM"));
+        assert!(wrapper.contains("trap 'exit 129' HUP"));
+    }
+
+    /// The generated hook settings register every `HOOKS` row with its
+    /// matcher, as `<shim> --phux-hook <arm>`, and the file is private.
+    #[test]
+    fn hook_settings_register_every_arm_and_stay_private() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let shim_dir = dir.path().join("shims");
+        let rc = dir.path().join("rc");
+        let phux = dir.path().join("phux");
+        let real = dir.path().join("real-claude");
+        std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        install_claude_into(&shim_dir, &rc, "zsh", Some(&real), &phux).unwrap();
+
+        let settings = shim_dir.join("claude-hooks.json");
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "hook settings must stay private");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        let hooks = json["hooks"].as_object().expect("hooks object");
+        assert_eq!(hooks.len(), HOOKS.len());
+        let shim = sh_quote_path(&shim_dir.join("claude"));
+        for (event, matcher, arm) in HOOKS {
+            let entry = &hooks[*event][0];
+            assert_eq!(entry["matcher"], *matcher, "{event}");
+            assert_eq!(
+                entry["hooks"][0]["command"],
+                format!("{shim} --phux-hook {arm}"),
+                "{event}"
+            );
+        }
+        for event in ["PreToolUse", "PostToolUse"] {
+            assert!(hooks.contains_key(event), "{event} must be registered");
+        }
+    }
+
+    /// The wrapper parses under `sh -n` (and, where a `shellcheck` is on
+    /// PATH, lints clean at `-s sh`) — it is installed as `/bin/sh` and has
+    /// to stay POSIX.
+    #[test]
+    fn the_wrapper_is_posix_sh() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let wrapper = dir.path().join("claude");
+        std::fs::write(&wrapper, rendered()).unwrap();
+        let parsed = std::process::Command::new("sh")
+            .arg("-n")
+            .arg(&wrapper)
+            .output()
+            .expect("run sh -n");
+        assert!(
+            parsed.status.success(),
+            "sh -n: {}",
+            String::from_utf8_lossy(&parsed.stderr)
+        );
+        if let Ok(lint) = std::process::Command::new("shellcheck")
+            .args(["-s", "sh"])
+            .arg(&wrapper)
+            .output()
+        {
+            assert!(
+                lint.status.success(),
+                "shellcheck -s sh:\n{}",
+                String::from_utf8_lossy(&lint.stdout)
+            );
+        }
     }
 
     /// The wrapper carries its own behavioral version, so an install can tell

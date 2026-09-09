@@ -55,12 +55,14 @@ integration for Claude sessions regardless of how they were started.
 
 ## What the hook shim emits
 
-<!-- impl-status: spec-only; probe: PHUX_AGENT_EMIT_RAW -->
+<!-- impl-status: partial; probe: PHUX_AGENT_EMIT_RAW -->
 > **Status: landing on the resource-model branch.** The arms below are the
 > resource-model contract for the shim `phux agent install-claude` writes
-> (ADR-0103). The shim a released binary installs (schema 4) registers every
-> arm below except `PreToolUse` and `PostToolUse`, feeds the detector with
-> `phux agent report-state`, and emits no records.
+> (ADR-0103). The shim in this tree (schema 5) registers every arm and emits
+> the records; the `phux agent session` and `phux agent emit` verbs it calls
+> land with phux-am9y.12. The shim a released binary installs (schema 4)
+> registers every arm below except `PreToolUse` and `PostToolUse`, feeds the
+> detector with `phux agent report-state`, and emits no records.
 
 On a server that advertises `RESOURCE_KINDS`, the shim gives every Claude run
 inside a phux pane an **agent session**: a second resource, parented to the

@@ -36,6 +36,7 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
@@ -58,6 +59,10 @@ pub(crate) struct StatusReport {
     since_unix_secs: Option<i64>,
     /// The protocol version triple the server selected in `HELLO_OK`.
     protocol: (u16, u16, u16),
+    /// The additive server features `HELLO_OK` advertised, as their
+    /// `snake_case` names — the capability probe for callers that cannot speak
+    /// the wire themselves (the Claude hook shim branches on it).
+    features: Vec<&'static str>,
     /// Hub-local sessions, name-sorted (the `phux ls` order).
     sessions: Vec<SessionInfo>,
     /// Formatted ids of satellite Terminals — panes that exist on federated
@@ -101,6 +106,9 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
     let pid = conn.peer_pid();
     let protocol = phux_client::state::probe_hello(&mut conn).await?;
+    let features = phux_client::state::probe_hello_features(&mut conn)
+        .await?
+        .unwrap_or_default();
     let view = phux_client::state::get_state_on(&mut conn).await?;
     let (snapshot, degradation) = view.into_parts();
     Ok(build_report(
@@ -108,9 +116,35 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         pid,
         socket_mtime_unix_secs(socket_path),
         protocol,
+        features,
         &snapshot,
         &degradation,
     ))
+}
+
+/// Every advertised feature bit as its `snake_case` name, in bit order.
+///
+/// The names are the wire constants' names lower-cased (`REPORT_AGENT_STATE`
+/// -> `report_agent_state`), so a reader can match them against
+/// `docs/spec/proto.md` without a translation table. The enum is
+/// `#[non_exhaustive]`; a bit this binary does not know is not named.
+fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
+    const NAMED: &[(ServerFeature, &str)] = &[
+        (ServerFeature::AcknowledgedInput, "acknowledged_input"),
+        (ServerFeature::FileUpload, "file_upload"),
+        (ServerFeature::MoveTerminal, "move_terminal"),
+        (ServerFeature::TerminalReply, "terminal_reply"),
+        (ServerFeature::Shutdown, "shutdown"),
+        (ServerFeature::SpawnInitialSize, "spawn_initial_size"),
+        (ServerFeature::ReportAgentState, "report_agent_state"),
+        (ServerFeature::GetPerf, "get_perf"),
+        (ServerFeature::Transcribe, "transcribe"),
+    ];
+    NAMED
+        .iter()
+        .filter(|(feature, _)| features.contains(*feature))
+        .map(|(_, name)| *name)
+        .collect()
 }
 
 /// Assemble the [`StatusReport`] from its collected parts. Split from
@@ -120,6 +154,7 @@ fn build_report(
     pid: Option<i32>,
     since_unix_secs: Option<i64>,
     protocol: (u16, u16, u16),
+    features: ServerFeatureSet,
     snapshot: &SessionSnapshot,
     degradation: &Degradation,
 ) -> StatusReport {
@@ -136,6 +171,7 @@ fn build_report(
         pid,
         since_unix_secs,
         protocol,
+        features: feature_names(features),
         sessions,
         satellite_terminals,
         unreachable: degradation.notices().to_vec(),
@@ -264,6 +300,7 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
         "socket": report.socket.display().to_string(),
         "since_unix_secs": report.since_unix_secs,
         "protocol": { "major": major, "minor": minor, "patch": patch },
+        "features": report.features,
         "clients": total_clients(&report.sessions),
         "sessions": report.sessions.iter().map(|s| serde_json::json!({
             "name": s.name,
@@ -355,13 +392,14 @@ mod tests {
 
     use phux_client::attach::AttachError;
     use phux_client::state::Degradation;
+    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::wire::frame::FrameKind;
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo};
     use phux_protocol::{SessionId, TerminalId, WindowId};
 
     use super::{
-        StatusReport, build_report, format_uptime, not_running_document, render_human,
-        status_document,
+        StatusReport, build_report, feature_names, format_uptime, not_running_document,
+        render_human, status_document,
     };
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
@@ -378,6 +416,7 @@ mod tests {
             pid: Some(4242),
             since_unix_secs: Some(1_754_000_000),
             protocol: (1, 2, 3),
+            features: vec!["acknowledged_input", "report_agent_state"],
             sessions: vec![session("scratch", 1, 0), session("work", 3, 2)],
             satellite_terminals: vec!["build-box/@1".to_owned()],
             unreachable: Vec::new(),
@@ -425,6 +464,11 @@ mod tests {
         assert_eq!(doc["protocol"]["major"], 1);
         assert_eq!(doc["protocol"]["minor"], 2);
         assert_eq!(doc["protocol"]["patch"], 3);
+        assert_eq!(
+            doc["features"],
+            serde_json::json!(["acknowledged_input", "report_agent_state"]),
+            "advertised features are named, in bit order"
+        );
         assert_eq!(doc["clients"], 2, "clients are summed across sessions");
         assert_eq!(doc["sessions"][0]["name"], "scratch");
         assert_eq!(doc["sessions"][1]["name"], "work");
@@ -524,16 +568,39 @@ mod tests {
             Some(7),
             Some(1),
             (0, 1, 0),
+            ServerFeatureSet::with(&[ServerFeature::Shutdown]),
             &snapshot,
             &degradation,
         );
         let names: Vec<_> = report.sessions.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["alpha", "beta"]);
+        assert_eq!(report.features, ["shutdown"]);
         assert_eq!(report.satellite_terminals.len(), 1);
         assert!(report.satellite_terminals[0].contains("build-box"));
         assert_eq!(
             report.unreachable,
             ["satellite build-box is unreachable".to_owned()]
+        );
+    }
+
+    /// Every known bit has a `snake_case` name, an empty set names nothing,
+    /// and the names are the spec constants lower-cased — the contract the
+    /// Claude shim's `resource_kinds` probe relies on.
+    #[test]
+    fn feature_names_are_the_wire_constants_in_snake_case() {
+        assert!(feature_names(ServerFeatureSet::new()).is_empty());
+        let all = ServerFeatureSet::from_wire(u32::MAX);
+        let names = feature_names(all);
+        assert_eq!(names.len(), 9, "one name per known bit: {names:?}");
+        for name in &names {
+            assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{name} is not snake_case"
+            );
+        }
+        assert_eq!(
+            feature_names(ServerFeatureSet::with(&[ServerFeature::ReportAgentState])),
+            ["report_agent_state"]
         );
     }
 
