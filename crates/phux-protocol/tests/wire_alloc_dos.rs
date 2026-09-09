@@ -84,6 +84,30 @@ fn largest_alloc_during_with_limits(
     (result, MAX_ALLOC.get())
 }
 
+/// A decoder that trusts a declared count reserves gigabytes for a frame that
+/// carries none of the promised elements. 1 MiB is a generous ceiling for
+/// anything these fixtures legitimately need.
+const ALLOC_CEILING: usize = 1 << 20;
+
+/// Assert a hostile frame both fails to decode and never reserves on the order
+/// of its declared count rather than its actual size.
+///
+/// The four cases below differ only in which field carries the bogus
+/// `u32::MAX`; before this they also differed in what their failure message
+/// bothered to report, which is not a difference worth keeping.
+fn assert_bounded_alloc(frame: &[u8], what: &str) {
+    let max = largest_alloc_during(frame);
+    assert!(
+        FrameKind::decode(frame).is_err(),
+        "{what}: a frame declaring u32::MAX elements must not decode"
+    );
+    assert!(
+        max < ALLOC_CEILING,
+        "{what}: decoder reserved {max} bytes for a {}-byte frame",
+        frame.len()
+    );
+}
+
 #[test]
 fn metadata_keys_huge_count_does_not_over_reserve() {
     // METADATA_KEYS (0xD2): the KEYS field (id 2) value is a positional u32
@@ -94,15 +118,7 @@ fn metadata_keys_huge_count_does_not_over_reserve() {
     tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
     tlv_field(&mut fields, 2, &keys_value); // keys: huge count, no elements
     let frame = framed_tlv(0xD2, &fields);
-    let max = largest_alloc_during(&frame);
-    assert!(FrameKind::decode(&frame).is_err());
-    // A sane decoder reserves on the order of the input, never gigabytes.
-    // 1 MiB is a generous ceiling.
-    assert!(
-        max < 1 << 20,
-        "decoder reserved {max} bytes for a {}-byte frame",
-        frame.len()
-    );
+    assert_bounded_alloc(&frame, "metadata keys");
 }
 
 #[test]
@@ -116,9 +132,7 @@ fn spawn_terminal_huge_command_list_does_not_over_reserve() {
     tlv_field(&mut fields, 2, &1u32.to_be_bytes()); // group
     tlv_field(&mut fields, 3, &cmd_value); // command: huge count
     let frame = framed_tlv(0x22, &fields);
-    let max = largest_alloc_during(&frame);
-    assert!(FrameKind::decode(&frame).is_err());
-    assert!(max < 1 << 20, "command-list reserved {max} bytes");
+    assert_bounded_alloc(&frame, "spawn command list");
 }
 
 #[test]
@@ -132,9 +146,7 @@ fn spawn_terminal_huge_env_list_does_not_over_reserve() {
     tlv_field(&mut fields, 2, &1u32.to_be_bytes()); // group
     tlv_field(&mut fields, 5, &env_value); // env: huge count
     let frame = framed_tlv(0x22, &fields);
-    let max = largest_alloc_during(&frame);
-    assert!(FrameKind::decode(&frame).is_err());
-    assert!(max < 1 << 20, "env-list reserved {max} bytes");
+    assert_bounded_alloc(&frame, "spawn env list");
 }
 
 #[test]
@@ -147,9 +159,7 @@ fn attached_snapshot_huge_sessions_list_does_not_over_reserve() {
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap_value); // snapshot
     let frame = framed_tlv(0x81, &fields);
-    let max = largest_alloc_during(&frame);
-    assert!(FrameKind::decode(&frame).is_err());
-    assert!(max < 1 << 20, "snapshot sessions reserved {max} bytes");
+    assert_bounded_alloc(&frame, "attached sessions list");
 }
 
 #[test]

@@ -13,17 +13,17 @@ use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 /// Overall ceiling for `phux server --ensure`.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Test-only override for [`TIMEOUT`], in whole seconds.
+/// Test-only override for the `TIMEOUT` ceiling below, in whole seconds.
 ///
 /// Never set in production, exactly like [`crate::AUTO_SPAWN_IDLE_ENV`]. The
 /// acceptance tests that prove this deadline is enforced have to block on a
 /// FIFO until it fires, so at the shipped value each one costs ten wall-clock
 /// seconds and three of them sat in the default unit pool. What those tests
 /// establish is that the bound exists and reports the log path — not its
-/// magnitude — so they run it at 1s and the ceiling itself is pinned by
+/// magnitude - so they run it at 1s and the ceiling itself is pinned by
 /// `default_timeout_is_ten_seconds` below.
 ///
-/// A missing, unparseable, or zero value falls back to [`TIMEOUT`]: a typo in
+/// A missing, unparseable, or zero value falls back to `TIMEOUT`: a typo in
 /// a harness must not silently uncap the wait.
 pub const ENSURE_TIMEOUT_ENV: &str = "PHUX_ENSURE_TIMEOUT_SECS";
 

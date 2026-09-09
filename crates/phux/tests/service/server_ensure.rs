@@ -298,7 +298,7 @@ fn invalid_config_reports_startup_failure_and_log_path() {
 
 #[test]
 fn blocked_config_read_is_bounded_by_the_overall_deadline() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     let status = Command::new("mkfifo")
         .arg(fixture.dir.path().join("phux/config.toml"))
         .status()
