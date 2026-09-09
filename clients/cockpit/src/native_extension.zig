@@ -446,6 +446,12 @@ fn paneInteraction(
             else
                 "";
             return ui.el(.stack, .{
+                // Focus belongs to the selected terminal, not the toolbar
+                // control that created it. A provider-qualified key gives a
+                // newly selected leaf its own mount/autofocus edge; keeping
+                // the flag held does not steal focus on output-only rebuilds.
+                .key = .{ .int = terminal.hash() },
+                .autofocus = current.focus == node,
                 .grow = 1,
                 .min_width = cockpit.projection.split_pane_min_width,
                 .min_height = cockpit.projection.split_pane_min_height,
@@ -535,7 +541,12 @@ var terminal_space_measurements: usize = 0;
 
 /// Only compiled markup enters this pass, never terminalInteraction: measuring
 /// the slot therefore cannot feed terminal sizing back into chrome layout.
-fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) !native_sdk.geometry.RectF {
+const ChromeSpace = struct {
+    terminal: native_sdk.geometry.RectF,
+    tab_strip_width: f32,
+};
+
+fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) !ChromeSpace {
     if (@import("builtin").is_test) terminal_space_measurements += 1;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -543,20 +554,26 @@ fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, 
     const tree = try ui.finalizeWithTokens(compiledWindow(&ui, model, window_index), tokens);
     const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
     const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, size.width, size.height), tokens, nodes);
+    var terminal: ?native_sdk.geometry.RectF = null;
+    var tab_strip_width: f32 = 0;
     for (measured.nodes) |entry| {
-        if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) return entry.frame;
+        if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) terminal = entry.frame;
+        if (entry.widget.kind == .tabs) tab_strip_width = entry.frame.width;
     }
-    return error.MissingTerminalSpace;
+    return .{ .terminal = terminal orelse return error.MissingTerminalSpace, .tab_strip_width = tab_strip_width };
 }
 
 fn syncTerminalSpace(model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) void {
     const engine = bridge.engine orelse return;
     const workspace = engine.model.wsAt(window_index) orelse return;
-    workspace.shipping_terminal_space = measureTerminalSpace(std.heap.page_allocator, model, window_index, size, tokens) catch {
+    const space = measureTerminalSpace(std.heap.page_allocator, model, window_index, size, tokens) catch {
         workspace.shipping_terminal_space = .init(0, 0, 0, 0);
         workspace.shipping_terminal_size = .{};
+        workspace.shipping_tab_strip_width = 0;
         return;
     };
+    workspace.shipping_terminal_space = space.terminal;
+    workspace.shipping_tab_strip_width = space.tab_strip_width;
     workspace.shipping_terminal_size = size;
 }
 
@@ -708,6 +725,7 @@ const PointerHost = struct {
         const before_sequence = if (engine) |current| current.sequence else 0;
         routeNativeInput(value);
         try self.inner.event(runtime, value);
+        if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
         if (engine) |current| {
             if (current.commitWindowAdoption(before_window, before_sequence)) bridge.announce(current);
         }
@@ -719,6 +737,23 @@ const PointerHost = struct {
             self.selection_autoscroll_timer_active = false;
         }
         try self.inner.stop(runtime);
+    }
+
+    fn focusTerminalAfterTabClick(self: *PointerHost, runtime: *native_sdk.Runtime, routed: native_sdk.runtime.CanvasWidgetPointerEvent) !void {
+        if (!activatedTab(routed)) return;
+        // The SDK has already focused the clicked control and dispatched its
+        // handler. Reselecting the same terminal has no autofocus edge, so
+        // explicitly hand the keyboard back through its public focus action.
+        // Overlay trees contain no terminal leaf and cannot lose editor focus.
+        const layout = try runtime.canvasWidgetLayout(routed.window_id, routed.view_label);
+        for (layout.nodes) |node| {
+            if (node.widget.kind != .stack or node.widget.semantics.role != .textbox or !node.widget.autofocus) continue;
+            _ = try runtime.dispatchCanvasWidgetAccessibilityAction(self.inner, routed.window_id, routed.view_label, .{
+                .id = node.widget.id,
+                .action = .focus,
+            });
+            return;
+        }
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
@@ -774,6 +809,13 @@ fn routeNativeInput(value: native_sdk.Event) void {
 }
 
 var pointer_host = PointerHost{};
+
+fn activatedTab(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    const target = routed.press_target orelse return false;
+    return routed.pointer.phase == .up and routed.pointer.button == 0 and
+        routed.pointer.captured_id == target.id and target.role == .tab and
+        target.bounds.normalized().containsPoint(routed.pointer.point);
+}
 
 pub fn app(app_state: *Adapter.App) native_sdk.App {
     bridge.effects = &app_state.effects;
@@ -1574,6 +1616,100 @@ test "a stale intent is refused, announced, and surfaced instead of applied" {
     try std.testing.expectEqual(core.TabPlacement.side, rig.app_state.model.tabPlacement);
 }
 
+test "new terminal click hands typing and Enter to the created pane" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.resize(native_sdk.geometry.SizeF.init(1100, 640));
+    const engine = bridge.engine.?;
+    const original = engine.model.focusedTerminalRef().?;
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var button: ?native_sdk.geometry.RectF = null;
+    for (layout.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.frame;
+    }
+    const frame = button orelse return error.TestExpectedButton;
+    inline for (.{ .pointer_down, .pointer_up }) |kind| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = kind,
+            .x = frame.x + frame.width / 2,
+            .y = frame.y + frame.height / 2,
+        } });
+    }
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const created = engine.model.focusedTerminalRef().?;
+    try std.testing.expect(!created.eql(original));
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .text_input,
+        .text = "ls",
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Enter",
+    } });
+    // The focused toolbar button used to consume Enter as another creation.
+    const pane = engine.model.provider.terminal(created).?;
+    try std.testing.expectEqual(@as(usize, 3), pane.outbound_len);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.provider.terminal(original).?.outbound_len);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+}
+
+test "clicking the selected tab returns Enter to its focused split pane in strip and rail" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    inline for (.{ core.TabPlacement.top, core.TabPlacement.side }) |placement| {
+        if (placement == .side) {
+            const before = rig.app_state.model.engineSequence.lo;
+            try rig.dispatch(.toggle_tab_placement);
+            try rig.settle(before + 1, "READY");
+        }
+        try rig.resize(native_sdk.geometry.SizeF.init(1100, 640));
+        const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var tab: ?native_sdk.geometry.RectF = null;
+        for (layout.nodes) |node| {
+            if (node.widget.state.selected and (node.widget.kind == .toggle_button or node.widget.kind == .list_item)) tab = node.frame;
+        }
+        const frame = tab orelse return error.TestExpectedTab;
+        inline for (.{ .pointer_down, .pointer_up }) |kind| {
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                .window_id = 1,
+                .label = canvas_label,
+                .kind = kind,
+                .x = frame.x + frame.width / 2,
+                .y = frame.y + frame.height / 2,
+            } });
+        }
+        try rig.settle(@intCast(engine.sequence), "READY");
+        const bytes_before = pane.outbound_len;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .text_input,
+            .text = "ls",
+        } });
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .key_down,
+            .key = "Enter",
+        } });
+        try std.testing.expectEqual(bytes_before + 3, pane.outbound_len);
+        try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    }
+}
+
 test "unclaimed keys and text reach the focused pane's outbound ring and never the core" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1867,6 +2003,59 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
+test "crowded tab strip keeps every tab and overflow cue inside its allocated chrome slot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "crowded strip", .tabs = 16 });
+    const before = rig.app_state.model.engineSequence.lo;
+    try rig.dispatch(.{ .select_tab = 15 });
+    try rig.settle(before + 1, "READY");
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var strip: ?native_sdk.geometry.RectF = null;
+        for (layout.nodes) |node| {
+            if (std.mem.eql(u8, node.widget.semantics.label, "Terminal tabs")) strip = node.frame;
+        }
+        const frame = strip orelse return error.TestExpectedTabStrip;
+        var seen: usize = 0;
+        for (layout.nodes) |node| {
+            if (node.widget.semantics.role != .tab and !std.mem.eql(u8, node.widget.semantics.label, "Tabs not shown")) continue;
+            seen += 1;
+            try std.testing.expect(node.frame.x >= frame.x);
+            try std.testing.expect(node.frame.x + node.frame.width <= frame.x + frame.width);
+        }
+        try std.testing.expect(seen > 1);
+    }
+}
+
+test "secondary tab strip stays horizontal when the main window uses the rail" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    for (1..16) |_| {
+        const before = rig.app_state.model.engineSequence.lo;
+        try rig.dispatch(.new_terminal);
+        try rig.settle(before + 1, "READY");
+    }
+    const engine = bridge.engine.?;
+    const workspace = engine.model.wsAt(1).?;
+    engine.model.tab_placement = .side;
+    rig.app_state.model.tabPlacement = .side;
+    const size = native_sdk.geometry.SizeF.init(1100, 640);
+    workspace.surface_size = size;
+    syncTerminalSpace(&rig.app_state.model, 1, size, cockpit.projection.cockpitTokens(engine.model));
+    const run = engine.currentRuns()[1];
+    try std.testing.expect(run.count < workspace.tab_count);
+    // Compare the entire run (including its one cue and intervening gaps)
+    // against the actual secondary markup slot, not a guessed toolbar width.
+    const occupied = @as(f32, @floatFromInt(run.count)) * (@as(f32, @floatFromInt(run.extent)) + 4) + 32;
+    try std.testing.expect(occupied <= workspace.shipping_tab_strip_width);
+}
+
 test "the switcher filters the engine's tabs by position or title and selects through the seam" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2006,9 +2195,13 @@ test "shipping remote bell uses native notifications and owner fenced attention"
     const fixtures = @TypeOf(remote.*).test_support;
     const BellFx = struct {
         notifications: usize = 0,
-        pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle { return .{}; }
+        pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle {
+            return .{};
+        }
         pub fn closeChannel(_: *@This(), _: u64) void {}
-        pub fn showNotification(self: *@This(), _: anytype) void { self.notifications += 1; }
+        pub fn showNotification(self: *@This(), _: anytype) void {
+            self.notifications += 1;
+        }
     };
     var bells = BellFx{};
     var fx = Recorder{};
@@ -2742,7 +2935,7 @@ test "shipping compiled chrome leaves remote row zero visible and selectable" {
     defer std.testing.allocator.free(commands);
     var builder = canvas.Builder.init(commands);
     try paintChrome(&rig.app_state.model, &builder, size, tokens);
-    const space = try measureTerminalSpace(std.testing.allocator, &rig.app_state.model, 0, size, tokens);
+    const space = (try measureTerminalSpace(std.testing.allocator, &rig.app_state.model, 0, size, tokens)).terminal;
     const rect = cockpit.projection.paneFrameFor(engine.model, size, ref).?;
     try expectRectInside(rect, space);
     const cell = engine.model.remotePresentation(ref).?.measured_cell.?;

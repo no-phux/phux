@@ -41,6 +41,7 @@
           <for each="visibleTabs" key="id" as="tab">
             <list-item
               icon="terminal"
+              role="tab"
               selected="{tab.selected}"
               on-press="select_tab:{tab.index}"
             >{tab.title}</list-item>
