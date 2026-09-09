@@ -26,16 +26,18 @@ special-purpose crates).
 ```
 src/
   lib.rs              — re-exports, top-level docs, PROTOCOL_VERSION
-  ids.rs              — SessionId, WindowId, PaneId, TerminalId, ClientId
+  ids.rs              — SessionId, WindowId, TerminalId (the wire resource
+                        id: Local / Satellite), ClientId, StreamId,
+                        BootstrapId
   caps.rs             — HELLO/HELLO_OK capability negotiation (features,
-                        native-bootstrap profile bits, ADR-0070)
+                        bootstrap profiles and codecs, ADR-0070)
   policy.rs           — shared ALPN / transport-policy constants
   sgr.rs              — SGR color/style wire atoms
   kitty_replay.rs      — kitty-keyboard-protocol replay helpers
   input/              — INPUT_* event types (docs/spec/input.md)
     key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
   wire/               — TLV codec (docs/spec/proto.md Appendix A)
-    frame.rs          — FrameKind + length-prefix framing
+    frame/            — FrameKind + discriminants + length-prefix framing
     encode.rs, decode.rs, field.rs, info.rs, error.rs
 ```
 
@@ -47,7 +49,10 @@ opaque `BOOTSTRAP_CHUNK`s / `BOOTSTRAP_READY`, with retained history pulled
 afterward ([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
 Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
 bytes and are never scanned or rewritten by phux; synthesized VT remains an
-explicit compatibility profile.
+explicit compatibility profile. The wire still spells the resource id and
+the substrate frames with the Terminal vocabulary (`TerminalId`,
+`TERMINAL_OUTPUT`, `SPAWN_TERMINAL`); the 0.9.0 rename is tracked in the
+Status table below.
 
 The mutual references among `wire/frame/`, `wire/decode.rs`, and
 `wire/info.rs` are deliberate. `frame` and `info` define one recursive wire
@@ -61,7 +66,8 @@ layer boundary, so this sibling cycle is accepted (phux-4fbs.5).
 ```
 src/
   lib.rs              — re-exports
-  ids.rs              — typed slotmap keys
+  ids.rs              — typed slotmap keys; `ResourceId` is the domain name
+                        for the `TerminalId` key
   registry.rs         — Registry: SlotMaps + cascading deletes (a parent
                         resource takes its children with it)
   session.rs          — Session
@@ -71,9 +77,17 @@ src/
                         window + the kind's facet), AgentFacet
   terminal.rs         — TerminalFacet: dims/cwd/title (no PTY, no
                         libghostty state)
-  screen.rs           — ScreenState: the GET_SCREEN / snapshot projection
+  screen.rs           — ScreenState: the GET_SCREEN / snapshot projection of
+                        the Terminal facet
   session_list.rs     — SessionListJson: the `phux ls --json` projection
 ```
+
+One descriptor struct serves every kind; `kind` decides which facet is
+populated, and the `Registry` is the only constructor. `Registry::
+new_terminal` places a Terminal in a window slot; `Registry::
+new_agent_session` binds an AgentSession to a live Terminal parent and
+refuses any other parent kind. `screen.rs` is unchanged by the kind split
+because it projects the Terminal facet only.
 
 Selectors and config still live outside this crate — selector resolution is
 client-side (`phux-client::selector`, per ADR-0021), and config is its own
@@ -82,15 +96,20 @@ crate (`phux-config`).
 ## `phux-server`
 
 The daemon. One `ServerRuntime` per user, a single-threaded tokio runtime,
-UDS listener (ADR-0003, ADR-0007).
+UDS listener plus optional remote listeners (ADR-0003, ADR-0007). What it
+serves are resources: a `ResourceCore` per served thing with one kind engine
+behind it.
 
 ```
 src/
-  lib.rs              — re-exports (ServerRuntime, ServerState, ...)
-  runtime/            — tokio current-thread executor + UDS accept loop;
+  lib.rs              — re-exports (ServerRuntime, ServerState, the
+                        resource types, ...)
+  runtime/            — tokio current-thread executor + accept loops;
                         spawns per-client tasks on a LocalSet (ADR-0014)
-    mod.rs, attach.rs, client.rs, commands.rs, input_lane.rs, resume.rs,
-    upgrade.rs, upload.rs
+    mod.rs, attach.rs, client.rs, commands.rs, pump.rs, resume.rs,
+    upgrade.rs, upload.rs, voice.rs
+    input_lane/       — the dedicated input-encoding thread (ADR-0044) and
+                        the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
                         metadata, hub table, agent tracking, config —
                         one module per concern rather than one large file
@@ -99,36 +118,103 @@ src/
     subscribers, output pumps, and the engine JoinSet), client.rs,
     client_table.rs, metadata.rs, leases.rs, lease_table.rs, hub.rs,
     hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
-    hook_dispatch.rs, lifecycle.rs, snapshot.rs, viewport.rs, ...
+    hook_dispatch.rs, lifecycle.rs, reap.rs, snapshot.rs, viewport.rs, ...
   resource/           — the generic resource core and the engines behind it
-    mod.rs            — ResourceCore (engine-side: checked u64 output
-                        sequence, output broadcast, event-subscriber
-                        registry + fan-out, cancel token + exit notify,
-                        control mailbox), ResourceHandle (the Send + Clone
-                        channel set the runtime holds: output, consumer
-                        attach/detach/ack, event subscribe/unsubscribe,
-                        upgrade, control, plus `facet`), ResourceFacetHandle
-                        (one variant per engine), WrongResourceKind
+    mod.rs            — ResourceCore (engine-side: kind, parent, wire id,
+                        checked u64 output sequence, output broadcast,
+                        event-subscriber registry + fan-out, cancel token +
+                        exit notify, control mailbox), ResourceHandle (the
+                        Send + Clone channel set the runtime holds: kind,
+                        parent, output, consumer attach/detach/ack, event
+                        subscribe/unsubscribe, upgrade, control, plus
+                        `facet`), ResourceFacetHandle (one variant per
+                        engine), WrongResourceKind
     terminal/         — the Terminal engine: TerminalActor owns one pane's
                         libghostty `Terminal` (!Send, in a RefCell on the
                         LocalSet), its input encoders, PTY reader/writer
                         threads, and coherent bootstrap capture cuts
                         (ADR-0070); embeds a ResourceCore and serves the
                         TerminalHandle facet (input, snapshot, screen,
-                        resize, cwd, palette, native checkpoints)
+                        resize, cwd, palette, native checkpoints, cols/rows)
       mod.rs, construct.rs, run_loop.rs, io.rs, native.rs, consumers.rs,
       events.rs, osc133.rs (OSC-133 command-boundary scanner, phux-foz.4),
       requests.rs, spawn.rs, sync.rs, tick.rs
   terminal_actor      — `pub use resource::terminal as terminal_actor`: the
                         path every existing `terminal_actor::` import
                         resolves through
+  mailbox.rs          — Outbound (per-client) and TerminalInput (per-engine)
+                        message shapes; a crate-root leaf so `state` and
+                        `resource` never import each other
+  grid/               — synthesized-VT compatibility bootstrap/StateSync
+                        emitter (never used to construct native records)
+    mod.rs, reference.rs, synthesizer.rs
+  native_state.rs     — native checkpoint bootstrap plumbing (ADR-0070)
+  downsample.rs       — compatibility-profile rewrite of outbound VT bytes
+                        (truecolor -> 256/16, OSC 8 / image / KIP gating);
+                        native checkpoint/history/raw live bytes bypass it
+  input/              — server-side encoders bridging wire input -> PTY
+                        bytes; each Terminal owns its own PerTerminal{Key,
+                        Mouse,Focus,Paste} encoder, refreshed from
+                        Terminal state
+    key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
+  agent_detect/       — level-triggered per-terminal agent-state detector
+                        (ADR-0046): mod.rs is the state machine (adaptive
+                        tick, hysteresis, edge-filtered publish); regions.rs
+                        slices the live screen; rules.rs loads the TOML
+                        manifests; identify.rs names the agent from the
+                        PTY's foreground process; record.rs is the
+                        phux.agent/v1 JSON shape
+  agent_state.rs      — arbitration between an explicit SET_METADATA and
+                        the detector's writes (ADR-0046)
+  agent_asked.rs      — the `phux ask` / `asked` event ingress (ADR-0036);
+                        the AskedSource ladder is Scrape < Sentinel < Hook
+  agent_explain.rs    — the `phux agent explain` evidence report
+  hooks.rs            — server-side event-hook dispatcher (config
+                        `[[hooks.<name>]]` plus plugin `[[events]]`),
+                        argv-only execution, no in-process host
+  hub/                — federation hub: satellite registry, outbound
+                        dialer/link supervisor, byte relay/splice
+                        (phux-v45, ADR-0007)
+    mod.rs, link.rs, relay.rs
+  transport.rs, transport/
+                      — per-transport listeners and frame reader/writer
+                        pairs: UDS and WebSocket in transport.rs, quic.rs,
+                        tls.rs, webtransport.rs (ADR-0007, ADR-0031); see
+                        transport.md
+  upgrade/            — graceful server re-exec / PTY handoff (ADR-0032)
+    mod.rs, blob.rs
+  health.rs, perf.rs, history_merge.rs
+                      — start-history crash-loop reporting, the ADR-0096
+                        metric statics, and the (unwired) ADR-0078
+                        viewport-alignment core
+  auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
+  policy.rs, search.rs, extract.rs, telemetry.rs
+    — auth token checks, outbound connector dialing, kernel cwd/process
+      introspection, core<->wire id translation, tracing setup
 ```
 
-The facet rule: runtime code holds a `ResourceHandle` and reaches a
+**The facet rule.** Runtime code holds a `ResourceHandle` and reaches a
 Terminal-only channel only through `ResourceHandle::terminal()`, the one
-place that produces `WrongResourceKind`. Nothing else in the crate matches
-on the facet enum, so a second engine adds a variant and a constructor, not
-a sweep of the runtime.
+place that produces `WrongResourceKind`. Each caller maps that error into
+its own reply shape (`runtime/commands.rs` has the one `CommandResult`
+mapping); nothing else in the crate matches on the facet enum, so a second
+engine adds a variant and a constructor, not a sweep of the runtime.
+
+**`ResourceTable`.** `state/resource_table.rs` holds every map keyed on a
+live resource — `ResourceHandle`s, cancellation tokens, the `JoinSet` that
+owns the engine futures, per-resource client subscriptions, and the
+`ATTACH_TERMINAL` and session-attach output pumps — and never looks inside a
+facet. `ServerState::spawn_resource_actor` mints the wire id, registers the
+handle, and spawns the engine future in one call under the state lock;
+`ServerState::reap_terminal` removes the domain entity (cascading to the
+window and session when they empty) and calls `ResourceTable::
+forget_resource` in the same acquisition.
+
+**Satellite routing.** Each command handler in `runtime/commands.rs` that
+names a resource checks `TerminalId::is_local()` itself and, on a hub,
+forwards a satellite-tagged frame through `hub::relay` with the id rewritten
+(ADR-0007). There are eight such sites; the single `resolve_resource` seam
+that replaces them is tracked in the Status table.
 
 PTY supervision lives inside `resource/terminal/` (two `std::thread`s
 bridging blocking `portable_pty` I/O — via `portable-pty-adopt` for
@@ -150,9 +236,11 @@ src/
   attach/             — the headless half of attaching
     mod.rs            — re-exports: Dial vocabulary, InputReplayJournal,
                         AttachError / AttachEnd
-    connection.rs     — UDS transport, HELLO negotiation, length-prefixed
-                        frame I/O; test seams (`from_stream`, `negotiate`)
-                        under the `testkit` feature
+    connection.rs     — Dial (Uds / Quic / Ws), the FrameReader and
+                        FrameWriter enums, HELLO negotiation,
+                        length-prefixed frame I/O; test seams
+                        (`from_stream`, `negotiate`) under the `testkit`
+                        feature
     quic.rs, ws.rs    — remote transports over phux-dial
     input.rs          — StdinParser: bytes -> libghostty input atoms
                         (shared by the TUI and the keystroke verbs)
@@ -243,7 +331,8 @@ unchanged.
 src/
   lib.rs              — re-exports
   engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
-                        its libghostty implementation
+                        its libghostty implementation (feature
+                        `native-engine`)
   session.rs, session/  — the synchronous protocol-0.7 session kernel
                         (kernel_rig.rs, property_tests.rs, tests.rs)
   history.rs          — client-owned scrollback cache (ADR-0070)
@@ -256,7 +345,15 @@ src/
   predict/            — Mosh-class predictive local echo over the pane
                         mirror
     mod.rs, overlay.rs, reconcile.rs, state.rs
+  perf.rs             — the crate's ADR-0096 metric statics
 ```
+
+The session kernel is keyed by the wire `TerminalId` and treats every
+resource it is told about as a Terminal: one replica generation
+(`ReplicaKey`: terminal, stream, bootstrap, profile) per attached id, staged
+through `BootstrapBegin` / `BootstrapChunk` / `BootstrapReady` and published
+atomically. It carries no kind; the kind-aware kernel is tracked in the
+Status table.
 
 `phux-client` and `phux-tui` both depend on this crate and re-export its
 modules so consumers keep stable `phux_client::{layout, multi_pane, predict}`
@@ -306,7 +403,8 @@ src/
     send_keys.rs, paste.rs, run.rs, wait.rs, watch.rs, snapshot.rs, ask.rs,
     tag.rs, play.rs, rec/, workspace.rs + workspace/archive/, host.rs,
     remote.rs, satellite.rs + satellite/, plugin.rs + plugin/,
-    agent/ (list/show/explain/set/clear/install-claude/config),
+    agent/ (list/show/explain/set/clear/install-claude/config, the
+    `--phux-hook` shim and its hook_payload reader),
     server.rs, service.rs, supervise.rs, upgrade.rs, doctor.rs, logs.rs,
     config.rs + config/, config_action.rs, enroll.rs, pair.rs, relay.rs,
     stdio_bridge.rs, worktree.rs, status.rs, completion.rs
@@ -345,10 +443,10 @@ rather than a layer with its own internal architecture worth diagramming:
   `provision` feature it also owns the *other* end of that trust story
   (`cert.rs`): minting the persisted self-signed pair whose fingerprint the
   dialer pins, and reading it back. `phux-server` and `phux-relay` both
-  terminate TLS on identical terms and each used to carry a near-verbatim
-  copy; ADR-0051 forbids the relay depending on `phux-server`, so the one
-  implementation lives here, in the crate both already sit on. Each caller
-  keeps its own error vocabulary and maps `cert::CertError` into it.
+  terminate TLS on identical terms; ADR-0051 forbids the relay depending on
+  `phux-server`, so the one implementation lives here, in the crate both
+  already sit on. Each caller keeps its own error vocabulary and maps
+  `cert::CertError` into it.
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
@@ -380,9 +478,19 @@ rather than a layer with its own internal architecture worth diagramming:
   Depends on nothing in the workspace, so it sits under server, client,
   and CLI alike.
 - **`phux-server-testkit`** — shared scaffolding for `phux-server`'s wire
-  integration tests, factored out of a `tests/common` module that used to
-  be recompiled once per test binary.
+  integration tests, factored out of a `tests/common` module so it is
+  compiled once rather than once per test binary.
 - **`portable-pty-adopt`** — re-adopts an already-running PTY (bare master
   fd + child pid) into `portable-pty`'s trait objects; fills the gap where
   `portable-pty` can only *create* a PTY, needed for the server's
   re-exec/upgrade PTY handoff (ADR-0032).
+
+## Status
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| `resource/agent_session/` engine (record ring, append validation, seq stamping, bootstrap from retained records, state derivation) | `ResourceFacetHandle` has one variant, `Terminal`; no engine accepts appended records and `Registry::new_agent_session` has no server caller. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |
+| One `resolve_resource(id) -> Local(&ResourceHandle) \| Remote(relay)` seam | Eight `is_local()` checks in `runtime/commands.rs`, each with its own relay branch. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.5 |
+| Detector precedence Stream > Hook > Process > Screen; `AskedSource::Stream` | `agent_detect` derives from process, title, and screen; `AskedSource` ranks Scrape < Sentinel < Hook. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.11 |
+| Kind-aware `phux-client-core` kernel, `phux-client` selectors (`%name`), and TUI projection of AgentSession children | The kernel keys replicas by `TerminalId` with no kind; `phux ls --json` carries no `kind` or `parent`. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.12, phux-am9y.14 |
+| Workspace rename `TerminalId` -> `ResourceId`, protocol 0.9.0 frame names | `ResourceId` is a `phux-core` alias only; the wire, `phux-client-core`, and the FFI keep the Terminal spelling. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |

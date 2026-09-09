@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-07-09
+last-reviewed: 2026-09-09
 ---
 
 # Architecture reference
@@ -18,11 +18,11 @@ are). What you read to understand how phux is built.
 | File | Owns |
 |---|---|
 | [process-model.md](./process-model.md) | Per-user server, single process, current-thread runtime; supervision (ADR-0003, ADR-0014) |
-| [threading.md](./threading.md) | `!Send`/`!Sync` constraints, LocalSet, why this matters for libghostty |
-| [transport.md](./transport.md) | The byte streams under the wire codec: UDS, WebSocket, QUIC, WebTransport, and SSH-stdio. Listeners and frame reader/writer types live in `phux-server`'s transport modules; outbound dialing is the `phux-dial` crate. There is no `Transport` trait (ADR-0007) |
-| [crate-graph.md](./crate-graph.md) | Crate dependency edges and the protocol-core independence (ADR-0011) |
-| [data-model.md](./data-model.md) | Sessions, windows, terminals, layouts as in-process types — distinct from wire shape |
-| [state-sync.md](./state-sync.md) | What happens on attach: snapshots, replay, scrollback policy (ADR-0018) |
+| [threading.md](./threading.md) | `!Send`/`!Sync` constraints, one LocalSet task per resource engine, the std mutex discipline |
+| [transport.md](./transport.md) | The frame seam and the five byte streams: UDS, WebSocket, QUIC, WebTransport, SSH-stdio; `phux-dial` (ADR-0007) |
+| [crate-graph.md](./crate-graph.md) | Crate dependency edges, the protocol-core independence (ADR-0011), and how the crates map onto L1/L3 |
+| [data-model.md](./data-model.md) | Sessions, windows, resources (kinds, facets, parent bindings), layouts as in-process types — distinct from wire shape |
+| [state-sync.md](./state-sync.md) | What happens on attach: the three Terminal bootstrap profiles, native checkpoint versus synthesized VT, StateSync (ADR-0018, ADR-0070) |
 | [render-layering.md](./render-layering.md) | ratatui chrome over libghostty pane interiors (ADR-0020) |
 | [predictive-echo.md](./predictive-echo.md) | Client-side prediction loop and reconciliation |
 | [verification.md](./verification.md) | The test and performance quality bar: unit, integration, golden snapshots, hot-path discipline, allocation budget |
@@ -30,16 +30,14 @@ are). What you read to understand how phux is built.
 
 ## Scratch (not in the published set)
 
-One file here is marked `stability: scratch` and is not part of the
-published architecture docs. Read it as a working note, not as design of
-record.
+- `DIAGRAM.md` — a one-glance system shape sketch (PTY and producer in,
+  resource engines, the frame seam, client replicas and chrome). Marked
+  `stability: scratch`; read it as a sketch, not as design of record.
 
-- `DIAGRAM.md` — a one-glance system shape sketch (PTY, server libghostty,
-  transport, client libghostty, TUI).
-
-The former L2 server design note, superseded by
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
-(there is no L2 tier), now lives under `research/archive/`.
+The former `l2-server-design.md` lives in
+[`research/archive/`](../../research/archive/2026-06-06-l2-server-design.md):
+there is no L2 tier
+([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)).
 
 ## What's not here
 
@@ -50,6 +48,9 @@ The former L2 server design note, superseded by
 
 ## When this directory is wrong
 
-Code is the implementation; these documents are the intended design. If
-they diverge, file an issue. Either the code drifted or the design did.
-Both happen; the response is to reconcile, not to let either rot.
+Code is the implementation; these documents describe it. Where the code
+and the target shape differ, each document says so in its single `Status`
+table, pointing at the owning ADR and the tracked bead
+([`../CONVENTIONS.md`](../CONVENTIONS.md)). If a document and the code
+disagree without such a row, file an issue: either the code drifted or the
+doc did, and the response is to reconcile, not to let either rot.

@@ -8,11 +8,12 @@ last-reviewed: 2026-09-09
 
 **TL;DR.** The in-process types the server manipulates: the resources it
 owns (a Terminal is the first kind, an agent session the second), the
-grouping metadata over them, and the attached clients. Pure-data
-`phux-core::Registry` on slotmaps with generational keys; I/O state lives
-separately on `phux-server::ServerState`. This shape is distinct from the
-wire; the bridge crosses at `IdBridge`. Grouping is metadata over resources,
-not a built collection type.
+parent bindings between them, the grouping metadata over them, and the
+attached clients. Pure-data `phux-core::Registry` on slotmaps with
+generational keys; I/O state lives separately on
+`phux-server::ServerState`. This shape is distinct from the wire; the
+bridge crosses at `IdBridge`. Grouping is metadata over resources, not a
+built collection type.
 
 ---
 
@@ -30,10 +31,22 @@ The shape splits in two: the *domain* (pure data, in `phux-core`) and the
 *attached-client + I/O* state (in `phux-server`). The split is deliberate;
 see ADR-0008 and the crate-graph note above.
 
+## Resources and kinds
+
+Everything the server serves is a `ResourceDescriptor`. `ResourceKind` is a
+`#[non_exhaustive]` enum with two variants today, `Terminal` and
+`AgentSession`; a consumer that meets a kind it does not know treats the
+resource as opaque, never as a Terminal. The kind fixes which facet the
+descriptor carries: a Terminal carries `TerminalFacet { dims, cwd, title }`
+and a window slot; an AgentSession carries `AgentFacet { provider,
+native_id, state }` and a parent. Exactly the facet named by `kind` is
+populated, and the `Registry` is the only constructor
+([ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md)).
+
 ## Grouping is metadata, not a collection tier
 
 There is no built `Collection` type and no L2 collection lifecycle tier.
-Grouping a set of terminals — what a user thinks of as a session — is L3
+Grouping a set of resources — what a user thinks of as a session — is L3
 metadata plus client logic over the [L3 metadata model](../spec/L3.md),
 keyed by an opaque grouping identity. `GroupId` is retained only as that
 opaque key, not as a lifecycle entity the server creates, names, or tears
@@ -67,7 +80,7 @@ pub struct ResourceDescriptor {
     agent: Option<AgentFacet>,         // present iff kind == AgentSession
 }
 pub struct TerminalFacet { dims, cwd, title }
-pub struct AgentFacet    { provider, native_id, state }
+pub struct AgentFacet    { provider, native_id: Option<String>, state: Option<String> }
 // ResourceId is the slotmap key (still spelled `TerminalId` in phux-core
 // until the wire rename lands); location and kind are orthogonal.
 // LayoutNode is a binary split tree of ResourceId leaves; only a Terminal
@@ -77,17 +90,30 @@ pub struct AgentFacet    { provider, native_id, state }
 // to the TUI's tree, not the wire.
 ```
 
-Exactly the facet named by `kind` is populated, and the `Registry` is the
-only constructor of a descriptor. A resource's `parent` is set at creation
-and never changes; removing a parent removes its children, and removing a
-window or session removes every resource in its slots and their children.
-Removing a child never touches the parent.
-
 The PTY handle and `libghostty_vt::Terminal` for a Terminal are not fields
 of the descriptor. They are server-side concerns and hang off `ResourceId`
 in side tables in `phux-server`. Keeping the descriptor free of I/O is what
 lets `phux-core` stay `forbid(unsafe_code)` and ship without an async
 runtime.
+
+## The binding graph
+
+A resource's `parent` is set at creation and never changes.
+`Registry::new_agent_session(parent, facet)` is the only way to create a
+bound resource: it refuses an unknown parent (`UnknownResource`) or a parent
+of another kind (`ParentKindMismatch`), so an AgentSession always hangs off
+a live Terminal and a Terminal has no parent. One level only: a child holds
+no children of its own. There is no inverse index; `Registry::children
+(parent)` scans the resource slotmap, which is O(N) in resource count and
+fine for the same reason session lookup is (below).
+
+Removal cascades downward and never upward. `Registry::remove_resource(id)`
+removes the resource, then every resource whose `parent` is `id`, then
+vacates the Terminal's window slot; `remove_window` and `remove_session`
+run the same cascade for every slot they hold. Removing a child never
+touches the parent ([ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md)).
+
+## Server-side state
 
 ```rust
 // phux-server::state::ServerState — domain + clients + I/O.
@@ -100,6 +126,8 @@ pub struct ServerState {
     // Core ids (slotmap keys, generational) <-> wire ids (u32), for
     // sessions, terminals, and windows. All three go through `IdBridge`.
     pub idspace:         IdSpace,
+    // Per-scope L3 key/value store (Terminal, group, global).
+    metadata:            MetadataStore,
     next_client_id:      u64,
 }
 
@@ -110,7 +138,7 @@ pub struct ResourceHandle {
     pub consumer_attach, consumer_detach, consumer_ack,    // ADR-0018 consumers
     pub subscribe_to_events, unsubscribe_from_events,      // semantic events
     pub upgrade, control,                                  // ADR-0032, ADR-0033
-    pub facet: ResourceFacetHandle,   // Terminal(TerminalHandle) | ...
+    pub facet: ResourceFacetHandle,   // non_exhaustive: Terminal(TerminalHandle)
 }
 
 pub struct AttachedClient {
@@ -125,17 +153,35 @@ pub struct AttachedClient {
 the current-thread runtime and how `KILL_TERMINALS` applies atomically under
 one acquisition.
 
-The engine side of a resource is `ResourceCore`: the checked output
-sequence, the output broadcast sender, the event-subscriber registry and
-fan-out, the cancel token and exit notification, and the control mailbox.
-An engine (today `resource::terminal::TerminalActor`) embeds one, keeps its
-own kind-specific state beside it, and builds the `ResourceHandle` in its
-constructor. Runtime code never holds a `TerminalHandle` on its own: it
-holds a `ResourceHandle` and calls `ResourceHandle::terminal()` where a
-grid, PTY, or input operation is needed — the one place a request aimed at
-a resource of another kind becomes a `WrongResourceKind` error.
+The engine side of a resource is `ResourceCore`: kind, parent, wire id, the
+checked output sequence, the output broadcast sender, the event-subscriber
+registry and fan-out, the cancel token and exit notification, and the
+control mailbox. An engine (today `resource::terminal::TerminalActor`)
+embeds one, keeps its own kind-specific state beside it, and builds the
+`ResourceHandle` in its constructor. Runtime code never holds a
+`TerminalHandle` on its own: it holds a `ResourceHandle` and calls
+`ResourceHandle::terminal()` where a grid, PTY, or input operation is needed
+— the one place a request aimed at a resource of another kind becomes a
+`WrongResourceKind` error.
+
+Teardown runs under one lock acquisition. `KILL_TERMINALS` resolves every
+wire id and cancels every engine inside a single `with_mut`, so no other
+command interleaves between the first and last removal. A Terminal engine
+that observes PTY EOF fires its exit notification; the exit watcher then
+gathers the subscribers, reaps the domain entity through
+`ServerState::reap_terminal` (cascading to the window and session when they
+empty), and forgets the `ResourceTable` entry, all in the same critical
+section, before the `TERMINAL_CLOSED` sends are awaited.
 
 Session name lookup goes through `Registry::sessions()` rather than a side
 index — it is O(N) in session count, which is fine: session count is small
 (single digits typical, double digits worst-case) and an extra index would
 have to be kept consistent across cascading deletes.
+
+## Status
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| Server-side cascade close: a parent's teardown closes each child's engine and announces it with `CloseReason::ParentClosed` | The cascade exists in the `Registry` only; no engine other than the Terminal exists, and `TERMINAL_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
+| AgentSession resources on the server (`SPAWN_TERMINAL` kind field, `Registry::new_agent_session` called from the runtime, `AgentFacet.state` derived from the stream) | `new_agent_session` has no caller outside `phux-core`'s tests; `AgentFacet.state` is never written. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6, phux-am9y.9 |
+| `ResourceId` as the key's name everywhere, `KILL_RESOURCES` on the wire | `TerminalId` is the slotmap key and the wire id; `ResourceId` is a `phux-core` alias. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |

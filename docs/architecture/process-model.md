@@ -99,9 +99,10 @@ Foreground-only flags such as `--session`, `--hub`, and `--listen` conflict
 with `--ensure`, rather than being silently ignored. Full parser reference:
 [`phux server`](../reference/cli.md#phux-server).
 
-## Terminal actor timers
+## Terminal engine timers
 
-Inside the server, a PTY-backed terminal actor now runs **two** independent
+Inside the server, a PTY-backed Terminal engine (`resource::terminal`, the
+per-resource actor of ADR-0014) runs **two** independent
 timers on its `select!`: the state-sync tick that paces output emission to its
 consumers, and a second, slower agent-state detector tick
 ([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)) that
@@ -110,6 +111,6 @@ the OSC title, and the live screen, and publishes the privacy-bounded
 `phux.pane-occupant/v1` foreground basename/shell answer from the same process
 query. The detector timer is the sole driver of
 that work — PTY bytes never wake it — so a chatty pane costs no extra
-detection. It is constructed only for a PTY-backed actor, only when a rule set
+detection. It is constructed only for a PTY-backed engine, only when a rule set
 loaded, and it publishes through its own `mpsc` channel to a per-terminal drain
 task that owns the metadata write. No new process, no new thread.
