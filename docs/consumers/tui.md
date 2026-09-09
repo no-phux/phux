@@ -1675,6 +1675,26 @@ asked flag or branch/cwd — those need a live per-pane subscription, so the
 record's declared state is the honest maximum until you attach there. The
 `phux agent list` CLI remains the exhaustive cross-session projection.
 
+<!-- impl-status: spec-only; probe: CloseReason -->
+> **Status: landing on the resource-model branch.** On a server that
+> advertises `RESOURCE_KINDS`, a pane's fleet row and sidebar row take their
+> state from the pane's live **agent session** when one exists
+> ([`agents.md`](./agents.md) §0.1) and from the `phux.agent/v1` record
+> otherwise. A released TUI knows only the record.
+
+An agent session is a child resource of a pane, never a pane: the TUI does
+not tile it, does not give it a layout slot, and has no keybinding for it.
+What it does is read it. A row whose pane has a live session shows the
+session's `provider` as the kind and its stream-derived state as the glyph,
+which is the harness's own account of the turn rather than a screen rule;
+the record path below is the fallback, unchanged, for a pane with no
+session. When a pane closes — `kill-pane`, the shell exiting, a window
+closed with the pane in it — the server closes its sessions with it, under
+one lock, with reason `parent_closed`; the row disappears with the pane and
+no orphaned session row is ever drawn. Closing a session (`phux agent
+session close`, or the harness ending) leaves the pane exactly as it was,
+with its row falling back to the record.
+
 The dashboard is **live**: while it is open, agent-record changes, asked
 events, pane spawns/closes, and layout changes rebuild its rows in place
 (push, not poll) without disturbing your query or selection. It shares
@@ -2059,6 +2079,12 @@ preference order (colored by the `agent_idle` / `agent_working` /
    Title changes refresh the chrome directly: the client diffs each
    pane's title as content frames apply, so the row appears when the
    agent sets its title and disappears when the shell resets it on exit.
+
+On the resource-model branch a third source sits above both: a pane's live
+**agent session** (§5.6), whose stream-derived state and `provider` the row
+takes when one exists, falling through to the record and then the title
+when it does not. The zone lists a pane once whichever source names it; a
+session never earns a row of its own.
 
 Rows are ordered by **how much they want a human**, not by session or
 window index:

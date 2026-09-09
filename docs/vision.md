@@ -79,6 +79,19 @@ where StateSync becomes the expected default rather than changing its shape.
 The research note (now archived) captures the algorithm composition:
 [`../research/archive/2026-05-26-state-sync-algorithm.md`](../research/archive/2026-05-26-state-sync-algorithm.md).
 
+## A multiplexer for all the work, not only the terminal
+
+The arc past the terminal is that the server serves *resources* and a
+terminal is the first kind of them: the same id space, lifecycle, attach,
+and metadata scope apply to whatever else the work produces. The second kind
+is the agent session — a coding agent's run inside a pane, with its own
+event stream, held next to the terminal it runs in and closed with it — and
+it is on a branch today, not in a release. What is deliberately not being
+built on top of it is a chat client, a transcript viewer, or a second agent
+harness: phux holds the session and its log so that the human and the
+agent's own tools read one record; it does not become the place you talk to
+the agent.
+
 ---
 
 ## Two consumer surfaces, both on the arc

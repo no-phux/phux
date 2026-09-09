@@ -48,6 +48,36 @@ consumers that have not adopted the carry-your-own-engine pattern — not a
 normative structured contract and not a license to add new structured wire
 surface (ADR-0030 §2).
 
+### 0.1 Resources and kinds
+
+<!-- impl-status: spec-only; probe: RESOURCE_KINDS -->
+> **Status: landing on the resource-model branch.** The server does not yet
+> advertise `RESOURCE_KINDS`; every resource a released binary serves is a
+> Terminal, and the verbs in this file that address an agent session are
+> documented ahead of the code that ships them.
+
+The server serves **resources**. A resource has an id (`@N`, or `host/@N`
+behind a hub), a **kind**, an optional **parent**, a lifecycle, an ordered
+output stream, an input channel its kind defines, and an L3 metadata scope.
+A **Terminal** is the first kind: a PTY plus a libghostty engine, with a grid,
+a title, a cwd, and the whole surface this file has always described. An
+**AgentSession** is the second: a coding-agent run (`provider: claude`, an
+opaque provider `native_id`, a derived lifecycle `state`) whose output stream
+is not VT bytes but one JSON record per event, appended by the agent harness
+itself through `phux agent emit`. An agent session always has a Terminal
+parent, set at spawn and never changed; the server closes the child when the
+parent closes, never the other way round. A **pane** remains the TUI word for
+a Terminal in a layout slot; an agent session is never a pane.
+
+What this means for a script: `@N` may now name either kind, and a
+Terminal-facet verb (`snapshot`, `send-keys`, `run`, `resize`, and the rest)
+refuses an agent-session id with `wrong_resource_kind` instead of guessing.
+`phux ls --json` tells the kinds apart (§4.1); the agent-session verbs are in
+§2 and their documents in §4.19. The mental model is owned by
+[`../CONCEPTS.md`](../CONCEPTS.md); the decisions are ADR-0102 (resources),
+ADR-0103 (the agent session and producer-fed streams), and ADR-0104 (parent
+bindings).
+
 ## 1. What this is, what this isn't
 
 This document is the agent-facing CLI surface, parallel to the
@@ -99,7 +129,9 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 
 - **`phux ls [--json] [--socket P]`** — list sessions. Does not auto-start a
   server (like `tmux ls`): with none running it reports as much and exits
-  non-zero. `--json` emits `SessionListJson` (§4.1).
+  non-zero. `--json` emits `SessionListJson` (§4.1), which on a
+  resource-model server additionally names each resource's `kind` and
+  `parent`.
 - **`phux snapshot [--json] [--scrollback[=N]] [--cells] [--tail[=N]]
   [--unwrap] [--socket P] [TARGET]`** — side-effect-free pane read via
   `GET_SCREEN`. `TARGET` is optional (defaults to the focused session).
@@ -340,6 +372,21 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   view. `--json` emits `AgentStateJson` (§4.7). States are `unknown`, `idle`,
   `working`, `blocked`, or `done`; each state carries confidence and ordered
   provenance so consumers can show why phux believes it.
+
+  **Where the state comes from, in precedence order (resource-model
+  branch).** The server ranks its evidence `Stream > Hook > Process >
+  Screen`: a live agent-session child's event stream (`prompt` and
+  `tool_start` mean working; `ask`, and a `notification` whose kind is
+  `permission` or `elicitation`, mean blocked; `stop` means done;
+  `session_end` retracts) outranks a lifecycle hook report (`phux agent
+  report-state`), which outranks foreground-process identity, which outranks
+  the screen rules. Idle stays the detector's to derive
+  ([ADR-0085](../../ADR/0085-hook-sourced-agent-state.md)): while a live
+  agent-session child exists, screen derivation runs only for idle and
+  departure. `agent show` names the winning rung in `sources[0].kind`
+  (`stream` when the session stream decided it) and reports the session
+  itself under `agent_session` (§4.7), so a consumer can tell a state the
+  agent's own harness emitted from one a screen rule inferred.
 - **`phux agent explain --file PATH --kind KIND [--title TEXT]
   [--format auto|json|text] [--json]`** — the offline half of `explain`. It
   evaluates the compiled detection manifests
@@ -560,6 +607,68 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux agent uninstall-claude`** — remove only the phux-owned shim, hook
   settings, manifest, and marked shell-rc block. User shell configuration and
   the real Claude installation are otherwise untouched.
+
+<!-- impl-status: spec-only; probe: APPEND_RESOURCE_OUTPUT,phux_agent_emit -->
+> **Status: landing on the resource-model branch.** The four agent-session
+> verbs below are documented from the resource-model contract (ADR-0103). A
+> released binary has none of them; against a server that does not advertise
+> `RESOURCE_KINDS` each one refuses with `unsupported_server` before doing
+> anything. Their grammar is enumerated here additively under ADR-0071
+> point 7(c) rather than by editing that ADR.
+
+- **`phux agent session open TARGET --provider P [--native-id ID] [--json]
+  [--socket P]`** — spawn an AgentSession resource whose parent is the
+  Terminal `TARGET` resolves to. `--provider` is the harness slug (`claude`);
+  `--native-id` is the provider's own opaque session id, bounded like an
+  ADR-0068 native id, and optional because some harnesses learn theirs late.
+  The call is what makes the caller the session's **producer**: only the
+  client that opened a session may append to it. The Claude hook shim issues
+  this on `SessionStart` ([`claude.md`](./claude.md)); an integration that
+  runs its own harness issues it itself. A `TARGET` that is not a Terminal is
+  refused (`wrong_resource_kind`). A Terminal that already has a live session
+  for the same provider gets a second one, not an error: the server does not
+  deduplicate, so read `phux ls --json` first if one is what you want.
+  Prints the new resource id (`@N`); `--json` emits the document in §4.19.
+- **`phux agent session close TARGET [--socket P]`** — close the AgentSession
+  `TARGET` resolves to (by `@N`, or by `%name`, §3). The parent Terminal is
+  untouched. Closing the parent instead — `phux kill`, the shell exiting —
+  closes every child with reason `parent_closed` under the same lock, so a
+  script never observes an orphan. Prints `@N<TAB>closed`. No `--json`.
+- **`phux agent emit TARGET --type T [--data JSON | -] [--json] [--socket P]`**
+  — append one record to an AgentSession's stream. `--type` is one of the
+  closed v1 set below; `--data` is a JSON object, inline or `-` for stdin,
+  and `{}` when omitted. The server stamps `seq` and `ts_ms` — a value the
+  caller supplies for either is ignored, not an error — and enforces the
+  bounds: a record over 16 KiB, a `type` outside the set, or `data` that is
+  not a JSON object is `record_invalid`; a session whose retained ring
+  (`defaults.agent-log-bytes`, 4 MiB by default) cannot take the record is
+  `overflow`; a caller that did not open the session is `not_producer`; a
+  Terminal target is `wrong_resource_kind`. Nothing is written on a refusal.
+  Prints nothing on success; `--json` echoes the stamped record header
+  (§4.19).
+
+  The v1 `type` set is closed: `session_start`, `prompt`, `tool_start`,
+  `tool_end`, `notification`, `ask`, `stop`, `session_end`, `state`,
+  `provider_raw`. **Privacy defaults belong to the producer, and the shipped
+  producer is conservative:** the Claude shim's `prompt` record carries the
+  prompt's character count (`{"chars": N}`) and never its text, `tool_start`
+  and `tool_end` carry `tool_name` and never `tool_input`, and
+  `provider_raw` — the hook's full stdin JSON — is emitted only when
+  `PHUX_AGENT_EMIT_RAW=1` is set in the harness's environment. The server
+  checks `data` for shape, not content, so a producer that chooses to emit
+  more is not stopped; it is simply not the default.
+- **`phux agent log TARGET [--follow] [--tail N] [--json] [--socket P]`** —
+  read an AgentSession's stream. It attaches to the resource the way `rec`
+  attaches to a Terminal: as an observer, with the retained records as its
+  bootstrap and, under `--follow`, live records after them until Ctrl-C or
+  the session closes. `--tail N` returns only the last N retained records
+  (the viewport-floor rule of `snapshot --tail` does not apply; there is no
+  grid). Without `--json` each record prints as
+  `seq<TAB>ts_ms<TAB>type<TAB>data`; `--json` emits the document in §4.19,
+  or, under `--follow`, one record per line with no envelope, on the same
+  terms as `watch --json`. There is no `--timeout`: run a following `log`
+  under a child-process deadline exactly as you would a `watch`. A Terminal
+  target is `wrong_resource_kind`.
 - **`phux resize [--json] [--socket P] TARGET COLSxROWS`** — set one resolved
   pane's grid, with no TTY. `TARGET` is required; `COLSxROWS` is two whole
   numbers of cells, each at least 1 (`120x40`). This is the only way to size a
@@ -751,11 +860,22 @@ line, the forms are: `.` (current), `name` (session), `name:N` / `name:tag`
 (window), `name:N.M` (pane), and `@N` (opaque id). `=` is explicitly
 unsupported for headless commands because they have no attached-client MRU.
 
-`%name` is reserved for the proposed agent-name addressing contract in
-[ADR-0075](../../ADR/0075-agent-name-addressing.md), but no shipped CLI verb
-resolves it yet. It fails closed as a selector miss rather than choosing a
-pane. Use the direct `@N` returned by inventory and creation verbs until that
-ADR is accepted and implemented.
+`%name` is the agent-name sigil from
+[ADR-0075](../../ADR/0075-agent-name-addressing.md). On a released binary no
+verb resolves it: it fails closed as a selector miss rather than choosing a
+pane, and the direct `@N` from inventory and creation verbs is the target to
+use. On the resource-model branch it gains its production caller. `%name`
+resolves against the live **AgentSession resources** first — the name being
+the `phux.agent/v1` `name` declared on the session's parent Terminal, under
+ADR-0075's grammar and its exactly-one-or-refuse rule — and falls back to the
+metadata index alone (a Terminal with a named record and no session child)
+when no session matches. A `%name` handed to an agent-session verb (`emit`,
+`log`, `session close`) yields the session; handed to a Terminal-facet verb it
+yields the session's parent Terminal, so `phux agent prompt %reviewer` and
+`phux agent log %reviewer` name the same agent from two sides. Two live
+sessions sharing a name refuse with every candidate listed (exit 2), exactly
+as two records would. `@N` resolves a resource of either kind; `name:N.M` and
+the window forms resolve Terminals only.
 
 A selector that names several panes (a whole session or window) narrows to a
 single pane: the focused pane when it is among the matches, else the first in
@@ -819,6 +939,32 @@ consumer cannot tell that apart from a degraded answer. Treat `sessions` and
 
 The MCP `phux_ls` tool ([`mcp.md`](./mcp.md) §3.1) executes and parses this
 same canonical CLI document, so one parser covers both surfaces.
+
+**`kind` and `parent` (resource-model branch; additive, `schema_version`
+stays 3).** A server that serves more than one resource kind reports it in a
+new `resources` array beside `terminals`, one entry per resource in snapshot
+order:
+
+```json
+{
+  "schema_version": 3,
+  "sessions": [ { "name": "work", "windows": 1, "attached": true, "attached_clients": 1 } ],
+  "terminals": ["@3"],
+  "resources": [
+    { "id": "@3", "kind": "terminal", "parent": null },
+    { "id": "@9", "kind": "agent_session", "parent": "@3" }
+  ],
+  "unreachable": []
+}
+```
+
+`kind` is `terminal` or `agent_session` (a kind this binary does not know
+renders as `unknown`, never as a failure); `parent` is the parent's id or
+`null`. `terminals` keeps its meaning — the Terminal-kind inventory, the ids
+a Terminal-facet verb accepts — so a consumer that iterates it and calls
+`snapshot` on each entry keeps working; an agent session appears only under
+`resources`. A pre-resource-model server omits `resources` altogether, which
+is the presence test to branch on.
 
 ### 4.2 `ScreenState` — `phux snapshot --json` (and `phux wait --json`)
 
@@ -1089,6 +1235,14 @@ This is a public clean-room projection. It does not copy external agent
 manifests or private tradecraft rules; built-in recognition comes from
 publicly observable process identity and captured pane chrome, plus optional
 local phux plugin declarations.
+
+On the resource-model branch each entry gains an additive `agent_session`
+key — `null` when the pane has no live AgentSession child, otherwise
+`{ "resource": "@9", "provider": "claude", "native_id": "sess-01H..." }` —
+and `sources` gains the kind `stream` for a state the session's own event
+stream decided (§2's precedence ladder). The key is `agent_session`, not
+`session`, because `session` in this document is already the phux session
+name. `schema_version` stays 1; branch on presence.
 
 #### `AgentWaitJson` — `phux agent wait --json`
 
@@ -1674,6 +1828,65 @@ before a replacement token is generated, so failed rotation emits no JSON
 document or secret. Revocation and rotation affect new connections; an
 established session retains its admission until it disconnects.
 
+### 4.19 Agent session documents — `phux agent session open`, `emit`, `log`
+
+<!-- impl-status: spec-only; probe: AgentEventsJsonlV1 -->
+> **Status: landing on the resource-model branch.** The shapes below are the
+> resource-model contract for the agent-session verbs (§2); no released
+> binary emits them. Each is `schema_version` 1 and additive from here.
+
+`phux agent session open --json`:
+
+```json
+{
+  "schema_version": 1,
+  "resource": "@9",
+  "parent": "@3",
+  "provider": "claude",
+  "native_id": "sess-01H..."
+}
+```
+
+`native_id` is `null` when `--native-id` was omitted. `resource` is the id
+every later `emit`, `log`, and `session close` takes.
+
+`phux agent emit --json` echoes the header the server stamped, never the
+payload you already have:
+
+```json
+{ "schema_version": 1, "resource": "@9", "seq": 42, "ts_ms": 1757404800123, "type": "tool_start" }
+```
+
+`phux agent log --json` (without `--follow`) is the retained stream in one
+envelope:
+
+```json
+{
+  "schema_version": 1,
+  "resource": "@9",
+  "parent": "@3",
+  "provider": "claude",
+  "native_id": "sess-01H...",
+  "records": [
+    { "seq": 1, "ts_ms": 1757404799001, "type": "session_start", "data": { "native_id": "sess-01H..." } },
+    { "seq": 2, "ts_ms": 1757404799850, "type": "prompt", "data": { "chars": 61 } },
+    { "seq": 3, "ts_ms": 1757404801002, "type": "tool_start", "data": { "tool_name": "Bash" } }
+  ]
+}
+```
+
+Each element of `records` is one `AgentEventsJsonlV1` record exactly as the
+wire retains it: `seq` is a dense, server-assigned counter per session,
+`ts_ms` the server's clock at append, `type` one of the closed v1 set, and
+`data` a JSON object whose keys the producer chose. `--tail N` trims
+`records` to the last N and says nothing else. Under `--follow`, stdout is
+NDJSON — one record object per line, no envelope, no `schema_version`, the
+`watch --json` rule for the same reason (a follower may join mid-stream and
+never see line one); the record's `type` vocabulary is the compatibility
+unit. A record whose `type` this binary does not know is printed, not
+dropped: the server refused unknown types at append, so an unknown one here
+means a newer server, which is information.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop
@@ -1761,6 +1974,9 @@ Exit codes are not uniform across verbs:
 | `agent prompt` | `0` delivered (and, with `--wait`, a target transition observed); `124` delivered but no target transition observed before timeout; `2` usage, identity, capability, or pre-write refusal; `1` transport or indeterminate delivery. |
 | `agent answer` | `0` the exact live ask was validated and the answer delivered; `2` stale/unidentified ask, invalid choice/text, or pre-write refusal; `1` transport or indeterminate delivery. |
 | `agent start` | `0` submitted, and ready unless `--no-wait`; `124` command typed but readiness not observed; `2` invalid name/kind/argv, no manifest, or unsafe target; `1` launch, transport, or observation failure. |
+| `agent session open` / `close` (resource-model branch) | `0` ok; `2` a refusal before anything was spawned or closed (`wrong_resource_kind`, `unsupported_server`, an unusable `--provider` / `--native-id`); `1` no server, selector miss, or transport; `3` the miss is not trustworthy — the `show`/`set`/`clear` rule, because these too address one pane. |
+| `agent emit` (resource-model branch) | `0` the record was appended and stamped; `2` a refusal with nothing written (`wrong_resource_kind`, `not_producer`, `record_invalid`, `overflow`, `unsupported_server`, unreadable or non-object `--data`); `1` no server, selector miss, or transport. |
+| `agent log` (resource-model branch) | `0` the retained records were printed, or a `--follow` ended by Ctrl-C or by the session closing; `2` `wrong_resource_kind` or `unsupported_server`; `1` no server, selector miss, transport, or the server going away mid-follow. No `124`: there is no `--timeout`. |
 | `new` | `0` ok; `1` duplicate `-s` name / failure. |
 | `resize` | `0` the pane holds the requested geometry; `1` no server / selector miss / unknown pane, or the server holds a different size (an attached view's `window-size` policy owns it); `2` unusable `COLSxROWS` (clap usage error, raised before any connection). |
 | `rename` | `0` renamed; `1` no server or transport failure; `2` unknown source session or destination name already exists. |
@@ -1898,7 +2114,19 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   `ambiguous_integration` (exit 2 — more than one enabled integration's
   `[agent_identity]` claims the requested `--kind`; the message names every
   claimant and `--integration ID` chooses), `agent_start_timeout`, and
-  `agent_kind_mismatch`. Watch adds `unknown_event_name`.
+  `agent_kind_mismatch`. Watch adds `unknown_event_name`. The resource
+  family (resource-model branch; `agent session open` / `close`, `agent
+  emit`, `agent log`, and any Terminal-facet verb handed a non-Terminal
+  id): `wrong_resource_kind` (exit 2 — the target exists but is not the kind
+  the verb operates on; the message names both kinds), `not_producer` (exit
+  2 — this client did not open the session, so it may not append; nothing
+  written), `record_invalid` (exit 2 — a `type` outside the closed set, a
+  record over 16 KiB, or `data` that is not a JSON object; nothing written),
+  `overflow` (exit 2 — the session's retained ring cannot take the record
+  under `defaults.agent-log-bytes`; nothing written, and the remedy names the
+  setting), and `unsupported_server` (exit 2 — the server did not advertise
+  `RESOURCE_KINDS` in HELLO, so agent sessions do not exist there; refused
+  before any resource is touched, with the server's version in the message).
 - `remedy` is always present and non-empty: the next command to run, in
   prose.
 - `exit_code` mirrors the process's own exit status, so a consumer that
@@ -1927,8 +2155,9 @@ The CLI verbs here are the stable contract. The
 the [Pi integration](./pi.md) exposes nineteen bounded tools, including spatial
 placement and topology edits. The [MCP adapter](./mcp.md) exposes 32 strict
 tools, including paste, launch/spawn, bounded watch, ask, spatial edits, agent
-state, and workspace parity, over JSON-RPC stdio. Adapter guides link here instead of
-redefining CLI syntax.
+state, and workspace parity, over JSON-RPC stdio; the resource-model branch
+adds four more over the agent-session verbs ([`mcp.md`](./mcp.md) §3.35).
+Adapter guides link here instead of redefining CLI syntax.
 [`sdk.md`](./sdk.md) documents `phux-client`, the library crate those surfaces
 are built from. These adapters are unprivileged consumers
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)); the wire
