@@ -14,14 +14,26 @@ on:
       - "docs/**"
       - "ADR/**"
       - ".github/workflows/site-deploy.yml"
+  # A new phux release stamps the site's version badge (scripts/fetch-release.ts).
+  release:
+    types: [published]
+  # Weekly backstop so the badge can never drift far from reality.
+  schedule:
+    - cron: "7 13 * * 1"
   workflow_dispatch:
 
 concurrency:
   group: site-deploy
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   pages:
+    # Release events only matter for core phux tags (vX.Y.Z) — component
+    # releases (cockpit-v*, opencode-plugin-v*, …) don't move the badge.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -47,6 +59,7 @@ jobs:
         working-directory: docs/site
         run: bun run build
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           PUBLIC_PHUX_DEMO_WS: ${{ vars.PUBLIC_PHUX_DEMO_WS }}
 
       - name: Check built links

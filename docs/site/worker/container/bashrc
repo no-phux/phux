@@ -5,16 +5,18 @@ unset GITHUB_TOKEN GH_TOKEN SSH_AUTH_SOCK AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KE
 help() {
   printf '%s\n' \
     'Commands:' \
+    '  phux            run the real phux TUI in this shell' \
+    '                  C-a % split, C-a " split, C-a c window, C-a ? all keys' \
+    '  phux --version  installed phux release' \
+    '  phui            real phui in deterministic mock mode' \
     '  git, rg, fd     source and file search tools' \
     '  python3, node   scripting runtimes (pip included)' \
     '  gcc, g++, make  native build toolchain' \
     '  jq, curl        JSON and HTTP utilities (internet disabled)' \
-    '  phui            real phui in deterministic mock mode' \
-    '  phux --version  installed phux release' \
     '  help            show this help'
 }
 
 printf '%s\n' \
   'Real disposable Linux shell, carried by Phux.' \
-  'Try: help, git --version, python3, node, or phui.' \
+  'Try: phux for the real TUI (C-a ? lists keys), or help.' \
   'No credentials. No network. Session state is discarded.'

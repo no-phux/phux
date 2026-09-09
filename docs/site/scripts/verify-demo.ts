@@ -4,8 +4,8 @@
  *
  * Checks the brief's "always render something" bar:
  *   1. JS off            → poster visible, launch button hidden, page coherent
- *   2. backend blocked   → click launch → "demo unreachable" + poster stays
- *   3. backend reachable → click launch → live canvas
+ *   2. backend blocked   → choose instant edge → error state + poster stays
+ *   3. backend reachable → choose instant edge → live canvas
  *   4. 375px viewport    → no horizontal scroll on / and /quickstart
  *
  * Usage: bun run scripts/verify-demo.ts [http://localhost:4330]
@@ -42,11 +42,11 @@ const browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await ctx.newPage();
   await page.route("**/healthz", (r) => r.abort());
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.click(".pterm-launch");
-  const label = page.locator(".pterm-label");
-  await label.waitFor({ timeout: 10_000 });
-  const text = (await label.textContent()) ?? "";
-  report("backend down: honest fallback", /unreachable/.test(text), text.trim());
+  await page.getByRole("button", { name: "Use instant edge shell" }).click();
+  const retry = page.locator(".pterm-retry");
+  await retry.waitFor({ timeout: 10_000 });
+  const text = (await retry.textContent()) ?? "";
+  report("backend down: honest fallback", /could not start/.test(text), text.trim());
   report("backend down: poster still covers", await page.locator(".pterm-poster").isVisible());
   await ctx.close();
 }
@@ -56,7 +56,7 @@ const browser = await chromium.launch({ channel: "chrome", headless: true });
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.click(".pterm-launch");
+  await page.getByRole("button", { name: "Use instant edge shell" }).click();
   const live = await page
     .waitForSelector('.pterm[data-status="live"]', { timeout: 30_000 })
     .then(() => true)

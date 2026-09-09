@@ -61,8 +61,18 @@ paths are scoped to `docs/site/**`.
 
 ### One-time setup
 
-1. **Cloudflare API token** (My Profile → API Tokens) with _Workers Scripts:
-   Edit_ **+** _Containers: Write_ (account scope). Grab your **Account ID**.
+1. **Cloudflare API token** (My Profile → API Tokens → Create Custom Token).
+   Exact recipe — a token's permissions cannot be edited from the API later,
+   only in the dashboard, so get this right at creation:
+   - Account (this account): **Workers Scripts : Edit**, **Containers : Write**
+   - Zone `phux.sh`: **Workers Routes : Edit** (wrangler reconciles the
+     declared custom domains by reading the zone's routes table on every
+     deploy; without this scope, deploys fail with code 10000 on
+     `/zones/.../workers/routes`)
+   - Zone Resources: Include → `phux.sh`
+   Verify before wiring CI: `CLOUDFLARE_API_TOKEN=<token> bunx wrangler deploy
+   --dry-run` should pass, and the same for `--cwd worker`. Grab your
+   **Account ID**.
 2. **Repo secrets** (Settings → Secrets and variables → Actions):
    ```
    CLOUDFLARE_API_TOKEN   = <token>
@@ -72,6 +82,17 @@ paths are scoped to `docs/site/**`.
    `shell.phux.sh` on the demo worker — both are declared in the wrangler
    configs, so `bun run deploy` / `bun run worker:deploy` attach them; the
    zone must live in the same account).
+
+   **Pages-migration wart, learned the hard way:** deleting a Pages project
+   does not reliably remove the zone CNAME its custom domain created. The
+   record becomes invisible to the DNS list API but still blocks Workers
+   custom-domain attaches (`code 100117`, "externally managed DNS records").
+   Verify with a BIND export (`GET /zones/{id}/dns_records/export`) before
+   reattaching a hostname, and delete the stale record in the dashboard (DNS →
+   Records) if it lingers — API deletion of Pages-managed records is not
+   reliable. The `phux.phall.io` redirect lives as a **zone Redirect Rule**
+   (Rules → Redirect Rules) over a dummy proxied `AAAA 100::` record, not a
+   Worker — keep it that way.
 4. **Session and OAuth secrets** on the Worker (after the first deploy):
    ```sh
    openssl rand -hex 32 | bunx wrangler secret put SESSION_TOKEN_SECRET --cwd worker

@@ -2,6 +2,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import PhuxTerminal from "../components/PhuxTerminal.tsx";
 import { SITE } from "../lib/site";
+import release from "../lib/release.json";
 ---
 
 <BaseLayout>
@@ -43,12 +44,13 @@ import { SITE } from "../lib/site";
 
     <div class="terminal-stage">
         <div class="terminal-heading">
-          <span><i></i> live / edge session</span>
+          <span><i></i> live / edge + native</span>
           <b>100×24 / phux-web</b>
       </div>
       <PhuxTerminal
         client:idle
         wsUrl={SITE.demoWsUrl}
+        mode="native"
         cols={100}
         rows={24}
         poster="/demo-poster.png"
@@ -60,16 +62,23 @@ import { SITE } from "../lib/site";
         </style>
       </noscript>
       <p class="term-cap">
-        A real phux terminal in your browser. The same bytes can be consumed by
-        a GUI, a headless tool, or an agent.
+        A real phux terminal in your browser. Start on the instant edge, or
+        sign in for five disposable minutes in Linux and run the real TUI.
         <span class="dim">
-          The demo backend is a curated, OS-less shell running as Wasm at the
-          edge: no network and no persistent session state.
+          Inside <code>phux</code>: split panes, open windows, detach, and
+          reattach — the same bytes a GUI, headless tool, or agent consumes.
         </span>
       </p>
 
       <div class="hero-install">
-        <div class="install-label">install and run</div>
+        <div class="install-label">
+          install and run
+          {release.tag && (
+            <a class="version-badge" href={release.url ?? "https://github.com/no-phux/phux/releases"}>
+              latest {release.tag}
+            </a>
+          )}
+        </div>
         <pre><code>brew trust --tap no-phux/tap # Homebrew 6+
 brew tap no-phux/tap
 brew install no-phux/tap/phux
@@ -637,10 +646,21 @@ phux</code></pre>
     .install-label {
       display: flex;
       align-items: center;
+      gap: 8px;
       padding: 12px;
       border-right: 1px solid var(--color-rule);
       color: var(--color-warn);
       font-size: 10px;
+    }
+    .version-badge {
+      color: var(--color-accent, currentColor);
+      border: 1px solid var(--color-rule);
+      padding: 1px 6px;
+      font-size: 9px;
+      text-decoration: none;
+    }
+    .version-badge:hover {
+      border-color: currentColor;
     }
     .hero-install pre {
       margin: 0;
