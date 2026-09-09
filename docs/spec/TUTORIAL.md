@@ -276,7 +276,119 @@ Server sends (frame type 0xB1):
 
 ---
 
-## Step 7: Detach
+## Step 7: Bind an agent session to the terminal
+
+<!-- impl-status: spec-only; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: spec-only —** this whole step. No server advertises
+> `RESOURCE_KINDS`, `SPAWN_TERMINAL` has no field 11, and tag `0x1a` decodes
+> as unknown. [L1.md §1.1, §1.2, §4.8, and §5.5](./L1.md) carry the contract
+> this step walks through.
+
+**What happens:** an agent harness running inside terminal 42 wants a
+durable, structured account of what it is doing — turns, tool calls,
+questions — that lives beside the pane rather than being scraped out of it.
+It asks the server for a second resource of a different kind, bound to the
+terminal as its parent, and appends records to it. A third party reads them
+back by attaching to the new resource exactly as it would attach to a
+terminal.
+
+Gate on the feature bit first: `HELLO_OK.server_caps.features` must contain
+`RESOURCE_KINDS`; an older server skips the new spawn fields and spawns a
+plain terminal.
+
+```
+Client sends (frame type 0x22):
+  SPAWN_TERMINAL {
+    request_id: 7,                 // field 1
+    group: GroupId(1),             // field 2; must equal the parent's Group
+    kind: AGENT_SESSION,           // field 11
+    parent: TerminalId::LOCAL(42), // field 12
+    provider: "claude",            // field 13
+    native_id: "c0ffee-…",         // field 14, the provider's own session id
+  }                                // fields 3–6, 8, 10 are absent: no process, no window, no grid
+
+Server replies (frame type 0xA2):
+  TERMINAL_SPAWNED { request_id: 7, result: OK(TerminalId::LOCAL(43)) }
+```
+
+Resource 43 is not a pane. A `GET_STATE` snapshot lists it with
+`kind = AGENT_SESSION`, `parent = LOCAL(42)`, `cols = rows = 0`,
+`window_id = 0`, and an `agent` facet `{ provider: "claude", state: "unknown" }`.
+
+The harness's hook shim appends two records. Each `phux agent emit` is one
+command; `seq` and `ts_ms` are absent because the server assigns them:
+
+```
+Client sends (frame type 0x31):
+  COMMAND { request_id: 8, cmd: APPEND_RESOURCE_OUTPUT {   // tag 0x1a
+    resource_id: TerminalId::LOCAL(43),
+    bytes: b'{"type":"session_start","data":{"provider":"claude","native_id":"c0ffee-…"}}\n'
+  } }
+Server replies (frame type 0xC2):
+  COMMAND_RESULT { request_id: 8, result: OK }
+
+Client sends (frame type 0x31):
+  COMMAND { request_id: 9, cmd: APPEND_RESOURCE_OUTPUT {
+    resource_id: TerminalId::LOCAL(43),
+    bytes: b'{"type":"prompt","data":{"length":412}}\n'
+  } }
+Server replies (frame type 0xC2):
+  COMMAND_RESULT { request_id: 9, result: OK }
+```
+
+The second record derives `working` for terminal 42's `phux.agent/v1`
+`state` ([L3.md §3.7](./L3.md)); the stream outranks the screen while the
+session is live. The prompt's text did not cross the wire, only its length.
+
+A fleet dashboard now attaches to 43. The bootstrap is the retained ring,
+replayed as chunks under the stream's own codec, and live records follow in
+the same generation:
+
+```
+Client sends (frame type 0x31):
+  COMMAND { request_id: 10, cmd: ATTACH_TERMINAL { terminal_id: LOCAL(43) } }
+
+Server sends BOOTSTRAP_BEGIN (0x93):
+  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5,
+    codec: AgentEventsJsonlV1, cols: 0, rows: 0,
+    output_mode: Raw, base_seq: 2 }
+Server sends BOOTSTRAP_CHUNK (0x94):
+  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, chunk_seq: 0,
+    payload:
+      b'{"seq":1,"ts_ms":1789000000123,"type":"session_start","data":{"provider":"claude","native_id":"c0ffee-…"}}\n'
+      b'{"seq":2,"ts_ms":1789000004871,"type":"prompt","data":{"length":412}}\n' }
+Server sends BOOTSTRAP_READY (0x95):
+  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, history_cursor: None }
+Server replies (frame type 0xC2):
+  COMMAND_RESULT { request_id: 10, result: OK }
+
+Later, the harness calls a tool:
+
+Server sends TERMINAL_OUTPUT (0x90):
+  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, seq: 3,
+    bytes: b'{"seq":3,"ts_ms":1789000009002,"type":"tool_start","data":{"tool_name":"Read"}}\n' }
+```
+
+When the shell in terminal 42 exits, the server closes 42 and 43 in one
+lock acquisition; the dashboard receives
+`TERMINAL_CLOSED { terminal_id: LOCAL(43), exit_status: None, reason: PARENT_CLOSED }`
+and never sees a snapshot with 43 and without 42.
+
+**Wire shape:** [L1.md §1.2](./L1.md) owns the spawn fields and the cascade,
+[§5.5](./L1.md) the append command and its error table, [§4.8](./L1.md) the
+record grammar, the ring, and the raw-only profile (no `FRAME_ACK`, no
+`HISTORY_REQUEST`, zero geometry in BEGIN), and [§7.2](./L1.md) the state
+table. The record's `seq` is the resource's own counter; the frame's `seq`
+is the generation's, as in Step 4.
+
+**Why it matters:** the agent's account and the human's terminal are two
+resources on one server, bound by lifecycle, read through one attach path.
+A consumer that only speaks L1 gets the agent's structured story without a
+metadata tier and without scraping the grid.
+
+---
+
+## Step 8: Detach
 
 **What happens:** the user quits or switches clients. The client sends `DETACH`; the server acknowledges and closes the transport.
 

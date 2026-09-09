@@ -1073,6 +1073,47 @@ to that consumer. The consumer MUST NOT send L2 or L3 messages.
 See [L1.md](./L1.md) and [input.md](./input.md) for the frame
 definitions.
 
+#### 11.2.1 Resource kinds
+
+<!-- impl-status: spec-only; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: spec-only.** No `kind` is on the wire and the reference server
+> serves Terminals only, so every requirement below is vacuously met by a
+> current consumer. The requirements bind a consumer the day a server
+> advertises `RESOURCE_KINDS`.
+
+An L1 identity names a resource of some `ResourceKind`; a Terminal is the
+first kind and an `AGENT_SESSION` the second ([L1.md §1.1](./L1.md)). Every
+L1 consumer, whether or not it implements any kind beyond Terminal:
+
+1. MUST tolerate a `TerminalInfo` whose `kind` it does not implement,
+   including `Unknown { tag }`, in `GET_STATE` and `ATTACHED` snapshots:
+   retain the entry, read the trailing fields it does not know at their
+   documented defaults under the append-only nested rule of
+   [appendix-encoding.md §2](./appendix-encoding.md), and never fail the
+   snapshot on it.
+2. MUST NOT send a Terminal-facet frame or command — `INPUT_*`,
+   `TERMINAL_RESIZE`, `HISTORY_REQUEST`, `FRAME_ACK`, `MOVE_TERMINAL`,
+   `GET_SCREEN`, `ROUTE_INPUT`, `APPLY_INPUT`, `PUT_FILE`, `TRANSCRIBE`,
+   `GET_TERMINAL_STATE`, `ACQUIRE_INPUT`, `RELEASE_INPUT`,
+   `SIGNAL_TERMINAL`, `REPORT_ASKED`, `REPORT_AGENT_STATE` — to a resource
+   whose `kind` is not `TERMINAL`, and MUST treat a `WRONG_RESOURCE_KIND`
+   it receives anyway as Terminal-scoped in the sense of §9: one resource is
+   affected, the attach is not.
+3. MUST NOT send `SPAWN_TERMINAL` field 11 with a non-zero value, fields 12
+   through 14, or `APPEND_RESOURCE_OUTPUT` unless `HELLO_OK` advertises
+   `RESOURCE_KINDS` (§6.2). An unadvertised server skips the fields by
+   length and spawns a Terminal.
+4. MUST accept a `TERMINAL_CLOSED` carrying a `CloseReason` it does not
+   recognise, treating the reason as unstated (§7.2's `DetachReason` rule).
+5. MUST NOT render a non-terminal resource as a pane, and MUST NOT
+   `FRAME_ACK` or `HISTORY_REQUEST` an `AgentEventsJsonlV1` stream
+   ([L1.md §4.8](./L1.md)).
+
+A server that advertises `RESOURCE_KINDS` MUST implement the
+`WRONG_RESOURCE_KIND` rule, the parent cascade, and `APPEND_RESOURCE_OUTPUT`
+as [L1.md §1.1, §1.2, §4.8, and §5.5](./L1.md) specify; advertising the bit
+and serving only the Terminal facet is not conformance.
+
 ### 11.3 L1+L3 conformance (RECOMMENDED for GUIs and shared TUIs)
 
 A consumer that additionally declares `L3` in `HELLO.layers` MUST
