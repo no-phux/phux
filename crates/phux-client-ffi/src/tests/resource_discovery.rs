@@ -35,6 +35,15 @@ fn outgoing(client: *mut PhuxClient) -> Vec<FrameKind> {
 
 fn answer_read(client: *mut PhuxClient, snapshot: SessionSnapshot) {
     let requests = outgoing(client);
+    answer_requests(client, &requests, snapshot, None);
+}
+
+fn answer_requests(
+    client: *mut PhuxClient,
+    requests: &[FrameKind],
+    snapshot: SessionSnapshot,
+    metadata: Option<Vec<u8>>,
+) {
     let state_id = requests
         .iter()
         .find_map(|frame| match frame {
@@ -58,7 +67,7 @@ fn answer_read(client: *mut PhuxClient, snapshot: SessionSnapshot) {
     for frame in [
         FrameKind::MetadataValue {
             request_id: metadata_id,
-            value: None,
+            value: metadata,
         },
         FrameKind::CommandResult {
             request_id: state_id,
@@ -79,6 +88,10 @@ fn refresh(client: *mut PhuxClient, request: u32, snapshot: SessionSnapshot) {
 }
 
 fn subscription(client: *mut PhuxClient) -> u32 {
+    subscription_for(client, &ResourceId::local(MIXED_AGENT))
+}
+
+fn subscription_for(client: *mut PhuxClient, id: &ResourceId) -> u32 {
     let frames = outgoing(client);
     assert_eq!(
         frames.len(),
@@ -90,7 +103,7 @@ fn subscription(client: *mut PhuxClient) -> u32 {
             request_id,
             command: Command::AttachResource { terminal_id },
         } => {
-            assert_eq!(terminal_id, &ResourceId::local(MIXED_AGENT));
+            assert_eq!(terminal_id, id);
             *request_id
         }
         other => panic!("expected resource subscription, got {other:?}"),
@@ -178,6 +191,11 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
             "a close racing an authoritative removal is idempotent"
         );
         assert_eq!(phux_client_effect_count(client), 0);
+        refresh(client, 4, snapshot(true));
+        assert!(
+            outgoing(client).is_empty(),
+            "explicit closure must prevent same-ID resubscription"
+        );
         assert_eq!(
             (*client).inner.session.published(&terminal).unwrap().key(),
             &generation
@@ -191,6 +209,35 @@ fn initial_agent_inventory_also_needs_a_subscription() {
     let client = attached_mixed_client();
     answer_read(client, snapshot(true));
     subscription(client);
+    // SAFETY: fixture owns this client.
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
+fn explicit_agent_close_cannot_be_undone_by_an_outstanding_subscription_refusal() {
+    let client = attached_mixed_client();
+    answer_read(client, snapshot(true));
+    let request_id = subscription(client);
+    assert_eq!(
+        feed_kind(
+            client,
+            &FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(MIXED_AGENT),
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        feed_kind(client, &subscription_refusal(request_id, false)),
+        PhuxClientResult::Ok
+    );
+    refresh(client, 1, snapshot(true));
+    assert!(
+        outgoing(client).is_empty(),
+        "late refusal must not release the explicit-close tombstone"
+    );
     // SAFETY: fixture owns this client.
     unsafe { phux_client_free(client) };
 }
@@ -379,6 +426,214 @@ fn agent_discovery_does_not_spend_dynamic_terminal_admission() {
         subscription(client);
         open_agent_stream(client);
         assert_eq!(effect_at(client, 1).detail, AGENT_RECORDS_LIVE);
+        phux_client_free(client);
+    }
+}
+
+fn workspace_info(client: *mut PhuxClient) -> PhuxWorkspaceInfo {
+    let mut info = PhuxWorkspaceInfo::default();
+    // SAFETY: fixture owns the client and the disjoint output record.
+    assert_eq!(
+        unsafe { phux_client_workspace_info(client, &raw mut info) },
+        PhuxClientResult::Ok
+    );
+    info
+}
+
+fn subscription_refusal(request_id: u32, standalone_error: bool) -> FrameKind {
+    let code = phux_protocol::wire::frame::ErrorCode::ResourceExhausted;
+    let message = "subscription temporarily unavailable".into();
+    if standalone_error {
+        FrameKind::Error {
+            request_id: Some(request_id),
+            code,
+            message,
+        }
+    } else {
+        FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Error { code, message },
+        }
+    }
+}
+
+#[test]
+fn older_subscription_refusal_does_not_cancel_a_newer_workspace_mutation() {
+    assert_subscription_refusal_preserves_mutation(false);
+}
+
+#[test]
+fn older_subscription_error_frame_does_not_cancel_a_newer_workspace_mutation() {
+    assert_subscription_refusal_preserves_mutation(true);
+}
+
+fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
+    let client = attached_resource_client(snapshot(false));
+    answer_read(client, snapshot(false));
+    refresh(client, 1, snapshot(true));
+    let subscription_id = subscription(client);
+    let before = workspace_info(client);
+    // SAFETY: fixture owns this live client and all borrowed options/output spans.
+    unsafe {
+        let mut window = PhuxWorkspaceWindow::default();
+        assert_eq!(
+            phux_client_workspace_window_get(client, 0, &raw mut window),
+            PhuxClientResult::Ok
+        );
+        let mutation = PhuxWorkspaceMutation {
+            request_id: 2,
+            expected_revision: before.revision,
+            session_id: before.session_id,
+            kind: 6,
+            window_id: window.window_id,
+            name: bytes_out(b"confirmed rename"),
+            ..PhuxWorkspaceMutation::default()
+        };
+        assert_eq!(
+            phux_client_workspace_mutate(client, &raw const mutation),
+            PhuxClientResult::Ok
+        );
+        let requests = outgoing(client);
+        assert!(
+            requests
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+            "the new mutation reached the transport before the old refusal"
+        );
+        assert_eq!(
+            feed_kind(
+                client,
+                &subscription_refusal(subscription_id, standalone_error)
+            ),
+            PhuxClientResult::Ok
+        );
+        let pending = workspace_info(client);
+        assert_eq!(
+            (pending.request_id, pending.status),
+            (2, 1),
+            "an older subscription failure must not fail workspace request 2"
+        );
+        assert_eq!(pending.revision, before.revision);
+        // Independent server-confirmation fixture, not a replay of the outgoing SET bytes.
+        let confirmed = phux_client_core::layout::Workspace {
+            windows: vec![phux_client_core::layout::WindowState {
+                id: window.window_id,
+                name: "confirmed rename".into(),
+                state: phux_client_core::layout::LayoutState::single(ResourceId::local(
+                    MIXED_TERMINAL,
+                )),
+            }],
+            active: 0,
+        };
+        answer_requests(
+            client,
+            &requests,
+            snapshot(true),
+            Some(confirmed.encode_topology_cbor().unwrap()),
+        );
+        let completed = workspace_info(client);
+        assert_eq!((completed.request_id, completed.status), (2, 2));
+        assert!(completed.revision > before.revision);
+        assert_eq!(
+            phux_client_workspace_window_get(client, 0, &raw mut window),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(span_bytes(window.name), b"confirmed rename");
+        phux_client_free(client);
+    }
+}
+
+fn satellite_snapshot() -> SessionSnapshot {
+    let parent = ResourceId::satellite("review-satellite", MIXED_TERMINAL);
+    let agent = ResourceId::satellite("review-satellite", MIXED_AGENT);
+    let mut registry = snapshot(false);
+    registry
+        .resources
+        .extend(mixed_kind_snapshot(&parent, &agent).resources);
+    registry
+}
+
+fn bootstrap_agent(
+    client: *mut PhuxClient,
+    agent: &ResourceId,
+    generation: u64,
+    seq: u64,
+    kind: &str,
+) {
+    let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).unwrap();
+    let bootstrap_id = phux_protocol::BootstrapId::new(generation).unwrap();
+    for frame in [
+        FrameKind::BootstrapBegin {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+            cols: 0,
+            rows: 0,
+            base_seq: seq,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: bytes::Bytes::from(record(seq, kind, "{}")),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: agent.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+    ] {
+        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+    }
+}
+
+#[test]
+fn satellite_inventory_withdrawal_allows_same_agent_to_return_with_a_fresh_generation() {
+    let client = attached_resource_client(snapshot(false));
+    answer_read(client, snapshot(false));
+    let agent = ResourceId::satellite("review-satellite", MIXED_AGENT);
+    refresh(client, 1, satellite_snapshot());
+    let request_id = subscription_for(client, &agent);
+    bootstrap_agent(client, &agent, AGENT_BOOTSTRAP, 1, "ask");
+    assert_eq!(
+        feed_kind(
+            client,
+            &FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Ok
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    // SAFETY: fixture owns this client through its final free.
+    unsafe {
+        assert_eq!(phux_client_effect_clear(client), PhuxClientResult::Ok);
+        // Federated GET_STATE succeeds with an empty satellite contribution on
+        // relay failure. This is membership withdrawal, not ResourceClosed.
+        refresh(client, 2, snapshot(false));
+        assert_eq!(phux_client_resource_count(client), 1);
+        assert_eq!(phux_client_effect_count(client), 1);
+        assert_eq!(effect_at(client, 0).detail, AGENT_RECORDS_CLOSED);
+        refresh(client, 3, snapshot(false));
+        assert_eq!(phux_client_effect_count(client), 1, "withdraw only once");
+        refresh(client, 4, satellite_snapshot());
+        subscription_for(client, &agent);
+        bootstrap_agent(client, &agent, AGENT_BOOTSTRAP + 1, 2, "stop");
+        assert_eq!(phux_client_resource_count(client), 3);
+        assert_eq!(phux_client_effect_count(client), 2);
+        assert_eq!(effect_at(client, 0).detail, AGENT_RECORDS_CLOSED);
+        let replacement = effect_at(client, 1);
+        assert_eq!(replacement.seq, 2);
+        assert_eq!(
+            (replacement.detail, replacement.bootstrap_id),
+            (AGENT_RECORDS_RETAINED, AGENT_BOOTSTRAP + 1)
+        );
+        let record: serde_json::Value =
+            serde_json::from_slice(effect_bytes(&replacement).trim_ascii()).unwrap();
+        assert_eq!(record["type"], "stop");
         phux_client_free(client);
     }
 }

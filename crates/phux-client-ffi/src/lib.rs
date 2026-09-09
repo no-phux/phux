@@ -692,6 +692,9 @@ fn dispatch_frame(
     let Some(frame) = session_rename::dispatch(client, frame)? else {
         return Ok(());
     };
+    if workspace::resources::dispatch(client, &frame)? {
+        return Ok(());
+    }
     let Some(frame) = workspace::dispatch(client, frame) else {
         return Ok(());
     };
@@ -1348,7 +1351,14 @@ fn apply_terminal_closed(
     client: &mut Client,
     terminal_id: &phux_protocol::ResourceId,
 ) -> Result<(), BridgeError> {
-    // GET_STATE may have already retired this agent before its close reaches us.
+    // A delayed explicit close after temporary inventory withdrawal still creates
+    // a durable tombstone, without retiring the host projection a second time.
+    client.workspace.subscriptions.cancel(terminal_id);
+    if client.workspace.subscriptions.was_withdrawn(terminal_id) {
+        apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
+        client.forget_resource(terminal_id);
+        return Ok(());
+    }
     if !client.is_agent_stream(terminal_id)
         && client.session.resource_kind(terminal_id) == Some(ResourceKind::AgentSession)
     {
