@@ -41,7 +41,7 @@ const DisabledPhuxProvider = struct {
         }
     };
     pub const Endpoint = union(enum) { tcp: struct { host: []const u8, port: u16 }, unix: []const u8 };
-    const State = enum { new };
+    const State = enum { new, attached };
     const Anchor = struct { opaque_id: u64 = 0 };
     pub const SessionSummary = struct {
         id: u32,
@@ -91,6 +91,21 @@ const DisabledPhuxProvider = struct {
     }
     pub fn catalogRefs(_: *const DisabledPhuxProvider, _: []TerminalRef) usize {
         return 0;
+    }
+    pub fn workspaceSnapshot(_: *const DisabledPhuxProvider) provider_contract.workspace.Snapshot {
+        return .{};
+    }
+    pub fn catalogTerminals(_: *const DisabledPhuxProvider) []const provider_contract.workspace.CatalogTerminal {
+        return &.{};
+    }
+    pub fn terminalSession(_: *const DisabledPhuxProvider, _: TerminalRef) ?u32 {
+        return null;
+    }
+    pub fn requestWorkspaceRefresh(_: *DisabledPhuxProvider) error{Disabled}!?u32 {
+        return error.Disabled;
+    }
+    pub fn requestWorkspaceMutation(_: *DisabledPhuxProvider, _: provider_contract.workspace.Mutation) error{Disabled}!u32 {
+        return error.Disabled;
     }
     pub fn takeOperationResult(_: *DisabledPhuxProvider) ?@This().OperationResult {
         return null;
@@ -186,7 +201,7 @@ pub const pointer_module = if (phux_enabled) @import("phux_pointer") else Disabl
 
 pub const phux_channel_key: u64 = 102;
 pub const pointer_channel_key: u64 = 103;
-pub const max_remote_terminals: usize = 64;
+pub const max_remote_terminals: usize = provider_contract.workspace.max_terminals;
 
 pub const ProviderKind = enum { local, phux };
 

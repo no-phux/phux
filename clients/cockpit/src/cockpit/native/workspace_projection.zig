@@ -740,8 +740,34 @@ pub fn terminalTitleInto(model: *const Model, id: TerminalRef, out: []u8) []cons
         if (at.pane_count <= 1) return std.fmt.bufPrint(out, "Terminal {d}", .{at.tab}) catch "Terminal";
         return std.fmt.bufPrint(out, "Terminal {d}.{d}", .{ at.tab, at.pane }) catch "Terminal";
     }
-    const presentation = model.remotePresentation(id) orelse return "Phux";
-    return if (presentation.title.len == 0) "Phux" else clampTitle(presentation.title);
+    return remoteTitle(model, id);
+}
+
+fn remoteTitle(model: *const Model, id: TerminalRef) []const u8 {
+    if (model.remotePresentation(id)) |presentation| {
+        if (presentation.title.len != 0) return clampTitle(presentation.title);
+    }
+    const remote = model.phuxConst() orelse return "Phux";
+    for (remote.catalogTerminals()) |*entry| {
+        if (!entry.terminal_ref.eql(id)) continue;
+        if (entry.title.len != 0) return clampTitle(entry.title.slice());
+        if (entry.cwd.len != 0) return clampTitle(entry.cwd.slice());
+    }
+    return "Phux";
+}
+
+pub fn tabTitleInto(model: *const Model, workspace: *const Workspace, index: usize, out: []u8) []const u8 {
+    if (workspace.shared_ids[index]) |id| {
+        if (model.phuxConst()) |remote| {
+            for (remote.workspaceSnapshot().windows) |*window| {
+                if (!std.mem.eql(u8, &window.id, &id)) continue;
+                if (window.name.len != 0) return clampTitle(window.name.slice());
+                break;
+            }
+        }
+    }
+    const ref = workspace.tabTerminal(index) orelse return "Terminal";
+    return terminalTitleInto(model, ref, out);
 }
 
 /// Cut an over-long title at a UTF-8 boundary rather than mid-codepoint: a
@@ -980,8 +1006,7 @@ pub fn tabLabelIdentityIn(
     var painted: [topology.max_tabs][]const u8 = undefined;
     var count: usize = 0;
     for (0..window.count) |offset| {
-        const id = workspace.tabTerminal(window.first + offset) orelse continue;
-        names[count] = terminalTitleInto(model, id, &name_storage[count]);
+        names[count] = tabTitleInto(model, workspace, window.first + offset, &name_storage[count]);
         painted[count] = elideTitleMiddleInto(tokens, names[count], result.label_width, &painted_storage[count]);
         count += 1;
     }

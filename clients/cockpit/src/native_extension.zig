@@ -688,6 +688,7 @@ pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void 
 /// overlay keeps the pointer for the core. Every event still reaches the
 /// inner app afterwards.
 const PointerHost = struct {
+    const workspace_timer_id = std.hash.Wyhash.hash(0, "phux-workspace-refresh");
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
 
@@ -716,6 +717,7 @@ const PointerHost = struct {
     fn start(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try self.inner.start(runtime);
+        if (comptime cockpit.phux_enabled) try runtime.startTimer(workspace_timer_id, std.time.ns_per_s, true);
     }
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
@@ -723,6 +725,9 @@ const PointerHost = struct {
         const engine = bridge.engine;
         const before_window = if (engine) |current| current.model.active_window else 0;
         const before_sequence = if (engine) |current| current.sequence else 0;
+        if (value == .timer and value.timer.id == workspace_timer_id) {
+            if (engine) |current| current.refreshWorkspace();
+        }
         routeNativeInput(value);
         try self.inner.event(runtime, value);
         if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
@@ -732,6 +737,7 @@ const PointerHost = struct {
     }
     fn stop(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        if (comptime cockpit.phux_enabled) runtime.cancelTimer(workspace_timer_id) catch {};
         if (self.selection_autoscroll_timer_active) {
             runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
             self.selection_autoscroll_timer_active = false;
@@ -910,6 +916,10 @@ const Rig = struct {
         }
         _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         try std.testing.expectEqual(.attached, remote.state());
+        try std.testing.expectEqual(@as(u32, 0), engine.model.shared_workspace.session);
+        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_initial_metadata.bin")));
+        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_initial_state.bin")));
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         try std.testing.expectEqual(@as(usize, 1), engine.model.remote_inventory_count);
         const ref = engine.model.focusedTerminalRef().?;
         try std.testing.expectEqual(.phux, ref.provider_id);
@@ -1456,22 +1466,21 @@ test "shipping search text cannot leak a key release after search closes" {
     try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
 }
 
-test "shipping shell exit transfers focus to the revealed Phux terminal" {
+test "shipping exit of superseded scratch shell preserves confirmed Phux focus" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
+    const scratch = bridge.engine.?.model.provider.terminal(bridge.engine.?.model.focusedTerminalRef().?).?;
+    const scratch_key = scratch.pty_key;
     const ref = try rig.attachFixture();
     const engine = bridge.engine.?;
     const remote = engine.model.phux().?;
-    const select = protocol.encodeIntent(.{ .kind = .select_tab, .expected_revision = engine.revision, .argument = 0 });
     const fx = EngineFx{ .effects = &rig.app_state.effects };
-    try std.testing.expect(engine.applyIntent(&select, fx));
-    try expectOutgoingTag(remote, 0x14);
-    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
-    _ = engine.onShellEvent(fx, .{ .key = pane.pty_key, .kind = .exit, .code = 0 });
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
-    try expectOutgoingTag(remote, 0x14);
+    _ = engine.onShellEvent(fx, .{ .key = scratch_key, .kind = .exit, .code = 0 });
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
 test "shipping frame resizes a published Phux viewport once" {
@@ -3088,48 +3097,8 @@ test "navigation selects an exact split pane across windows through the shipping
 }
 
 test "navigation activates available remote identity and stable session id including reconnect" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    const engine = try Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
-    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/navigation-unused.sock" });
-    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
-    engine.model.phux_provider = remote;
-    try remote.host.terminals.append(std.testing.allocator, .{ .id = .{ .kind = 0, .id = 900 }, .published = true, .phase = .live });
-    const ref: @TypeOf(engine.model.remote_inventory[0]) = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 900 } } };
-    engine.model.remote_inventory[0] = ref;
-    engine.model.remote_inventory_count = 1;
-    try remote.host.sessions.append(std.testing.allocator, .{
-        .id = 41,
-        .name = try std.testing.allocator.dupe(u8, "work"),
-        .created_at_unix_secs = 0,
-        .window_count = 1,
-        .attached_client_count = 0,
-        .focused = false,
-    });
     var recorder: Recorder = .{};
-    engine.model.ws().tab_limit_refused = true;
-    const available = navigationIntentBytes(engine.revision, 1);
-    try std.testing.expect(engine.applyIntent(&available, &recorder));
-    try std.testing.expect(!engine.model.wsConst().tab_limit_refused);
-    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
-    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
-    const session = navigationIntentBytes(engine.revision, 2);
-    try std.testing.expect(engine.applyIntent(&session, &recorder));
-    try std.testing.expectEqual(@as(?u32, 41), remote.session_id);
-    // SelectedSessionId remains server-authoritative until reconnect publishes.
-    try std.testing.expect(remote.selectedSessionId() == null);
-    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
-    try std.testing.expect(engine.model.phux_admit_on_ready);
-    try std.testing.expect(!engine.applyIntent(&session, &recorder));
-    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
-    const same_session = navigationIntentBytes(engine.revision, 2);
-    try std.testing.expect(engine.applyIntent(&same_session, &recorder));
-    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
-    engine.model.phux_connection_unavailable = true;
-    var reconnect = navigationIntentBytes(engine.revision, 0);
-    reconnect[1] = 12;
-    try std.testing.expect(engine.applyIntent(&reconnect, &recorder));
-    try std.testing.expectEqual(@as(usize, 2), recorder.navigation_restarts);
+    try cockpit.durable_tests.navigationSharedAdmission(&recorder);
 }
 
 test "navigation snapshots preserve full window inventory within the host payload limit" {
@@ -3161,145 +3130,16 @@ test "navigation snapshots preserve full window inventory within the host payloa
     try std.testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, page[13..15], .little));
 }
 
-test "shipping remote close retires replica and navigation explicitly reattaches catalog identity" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    const engine = try Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
-    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-unused.sock" });
-    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
-    const fixtures = @TypeOf(remote.*).test_support;
-    engine.model.phux_provider = remote;
-    try fixtures.attachHost(remote.host);
-    engine.model.reconcileRemoteTerminals();
-    const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
-    try std.testing.expect(engine.model.admitTab(ref));
-    try std.testing.expect(engine.model.selectTerminal(ref));
-    const old_owner = remote.owner(ref).?;
-    const before = remote.host.terminals.items.len;
-    var recorder: Recorder = .{};
-    const close = protocol.encodeIntent(.{ .kind = .native_command, .expected_revision = engine.revision, .argument = @intFromEnum(protocol.NativeCommand.close_focused_pane) });
-    try std.testing.expect(engine.applyIntent(&close, &recorder));
-    try std.testing.expect(engine.model.locateTerminal(ref) == null);
-    try std.testing.expect(!remote.ownerIsCurrent(old_owner));
-    const early_select = navigationIntentBytes(engine.revision, 1);
-    try std.testing.expect(!engine.applyIntent(&early_select, &recorder));
-    try std.testing.expect(engine.model.locateTerminal(ref) == null);
-    try fixtures.expectOutgoing(remote.host.bridge, "detach-request.bin");
-    try fixtures.stageFixture(remote.host.bridge, "detach-ok.bin");
-    _ = try remote.drainReadiness();
-    try std.testing.expectEqual(before - 1, remote.host.terminals.items.len);
-    try std.testing.expect(!remote.contains(ref));
-    const detached = remote.takeOperationResult().?;
-    try std.testing.expectEqual(@as(u32, 3), @intFromEnum(detached.kind));
-    engine.model.reconcileRemoteTerminals();
-    var found = false;
-    for (engine.model.remoteTerminalRefs()) |entry| if (entry.eql(ref)) {
-        found = true;
-    };
-    try std.testing.expect(found);
-    // Drive shipping navigation through the revision-fenced catalog index.
-    var index: u16 = 0;
-    var entries: [8]cockpit.projection.PaletteEntry = undefined;
-    const count = cockpit.projection.paletteEntriesWindowIn(engine.model, engine.model.wsConst(), .{ .first = 0, .count = entries.len }, &entries);
-    for (entries[0..count]) |entry| {
-        if (entry == .available_terminal and entry.available_terminal.eql(ref)) break;
-        index += 1;
-    }
-    const select = navigationIntentBytes(engine.revision, index);
-    try std.testing.expect(engine.applyIntent(&select, &recorder));
-    try std.testing.expect(engine.model.locateTerminal(ref) == null);
-    try fixtures.expectOutgoing(remote.host.bridge, "reattach-request.bin");
-    // Bootstrap is permitted before COMMAND_RESULT. Repeated navigation must
-    // not bypass the outstanding exact-destination transaction's acceptance.
-    try fixtures.stageFixture(remote.host.bridge, "reattach-ready.bin");
-    _ = try remote.drainReadiness();
-    try std.testing.expect(!engine.creation.pump(engine.model));
-    const repeat_select = navigationIntentBytes(engine.revision, index);
-    try std.testing.expect(!engine.applyIntent(&repeat_select, &recorder));
-    try std.testing.expect(engine.model.locateTerminal(ref) == null);
-    try fixtures.stageFixture(remote.host.bridge, "reattach-ok.bin");
-    _ = try remote.drainReadiness();
-    try std.testing.expect(engine.creation.complete(engine.model, remote.takeOperationResult().?));
-    try std.testing.expect(engine.creation.pump(engine.model));
-    try std.testing.expect(engine.model.locateTerminal(ref) != null);
+test "shipping remote close removes shared presentation and navigation reattaches catalog identity" {
+    try cockpit.durable_tests.sharedCloseAndCatalogAdmission();
 }
 
-test "shipping close window makes bounded progress when remote detach is locally refused" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    const engine = try Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
-    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/detach-refused-unused.sock" });
-    const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
-    engine.model.phux_provider = remote;
-    try @TypeOf(remote.*).test_support.attachHost(remote.host);
-    const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
-    try std.testing.expect(engine.model.admitTab(ref));
-    // Fill the bounded completion ledger, as an undrained UI consumer can.
-    for (1..17) |id| {
-        remote.host.operation_ledger.accepted(@intCast(id), remote.connectionEpoch(), .spawn, null);
-        try remote.host.operation_ledger.complete(.{ .request_id = @intCast(id), .connection_epoch = remote.connectionEpoch(), .kind = .spawn, .status = .refused });
-    }
-    var recorder: Recorder = .{};
-    // This assertion catches false progress before the old window loop can spin.
-    const close_tab = protocol.encodeIntent(.{ .kind = .close_tab, .expected_revision = engine.revision, .argument = 1 });
-    try std.testing.expect(!engine.applyIntent(&close_tab, &recorder));
-    const close_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
-    try std.testing.expect(engine.applyIntent(&close_window, &recorder));
-    try std.testing.expect(engine.model.windowOpen(0));
-    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
-    try std.testing.expect(engine.model.locateTerminal(ref) != null);
-    try std.testing.expectEqual(@as(u32, 16), remote.host.operation_ledger.last_id);
-    const retry_window = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 0, .argument = 0 });
-    try std.testing.expect(!engine.applyIntent(&retry_window, &recorder));
+test "shipping native close rehomes shared tabs while topology mutation is busy" {
+    try cockpit.durable_tests.nativeCloseRehomesWhileBusy();
 }
 
-test "shipping offline remote close stays absent after reconnect without outbound work" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    const ChannelFx = struct {
-        pub fn openChannel(_: *const @This(), _: anytype) native_sdk.ChannelHandle {
-            return .{};
-        }
-        pub fn closeChannel(_: *const @This(), _: u64) void {}
-        pub fn showNotification(_: *const @This(), _: anytype) void {}
-    };
-    for ([_]protocol.IntentKind{ .native_command, .close_tab, .close_window }) |kind| {
-        const engine = try Engine.create(std.testing.allocator, std.testing.io);
-        defer engine.destroy();
-        var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/offline-detach-unused.sock" });
-        const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
-        const fixtures = @TypeOf(remote.*).test_support;
-        engine.model.phux_provider = remote;
-        try fixtures.attachHost(remote.host);
-        engine.model.phux_admit_on_ready = false;
-        const ref: cockpit.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try cockpit.RemoteTerminalId.fromPhux(0, 7, "") } };
-        const workspace = engine.model.openWindow(1).?;
-        try std.testing.expect(workspace.admitTab(ref));
-        const before = engine.model.topologyFingerprint();
-        remote.host.disconnect();
-        var recorder: Recorder = .{};
-        const close = protocol.encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .window = 1, .argument = if (kind == .native_command) @intFromEnum(protocol.NativeCommand.close_focused_pane) else 0 });
-        try std.testing.expect(engine.applyIntent(&close, &recorder));
-        try std.testing.expect(engine.model.locateTerminal(ref) == null);
-        try std.testing.expect(!engine.model.windowOpen(1));
-        try std.testing.expect(engine.model.topologyFingerprint() != before);
-        const saved = try engine.model.topologySnapshot();
-        try std.testing.expectEqual(@as(u8, 1), saved.window_count);
-        for (saved.tabs[0..saved.tab_count]) |tab| {
-            for (tab.nodes) |node| try std.testing.expect(node.remote_ref == null);
-        }
-        try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
-        try std.testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
-        try std.testing.expect(remote.host.bridge.outgoing.take() == null);
-        try remote.host.reconnect("operations-test");
-        remote.attach_queued = false;
-        try fixtures.stageFixture(remote.host.bridge, "hello.bin");
-        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
-        try fixtures.stageFixture(remote.host.bridge, "attached.bin");
-        _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = cockpit.phux_channel_key, .kind = .data }, null);
-        try std.testing.expect(remote.contains(ref));
-        try std.testing.expect(engine.model.locateTerminal(ref) == null);
-        try std.testing.expect(!engine.model.windowOpen(1));
-    }
+test "shipping offline shared topology edits refuse while native placement remains local" {
+    try cockpit.durable_tests.offlineSharedCloseRefuses();
 }
 
 const NavigationConnectionRecorder = struct {

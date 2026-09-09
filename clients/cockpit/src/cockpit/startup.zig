@@ -563,7 +563,7 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
         init.io,
         user_config,
         loaded_config.path(),
-        state_path,
+        if (phux_enabled) null else state_path,
         init.environ_map.get("PHUX_COCKPIT_TABS"),
     );
     errdefer model_module.deinitModel(&initialized.model);

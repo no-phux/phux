@@ -17,13 +17,14 @@ pub const max_bytes = 4096;
 pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge };
 const empty_workspace: model_module.Workspace = .{};
 
-pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3 };
+pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3, workspace_unavailable = 4 };
 
 pub fn connection(model: *const Model) Connection {
     if (model.phux_reconnect_after_close) return .connecting;
     if (model.phux_connection_unavailable) return .offline;
     if (comptime !support.phux_enabled) return .local;
     const remote = model.phuxConst() orelse return .local;
+    if (remote.state() == .attached and (model.shared_workspace.refused or model.shared_workspace.subscription_refused)) return .workspace_unavailable;
     return switch (remote.state()) {
         .new, .hello_queued, .negotiated => .connecting,
         .attached => .connected,

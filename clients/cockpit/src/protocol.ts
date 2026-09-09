@@ -232,7 +232,7 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
   if (bytes.length < 28 || bytes.length > 4096) return false;
   if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== SNAPSHOT) return false;
-  if (!(bytes[23] >= 0 && bytes[23] <= 3)) return false;
+  if (!(bytes[23] >= 0 && bytes[23] <= 4)) return false;
   return validRun(bytes[20], bytes[21], bytes[24], bytes[25]);
 }
 
