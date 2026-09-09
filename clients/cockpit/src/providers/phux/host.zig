@@ -527,6 +527,7 @@ pub const Host = struct {
             try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
         }
         host.captureWorkspace();
+        delta.removed_count += try host.prepareAttachAdmission();
         try host.captureEffects();
         delta.detached = host.state() == .detached;
         if (host.state() == .attached and !host.attach_barrier_seen) {
@@ -988,6 +989,52 @@ pub const Host = struct {
         _ = try host.ensureTerminal(cId(&remote));
     }
 
+    fn prepareAttachAdmission(host: *Host) !usize {
+        if (host.attach_barrier_seen) return 0;
+        host.markObsoleteAttachReplicas();
+        const removed = host.pruneRemoved(false);
+        if (host.state() != .attached) return removed;
+        // ATTACH_READY emits damage for every resolved participant. Mark the
+        // retained IDs before freeing unseen slots, without admitting new IDs.
+        try host.markReadyAttachReplicas();
+        return removed + host.pruneRemoved(true);
+    }
+
+    fn markObsoleteAttachReplicas(host: *Host) void {
+        // Reconnect clears this store. A nonzero publication is the copied
+        // ATTACHED registry, even while metadata and initial READY are pending.
+        if (host.workspace_store.info.revision == 0) return;
+        for (host.terminals.items) |*terminal| {
+            if (terminal.generation.epoch_id == host.client_generation) continue;
+            if (host.retainedByAttachCatalog(terminal.terminalRef())) continue;
+            terminal.remove_at_barrier = true;
+        }
+    }
+
+    fn retainedByAttachCatalog(host: *const Host, ref: provider.TerminalRef) bool {
+        for (host.workspace_store.catalog) |entry| {
+            if (!entry.terminal_ref.eql(ref)) continue;
+            // Unknown satellite ownership is not evidence of removal.
+            return entry.session_id == 0 or entry.session_id == host.workspace_store.info.session_id;
+        }
+        return false;
+    }
+
+    fn markReadyAttachReplicas(host: *Host) !void {
+        const count = c.phux_client_effect_count(host.client);
+        for (0..count) |index| {
+            var effect: c.PhuxClientEffect = undefined;
+            try resultError(c.phux_client_effect_get(host.client, index, &effect));
+            if (effect.kind != c.PHUX_CLIENT_EFFECT_DAMAGE) continue;
+            const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse continue;
+            if (effect.detail == c.PHUX_CLIENT_DAMAGE_REMOVED) {
+                terminal.remove_at_barrier = true;
+            } else {
+                terminal.seen_in_attach = true;
+            }
+        }
+    }
+
     fn captureEffects(host: *Host) !void {
         const count = c.phux_client_effect_count(host.client);
         var index: usize = 0;
@@ -1001,15 +1048,7 @@ pub const Host = struct {
                 .last_seq = effect.seq,
             };
             switch (effect.kind) {
-                c.PHUX_CLIENT_EFFECT_DAMAGE => {
-                    const terminal = try host.ensureTerminal(effect.terminal_id);
-                    if (effect.detail == c.PHUX_CLIENT_DAMAGE_REMOVED) {
-                        terminal.phase = .tombstoned;
-                        terminal.remove_at_barrier = true;
-                    } else {
-                        markGridDirty(terminal, host.attach_barrier_seen);
-                    }
-                },
+                c.PHUX_CLIENT_EFFECT_DAMAGE => try host.captureDamage(&effect),
                 c.PHUX_CLIENT_EFFECT_STATUS => {
                     try host.captureStatus(&effect);
                     try host.appendNotice(.status, &effect, generation);
@@ -1022,6 +1061,19 @@ pub const Host = struct {
         }
         try resultError(c.phux_client_effect_clear(host.client));
         try host.captureOperations();
+    }
+
+    fn captureDamage(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        if (effect.detail == c.PHUX_CLIENT_DAMAGE_REMOVED) {
+            // A removed participant may already have released its slot before
+            // admission. Never recreate a replica merely to remove it again.
+            const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+            terminal.phase = .tombstoned;
+            terminal.remove_at_barrier = true;
+            return;
+        }
+        const terminal = try host.ensureTerminal(effect.terminal_id);
+        markGridDirty(terminal, host.attach_barrier_seen);
     }
 
     fn captureStatus(host: *Host, effect: *const c.PhuxClientEffect) !void {
@@ -1607,6 +1659,60 @@ test "replacement session admits one terminal after sixteen old replicas" {
     try std.testing.expect(delta.ready_published);
     try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
     try std.testing.expect(host.terminalKnown(phuxRef(replacement)));
+}
+
+test "same-session reconnect replaces one of sixteen replicas before admitting new effects" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try host.start("full-inventory");
+    try test_support.stageFixture(&bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    var offset: usize = 0;
+    try test_support.stageFrames(&bridge, @embedFile("fixtures/reconnect_initial.bin"), &offset, 50);
+    try std.testing.expect((try host.drainReadiness()).ready_published);
+    try std.testing.expectEqual(max_terminals, host.terminals.items.len);
+    try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
+    const survivor = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 7, ""));
+    const removed = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 22, ""));
+    const replacement = phuxRef(try RemoteId.fromPhux(c.PHUX_TERMINAL_LOCAL, 23, ""));
+    const old_grid = host.presentation(survivor).?.grid.screen_text;
+    const frozen = try host.capturePresentation(host.owner(survivor).?);
+    defer frozen.destroy();
+    const removed_frozen = try host.capturePresentation(host.owner(removed).?);
+    defer removed_frozen.destroy();
+
+    try host.reconnect("full-inventory");
+    try test_support.stageFixture(&bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    // The complete ATTACHED roster proves 22 obsolete before any new TITLE or
+    // DAMAGE effect needs its slot. Same-ID borrowed grids survive until READY.
+    offset = 0;
+    const encoded = @embedFile("fixtures/reconnect_replacement.bin");
+    try test_support.stageFrames(&bridge, encoded, &offset, 1);
+    const roster_delta = try host.drainReadiness();
+    try std.testing.expect(!roster_delta.ready_published);
+    try std.testing.expectEqual(@as(?u32, 1), host.selectedSessionId());
+    try test_support.stageFrames(&bridge, encoded, &offset, 48);
+    const bootstrap_delta = try host.drainReadiness();
+    try std.testing.expect(!bootstrap_delta.ready_published);
+    const retained = host.presentation(survivor).?;
+    try std.testing.expectEqual(provider.Phase.reconnecting, retained.phase);
+    try std.testing.expectEqual(@intFromPtr(old_grid.ptr), @intFromPtr(retained.grid.screen_text.ptr));
+    try std.testing.expectEqualStrings(frozen.value.grid.screen_text, retained.grid.screen_text);
+    try test_support.stageFrames(&bridge, encoded, &offset, 1);
+    const ready_delta = try host.drainReadiness();
+    try std.testing.expect(ready_delta.ready_published);
+    try std.testing.expectEqual(@as(usize, 1), roster_delta.removed_count + bootstrap_delta.removed_count + ready_delta.removed_count);
+    try std.testing.expectEqual(max_terminals, host.terminals.items.len);
+    try std.testing.expect(!host.terminalKnown(removed));
+    try std.testing.expectEqual(provider.Phase.live, host.presentation(replacement).?.phase);
+    try std.testing.expectEqualStrings("replacement", host.presentation(replacement).?.title);
+    try std.testing.expect(std.mem.startsWith(u8, host.presentation(replacement).?.grid.screen_text, "NEW REPLICA"));
+    try std.testing.expectEqualStrings(frozen.value.grid.screen_text, removed_frozen.value.grid.screen_text);
 }
 
 test "workspace C publication owns borrowed bytes and rejects invalid capacity atomically" {

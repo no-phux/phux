@@ -126,7 +126,10 @@ pub const PhuxProvider = struct {
             }
         }
         if (!found) return error.InvalidIdentity;
-        if (self.selectedSessionId() == session_id or self.session_id == session_id) return false;
+        // A pending destination takes precedence over the last attachment: an
+        // A -> B -> A intent must cancel B even while A is still displayed.
+        const requested: ?u32 = self.session_id orelse self.selectedSessionId();
+        if (requested == session_id) return false;
         self.session_id = session_id;
         return true;
     }
@@ -402,6 +405,40 @@ fn discoverFixtureSessions(self: *PhuxProvider) !void {
     _ = try self.requestWorkspaceRefresh();
     try host_mod.test_support.stageWorkspaceFixture(self.bridge, "workspace_refresh_metadata.bin");
     try host_mod.test_support.stageWorkspaceFixture(self.bridge, "workspace_refresh_state.bin");
+    _ = try self.drainReadiness();
+}
+
+test "pending session switch back to attached session replaces the requested destination" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, null, "switch-back");
+    defer self.destroy();
+    try host_mod.test_support.attachHost(self.host);
+    try discoverFixtureSessions(self);
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
+    try std.testing.expect(try self.selectSession(2));
+    try restartFixtureConnection(self);
+    try std.testing.expect(self.attach_queued);
+    try std.testing.expectEqual(State.negotiated, self.state());
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
+    try std.testing.expectEqual(@as(?u32, 2), self.session_id);
+
+    // B has been queued, but its ATTACHED has not arrived. Selecting A must
+    // replace B's intent even though the last completed attachment is still A.
+    try std.testing.expect(try self.selectSession(1));
+    try std.testing.expectEqual(@as(?u32, 1), self.session_id);
+    try std.testing.expect(!try self.selectSession(1));
+    try restartFixtureConnection(self);
+    try host_mod.test_support.stageFixture(self.bridge, "attached.bin");
+    _ = try self.drainReadiness();
+    try std.testing.expectEqual(State.attached, self.state());
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
+    try std.testing.expectEqual(@as(?u32, 1), self.session_id);
+}
+
+fn restartFixtureConnection(self: *PhuxProvider) !void {
+    self.prepareSessionSwitch();
+    try self.host.reconnect(self.client_name);
+    self.attach_queued = false;
+    try host_mod.test_support.stageFixture(self.bridge, "hello.bin");
     _ = try self.drainReadiness();
 }
 
