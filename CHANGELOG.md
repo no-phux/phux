@@ -9,6 +9,37 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.28.0](https://github.com/no-phux/phux/compare/v0.27.1...v0.28.0) (2026-09-09)
+
+
+### Features
+
+* **cockpit:** complete native durable Phux interactions and recovery ([aee3681](https://github.com/no-phux/phux/commit/aee368117cf1b05ac11fbd051f8a8383aeceac0b))
+* **config:** schema-pinned settings catalogue with provenance and a comment-preserving writer ([ec50a45](https://github.com/no-phux/phux/commit/ec50a4578d2b33b5977c2a7945e38796edc23267))
+* **tui:** refine sidebar layout and shared visual system ([cbeefb2](https://github.com/no-phux/phux/commit/cbeefb2db680596f2f51d32a7fc075d57f62b72f))
+* **tui:** settings page that edits config.toml in place ([c6c3711](https://github.com/no-phux/phux/commit/c6c37118ac084fd323ea2d4e9d42b29f60616045))
+
+
+### Bug Fixes
+
+* **ci:** verify the vendored ghostty-vt.wasm with the release-pinned Zig ([dfe671b](https://github.com/no-phux/phux/commit/dfe671b1cc0ae696d9e1e940e66c43698a7626c4))
+* **cockpit:** soak the coordinator-backed lifecycle of the packaged app ([#552](https://github.com/no-phux/phux/issues/552)) ([45575ac](https://github.com/no-phux/phux/commit/45575acf80013a28b4210175af27ff08752948b6))
+* **pair:** emit the connect link as an https Universal Link ([2a2dccd](https://github.com/no-phux/phux/commit/2a2dccd94f971f6a3df50380a1b103fc92582ca1)), closes [#488](https://github.com/no-phux/phux/issues/488)
+* **release:** use tap token for cross-repo updates ([a9b4161](https://github.com/no-phux/phux/commit/a9b4161682ed763fdb178fe3d1b2f73dcfb57a32))
+
+
+### Refactors
+
+* **client:** extract the ratatui TUI into the phux-tui crate ([071e174](https://github.com/no-phux/phux/commit/071e174dad955afe59aba27fa454a045ec9d795b))
+* **tui:** consolidate config-derived state into TuiSettings ([629c550](https://github.com/no-phux/phux/commit/629c5500def84367a6153c0f49b7443dd98e10e7))
+
+
+### Documentation
+
+* **agents:** commit verified work before handoff ([e227b33](https://github.com/no-phux/phux/commit/e227b330199223afebf918352886b3cd54106b55))
+* **homebrew:** explain tap trust requirement ([bd708f7](https://github.com/no-phux/phux/commit/bd708f7989b4ae009d5957c8e7e7903066d4f493))
+* **site:** import phux-site as docs/site and move to phux.sh ([#547](https://github.com/no-phux/phux/issues/547)) ([d30f128](https://github.com/no-phux/phux/commit/d30f128eb48c0964078bc4286e24728142591b85))
+
 ## [0.27.1](https://github.com/no-phux/phux/compare/v0.27.0...v0.27.1) (2026-09-07)
 
 
