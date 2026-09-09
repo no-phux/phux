@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/oly-wan-kenobi/zentinel",
+  "revision": "5844713b792a1dc56cfd5407f7413b0892162d1b",
+  "archive_sha256": "9591bababd27fe5fa8fad7d8c6f398d40524b7aaf90fc7d5e38e0d03dd1ad7b2",
+  "zig_version": "0.16.0"
+}
