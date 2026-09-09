@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import socket
 import sys
@@ -14,6 +15,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from lib import input_roundtrip as helpers
+from lib import agent_attention as agents
 
 SPEC = importlib.util.spec_from_file_location("roundtrip_cli", Path(__file__).with_name("input-roundtrip.py"))
 cli = importlib.util.module_from_spec(SPEC)
@@ -110,6 +112,27 @@ class IsolationTests(unittest.TestCase):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_mixed_inventory_keeps_only_terminal_facet_targets(self):
+        report = inventory("@1", "@2")
+        report["resources"].append({"id": "@3", "kind": "agent_session", "parent": "@1"})
+        self.assertEqual(helpers.terminal_ids(report), {"@1", "@2"})
+        self.assertEqual(helpers.resource_inventory(report)["@3"], {"kind": "agent_session", "parent": "@1"})
+
+    def test_nonterminal_rows_are_validated_before_filtering(self):
+        for agent_id in ("@1", "remote/@3", "@0", "@\u0663"):
+            report = inventory("@1", "@2")
+            report["resources"].append({"id": agent_id, "kind": "agent_session", "parent": "@1"})
+            with self.subTest(agent_id=agent_id), self.assertRaises(helpers.Failure):
+                helpers.terminal_ids(report)
+
+    def test_mixed_inventory_terminal_facet_must_agree_exactly(self):
+        for terminals in (["@1", "@2", "@3"], ["@1"], ["@1", "@2", "@2"]):
+            report = inventory("@1", "@2")
+            report["resources"].append({"id": "@3", "kind": "agent_session", "parent": "@1"})
+            report["terminals"] = terminals
+            with self.subTest(terminals=terminals), self.assertRaises(helpers.Failure):
+                helpers.terminal_ids(report)
+
     def test_resource_delta_uses_exact_id_not_tab_ordinal(self):
         before = helpers.terminal_ids(inventory("@1", "@2"))
         after = helpers.terminal_ids(inventory("@1", "@2", "@4"))
@@ -347,6 +370,268 @@ class RestartTests(unittest.TestCase):
                 {"targets": ["@1", "@2"], "window": "@w7"},
                 {"targets": ["@3"], "window": "@w9"},
             ])
+
+
+class AgentFixture:
+    """Offline UI/producer model behind the real Probe click/key/owner methods.
+
+    Faults alter observed behavior, not the acceptance assertions. No native,
+    Phux, fixture subprocess or AppKit is invoked by this model.
+    """
+    view = "@w1/phux-cockpit-canvas"
+
+    def __init__(self, work, fault=None):
+        self.work, self.fault = work, fault
+        self.focused, self.side, self.inspector = "@2", False, False
+        self.live, self.retained_row = False, False
+        self.state, self.attention, self.stage = "unknown", False, "shell"
+        self.typed, self.buffer, self.records = [], "", []
+        self.screens = {"@1": [], "@2": [], "@3": []}
+        self.native_id, self.resource, self.parent = "", "@4", "@1"
+        self.seq, self.ts, self.reason, self.kind = 0, 0, "", "ask"
+        (work / "scripts").mkdir()
+        (work / "scripts/agent-attention-proof.py").touch()
+        launcher = Mock(work=work, app={"pid": 50, "started_unix": 1},
+                        env={"PHUX_SOCKET": str(work / "p.sock")})
+        launcher.args.phux = work / "phux"
+        self.probe = cli.Probe(launcher, Mock(), {"results": []})
+        self.probe.titles = {t: f"rt-fixture-r{t[1:]}" for t in self.screens}
+        self.probe.server = self.server
+        self.probe.snapshot = self.snapshot
+        self.probe.automate = self.automate
+
+    def server(self, verb, target=None):
+        if verb == "snapshot":
+            return {"title": self.probe.titles[target], "lines": self.screens[target]}
+        assert verb == "ls"
+        return self.catalog()
+
+    def catalog(self):
+        report = inventory(*self.screens)
+        if self.live:
+            report["resources"].append({"id": self.resource, "kind": "agent_session", "parent": self.parent})
+        if self.fault == "extra-resource" and self.stage == "answer":
+            report["resources"].append({"id": "@9", "kind": "agent_session", "parent": "@2"})
+        return report
+
+    def add_widget(self, role, name, target=None):
+        widget = {"role": role, "name": name, "id": str(len(self.widgets) + 1), "view": self.view,
+                  "focused": str(target == self.focused).lower(), "enabled": "true"}
+        self.widgets.append(widget)
+
+    def snapshot(self):
+        self.widgets = []
+        self.add_widget("tab", self.probe.titles["@2"])
+        for target in ("@1", "@2"):
+            self.add_widget("textbox", self.probe.titles[target], target)
+        self.add_widget("button", "Agents " + str(int(self.live)))
+        self.rail_widgets()
+        if self.inspector:
+            self.inspection_widgets()
+        return self.serialized_widgets()
+
+    def rail_widgets(self):
+        if self.side and (self.live or self.retained_row):
+            self.add_widget("button", f"cockpit-proof / phux:0:4@ under phux:0:{self.parent[1:]}@")
+            self.add_widget("text", self.state)
+            if self.attention:
+                self.add_widget("text", "\u25cf")
+
+    def serialized_widgets(self):
+        # Exercise the controlled parser against the SDK's literal multiline
+        # label format rather than handing the driver pre-parsed evidence.
+        raw = "\n".join(f'    widget {w["view"]}#{w["id"]} role={w["role"]} name="{w["name"]}" '
+                        f'bounds=(0,0 10x10) focused={w["focused"]} enabled=true parent=#1'
+                        for w in self.widgets).encode()
+        return helpers.fixture_widgets(raw), {"publisher_pid": "50"}
+
+    def inspection_widgets(self):
+        self.add_widget("button", "Close agent inspector")
+        if not self.live:
+            self.add_widget("text", "No agent resources in the attached catalog")
+            return
+        self.add_widget("button", "Jump to parent")
+        self.add_widget("text", "phux:0:4@")
+        self.add_widget("text", f"phux:0:{self.parent[1:]}@")
+        self.add_widget("text", self.native_id)
+        seq = self.seq - 1 if self.fault == "stale-ui-sequence" else self.seq
+        reason = "Preparing terminal intervention proof" if self.fault == "stale-second-reason" else self.reason
+        self.add_widget("text", f"Provider: cockpit-proof\nCatalog: unknown; records: {self.state}\n"
+                        f"Latest record: {self.kind}\nSequence: {seq}\n"
+                        f"Coordinator-stamped record time (ts_ms): {self.ts}\nReason: {reason}")
+
+    def automate(self, action, *args):
+        actions = {"native-command": self.toggle_placement, "widget-click": self.click_id,
+                   "widget-key": self.widget_key}
+        actions[action](*args)
+
+    def click_id(self, view, widget_id):
+        assert view == self.view
+        self.click(next(w for w in self.widgets if w["id"] == widget_id))
+
+    def widget_key(self, view, key, text=None):
+        assert view == self.view
+        self.key(key, text)
+
+    def toggle_placement(self, command, view):
+        assert (command, view) == ("tabs.toggle-placement", self.view)
+        self.side = not self.side
+
+    def click(self, widget):
+        name = widget["name"]
+        if widget["role"] in ("tab", "textbox"):
+            self.focused = next(t for t, title in self.probe.titles.items() if title == name)
+            return
+        self.click_inspector(name)
+
+    def click_inspector(self, name):
+        if name.startswith("Agents "):
+            self.inspector, self.focused = True, None
+            self.preserve_attention()
+        elif name == "Close agent inspector":
+            self.inspector = False
+        elif name == "Jump to parent":
+            self.inspector = False
+            self.focused = "@2" if self.fault == "jump-wrong-split" else "@1"
+
+    def preserve_attention(self):
+        if self.fault == "inspection-clears-attention":
+            self.attention = False
+
+    def key(self, key, text=None):
+        assert self.focused is not None
+        if text is not None:
+            self.input_text(text)
+        if key == "enter":
+            self.typed.append(self.buffer)
+            action = {"shell": self.open, "inspect": self.second_ask,
+                      "answer": self.answer, "close": self.close}[self.stage]
+            action(self.buffer)
+            self.buffer = ""
+
+    def input_text(self, text):
+        self.buffer += text
+        if self.fault == "premature-result" and self.stage == "answer":
+            self.screens["@1"].append(str(int(text) + 451))
+
+    def receipt(self, value):
+        self.records.append(value)
+        with (self.work / "agent-receipt.jsonl").open("a") as stream:
+            stream.write(json.dumps(value) + "\n")
+
+    def stamp(self, phase, seq, kind, reason, state):
+        self.seq, self.ts, self.kind, self.reason, self.state = seq, 2000 + seq, kind, reason, state
+        self.attention = state == "blocked"
+        return {"phase": phase, "resource": self.resource, "seq": seq, "ts_ms": self.ts, "type": kind}
+
+    def open(self, command):
+        args = shlex.split(command)
+        self.native_id = args[args.index("--run-id") + 1]
+        if self.fault == "wrong-native-id":
+            self.native_id = "different-producer"
+        if self.fault == "wrong-parent":
+            self.parent = "@2"
+        self.live, self.stage = True, "inspect"
+        self.receipt({"phase": "opened", "resource": self.resource, "parent": self.parent,
+                      "native_id": self.native_id, "provider": "cockpit-proof"})
+        self.receipt(self.stamp("blocked-initial", 1, "ask", "Preparing terminal intervention proof", "blocked"))
+
+    def second_ask(self, command):
+        assert command == "inspect"
+        self.stage = "answer"
+        self.receipt(self.stamp("blocked", 2, "ask", "Enter a decimal proof value in this terminal", "blocked"))
+
+    def answer(self, command):
+        assert command.isdecimal()
+        self.stage = "close"
+        result = str(int(command) + 451)
+        self.screens["@1"].append(result)
+        if self.fault == "duplicate-result":
+            self.screens["@2"].append(result)
+        self.receipt({**self.stamp("done", 4, "stop", "Terminal intervention completed", "done"),
+                      "computed_result": result})
+
+    def close(self, command):
+        assert command == "close"
+        self.live = False
+        self.retained_row = self.fault == "retained-row"
+        self.receipt({"phase": "closed", "resource": self.resource, "parent": self.parent})
+
+
+class AgentAcceptanceTests(unittest.TestCase):
+    def test_matrix_runs_agent_workflow_once_before_restart(self):
+        probe = Mock(groups=[], window_groups=[["@1"]], evidence={})
+        probe.start.return_value = ("@1", AgentFixture.view)
+        probe.transition.side_effect = [("@2", AgentFixture.view), ("@3", AgentFixture.view),
+                                        ("@5", "@w2/phux-cockpit-canvas-1")]
+        order = []
+        probe.restart.side_effect = lambda: order.append("restart")
+        with patch.object(cli, "AgentAcceptance") as driver, \
+             patch.object(cli.identity, "source_identity", return_value={}):
+            driver.return_value.run.side_effect = lambda: order.append("agent")
+            cli.Probe.matrix(probe)
+        driver.assert_called_once_with(probe, "@2", "@3", AgentFixture.view)
+        self.assertEqual(order, ["agent", "restart"])
+
+    @staticmethod
+    def immediate(check, description, *unused):
+        result = check()
+        if not result:
+            raise helpers.WaitTimeout("timeout: " + description)
+        return result
+
+    def run_fixture(self, fixture):
+        with patch.object(agents, "ROOT", fixture.work), \
+             patch.object(agents, "wait_for", side_effect=self.immediate), \
+             patch.object(cli, "wait_for", side_effect=self.immediate):
+            driver = agents.AgentAcceptance(fixture.probe, "@1", "@2", fixture.view)
+            driver.run()
+
+    def test_full_serial_agent_choreography_and_private_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            fixture = AgentFixture(Path(d))
+            self.run_fixture(fixture)
+            self.assertEqual(fixture.typed[1], "inspect")
+            self.assertTrue(fixture.typed[2].isdecimal())
+            self.assertEqual(fixture.typed[3], "close")
+            self.assertFalse(fixture.live)
+            self.assertFalse(fixture.side, "driver must restore top tabs before restart")
+            report = json.dumps(fixture.probe.evidence)
+            for private in (fixture.typed[0], fixture.typed[2], fixture.screens["@1"][0], d,
+                            "Preparing terminal intervention proof", "Enter a decimal proof value"):
+                self.assertNotIn(private, report)
+            self.assertEqual([r["phase"] for r in fixture.probe.evidence["results"]], [
+                "agent-birth", "agent-blocked-initial", "agent-readonly-jump", "agent-blocked",
+                "agent-intervention", "agent-retirement"])
+
+    def test_agent_behavioral_faults_cannot_pass_acceptance(self):
+        faults = ("wrong-parent", "wrong-native-id", "stale-ui-sequence", "stale-second-reason",
+                  "inspection-clears-attention", "jump-wrong-split", "extra-resource",
+                  "premature-result", "duplicate-result", "retained-row")
+        for fault in faults:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as d:
+                fixture = AgentFixture(Path(d), fault)
+                with self.assertRaises(helpers.Failure):
+                    self.run_fixture(fixture)
+                self.assertNotIn("agent-retirement", [r["phase"] for r in fixture.probe.evidence["results"]])
+
+    def test_receipt_partial_write_order_and_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "receipt"
+            self.assertEqual(agents.read_receipts(path), [])
+            path.write_text('{"phase":"opened"}\n{"phase":')
+            self.assertEqual(agents.read_receipts(path), [{"phase": "opened"}])
+            for invalid in ('{"phase":"done"}\n', 'x' * 16385):
+                path.write_text(invalid)
+                with self.assertRaises(helpers.Failure):
+                    agents.read_receipts(path)
+
+    def test_stamped_evidence_requires_exact_resource_and_ordered_integers(self):
+        record = {"phase": "blocked", "resource": "@4", "seq": 2, "ts_ms": 100, "type": "ask"}
+        for bad in ({"resource": "@5"}, {"seq": True}, {"seq": 1}, {"ts_ms": 9},
+                    {"type": "stop"}, {"ts_ms": 2**64}):
+            with self.subTest(bad=bad), self.assertRaises(helpers.Failure):
+                agents.stamped_record({**record, **bad}, "@4", {"seq": 1, "ts_ms": 10})
 
 
 class RoutingTests(unittest.TestCase):
