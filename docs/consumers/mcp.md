@@ -632,7 +632,7 @@ anything.
 
 ### 3.35 Agent session tools
 
-<!-- impl-status: spec-only; probe: phux_agent_log,phux_agent_emit -->
+<!-- impl-status: partial; probe: phux_agent_log,phux_agent_emit -->
 > **Status: landing on the resource-model branch.** Four tools over the
 > agent-session verbs of [`agents.md`](./agents.md) §2. A released `phux-mcp`
 > lists none of them; against a server without `RESOURCE_KINDS` each returns
