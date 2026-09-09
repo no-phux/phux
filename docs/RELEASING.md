@@ -72,12 +72,52 @@ tap build.
 | release-please | push to `main` | Maintains the release PR; creates tags/drafts, waits for validation of each emitted tag's exact commit, then calls artifact workflows. |
 | Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Cockpit release | called by release-please, or manual dispatch | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
-| Cockpit SDK head | source-repository dispatch, manual, or Monday 07:17 UTC | Builds Cockpit against the exact SDK ref supplied by the fork; the weekly run catches missed dispatches. |
+| Cockpit SDK head | manual | Builds Cockpit against an explicitly selected SDK ref. Pinned SDK changes still run ordinary Cockpit CI. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | component tag or manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
-| Stress lane | nightly, manual, or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
+| Stress lane | manual or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
+| Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 | Linear release report | called by release-please, or manual dispatch | `linear-release.yml`. `stage=building` at tag time, `stage=released` once artifacts are public. Dispatchable so a hand-recovered release can still be reported. |
+
+### Standard public runner policy
+
+This repository is public. Standard GitHub-hosted runners are
+[free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+and do not consume the private-repository minute allowance. Workflows use only
+standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-22.04`,
+`ubuntu-22.04-arm` and `macos-26` labels. Blacksmith and larger hosted runners
+are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
+runner registration. GitHub artifact/cache storage is a separate billing surface.
+
+Root release targets retain their artifact names and native architectures:
+
+| Target | Standard runner | Build userspace |
+|---|---|---|
+| `aarch64-apple-darwin` | `macos-26` | Native Apple-silicon macOS |
+| `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | Native Ubuntu 22.04 |
+| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | Native ARM Ubuntu 22.04 |
+
+The [standard runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+lists Ubuntu 22.04 for both Linux architectures. Before building, every matrix
+leg checks its OS/architecture; Linux also requires
+Ubuntu 22.04 and glibc 2.35. Existing binary portability and executable smoke
+checks remain mandatory before upload. This is a native ARM build,
+not an x64 emulation or a relabeled macOS binary. Every target must succeed
+before the root draft is published; no partial-matrix publication is allowed.
+
+GitHub [announces retirement of both Ubuntu 22.04 images](https://github.com/actions/runner-images/issues/14254)
+on April 17, 2027, with deprecation beginning September 17, 2026. The replacement
+build userspace that preserves this glibc floor is tracked work in `phux-xrok`.
+
+All workflow concurrency groups use the `mini-v1-` cutover namespace. New
+pushes cannot cancel pre-cutover groups; root/Cockpit main validation still
+keeps one group per SHA. The PR-close janitor is retired to a manual read-only
+policy report, with no cancellation permission or endpoint. Already queued or
+running workflows retain their original definitions: this policy does not stop,
+rerun or migrate those jobs. After review, validate the first future ARM Linux
+release build and the standard macOS raster/soak lanes before declaring the
+new execution environments proven.
 
 ### Monorepo CI routing
 
@@ -147,8 +187,8 @@ Three things that lane depends on, all enforced in CI by
 `scripts/check-install-surface.sh` so they cannot drift back:
 
 - **The publish job runs on `ubuntu-latest`.** npm rejects OIDC from self-hosted
-  runners, and this repo's other jobs run on Blacksmith. The expensive gates stay
-  on Blacksmith; only the small publish job is GitHub-hosted.
+  runners. Standard public GitHub runners preserve the supported trusted-publisher
+  identity for both the build gates and the small publication job.
 - **Each package's `repository.url` matches this repository exactly**
   (`https://github.com/no-phux/phux.git`). npm validates it during the token
   exchange and when attaching provenance.

@@ -37,7 +37,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: cockpit-release-${{ inputs.tag }}
+  group: mini-v1-cockpit-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -47,7 +47,7 @@ jobs:
     name: Package arm64 macOS release
     # Standard macos-26 is an arm64 GitHub-hosted runner and is free for this
     # public repository. Release signing does not require a larger paid runner.
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.tag }}
@@ -87,16 +87,16 @@ jobs:
       # retains the two final Rust outputs with exact input and byte hashes.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: cockpit-ffi
+          shared-key: mini-v1-cockpit-ffi
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
-            cockpit-zig-0.16.0-${{ runner.os }}-
+            mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
         if: hashFiles('.github/actions/cockpit-rust-artifacts/action.yml') != ''

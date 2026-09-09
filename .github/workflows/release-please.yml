@@ -125,13 +125,13 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: release-please-${{ github.ref }}
+  group: mini-v1-release-please-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   release-please:
     name: release PR / github release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
       tag_name: ${{ steps.rp.outputs.tag_name }}
@@ -179,7 +179,7 @@ jobs:
     name: sync Cargo.lock on the release PR
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # release-please cannot update Cargo.lock, and this is not a config mistake:
     #
     #   * Its `rust` strategy is unusable here (see the header of release.yml),
@@ -271,7 +271,7 @@ jobs:
     name: validate exact root release commit
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -290,7 +290,7 @@ jobs:
     name: validate exact Cockpit release commit
     needs: release-please
     if: needs.release-please.outputs.cockpit_release_created == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: site-deploy
+  group: mini-v1-site-deploy
   cancel-in-progress: true
 
 permissions:

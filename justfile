@@ -485,6 +485,7 @@ shellcheck:
 [doc('Workflow syntax, the CI path-routing truth table, and action SHA pins.')]
 workflow-check:
     actionlint .github/workflows/*.yml
+    python3 clients/cockpit/scripts/check-build-contracts.py
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
     node --test scripts/test-vt-wasm.mjs

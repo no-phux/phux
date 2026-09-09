@@ -14,13 +14,7 @@
 name: Cockpit SDK HEAD
 
 on:
-  schedule:
-    # Weekly fallback. The preferred path is a repository dispatch from the SDK
-    # repository at the exact commit being changed; this catches missed dispatches
-    # without paying for a daily downstream rebuild.
-    - cron: "17 7 * * 1"
-  repository_dispatch:
-    types: [cockpit-sdk-head]
+  # Optional SDK-head experiments are manual to reduce redundant rebuilds.
   workflow_dispatch:
     inputs:
       ref:
@@ -32,17 +26,17 @@ on:
 permissions:
   contents: read
 
-# Never cancel in progress: a scheduled run that a dispatch cancels reports no
+# Never cancel in progress: a manual run that another dispatch cancels reports no
 # result at all, which is indistinguishable from the failure this job exists to
 # catch.
 concurrency:
-  group: cockpit-sdk-head
+  group: mini-v1-cockpit-sdk-head
   cancel-in-progress: false
 
 jobs:
   build:
     name: Cockpit vs SDK branch head
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     # 45 minutes, matching ci.yml. Measured against the run that is a superset
     # of every step below except packaging:
     # The standalone repository's measured cold job total was 12m23s:
@@ -59,13 +53,13 @@ jobs:
         with:
           version: 0.16.0
       # Same caches as cockpit-ci.yml: the FFI build shares cockpit-ci's
-      # macOS `cockpit-ffi` rust-cache (same profile, same fleet), and the
+      # macOS `mini-v1-cockpit-ffi` rust-cache (same profile, same fleet), and the
       # Zig caches key on the CHECKED-OUT build manifest — the repoint below
       # rewrites build.zig.zon after this restore. The revision suffix matches
       # cockpit-ci; its stable prefix supplies the latest compatible cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: cockpit-ffi
+          shared-key: mini-v1-cockpit-ffi
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -73,21 +67,20 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
-            cockpit-zig-0.16.0-${{ runner.os }}-
+            mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
       # Resolve and repoint before the FFI build, so a fork that renamed its
       # cockpit branches fails in 5 seconds rather than after 4 minutes of cargo.
       # This step also writes the run summary — pin, branch head, and the command
       # to bump — because everything a reader of a FAILED run needs is known
       # here, before the build, rather than from a trailing step that would have
-      # to survive the failure it reports on. `inputs` is empty on a schedule
-      # event; the script treats an empty ref as `auto` regardless.
+      # to survive the failure it reports on.
       - name: Repoint the SDK dependency at the fork's branch head
         working-directory: clients/cockpit
         run: ./scripts/repoint-sdk.sh --ref "${SDK_REF}"
         env:
-          SDK_REF: ${{ github.event.client_payload.ref || inputs.ref || 'auto' }}
+          SDK_REF: ${{ inputs.ref || 'auto' }}
       # Repointing rewrites build.zig.zon but does not create an SDK source
       # checkout. Materialize that newly-written pin through the same helper as
       # ci.yml, so host-raster-check.sh keeps enforcing its normal refusal to

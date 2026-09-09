@@ -42,9 +42,11 @@ class BuildContracts(unittest.TestCase):
         key = re.search(r"(?m)^          key: (.+)$", restore).group(1)
         self.assertIn("${{ github.sha }}", key)
         self.assertIn("${{ runner.os }}", key)
+        self.assertIn("${{ runner.arch }}", key)
+        self.assertTrue(key.startswith("mini-v1-cockpit-zig-"))
         self.assertIn("hashFiles(", key)
         self.assertIn(f"          key: {key}", save)
-        self.assertRegex(restore, r"restore-keys: \|\n            cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\n")
+        self.assertRegex(restore, r"restore-keys: \|\n            mini-v1-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
         self.assertIn("github.ref == 'refs/heads/main'", save)
         self.assertIn("steps.zig-cache.outputs.cache-hit != 'true'", save)
 
