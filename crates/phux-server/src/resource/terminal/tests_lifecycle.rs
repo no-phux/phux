@@ -177,6 +177,8 @@ async fn actor_responds_to_snapshot_request_on_localset() {
 
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
+                .terminal()
+                .expect("terminal facet")
                 .snapshot
                 .send(SnapshotRequest {
                     scrollback: None,
@@ -278,9 +280,11 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
         clippy::future_not_send,
         reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
     )]
-    async fn snapshot(handle: &TerminalHandle) -> String {
+    async fn snapshot(handle: &ResourceHandle) -> String {
         let (reply, rx) = oneshot::channel();
         handle
+            .terminal()
+            .expect("terminal facet")
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -1124,6 +1128,8 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
             // off (a fresh Terminal's default) a Trusted paste of
             // b"x" encodes to exactly b"x" on the writer channel.
             handle
+                .terminal()
+                .expect("terminal facet")
                 .input
                 .send(TerminalInput::Paste(PasteEvent {
                     trust: PasteTrust::Trusted,
@@ -1274,6 +1280,8 @@ async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
             let actor = bundle.actor;
             let (reply, replied) = oneshot::channel();
             handle
+                .terminal()
+                .expect("terminal facet")
                 .native_bootstrap
                 .send(NativeBootstrapRequest {
                     owner: 3,
@@ -1348,6 +1356,8 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
             }
             let (reply, replied) = oneshot::channel();
             handle
+                .terminal()
+                .expect("terminal facet")
                 .native_bootstrap
                 .send(NativeBootstrapRequest {
                     owner: 7,
@@ -1502,8 +1512,9 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
         },
     );
 
-    actor.raw_seq = 5;
+    actor.core.seq = 5;
     actor
+        .core
         .output_tx
         .send(PaneOutput::Live {
             seq: 5,
@@ -1638,10 +1649,12 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
     local
         .run_until(async {
             async fn request_prefix(
-                handle: &TerminalHandle,
+                handle: &ResourceHandle,
             ) -> Result<NativeBootstrapReply, crate::native_state::NativeStateError> {
                 let (reply, replied) = oneshot::channel();
                 handle
+                    .terminal()
+                    .expect("terminal facet")
                     .native_bootstrap
                     .send(NativeBootstrapRequest {
                         owner: 11,
@@ -1696,6 +1709,8 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                 .expect("retry request permit");
             let (retry_reply, retried) = oneshot::channel();
             handle
+                .terminal()
+                .expect("terminal facet")
                 .native_history
                 .send(NativeHistoryRequest {
                     permit: retry_permit,
@@ -1742,6 +1757,8 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                     .expect("continuation request permit");
                 let (reply, response) = oneshot::channel();
                 handle
+                    .terminal()
+                    .expect("terminal facet")
                     .native_history
                     .send(NativeHistoryRequest {
                         permit,
@@ -1824,6 +1841,8 @@ async fn actor_responds_to_pwd_request_with_pty_child_cwd() {
             while tokio::time::Instant::now() < deadline {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 handle
+                    .terminal()
+                    .expect("terminal facet")
                     .pwd
                     .send(PwdRequest { reply: reply_tx })
                     .await
@@ -1860,6 +1879,8 @@ async fn actor_pwd_request_is_none_without_pty() {
 
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
+                .terminal()
+                .expect("terminal facet")
                 .pwd
                 .send(PwdRequest { reply: reply_tx })
                 .await
@@ -1888,13 +1909,17 @@ async fn actor_exits_on_cancellation() {
                 .expect("actor task panicked");
 
             let (reply_tx, reply_rx) = oneshot::channel();
-            let _ = handle.snapshot.try_send(SnapshotRequest {
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply: reply_tx,
-            });
+            let _ = handle
+                .terminal()
+                .expect("terminal facet")
+                .snapshot
+                .try_send(SnapshotRequest {
+                    scrollback: None,
+                    max_bytes: usize::MAX,
+                    max_frames: usize::MAX,
+                    chunk_bytes: 1,
+                    reply: reply_tx,
+                });
             drop(reply_rx);
         })
         .await;

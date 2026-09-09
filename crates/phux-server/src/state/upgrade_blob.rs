@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
 use phux_core::ids::{SessionId, TerminalId, WindowId};
-use phux_core::terminal::TerminalDescriptor;
+use phux_core::terminal::TerminalFacet;
 use phux_core::window::{LayoutNode, SplitDir};
 use phux_protocol::ids::{
     SessionId as WireSessionId, TerminalId as WireTerminalId, WindowId as WireWindowId,
@@ -19,9 +19,8 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
-use crate::terminal_actor::{
-    PaneUpgradeHandle, TerminalActor, TerminalHandle, UpgradeHandleRequest,
-};
+use crate::resource::ResourceHandle;
+use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
 use crate::upgrade::blob::{
     BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
@@ -67,7 +66,7 @@ impl ServerState {
     /// re-adopt for it.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut handoffs = HashMap::new();
-        let tids: Vec<TerminalId> = self.terminal_table.terminal_ids();
+        let tids: Vec<TerminalId> = self.resources.resource_ids();
         for tid in tids {
             if let Some(handoff) = self.request_pane_handoff(tid).await {
                 handoffs.insert(tid, handoff);
@@ -97,12 +96,12 @@ impl ServerState {
         self.lifecycle.upgrade_context()
     }
 
-    /// Clone every pane's [`TerminalHandle`] so the runtime can query each
-    /// actor's upgrade handoff *outside* the `ServerState` lock (it can't hold
-    /// the `Arc<Mutex<_>>` across the await; see
+    /// Clone every resource's [`ResourceHandle`] so the runtime can query
+    /// each engine's upgrade handoff *outside* the `ServerState` lock (it
+    /// can't hold the `Arc<Mutex<_>>` across the await; see
     /// [`Self::assemble_upgrade_blob`]).
-    pub(crate) fn upgrade_handles(&self) -> Vec<(TerminalId, TerminalHandle)> {
-        self.all_terminal_handles()
+    pub(crate) fn upgrade_handles(&self) -> Vec<(TerminalId, ResourceHandle)> {
+        self.all_resource_handles()
     }
 
     /// Assemble the [`StateBlob`] from the live tree plus a pre-fetched map of
@@ -148,7 +147,7 @@ impl ServerState {
                     wire_id: window_wire,
                     session_wire_id: session_wire,
                     pane_wire_ids: window
-                        .panes
+                        .slots
                         .iter()
                         .filter_map(|t| self.terminal_wire(*t))
                         .collect(),
@@ -157,7 +156,7 @@ impl ServerState {
                     last_cwd: self.sessions.last_cwd(wid).cloned(),
                 });
 
-                for &tid in &window.panes {
+                for &tid in &window.slots {
                     let (Some(desc), Some(pane_wire)) = (
                         self.sessions.registry.terminal(tid),
                         self.terminal_wire(tid),
@@ -193,7 +192,7 @@ impl ServerState {
     /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
     /// no registered handle or the actor has gone away.
     async fn request_pane_handoff(&self, tid: TerminalId) -> Option<PaneUpgradeHandle> {
-        let handle = self.terminal_handle(tid)?;
+        let handle = self.resource_handle(tid)?;
         let (reply, rx) = oneshot::channel();
         handle
             .upgrade
@@ -249,7 +248,7 @@ impl ServerState {
 fn pane_blob(
     wire_id: u32,
     window_wire_id: u32,
-    desc: &TerminalDescriptor,
+    desc: &TerminalFacet,
     term: &str,
     handoff: Option<&PaneUpgradeHandle>,
 ) -> PaneBlob {
@@ -404,7 +403,7 @@ impl ServerState {
             }
 
             let bundle = pane_actor_bundle(p, scrollback)?;
-            // Pre-bind the wire id so `spawn_terminal_actor`'s intern is a
+            // Pre-bind the wire id so `spawn_resource_actor`'s intern is a
             // no-op (it returns the existing mapping instead of allocating a
             // fresh one that would diverge from the blob).
             self.idspace
@@ -415,7 +414,7 @@ impl ServerState {
                 token,
                 exit_notify,
             } = bundle;
-            self.spawn_terminal_actor(core, handle, token, actor.run());
+            self.spawn_resource_actor(core, handle, token, actor.run());
             if let Some(exit_notify) = exit_notify {
                 panes.exit_watchers.push((core, exit_notify));
             }
@@ -443,7 +442,7 @@ impl ServerState {
                 .as_ref()
                 .and_then(|l| layout_from_blob(l, pane_core));
             if let Some(win) = self.sessions.registry.window_mut(core) {
-                win.panes = panes;
+                win.slots = panes;
                 win.active = active;
                 win.layout = layout;
             }
@@ -589,7 +588,7 @@ mod tests {
                 let token = bundle.token.clone();
                 tokio::task::spawn_local(bundle.actor.run());
                 let pane_wire = state
-                    .register_terminal_handle(tid, handle, token)
+                    .register_resource_handle(tid, handle, token)
                     .local_id()
                     .expect("local wire id");
 
@@ -648,7 +647,7 @@ mod tests {
                 state.intern_window_wire(wid);
                 let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
                 tokio::task::spawn_local(bundle.actor.run());
-                state.register_terminal_handle(tid, bundle.handle, bundle.token);
+                state.register_resource_handle(tid, bundle.handle, bundle.token);
 
                 let blob = state.build_upgrade_blob(7).await;
 

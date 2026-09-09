@@ -18,12 +18,24 @@ use super::{
     spawn_terminal_exit_watcher,
 };
 use crate::agent_asked::{AskedPayload, AskedSource};
+use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{ClientId, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::{
     ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenRequest,
     TerminalActor, TerminalHandle,
 };
+
+/// The command-result shape of a Terminal-only request aimed at a resource
+/// of another kind. Every command handler that reaches a Terminal facet
+/// maps [`ResourceHandle::terminal`]'s error through here, so the wire code
+/// for the condition is chosen in one place.
+fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InvalidCommand,
+        message: error.to_string(),
+    }
+}
 
 /// The grid a pane is built at when nothing better is known: the classic
 /// VT100 default, and the same dims `phux_core::Registry::new_terminal`
@@ -114,7 +126,7 @@ fn seed_session_with_actor_and_metadata(
         ..
     } = bundle;
     let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_terminal_actor(terminal, handle, terminal_token, actor.run());
+        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         s.intern_terminal_wire(terminal)
     });
     spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
@@ -238,7 +250,7 @@ fn seed_session_with_pty_and_colors_and_metadata(
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
     let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_terminal_actor(terminal, handle, terminal_token, actor.run());
+        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         s.intern_terminal_wire(terminal)
     });
     spawn_pane_event_drain(state.clone(), wire_terminal_id.clone(), event_rx);
@@ -385,7 +397,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
     actor.set_agent_state_sink(agent_tx);
     let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_terminal_actor(terminal, handle, terminal_token, actor.run());
+        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         s.intern_terminal_wire(terminal)
     });
     spawn_pane_event_drain(state.clone(), wire_terminal_id.clone(), event_rx);
@@ -393,7 +405,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
     // docs/consumers/tui.md §9 (phux-r82.1): the split pane's actor is live.
     let session_name = state.with(|s| {
-        let window = s.registry().terminal(terminal)?.window;
+        let window = s.registry().resource(terminal)?.window?;
         let session = s.registry().window(window)?.session;
         s.registry().session(session).map(|sess| sess.name.clone())
     });
@@ -532,7 +544,7 @@ pub(crate) fn handle_terminal_resize(
         if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
             pane.dims = (cols, rows);
         }
-        let Some(handle) = s.terminal_handle(terminal) else {
+        let Some(handle) = s.resource_handle(terminal) else {
             debug!(
                 ?client_id,
                 ?terminal,
@@ -542,11 +554,18 @@ pub(crate) fn handle_terminal_resize(
             );
             return;
         };
+        let terminal = match handle.terminal() {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                debug!(?client_id, ?terminal, %error, "TERMINAL_RESIZE: not a Terminal; dropping");
+                return;
+            }
+        };
         // Live per-pane resize (TERMINAL_RESIZE): resync clients so their
         // mirrors reconverge after reflow (phux-8v1). An agent's explicit
         // resize carries cell counts only — no pixel truth — so the actor
         // keeps its last-known cell pixel size.
-        match handle.resize.try_send(ResizeRequest {
+        match terminal.resize.try_send(ResizeRequest {
             cols,
             rows,
             cell_px: None,
@@ -604,7 +623,7 @@ pub(crate) fn prepare_attach(
             .iter()
             .filter_map(|window_id| s.registry().window(*window_id))
             .try_fold(0_usize, |count, window| {
-                count.checked_add(window.panes.len())
+                count.checked_add(window.slots.len())
             })
             .ok_or(crate::state::AttachError::ResourceLimit)?;
         if pane_count > crate::runtime::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
@@ -968,7 +987,7 @@ fn handle_kill_terminal(
                 message: format!("no such terminal: {terminal_id:?}"),
             },
             |core_id| {
-                state.with_mut(|s| s.detach_terminal_actor(core_id));
+                state.with_mut(|s| s.detach_resource_actor(core_id));
                 CommandResult::Ok
             },
         )
@@ -1033,6 +1052,18 @@ async fn handle_attach_terminal(
         };
     };
 
+    // ATTACH_TERMINAL bootstraps a grid, so the Terminal facet is resolved
+    // once here; every later stage reads it from the session.
+    let terminal = match handle.terminal() {
+        Ok(terminal) => terminal.clone(),
+        Err(error) => {
+            state.with_mut(|s| {
+                s.cancel_attach_terminal_pump(client_id, core);
+                s.unsubscribe_terminal(client_id, core);
+            });
+            return wrong_resource_kind(error);
+        }
+    };
     let session = AttachTerminalSession {
         state,
         out_tx,
@@ -1040,6 +1071,7 @@ async fn handle_attach_terminal(
         terminal_id,
         core,
         handle,
+        terminal,
         client_id,
         stream_id: crate::runtime::attach::stream_id_from(client_id.0),
         client_caps,
@@ -1090,10 +1122,10 @@ fn subscribe_attach_terminal(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::TerminalId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-) -> Option<(phux_core::ids::TerminalId, TerminalHandle)> {
+) -> Option<(phux_core::ids::TerminalId, ResourceHandle)> {
     state.with_mut(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
-        let handle = s.terminal_handle(core).cloned()?;
+        let handle = s.resource_handle(core).cloned()?;
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
         Some((core, handle))
     })
@@ -1168,7 +1200,10 @@ struct AttachTerminalSession<'a> {
     connection_token: &'a CancellationToken,
     terminal_id: &'a phux_protocol::ids::TerminalId,
     core: phux_core::ids::TerminalId,
-    handle: TerminalHandle,
+    /// The resource's generic channels (output, consumers, control).
+    handle: ResourceHandle,
+    /// The Terminal facet of `handle`, resolved once at entry.
+    terminal: TerminalHandle,
     client_id: ClientId,
     stream_id: phux_protocol::ids::StreamId,
     client_caps: ClientCapabilities,
@@ -1196,12 +1231,12 @@ impl AttachTerminalSession<'_> {
             s.unsubscribe_terminal(self.client_id, self.core);
         });
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let _ = self
-            .handle
-            .native_release
-            .try_send(crate::terminal_actor::NativeReleaseRequest {
-                owner: self.client_id.0,
-            });
+        let _ =
+            self.terminal
+                .native_release
+                .try_send(crate::terminal_actor::NativeReleaseRequest {
+                    owner: self.client_id.0,
+                });
         let (reply, _ack) = oneshot::channel();
         let _ = self.handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id(self.client_id),
@@ -1355,11 +1390,11 @@ impl AttachTerminalSession<'_> {
             state: self.state.clone(),
             out_tx: self.out_tx.clone(),
             connection_token: self.connection_token.clone(),
-            resize: self.handle.resize.clone(),
+            resize: self.terminal.resize.clone(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_bootstrap: self.handle.native_bootstrap.clone(),
+            native_bootstrap: self.terminal.native_bootstrap.clone(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            handle: self.handle.clone(),
+            terminal: self.terminal.clone(),
             wire_terminal_id: self.terminal_id.clone(),
             client_id: self.client_id,
             stream_id: self.stream_id,
@@ -1431,7 +1466,7 @@ impl AttachTerminalSession<'_> {
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<crate::terminal_actor::NativeBootstrapReply, AttachTerminalFailure> {
         let (reply, reply_rx) = oneshot::channel();
-        self.handle
+        self.terminal
             .native_bootstrap
             .send(crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -1475,7 +1510,7 @@ impl AttachTerminalSession<'_> {
                 AttachTerminalFailure::internal("consumer went away during native ATTACH_TERMINAL")
             })?;
         let publication = crate::runtime::attach::activate_native_publication(
-            &self.handle,
+            &self.terminal,
             self.client_id.0,
             self.terminal_id.clone(),
             self.stream_id,
@@ -1520,7 +1555,7 @@ impl AttachTerminalSession<'_> {
         use crate::terminal_actor::SnapshotRequest;
 
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
-        self.handle
+        self.terminal
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -1608,8 +1643,9 @@ struct AttachTerminalPumpCtx {
     resize: tokio::sync::mpsc::Sender<ResizeRequest>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_bootstrap: tokio::sync::mpsc::Sender<crate::terminal_actor::NativeBootstrapRequest>,
+    /// Terminal facet, for the native publication fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    handle: TerminalHandle,
+    terminal: TerminalHandle,
     wire_terminal_id: phux_protocol::ids::TerminalId,
     client_id: ClientId,
     stream_id: phux_protocol::ids::StreamId,
@@ -2060,7 +2096,7 @@ impl AttachTerminalPumpCtx {
             return self.abandon_connection();
         };
         let Ok(publication) = crate::runtime::attach::activate_native_publication(
-            &self.handle,
+            &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
@@ -2154,7 +2190,7 @@ async fn handle_detach_terminal(
         s.unsubscribe_terminal_events(client_id, terminal_id);
         let core = s.terminal_from_wire(terminal_id)?;
         s.unsubscribe_terminal(client_id, core);
-        Some((core, s.terminal_handle(core).cloned()))
+        Some((core, s.resource_handle(core).cloned()))
     });
     let Some((core, handle)) = handle else {
         return CommandResult::Ok;
@@ -2723,7 +2759,7 @@ fn relay_satellite_frame(
 /// so the removals are atomic with respect to every other command: no peer
 /// can observe a half-killed group on this server. (Cross-host atomicity is
 /// out of scope, as it would be under any tiering.) Each removal cancels the
-/// pane actor via [`crate::state::ServerState::detach_terminal_actor`];
+/// pane actor via [`crate::state::ServerState::detach_resource_actor`];
 /// cancellation drops the actor's `exit_notify`, which the per-pane EOF
 /// watcher treats like PTY EOF — it broadcasts `TERMINAL_CLOSED` and reaps
 /// the pane, cascading to session removal and (when the last session
@@ -2785,7 +2821,7 @@ pub(crate) fn handle_kill_terminals(
     // Single lock scope: resolve every wire id to its core pane and cancel
     // its actor before releasing the lock. All-or-nothing for a local
     // server — no other command interleaves between the first and last
-    // removal. `detach_terminal_actor` is idempotent (cancelling an
+    // removal. `detach_resource_actor` is idempotent (cancelling an
     // already-cancelled token is a no-op), so an id racing a natural exit
     // and an unknown id both collapse to a silent skip (satellite ids were
     // partitioned above and resolve to no local pane here).
@@ -2793,7 +2829,7 @@ pub(crate) fn handle_kill_terminals(
         let mut killed = 0u32;
         for wire_id in ids {
             if let Some(core_id) = s.terminal_from_wire(wire_id) {
-                s.detach_terminal_actor(core_id);
+                s.detach_resource_actor(core_id);
                 killed = killed.saturating_add(1);
             } else {
                 debug!(?wire_id, "KILL_TERMINALS: unknown / dead id; skipping");
@@ -3131,7 +3167,7 @@ pub(crate) async fn handle_get_screen(
     // outside the critical section.
     let handle = state.with(|s| {
         s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.terminal_handle(core).cloned())
+            .and_then(|core| s.resource_handle(core).cloned())
     });
     let Some(handle) = handle else {
         return CommandResult::Error {
@@ -3139,9 +3175,13 @@ pub(crate) async fn handle_get_screen(
             message: format!("no such terminal: {terminal_id:?}"),
         };
     };
+    let terminal = match handle.terminal() {
+        Ok(terminal) => terminal,
+        Err(error) => return wrong_resource_kind(error),
+    };
     let pane = terminal_id.local_id().unwrap_or(0);
     let (reply_tx, reply_rx) = oneshot::channel();
-    if handle
+    if terminal
         .screen
         .send(ScreenRequest {
             pane,
@@ -3221,7 +3261,7 @@ pub(crate) async fn handle_get_terminal_state(
     // handle_get_screen).
     let handle = state.with(|s| {
         s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.terminal_handle(core).cloned())
+            .and_then(|core| s.resource_handle(core).cloned())
     });
 
     let Some(handle) = handle else {
@@ -3231,13 +3271,17 @@ pub(crate) async fn handle_get_terminal_state(
         };
     };
 
+    let terminal = match handle.terminal() {
+        Ok(terminal) => terminal,
+        Err(error) => return wrong_resource_kind(error),
+    };
     let pane = terminal_id.local_id().unwrap_or(0);
 
     // Step 2: Query screen state via ScreenRequest (reuse existing path).
     // This gives us canonical grid snapshot, scrollback (if requested), and
     // cell styling information.
     let (reply_tx, reply_rx) = oneshot::channel();
-    if handle
+    if terminal
         .screen
         .send(ScreenRequest {
             pane,
@@ -3407,6 +3451,8 @@ pub(crate) async fn handle_get_terminal_state(
 #[derive(Debug)]
 pub(crate) struct InputDestination {
     pub(crate) pane: phux_core::ids::TerminalId,
+    /// The Terminal facet: input atoms only ever go to a Terminal, so the
+    /// resolver settles the kind before `action` runs.
     pub(crate) handle: TerminalHandle,
 }
 
@@ -3442,12 +3488,13 @@ pub(crate) fn with_route_input_destination<R>(
                 message: "input lease held by another client".to_owned(),
             });
         }
-        let Some(handle) = s.terminal_handle(pane).cloned() else {
+        let Some(handle) = s.resource_handle(pane) else {
             return Err(CommandResult::Error {
                 code: ErrorCode::TerminalNotFound,
                 message: format!("no such terminal: {terminal_id:?}"),
             });
         };
+        let handle = handle.terminal().map_err(wrong_resource_kind)?.clone();
         Ok(action(InputDestination { pane, handle }))
     })
 }
@@ -3516,7 +3563,7 @@ enum AcquireOutcome {
     /// The lease was granted; broadcast the change via the pane's actor.
     Granted {
         /// The pane actor to notify.
-        handle: Box<TerminalHandle>,
+        handle: Box<ResourceHandle>,
         /// `Acquired` (was free / self) or `Seized` (preempted another).
         action: ControlAction,
     },
@@ -3545,7 +3592,7 @@ pub(crate) async fn handle_acquire_input(
         let Some(core) = s.terminal_from_wire(terminal_id) else {
             return AcquireOutcome::NotFound;
         };
-        let Some(handle) = s.terminal_handle(core).cloned() else {
+        let Some(handle) = s.resource_handle(core).cloned() else {
             return AcquireOutcome::NotFound;
         };
         let prior = s.input_lease_holder(core);
@@ -3601,7 +3648,7 @@ pub(crate) async fn handle_release_input(
     // `handle_acquire_input` — `route_to_satellite` owns that dispatch.
     let released = state.with_mut(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
-        let handle = s.terminal_handle(core).cloned()?;
+        let handle = s.resource_handle(core).cloned()?;
         Some((handle, s.release_input_lease(core, client_id)))
     });
     match released {
@@ -3644,7 +3691,7 @@ pub(crate) async fn handle_signal_terminal(
     let resolved = state.with(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
         let holder = s.input_lease_holder(core).map(wire_client_id);
-        s.terminal_handle(core).cloned().map(|h| (h, holder))
+        s.resource_handle(core).cloned().map(|h| (h, holder))
     });
     let Some((handle, input_holder)) = resolved else {
         return CommandResult::Error {
@@ -3696,7 +3743,7 @@ pub(crate) async fn handle_report_agent_state(
     }
     let handle = state.with(|server| {
         let core = server.terminal_from_wire(terminal_id)?;
-        server.terminal_handle(core).cloned()
+        server.resource_handle(core).cloned()
     });
     let Some(handle) = handle else {
         return CommandResult::Error {
@@ -3756,7 +3803,7 @@ pub(crate) fn handle_subscribe_terminal_events(
     // Resolve the wire id to its pane actor (same pattern as handle_route_input).
     let handle = state.with(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
-        s.terminal_handle(core).cloned()
+        s.resource_handle(core).cloned()
     });
 
     let Some(handle) = handle else {
@@ -3967,9 +4014,9 @@ pub(crate) fn handle_viewport_resize(
         // dropped resize is recoverable (the next resize, or the
         // next snapshot, re-syncs) and SPEC §10.5 explicitly classes
         // VIEWPORT_RESIZE as best-effort.
-        if let Some(handle) = s.terminal_handle(terminal_id) {
+        if let Some(Ok(terminal)) = s.resource_handle(terminal_id).map(ResourceHandle::terminal) {
             // Live viewport resize (SIGWINCH): resync clients (phux-8v1).
-            match handle.resize.try_send(ResizeRequest {
+            match terminal.resize.try_send(ResizeRequest {
                 cols,
                 rows,
                 cell_px,
@@ -4158,14 +4205,21 @@ pub(crate) fn with_attached_input_destination<R>(
         if let Some(session) = touched_session {
             s.touch_session(session);
         }
-        let Some(handle) = s.terminal_handle(pane).cloned() else {
+        let Some(handle) = s.resource_handle(pane) else {
             warn!(
                 ?client_id,
                 ?wire_terminal_id,
                 frame_label,
-                "no TerminalHandle for pane; dropping input"
+                "no ResourceHandle for pane; dropping input"
             );
             return None;
+        };
+        let handle = match handle.terminal() {
+            Ok(terminal) => terminal.clone(),
+            Err(error) => {
+                warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
+                return None;
+            }
         };
         Some(action(InputDestination { pane, handle }))
     })
@@ -4462,7 +4516,7 @@ fn frame_ack_destination<'a>(
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
     seq: u64,
-) -> Option<&'a TerminalHandle> {
+) -> Option<&'a ResourceHandle> {
     let Some(pane) = s.terminal_from_wire(wire_terminal_id) else {
         warn!(
             ?client_id,
@@ -4485,12 +4539,12 @@ fn frame_ack_destination<'a>(
         );
         return None;
     }
-    let Some(handle): Option<&TerminalHandle> = s.terminal_handle(pane) else {
+    let Some(handle) = s.resource_handle(pane) else {
         warn!(
             ?client_id,
             ?wire_terminal_id,
             seq,
-            "FRAME_ACK with no TerminalHandle for pane; dropping",
+            "FRAME_ACK with no ResourceHandle for pane; dropping",
         );
         return None;
     };

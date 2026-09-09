@@ -974,7 +974,11 @@ mod tests {
     fn spawn_fixture_with_seed(seed: &[u8]) -> Fixture {
         let bundle = TerminalActor::new_with_seed(80, 24, seed).expect("actor");
         let handle = bundle.handle.clone();
-        let encoded_input = handle.encoded_input.clone();
+        let encoded_input = handle
+            .terminal()
+            .expect("terminal facet")
+            .encoded_input
+            .clone();
         let token = bundle.token.clone();
         let mut actor = bundle.actor;
         let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
@@ -982,7 +986,7 @@ mod tests {
         let state = SharedState::new();
         let (wire, pane, client_a, client_b) = state.with_mut(|s| {
             let (_sid, _wid, pane) = s.seed_session("s");
-            let wire = s.register_terminal_handle(pane, handle.clone(), token.clone());
+            let wire = s.register_resource_handle(pane, handle.clone(), token.clone());
             let a = s.new_client_id();
             let b = s.new_client_id();
             let (tx_a, _rx_a) = mpsc::channel(16);
@@ -1196,6 +1200,8 @@ mod tests {
         for _ in 0..crate::terminal_actor::DEFAULT_INPUT_MAILBOX {
             bundle
                 .handle
+                .terminal()
+                .expect("terminal facet")
                 .encoded_input
                 .try_send(EncodedInputRequest::legacy(vec![b'x']))
                 .expect("capacity available");
@@ -1203,6 +1209,8 @@ mod tests {
         assert!(matches!(
             bundle
                 .handle
+                .terminal()
+                .expect("terminal facet")
                 .encoded_input
                 .try_send(EncodedInputRequest::legacy(vec![b'y'])),
             Err(mpsc::error::TrySendError::Full(_))
@@ -1215,7 +1223,12 @@ mod tests {
         let state = SharedState::new();
         let pane = state.with_mut(|s| s.seed_session("s").2);
         let mut encoders = std::collections::HashMap::new();
-        encoder_for(&mut encoders, pane, &bundle.handle).expect("encoder");
+        encoder_for(
+            &mut encoders,
+            pane,
+            bundle.handle.terminal().expect("facet"),
+        )
+        .expect("encoder");
         assert_eq!(encoders.len(), 1);
         drop(bundle);
         prune_closed_encoders(&mut encoders);
@@ -1229,17 +1242,23 @@ mod tests {
         let state = SharedState::new();
         let pane = state.with_mut(|s| s.seed_session("s").2);
         let mut encoders = std::collections::HashMap::new();
-        encoder_for(&mut encoders, pane, &first.handle).expect("first encoder");
+        encoder_for(&mut encoders, pane, first.handle.terminal().expect("facet"))
+            .expect("first encoder");
         assert!(
             encoders[&pane]
                 .snapshot
-                .same_channel(&first.handle.input_snapshot)
+                .same_channel(&first.handle.terminal().expect("facet").input_snapshot)
         );
-        encoder_for(&mut encoders, pane, &second.handle).expect("replacement encoder");
+        encoder_for(
+            &mut encoders,
+            pane,
+            second.handle.terminal().expect("facet"),
+        )
+        .expect("replacement encoder");
         assert!(
             encoders[&pane]
                 .snapshot
-                .same_channel(&second.handle.input_snapshot)
+                .same_channel(&second.handle.terminal().expect("facet").input_snapshot)
         );
         assert_eq!(encoders.len(), 1, "one encoder set per pane generation");
     }
@@ -1435,6 +1454,8 @@ mod tests {
         for _ in 0..crate::terminal_actor::DEFAULT_INPUT_MAILBOX {
             bundle
                 .handle
+                .terminal()
+                .expect("terminal facet")
                 .encoded_input
                 .try_send(EncodedInputRequest::legacy(vec![b'x']))
                 .expect("fill mailbox");
@@ -1443,7 +1464,7 @@ mod tests {
         let (wire, client) = state.with_mut(|s| {
             let pane = s.seed_session("s").2;
             let wire =
-                s.register_terminal_handle(pane, bundle.handle.clone(), bundle.token.clone());
+                s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone());
             (wire, s.new_client_id())
         });
         let lane = spawn_input_lane(state).expect("spawn lane");
@@ -1481,7 +1502,7 @@ mod tests {
                 let state = SharedState::new();
                 let (wire, client) = state.with_mut(|s| {
                     let pane = s.seed_session("s").2;
-                    let wire = s.register_terminal_handle(pane, handle, token.clone());
+                    let wire = s.register_resource_handle(pane, handle, token.clone());
                     (wire, s.new_client_id())
                 });
                 tokio::task::spawn_local(actor.run());
@@ -1524,7 +1545,7 @@ mod tests {
         let state = SharedState::new();
         let (wire, client) = state.with_mut(|s| {
             let pane = s.seed_session("s").2;
-            let wire = s.register_terminal_handle(pane, handle, token);
+            let wire = s.register_resource_handle(pane, handle, token);
             (wire, s.new_client_id())
         });
         let lane = spawn_input_lane(state).expect("spawn lane");
@@ -1928,7 +1949,7 @@ mod tests {
         let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
         let wire = fx.state.with_mut(|s| {
             let (_sid, _wid, pane) = s.seed_session("t");
-            s.register_terminal_handle(pane, handle.clone(), token.clone())
+            s.register_resource_handle(pane, handle.clone(), token.clone())
         });
         tokio::task::spawn_local(actor.run());
         SecondPane {

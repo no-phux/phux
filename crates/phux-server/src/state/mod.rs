@@ -59,10 +59,10 @@ mod lifecycle_state;
 mod metadata;
 mod policy;
 mod reap;
+mod resource_table;
 mod session_table;
 mod sessions;
 mod snapshot;
-mod terminal_table;
 mod terminals;
 mod upgrade_blob;
 mod viewport;
@@ -84,8 +84,8 @@ use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
 pub use metadata::{MetadataSetOutcome, MetadataStore, RenameOutcome};
+use resource_table::ResourceTable;
 use session_table::SessionTable;
-use terminal_table::TerminalTable;
 pub use upgrade_blob::RebuildError;
 
 /// Default Group identifier exposed by v0.1 servers.
@@ -163,9 +163,9 @@ pub struct ServerState {
     ///
     /// Accessors stay on this type (see `state::terminals`); the table is
     /// an internal grouping, so nothing outside `state` names it. See
-    /// [`terminal_table`] for the per-field documentation, including the
+    /// [`resource_table`] for the per-field documentation, including the
     /// ADR-0014 drop-safety contract on the `JoinSet`.
-    terminal_table: TerminalTable,
+    resources: ResourceTable,
     /// Both input-lease ledgers (ADR-0033, "take the wheel"): the local
     /// per-pane leases and, on a federation hub, the per-satellite-pane
     /// leases that tell hub consumers apart behind the link's single client
@@ -316,6 +316,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::resource::ResourceHandle;
     use crate::terminal_actor::TerminalHandle;
     use phux_core::ids::TerminalId;
     use phux_protocol::caps::{
@@ -334,57 +335,35 @@ mod tests {
         let second = ServerState::new();
         assert_ne!(stable, second.server_incarnation());
     }
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     fn mk_tx() -> mpsc::Sender<Outbound> {
         let (tx, _rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         tx
     }
-    fn mk_handle() -> TerminalHandle {
-        let (input_tx, _input_rx) = mpsc::channel(8);
-        let (snapshot_tx, _snapshot_rx) = mpsc::channel(8);
-        let (screen_tx, _screen_rx) = mpsc::channel(8);
-        let (upgrade_tx, _upgrade_rx) = mpsc::channel(8);
-        let (pwd_tx, _pwd_rx) = mpsc::channel(8);
-        let (output_tx, _output_rx_seed) =
-            broadcast::channel::<crate::terminal_actor::PaneOutput>(8);
-        let (resize_tx, _resize_rx) = mpsc::channel(8);
-        let (consumer_attach_tx, _consumer_attach_rx) = mpsc::channel(8);
-        let (consumer_detach_tx, _consumer_detach_rx) = mpsc::channel(8);
-        let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
-        let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
-        let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) = mpsc::channel(8);
-        TerminalHandle {
-            input: input_tx,
-            encoded_input: mpsc::channel(8).0,
-            input_snapshot: tokio::sync::watch::channel(
-                crate::input::InputEncoderSnapshot::default(),
-            )
-            .1,
-            snapshot: snapshot_tx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_bootstrap: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_publication: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_history: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_release: mpsc::channel(8).0,
-            set_default_colors: mpsc::channel(8).0,
-            screen: screen_tx,
-            upgrade: upgrade_tx,
-            pwd: pwd_tx,
-            output: output_tx,
-            resize: resize_tx,
-            consumer_attach: consumer_attach_tx,
-            consumer_detach: consumer_detach_tx,
-            consumer_ack: consumer_ack_tx,
-            subscribe_to_events: subscribe_to_events_tx,
-            unsubscribe_from_events: unsubscribe_from_events_tx,
-            control: mpsc::channel(8).0,
-            cols: 80,
-            rows: 24,
+    fn mk_handle() -> ResourceHandle {
+        let (core, channels) = crate::resource::ResourceCore::new(
+            crate::resource::ResourceKind::Terminal,
+            None,
+            CancellationToken::new(),
+            8,
+        );
+        drop(core);
+        ResourceHandle {
+            kind: crate::resource::ResourceKind::Terminal,
+            parent: None,
+            output: channels.output,
+            consumer_attach: mpsc::channel(8).0,
+            consumer_detach: mpsc::channel(8).0,
+            consumer_ack: mpsc::channel(8).0,
+            subscribe_to_events: channels.subscribe_to_events,
+            unsubscribe_from_events: channels.unsubscribe_from_events,
+            upgrade: mpsc::channel(8).0,
+            control: channels.control,
+            facet: crate::resource::ResourceFacetHandle::Terminal(
+                TerminalHandle::detached_for_test(80, 24),
+            ),
         }
     }
 
@@ -785,7 +764,7 @@ mod tests {
         assert!(!s.attached().contains_key(&cid));
         assert!(s.subscribers_for_terminal(pid).is_empty());
         assert!(
-            s.terminal_table.subscriber_map_is_empty(),
+            s.resources.subscriber_map_is_empty(),
             "empty lists should be GC'd"
         );
     }
@@ -830,8 +809,8 @@ mod tests {
         );
         assert!(s.registry().session(sid_b).is_some());
         assert_eq!(
-            s.registry().terminal(pid_a).expect("pane survives").window,
-            wid_b
+            s.registry().resource(pid_a).expect("pane survives").window,
+            Some(wid_b)
         );
 
         // A move that leaves the source window populated reaps nothing.
@@ -895,7 +874,7 @@ mod tests {
             "sibling pane survives"
         );
         assert_eq!(
-            s.registry().window(wid).map(|w| w.panes.len()),
+            s.registry().window(wid).map(|w| w.slots.len()),
             Some(1),
             "window keeps the surviving pane",
         );
@@ -1019,8 +998,8 @@ mod tests {
             .new_terminal(wid_2)
             .expect("pane in second window");
 
-        let _ = s.register_terminal_handle(pid_a, mk_handle(), CancellationToken::new());
-        let _ = s.register_terminal_handle(pid_c, mk_handle(), CancellationToken::new());
+        let _ = s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new());
+        let _ = s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new());
         // pid_b intentionally has no handle and must be excluded.
 
         let panes = s.attach_snapshot_panes(sid);

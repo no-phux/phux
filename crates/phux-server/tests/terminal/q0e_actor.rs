@@ -54,7 +54,7 @@ use phux_protocol::{BootstrapId, ClientId, StreamId};
 use phux_server::state::Outbound;
 use phux_server::terminal_actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
-    TerminalActor, TerminalHandle,
+    TerminalActor,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::LocalSet;
@@ -77,7 +77,7 @@ const WIRE_TID: u32 = 7;
 /// consumers whose `ClientId`s are `1..=n_consumers`. Every test in this
 /// binary used to hand-roll exactly this boot sequence.
 struct ActorFixture {
-    handle: TerminalHandle,
+    handle: phux_server::ResourceHandle,
     token: CancellationToken,
     join: tokio::task::JoinHandle<()>,
     /// Per-consumer outbound mailboxes, indexed `ClientId(i + 1)`.

@@ -3,8 +3,8 @@
 //! The layout is a binary split tree ([`LayoutNode`]). Each interior
 //! [`LayoutNode::Split`] divides its rectangle along one axis at a `ratio`;
 //! each [`LayoutNode::Leaf`] is a single pane. The tree is the auxiliary
-//! structure; [`Window::panes`] remains the insertion-ordered source of
-//! truth for which panes are in the window.
+//! structure; [`Window::slots`] remains the insertion-ordered source of
+//! truth for which Terminal-kind resources are in the window.
 //!
 //! Spec ref: `docs/spec/L3.md` §3.2 Layout (binary subset; `TABBED` is reserved for
 //! a later version and is intentionally absent here).
@@ -26,10 +26,11 @@ use thiserror::Error;
 
 use crate::ids::{SessionId, TerminalId, WindowId};
 
-/// A window: an ordered collection of panes belonging to a session.
+/// A window: an ordered collection of layout slots belonging to a session.
 ///
-/// `panes` is the insertion-ordered source of truth. `layout` is a binary
-/// split tree over the same set of panes; the two are kept in sync by
+/// `slots` is the insertion-ordered source of truth; only Terminal-kind
+/// resources occupy a slot. `layout` is a binary split tree over the same
+/// set of slots; the two are kept in sync by
 /// [`Window::split`] and [`Window::kill_pane`] (and by the
 /// [`Registry`](crate::registry::Registry) that owns the [`Window`]).
 #[derive(Debug, Clone)]
@@ -40,8 +41,8 @@ pub struct Window {
     pub id: WindowId,
     /// The session that owns this window.
     pub session: SessionId,
-    /// Panes belonging to this window, in insertion order.
-    pub panes: Vec<TerminalId>,
+    /// Terminal-kind resources occupying this window, in insertion order.
+    pub slots: Vec<TerminalId>,
     /// The pane layout as a binary split tree, or `None` when no panes exist.
     pub layout: Option<LayoutNode>,
     /// The currently focused pane, if any.

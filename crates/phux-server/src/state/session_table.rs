@@ -201,7 +201,7 @@ impl SessionTable {
         let session = self.registry.session(session)?;
         let window_id = *session.windows.first()?;
         let window = self.registry.window(window_id)?;
-        window.panes.first().copied()
+        window.slots.first().copied()
     }
 
     // -- mutation -------------------------------------------------------
@@ -269,7 +269,7 @@ impl SessionTable {
     /// can name `owner`.
     #[must_use]
     pub(super) fn add_pane_beside(&mut self, owner: TerminalId) -> Option<TerminalId> {
-        let window = self.registry.terminal(owner)?.window;
+        let window = self.registry.resource(owner)?.window?;
         self.registry.new_terminal(window).ok()
     }
 

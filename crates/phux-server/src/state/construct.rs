@@ -1,6 +1,6 @@
 use super::{
-    AgentState, ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore, ServerState,
-    SessionTable, TerminalTable,
+    AgentState, ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore,
+    ResourceTable, ServerState, SessionTable,
 };
 
 impl ServerState {
@@ -10,7 +10,7 @@ impl ServerState {
         Self {
             sessions: SessionTable::new(),
             clients: ClientTable::new(),
-            terminal_table: TerminalTable::new(),
+            resources: ResourceTable::new(),
             leases: LeaseTable::new(),
             idspace: IdSpace::new(),
             metadata: MetadataStore::default(),

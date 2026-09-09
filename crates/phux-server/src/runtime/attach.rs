@@ -23,6 +23,7 @@ use super::{
     seed_session_with_pty_and_colors, send_error, spawn_pane_with_pty_and_colors,
 };
 use crate::hub::relay::SatelliteSpawn;
+use crate::resource::ResourceHandle;
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
@@ -173,7 +174,8 @@ struct SnapshotGate {
     terminal_id: TerminalId,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     wire_terminal_id: phux_protocol::ids::TerminalId,
-    handle: crate::terminal_actor::TerminalHandle,
+    /// Terminal facet, for the native publication fence.
+    terminal: crate::terminal_actor::TerminalHandle,
     gate: oneshot::Sender<OutputPumpStart>,
     cut: Option<u64>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -502,9 +504,9 @@ struct OutputPumpContext {
     limits: BootstrapLimits,
     /// How this pump names itself in the broadcast-lag warning.
     lag_label: &'static str,
-    /// Actor handle used for native checkpoint capture and publication.
+    /// Terminal facet used for native checkpoint capture and publication.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    handle: crate::terminal_actor::TerminalHandle,
+    terminal: crate::terminal_actor::TerminalHandle,
 }
 
 impl OutputPumpContext {
@@ -643,7 +645,7 @@ impl OutputPumpContext {
     ) -> Result<crate::terminal_actor::NativeBootstrapReply, PumpFault> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
-            .handle
+            .terminal
             .native_bootstrap
             .send(crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -706,7 +708,7 @@ impl OutputPumpContext {
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
         let publication = activate_native_publication(
-            &self.handle,
+            &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
@@ -1002,7 +1004,7 @@ async fn fail_aggregate_attach_prepublication(
     attach_id: u32,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     connection_token: &CancellationToken,
-    staged_handles: &[crate::terminal_actor::TerminalHandle],
+    staged_handles: &[ResourceHandle],
     staged_pumps: &mut JoinSet<()>,
     committed_pumps: &mut JoinSet<()>,
     reason: &str,
@@ -1015,11 +1017,12 @@ async fn fail_aggregate_attach_prepublication(
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in staged_handles {
+        // Native history cuts are a Terminal facet lease.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
+        if let Ok(terminal) = handle.terminal() {
             let _ = tokio::time::timeout(
                 producer_deadline,
-                handle
+                terminal
                     .native_release
                     .send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 }),
             )
@@ -1363,7 +1366,7 @@ async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<St
     let handle = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
         let focused = s.active_pane_of_session(session)?;
-        s.terminal_handle(focused).cloned()
+        s.resource_handle(focused).cloned()
     })?;
     query_pane_cwd(handle).await
 }
@@ -1383,7 +1386,7 @@ async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<St
             return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
         }
         let seed = s.seed_pane_of_session(session)?;
-        let handle = s.terminal_handle(seed).cloned()?;
+        let handle = s.resource_handle(seed).cloned()?;
         Some((session, FrozenOrQuery::Query(handle)))
     })?;
     match handle {
@@ -1411,7 +1414,7 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
         let window = s.active_window_of_session(session)?;
         let handle = s
             .active_pane_of_session(session)
-            .and_then(|p| s.terminal_handle(p).cloned());
+            .and_then(|p| s.resource_handle(p).cloned());
         Some((window, handle))
     })?;
     let resolved = match handle {
@@ -1437,7 +1440,7 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
 /// the lock across the `await`.
 pub(crate) enum FrozenOrQuery {
     Frozen(String),
-    Query(crate::terminal_actor::TerminalHandle),
+    Query(ResourceHandle),
 }
 
 /// Render `path` as a UTF-8 string, or `None` if it is not valid UTF-8 — the
@@ -1447,15 +1450,15 @@ pub(crate) fn path_to_string(path: &std::path::Path) -> Option<String> {
     path.to_str().map(ToOwned::to_owned)
 }
 
-/// Ask `handle`'s actor for its live PTY child CWD (a kernel query, see
-/// [`crate::cwd_query`]). `None` when the actor has gone away or the query
+/// Ask `handle`'s engine for its live PTY child CWD (a kernel query, see
+/// [`crate::cwd_query`]). `None` when the resource is not a Terminal (only a
+/// Terminal has a working directory), the actor has gone away, or the query
 /// is unsupported/denied. The handle must be cloned out of state before the
 /// call: `with` must not be held across the `await`.
-pub(crate) async fn query_pane_cwd(
-    handle: crate::terminal_actor::TerminalHandle,
-) -> Option<String> {
+pub(crate) async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
+    let terminal = handle.terminal().ok()?;
     let (reply, rx) = tokio::sync::oneshot::channel();
-    handle.pwd.send(PwdRequest { reply }).await.ok()?;
+    terminal.pwd.send(PwdRequest { reply }).await.ok()?;
     rx.await.ok().flatten()
 }
 
@@ -1487,8 +1490,8 @@ pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
     /// visibly delays the attacher's first paint.
     const CWD_REFRESH_DEADLINE: std::time::Duration = std::time::Duration::from_millis(250);
 
-    let handles: Vec<(TerminalId, crate::terminal_actor::TerminalHandle)> =
-        state.with(crate::state::ServerState::all_terminal_handles);
+    let handles: Vec<(TerminalId, ResourceHandle)> =
+        state.with(crate::state::ServerState::all_resource_handles);
     if handles.is_empty() {
         return;
     }
@@ -1673,7 +1676,7 @@ pub(crate) async fn handle_move_terminal(
                         Vec::new(),
                     );
                 };
-                let Some(dest_window) = s.registry().terminal(owner).map(|t| t.window) else {
+                let Some(dest_window) = s.registry().resource(owner).and_then(|t| t.window) else {
                     return (
                         MoveResult::Err(MoveError::MoveFailed(
                             "owner terminal has no window on this server".to_owned(),
@@ -1681,7 +1684,7 @@ pub(crate) async fn handle_move_terminal(
                         Vec::new(),
                     );
                 };
-                let source_window = s.registry().terminal(moved).map(|t| t.window);
+                let source_window = s.registry().resource(moved).and_then(|t| t.window);
                 let source_session = source_window
                     .and_then(|window| s.registry().window(window))
                     .map(|window| window.session);
@@ -1903,6 +1906,17 @@ pub(crate) async fn handle_spawn_terminal(
         refuse_vanished_pane_handle(state, out_tx, client_id, request_id, core_terminal_id).await;
         return;
     };
+    // The pane was just built by the Terminal engine; the facet is resolved
+    // once and carried through publication.
+    let terminal = match handle.terminal() {
+        Ok(terminal) => terminal.clone(),
+        Err(error) => {
+            warn!(?client_id, request_id, ?core_terminal_id, %error, "SPAWN_TERMINAL");
+            refuse_vanished_pane_handle(state, out_tx, client_id, request_id, core_terminal_id)
+                .await;
+            return;
+        }
+    };
 
     SpawnPublication {
         state,
@@ -1912,6 +1926,7 @@ pub(crate) async fn handle_spawn_terminal(
         core_terminal_id,
         wire_terminal_id,
         handle,
+        terminal,
         client_caps,
         stream_id: stream_id_from(u64::from(request_id)),
         profile,
@@ -2200,7 +2215,7 @@ fn subscribe_spawning_client(
     core_terminal_id: TerminalId,
 ) -> Option<(
     phux_protocol::ids::TerminalId,
-    crate::terminal_actor::TerminalHandle,
+    ResourceHandle,
     ClientCapabilities,
 )> {
     state.with_mut(|s| {
@@ -2220,7 +2235,7 @@ fn subscribe_spawning_client(
             // resolves it without a second copy (phux-w7z2.56).
             s.subscribe_terminal(client_id, core_terminal_id, None);
         }
-        s.terminal_handle(core_terminal_id)
+        s.resource_handle(core_terminal_id)
             .cloned()
             .map(|h| (wire_terminal_id, h, client_caps))
     })
@@ -2285,8 +2300,10 @@ struct SpawnPublication<'a> {
     core_terminal_id: TerminalId,
     /// Wire id announced to the client.
     wire_terminal_id: phux_protocol::ids::TerminalId,
-    /// Actor handle for the capture.
-    handle: crate::terminal_actor::TerminalHandle,
+    /// The resource's generic channels (output, consumers).
+    handle: ResourceHandle,
+    /// The Terminal facet of `handle`, for capture and resync.
+    terminal: crate::terminal_actor::TerminalHandle,
     /// Negotiated capabilities the payload is adapted to.
     client_caps: ClientCapabilities,
     /// Stream the pane's generation publishes on.
@@ -2349,7 +2366,7 @@ impl SpawnPublication<'_> {
     ) -> Option<crate::terminal_actor::NativeBootstrapReply> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let sent = self
-            .handle
+            .terminal
             .native_bootstrap
             .send(crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -2392,7 +2409,7 @@ impl SpawnPublication<'_> {
         let gate_tx = spawn_terminal_output_pump(
             OutputPumpContext {
                 out_tx: self.out_tx.clone(),
-                resize: self.handle.resize.clone(),
+                resize: self.terminal.resize.clone(),
                 wire_terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
                 initial_bootstrap_id: initial_bootstrap_id(),
@@ -2402,7 +2419,7 @@ impl SpawnPublication<'_> {
                 limits: self.limits,
                 lag_label: "SPAWN_TERMINAL output pump",
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                handle: self.handle.clone(),
+                terminal: self.terminal.clone(),
             },
             output_rx,
             self.state,
@@ -2445,7 +2462,7 @@ impl SpawnPublication<'_> {
             }
         }
         let Ok(publication) = activate_native_publication(
-            &self.handle,
+            &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
@@ -2470,7 +2487,7 @@ impl SpawnPublication<'_> {
     async fn capture_snapshot(&self) -> Option<(crate::grid::SnapshotBytes, u64)> {
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
         if self
-            .handle
+            .terminal
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -2650,9 +2667,12 @@ async fn apply_client_default_colors(
         return;
     };
     for pane in panes {
+        // A palette is grid state; a resource of another kind has none.
+        let Ok(terminal) = pane.handle.terminal() else {
+            continue;
+        };
         let (reply, done) = oneshot::channel();
-        if pane
-            .handle
+        if terminal
             .set_default_colors
             .send(SetDefaultColorsRequest { colors, reply })
             .await
@@ -2674,8 +2694,8 @@ struct AttachStaging {
     budget: BootstrapStagingBudget,
     /// Bootstrap and authoritative-closure frames staged for atomic publication.
     frames: Vec<FrameKind>,
-    /// Actor handles staged so the rollback boundary can detach each producer.
-    handles: Vec<crate::terminal_actor::TerminalHandle>,
+    /// Resource handles staged so the rollback boundary can detach each producer.
+    handles: Vec<ResourceHandle>,
     /// phux-7w1j: per-pane "snapshot has been sent" gates.
     gates: Vec<SnapshotGate>,
     /// A failed replacement is connection-fatal: preserving an older producer
@@ -2801,7 +2821,7 @@ impl PaneCaptureContext<'_> {
     /// logged and we fall back to the broadcast path.
     async fn register_consumer(
         &self,
-        handle: &crate::terminal_actor::TerminalHandle,
+        handle: &ResourceHandle,
         wire_terminal_id: &phux_protocol::ids::TerminalId,
         terminal_id: TerminalId,
         bootstrap_max_bytes: usize,
@@ -2902,12 +2922,13 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         terminal_id: TerminalId,
         wire_terminal_id: &phux_protocol::ids::TerminalId,
-        handle: &crate::terminal_actor::TerminalHandle,
+        handle: &ResourceHandle,
+        terminal: &crate::terminal_actor::TerminalHandle,
     ) {
         let output_rx = handle.output.subscribe();
         let ctx = OutputPumpContext {
             out_tx: self.out_tx.clone(),
-            resize: handle.resize.clone(),
+            resize: terminal.resize.clone(),
             wire_terminal_id: wire_terminal_id.clone(),
             stream_id: self.stream_id,
             initial_bootstrap_id: self.bootstrap_id,
@@ -2917,7 +2938,7 @@ impl PaneCaptureContext<'_> {
             limits: self.limits,
             lag_label: "TerminalOutput pump",
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            handle: handle.clone(),
+            terminal: terminal.clone(),
         };
         let pump_state = self.state.clone();
         let pump_connection_token = self.connection_token.clone();
@@ -2927,7 +2948,7 @@ impl PaneCaptureContext<'_> {
             terminal_id,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             wire_terminal_id: wire_terminal_id.clone(),
-            handle: handle.clone(),
+            terminal: terminal.clone(),
             gate: gate_tx,
             cut: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -3012,10 +3033,10 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         terminal_id: TerminalId,
         wire_terminal_id: &phux_protocol::ids::TerminalId,
-        handle: &crate::terminal_actor::TerminalHandle,
+        terminal: &crate::terminal_actor::TerminalHandle,
     ) -> Result<(), String> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if handle
+        if terminal
             .native_bootstrap
             .send(crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -3072,13 +3093,13 @@ impl PaneCaptureContext<'_> {
     /// cut it was taken at.
     async fn request_pane_snapshot(
         &self,
-        handle: &crate::terminal_actor::TerminalHandle,
+        terminal: &crate::terminal_actor::TerminalHandle,
         terminal_id: TerminalId,
         max_bytes: usize,
         max_frames: usize,
     ) -> Result<(crate::grid::SnapshotBytes, u64), String> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if handle
+        if terminal
             .snapshot
             .send(SnapshotRequest {
                 scrollback: self.scrollback,
@@ -3124,6 +3145,12 @@ impl PaneCaptureContext<'_> {
             bootstrap_source_ceiling(staging.budget.remaining_bytes(), self.client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
+        // A window slot only ever holds a Terminal; a bootstrap of anything
+        // else is a state inconsistency that fails the attach.
+        let terminal = handle
+            .terminal()
+            .map_err(|error| error.to_string())?
+            .clone();
         staging.handles.push(handle.clone());
         let wire_terminal_id = pane.wire_terminal_id;
         let registration = self
@@ -3162,7 +3189,7 @@ impl PaneCaptureContext<'_> {
         // existed. Writing the real two-path version is its own piece of work
         // and its own bead, not a comment.)
         if !registration.tick_managed {
-            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle);
+            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal);
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
             return self.stage_synthesized_frames(
@@ -3176,12 +3203,12 @@ impl PaneCaptureContext<'_> {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if self.publishes_native_checkpoints() {
             return self
-                .stage_native_bootstrap(staging, terminal_id, &wire_terminal_id, &handle)
+                .stage_native_bootstrap(staging, terminal_id, &wire_terminal_id, &terminal)
                 .await;
         }
         let (snapshot, cut) = self
             .request_pane_snapshot(
-                &handle,
+                &terminal,
                 terminal_id,
                 synthesized_source_max,
                 staging.budget.remaining_frames(),
@@ -3306,7 +3333,7 @@ impl AttachPublication<'_> {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             if let Some(cursor) = gate.native_cursor {
                 let Ok(publication) = activate_native_publication(
-                    &gate.handle,
+                    &gate.terminal,
                     self.client_id.0,
                     gate.wire_terminal_id,
                     self.stream_id,
@@ -3606,7 +3633,10 @@ pub(crate) fn apply_attach_viewport(
             // resync broadcast here would race ahead of it (phux-8v1).
             // Pixel geometry rides along (most recent usable subscriber
             // report — normally the viewport recorded above).
-            match pane.handle.resize.try_send(ResizeRequest {
+            let Ok(terminal) = pane.handle.terminal() else {
+                continue;
+            };
+            match terminal.resize.try_send(ResizeRequest {
                 cols,
                 rows,
                 cell_px: s.resolve_terminal_cell_px(pane.terminal_id),
@@ -3936,7 +3966,7 @@ mod tests {
             )
             .expect("test terminal actor");
             state.with_mut(|server| {
-                server.register_terminal_handle(terminal, bundle.handle.clone(), token);
+                server.register_resource_handle(terminal, bundle.handle.clone(), token);
             });
             actors.push(bundle.actor);
         }
@@ -4039,7 +4069,7 @@ mod tests {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_attach_handle() -> (
-        crate::terminal_actor::TerminalHandle,
+        ResourceHandle,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::NativePublicationRequest>,
@@ -4051,29 +4081,38 @@ mod tests {
         let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
         let (native_publication, native_publication_rx) = mpsc::channel(8);
         (
-            crate::terminal_actor::TerminalHandle {
-                input: mpsc::channel(8).0,
-                encoded_input: mpsc::channel(8).0,
-                input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
-                snapshot: mpsc::channel(8).0,
-                native_bootstrap,
-                native_publication,
-                native_history: mpsc::channel(8).0,
-                native_release: mpsc::channel(8).0,
-                set_default_colors: mpsc::channel(8).0,
-                screen: mpsc::channel(8).0,
-                upgrade: mpsc::channel(8).0,
-                pwd: mpsc::channel(8).0,
+            crate::resource::ResourceHandle {
+                kind: crate::resource::ResourceKind::Terminal,
+                parent: None,
                 output,
-                resize: mpsc::channel(8).0,
                 consumer_attach,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
                 subscribe_to_events: mpsc::channel(8).0,
                 unsubscribe_from_events: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
                 control: mpsc::channel(8).0,
-                cols: 80,
-                rows: 24,
+                facet: crate::resource::ResourceFacetHandle::Terminal(
+                    crate::terminal_actor::TerminalHandle {
+                        input: mpsc::channel(8).0,
+                        encoded_input: mpsc::channel(8).0,
+                        input_snapshot: watch::channel(
+                            crate::input::InputEncoderSnapshot::default(),
+                        )
+                        .1,
+                        snapshot: mpsc::channel(8).0,
+                        native_bootstrap,
+                        native_publication,
+                        native_history: mpsc::channel(8).0,
+                        native_release: mpsc::channel(8).0,
+                        set_default_colors: mpsc::channel(8).0,
+                        screen: mpsc::channel(8).0,
+                        pwd: mpsc::channel(8).0,
+                        resize: mpsc::channel(8).0,
+                        cols: 80,
+                        rows: 24,
+                    },
+                ),
             },
             consumer_attach_rx,
             native_bootstrap_rx,
@@ -4186,7 +4225,7 @@ mod tests {
                     mut native_publication_rx,
                 ) = native_attach_handle();
                 state.with_mut(|s| {
-                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                    let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
                 });
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
                 let (out_tx, mut out_rx) =
@@ -4254,7 +4293,7 @@ mod tests {
                     mut native_publication_rx,
                 ) = native_attach_handle();
                 state.with_mut(|s| {
-                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                    let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
                 });
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
                 let (out_tx, mut out_rx) =

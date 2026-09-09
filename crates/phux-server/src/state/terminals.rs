@@ -5,17 +5,17 @@ use phux_protocol::ids::{BootstrapId, TerminalId as WireTerminalId};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::terminal_table::AttachTerminalPumpReplacement;
+use super::resource_table::AttachTerminalPumpReplacement;
 use super::{ClientId, ServerState};
 use crate::mailbox::Outbound;
-use crate::terminal_actor::TerminalHandle;
+use crate::resource::ResourceHandle;
 
 impl ServerState {
     /// Subscribers (snapshot) for `pane`. Returns an empty slice if no
     /// clients are currently observing the pane.
     #[must_use]
     pub fn subscribers_for_terminal(&self, terminal: TerminalId) -> &[ClientId] {
-        self.terminal_table.subscribers_for(terminal)
+        self.resources.subscribers_for(terminal)
     }
 
     /// Subscribe `client` to `terminal`'s output fanout, deduplicating so a
@@ -40,7 +40,7 @@ impl ServerState {
         if let Some(tx) = mailbox {
             self.clients.remember_terminal_mailbox(client, tx);
         }
-        self.terminal_table.subscribe(client, terminal);
+        self.resources.subscribe(client, terminal);
     }
 
     /// Outbound mailboxes of every client subscribed to `terminal`, for the
@@ -64,7 +64,7 @@ impl ServerState {
             .collect()
     }
 
-    /// Clone the [`TerminalHandle`] of every pane `client_id` currently
+    /// Clone the [`ResourceHandle`] of every pane `client_id` currently
     /// subscribes to (phux-0q8). The runtime uses this at DETACH /
     /// disconnect / EOF time to send a
     /// [`ConsumerDetachRequest`](crate::terminal_actor::ConsumerDetachRequest) to each
@@ -73,40 +73,42 @@ impl ServerState {
     /// made. Gathered under-lock; the sends happen off-lock in the
     /// runtime to avoid awaiting inside `with_mut`.
     #[must_use]
-    pub fn subscribed_terminal_handles(&self, client_id: ClientId) -> Vec<TerminalHandle> {
-        self.terminal_table.subscribed_handles(client_id)
+    pub fn subscribed_resource_handles(&self, client_id: ClientId) -> Vec<ResourceHandle> {
+        self.resources.subscribed_handles(client_id)
     }
 
-    /// Record a freshly-spawned [`TerminalHandle`] against `pane` and
-    /// allocate its wire id.
+    /// Record a freshly-spawned engine's [`ResourceHandle`] against
+    /// `terminal` and allocate its wire id.
     ///
     /// Called by the runtime after `TerminalActor::new` /
     /// `build_with_token`. Subsequent attaches use
-    /// [`Self::terminal_handle`] to look the handle up.
+    /// [`Self::resource_handle`] to look the handle up; a Terminal-only
+    /// request then goes through
+    /// [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal).
     ///
     /// `token` is stashed alongside the handle; cancelling it (e.g. via
-    /// [`Self::detach_terminal_actor`]) fires the actor's shutdown branch.
+    /// [`Self::detach_resource_actor`]) fires the actor's shutdown branch.
     ///
     /// This method does NOT spawn the actor — pair it with
-    /// [`Self::spawn_terminal_actor`] when you also want the actor task
+    /// [`Self::spawn_resource_actor`] when you also want the actor task
     /// registered against the per-server `JoinSet`.
     ///
     /// Idempotent on the wire-id allocation (a second call for the
     /// same `pane` returns the same wire id) but overwrites the
-    /// `TerminalHandle` / token. In practice the runtime calls this
+    /// `ResourceHandle` / token. In practice the runtime calls this
     /// exactly once per pane lifetime.
     ///
     /// Stays on `ServerState` rather than moving onto the terminal table:
     /// the wire-id mint and the two table writes are one atomic step the
     /// runtime depends on, and the id space is a different concern.
-    pub fn register_terminal_handle(
+    pub fn register_resource_handle(
         &mut self,
         terminal: TerminalId,
-        handle: TerminalHandle,
+        handle: ResourceHandle,
         token: CancellationToken,
     ) -> WireTerminalId {
         let wire = self.intern_terminal_wire(terminal);
-        self.terminal_table.register(terminal, handle, token);
+        self.resources.register(terminal, handle, token);
         wire
     }
 
@@ -116,19 +118,19 @@ impl ServerState {
     /// own `!Send` `Terminal`s and are spawned via
     /// `JoinSet::spawn_local`).
     ///
-    /// Returns the wire pane id, matching [`Self::register_terminal_handle`].
-    pub fn spawn_terminal_actor<F>(
+    /// Returns the wire pane id, matching [`Self::register_resource_handle`].
+    pub fn spawn_resource_actor<F>(
         &mut self,
         terminal: TerminalId,
-        handle: TerminalHandle,
+        handle: ResourceHandle,
         token: CancellationToken,
         actor_future: F,
     ) -> WireTerminalId
     where
         F: Future<Output = ()> + 'static,
     {
-        let wire = self.register_terminal_handle(terminal, handle, token);
-        self.terminal_table.spawn_actor(actor_future);
+        let wire = self.register_resource_handle(terminal, handle, token);
+        self.resources.spawn_actor(actor_future);
         wire
     }
 
@@ -139,27 +141,30 @@ impl ServerState {
     /// The actor task itself is drained from the per-server `JoinSet`
     /// when it returns from `run`; we don't need to touch the pane-task
     /// set here.
-    pub fn detach_terminal_actor(&mut self, terminal: TerminalId) {
-        self.terminal_table.detach_actor(terminal);
+    pub fn detach_resource_actor(&mut self, terminal: TerminalId) {
+        self.resources.detach_actor(terminal);
     }
 
-    /// Look up the [`TerminalHandle`] for `pane`, if registered.
+    /// Look up the [`ResourceHandle`] for `terminal`, if registered. The
+    /// handle is kind-agnostic; see
+    /// [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal)
+    /// for the Terminal facet.
     #[must_use]
-    pub fn terminal_handle(&self, terminal: TerminalId) -> Option<&TerminalHandle> {
-        self.terminal_table.handle(terminal)
+    pub fn resource_handle(&self, terminal: TerminalId) -> Option<&ResourceHandle> {
+        self.resources.handle(terminal)
     }
 
     /// Clone every registered `(pane, handle)` pair so the caller can talk
     /// to the actors outside the `ServerState` lock (the `Arc<Mutex<_>>`
     /// must not be held across an await).
-    pub(crate) fn all_terminal_handles(&self) -> Vec<(TerminalId, TerminalHandle)> {
-        self.terminal_table.all_handles()
+    pub(crate) fn all_resource_handles(&self) -> Vec<(TerminalId, ResourceHandle)> {
+        self.resources.all_handles()
     }
 
     /// Install a new `ATTACH_TERMINAL` pump generation for `(client,
     /// terminal)`, displacing any live one.
     ///
-    /// See `TerminalTable::replace_pump` for what the returned tuple carries
+    /// See `ResourceTable::replace_pump` for what the returned tuple carries
     /// and why a second attach replaces rather than being refused. (Not a
     /// rustdoc link: that method is `pub(super)`, and rustdoc does not document
     /// private items.)
@@ -169,20 +174,19 @@ impl ServerState {
         terminal: TerminalId,
         bootstrap_id: BootstrapId,
     ) -> AttachTerminalPumpReplacement {
-        self.terminal_table
-            .replace_pump(client, terminal, bootstrap_id)
+        self.resources.replace_pump(client, terminal, bootstrap_id)
     }
 
     /// Allocate the next per-terminal bootstrap id for `client`, or `None`
     /// once the connection has exhausted its id space.
     pub fn next_attach_terminal_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        self.terminal_table.next_bootstrap_id(client)
+        self.resources.next_bootstrap_id(client)
     }
 
     /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
     pub fn cancel_attach_terminal_pump(&mut self, client: ClientId, terminal: TerminalId) {
-        self.terminal_table.cancel_pump(client, terminal);
+        self.resources.cancel_pump(client, terminal);
     }
 
     /// Track a task from any of the three output subscription paths.
@@ -193,7 +197,7 @@ impl ServerState {
         abort: tokio::task::AbortHandle,
         done: CancellationToken,
     ) {
-        self.terminal_table
+        self.resources
             .track_output_pump(client, terminal, abort, done);
     }
 
@@ -204,12 +208,12 @@ impl ServerState {
         client: ClientId,
         terminal: TerminalId,
     ) -> Vec<CancellationToken> {
-        self.terminal_table.stop_output_pumps(client, terminal)
+        self.resources.stop_output_pumps(client, terminal)
     }
 
     /// Remove `client` from `terminal`'s subscriber list (the
     /// `DETACH_TERMINAL` counterpart of the attach-time registration).
     pub fn unsubscribe_terminal(&mut self, client: ClientId, terminal: TerminalId) {
-        self.terminal_table.unsubscribe(client, terminal);
+        self.resources.unsubscribe(client, terminal);
     }
 }

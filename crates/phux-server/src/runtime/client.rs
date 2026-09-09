@@ -506,7 +506,7 @@ fn invalidate_agent_detector(
     };
     let handle = state.with(|s| {
         s.terminal_from_wire(wire)
-            .and_then(|pane| s.terminal_handle(pane).cloned())
+            .and_then(|pane| s.resource_handle(pane).cloned())
     });
     if let Some(handle) = handle {
         let _ = handle
@@ -738,7 +738,7 @@ pub(crate) async fn broadcast_terminal_closed(
 /// transport-close superset, and the accept loop runs it exactly once per
 /// connection no matter which path ended the client task.
 ///
-/// Handles are gathered under-lock (`subscribed_terminal_handles`); the
+/// Handles are gathered under-lock (`subscribed_resource_handles`); the
 /// `consumer_detach` sends happen off-lock to avoid awaiting inside
 /// `with_mut`. `try_send` is non-blocking and best-effort: a full or
 /// closed mailbox just means the actor is gone or saturated. A dropped
@@ -761,12 +761,16 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     });
     let wire_client_id =
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-    let handles = state.with(|s| s.subscribed_terminal_handles(client_id));
+    let handles = state.with(|s| s.subscribed_resource_handles(client_id));
     for handle in handles {
+        // Native history cuts are a Terminal facet lease; a resource of
+        // another kind never held one.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let _ = handle
-            .native_release
-            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
+        if let Ok(terminal) = handle.terminal() {
+            let _ = terminal
+                .native_release
+                .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
+        }
         let (reply_tx, _reply_rx) = oneshot::channel();
         match handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id,
@@ -792,10 +796,10 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     // Gathered under-lock; the `control` sends happen off-lock. `detach`
     // (below) clears the lease state regardless, so this is purely the
     // observable-event half — a saturated/closed mailbox is benign.
-    let released: Vec<crate::terminal_actor::TerminalHandle> = state.with(|s| {
+    let released: Vec<crate::resource::ResourceHandle> = state.with(|s| {
         s.leases_held_by(client_id)
             .into_iter()
-            .filter_map(|pane| s.terminal_handle(pane).cloned())
+            .filter_map(|pane| s.resource_handle(pane).cloned())
             .collect()
     });
     for handle in released {
@@ -1789,6 +1793,31 @@ struct HistoryPageRequest {
 /// takes the whole attach down (phux-ijuj). Every exit below tombstones the
 /// cursor instead.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+/// The Terminal facet a `HISTORY_REQUEST` pages against: `None` for an
+/// unknown terminal or a resource of another kind. Only a Terminal retains
+/// native history cuts, so either way the cursor's lease cannot exist.
+fn history_terminal(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::TerminalId,
+) -> Option<crate::terminal_actor::TerminalHandle> {
+    let handle = state.with(|server| {
+        server
+            .terminal_from_wire(terminal_id)
+            .and_then(|pane| server.resource_handle(pane).cloned())
+    });
+    let Some(handle) = handle else {
+        warn!(?terminal_id, "HISTORY_REQUEST for an unknown terminal");
+        return None;
+    };
+    match handle.terminal() {
+        Ok(terminal) => Some(terminal.clone()),
+        Err(error) => {
+            warn!(?terminal_id, %error, "HISTORY_REQUEST for a non-Terminal resource");
+            None
+        }
+    }
+}
+
 async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,
@@ -1829,14 +1858,9 @@ async fn serve_history_request(
             .await;
         return;
     }
-    let handle = state.with(|server| {
-        server
-            .terminal_from_wire(&terminal_id)
-            .and_then(|pane| server.terminal_handle(pane).cloned())
-    });
-    let Some(handle) = handle else {
-        // The terminal is gone, so the cursor's lease died with it.
-        warn!(?terminal_id, "HISTORY_REQUEST for an unknown terminal");
+    let Some(terminal) = history_terminal(state, &terminal_id) else {
+        // The terminal is gone, or the resource never was one, so no history
+        // lease can exist for the cursor.
         let _ = out_tx
             .send(Outbound::Frame(tombstone(
                 phux_protocol::wire::frame::HistoryTombstoneReason::Released,
@@ -1848,7 +1872,7 @@ async fn serve_history_request(
         return;
     };
     let (reply_tx, reply_rx) = oneshot::channel();
-    if handle
+    if terminal
         .native_history
         .send(crate::terminal_actor::NativeHistoryRequest {
             permit,
@@ -4034,7 +4058,7 @@ mod fatal_preflight_close_tests {
 
     use super::handle_client;
     use crate::state::SharedState;
-    use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput, TerminalHandle};
+    use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput};
     use crate::transport::{FrameReader, FrameWriter};
 
     struct ScriptReader {
@@ -4096,7 +4120,7 @@ mod fatal_preflight_close_tests {
     }
 
     fn native_failure_handle() -> (
-        TerminalHandle,
+        crate::resource::ResourceHandle,
         mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
         mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
     ) {
@@ -4106,23 +4130,10 @@ mod fatal_preflight_close_tests {
         let (native_release, _native_release_rx) = mpsc::channel(8);
         let (consumer_detach, _consumer_detach_rx) = mpsc::channel(8);
         (
-            TerminalHandle {
-                input: mpsc::channel(8).0,
-                encoded_input: mpsc::channel(8).0,
-                input_snapshot: tokio::sync::watch::channel(
-                    crate::input::InputEncoderSnapshot::default(),
-                )
-                .1,
-                snapshot: mpsc::channel(8).0,
-                native_bootstrap,
-                native_publication: mpsc::channel(8).0,
-                native_history: mpsc::channel(8).0,
-                native_release,
-                set_default_colors: mpsc::channel(8).0,
-                screen: mpsc::channel(8).0,
-                pwd: mpsc::channel(8).0,
+            crate::resource::ResourceHandle {
+                kind: crate::resource::ResourceKind::Terminal,
+                parent: None,
                 output,
-                resize: mpsc::channel(8).0,
                 consumer_attach,
                 consumer_detach,
                 consumer_ack: mpsc::channel(8).0,
@@ -4130,8 +4141,27 @@ mod fatal_preflight_close_tests {
                 unsubscribe_from_events: mpsc::channel(8).0,
                 upgrade: mpsc::channel(8).0,
                 control: mpsc::channel(8).0,
-                cols: 80,
-                rows: 24,
+                facet: crate::resource::ResourceFacetHandle::Terminal(
+                    crate::terminal_actor::TerminalHandle {
+                        input: mpsc::channel(8).0,
+                        encoded_input: mpsc::channel(8).0,
+                        input_snapshot: tokio::sync::watch::channel(
+                            crate::input::InputEncoderSnapshot::default(),
+                        )
+                        .1,
+                        snapshot: mpsc::channel(8).0,
+                        native_bootstrap,
+                        native_publication: mpsc::channel(8).0,
+                        native_history: mpsc::channel(8).0,
+                        native_release,
+                        set_default_colors: mpsc::channel(8).0,
+                        screen: mpsc::channel(8).0,
+                        pwd: mpsc::channel(8).0,
+                        resize: mpsc::channel(8).0,
+                        cols: 80,
+                        rows: 24,
+                    },
+                ),
             },
             consumer_attach_rx,
             native_bootstrap_rx,
@@ -4151,7 +4181,7 @@ mod fatal_preflight_close_tests {
                     native_failure_handle();
                 state.with_mut(|server| {
                     let _ =
-                        server.register_terminal_handle(terminal, handle, CancellationToken::new());
+                        server.register_resource_handle(terminal, handle, CancellationToken::new());
                 });
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
                 state.with_mut(|server| {

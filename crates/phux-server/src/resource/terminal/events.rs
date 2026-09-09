@@ -5,8 +5,7 @@
 
 use super::{
     AgentDetectEvent, AgentEvent, AskMarker, ControlAction, ControlRequest, DetectOutcome,
-    FrameKind, Outbound, SubscribeToEventsRequest, TerminalActor, TerminalEventType,
-    TerminalLifecycle, TerminalSignal, UnsubscribeFromEventsRequest, mpsc, osc133, trace,
+    TerminalActor, TerminalLifecycle, TerminalSignal, mpsc, osc133, trace,
 };
 use crate::agent_asked::AskedPayload;
 
@@ -210,7 +209,7 @@ impl TerminalActor {
                 self.last_progress.clone_from(progress);
             }
         }
-        if self.event_sink.is_none() && self.event_subscribers.borrow().is_empty() {
+        if self.event_sink.is_none() && self.core.has_no_event_subscribers() {
             return;
         }
         self.output_since_idle_tick = true;
@@ -356,59 +355,11 @@ impl TerminalActor {
         self.broadcast_agent_event(&AgentEvent::CwdChanged { cwd });
     }
 
-    /// Register a new event subscriber to receive semantic terminal events.
-    /// Non-blocking: failure to send is silently dropped (accelerator semantics).
-    /// Also updates the actor's `wire_terminal_id` for use in Event frames.
-    pub(super) fn subscribe_to_events(&mut self, request: SubscribeToEventsRequest) {
-        self.wire_terminal_id = request.wire_terminal_id;
-        self.event_subscribers.borrow_mut().push(request.subscriber);
-    }
-
-    /// Unsubscribe from semantic terminal events by removing the subscriber
-    /// whose outbound mailbox pointer matches the provided reference.
-    /// Silent no-op if the subscriber is not found.
-    pub(super) fn unsubscribe_from_events(&self, request: &UnsubscribeFromEventsRequest) {
-        let mut subs = self.event_subscribers.borrow_mut();
-        subs.retain(|sub| (&raw const sub.outbound) as usize != request.outbound_addr);
-    }
-
-    /// Broadcast an `AgentEvent` to all interested subscribers based on the
-    /// event type. Uses `try_send`: drops events if a subscriber's mailbox is full.
+    /// Fan an `AgentEvent` out to every event subscriber whose filter admits
+    /// it. The subscriber registry and the wire id stamped on the frame are
+    /// the core's; this engine only decides *when* an event happens.
     pub(super) fn broadcast_agent_event(&self, event: &AgentEvent) {
-        let subs = self.event_subscribers.borrow();
-        for subscriber in subs.iter() {
-            // Check if this subscriber is interested in this event type.
-            // Map AgentEvent variants to TerminalEventType for filtering.
-            let event_type = match event {
-                AgentEvent::CommandStarted => Some(TerminalEventType::CommandStarted),
-                AgentEvent::CommandFinished { .. } => Some(TerminalEventType::CommandEnded),
-                AgentEvent::CwdChanged { .. } => Some(TerminalEventType::CwdChanged),
-                AgentEvent::Dirty => Some(TerminalEventType::GridChanged),
-                AgentEvent::Idle => Some(TerminalEventType::OutputReceived),
-                // Other event types don't map to semantic filters yet
-                _ => None,
-            };
-
-            // Supervisory control events (ADR-0033) bypass the semantic-type
-            // filter: "who has the wheel" and "frozen" are not grid activity,
-            // and every subscriber needs them to render an honest state.
-            let interested = matches!(event, AgentEvent::TerminalControl { .. })
-                || event_type.is_some_and(|et| {
-                    subscriber.event_types.is_empty() || subscriber.event_types.contains(&et)
-                });
-
-            if interested {
-                let frame = FrameKind::Event {
-                    terminal: if self.wire_terminal_id != 0 {
-                        Some(phux_protocol::ids::TerminalId::local(self.wire_terminal_id))
-                    } else {
-                        None
-                    },
-                    event: event.clone(),
-                };
-                let _ = subscriber.outbound.try_send(Outbound::Frame(frame));
-            }
-        }
+        self.core.fan_out_event(event);
     }
 
     /// Handle a supervisory [`ControlRequest`] (ADR-0033): a lease-change

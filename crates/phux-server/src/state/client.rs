@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use super::ServerState;
 use crate::mailbox::Outbound;
-use crate::terminal_actor::TerminalHandle;
+use crate::resource::ResourceHandle;
 
 /// Server-assigned identifier for an attached client.
 ///
@@ -74,8 +74,9 @@ pub struct AttachedClient {
 pub struct AttachSnapshotPane {
     /// Core pane identifier.
     pub terminal_id: TerminalId,
-    /// Cross-task handle for snapshot/input/resize requests.
-    pub handle: TerminalHandle,
+    /// Cross-task handle: the generic channels plus the Terminal facet
+    /// behind [`ResourceHandle::terminal`].
+    pub handle: ResourceHandle,
     /// Stable wire id to use in `TERMINAL_SNAPSHOT` / `TERMINAL_OUTPUT`.
     pub wire_terminal_id: WireTerminalId,
 }
@@ -217,12 +218,12 @@ impl ServerState {
                 self.sessions
                     .registry
                     .window(wid)
-                    .map(|w| w.panes.clone())
+                    .map(|w| w.slots.clone())
                     .unwrap_or_default()
             })
             .collect();
         for pane in session_panes {
-            self.terminal_table.subscribe(client_id, pane);
+            self.resources.subscribe(client_id, pane);
         }
         Ok(session_id)
     }
@@ -299,8 +300,8 @@ impl ServerState {
         // (phux-v45.7) so no task keeps streaming into a dead mailbox, then
         // drop it from every subscriber list (empty lists are GC'd so the
         // map doesn't grow unboundedly across attach/detach churn).
-        self.terminal_table.cancel_pumps_for_client(client_id);
-        self.terminal_table.drop_client_subscriptions(client_id);
+        self.resources.cancel_pumps_for_client(client_id);
+        self.resources.drop_client_subscriptions(client_id);
         // Drop any L3 metadata subscriptions this client owned. L3.md §1.2
         // scopes them to the attachment ("dropped automatically on DETACH
         // and on transport close"), so this is the correct place. The

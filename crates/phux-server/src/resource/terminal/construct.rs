@@ -5,15 +5,15 @@
 
 use super::{
     CancellationToken, CanonicalTerminal, Cell, ColorQueryScanner, CommandBuilder,
-    ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, ControlRequest,
-    DEFAULT_CELL_PX, DEFAULT_INPUT_MAILBOX, DEFAULT_OUTPUT_BROADCAST, DEFAULT_SCROLLBACK,
-    EncodedInputRequest, GhosttyTerminal, HashMap, InputEncoderSnapshot, NativeRequestReceivers,
+    ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_CELL_PX,
+    DEFAULT_INPUT_MAILBOX, DEFAULT_OUTPUT_BROADCAST, DEFAULT_SCROLLBACK, EncodedInputRequest,
+    GhosttyTerminal, HashMap, InputEncoderSnapshot, NativeRequestReceivers,
     PerTerminalFocusEncoder, PerTerminalKeyEncoder, PerTerminalMouseEncoder,
-    PerTerminalPasteEncoder, PtySource, Rc, RefCell, SizeReportSize, SnapshotSynthesizer,
-    SubscribeToEventsRequest, TerminalActor, TerminalActorBundle, TerminalActorError,
-    TerminalHandle, TerminalLifecycle, TerminalOptions, UnsubscribeFromEventsRequest, VecDeque,
-    adopt_pty, broadcast, color_query_reply, default_shell_command, mpsc, oneshot, osc133,
-    resolve_shell, spawn_pty, watch,
+    PerTerminalPasteEncoder, PtySource, Rc, RefCell, ResourceCore, ResourceFacetHandle,
+    ResourceHandle, ResourceKind, SizeReportSize, SnapshotSynthesizer, TerminalActor,
+    TerminalActorBundle, TerminalActorError, TerminalHandle, TerminalLifecycle, TerminalOptions,
+    VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133, resolve_shell,
+    spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -227,14 +227,14 @@ impl TerminalActor {
             mpsc::channel::<ConsumerDetachRequest>(DEFAULT_INPUT_MAILBOX);
         let (consumer_ack_tx, consumer_ack_rx) =
             mpsc::channel::<ConsumerAckRequest>(DEFAULT_INPUT_MAILBOX);
-        let (subscribe_to_events_tx, subscribe_to_events_rx) =
-            mpsc::channel::<SubscribeToEventsRequest>(DEFAULT_INPUT_MAILBOX);
-        let (unsubscribe_from_events_tx, unsubscribe_from_events_rx) =
-            mpsc::channel::<UnsubscribeFromEventsRequest>(DEFAULT_INPUT_MAILBOX);
-        let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(DEFAULT_INPUT_MAILBOX);
-        let (output_tx, _output_rx_seed) = broadcast::channel(DEFAULT_OUTPUT_BROADCAST);
-        let (exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
         let bundle_token = token.clone();
+        // A Terminal is a root resource: it has no parent in this program.
+        let (core, core_channels) = ResourceCore::new(
+            ResourceKind::Terminal,
+            None,
+            token,
+            DEFAULT_OUTPUT_BROADCAST,
+        );
 
         let (pty_rx, pty_tx, pty) = match pty_source {
             PtySource::None => (None, None, None),
@@ -260,7 +260,7 @@ impl TerminalActor {
             terminal_dirty_since_tick: true,
             last_input_at: std::cell::Cell::new(None),
             last_output_at: std::cell::Cell::new(None),
-            raw_seq: 0,
+            core,
             color_query_scanner: ColorQueryScanner::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
@@ -300,9 +300,6 @@ impl TerminalActor {
             pty_rx,
             pty_tx,
             pty,
-            output_tx: output_tx.clone(),
-            exit_notify: Some(exit_tx),
-            token,
             event_sink: None,
             last_title: String::new(),
             last_progress: String::new(),
@@ -313,21 +310,16 @@ impl TerminalActor {
             ask_retry_owed: false,
             in_output_burst: false,
             output_since_idle_tick: false,
-            event_subscribers: RefCell::new(Vec::new()),
             last_known_cwd: RefCell::new(std::env::var("HOME").unwrap_or_default()),
             osc133: osc133::Osc133Scanner::new(),
             dirty_event_emitted_this_burst: false,
-            subscribe_to_events_rx,
-            unsubscribe_from_events_rx,
-            control_rx,
             lifecycle: TerminalLifecycle::Running,
-            wire_terminal_id: 0,
             cols,
             rows,
             cell_px: DEFAULT_CELL_PX,
             size_report,
         };
-        let handle = TerminalHandle {
+        let facet = TerminalHandle {
             input: input_tx,
             encoded_input: encoded_input_tx,
             input_snapshot: input_snapshot_rx,
@@ -342,24 +334,29 @@ impl TerminalActor {
             snapshot: snapshot_tx,
             set_default_colors: set_default_colors_tx,
             screen: screen_tx,
-            upgrade: upgrade_tx,
             pwd: pwd_tx,
-            output: output_tx,
             resize: resize_tx,
+            cols,
+            rows,
+        };
+        let handle = ResourceHandle {
+            kind: actor.core.kind(),
+            parent: actor.core.parent(),
+            output: core_channels.output,
             consumer_attach: consumer_attach_tx,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
-            subscribe_to_events: subscribe_to_events_tx,
-            unsubscribe_from_events: unsubscribe_from_events_tx,
-            control: control_tx,
-            cols,
-            rows,
+            subscribe_to_events: core_channels.subscribe_to_events,
+            unsubscribe_from_events: core_channels.unsubscribe_from_events,
+            upgrade: upgrade_tx,
+            control: core_channels.control,
+            facet: ResourceFacetHandle::Terminal(facet),
         };
         Ok(TerminalActorBundle {
             actor,
             handle,
             token: bundle_token,
-            exit_notify: Some(exit_rx),
+            exit_notify: Some(core_channels.exit_notify),
         })
     }
 

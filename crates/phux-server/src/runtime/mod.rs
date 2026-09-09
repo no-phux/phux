@@ -2261,7 +2261,6 @@ mod tests {
     /// stand up libghostty or a PTY pair.
     #[test]
     fn viewport_resize_sends_to_terminal_actor_resize_channel() {
-        use crate::terminal_actor::TerminalHandle;
         use phux_core::ids::TerminalId as CoreTerminalId;
         use tokio::sync::{broadcast, mpsc};
 
@@ -2284,43 +2283,49 @@ mod tests {
         let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
         let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
         let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) = mpsc::channel(8);
-        let handle = TerminalHandle {
-            input: input_tx,
-            encoded_input: mpsc::channel(8).0,
-            input_snapshot: tokio::sync::watch::channel(
-                crate::input::InputEncoderSnapshot::default(),
-            )
-            .1,
-            snapshot: snapshot_tx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_bootstrap: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_publication: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_history: mpsc::channel(8).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_release: mpsc::channel(8).0,
-            set_default_colors: mpsc::channel(8).0,
-            screen: screen_tx,
-            upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
-            pwd: pwd_tx,
+        let handle = crate::resource::ResourceHandle {
+            kind: crate::resource::ResourceKind::Terminal,
+            parent: None,
             output: output_tx,
-            resize: resize_tx,
             consumer_attach: consumer_attach_tx,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             subscribe_to_events: subscribe_to_events_tx,
             unsubscribe_from_events: unsubscribe_from_events_tx,
+            upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
             control: mpsc::channel(8).0,
-            cols: 80,
-            rows: 24,
+            facet: crate::resource::ResourceFacetHandle::Terminal(
+                crate::terminal_actor::TerminalHandle {
+                    input: input_tx,
+                    encoded_input: mpsc::channel(8).0,
+                    input_snapshot: tokio::sync::watch::channel(
+                        crate::input::InputEncoderSnapshot::default(),
+                    )
+                    .1,
+                    snapshot: snapshot_tx,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_bootstrap: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_publication: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_history: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_release: mpsc::channel(8).0,
+                    set_default_colors: mpsc::channel(8).0,
+                    screen: screen_tx,
+                    pwd: pwd_tx,
+                    resize: resize_tx,
+                    cols: 80,
+                    rows: 24,
+                },
+            ),
         };
         state.with_mut(|s| {
-            // `register_terminal_handle` wants a CancellationToken; build
+            // `register_resource_handle` wants a CancellationToken; build
             // a fresh one. We don't keep a clone — no actor is running
             // for this test, so cancellation is moot.
             let token = CancellationToken::new();
-            let _ = s.register_terminal_handle(pid, handle, token);
+            let _ = s.register_resource_handle(pid, handle, token);
         });
 
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
@@ -2386,7 +2391,7 @@ mod tests {
         use tokio::task::LocalSet;
 
         use crate::grid::SnapshotBytes;
-        use crate::terminal_actor::{SnapshotRequest, TerminalHandle};
+        use crate::terminal_actor::SnapshotRequest;
 
         const N: usize = 4;
 
@@ -2405,7 +2410,7 @@ mod tests {
                         .window(session.windows[0])
                         .cloned()
                         .expect("window");
-                    terminal_ids.push(window.panes[0]);
+                    terminal_ids.push(window.slots[0]);
                     for _ in 1..N {
                         let pid = s.registry_mut().new_terminal(wid).expect("new_pane");
                         terminal_ids.push(pid);
@@ -2428,39 +2433,57 @@ mod tests {
                     let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
                     let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) =
                         mpsc::channel(8);
-                    let handle = TerminalHandle {
-                        input: input_tx,
-                        encoded_input: mpsc::channel(8).0,
-                        input_snapshot: tokio::sync::watch::channel(
-                            crate::input::InputEncoderSnapshot::default(),
-                        )
-                        .1,
-                        snapshot: snapshot_tx,
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        native_bootstrap: mpsc::channel(8).0,
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        native_publication: mpsc::channel(8).0,
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        native_history: mpsc::channel(8).0,
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        native_release: mpsc::channel(8).0,
-                        set_default_colors: mpsc::channel(8).0,
-                        screen: screen_tx,
-                        upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
-                        pwd: pwd_tx,
+                    let handle = crate::resource::ResourceHandle {
+                        kind: crate::resource::ResourceKind::Terminal,
+                        parent: None,
                         output: output_tx,
-                        resize: resize_tx,
                         consumer_attach: consumer_attach_tx,
                         consumer_detach: consumer_detach_tx,
                         consumer_ack: consumer_ack_tx,
                         subscribe_to_events: subscribe_to_events_tx,
                         unsubscribe_from_events: unsubscribe_from_events_tx,
+                        upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                         control: mpsc::channel(8).0,
-                        cols: 80,
-                        rows: 24,
+                        facet: crate::resource::ResourceFacetHandle::Terminal(
+                            crate::terminal_actor::TerminalHandle {
+                                input: input_tx,
+                                encoded_input: mpsc::channel(8).0,
+                                input_snapshot: tokio::sync::watch::channel(
+                                    crate::input::InputEncoderSnapshot::default(),
+                                )
+                                .1,
+                                snapshot: snapshot_tx,
+                                #[cfg(all(
+                                    feature = "native-engine",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                native_bootstrap: mpsc::channel(8).0,
+                                #[cfg(all(
+                                    feature = "native-engine",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                native_publication: mpsc::channel(8).0,
+                                #[cfg(all(
+                                    feature = "native-engine",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                native_history: mpsc::channel(8).0,
+                                #[cfg(all(
+                                    feature = "native-engine",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                native_release: mpsc::channel(8).0,
+                                set_default_colors: mpsc::channel(8).0,
+                                screen: screen_tx,
+                                pwd: pwd_tx,
+                                resize: resize_tx,
+                                cols: 80,
+                                rows: 24,
+                            },
+                        ),
                     };
                     state.with_mut(|s| {
-                        let _ = s.register_terminal_handle(pid, handle, CancellationToken::new());
+                        let _ = s.register_resource_handle(pid, handle, CancellationToken::new());
                     });
                     snapshot_rxs.push(snapshot_rx);
                 }
@@ -2582,7 +2605,7 @@ mod tests {
 
         use crate::grid::SnapshotBytes;
         use crate::terminal_actor::{
-            ConsumerAttachRequest, ConsumerDetachRequest, SnapshotRequest, TerminalHandle,
+            ConsumerAttachRequest, ConsumerDetachRequest, SnapshotRequest,
         };
 
         let local = LocalSet::new();
@@ -2606,39 +2629,45 @@ mod tests {
                 let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
                 let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
                 let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) = mpsc::channel(8);
-                let handle = TerminalHandle {
-                    input: input_tx,
-                    encoded_input: mpsc::channel(8).0,
-                    input_snapshot: tokio::sync::watch::channel(
-                        crate::input::InputEncoderSnapshot::default(),
-                    )
-                    .1,
-                    snapshot: snapshot_tx,
-                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                    native_bootstrap: mpsc::channel(8).0,
-                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                    native_publication: mpsc::channel(8).0,
-                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                    native_history: mpsc::channel(8).0,
-                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                    native_release: mpsc::channel(8).0,
-                    set_default_colors: mpsc::channel(8).0,
-                    screen: screen_tx,
-                    upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
-                    pwd: pwd_tx,
+                let handle = crate::resource::ResourceHandle {
+                    kind: crate::resource::ResourceKind::Terminal,
+                    parent: None,
                     output: output_tx,
-                    resize: resize_tx,
                     consumer_attach: consumer_attach_tx,
                     consumer_detach: consumer_detach_tx,
                     consumer_ack: consumer_ack_tx,
                     subscribe_to_events: subscribe_to_events_tx,
                     unsubscribe_from_events: unsubscribe_from_events_tx,
+                    upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                     control: mpsc::channel(8).0,
-                    cols: 80,
-                    rows: 24,
+                    facet: crate::resource::ResourceFacetHandle::Terminal(
+                        crate::terminal_actor::TerminalHandle {
+                            input: input_tx,
+                            encoded_input: mpsc::channel(8).0,
+                            input_snapshot: tokio::sync::watch::channel(
+                                crate::input::InputEncoderSnapshot::default(),
+                            )
+                            .1,
+                            snapshot: snapshot_tx,
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            native_bootstrap: mpsc::channel(8).0,
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            native_publication: mpsc::channel(8).0,
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            native_history: mpsc::channel(8).0,
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            native_release: mpsc::channel(8).0,
+                            set_default_colors: mpsc::channel(8).0,
+                            screen: screen_tx,
+                            pwd: pwd_tx,
+                            resize: resize_tx,
+                            cols: 80,
+                            rows: 24,
+                        },
+                    ),
                 };
                 state.with_mut(|s| {
-                    let _ = s.register_terminal_handle(pid, handle, CancellationToken::new());
+                    let _ = s.register_resource_handle(pid, handle, CancellationToken::new());
                 });
 
                 let (out_tx, mut out_rx) =
@@ -2943,8 +2972,6 @@ mod tests {
         use phux_protocol::input::focus::FocusEvent;
         use tokio::sync::{broadcast, mpsc};
 
-        use crate::terminal_actor::TerminalHandle;
-
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         let local = LocalSet::new();
         local.block_on(&rt, async {
@@ -2960,39 +2987,45 @@ mod tests {
             let (encoded_tx, mut encoded_rx) = mpsc::channel(8);
             let (output_tx, _output_rx_seed) =
                 broadcast::channel::<crate::terminal_actor::PaneOutput>(8);
-            let handle = TerminalHandle {
-                input: input_tx,
-                encoded_input: encoded_tx,
-                input_snapshot: tokio::sync::watch::channel(
-                    crate::input::InputEncoderSnapshot::default(),
-                )
-                .1,
-                snapshot: mpsc::channel(8).0,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                native_bootstrap: mpsc::channel(8).0,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                native_publication: mpsc::channel(8).0,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                native_history: mpsc::channel(8).0,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                native_release: mpsc::channel(8).0,
-                set_default_colors: mpsc::channel(8).0,
-                screen: mpsc::channel(8).0,
-                upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
-                pwd: mpsc::channel(8).0,
+            let handle = crate::resource::ResourceHandle {
+                kind: crate::resource::ResourceKind::Terminal,
+                parent: None,
                 output: output_tx,
-                resize: mpsc::channel::<ResizeRequest>(8).0,
                 consumer_attach: mpsc::channel(8).0,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
                 subscribe_to_events: mpsc::channel(8).0,
                 unsubscribe_from_events: mpsc::channel(8).0,
+                upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                 control: mpsc::channel(8).0,
-                cols: 80,
-                rows: 24,
+                facet: crate::resource::ResourceFacetHandle::Terminal(
+                    crate::terminal_actor::TerminalHandle {
+                        input: input_tx,
+                        encoded_input: encoded_tx,
+                        input_snapshot: tokio::sync::watch::channel(
+                            crate::input::InputEncoderSnapshot::default(),
+                        )
+                        .1,
+                        snapshot: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_bootstrap: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_publication: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_history: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_release: mpsc::channel(8).0,
+                        set_default_colors: mpsc::channel(8).0,
+                        screen: mpsc::channel(8).0,
+                        pwd: mpsc::channel(8).0,
+                        resize: mpsc::channel::<ResizeRequest>(8).0,
+                        cols: 80,
+                        rows: 24,
+                    },
+                ),
             };
             let wire_terminal_id = state.with_mut(|s| {
-                let _ = s.register_terminal_handle(pane, handle, CancellationToken::new());
+                let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
                 s.intern_terminal_wire(pane)
             });
 
@@ -3130,7 +3163,7 @@ mod tests {
         use tokio::task::LocalSet;
 
         use crate::terminal_actor::{
-            ConsumerAttachOutcome, NativeBootstrapReply, PaneOutput, ResyncReason, TerminalHandle,
+            ConsumerAttachOutcome, NativeBootstrapReply, PaneOutput, ResyncReason,
         };
 
         let local = LocalSet::new();
@@ -3144,35 +3177,41 @@ mod tests {
                 let (native_publication_tx, mut native_publication_rx) = mpsc::channel(8);
                 let (consumer_attach_tx, mut consumer_attach_rx) = mpsc::channel(8);
                 let (consumer_detach_tx, mut consumer_detach_rx) = mpsc::channel(8);
-                let handle = TerminalHandle {
-                    input: mpsc::channel(8).0,
-                    encoded_input: mpsc::channel(8).0,
-                    input_snapshot: tokio::sync::watch::channel(
-                        crate::input::InputEncoderSnapshot::default(),
-                    )
-                    .1,
-                    snapshot: mpsc::channel(8).0,
-                    native_bootstrap: native_bootstrap_tx,
-                    native_publication: native_publication_tx,
-                    native_history: mpsc::channel(8).0,
-                    native_release: mpsc::channel(8).0,
-                    set_default_colors: mpsc::channel(8).0,
-                    screen: mpsc::channel(8).0,
-                    upgrade: mpsc::channel(8).0,
-                    pwd: mpsc::channel(8).0,
+                let handle = crate::resource::ResourceHandle {
+                    kind: crate::resource::ResourceKind::Terminal,
+                    parent: None,
                     output: output_tx.clone(),
-                    resize: mpsc::channel(8).0,
                     consumer_attach: consumer_attach_tx,
                     consumer_detach: consumer_detach_tx,
                     consumer_ack: mpsc::channel(8).0,
                     subscribe_to_events: mpsc::channel(8).0,
                     unsubscribe_from_events: mpsc::channel(8).0,
+                    upgrade: mpsc::channel(8).0,
                     control: mpsc::channel(8).0,
-                    cols: 80,
-                    rows: 24,
+                    facet: crate::resource::ResourceFacetHandle::Terminal(
+                        crate::terminal_actor::TerminalHandle {
+                            input: mpsc::channel(8).0,
+                            encoded_input: mpsc::channel(8).0,
+                            input_snapshot: tokio::sync::watch::channel(
+                                crate::input::InputEncoderSnapshot::default(),
+                            )
+                            .1,
+                            snapshot: mpsc::channel(8).0,
+                            native_bootstrap: native_bootstrap_tx,
+                            native_publication: native_publication_tx,
+                            native_history: mpsc::channel(8).0,
+                            native_release: mpsc::channel(8).0,
+                            set_default_colors: mpsc::channel(8).0,
+                            screen: mpsc::channel(8).0,
+                            pwd: mpsc::channel(8).0,
+                            resize: mpsc::channel(8).0,
+                            cols: 80,
+                            rows: 24,
+                        },
+                    ),
                 };
                 state.with_mut(|s| {
-                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                    let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
                 });
 
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);

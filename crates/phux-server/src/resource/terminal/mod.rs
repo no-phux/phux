@@ -40,10 +40,10 @@ use libghostty_vt::terminal::SizeReportSize;
 use libghostty_vt::{RenderState, Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{
-    AgentEvent, ControlAction, FrameKind, TerminalEventType, TerminalLifecycle, TerminalSignal,
+    AgentEvent, ControlAction, FrameKind, TerminalLifecycle, TerminalSignal,
 };
 use portable_pty::{CommandBuilder, PtySize};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -55,6 +55,7 @@ use crate::input::{
     PerTerminalPasteEncoder,
 };
 use crate::mailbox::{Outbound, TerminalInput};
+use crate::resource::{ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceKind};
 
 mod construct;
 mod consumers;
@@ -659,8 +660,11 @@ async fn recv_native_or_pty(
     }
 }
 
-/// Per-pane actor. Owns the `Terminal`, the PTY master, the per-pane
-/// input encoders, and serves the channels exposed via [`TerminalHandle`].
+/// The Terminal engine: one per-pane actor.
+///
+/// Owns the `Terminal`, the PTY master, the per-pane input encoders, and a
+/// [`ResourceCore`], and serves the channels exposed via [`ResourceHandle`]
+/// (generic) and [`TerminalHandle`] (the Terminal facet).
 ///
 /// `GhosttyTerminal<'static, 'static>` because we use [`GhosttyTerminal::new`] (NULL
 /// allocator) — the lifetime parameters degenerate to `'static`. A
@@ -702,8 +706,10 @@ pub struct TerminalActor {
     /// When this pane last produced output; gates `echo.server` arming to a
     /// pane that was quiet (`crate::perf::ECHO_QUIET_WINDOW`).
     last_output_at: std::cell::Cell<Option<std::time::Instant>>,
-    /// Actor-global raw PTY sequence; never resets across bootstrap generations.
-    raw_seq: u64,
+    /// The backing-agnostic half: output sequence and broadcast, event
+    /// subscribers and fan-out, lifecycle token and exit notify, control
+    /// mailbox. The Terminal engine is one owner of a [`ResourceCore`].
+    core: ResourceCore,
     color_query_scanner: ColorQueryScanner,
     key_enc: RefCell<PerTerminalKeyEncoder>,
     mouse_enc: RefCell<PerTerminalMouseEncoder>,
@@ -795,32 +801,6 @@ pub struct TerminalActor {
     /// dropped on shutdown to send EOF to the slave and tear down the
     /// reader/writer threads.
     pty: Option<PtyOwned>,
-    output_tx: broadcast::Sender<PaneOutput>,
-    /// One-shot fired when the actor observes PTY EOF. Paired with the
-    /// matching receiver in [`TerminalActorBundle::exit_notify`]; the
-    /// runtime uses it to drive client-detach on shell exit (phux-it8).
-    ///
-    /// `Option` so the actor can `.take()` it after firing — sending on
-    /// a `oneshot::Sender` is a by-value move. `None` after the first
-    /// fire or if the bundle's receiver was never created (the test
-    /// constructor [`TerminalActor::new_with_seed`] leaves it `Some` too,
-    /// but no consumer subscribes; the `.ok()` swallow is benign).
-    ///
-    /// Carries the child's exit status when known: `Some(code)` for a
-    /// normal `_exit(n)`, `None` for signal-killed children or
-    /// otherwise-unknown exits (phux-4li.11; the structured exit code
-    /// flows into the `TERMINAL_CLOSED` wire frame the runtime emits on
-    /// PTY EOF).
-    exit_notify: Option<oneshot::Sender<Option<i32>>>,
-    /// Cancellation token watched by the actor's `select!`. Cancel to
-    /// ask the actor to shut down cleanly (drains the PTY, reaps the
-    /// child, and exits). A child token of the per-server root token
-    /// when constructed via [`Self::build_with_token`]; an unlinked
-    /// fresh token when constructed via [`TerminalActor::new`] et al.
-    /// Dropping the token does NOT cancel — call `.cancel()` explicitly
-    /// (this is intentional; the prior `oneshot::Sender::drop` semantics
-    /// were a hidden lifecycle coupling we want gone).
-    token: CancellationToken,
     /// Optional sink for agent events the actor sources from the PTY
     /// stream (SPEC §7.5, phux-y2t): `bell`, `title_changed`, `dirty`,
     /// `idle`, and the OSC-133-sourced `command_started` / `command_finished`.
@@ -900,13 +880,6 @@ pub struct TerminalActor {
     /// not depend on [`Self::tick_emit`] consuming its state-sync mutation
     /// flag (that emitter is deliberately gated off for raw consumers).
     output_since_idle_tick: bool,
-    /// Event subscribers for this pane. When semantic state changes occur
-    /// (command started, grid changed, etc.), broadcast to all subscribers
-    /// whose `event_types` filter matches. `Vec` guarded by `RefCell` for
-    /// interior mutability (single-threaded actor, no lock contention).
-    /// Subscribers added by `handle_subscribe_terminal_events` and removed
-    /// implicitly on detach.
-    event_subscribers: RefCell<Vec<TerminalEventSubscriber>>,
     /// Last known working directory for this pane. Used to detect CWD
     /// changes and emit `CwdChanged` events (phux-foz.4). Queried lazily at
     /// OSC-133 prompt boundaries and on output-idle via `process_cwd`
@@ -922,23 +895,11 @@ pub struct TerminalActor {
     /// burst. Coalesces multiple grid mutations into one event per burst
     /// (matching the `in_output_burst` coalescing for `AgentEvent`).
     dirty_event_emitted_this_burst: bool,
-    /// Inbound subscription request channel. Drained by a select! arm
-    /// that calls `subscribe_to_events`.
-    /// Supervisory control mailbox (ADR-0033): lease-change broadcasts and
-    /// process signals. Drained by a `select!` arm.
-    control_rx: mpsc::Receiver<ControlRequest>,
     /// Process lifecycle as the supervisory surface sees it (ADR-0033):
     /// `Running` until a `Freeze` (SIGSTOP) flips it to `Frozen`, back to
     /// `Running` on `Resume` (SIGCONT). Natural/terminal exits are reported
     /// by the existing `TERMINAL_CLOSED` / `PaneClosed` path, not here.
     lifecycle: TerminalLifecycle,
-    subscribe_to_events_rx: mpsc::Receiver<SubscribeToEventsRequest>,
-    /// Inbound unsubscription request channel. Drained by a select! arm
-    /// that calls `unsubscribe_from_events`.
-    unsubscribe_from_events_rx: mpsc::Receiver<UnsubscribeFromEventsRequest>,
-    /// Wire-level terminal id (for Event frames). Set by the runtime
-    /// during subscription registration. `0` until a subscriber arrives.
-    wire_terminal_id: u32,
     cols: u16,
     rows: u16,
     /// Per-cell pixel size `(width, height)` used to derive the PTY winsize
@@ -990,8 +951,9 @@ pub enum TerminalActorError {
 pub struct TerminalActorBundle {
     /// The actor; pass to `tokio::task::spawn_local`.
     pub actor: TerminalActor,
-    /// Cross-task handle to the actor.
-    pub handle: TerminalHandle,
+    /// Cross-task handle to the actor: the generic resource channels plus
+    /// the Terminal facet.
+    pub handle: ResourceHandle,
     /// Cancellation token. Call `.cancel()` to ask the actor to shut
     /// down cleanly. Cloneable; shares cancellation state with the
     /// actor's internal copy.
