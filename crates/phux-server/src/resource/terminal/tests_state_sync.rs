@@ -1738,3 +1738,36 @@ fn input_snapshot_publishes_after_seed_output_and_resize() {
     assert_eq!((resized.cols, resized.rows), (101, 39));
     assert_eq!(resized.cell_px, (11, 19));
 }
+
+/// `REPORT_AGENT_STATE` with a live `AgentSession` child routes to
+/// [`TerminalActor::synthesize_state_record`] (ADR-0103 decision 6). No
+/// `AgentSession` engine exists yet, so that hook's default falls back to the
+/// ADR-0085 detector path — which is the contract this pins: the fallback is
+/// a real report, not a swallowed one and not a panic.
+#[test]
+fn a_synthesized_state_record_falls_back_to_the_detector_path() {
+    let bundle = TerminalActor::new(20, 5).expect("new");
+    let mut actor = bundle.actor;
+    let now = std::time::Instant::now();
+    let mut detector = AgentDetector::new(crate::agent_detect::rules::global(), now);
+    detector.force_identity("claude", now);
+    actor.agent_detect = Some(detector);
+    actor.agent_dirty_since_detect = false;
+
+    actor
+        .synthesize_state_record(crate::agent_detect::DetectedState::Blocked)
+        .expect("the fallback accepts the report");
+
+    assert_eq!(
+        actor
+            .agent_detect
+            .as_ref()
+            .and_then(AgentDetector::published_state),
+        Some(crate::agent_detect::DetectedState::Blocked),
+        "the hook's evidence still reaches the record",
+    );
+    assert!(
+        actor.agent_dirty_since_detect,
+        "and still forces one ordinary derivation, so it cannot latch",
+    );
+}

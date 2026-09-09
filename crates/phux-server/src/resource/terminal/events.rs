@@ -8,6 +8,7 @@ use super::{
     TerminalActor, TerminalLifecycle, TerminalSignal, mpsc, osc133, trace,
 };
 use crate::agent_asked::AskedPayload;
+use crate::agent_detect::DetectedState;
 
 impl TerminalActor {
     /// Wire an agent-event sink (SPEC §7.5, phux-y2t). The actor emits
@@ -381,36 +382,10 @@ impl TerminalActor {
                 }
             }
             ControlRequest::ReportAgentState { state, reply } => {
-                let state = match state {
-                    phux_protocol::wire::frame::ReportedAgentState::Working => {
-                        crate::agent_detect::DetectedState::Working
-                    }
-                    phux_protocol::wire::frame::ReportedAgentState::Blocked => {
-                        crate::agent_detect::DetectedState::Blocked
-                    }
-                    phux_protocol::wire::frame::ReportedAgentState::Done => {
-                        crate::agent_detect::DetectedState::Done
-                    }
-                };
-                let result = self
-                    .agent_detect
-                    .as_mut()
-                    .ok_or_else(|| "agent detection is unavailable for this pane".to_owned())
-                    .map(|detector| detector.report_hook_state(state, std::time::Instant::now()));
-                match result {
-                    Ok(report) => {
-                        if let Some(report) = report {
-                            self.emit_agent_state(AgentDetectEvent::State(report));
-                        }
-                        // Force one normal derivation after the edge so hook
-                        // evidence never becomes a latch on a quiet screen.
-                        self.agent_dirty_since_detect = true;
-                        let _ = reply.send(Ok(()));
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                    }
-                }
+                let _ = reply.send(self.apply_hook_state(hook_state(state)));
+            }
+            ControlRequest::SynthesizeAgentStateRecord { state, reply } => {
+                let _ = reply.send(self.synthesize_state_record(hook_state(state)));
             }
             ControlRequest::Signal {
                 signal,
@@ -474,6 +449,56 @@ impl TerminalActor {
         killpg(Pid::from_raw(pid), nix_signal).map_err(|err| format!("killpg failed: {err}"))
     }
 
+    /// Feed hook-reported state straight into this pane's detector
+    /// (ADR-0085) — the `REPORT_AGENT_STATE` path taken whenever no live
+    /// `AgentSession` child exists, which today is always.
+    ///
+    /// The detector may swallow the edge (its own filter said the record is
+    /// already right), which is a success, not a no-op to report.
+    pub(super) fn apply_hook_state(&mut self, state: DetectedState) -> Result<(), String> {
+        let report = self
+            .agent_detect
+            .as_mut()
+            .ok_or_else(|| "agent detection is unavailable for this pane".to_owned())?
+            .report_hook_state(state, std::time::Instant::now());
+        if let Some(report) = report {
+            self.emit_agent_state(AgentDetectEvent::State(report));
+        }
+        // Force one normal derivation after the edge so hook evidence never
+        // becomes a latch on a quiet screen.
+        self.agent_dirty_since_detect = true;
+        Ok(())
+    }
+
+    /// Append a synthesized `{"type":"state","data":{"state":...,
+    /// "source":"hook"}}` record to this Terminal's live `AgentSession`
+    /// child, so the hook's evidence reaches the arbiter the same way every
+    /// other thing the agent says about itself does (ADR-0103 decision 6).
+    ///
+    /// # The default body, and why it is not a `todo!`
+    ///
+    /// There is no `AgentSession` engine on this branch, so there is nothing
+    /// to append to and no stream to derive from. The honest behaviour is
+    /// therefore the ADR-0085 one: report the gap once, at `trace`, and take
+    /// the legacy path — a hook that reports `blocked` still turns the pane
+    /// red, which is the entire user-visible contract of
+    /// `REPORT_AGENT_STATE`. A `todo!` here would panic the pane engine on a
+    /// shipped command, and returning an error would make the shim's
+    /// `report-state` call start failing, both to signal an absence the
+    /// caller could not act on.
+    ///
+    /// The `AgentSession` engine lane replaces the body with the real append;
+    /// the fallback stays, because the caller's live-child test and this
+    /// actor's view of its own children can disagree for exactly as long as
+    /// it takes a `session_end` to land.
+    pub(super) fn synthesize_state_record(&mut self, state: DetectedState) -> Result<(), String> {
+        trace!(
+            state = state.as_str(),
+            "REPORT_AGENT_STATE: no agent-session stream to append to; using the detector path",
+        );
+        self.apply_hook_state(state)
+    }
+
     /// Build and broadcast an [`AgentEvent::TerminalControl`] (ADR-0033)
     /// stamped with this actor's current lifecycle.
     pub(super) fn emit_terminal_control(
@@ -490,5 +515,18 @@ impl TerminalActor {
             action,
             actor,
         });
+    }
+}
+
+/// The detector's word for a wire-reported agent state.
+///
+/// `ReportedAgentState` has no `idle`: a hook reports what the agent is
+/// doing, and "not doing anything" is the detector's call to make (ADR-0085).
+const fn hook_state(state: phux_protocol::wire::frame::ReportedAgentState) -> DetectedState {
+    use phux_protocol::wire::frame::ReportedAgentState;
+    match state {
+        ReportedAgentState::Working => DetectedState::Working,
+        ReportedAgentState::Blocked => DetectedState::Blocked,
+        ReportedAgentState::Done => DetectedState::Done,
     }
 }

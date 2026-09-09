@@ -66,6 +66,7 @@
 )]
 
 pub(crate) mod identify;
+pub(crate) mod live_session;
 pub(crate) mod record;
 pub(crate) mod regions;
 pub(crate) mod rules;
@@ -374,6 +375,17 @@ pub(crate) struct AgentDetector {
     pending_occupant: Option<identify::PaneOccupant>,
     /// Latest hook edge received just before process identity resolved.
     pending_hook: Option<(DetectedState, Instant)>,
+    /// Injected answer to "does this pane's Terminal own a live
+    /// `AgentSession` child?" (ADR-0103 decision 5).
+    ///
+    /// `None` — the default, and the only value production takes until the
+    /// `AgentSession` engine lands — means "no", which is the world this
+    /// detector was written for. See [`live_session`].
+    live_session: Option<live_session::LiveSessionProbe>,
+    /// What the probe said on the previous tick, so the child ENDING is an
+    /// edge the detector can act on rather than a level it merely stops
+    /// reading. See [`Self::tick_for_pane`] for what it does with it.
+    live_session_held: bool,
     cadence: Cadence,
     /// Test seam: where [`Self::reidentify`] gets identity from.
     #[cfg(test)]
@@ -404,6 +416,7 @@ impl std::fmt::Debug for AgentDetector {
             .field("vacant_streak", &self.vacant_streak)
             .field("published", &self.published)
             .field("current", &self.current)
+            .field("live_session_held", &self.live_session_held)
             .field("cadence", &self.cadence)
             .finish_non_exhaustive()
     }
@@ -456,6 +469,8 @@ impl AgentDetector {
             published_occupant: None,
             pending_occupant: None,
             pending_hook: None,
+            live_session: None,
+            live_session_held: false,
             cadence: Cadence::Unidentified,
             #[cfg(test)]
             identity_source: IdentitySource::Kernel,
@@ -476,6 +491,32 @@ impl AgentDetector {
     /// untouched, because nothing calls this on the steady path.
     pub(crate) fn invalidate_published(&mut self) {
         self.published = None;
+    }
+
+    /// Wire the live-`AgentSession`-child probe for this pane (ADR-0103
+    /// decision 5).
+    ///
+    /// The one line the `AgentSession` engine lane adds at integration; until
+    /// then no caller exists and the detector's answer is a constant `false`,
+    /// which is the behaviour every shipped test pins.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the producer of a live AgentSession child lands with the engine; the seam is defined here so the screen detector's side of the precedence is written and tested when it does"
+        )
+    )]
+    pub(crate) fn set_live_session_probe(&mut self, probe: live_session::LiveSessionProbe) {
+        self.live_session = Some(probe);
+    }
+
+    /// Whether a live `AgentSession` child currently outranks the screen.
+    ///
+    /// Read once per tick and never cached across ticks: the child can end
+    /// between any two of them, and a stale `true` would keep the scrape
+    /// muted for a pane that is once again the only thing describing itself.
+    fn live_session_active(&self) -> bool {
+        self.live_session.as_ref().is_some_and(|probe| probe())
     }
 
     /// The interval the actor should re-arm its detector timer at.
@@ -552,6 +593,25 @@ impl AgentDetector {
         progress: &str,
         screen: Option<&[String]>,
     ) -> DetectOutcome {
+        // 0. Rank. While a live `AgentSession` child is appending records the
+        //    arbiter is publishing `Stream` evidence and the screen is the
+        //    bottom of the ladder (ADR-0103 decision 5). Read once, here, so
+        //    identity, vacancy and hysteresis all see the same answer.
+        let live_session = self.live_session_active();
+        if self.live_session_held && !live_session {
+            // `session_end`: the child is gone and the scrape is the only
+            // source left. The store holds whatever the stream last wrote,
+            // while `published` models an emission this detector never made
+            // - so it is a model of a store that no longer exists, exactly
+            // the condition `invalidate_published` exists for. Clearing it
+            // re-arms ONE republish; without it a pane whose agent is sitting
+            // idle waiting on a human would keep the stream's last word
+            // forever, because the next screen derivation matches the stale
+            // filter and is swallowed.
+            self.invalidate_published();
+        }
+        self.live_session_held = live_session;
+
         // 1. Identity.
         if let Some(outcome) = self.maybe_identify(now, master_fd, pane_child_pid) {
             return outcome;
@@ -659,6 +719,28 @@ impl AgentDetector {
         };
         self.current = Some(derived);
         if !publishable {
+            return DetectOutcome::Quiet;
+        }
+
+        // 4b. Precedence. A live child outranks the screen, so a screen-derived
+        //     `working` / `blocked` / `done` is not published while one exists
+        //     - the stream is saying the same thing from the inside, and a
+        //     contradiction resolved in the screen's favour is the ladder
+        //     inverted. What survives is exactly what ADR-0103 decision 5
+        //     names: identity (the process probe above, which still acquires,
+        //     corrects and retracts), the idle confirmation - `idle` stays
+        //     detector-owned per ADR-0085, because a stream that has stopped
+        //     emitting cannot itself say so - and departure, which is the only
+        //     path back to truth for an agent that was `kill -9`'d.
+        //
+        //     `published` is deliberately NOT advanced here: it models this
+        //     detector's own emissions, and suppressing one is not making one.
+        if live_session && derived != DetectedState::Idle {
+            trace!(
+                %kind,
+                ?derived,
+                "agent-detect: a live agent session outranks the screen; not publishing",
+            );
             return DetectOutcome::Quiet;
         }
 
@@ -989,6 +1071,14 @@ impl AgentDetector {
     /// state machine — which is pure — can be driven by a fake clock. Also used
     /// by the `terminal_actor` tests that pin `detect_tick`'s contract with the
     /// dirty flag, which only bites once an agent is identified.
+    /// Test seam: the state this detector last published. Read by the
+    /// actor-level tests, which live outside this module and therefore
+    /// cannot reach the field.
+    #[cfg(test)]
+    pub(crate) fn published_state(&self) -> Option<DetectedState> {
+        self.published.as_ref().map(|report| report.state)
+    }
+
     #[cfg(test)]
     pub(crate) fn force_identity(&mut self, kind: &str, now: Instant) {
         self.identified = Some(kind.to_owned());
@@ -1080,6 +1170,15 @@ match = { contains = "WORKING" }
         /// The actor's `agent_dirty_since_detect` flag, for the tests that
         /// replay the actor's real tick sequence.
         dirty: bool,
+        /// The fake `AgentSession` child behind the detector's live-session
+        /// probe (ADR-0103 decision 5), flipped by [`Harness::session_open`]
+        /// and [`Harness::session_end`].
+        ///
+        /// Wired for EVERY harness, not only the cases that flip it: `false`
+        /// is the shipped world, so the other cases in this module are
+        /// simultaneously the regression test that a wired-but-quiet probe
+        /// changes nothing.
+        live_session: Rc<std::cell::Cell<bool>>,
     }
 
     impl Harness {
@@ -1100,10 +1199,15 @@ match = { contains = "WORKING" }
             set.install(spec).expect("compiles");
             set.install(other).expect("compiles");
             let now = Instant::now();
+            let live_session = Rc::new(std::cell::Cell::new(false));
+            let mut detector = AgentDetector::new(Rc::new(set), now);
+            let probe = Rc::clone(&live_session);
+            detector.set_live_session_probe(Rc::new(move || probe.get()));
             Self {
-                detector: AgentDetector::new(Rc::new(set), now),
+                detector,
                 now,
                 dirty: false,
+                live_session,
             }
         }
 
@@ -1175,6 +1279,18 @@ match = { contains = "WORKING" }
 
         fn state(&self) -> Option<DetectedState> {
             self.detector.published.as_ref().map(|r| r.state)
+        }
+
+        /// An `AgentSession` child opens under this pane and starts feeding
+        /// the arbiter at rank `Stream`.
+        fn session_open(&self) {
+            self.live_session.set(true);
+        }
+
+        /// The child emits `session_end` and is reaped; the screen is the
+        /// only source describing the pane again.
+        fn session_end(&self) {
+            self.live_session.set(false);
         }
     }
 
@@ -2205,5 +2321,109 @@ match = { contains = "IDLE" }
         let lines = vec!["IDLE".to_owned()];
         let out = detector.tick(at, None, "busy", "", Some(&lines));
         assert_eq!(published(&out), DetectedState::Working);
+    }
+
+    /// ADR-0103 decision 5, the whole of it in one case: the stream is the
+    /// agent describing itself and the screen is a guess about pixels, so
+    /// when a live child exists the screen does not get to publish a
+    /// lifecycle state over it — not even a `blocked` the rules matched
+    /// outright, which is the loudest thing the scrape can say.
+    #[test]
+    fn a_live_agent_session_suppresses_a_contradicting_screen_derivation() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        assert_eq!(
+            h.tick("BLOCKED"),
+            DetectOutcome::Quiet,
+            "the screen must not publish over a live session's stream",
+        );
+        assert_eq!(h.state(), None, "and must not advance its own edge filter");
+        assert_eq!(h.tick("WORKING"), DetectOutcome::Quiet, "nor a second one");
+        assert_eq!(h.state(), None);
+    }
+
+    /// The exception the same decision carves out: `idle` stays
+    /// detector-owned (ADR-0085). A stream that has gone quiet cannot emit a
+    /// record saying so — silence is not a record — so if the screen did not
+    /// keep the idle confirmation, an agent that finished would sit on its
+    /// last stream-published state forever.
+    #[test]
+    fn a_live_agent_session_leaves_the_idle_confirmation_to_the_screen() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        assert_eq!(
+            published(&h.tick("a quiet prompt")),
+            DetectedState::Idle,
+            "idle is detector-owned even while a session is live",
+        );
+    }
+
+    /// And the other exception: departure. A `kill -9` runs no `session_end`,
+    /// so the process probe's confirmed vacancy is the only path back to
+    /// truth for a pane whose child died with its agent — the same reason the
+    /// retraction is trusted enough to withdraw a human's declaration.
+    #[test]
+    fn a_live_agent_session_still_retracts_a_departed_agent() {
+        let mut h = Harness::new().past_grace();
+        assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
+        h.session_open();
+
+        h.occupy(Occupancy::Vacant { pgid: 100 });
+        for _ in 1..VACANT_CONFIRMATIONS {
+            assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
+        }
+        assert_eq!(
+            h.identity_tick(),
+            DetectOutcome::Retract,
+            "a live session does not make a dead agent's badge unretractable",
+        );
+        assert_eq!(h.state(), None);
+    }
+
+    /// `session_end`: the child is gone, the scrape resumes, and it reasserts
+    /// ONCE rather than waiting for the pane's state to happen to change.
+    ///
+    /// The republish is the load-bearing half. While the child lived the
+    /// record was the stream's to write, so the detector's edge filter — a
+    /// model of its OWN emissions — describes a store it did not author. An
+    /// agent sitting `blocked` on a permission prompt changes state next at
+    /// no predictable time, so a filter left in place would leave the stream's
+    /// last word standing indefinitely.
+    #[test]
+    fn the_screen_scrape_resumes_and_reasserts_once_when_the_session_ends() {
+        let mut h = Harness::new().past_grace();
+        assert_eq!(published(&h.tick("BLOCKED")), DetectedState::Blocked);
+
+        h.session_open();
+        assert_eq!(h.tick("BLOCKED"), DetectOutcome::Quiet, "suppressed");
+
+        h.session_end();
+        assert_eq!(
+            published(&h.tick("BLOCKED")),
+            DetectedState::Blocked,
+            "the resumed scrape reasserts what it can now see",
+        );
+        assert_eq!(
+            h.tick("BLOCKED"),
+            DetectOutcome::Quiet,
+            "exactly once: the edge filter is armed again, not disabled",
+        );
+    }
+
+    /// Hook evidence outranks the screen and is NOT what decision 5
+    /// suppresses — a `REPORT_AGENT_STATE` that reaches the detector still
+    /// lands. (With a live child the command router sends it down the
+    /// synthesized-record path instead; that routing is
+    /// `handle_report_agent_state`'s, not the detector's, and this pins the
+    /// detector half so the two cannot be confused.)
+    #[test]
+    fn hook_evidence_is_not_suppressed_by_a_live_session() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        let report = h
+            .detector
+            .report_hook_state(DetectedState::Blocked, h.now)
+            .expect("a hook edge publishes");
+        assert_eq!(report.state, DetectedState::Blocked);
     }
 }
