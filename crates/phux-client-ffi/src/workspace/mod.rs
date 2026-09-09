@@ -7,7 +7,7 @@
 mod exports;
 mod model;
 mod mutation;
-mod resources;
+pub(crate) mod resources;
 mod types;
 pub use exports::*;
 pub use types::*;
@@ -60,7 +60,7 @@ pub(crate) struct SharedWorkspace {
     nodes: Vec<Node>,
     roots: Vec<u32>,
     pending: Option<Pending>,
-    subscriptions: resources::Subscriptions,
+    pub(crate) subscriptions: resources::Subscriptions,
     next_internal: u32,
 }
 
@@ -229,11 +229,10 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
         }
         FrameKind::Error {
             request_id: Some(request_id),
-            code,
             message,
             ..
         } if request_id >= INTERNAL_START => {
-            if let Err(error) = receive_error(client, request_id, code, message) {
+            if let Err(error) = receive_error(client, request_id, message) {
                 client.workspace.fail(&error);
             }
         }
@@ -270,9 +269,6 @@ fn reject_owned_reply(workspace: &SharedWorkspace, id: u32) -> Result<(), Bridge
 }
 
 fn receive_state(client: &mut Client, id: u32, result: CommandResult) -> Result<(), BridgeError> {
-    if resources::receive_reply(client, id, &result)? {
-        return Ok(());
-    }
     let Some(pending) = client.workspace.pending.as_ref() else {
         return Ok(());
     };
@@ -293,19 +289,7 @@ fn receive_state(client: &mut Client, id: u32, result: CommandResult) -> Result<
     finish_read(client)
 }
 
-fn receive_error(
-    client: &mut Client,
-    id: u32,
-    code: phux_protocol::wire::frame::ErrorCode,
-    message: String,
-) -> Result<(), BridgeError> {
-    let result = CommandResult::Error {
-        code,
-        message: message.clone(),
-    };
-    if resources::receive_reply(client, id, &result)? {
-        return Ok(());
-    }
+fn receive_error(client: &Client, id: u32, message: String) -> Result<(), BridgeError> {
     if pending_id(&client.workspace, id) {
         return Err(BridgeError::state(message));
     }
