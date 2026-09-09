@@ -4,6 +4,7 @@
       <row height="50" padding="4" gap="8" cross="center" background="surface">
         <spacer width="78" window-drag="true" />
         <button size="sm" variant="ghost" icon="folder-open" width="176" label="Switch workspace" on-press="palette_open">{workspaceLabel}</button>
+        <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
@@ -81,6 +82,7 @@
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
               <text grow="1">Switch workspace</text>
+              <button size="sm" variant="ghost" on-press="agents_open">Agents</button>
               <button size="sm" variant="ghost" icon="x" label="Close switcher" on-press="palette_close" />
             </row>
             <row gap="4" cross="center" label="Workspace filters">
@@ -154,6 +156,42 @@
     </if>
   </stack>
 </template>
+<template name="cockpit-agents" args="open rows notice previous next status">
+  <stack>
+    <if test="{open}">
+      <row main="center" cross="start" padding="24">
+        <panel width="520" padding="16">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <text grow="1">Agents</text>
+              <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
+            </row>
+            <text foreground="text_muted" overflow="ellipsis">{status}</text>
+            <for each="rows" key="id" as="agent">
+              <column gap="4">
+                <text overflow="ellipsis">{agent.label}</text>
+                <row gap="8"><text>Resource</text><text grow="1" overflow="ellipsis" label="Agent resource identity">{agent.resource}</text></row>
+                <row gap="8"><text>Parent</text><text grow="1" overflow="ellipsis" label="Agent terminal parent">{agent.parent}</text></row>
+                <row gap="8"><text>Native ID</text><text grow="1" overflow="ellipsis" label="Producer native identity">{agent.nativeId}</text></row>
+                <text overflow="ellipsis" foreground="text_muted" label="Agent state evidence">{agent.evidence}</text>
+                <if test="{agent.index != 65535}"><button size="sm" on-press="palette_submit">Jump to parent</button></if>
+                <else><text foreground="text_muted">Parent unavailable</text></else>
+              </column>
+            </for>
+            <text foreground="text_muted">{notice}</text>
+            <row gap="8" cross="center">
+              <if test="{previous}"><button size="sm" variant="ghost" on-press="palette_previous">Previous agent</button></if>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
+              <if test="{next}"><button size="sm" variant="ghost" on-press="palette_next">Next agent</button></if>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 
 <!-- Rename Session, presented by whichever window invoked it. The engine
      names the session on screen and the coordinator that owns it; the new
