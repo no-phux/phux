@@ -210,7 +210,22 @@ pub const KeyInput = struct {
 };
 
 pub const MouseAction = enum { press, release, move };
-pub const MouseButton = enum(u8) { none, left, middle, right, button_4, button_5, _ };
+pub const MouseButton = enum(u8) { none, left, middle, right, button_4, button_5, button_6, button_7, _ };
+pub const MouseMode = enum(u32) { off, x10, normal, button, any_motion };
+pub const MeasuredCell = struct { width: f32, height: f32 };
+pub const SelectionGesture = struct {
+    phase: enum(u32) { press, drag, release },
+    clicks: u8 = 1,
+    handle: u64 = 0,
+    cell: DocumentPoint,
+    x: f64,
+    y: f64,
+    columns: u16,
+    cell_width: f32,
+    screen_height: f32,
+    rectangle: bool = false,
+};
+pub const SelectionGestureResult = struct { handle: u64, start: u64, end: u64 };
 
 pub const MouseInput = struct {
     action: MouseAction,
@@ -236,6 +251,7 @@ pub const DocumentPoint = struct {
 /// and the grid remain valid through painting or until the next provider
 /// mutation, whichever comes first.
 pub const Presentation = struct {
+    measured_cell: ?MeasuredCell = null,
     grid: canvas.TerminalGrid,
     owner: ReplicaOwner,
     phase: Phase,

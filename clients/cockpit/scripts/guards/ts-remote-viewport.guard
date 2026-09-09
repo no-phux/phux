@@ -1,0 +1,20 @@
+# GUARD ts-remote-viewport
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping frame resizes a published Phux viewport once
+red: 2026-09-07 at 11fd527
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/terminal_interaction.zig b/src/cockpit/terminal_interaction.zig
+index ba259b8d..859a0338 100644
+--- a/src/cockpit/terminal_interaction.zig
++++ b/src/cockpit/terminal_interaction.zig
+@@ -129,7 +129,7 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
+     if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
+     const presentation = model.remotePresentation(ref) orelse return;
+     if (presentation.phase != .live) return;
+-    remote.viewportResize(ref, viewport) catch {};
++    if (false) remote.viewportResize(ref, viewport) catch {};
+ }
+ 
+ fn resizeLocal(pane: *local.Pane, fx: anytype, viewport: contract.Viewport) void {

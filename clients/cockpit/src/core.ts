@@ -6,9 +6,12 @@ import {
   type WireU64,
   invalidation,
   intent,
-  nextU64,
   sameU64,
   snapshot,
+  navigationRequest,
+  navigationPage,
+  navigationIntent,
+  sameBytes,
 } from "./protocol.ts";
 
 export interface Tab {
@@ -78,6 +81,18 @@ export interface Model {
   readonly paletteFocus: number;
   readonly paletteRows: readonly SwitcherRow[];
   readonly paletteCursor: number;
+  readonly paletteOffset: number;
+  readonly paletteTotal: number;
+  readonly palettePrevious: boolean;
+  readonly paletteNext: boolean;
+  readonly paletteLoading: boolean;
+  readonly paletteNotice: Uint8Array;
+  readonly canReconnect: boolean;
+  readonly connectionStatus: Uint8Array;
+  readonly window1Status: Uint8Array;
+  readonly window2Status: Uint8Array;
+  readonly window3Status: Uint8Array;
+  readonly window4Status: Uint8Array;
   readonly settingsOpen: boolean;
   readonly mainSettingsOpen: boolean;
   readonly themes: readonly ThemeRow[];
@@ -135,6 +150,12 @@ export type Msg =
   | { readonly kind: "palette_move"; readonly delta: number }
   | { readonly kind: "palette_submit" }
   | { readonly kind: "palette_pick"; readonly index: number }
+  | { readonly kind: "palette_previous" }
+  | { readonly kind: "palette_next" }
+  | { readonly kind: "palette_retry" }
+  | { readonly kind: "navigation_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "navigation_failed"; readonly error: Uint8Array }
+  | { readonly kind: "reconnect" }
   | { readonly kind: "settings_open" }
   | { readonly kind: "settings_close" }
   | { readonly kind: "settings_move"; readonly delta: number }
@@ -166,12 +187,18 @@ export const viewUnbound = [
   "paletteAnchor",
   "paletteFocus",
   "paletteCursor",
+  "paletteOffset",
+  "paletteTotal",
+  "paletteLoading",
+  "navigation_loaded",
+  "navigation_failed",
   "settingsCursor",
   "palette_move",
   "settings_move",
   "engineConnected",
   "engineSequence",
   "engineRevision",
+  "status",
   "engine_event",
   "engine_wake",
   "snapshot_loaded",
@@ -212,32 +239,6 @@ function overflowLabel(hidden: number): Uint8Array {
   return out;
 }
 
-function lower(byte: number): number {
-  return byte >= 65 && byte <= 90 ? byte + 32 : byte;
-}
-
-/// Case-insensitive ASCII substring, the shipping palette's rule
-/// (workspace_projection.zig containsIgnoreCase).
-function containsIgnoreCase(haystack: Uint8Array, needle: Uint8Array): boolean {
-  if (needle.length === 0) return true;
-  if (needle.length > haystack.length) return false;
-  for (let start = 0; start + needle.length <= haystack.length; start += 1) {
-    let matched = true;
-    for (let at = 0; at < needle.length; at += 1) {
-      if (lower(haystack[start + at]) !== lower(needle[at])) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) return true;
-  }
-  return false;
-}
-
-function positionBytes(index: number): Uint8Array {
-  return overflowLabel(index + 1).subarray(1);
-}
-
 function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
   const out = new Uint8Array(head.length + mid.length + tail.length);
   let at = 0;
@@ -256,31 +257,12 @@ function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Ar
   return out;
 }
 
-const TWO_SPACES = asciiBytes("  ");
 const NO_BYTES = new Uint8Array(0);
 // Typed empties: a bare `[]` in a record literal is inferred as number[] and
 // the record then fails to be a Model at the union boundary, at runtime.
 const NO_ROWS: readonly SwitcherRow[] = [];
 const NO_TABS: readonly Tab[] = [];
 const NO_THEMES: readonly ThemeRow[] = [];
-
-/// The switcher rows for a needle: every tab whose strip position, title or
-/// working directory contains it, matching the shipping palette's rule. The
-/// cursor is clamped into the filtered list so Enter always lands on a row
-/// that is showing.
-function switcherRows(tabs: readonly Tab[], needle: Uint8Array, cursor: number): readonly SwitcherRow[] {
-  const rows: SwitcherRow[] = [];
-  for (let index = 0; index < tabs.length; index += 1) {
-    if (!(index >= 0 && index <= 255)) break;
-    const tab = tabs[index];
-    const position = positionBytes(index);
-    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;
-    rows.push({ id: tab.id, index, label: joinBytes(position, TWO_SPACES, tab.title), highlighted: false });
-  }
-  if (rows.length === 0) return rows;
-  const at = cursor >= 0 && cursor < rows.length ? Math.trunc(cursor) : 0;
-  return rows.map((row, i) => ({ ...row, highlighted: i === at }));
-}
 
 function paletteState(model: Model): TextEditState {
   return {
@@ -290,14 +272,128 @@ function paletteState(model: Model): TextEditState {
   };
 }
 
-function withSwitcher(model: Model, query: Uint8Array, anchor: number, focus: number, cursor: number): Model {
-  // Caret and cursor positions enter integer slots: fenced to the query's
-  // own bound and the row count, then stated whole.
-  const a = anchor >= 0 && anchor <= 4096 ? Math.trunc(anchor) : 0;
-  const f = focus >= 0 && focus <= 4096 ? Math.trunc(focus) : 0;
-  const rows = switcherRows(model.tabs, query, cursor);
-  const clamped = rows.length === 0 ? 0 : cursor >= 0 && cursor < rows.length && cursor <= 255 ? Math.trunc(cursor) : 0;
-  return { ...model, paletteQuery: query, paletteAnchor: a, paletteFocus: f, paletteRows: rows, paletteCursor: clamped };
+function requestNavigation(model: Model, offset: number): Model {
+  const at = offset >= 0 && offset <= 65535 ? Math.trunc(offset) : 0;
+  return { ...model, paletteOffset: at, paletteRows: NO_ROWS, paletteCursor: 0, paletteLoading: true,
+    palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Loading workspace...") };
+}
+
+function closePalette(model: Model): Model {
+  return scopeOverlays({ ...model, paletteOpen: false, paletteQuery: NO_BYTES, paletteRows: NO_ROWS, paletteCursor: 0 });
+}
+
+function refreshNavigation(model: Model): Model {
+  const refreshed = requestNavigation(model, model.paletteOffset);
+  return { ...refreshed, paletteCursor: model.paletteCursor };
+}
+
+function validNavigationPick(model: Model, index: number): boolean {
+  if (!model.paletteOpen || model.paletteLoading) return false;
+  for (const row of model.paletteRows) {
+    if (row.index === index) return true;
+  }
+  return false;
+}
+
+function loadedNavigation(model: Model, body: Uint8Array): Model {
+  if (!model.paletteOpen || !model.engineConnected) return model;
+  const page = navigationPage(body);
+  if (page === null) return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
+  if (!sameU64(page.revision, model.engineRevision)) return model;
+  if (page.offset !== model.paletteOffset || !sameBytes(page.query, model.paletteQuery)) return model;
+  const total = page.total >= 0 && page.total <= 65535 ? Math.trunc(page.total) : 0;
+  const loaded: Model = { ...model, paletteRows: page.rows, paletteTotal: total, paletteLoading: false,
+    palettePrevious: page.offset > 0, paletteNext: page.offset + page.rows.length < total,
+    paletteNotice: total === 0 ? asciiBytes("No matching terminals or sessions") : asciiBytes("Open panes / Available terminals / Sessions") };
+  return highlightNavigation(loaded, Math.min(model.paletteCursor, page.rows.length - 1));
+}
+
+function moveNavigation(model: Model, delta: number): Model {
+  if (!model.paletteOpen || model.paletteLoading) return model;
+  const next = model.paletteCursor + (delta >= 0 ? 1 : -1);
+  if (next < 0 && model.palettePrevious) return previousNavigation(model);
+  if (next >= model.paletteRows.length && model.paletteNext) return requestNavigation(model, model.paletteOffset + 4);
+  return highlightNavigation(model, next);
+}
+
+function previousNavigation(model: Model): Model {
+  const previous = requestNavigation(model, model.paletteOffset - 4);
+  return { ...previous, paletteCursor: 3 };
+}
+
+function highlightNavigation(model: Model, next: number): Model {
+  if (next < 0 || next >= model.paletteRows.length) return model;
+  const cursor = next >= 0 && next <= 3 ? Math.trunc(next) : 0;
+  const rows: SwitcherRow[] = [];
+  for (let i = 0; i < model.paletteRows.length; i += 1) {
+    const row = model.paletteRows[i];
+    rows.push({ ...row, highlighted: i === cursor });
+  }
+  return { ...model, paletteCursor: cursor, paletteRows: rows };
+}
+
+function editNavigation(model: Model, edit: TextInputEvent): Model {
+  if (!model.paletteOpen) return model;
+  const next = applyTextInputEvent(paletteState(model), edit, 64);
+  if (next === null) return model;
+  const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
+  const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
+  return requestNavigation({ ...model, paletteQuery: next.text, paletteAnchor: anchor, paletteFocus: focus }, 0);
+}
+
+function browseNavigation(model: Model, msg: Msg): Model {
+  if (!model.paletteOpen) return model;
+  switch (msg.kind) {
+    case "palette_previous": return model.palettePrevious ? requestNavigation(model, model.paletteOffset - 4) : model;
+    case "palette_next": return model.paletteNext ? requestNavigation(model, model.paletteOffset + 4) : model;
+    case "palette_retry": return requestNavigation(model, 0);
+    default: return model;
+  }
+}
+
+function changeNavigation(model: Model, msg: Msg): Model {
+  switch (msg.kind) {
+    case "palette_open":
+      if (model.paletteOpen) return model;
+      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0 }), 0);
+    case "palette_edit": return editNavigation(model, msg.edit);
+    case "palette_move": return moveNavigation(model, msg.delta);
+    default: return browseNavigation(model, msg);
+  }
+}
+
+function connectionLabel(state: number): Uint8Array {
+  if (state === 0) return asciiBytes("Local terminals");
+  if (state === 1) return asciiBytes("Phux connecting...");
+  if (state === 2) return asciiBytes("Phux connected");
+  return asciiBytes("Phux offline");
+}
+
+function terminalStateLabel(state: number): Uint8Array {
+  if (state === 1) return asciiBytes("Loading terminal");
+  if (state === 2) return asciiBytes("Recovering terminal: waiting for snapshot");
+  if (state === 3) return asciiBytes("Terminal frozen: waiting for recovery");
+  if (state === 4) return asciiBytes("Terminal unavailable");
+  if (state === 5) return asciiBytes("Terminal ended");
+  if (state === 6) return asciiBytes("Loading earlier history");
+  if (state === 7) return asciiBytes("Earlier history available");
+  return NO_BYTES;
+}
+
+function windowStatus(connection: number, terminal: number, refused: boolean): Uint8Array {
+  const global = refused ? joinBytes(connectionLabel(connection), asciiBytes(" / Action refused"), NO_BYTES) : connectionLabel(connection);
+  if (terminal === 0) return global;
+  return joinBytes(global, asciiBytes(" / "), terminalStateLabel(terminal));
+}
+
+function engineUnavailable(model: Model, status: Uint8Array): Model {
+  return { ...model, engineConnected: false, status, canReconnect: false,
+    connectionStatus: asciiBytes("Connection status unavailable"), paletteRows: NO_ROWS,
+    window1Status: asciiBytes("Connection status unavailable"),
+    window2Status: asciiBytes("Connection status unavailable"),
+    window3Status: asciiBytes("Connection status unavailable"),
+    window4Status: asciiBytes("Connection status unavailable"),
+    paletteLoading: false, palettePrevious: false, paletteNext: false };
 }
 
 /// Only the active native window presents the global core-owned modal. The
@@ -578,6 +674,18 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteFocus: 0,
       paletteRows: NO_ROWS,
       paletteCursor: 0,
+      paletteOffset: 0,
+      paletteTotal: 0,
+      palettePrevious: false,
+      paletteNext: false,
+      paletteLoading: false,
+      paletteNotice: NO_BYTES,
+      canReconnect: false,
+      connectionStatus: asciiBytes("Starting Cockpit..."),
+      window1Status: asciiBytes("Starting Cockpit..."),
+      window2Status: asciiBytes("Starting Cockpit..."),
+      window3Status: asciiBytes("Starting Cockpit..."),
+      window4Status: asciiBytes("Starting Cockpit..."),
       settingsOpen: false,
       mainSettingsOpen: false,
       themes: NO_THEMES,
@@ -615,7 +723,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       engineConnected: false,
       engineSequence: ZERO_U64,
       engineRevision: ZERO_U64,
-      status: asciiBytes("CONNECTING"),
+      status: asciiBytes("Starting Cockpit..."),
     },
     Cmd.batch([
       Cmd.channelOpen(ENGINE_CHANNEL_KEY, { event: "engine_event" }),
@@ -660,7 +768,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, index, window))];
     }
     case "new_terminal":
-      return [model, Cmd.host("cockpit.intent", intent(2, model.engineRevision, 0, 0))];
+      return [model, Cmd.host("cockpit.intent", intent(2, model.engineRevision, 0, 255))];
+    case "reconnect":
+      return [model, Cmd.host("cockpit.intent", intent(12, model.engineRevision, 0, 255))];
     case "new_window":
       return [model, Cmd.host("cockpit.intent", intent(8, model.engineRevision, 0, 0))];
     case "window_closed": {
@@ -678,53 +788,33 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ];
     }
     case "palette_open":
-      // Two modal surfaces cannot both own the keyboard; the one just asked
-      // for wins. Opening is idempotent so a repeat never clears a needle.
-      if (model.paletteOpen) return model;
-      return scopeOverlays(withSwitcher({ ...model, paletteOpen: true, settingsOpen: false }, new Uint8Array(0), 0, 0, 0));
+    case "palette_edit":
+    case "palette_move":
+    case "palette_previous":
+    case "palette_next":
+    case "palette_retry": {
+      const next = changeNavigation(model, msg);
+      if (next === model || !next.paletteLoading) return next;
+      return [next, Cmd.request("cockpit.navigation", navigationRequest(next.engineRevision, next.paletteOffset, next.paletteQuery), {
+        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+      })];
+    }
     case "palette_close":
-      return scopeOverlays({ ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 });
-    case "palette_edit": {
-      if (!model.paletteOpen) return model;
-      const next = applyTextInputEvent(paletteState(model), msg.edit, 96);
-      if (next === null) return model;
-      return withSwitcher(model, next.text, next.selection.anchor, next.selection.focus, 0);
-    }
-    case "palette_move": {
-      if (!model.paletteOpen || model.paletteRows.length === 0) return model;
-      const step = msg.delta >= 0 ? 1 : -1;
-      const last = model.paletteRows.length - 1;
-      const raw = model.paletteCursor + step < 0 ? 0 : model.paletteCursor + step > last ? last : model.paletteCursor + step;
-      return withSwitcher(model, model.paletteQuery, model.paletteAnchor, model.paletteFocus, raw);
-    }
-    case "palette_submit": {
-      if (!model.paletteOpen) return model;
-      const closed: Model = scopeOverlays({ ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 });
-      // A commit with nothing matching still dismisses: an Enter that found
-      // nothing and left the switcher up reads as a stuck keyboard.
-      if (model.paletteRows.length === 0) return closed;
-      const row = model.paletteRows[model.paletteCursor];
-      const picked = row.index;
-      const selected: Model = { ...closed, tabs: selectTab(model.tabs, picked), visibleTabs: selectTab(model.visibleTabs, picked), selectedTab: picked };
-      return [selected, Cmd.host("cockpit.intent", intent(1, model.engineRevision, picked, 0))];
-    }
+      return closePalette(model);
+    case "palette_submit":
     case "palette_pick": {
-      if (!model.paletteOpen) return model;
-      const index = msg.index;
-      if (!(index >= 0 && index < model.tabs.length)) return model;
-      const picked = Math.trunc(index);
-      const chosen: Model = scopeOverlays({
-        ...model,
-        paletteOpen: false,
-        paletteQuery: new Uint8Array(0),
-        paletteRows: NO_ROWS,
-        paletteCursor: 0,
-        tabs: selectTab(model.tabs, picked),
-        visibleTabs: selectTab(model.visibleTabs, picked),
-        selectedTab: picked,
-      });
-      return [chosen, Cmd.host("cockpit.intent", intent(1, model.engineRevision, picked, 0))];
+      if (model.paletteRows.length === 0) return model;
+      const index = msg.kind === "palette_pick" ? msg.index : model.paletteRows[model.paletteCursor].index;
+      if (!validNavigationPick(model, index)) return model;
+      return [closePalette(model), Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index))];
     }
+    case "navigation_loaded":
+      return loadedNavigation(model, msg.body);
+    case "navigation_failed":
+      if (model.paletteOffset > 0) return [requestNavigation(model, 0), Cmd.request("cockpit.navigation", navigationRequest(model.engineRevision, 0, model.paletteQuery), {
+        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+      })];
+      return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
     case "settings_open": {
       if (model.settingsOpen) return model;
       // The probe is the engine's, once per opening, exactly as the shipping
@@ -768,19 +858,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "snapshot_loaded": {
       const projected = snapshot(msg.body);
       if (projected === null) {
-        return { ...model, engineConnected: false, status: asciiBytes("BAD SNAPSHOT") };
+        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
       }
       // Bits 0..4 are the engine model's own limit and write refusals; bit 7
       // is the seam's: the last intent named a revision the engine had left.
       const refusedMask = projected.flags & 159;
       const rawSelected = projected.selectedTab;
       if (!(rawSelected >= 0 && rawSelected <= 255)) {
-        return { ...model, engineConnected: false, status: asciiBytes("BAD SNAPSHOT") };
+        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
       }
       const selectedTab = Math.trunc(rawSelected);
       const rawWidth = projected.tabWidth;
       if (!(rawWidth >= 0 && rawWidth <= 65535)) {
-        return { ...model, engineConnected: false, status: asciiBytes("BAD SNAPSHOT") };
+        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
       }
       const tabWidth = Math.trunc(rawWidth);
       const hidden = projected.tabs.length - projected.runCount;
@@ -835,32 +925,37 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         engineConnected: true,
         engineSequence: projected.sequence,
         engineRevision: projected.revision,
+        canReconnect: projected.connection === 3,
+        connectionStatus: windowStatus(projected.connection, projected.terminalStates[0], refusedMask !== 0),
+        window1Status: windowStatus(projected.connection, projected.terminalStates[1], refusedMask !== 0),
+        window2Status: windowStatus(projected.connection, projected.terminalStates[2], refusedMask !== 0),
+        window3Status: windowStatus(projected.connection, projected.terminalStates[3], refusedMask !== 0),
+        window4Status: windowStatus(projected.connection, projected.terminalStates[4], refusedMask !== 0),
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
       };
-      const switched = model.paletteOpen
-        ? withSwitcher(synced, model.paletteQuery, model.paletteAnchor, model.paletteFocus, model.paletteCursor)
-        : synced;
-      return scopeOverlays(switched);
+      const scoped = scopeOverlays(synced);
+      if (!model.paletteOpen) return scoped;
+      return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", navigationRequest(scoped.engineRevision, model.paletteOffset, model.paletteQuery), {
+        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+      })];
     }
     case "snapshot_failed":
-      return { ...model, engineConnected: false, status: asciiBytes("ENGINE UNAVAILABLE") };
+      return engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE"));
     case "engine_event": {
       if (msg.state !== "data") {
-        return {
-          ...model,
-          engineConnected: false,
-          status: msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED"),
-        };
+        return engineUnavailable(model, msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED"));
       }
       const event = invalidation(msg.bytes);
       if (event === null) return { ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") };
-      const contiguous = sameU64(event.sequence, nextU64(model.engineSequence));
       const next = {
         ...model,
         engineSequence: event.sequence,
-        status: contiguous || sameU64(model.engineSequence, ZERO_U64)
-          ? asciiBytes("SYNCING")
-          : asciiBytes("RESYNCING"),
+        engineConnected: false,
+        status: asciiBytes("SYNCING"),
+        paletteRows: NO_ROWS,
+        paletteLoading: model.paletteOpen,
+        palettePrevious: false,
+        paletteNext: false,
       };
       return [
         next,

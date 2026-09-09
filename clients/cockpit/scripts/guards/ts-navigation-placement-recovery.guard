@@ -1,0 +1,19 @@
+# GUARD ts-navigation-placement-recovery
+#
+# A past capacity refusal must clear when an available remote terminal can be
+# placed. Removing that clear keeps Action refused visible after success.
+test: navigation activates available remote identity and stable session id including reconnect
+red: 2026-09-07 at 6d99366
+build: test -Dphux-enabled=true
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index ab962c89..38184b2f 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -472,7 +472,6 @@ pub const Engine = struct {
+             return false;
+         }
+         if (!model.selectTerminal(ref)) return false;
+-        model.ws().tab_limit_refused = false;
+         pointer_input.endHiddenCaptures(model, fx);
+         return true;
+     }

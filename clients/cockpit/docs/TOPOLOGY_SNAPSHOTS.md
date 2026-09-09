@@ -1,7 +1,20 @@
+---
+audience: contributors, agents
+stability: evolving
+last-reviewed: 2026-09-07
+---
+
 # Topology Snapshots
 
+**TL;DR.** Version 5 preserves mixed local and remote pane trees. Local leaves
+recreate ephemeral shells; remote leaves retain bounded references and original
+endpoint, server-incarnation, and session evidence. Restored remote placements
+stay pending until matching provider evidence establishes readiness. Satellite
+references remain unresolved because coordinator identity does not prove a
+satellite incarnation.
+
 `Model.topologySnapshot()` is the durable boundary between terminal identity
-and a live local process. The current version is `4`, and
+and a live local process. The current version is `5`, and
 `process_restoration_supported` is explicitly `false`.
 
 ## Persisted State
@@ -9,11 +22,13 @@ and a live local process. The current version is `4`, and
 - The ordered **window** list, window 0 first (the scene's own window)
 - The ordered tab list, flat across every window: each window owns the
   contiguous run of `tab_count` tabs that follows the windows before it
-- Each tab's **pane tree**: leaves naming stable local terminal IDs, branches
+- Each tab's **pane tree**: leaves naming local IDs or remote references, branches
   carrying an orientation and a divider fraction
 - Each window's selected tab — numbered **within that window's run** — and each
   tree's focused leaf
 - Each terminal's working directory, when one was reported
+- A bounded remote reference table: provider ID, tagged remote terminal ID,
+  full host (at most 255 bytes), endpoint, opaque `HELLO_OK.server_id`, session ID
 
 ## Windows
 
@@ -26,8 +41,8 @@ array exactly, so a snapshot can neither strand a tab no window owns nor let a
 window read past its own run.
 
 The tab ceiling is per window (`max_tabs`, 16); the whole-session ceiling is
-`max_snapshot_tabs` (32, the registry size — a persistable tab holds at least
-one local terminal). Windows cap at `max_snapshot_windows` (5: the scene's
+`max_snapshot_tabs` (32); combined local and remote leaves also cap at 32.
+Windows cap at `max_snapshot_windows` (5: the scene's
 window plus the four the toolkit budgets).
 
 ## Deliberately Ephemeral State
@@ -36,32 +51,77 @@ window plus the four the toolkit budgets).
 - PTY effect keys and spawn generations
 - Emulator cells, scrollback, selection, and pending input
 - Process phase, exit status, and clipboard operations
-- **Every Phux (remote) terminal identity**
 
-## Local Only, By Construction
+## Pending Remote Attachments
 
-Snapshots carry local topology only. A Phux terminal exists because its
-coordinator says so; writing one into a Cockpit snapshot would claim a
-durability this app does not have and cannot honor — on the next launch that
-terminal may be gone, owned by another client, or renumbered.
+A snapshot records placement intent and identity evidence, not remote survival.
+`SnapshotNode.remote_ref` indexes `TopologySnapshot.references`; local nodes
+retain the existing `terminal` registry offset and working-directory semantics.
+Every reference is used exactly once, and duplicate qualified IDs are rejected.
+The supported provider is Phux; unknown provider and remote-kind tags are refused.
 
-The snapshot types enforce this rather than relying on discipline: a leaf holds
-a `LocalTerminalId`, and the selection is a dedicated `SnapshotSelection` whose
-terminal arm is local.
+Restoring retains remote leaves in their exact tree positions and marks them
+pending. `normalizeTopology()` preserves pending leaves. Pending state does not
+grant `containsTerminal`, `selectedTerminalRef`, `terminalOwner`,
+`ownerIsCurrent`, or `remotePresentation` readiness, even if another connection
+publishes the same numeric ID.
 
-Because a live model may hold remote identities in a pane tree or as the
-selection, `Model.topologySnapshot()` **filters** them out and then settles what
-filtering disturbed — a branch that loses one child collapses to its surviving
-sibling, exactly as `closePane` does at runtime, and focus moves to a retained
-leaf. This settling is confined to the projection into snapshot space; it never
-mutates the live model, and the emitted snapshot is still passed through
-`validate()` before it is returned.
+Each saved reference keeps its original context across connection changes and
+resaves. Endpoint matching is byte-exact; aliases are not inferred. Empty
+endpoint or server identity means unknown and cannot match. The server identity
+is opaque bytes, not a display name or a hash. Satellite IDs are retained but
+never automatically matched: `HELLO_OK` proves only the connected coordinator's
+incarnation. Per-route incarnation evidence would need an explicit future seam.
 
 `restoreModel()` validates references and uniqueness before allocating fresh
-libghostty-vt sessions. Starting the restored app spawns one new shell per
-restored terminal, in that terminal's recorded working directory when one
+libghostty-vt sessions for local leaves only. Starting the restored app spawns
+one new shell per local terminal, in its recorded working directory when one
 survived validation. Stable terminal IDs and pane geometry survive; the old
 processes do not.
+
+### Model integration API
+
+All signatures below are methods of `cockpit/model.zig`'s `Model`; `TerminalRef`
+is the provider contract type. They are additive internal APIs.
+
+```zig
+setAttachmentContext(model: *Model, endpoint: []const u8,
+    server_id: []const u8, session_id: u32) !void
+rejectAttachmentContext(model: *Model) void
+pendingRestoredRefs(model: *const Model, out: []TerminalRef) usize
+restoredAttachmentMatches(model: *const Model, ref: TerminalRef) bool
+restoredAttachmentContext(model: *const Model, ref: TerminalRef) ?attachments.Context
+resolveRestoredAttachment(model: *Model, ref: TerminalRef) bool
+attachmentPending(model: *const Model, ref: TerminalRef) bool
+pruneAttachmentState(model: *Model) void
+canAddPane(model: *const Model) bool
+```
+
+1. Publish endpoint + `HELLO_OK.server_id` + attached session ID through
+   `setAttachmentContext`, before admitting new remote placements. The method
+   freezes existing placement evidence before changing the connection context.
+   Endpoint and incarnation ceilings are 256 and 255 bytes; overlong inputs
+   return an error without truncation.
+2. Enumerate pending refs into a 32-entry buffer. A smaller buffer returns only
+   the prefix that fits. Request subscriptions only for refs whose
+   `restoredAttachmentMatches` returns true. `restoredAttachmentContext` exposes
+   the saved endpoint/incarnation/session evidence when selecting a session;
+   `attachments.Context` lives in `cockpit/attachment_state.zig`.
+3. Once the provider publishes that ref with phase `.live`, call
+   `resolveRestoredAttachment`. It repeats the context check and refuses missing
+   or non-live provider presentation. Matching context alone never clears pending.
+4. On disconnect or rejected context, call `rejectAttachmentContext`; pending
+   leaves and their original evidence remain saved. Reconnect may retry them.
+5. Before creating a shell or remote resource for a new leaf, check
+   `canAddPane()`. The combined limit includes pending references. `admitTab`
+   enforces this itself; split/spawn callers must preflight before allocation.
+   After direct tree removals, call `pruneAttachmentState()` before admitting
+   another identity. Model tab/window close and normalization already do this;
+   moves retain evidence whenever their destination still holds the reference.
+
+The composition/provider layer owns HELLO/session evidence and subscription
+requests. It must use these fences before input, focus, or subscription paths
+that directly access the provider rather than going through model readiness.
 
 ## Working Directories
 
@@ -85,8 +145,8 @@ Every accepted snapshot restores exactly and captures back byte-for-byte at the
 struct level; restore never clamps or normalizes current-version topology.
 Validation therefore rejects non-canonical state:
 
-- terminal IDs are unique across ALL tabs, allocatable, and leave the exhausted
-  integer edge
+- terminal IDs are unique across ALL tabs; local IDs are valid registry offsets
+  and remote nodes name valid, distinct entries in the bounded reference table
 - every tree is a tree: no cycles, no node reachable as a child twice, no
   orphans, exactly one root
 - a branch names two distinct existing children; a leaf names a terminal
@@ -99,8 +159,8 @@ Validation therefore rejects non-canonical state:
 - recorded working directories are absolute and free of NUL and newline
 - an empty registry has no tabs and selects nothing
 
-`Model.topologySnapshot()` returns an error if the projected topology is still
-not canonical after the remote-filtering settlement described above — it never
+`Model.topologySnapshot()` returns an error if the projected topology is
+not canonical or exceeds the bounds — it never
 emits an invalid snapshot and never rewrites the live model to make one valid.
 Migration from an older version may explicitly normalize its less expressive
 representation before emitting a validated current snapshot.
@@ -125,6 +185,9 @@ union.
   carried, so **a pre-multi-window snapshot restores as exactly one window**.
   A v3 file with no tabs stays a zero-window snapshot, which is what "there is
   nothing to reopen" has always meant.
+- **Version 4** retains its windows, local leaves, working directories and
+  selection unchanged, adding an empty reference table. New callers use the
+  `.v5` persisted union arm; `.v4` remains accepted by legacy internal callers.
 
 Unknown versions are not guessed. Invalid counts, duplicate or exhausted IDs,
 dangling references, malformed trees, focus on a non-leaf, and out-of-range
@@ -137,7 +200,7 @@ directory — layout is state) as a flat, line-oriented text file terminated by 
 explicit `end`:
 
 ```
-phux-cockpit-state 4
+phux-cockpit-state 5
 placement top
 window tab 1
 tab 0 0
@@ -151,6 +214,22 @@ tab 0 0
 node 0 leaf - 3
 end
 ```
+
+Remote records precede the windows and use this grammar:
+
+```text
+ref INDEX PROVIDER_U64 KIND_U32 ID_U32 HOST_HEX ENDPOINT_HEX SERVER_ID_HEX SESSION_U32
+node INDEX remote PARENT REF_INDEX
+```
+
+Hex encoding round-trips spaces, NULs and newlines in opaque identity bytes;
+`-` denotes an empty byte string. Reference indexes are dense and ordered.
+The fixed file ceiling is 96 KiB, derived from 32 references with maximal host,
+endpoint and incarnation lengths, local cwd lines, tab headers and live nodes.
+Both serialization and parsing enforce it. Legacy v2-v4 files reject `ref` and
+`remote` lines.
+Coordinator-local remote IDs require an empty host; satellite hosts must be
+nonempty UTF-8, matching the provider's canonical identity validation.
 
 A `window` line OPENS a window's run, and every `tab` line after it belongs to
 that window until the next `window` line — so a window's tab count is implied
@@ -174,7 +253,8 @@ stack or looping. Structural claims stay where they already were, in
 Truncation is **detected, not inferred**: a write cut short fails the terminator
 check instead of parsing as a smaller but entirely plausible workspace.
 
-Writes are debounced and edge-triggered off a hash of the workspace *shape*.
+Writes are debounced and edge-triggered off a hash of the workspace *shape*,
+full qualified terminal identity and saved attachment context.
 That hash deliberately excludes working directories — folding them in would
 make every `cd` a disk write. A shutdown flush is synchronous, because nothing
 drains an effect queue after shutdown.

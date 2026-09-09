@@ -2,6 +2,7 @@ const std = @import("std");
 const local = @import("../providers/local/provider.zig");
 const layout = @import("layout.zig");
 const support = @import("phux_support.zig");
+pub const attachments = @import("attachment_state.zig");
 
 pub const LocalTerminalId = support.LocalTerminalId;
 pub const TerminalRef = support.TerminalRef;
@@ -31,7 +32,8 @@ pub const SurfaceSelection = union(enum) {
     }
 };
 
-/// v4 carries WINDOWS. v3 was one window's tree schema plus per-terminal
+/// v5 adds bounded remote attachment references. v4 carries windows. v3 was
+/// one window's tree schema plus per-terminal
 /// working directories; v2 was the same tree with no directories; v1 encoded a
 /// fixed two-pane workspace (`layout: {single,split}`, `attachments[2]`, one
 /// `split_fraction`, `focused_attachment`) and cannot express a tab that owns a
@@ -41,7 +43,7 @@ pub const SurfaceSelection = union(enum) {
 /// v3 -> v4 is the same shape one level up: a pre-multi-window file describes
 /// exactly one window, so it migrates to a single `SnapshotWindow` owning
 /// every tab it carried.
-pub const topology_snapshot_version: u16 = 4;
+pub const topology_snapshot_version: u16 = 5;
 
 /// Windows one snapshot can carry — the model's own ceiling (the scene's
 /// window plus the toolkit's four declared ones).
@@ -49,15 +51,13 @@ pub const max_snapshot_windows: usize = 5;
 
 /// Tabs one snapshot can carry ACROSS every window.
 ///
-/// `max_tabs` is the per-window ceiling; this is the whole-session one, and it
-/// is `max_terminals` because a persistable tab holds at least one local
-/// terminal and the registry has that many slots. Five windows of sixteen tabs
-/// is not reachable — thirty-two terminals is.
+/// `max_tabs` is the per-window ceiling. This whole-session ceiling matches
+/// the combined local and remote leaf budget, preserving the v4 bound while
+/// allowing every leaf to be remote.
 pub const max_snapshot_tabs: usize = max_terminals;
 
-/// Restoring recreates SHELLS in the saved shape. It does not, and cannot,
-/// reattach the processes that were running — the snapshot carries no pid and
-/// makes no survival claim, and every restored leaf gets a fresh emulator.
+/// Local restoration recreates shells, never local process state. Remote
+/// restoration retains references pending explicit provider/context evidence.
 pub const process_restoration_supported = false;
 
 /// Byte ceiling for one persisted working directory.
@@ -117,6 +117,8 @@ pub const SnapshotNode = struct {
     parent: layout.NodeId = layout.none,
     terminal: LocalTerminalId = .terminal_1,
     has_terminal: bool = false,
+    /// v5 remote reference table index. Local leaves keep their v2-v4 offset.
+    remote_ref: ?u8 = null,
     orientation: layout.Orientation = .horizontal,
     fraction: f32 = 0.5,
     first: layout.NodeId = layout.none,
@@ -175,6 +177,17 @@ pub const TopologySnapshot = struct {
     /// an order of magnitude smaller than one path per tree node (31 nodes x
     /// 16 tabs) would be.
     cwds: [max_terminals]SnapshotCwd = [_]SnapshotCwd{.{}} ** max_terminals,
+    references: attachments.Table = .{},
+
+    pub fn terminalRef(snapshot: *const TopologySnapshot, node: SnapshotNode) ?TerminalRef {
+        if (!node.has_terminal) return null;
+        if (node.remote_ref) |index| {
+            const reference = snapshot.references.get(index) orelse return null;
+            return reference.terminal_ref;
+        }
+        if (terminalOffset(node.terminal) == null) return null;
+        return local.localRef(node.terminal);
+    }
 
     pub fn cwdFor(snapshot: *const TopologySnapshot, id: LocalTerminalId) []const u8 {
         const offset = terminalOffset(id) orelse return "";
@@ -211,6 +224,13 @@ pub const TopologySnapshot = struct {
         if (snapshot.version != topology_snapshot_version) return error.UnsupportedTopologyVersion;
         if (snapshot.tab_count > max_snapshot_tabs) return error.InvalidTopology;
         if (snapshot.window_count > max_snapshot_windows) return error.InvalidTopology;
+        try snapshot.references.validate();
+        try snapshot.validateWindows();
+        try snapshot.validateTabs();
+        for (snapshot.cwds) |cwd| try validateCwd(cwd);
+    }
+
+    fn validateWindows(snapshot: *const TopologySnapshot) !void {
         const count: usize = snapshot.tab_count;
 
         // Every tab belongs to exactly one window, so the windows' counts must
@@ -231,58 +251,66 @@ pub const TopologySnapshot = struct {
         for (snapshot.windows[snapshot.window_count..]) |window| {
             if (window.tab_count != 0 or window.selection != .web) return error.InvalidTopology;
         }
+    }
 
-        // Terminal identity is window-wide: the same terminal may never be a
-        // leaf in two panes, in this tab or another, because two panes would
-        // then drive one emulator.
-        var seen: [max_terminals]bool = @splat(false);
-        var total_panes: usize = 0;
-
-        for (snapshot.tabs[0..count]) |tab| {
-            if (tab.root == layout.none or tab.root >= layout.max_nodes) return error.InvalidTopology;
-            if (tab.focus == layout.none or tab.focus >= layout.max_nodes) return error.InvalidTopology;
-            if (tab.nodes[tab.focus].kind != .leaf) return error.InvalidTopology;
-            if (tab.nodes[tab.root].parent != layout.none) return error.InvalidTopology;
-
-            var reachable: [layout.max_nodes]bool = @splat(false);
-            try walkSnapshotNode(tab, tab.root, &reachable);
-            if (!reachable[tab.focus]) return error.InvalidTopology;
-
-            for (tab.nodes, 0..) |node, index| {
-                if (node.kind == .free) continue;
-                if (!reachable[index]) return error.InvalidTopology;
-                if (node.kind != .leaf) continue;
-                if (!node.has_terminal) return error.InvalidTopology;
-                const raw = @intFromEnum(node.terminal);
-                if (raw < local.first_terminal_raw or raw >= std.math.maxInt(u64) - 1) return error.InvalidTopology;
-                const offset = raw - local.first_terminal_raw;
-                if (offset >= max_terminals) return error.InvalidTopology;
-                if (seen[offset]) return error.InvalidTopology;
-                seen[offset] = true;
-                total_panes += 1;
-            }
-        }
-        if (total_panes > max_terminals) return error.InvalidTopology;
-
-        // Tabs past the count must be blank, so a truncated write cannot be
-        // read back as extra structure.
-        for (snapshot.tabs[count..]) |tab| {
+    fn validateTabs(snapshot: *const TopologySnapshot) !void {
+        var seen: SeenTerminals = .{};
+        for (snapshot.tabs[0..snapshot.tab_count]) |*tab| try validateTab(snapshot, tab, &seen);
+        // Every reference must be used; a missing leaf is a truncated topology.
+        for (seen.remote[0..snapshot.references.count]) |used| if (!used) return error.InvalidTopology;
+        for (snapshot.tabs[snapshot.tab_count..]) |tab| {
             if (tab.root != layout.none or tab.focus != layout.none) return error.InvalidTopology;
-        }
-
-        // A recorded directory has to be one a restored shell can actually be
-        // put in, and one the line-oriented state file can round trip. An
-        // entry for a terminal no pane holds is left alone: it is dead weight,
-        // not a lie about the topology.
-        for (snapshot.cwds) |cwd| {
-            if (cwd.len > max_snapshot_cwd_bytes) return error.InvalidTopology;
-            if (cwd.len == 0) continue;
-            const path = cwd.bytes[0..cwd.len];
-            if (path[0] != '/') return error.InvalidTopology;
-            for (path) |byte| if (byte == 0 or byte == '\n') return error.InvalidTopology;
         }
     }
 };
+
+const SeenTerminals = struct {
+    local: [max_terminals]bool = @splat(false),
+    remote: [attachments.max_references]bool = @splat(false),
+    count: usize = 0,
+
+    fn admit(self: *SeenTerminals, snapshot: *const TopologySnapshot, node: SnapshotNode) !void {
+        if (!node.has_terminal) return error.InvalidTopology;
+        const seen = if (node.remote_ref) |index| remote: {
+            _ = snapshot.references.get(index) orelse return error.InvalidTopology;
+            break :remote &self.remote[index];
+        } else local_seen: {
+            const index = terminalOffset(node.terminal) orelse return error.InvalidTopology;
+            break :local_seen &self.local[index];
+        };
+        if (seen.*) return error.InvalidTopology;
+        seen.* = true;
+        self.count += 1;
+        if (self.count > max_terminals) return error.InvalidTopology;
+    }
+};
+
+fn validateTab(snapshot: *const TopologySnapshot, tab: *const SnapshotTab, seen: *SeenTerminals) !void {
+    try validateTabRoot(tab);
+    var reachable: [layout.max_nodes]bool = @splat(false);
+    try walkSnapshotNode(tab.*, tab.root, &reachable);
+    if (!reachable[tab.focus]) return error.InvalidTopology;
+    for (tab.nodes, 0..) |node, index| {
+        if (node.kind != .leaf and node.remote_ref != null) return error.InvalidTopology;
+        if (node.kind == .free) continue;
+        if (!reachable[index]) return error.InvalidTopology;
+        if (node.kind == .leaf) try seen.admit(snapshot, node);
+    }
+}
+
+fn validateTabRoot(tab: *const SnapshotTab) !void {
+    if (tab.root >= layout.max_nodes or tab.focus >= layout.max_nodes) return error.InvalidTopology;
+    if (tab.nodes[tab.focus].kind != .leaf) return error.InvalidTopology;
+    if (tab.nodes[tab.root].parent != layout.none) return error.InvalidTopology;
+}
+
+fn validateCwd(cwd: SnapshotCwd) !void {
+    if (cwd.len > max_snapshot_cwd_bytes) return error.InvalidTopology;
+    if (cwd.len == 0) return;
+    const path = cwd.bytes[0..cwd.len];
+    if (path[0] != '/') return error.InvalidTopology;
+    for (path) |byte| if (byte == 0 or byte == '\n') return error.InvalidTopology;
+}
 
 fn walkSnapshotNode(tab: SnapshotTab, id: layout.NodeId, reachable: *[layout.max_nodes]bool) !void {
     if (id >= layout.max_nodes) return error.InvalidTopology;
@@ -295,14 +323,19 @@ fn walkSnapshotNode(tab: SnapshotTab, id: layout.NodeId, reachable: *[layout.max
             if (node.first != layout.none or node.second != layout.none) return error.InvalidTopology;
         },
         .branch => {
-            if (node.first == layout.none or node.second == layout.none) return error.InvalidTopology;
-            if (!std.math.isFinite(node.fraction) or
-                node.fraction < layout.min_fraction or node.fraction > layout.max_fraction) return error.InvalidTopology;
-            if (tab.nodes[node.first].parent != id or tab.nodes[node.second].parent != id) return error.InvalidTopology;
+            try validateBranch(tab, id);
             try walkSnapshotNode(tab, node.first, reachable);
             try walkSnapshotNode(tab, node.second, reachable);
         },
     }
+}
+
+fn validateBranch(tab: SnapshotTab, id: layout.NodeId) !void {
+    const node = tab.nodes[id];
+    if (node.first >= layout.max_nodes or node.second >= layout.max_nodes) return error.InvalidTopology;
+    if (!std.math.isFinite(node.fraction) or
+        node.fraction < layout.min_fraction or node.fraction > layout.max_fraction) return error.InvalidTopology;
+    if (tab.nodes[node.first].parent != id or tab.nodes[node.second].parent != id) return error.InvalidTopology;
 }
 
 /// The pre-tree schemas. v0 was a bare count-and-flag; v1 was the two-pane
@@ -352,6 +385,7 @@ pub const PersistedTopologySnapshot = union(enum) {
     v2: LegacyTopologySnapshotV2,
     v3: LegacyTopologySnapshotV3,
     v4: TopologySnapshot,
+    v5: TopologySnapshot,
 };
 
 /// Build a one-leaf tab. Every migration path lands here: a legacy terminal
@@ -384,7 +418,12 @@ fn splitTab(first: LocalTerminalId, second: LocalTerminalId, fraction: f32, focu
 
 pub fn migrateTopologySnapshot(persisted: PersistedTopologySnapshot) !TopologySnapshot {
     const snapshot = switch (persisted) {
-        .v4 => |current| current,
+        .v5 => |current| current,
+        .v4 => |legacy| blk: {
+            var current = legacy;
+            if (current.version == 4) current.version = topology_snapshot_version;
+            break :blk current;
+        },
         // v3 -> v4: a pre-multi-window file describes exactly ONE window, and
         // restoring it as one window is the whole compatibility claim. A file
         // with no tabs stays a zero-window snapshot, which is what "there is
@@ -412,28 +451,26 @@ pub fn migrateTopologySnapshot(persisted: PersistedTopologySnapshot) !TopologySn
             .tab_placement = legacy.tab_placement,
         } }),
         .v1 => |legacy| try migrateV1(legacy),
-        .v0 => |legacy| blk: {
-            if (legacy.terminal_count > max_tabs or !std.math.isFinite(legacy.split_fraction)) return error.InvalidTopology;
-            var v1: LegacyTopologySnapshotV1 = .{
-                .terminal_count = legacy.terminal_count,
-                .split = legacy.split and legacy.terminal_count >= 2,
-                .split_fraction = std.math.clamp(legacy.split_fraction, 0.05, 0.95),
-            };
-            if (legacy.terminal_count > 4) return error.InvalidTopology;
-            for (0..legacy.terminal_count) |index| {
-                v1.terminal_order[index] = @enumFromInt(local.first_terminal_raw + index);
-            }
-            if (legacy.terminal_count > 0) {
-                const selected = @min(@as(usize, legacy.selected_index), legacy.terminal_count - 1);
-                v1.selection = v1.terminal_order[selected];
-                v1.attachments[0] = v1.terminal_order[selected];
-                if (v1.split) v1.attachments[1] = v1.terminal_order[if (selected == 0) 1 else 0];
-            }
-            break :blk try migrateV1(v1);
-        },
+        .v0 => |legacy| try migrateV1(try upgradeV0(legacy)),
     };
     try snapshot.validate();
     return snapshot;
+}
+
+fn upgradeV0(legacy: LegacyTopologySnapshotV0) !LegacyTopologySnapshotV1 {
+    if (legacy.terminal_count > 4 or !std.math.isFinite(legacy.split_fraction)) return error.InvalidTopology;
+    var v1: LegacyTopologySnapshotV1 = .{
+        .terminal_count = legacy.terminal_count,
+        .split = legacy.split and legacy.terminal_count >= 2,
+        .split_fraction = std.math.clamp(legacy.split_fraction, 0.05, 0.95),
+    };
+    for (0..legacy.terminal_count) |index| v1.terminal_order[index] = @enumFromInt(local.first_terminal_raw + index);
+    if (legacy.terminal_count == 0) return v1;
+    const selected = @min(@as(usize, legacy.selected_index), legacy.terminal_count - 1);
+    v1.selection = v1.terminal_order[selected];
+    v1.attachments[0] = v1.terminal_order[selected];
+    if (v1.split) v1.attachments[1] = v1.terminal_order[if (selected == 0) 1 else 0];
+    return v1;
 }
 
 /// The tab a migrated legacy snapshot had selected, in the ONE window it

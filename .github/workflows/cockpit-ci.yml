@@ -5,10 +5,8 @@ on:
     branches: [main]
     paths:
       - "clients/cockpit/**"
-      - "crates/phux-client-core/**"
-      - "crates/phux-client-ffi/**"
-      - "crates/phux-perf/**"
-      - "crates/phux-protocol/**"
+      # The bundle now carries the same-checkout CLI and its native dependencies.
+      - "crates/**"
       - ".cargo/config.toml"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -26,10 +24,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "clients/cockpit/**"
-      - "crates/phux-client-core/**"
-      - "crates/phux-client-ffi/**"
-      - "crates/phux-perf/**"
-      - "crates/phux-protocol/**"
+      - "crates/**"
       - ".cargo/config.toml"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -174,8 +169,10 @@ jobs:
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
           ./scripts/host-raster-check.sh --min-solid 4179
 
-      - name: Build the same-checkout Phux client FFI
-        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+      - name: Build the same-checkout Phux FFI and coordinator CLI
+        run: |
+          cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+          cargo build --locked --profile ffi-release -p phux
 
       - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit

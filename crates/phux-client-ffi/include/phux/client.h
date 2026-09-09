@@ -395,6 +395,96 @@ typedef struct PhuxAttachOptions {
     uint32_t scrollback_limit_lines;
 } PhuxAttachOptions;
 
+#define PHUX_CLIENT_MAX_OPERATIONS 128u
+#define PHUX_CLIENT_MAX_DYNAMIC_TERMINALS 256u
+#define PHUX_CLIENT_MAX_SPAWN_ARGS 256u
+#define PHUX_CLIENT_MAX_SPAWN_BYTES (64u * 1024u)
+#define PHUX_CLIENT_MAX_OPERATION_MESSAGE_BYTES 4096u
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * Request IDs are nonzero and strictly increasing across spawn/attach/detach-terminal
+ * calls for this client, including after results are cleared. Validation failure
+ * does not consume an ID. All operations require completed session ATTACH.
+ * Pending requests plus retained completions are bounded by MAX_OPERATIONS;
+ * consume/clear completions to free capacity. Spawn is never retried internally.
+ * New operations also require fewer than MAX_OPERATIONS queued outgoing frames;
+ * drain/clear outgoing frames after handing them to the transport.
+ * All input spans are copied by the queue call, UTF-8, and reject embedded NUL.
+ * argc == 0 selects the default shell; otherwise argv[0] must be nonempty.
+ * Empty cwd/satellite and null owner_terminal mean absent. A nonzero local owner
+ * requires satellite absent. A nonzero satellite owner requires an explicit
+ * satellite route exactly matching its host; mismatches are rejected. The wire
+ * retains the satellite-tagged owner for server-side route translation.
+ * Text across argv/cwd/route/owner host is bounded by MAX_SPAWN_BYTES (both host
+ * spans count when an owner is present). Both geometry axes must be nonzero.
+ * Geometry is an initial hint; older servers and satellite relays may ignore it.
+ */
+typedef struct PhuxSpawnOptions {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    const PhuxTerminalId *owner_terminal;
+    PhuxBytes satellite;
+    const PhuxBytes *argv;
+    size_t argc;
+    PhuxBytes cwd;
+    uint16_t cols;
+    uint16_t rows;
+} PhuxSpawnOptions;
+
+/** Explicitly admits this ID before bootstrap can arrive, including before the
+ * COMMAND_RESULT acknowledgment. Already admitted or pending IDs are rejected. A successful
+ * local spawn is automatically admitted; a satellite spawn needs this call.
+ */
+typedef struct PhuxAttachTerminalOptions {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    PhuxTerminalId terminal_id;
+} PhuxAttachTerminalOptions;
+
+typedef PhuxAttachTerminalOptions PhuxDetachTerminalOptions;
+
+typedef enum PhuxOperationKind {
+    PHUX_OPERATION_SPAWN = 1,
+    PHUX_OPERATION_ATTACH_TERMINAL = 2,
+    PHUX_OPERATION_DETACH_TERMINAL = 3
+} PhuxOperationKind;
+
+typedef enum PhuxOperationStatus {
+    PHUX_OPERATION_SUCCESS = 1,
+    PHUX_OPERATION_REFUSED = 2,
+    PHUX_OPERATION_UNKNOWN_OUTCOME = 3
+} PhuxOperationStatus;
+
+typedef enum PhuxOperationErrorDomain {
+    PHUX_OPERATION_ERROR_NONE = 0,
+    PHUX_OPERATION_ERROR_SPAWN = 1,
+    PHUX_OPERATION_ERROR_PROTOCOL = 2
+} PhuxOperationErrorDomain;
+
+/** Initialize size/version before operation_get. Success is command acceptance,
+ * not stream READY; use terminal_grid to observe a published replica. Spawn
+ * errors use wire SpawnError tags (0 group missing, 1 spawn failed, 2 unsupported
+ * satellite, 3 satellite unreachable). Protocol errors use ErrorCode wire values.
+ * id == 0 means absent; attach/detach results retain their requested ID even on failure.
+ * Host/message spans are borrowed until the next mutable client call. Messages
+ * are truncated at a UTF-8 boundary to MAX_OPERATION_MESSAGE_BYTES.
+ * UNKNOWN_OUTCOME means transport ended before a reply; reconcile against server
+ * inventory/identity, never automatically retry creation.
+ */
+typedef struct PhuxOperationResult {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t kind;
+    uint32_t status;
+    uint32_t error_domain;
+    uint32_t error_code;
+    PhuxTerminalId terminal_id;
+    PhuxBytes message;
+} PhuxOperationResult;
+
 typedef enum PhuxClientEffectKind {
     PHUX_CLIENT_EFFECT_DAMAGE = 1,
     PHUX_CLIENT_EFFECT_STATUS = 2,
@@ -444,7 +534,8 @@ typedef enum PhuxClientHistoryLoadCode {
     PHUX_CLIENT_HISTORY_GAP = 3,
     PHUX_CLIENT_HISTORY_STALE = 4,
     PHUX_CLIENT_HISTORY_PRUNED = 5,
-    PHUX_CLIENT_HISTORY_TOMBSTONED = 6
+    PHUX_CLIENT_HISTORY_TOMBSTONED = 6,
+    PHUX_CLIENT_HISTORY_CLEARED = 7
 } PhuxClientHistoryLoadCode;
 
 typedef enum PhuxClientHistoryUnavailableCode {
@@ -551,6 +642,41 @@ typedef struct PhuxTerminalGridView {
     PhuxDocumentAnchor top_anchor;
 } PhuxTerminalGridView;
 
+/* Additive metadata: the v1 PhuxTerminalGridView/PhuxTerminalCell layouts stay
+ * unchanged. Color provenance permits renderer policy (such as ANSI-8
+ * bold-as-bright) without guessing the palette index from resolved RGB. */
+typedef enum PhuxGridColorKind {
+    PHUX_GRID_COLOR_DEFAULT = 0,
+    PHUX_GRID_COLOR_PALETTE = 1,
+    PHUX_GRID_COLOR_RGB = 2
+} PhuxGridColorKind;
+
+typedef struct PhuxGridRgb {
+    uint8_t r, g, b;
+} PhuxGridRgb;
+
+typedef struct PhuxGridCellMetadata {
+    uint8_t foreground_kind;
+    uint8_t foreground_palette_index; /* meaningful only for PALETTE */
+    bool underline_color_is_default;
+    bool background_color_is_default;
+} PhuxGridCellMetadata;
+
+typedef struct PhuxTerminalGridMetadata {
+    size_t size; /* initialize to sizeof(PhuxTerminalGridMetadata) */
+    uint32_t version; /* initialize to PHUX_CLIENT_ABI_VERSION */
+    uint64_t stream_id, bootstrap_id, last_seq, document_revision;
+    uint16_t cols, rows;
+    PhuxGridRgb foreground, background, cursor_color;
+    bool has_foreground, has_background; /* false: configured renderer fallback */
+    bool reverse_colors; /* DECSCNM; effective colors above already swapped */
+    bool has_cursor_color;
+    bool cursor_blinking, cursor_wide, cursor_at_wide_tail;
+    PhuxGridRgb palette[256];
+    const PhuxGridCellMetadata *cells; /* row-major, same grid/cell count */
+    size_t cell_count;
+} PhuxTerminalGridMetadata;
+
 typedef struct PhuxKeyEvent {
     size_t size;
     uint32_t version;
@@ -596,7 +722,8 @@ typedef struct PhuxSearchResult {
  * input only for the call. Returned frame/effect/grid/search/selection buffers
  * are owned by the bridge and remain valid until the next mutable PhuxClient
  * call. Opaque document anchors remain valid until explicitly released or
- * their terminal generation is replaced. count/get/state/last_error and
+ * their terminal generation is replaced or its presentation is cleared.
+ * count/get/state/last_error and
  * terminal_mouse_tracking are read-only and do not invalidate borrowed
  * pointers; clear calls are mutable. Outbound caller-provided byte fields must
  * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
@@ -608,6 +735,30 @@ PhuxClientState phux_client_state(const PhuxClient *client);
 PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out_error);
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
+PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
+PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const PhuxAttachTerminalOptions *options);
+
+/* Withdraw a subscription, never kill durable work. Requires completed session
+ * ATTACH and an admitted terminal without a pending attach/detach. Correlated
+ * success retires client replica/admission, including initial participation.
+ * Refusal retains state; disconnect yields unknown outcome. Never replay
+ * automatically. Detach remains available when dynamic admission capacity is full.
+ * Shares the monotonically increasing request IDs and bounded result queue.
+ * While pending, input/resize are refused and automatic terminal sends are
+ * fenced behind withdrawal. At most one unsent history request and latest ACK
+ * are retained per detach, resumed only on refusal with a still-live exact
+ * generation/cursor. Success/closure/disconnect discard them; input is never
+ * retained or replayed. */
+PhuxClientResult phux_client_queue_detach_terminal(PhuxClient *client, const PhuxDetachTerminalOptions *options);
+size_t phux_client_operation_count(const PhuxClient *client);
+PhuxClientResult phux_client_operation_get(const PhuxClient *client, size_t index, PhuxOperationResult *out_result);
+/** Clears completions only, preserving pending correlation and stream admission. */
+PhuxClientResult phux_client_operation_clear(PhuxClient *client);
+/** Opaque HELLO_OK identity, borrowed until mutation and retained after disconnect. */
+PhuxClientResult phux_client_server_id(const PhuxClient *client, PhuxBytes *out_id);
+/** Call on transport loss: cancels pending requests as unknown outcome, discards
+ * outgoing frames, and permanently detaches this client. Idempotent. */
+PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
@@ -618,10 +769,19 @@ size_t phux_client_effect_count(const PhuxClient *client);
 PhuxClientResult phux_client_effect_get(const PhuxClient *client, size_t index, PhuxClientEffect *out_effect);
 PhuxClientResult phux_client_effect_clear(PhuxClient *client);
 PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridView *out_view);
+
+/* Read-only companion to terminal_grid. Call immediately after that query,
+ * before ANY mutable client call; both borrows remain valid. Returns
+ * INVALID_STATE when there is no current grid. Initialize size/version first.
+ * Defaults/palette entries come from the same libghostty render pass. Missing
+ * default colors use the renderer's configured fallback (also swapped under
+ * reverse_colors); missing cursor color uses its configured cursor fallback. */
+PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
 /**
- * Reports whether the published Ghostty terminal has DEC mouse tracking mode
- * 9, 1000, 1002, or 1003 enabled. Returns PHUX_CLIENT_INVALID_STATE before
- * publication or after detach, and PHUX_CLIENT_INVALID_ARGUMENT for null or
+ * Reports whether the published Ghostty terminal's effective mouse-tracking
+ * state is active (X10, normal, button, or any-event). Returns
+ * PHUX_CLIENT_INVALID_STATE before publication or after detach, and
+ * PHUX_CLIENT_INVALID_ARGUMENT for null or
  * malformed arguments. This read-only query preserves borrowed bridge views.
  */
 PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxTerminalId *terminal_id, bool *out_enabled);
@@ -634,9 +794,39 @@ PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, 
 PhuxClientResult phux_client_scroll_viewport(PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t kind, int64_t value);
 PhuxClientResult phux_client_anchor_create(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentPoint point, PhuxDocumentAnchor *out_anchor);
 PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
+/** Client-only Clear: home the cursor, erase the active display and scrollback,
+ * clear selection/document anchors, and cancel older history for this replica.
+ * Preserves modes, dimensions, durable work and live sequence; sends no input.
+ * Rejects an absent/disconnected terminal or mismatched stream/bootstrap IDs. */
+PhuxClientResult phux_client_clear_presentation(PhuxClient *client, const PhuxTerminalId *terminal_id, uint64_t stream_id, uint64_t bootstrap_id);
 PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
 PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
+
+/* Native Ghostty gestures, version 1. phase: press=0, drag=1, release=2.
+ * Positions and geometry share surface units; press clicks=1..3. A release
+ * ignores the cell. A stale handle is rejected. selection_clear invalidates
+ * gestures. Nonzero result anchors belong to the caller (anchor_release). */
+typedef struct PhuxSelectionGestureEvent {
+    size_t size;
+    uint32_t version, phase, clicks;
+    uint64_t handle;
+    uint16_t column;
+    bool rectangle;
+    uint8_t reserved;
+    uint32_t row;
+    double x, y;
+    uint32_t columns, cell_width, screen_height, padding_left;
+} PhuxSelectionGestureEvent;
+typedef struct PhuxSelectionGestureResult {
+    uint64_t handle;
+    PhuxDocumentAnchor start, end;
+} PhuxSelectionGestureResult;
+PhuxClientResult phux_client_selection_gesture(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxSelectionGestureEvent *event, PhuxSelectionGestureResult *out_result);
+
+/* Read-only effective Ghostty mode: off=0, X10=1, normal=2, button=3, any=4.
+ * Uses the resolved encoder state, including DECSET/DECRST ordering. */
+PhuxClientResult phux_client_terminal_mouse_mode(const PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t *out_mode);
 PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes *out_text);
 /**
@@ -650,7 +840,8 @@ PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTermin
 PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
 /**
  * Every returned anchor handle is transferred to the caller and remains valid
- * until explicitly released or its terminal generation is replaced. Before
+ * until explicitly released, its terminal generation is replaced, or its
+ * presentation is cleared. Before
  * the next mutable client call invalidates this borrowed array, callers must
  * either copy the handles for later individual release or call
  * phux_client_search_results_release to release the entire set atomically.

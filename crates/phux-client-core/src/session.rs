@@ -9,8 +9,8 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Strea
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineJob, EngineProjectionOrigin, EngineSearchMatch, EngineSend,
-    EngineStatus,
+    EngineHistoryProjection, EngineJob, EnginePresentationAdapter, EngineProjectionOrigin,
+    EngineSearchMatch, EngineSend, EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
@@ -916,6 +916,51 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.attach = None;
     }
 
+    /// Complete an acknowledged per-terminal detach after the session ATTACH
+    /// barrier. The caller must revoke dynamic admission and reject subsequent
+    /// unsolicited frames. This transition withdraws initial participation; it
+    /// never marks durable work closed and permits a later explicit reattach.
+    /// Returns false without mutation while the initial barrier is outstanding.
+    #[must_use]
+    pub fn detach_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+        if let Some(attach) = self.attach.as_mut() {
+            if !attach.released {
+                return false;
+            }
+            attach
+                .terminals
+                .retain(|entry| &entry.terminal_id != terminal_id);
+        }
+        self.release_terminal(terminal_id)
+    }
+
+    /// Release all replica, retirement, and echo-probe state for a subscription.
+    ///
+    /// The caller MUST revoke its terminal admission before calling this method
+    /// and reject subsequent unsolicited frames for the released terminal. Unlike
+    /// terminal closure, release permits a later explicitly requested subscription
+    /// to the same ID. The caller owns removal of its presentation and queued
+    /// effects; this method emits no effects.
+    ///
+    /// Returns `false` without mutation for any terminal in the active ATTACH
+    /// inventory, including closed participants, preserving its aggregate barrier.
+    /// Returns `true` otherwise, including for an already released terminal.
+    #[must_use]
+    pub fn release_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+        if self.attach.as_ref().is_some_and(|attach| {
+            attach
+                .terminals
+                .iter()
+                .any(|participant| &participant.terminal_id == terminal_id)
+        }) {
+            return false;
+        }
+        self.terminals.remove(terminal_id);
+        self.closed.remove(terminal_id);
+        self.perf_echo.forget(terminal_id);
+        true
+    }
+
     /// Borrow the published replica for one terminal.
     #[must_use]
     pub fn published(&self, terminal_id: &TerminalId) -> Option<PublishedReplica<'_, E>> {
@@ -949,6 +994,28 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .as_mut()?
                 .engine,
         )
+    }
+
+    /// Clear only this client's presentation. The published generation, parser
+    /// and live sequence survive; in-flight older pages can no longer reappear.
+    pub fn clear_presentation(
+        &mut self,
+        terminal_id: &TerminalId,
+    ) -> Result<(), KernelError<E::Error>>
+    where
+        E: EnginePresentationAdapter,
+    {
+        self.ensure_open(terminal_id)?;
+        let replica = self
+            .terminals
+            .get_mut(terminal_id)
+            .and_then(|state| state.published.as_mut())
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        self.adapter
+            .clear_presentation(&mut replica.engine)
+            .map_err(KernelError::Engine)?;
+        replica.history.clear_presentation();
+        Ok(())
     }
 
     /// Borrow one published generation's progressive history cache.
@@ -1998,6 +2065,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.ensure_open(page.terminal_id)?;
         let replica =
             Self::published_replica(&mut self.terminals, page.terminal_id, page.generation)?;
+        if replica.history.is_locally_cleared() {
+            return Ok(());
+        }
         let cursor = HistoryCursor::new(page.cursor);
         let next_cursor = page.next_cursor.map(HistoryCursor::new);
         match replica.history.check_page(

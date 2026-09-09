@@ -1,0 +1,19 @@
+# GUARD ts-shell-exit-focus
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping shell exit transfers focus to the revealed Phux terminal
+red: 2026-09-07 at 4d0d589
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index 932aa54d..817ead45 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -761,7 +761,6 @@ pub const Engine = struct {
+     /// snapshot (phase/title/cwd/attention); ordinary terminal output still
+     /// wakes native painting without forcing a snapshot on every byte batch.
+     pub fn onShellEvent(self: *Engine, fx: anytype, event: native_sdk.EffectPtyEvent) bool {
+-        defer self.syncRemoteFocus();
+         const pane = terminal_runtime.paneForKey(self.model, event.key) orelse return false;
+         const chrome_before = self.paneChromeFingerprint(pane);
+         switch (event.kind) {

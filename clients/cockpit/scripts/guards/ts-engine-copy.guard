@@ -1,21 +1,20 @@
 # GUARD ts-engine-copy
 #
-# cmd+C on a selection must reach the clipboard through the seam. The break
-# drops the copy chord from the key block, so the keystroke falls through to
-# the encoder and the selection never leaves the pane.
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
 test: select all and cmd+C put the scrollback on the clipboard through the seam
-red: 2026-09-02 at d7dc724
-build: test -Dplatform=null
+red: 2026-09-07 at 2f8fa21
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
-index c5489f5..496fd8f 100644
+index f47d8461..a24e12ed 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
-@@ -316,7 +316,7 @@ pub const Engine = struct {
-             return;
-         }
-         if (primary and keyIs(event.key, "c") and (pane.selecting or pane.session.selectionActive())) {
--            self.copySelection(fx, pane);
-+            if (false) self.copySelection(fx, pane);
-             return;
-         }
-         if (primary and keyIs(event.key, "v")) {
+@@ -915,7 +915,7 @@ pub const Engine = struct {
+     }
+ 
+     fn terminalShortcut(event: canvas.WidgetKeyboardEvent) ?protocol.NativeCommand {
+-        if (keyIs(event.key, "c")) return .copy;
++        if (keyIs(event.key, "c")) return null;
+         if (keyIs(event.key, "v")) return .paste;
+         if (event.modifiers.alt or event.modifiers.control) return null;
+         if (keyIs(event.key, "g")) return if (event.modifiers.shift) .find_previous else .find_next;

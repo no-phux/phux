@@ -103,6 +103,50 @@ class BuildContracts(unittest.TestCase):
     def test_dev_preserves_production_default(self):
         self.check_dev_invocation([], "ffi-release")
 
+    def test_matching_cli_build_uses_checkout_target_and_copies_executable(self):
+        with tempfile.TemporaryDirectory(prefix="cockpit cli contract ") as directory:
+            repo = Path(directory)
+            scripts = repo / "clients/cockpit/scripts"
+            scripts.mkdir(parents=True)
+            script = scripts / "build-phux-cli.sh"
+            script.write_text((ROOT / "scripts/build-phux-cli.sh").read_text())
+            (scripts / "stage-phux-cli.sh").write_text((ROOT / "scripts/stage-phux-cli.sh").read_text())
+            tools = repo / "tools"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text('''#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$CARGO_TARGET_DIR" "$@" > "$CAPTURE"
+mkdir -p "$CARGO_TARGET_DIR/ffi-dev"
+printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/ffi-dev/phux"
+''')
+            cargo.chmod(0o755)
+            # A global installed phux is deliberately poisonous; staging should
+            # neither execute it nor copy it.
+            installed = tools / "phux"
+            installed.write_text("#!/bin/sh\nexit 99\n")
+            installed.chmod(0o755)
+            capture = repo / "capture"
+            destination = repo / "app with spaces/Contents/MacOS/phux"
+            destination.parent.mkdir(parents=True)
+            destination.write_text("old CLI")
+            # A retained descriptor represents a running coordinator's inode:
+            # staging must replace the name without truncating that old image.
+            previous = destination.open("rb")
+            self.addCleanup(previous.close)
+            env = dict(os.environ, CAPTURE=str(capture),
+                       CARGO_TARGET_DIR="/unrelated/target",
+                       PATH=f"{tools}:{os.environ['PATH']}")
+            subprocess.run(["bash", str(script), "ffi-dev", str(destination)],
+                           env=env, check=True, capture_output=True)
+            self.assertEqual(capture.read_text().splitlines(), [
+                str(repo / "target"), "build", "--locked", "--manifest-path",
+                str(repo / "Cargo.toml"), "--profile", "ffi-dev", "-p", "phux",
+            ])
+            self.assertTrue(os.access(destination, os.X_OK))
+            self.assertEqual(destination.read_bytes(), (repo / "target/ffi-dev/phux").read_bytes())
+            self.assertEqual(previous.read(), b"old CLI")
+
 
 if __name__ == "__main__":
     unittest.main()

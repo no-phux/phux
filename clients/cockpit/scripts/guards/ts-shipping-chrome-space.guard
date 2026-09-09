@@ -1,0 +1,12 @@
+# GUARD ts-shipping-chrome-space
+# Retained titlebar geometry places row zero underneath compiled chrome.
+# Bypass the measured slot and compare against the actual compiled bands.
+test: shipping terminal rows fit between the compiled header and status
+red: 2026-09-07 at 30398dc
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/workspace_projection.zig b/src/cockpit/native/workspace_projection.zig
+--- a/src/cockpit/native/workspace_projection.zig
++++ b/src/cockpit/native/workspace_projection.zig
+@@ -1509,1 +1509,1 @@
+-    if (workspace.shipping_terminal_space) |space| return shippingChromeIn(model, workspace, space);
++    if (false) if (workspace.shipping_terminal_space) |space| return shippingChromeIn(model, workspace, space);

@@ -185,6 +185,28 @@ impl ServerState {
         self.terminal_table.cancel_pump(client, terminal);
     }
 
+    /// Track a task from any of the three output subscription paths.
+    pub(crate) fn track_terminal_output_pump(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        abort: tokio::task::AbortHandle,
+        done: CancellationToken,
+    ) {
+        self.terminal_table
+            .track_output_pump(client, terminal, abort, done);
+    }
+
+    /// Abort all of this subscription's tasks. Await each returned completion
+    /// token outside the state borrow before acknowledging detach/replacement.
+    pub(crate) fn stop_terminal_output_pumps(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> Vec<CancellationToken> {
+        self.terminal_table.stop_output_pumps(client, terminal)
+    }
+
     /// Remove `client` from `terminal`'s subscriber list (the
     /// `DETACH_TERMINAL` counterpart of the attach-time registration).
     pub fn unsubscribe_terminal(&mut self, client: ClientId, terminal: TerminalId) {

@@ -1728,10 +1728,9 @@ fn reload(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), 
 /// Run an init-system tool, turning a nonzero exit into a message that names
 /// the command — a bare exit code from `launchctl` is not a diagnosis.
 fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|err| format!("could not run `{program}`: {err}"))?;
+    let output =
+        super::server::ensure::service_output(std::process::Command::new(program).args(args))
+            .map_err(|err| format!("could not run `{program}`: {err}"))?;
     if output.status.success() {
         return Ok(());
     }

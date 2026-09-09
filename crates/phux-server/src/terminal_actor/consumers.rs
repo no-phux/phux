@@ -267,6 +267,8 @@ impl TerminalActor {
         // `HashMap::remove` returns the entry; dropping it frees the
         // per-consumer reference grid.
         let _ = self.consumer_states.remove(&client_id);
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        self.release_native_owner(u64::from(client_id.get()));
     }
 
     /// Handle an inbound `FRAME_ACK` from `client_id` carrying cumulative

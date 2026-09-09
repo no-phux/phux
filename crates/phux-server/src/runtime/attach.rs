@@ -22,6 +22,7 @@ use super::{
     SpawnOwnership, broadcast_event, prepare_attach, seed_session_with_actor,
     seed_session_with_pty_and_colors, send_error, spawn_pane_with_pty_and_colors,
 };
+use crate::hub::relay::SatelliteSpawn;
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
@@ -1540,7 +1541,7 @@ pub(crate) struct SpawnRequest {
     pub(crate) term: Option<String>,
     /// Satellite host to route the spawn to (phux-v45.6), `None` = local.
     pub(crate) satellite: Option<phux_protocol::ids::SatelliteHost>,
-    /// Existing local Terminal whose exact window must own the new pane.
+    /// Existing Terminal on the spawn's host whose exact window owns the new pane.
     pub(crate) owner_terminal: Option<phux_protocol::ids::TerminalId>,
     /// Opaque native agent-session provenance to install before publication.
     pub(crate) agent_session: Option<Vec<u8>>,
@@ -1549,26 +1550,28 @@ pub(crate) struct SpawnRequest {
     pub(crate) initial_size: Option<(u16, u16)>,
 }
 
-/// The parts of a `SPAWN_TERMINAL` payload a satellite can serve. Everything
-/// else in the frame is local-only.
-#[derive(Debug)]
-struct SatelliteSpawn {
-    /// Group under which to spawn on the satellite.
-    group: GroupId,
-    /// Command + argv, or `None` for the satellite's default shell.
-    command: Option<Vec<String>>,
-    /// Working directory, or `None` for the satellite's default policy.
-    cwd: Option<String>,
-    /// Environment pairs, `None` = inherit the satellite's environment.
-    env: Option<Vec<(String, String)>>,
-    /// First-class `TERM` override (phux-ign).
-    term: Option<String>,
-}
-
-/// Owner-terminal targeting and agent-session provenance are local-only: a
-/// satellite can resolve neither.
-const fn targets_local_only(request: &SpawnRequest) -> bool {
-    request.owner_terminal.is_some() || request.agent_session.is_some()
+/// Only an owner explicitly addressed to this satellite can cross its link.
+/// Provenance remains an independent local-only restriction.
+fn satellite_spawn_owner(
+    host: &phux_protocol::ids::SatelliteHost,
+    owner: Option<phux_protocol::ids::TerminalId>,
+    has_agent_session: bool,
+) -> Result<Option<u32>, SpawnError> {
+    if has_agent_session {
+        return Err(SpawnError::SpawnFailed(
+            "agent-session provenance is local-only".to_owned(),
+        ));
+    }
+    match owner {
+        None => Ok(None),
+        Some(phux_protocol::ids::TerminalId::Satellite {
+            host: owner_host,
+            id,
+        }) if owner_host == *host => Ok(Some(id)),
+        Some(_) => Err(SpawnError::SpawnFailed(
+            "owner terminal must belong to the requested satellite host".to_owned(),
+        )),
+    }
 }
 
 /// Relay one satellite-addressed spawn over the owning hub link
@@ -1588,30 +1591,23 @@ async fn relay_spawn_to_satellite(
         );
         return SpawnResult::Err(SpawnError::UnsupportedSatelliteRoute);
     };
-    relay
-        .spawn(spawn.group, spawn.command, spawn.cwd, spawn.env, spawn.term)
-        .await
+    relay.spawn(spawn).await
 }
 
 /// Relay a satellite-targeted spawn and reply with its re-tagged result.
 ///
-/// A payload carrying owner-terminal targeting or agent-session provenance is
-/// refused rather than silently stripped, because the satellite cannot honour
-/// either.
+/// Only a validated payload reaches route lookup. Ownership or independent
+/// agent-session provenance refusals are returned without touching the link.
 async fn dispatch_satellite_spawn(
     state: &SharedState,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     request_id: u32,
     host: &phux_protocol::ids::SatelliteHost,
-    spawn: SatelliteSpawn,
-    local_only_targeting: bool,
+    spawn: Result<SatelliteSpawn, SpawnError>,
 ) {
-    let result = if local_only_targeting {
-        SpawnResult::Err(SpawnError::SpawnFailed(
-            "owner-terminal targeting and agent-session provenance are local-only".to_owned(),
-        ))
-    } else {
-        relay_spawn_to_satellite(state, host, spawn).await
+    let result = match spawn {
+        Ok(spawn) => relay_spawn_to_satellite(state, host, spawn).await,
+        Err(error) => SpawnResult::Err(error),
     };
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::TerminalSpawned {
@@ -1823,7 +1819,6 @@ pub(crate) async fn handle_spawn_terminal(
             .await;
         return;
     };
-    let local_only_targeting = targets_local_only(&request);
     let initial_size = usable_initial_size(request.initial_size);
     log_spawn_request(client_id, request_id, &request, initial_size);
     let SpawnRequest {
@@ -1843,21 +1838,18 @@ pub(crate) async fn handle_spawn_terminal(
     // satellite, whose errors relay back verbatim. Never falls through to
     // local dispatch.
     if let Some(host) = satellite {
-        dispatch_satellite_spawn(
-            state,
-            out_tx,
-            request_id,
-            &host,
-            SatelliteSpawn {
+        let spawn = satellite_spawn_owner(&host, owner_terminal, agent_session.is_some()).map(
+            |owner_terminal| SatelliteSpawn {
                 group,
                 command,
                 cwd,
                 env,
                 term,
+                owner_terminal,
+                initial_size,
             },
-            local_only_targeting,
-        )
-        .await;
+        );
+        dispatch_satellite_spawn(state, out_tx, request_id, &host, spawn).await;
         return;
     }
 
@@ -2251,23 +2243,29 @@ fn spawn_terminal_output_pump(
     let pump_state = state.clone();
     let pump_connection_token = connection_token.clone();
     let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
-    output_pumps.spawn_local(async move {
-        let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
-            return;
-        };
-        match fault {
-            PumpFault::OutboundClosed
-            | PumpFault::TombstoneNotQueued
-            | PumpFault::ReplayAbandoned => {}
-            PumpFault::GenerationLost => {
-                pump_state.with_mut(|s| {
-                    s.reap_terminal(core_terminal_id);
-                });
-                pump_connection_token.cancel();
+    pump::spawn_tracked(
+        state,
+        ctx.client_id,
+        core_terminal_id,
+        Some(output_pumps),
+        async move {
+            let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
+                return;
+            };
+            match fault {
+                PumpFault::OutboundClosed
+                | PumpFault::TombstoneNotQueued
+                | PumpFault::ReplayAbandoned => {}
+                PumpFault::GenerationLost => {
+                    pump_state.with_mut(|s| {
+                        s.reap_terminal(core_terminal_id);
+                    });
+                    pump_connection_token.cancel();
+                }
+                PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
             }
-            PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
-        }
-    });
+        },
+    );
     gate_tx
 }
 
@@ -2935,22 +2933,28 @@ impl PaneCaptureContext<'_> {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_cursor: None,
         });
-        staging.pumps.spawn_local(async move {
-            let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
-                return;
-            };
-            match fault {
-                PumpFault::OutboundClosed | PumpFault::ReplayAbandoned => {}
-                PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
-                    crate::runtime::client::detach_and_release_consumer_state(
-                        &pump_state,
-                        client_id,
-                    );
-                    pump_connection_token.cancel();
+        pump::spawn_tracked(
+            self.state,
+            client_id,
+            terminal_id,
+            Some(&mut staging.pumps),
+            async move {
+                let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
+                    return;
+                };
+                match fault {
+                    PumpFault::OutboundClosed | PumpFault::ReplayAbandoned => {}
+                    PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
+                        crate::runtime::client::detach_and_release_consumer_state(
+                            &pump_state,
+                            client_id,
+                        );
+                        pump_connection_token.cancel();
+                    }
+                    PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
                 }
-                PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
-            }
-        });
+            },
+        );
     }
 
     /// Adapt one pane's synthesized snapshot to the client's capabilities,

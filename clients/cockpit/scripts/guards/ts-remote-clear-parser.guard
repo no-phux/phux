@@ -1,0 +1,17 @@
+# GUARD ts-remote-clear-parser
+# Injecting Clear bytes consumes an incomplete live CSI as parser input.
+# A UI-only Clear must mutate the presentation without consuming VT input.
+test: shipping remote Clear preserves an incomplete VT sequence
+red: 2026-09-08 at a9ca500
+root: repository
+rebuild: cargo build --locked --profile ffi-dev -p phux-client-ffi --target-dir target
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/crates/phux-client-core/src/engine/ghostty.rs b/crates/phux-client-core/src/engine/ghostty.rs
+--- a/crates/phux-client-core/src/engine/ghostty.rs
++++ b/crates/phux-client-core/src/engine/ghostty.rs
+@@ -682,3 +682,4 @@
+     fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error> {
+-        replica.clear_presentation()?;
++        let mut effects = EngineEffectBuffer::new();
++        self.apply_output(replica, b"\x1b[H\x1b[2J\x1b[3J", &mut effects)?;
+         self.clear_document_state(replica);

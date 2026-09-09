@@ -1,0 +1,25 @@
+# GUARD remote-cell-hyperlinks
+#
+# Before this fix, copyBorrowed in 7dc3ad06 ignored hyperlink spans entirely.
+# Returning an empty span restores that exact loss. The admission/lifetime
+# test copies a flagged C URI, overwrites the borrowed arena and demands an
+# owned URI remains. The canonical C-client test independently checks an OSC 8
+# target after freeing its originating engine. No UI activation is claimed.
+test: remote URI and cluster admission is bounded before replacing owned state
+red: 2026-09-07 at 242517b
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/cell_projection.zig b/src/providers/phux/cell_projection.zig
+index 672ecf71..d918500c 100644
+--- a/src/providers/phux/cell_projection.zig
++++ b/src/providers/phux/cell_projection.zig
+@@ -29,8 +29,8 @@ pub fn text(raw: c.PhuxTerminalCell) Span {
+ }
+ 
+ pub fn hyperlink(raw: c.PhuxTerminalCell) Span {
+-    if (raw.flags & c.PHUX_CLIENT_CELL_HYPERLINK == 0) return .{};
+-    return .{ .start = raw.hyperlink_offset, .len = raw.hyperlink_len };
++    _ = raw;
++    return .{};
+ }
+ 
+ fn validateShape(view: *const c.PhuxTerminalGridView) !void {

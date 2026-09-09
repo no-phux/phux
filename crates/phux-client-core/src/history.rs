@@ -144,6 +144,8 @@ pub enum HistoryLoadState {
     Pruned,
     /// The generation was permanently retired.
     Tombstoned,
+    /// This client cleared its presentation; older pages must not return.
+    Cleared,
 }
 
 /// Frontend presentation state for progressive history.
@@ -329,6 +331,17 @@ impl HistoryCache {
             next_cursor: self.next_cursor.clone(),
             next_page_seq: self.next_page_seq,
         }
+    }
+
+    /// Whether this exact transport cursor still owns the outstanding fetch.
+    /// Hosts use this to validate a temporarily deferred, never-sent request.
+    #[must_use]
+    pub fn is_fetching(&self, cursor: &[u8]) -> bool {
+        self.state == HistoryLoadState::Loading
+            && self
+                .next_cursor
+                .as_ref()
+                .is_some_and(|next| next.as_bytes() == cursor)
     }
 
     /// Opaque page payload bytes retained under the configured byte budget.
@@ -719,6 +732,16 @@ impl HistoryCache {
     /// Mark the requested boundary pruned and deterministically drop all pages and pins.
     pub(crate) fn mark_pruned(&mut self) {
         self.invalidate(HistoryLoadState::Pruned);
+    }
+
+    /// Cancel progressive history after a client-only Clear, without retiring
+    /// the live generation or preventing it from accumulating new scrollback.
+    pub(crate) fn clear_presentation(&mut self) {
+        self.invalidate(HistoryLoadState::Cleared);
+    }
+
+    pub(crate) const fn is_locally_cleared(&self) -> bool {
+        matches!(self.state, HistoryLoadState::Cleared)
     }
 
     /// Permanently retire the generation and deterministically drop all pages and pins.

@@ -1,0 +1,29 @@
+# GUARD outgoing-socket-wake
+#
+# Before this fix (main 7dc3ad06), the worker flushed outgoing frames and then
+# polled only socket IN for up to 50ms. A producer staging after that flush
+# could not wake the idle or partial-frame reader. The break restores that
+# socket-only poll and its bounded idle timeout while retaining the extracted
+# helper so the same deterministic test can exercise it. With a silent peer,
+# staging must change a zero-time poll from retry to outgoing-ready; no sleep
+# or scheduling-dependent latency threshold can conceal the missing wake fd.
+# The Phux-inclusive build below compiles the real extension and its SDK graph.
+test: staging after the idle flush makes socket wait outgoing-ready
+red: 2026-09-06 at 878a400
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/extension.zig b/src/providers/phux/extension.zig
+index c957fd33..0e98736f 100644
+--- a/src/providers/phux/extension.zig
++++ b/src/providers/phux/extension.zig
+@@ -184,9 +184,9 @@ const Readiness = enum { retry, readable, outgoing };
+ fn waitReadable(worker: *Worker, fd: posix.fd_t, timeout_ms: i32) !Readiness {
+     var poll_fds = [_]posix.pollfd{
+         .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 },
+-        .{ .fd = worker.outgoing_wake_fd, .events = posix.POLL.IN, .revents = 0 },
++        .{ .fd = -1, .events = posix.POLL.IN, .revents = 0 },
+     };
+-    const timeout = if (worker.bridge.outgoing.hasPending()) 0 else timeout_ms;
++    const timeout = if (worker.bridge.outgoing.hasPending()) 0 else if (timeout_ms < 0) 50 else timeout_ms;
+     const ready = try posix.poll(&poll_fds, timeout);
+     if (ready == 0) return .retry;
+     // Prefer readable data over HUP, preserving the peer's final full frame.

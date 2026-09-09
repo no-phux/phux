@@ -1,0 +1,20 @@
+# GUARD ts-offline-remote-close
+#
+# Restore the offline detach-enqueue refusal for a frozen remote replica.
+# Pane/tab/window close must remove presentation and saved placement without
+# outbound work, then remain absent when the remote replica reconnects.
+test: shipping offline remote close stays absent after reconnect without outbound work
+red: 2026-09-07 at 3361eec
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/workspace_lifecycle.zig b/src/cockpit/workspace_lifecycle.zig
+index a9be7350..26d0c308 100644
+--- a/src/cockpit/workspace_lifecycle.zig
++++ b/src/cockpit/workspace_lifecycle.zig
+@@ -29,7 +29,6 @@ fn releaseRemote(model: *Model, ref: support.TerminalRef) bool {
+     if (support.providerKind(ref) != .phux) return true;
+     const remote = model.phux() orelse return true;
+     if (!remote.contains(ref)) return true;
+-    if (remote.state() != .attached) return true;
+     _ = remote.requestDetach(ref) catch {
+         model.terminal_limit_refused = true;
+         return false;

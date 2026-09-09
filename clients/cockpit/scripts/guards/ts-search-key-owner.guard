@@ -1,0 +1,20 @@
+# GUARD ts-search-key-owner
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping search text cannot leak a key release after search closes
+red: 2026-09-07 at 764cabb
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/terminal_interaction.zig b/src/cockpit/terminal_interaction.zig
+index 5e8dc582..2b7af0af 100644
+--- a/src/cockpit/terminal_interaction.zig
++++ b/src/cockpit/terminal_interaction.zig
+@@ -191,7 +191,7 @@ pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
+ }
+ 
+ pub fn rememberKey(model: *Model, ref: TerminalRef, event: Event) void {
+-    if (!terminalAcceptsKeys(model, ref)) return;
++    if (false and !terminalAcceptsKeys(model, ref)) return;
+     const owner = model.terminalOwner(ref) orelse return;
+     update.key_owners.remember(model, owner, event.key);
+ }

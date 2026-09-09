@@ -5,6 +5,9 @@ const native_sdk = @import("native_sdk");
 const c = @import("abi.zig").c;
 
 const canvas = native_sdk.canvas;
+const projection = @import("cell_projection.zig");
+const grid_metadata = @import("grid_metadata.zig");
+const default_tokens: canvas.DesignTokens = .{};
 
 /// Admission is bounded independently from one frame's text budget. The
 /// painter degrades rows atomically while this store retains the complete valid
@@ -17,15 +20,65 @@ pub const CanvasStore = struct {
     rows: std.ArrayListUnmanaged(canvas.TerminalRow) = .empty,
     utf8: std.ArrayListUnmanaged(u8) = .empty,
     screen_text: std.ArrayListUnmanaged(u8) = .empty,
+    /// The SDK cell has no URI field. Keep explicit OSC 8 targets alongside
+    /// its row-major cells, in an independently bounded owned arena.
+    hyperlinks: std.ArrayListUnmanaged(projection.Span) = .empty,
+    hyperlink_utf8: std.ArrayListUnmanaged(u8) = .empty,
     cursor: ?canvas.TerminalCursor = null,
     scrollbar: canvas.TerminalScrollbar = .{},
     selection_active: bool = false,
+    background: canvas.Color = default_tokens.colors.background,
+    foreground: canvas.Color = default_tokens.colors.text,
+    cursor_color: canvas.Color = default_tokens.colors.accent,
+    selection_color: canvas.Color = default_tokens.colors.accent,
+    policy: grid_metadata.Policy = .{},
+    source_colors: @import("owned_colors.zig").OwnedColors = .{},
 
     pub fn deinit(store: *CanvasStore, gpa: std.mem.Allocator) void {
         store.cells.deinit(gpa);
         store.rows.deinit(gpa);
         store.utf8.deinit(gpa);
         store.screen_text.deinit(gpa);
+        store.hyperlinks.deinit(gpa);
+        store.hyperlink_utf8.deinit(gpa);
+        store.source_colors.deinit(gpa);
+    }
+
+    /// Deep-own a last-good projection once at disconnect, never per paint.
+    /// Only occupied bytes are copied; the live store's admission reserves are
+    /// deliberately not duplicated. Row/cell slices are rebased before return.
+    pub fn clone(store: *const CanvasStore, gpa: std.mem.Allocator) !CanvasStore {
+        var result: CanvasStore = .{
+            .cursor = store.cursor,
+            .scrollbar = store.scrollbar,
+            .selection_active = store.selection_active,
+            .background = store.background,
+            .foreground = store.foreground,
+            .cursor_color = store.cursor_color,
+            .selection_color = store.selection_color,
+            .policy = store.policy,
+        };
+        errdefer result.deinit(gpa);
+        try result.utf8.appendSlice(gpa, store.utf8.items);
+        try result.cells.appendSlice(gpa, store.cells.items);
+        try result.rows.appendSlice(gpa, store.rows.items);
+        try result.screen_text.appendSlice(gpa, store.screen_text.items);
+        try result.hyperlinks.appendSlice(gpa, store.hyperlinks.items);
+        try result.hyperlink_utf8.appendSlice(gpa, store.hyperlink_utf8.items);
+        try result.source_colors.cells.appendSlice(gpa, store.source_colors.cells.items);
+        result.source_colors.globals = store.source_colors.globals;
+        for (result.cells.items) |*cell| {
+            if (cell.cluster.len == 0) continue;
+            const start = @intFromPtr(cell.cluster.ptr) - @intFromPtr(store.utf8.items.ptr);
+            cell.cluster = result.utf8.items[start..][0..cell.cluster.len];
+        }
+        var first: usize = 0;
+        for (result.rows.items) |*row| {
+            const count = row.cells.len;
+            row.cells = result.cells.items[first..][0..count];
+            first += count;
+        }
+        return result;
     }
 
     fn reserve(store: *CanvasStore, gpa: std.mem.Allocator) !void {
@@ -33,97 +86,59 @@ pub const CanvasStore = struct {
         try store.cells.ensureTotalCapacity(gpa, canvas.max_terminal_cells);
         try store.rows.ensureTotalCapacity(gpa, canvas.max_terminal_rows);
         try store.screen_text.ensureTotalCapacity(gpa, max_grid_utf8_bytes + canvas.max_terminal_rows);
+        try store.hyperlinks.ensureTotalCapacity(gpa, canvas.max_terminal_cells);
     }
 
     pub fn copyBorrowed(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView) !void {
-        const cols: usize = view.cols;
+        return store.copy(gpa, view, null, .{});
+    }
+
+    pub fn copyClient(store: *CanvasStore, gpa: std.mem.Allocator, client: *const c.PhuxClient, view: *const c.PhuxTerminalGridView) !void {
+        const metadata = try grid_metadata.read(client, view);
+        return store.copyWithMetadata(gpa, view, &metadata, store.policy);
+    }
+
+    pub fn copyWithMetadata(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: *const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {
+        return store.copy(gpa, view, metadata, policy);
+    }
+
+    fn copy(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: ?*const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {
+        const source = try projection.validate(view, max_grid_utf8_bytes);
+        if (metadata) |meta| try grid_metadata.validate(view, meta);
         const rows: usize = view.rows;
-        if (cols > canvas.max_terminal_cols or rows > canvas.max_terminal_rows) return error.Protocol;
-        if (view.cell_count > canvas.max_terminal_cells or view.cell_count != cols * rows) return error.Protocol;
-        if (view.cell_count != 0 and view.cells == null) return error.Protocol;
-        if (view.utf8.len != 0 and view.utf8.data == null) return error.Protocol;
-        const source_cells: []const c.PhuxTerminalCell = if (view.cell_count == 0) &.{} else view.cells[0..view.cell_count];
-        const source_utf8 = view.utf8.data;
-        var visible_utf8_len: usize = 0;
-        const screen_text_limit = max_grid_utf8_bytes + canvas.max_terminal_rows;
-        var screen_text_len: usize = if (rows == 0) 0 else rows - 1;
-        for (source_cells) |raw| {
-            const start: usize = raw.utf8_offset;
-            const len: usize = raw.utf8_len;
-            if (start > view.utf8.len or len > view.utf8.len - start) return error.Protocol;
-            const cluster: []const u8 = if (len == 0) &.{} else source_utf8[start..][0..len];
-            if (cluster.len != 0) _ = std.unicode.Utf8View.init(cluster) catch return error.Protocol;
-            if (visible_utf8_len > max_grid_utf8_bytes or len > max_grid_utf8_bytes - visible_utf8_len) return error.Protocol;
-            visible_utf8_len += len;
-            if (screen_text_len > screen_text_limit or len > screen_text_limit - screen_text_len) return error.Protocol;
-            screen_text_len += len;
-        }
-        if (screen_text_len > screen_text_limit) return error.Protocol;
         try store.reserve(gpa);
+        try store.hyperlink_utf8.ensureTotalCapacity(gpa, source.hyperlink_bytes);
+        try store.source_colors.reserve(gpa, view.cell_count);
+        store.source_colors.capture(source.cells, metadata);
+        store.policy = policy;
         store.utf8.clearRetainingCapacity();
+        store.hyperlink_utf8.clearRetainingCapacity();
         store.cells.items.len = view.cell_count;
+        store.hyperlinks.items.len = view.cell_count;
         store.rows.items.len = rows;
         store.screen_text.clearRetainingCapacity();
         store.selection_active = false;
 
         for (store.cells.items, 0..) |*cell, index| {
-            const raw = source_cells[index];
-            const start: usize = raw.utf8_offset;
-            const len: usize = raw.utf8_len;
-            const source_cluster: []const u8 = if (len == 0) &.{} else source_utf8[start..][0..len];
+            const raw = source.cells[index];
+            const source_cluster = projection.text(raw).slice(source.utf8);
             const compact_start = store.utf8.items.len;
             store.utf8.appendSliceAssumeCapacity(source_cluster);
-            const cluster = store.utf8.items[compact_start..][0..len];
-            const decoded: u21 = if (cluster.len == 0) 0 else firstCodepoint(cluster) catch return error.Protocol;
-            var fg = canvas.Color.rgb8(raw.foreground_r, raw.foreground_g, raw.foreground_b);
-            var bg = canvas.Color.rgb8(raw.background_r, raw.background_g, raw.background_b);
-            if (raw.flags & c.PHUX_CLIENT_CELL_INVERSE != 0) std.mem.swap(canvas.Color, &fg, &bg);
-            const invisible = raw.flags & c.PHUX_CLIENT_CELL_INVISIBLE != 0;
-            const cp: u21 = if (invisible) 0 else decoded;
-            cell.* = .{
-                .cp = cp,
-                .cluster = if (cp == 0 or canvas.terminal_box.isBoxDrawing(cp)) "" else cluster,
-                .fg = fg,
-                .bg = bg,
-                .underline = raw.underline != c.PHUX_UNDERLINE_NONE,
-                .wide = switch (raw.wide) {
-                    c.PHUX_CELL_WIDE => .wide,
-                    c.PHUX_CELL_SPACER_TAIL, c.PHUX_CELL_SPACER_HEAD => .spacer,
-                    else => .narrow,
-                },
-            };
+            const cluster = store.utf8.items[compact_start..][0..source_cluster.len];
+            const cell_metadata: ?projection.CellMetadata = if (metadata) |meta| .{
+                .grid = meta,
+                .cell = meta.cells[index],
+                .policy = policy,
+            } else null;
+            cell.* = projection.project(raw, cluster, cell_metadata);
+            const uri = projection.hyperlink(raw).slice(source.utf8);
+            store.hyperlinks.items[index] = .{ .start = store.hyperlink_utf8.items.len, .len = uri.len };
+            store.hyperlink_utf8.appendSliceAssumeCapacity(uri);
             store.selection_active = store.selection_active or raw.flags & c.PHUX_CLIENT_CELL_SELECTED != 0;
         }
+        store.copyRows(source, view.cols);
 
-        for (store.rows.items, 0..) |*row, row_index| {
-            const first = row_index * cols;
-            const last = first + cols;
-            row.* = .{ .cells = store.cells.items[first..last] };
-            var selected_first: ?u16 = null;
-            var selected_last: u16 = 0;
-            for (source_cells[first..last], 0..) |raw, col| {
-                if (raw.flags & c.PHUX_CLIENT_CELL_SELECTED != 0) {
-                    if (selected_first == null) selected_first = @intCast(col);
-                    selected_last = @intCast(col);
-                }
-                const start: usize = raw.utf8_offset;
-                const len: usize = raw.utf8_len;
-                const source_cluster: []const u8 = if (len == 0) &.{} else source_utf8[start..][0..len];
-                store.screen_text.appendSliceAssumeCapacity(source_cluster);
-            }
-            if (selected_first) |first_selected| row.selection = .{ first_selected, selected_last };
-            if (row_index + 1 < rows) store.screen_text.appendAssumeCapacity('\n');
-        }
-
-        store.cursor = if (view.cursor_visible) .{
-            .x = view.cursor_col,
-            .y = view.cursor_row,
-            .shape = switch (view.cursor_style) {
-                c.PHUX_CURSOR_BAR => .bar,
-                c.PHUX_CURSOR_UNDERLINE => .underline,
-                else => .block,
-            },
-        } else null;
+        store.copyAppearance(view, metadata, policy);
         store.scrollbar = .{
             .offset = saturatingU32(view.history_viewport_offset),
             .len = saturatingU32(view.history_visible_rows),
@@ -131,13 +146,62 @@ pub const CanvasStore = struct {
         };
     }
 
+    fn copyAppearance(store: *CanvasStore, view: *const c.PhuxTerminalGridView, metadata: ?*const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) void {
+        store.background = default_tokens.colors.background;
+        store.foreground = default_tokens.colors.text;
+        store.cursor_color = policy.cursor_fallback;
+        store.selection_color = policy.selection_color;
+        store.cursor = cursor(view);
+        const meta = metadata orelse return;
+        store.background = grid_metadata.background(meta, policy);
+        store.foreground = grid_metadata.foreground(meta, policy);
+        if (meta.has_cursor_color) store.cursor_color = grid_metadata.rgb(meta.cursor_color);
+        if (store.cursor) |*value| {
+            value.blinking = meta.cursor_blinking;
+            value.wide = meta.cursor_wide;
+            if (meta.cursor_at_wide_tail) value.x -= 1;
+        }
+    }
+
+    fn copyRows(store: *CanvasStore, source: projection.Source, cols: usize) void {
+        for (store.rows.items, 0..) |*row, index| {
+            const first = index * cols;
+            const last = first + cols;
+            const raw = source.cells[first..last];
+            row.* = .{ .cells = store.cells.items[first..last], .selection = projection.selection(raw) };
+            for (raw) |cell| store.screen_text.appendSliceAssumeCapacity(projection.text(cell).slice(source.utf8));
+            if (index + 1 < store.rows.items.len) store.screen_text.appendAssumeCapacity('\n');
+        }
+    }
+
+    pub fn setColorPolicy(store: *CanvasStore, policy: grid_metadata.Policy) void {
+        if (std.meta.eql(store.policy, policy)) return;
+        store.policy = policy;
+        const meta = &(store.source_colors.globals orelse return);
+        store.source_colors.recolor(store.cells.items, policy);
+        store.background = grid_metadata.background(meta, policy);
+        store.foreground = grid_metadata.foreground(meta, policy);
+        store.cursor_color = if (meta.has_cursor_color) grid_metadata.rgb(meta.cursor_color) else policy.cursor_fallback;
+        store.selection_color = policy.selection_color;
+    }
+
+    /// Borrowed until the next successful copy or deinit, like grid().
+    pub fn hyperlinkAt(store: *const CanvasStore, row: usize, col: usize) ?[]const u8 {
+        if (row >= store.rows.items.len) return null;
+        const cols = store.rows.items[row].cells.len;
+        if (col >= cols) return null;
+        const span = store.hyperlinks.items[row * cols + col];
+        if (span.len == 0) return null;
+        return span.slice(store.hyperlink_utf8.items);
+    }
+
     pub fn grid(store: *const CanvasStore, running: bool) canvas.TerminalGrid {
         return .{
             .rows = store.rows.items,
-            .background = canvas.Color.rgb8(13, 17, 23),
-            .foreground = canvas.Color.rgb8(230, 237, 243),
-            .cursor_color = canvas.Color.rgb8(88, 166, 255),
-            .selection_color = canvas.Color.rgb8(56, 139, 253),
+            .background = store.background,
+            .foreground = store.foreground,
+            .cursor_color = store.cursor_color,
+            .selection_color = store.selection_color,
             .cursor = store.cursor,
             .running = running,
             .scrollbar = store.scrollbar,
@@ -147,14 +211,26 @@ pub const CanvasStore = struct {
     }
 };
 
-fn firstCodepoint(cluster: []const u8) !u21 {
-    const sequence_len = try std.unicode.utf8ByteSequenceLength(cluster[0]);
-    if (sequence_len > cluster.len) return error.InvalidUtf8;
-    return std.unicode.utf8Decode(cluster[0..sequence_len]);
+fn cursor(view: *const c.PhuxTerminalGridView) ?canvas.TerminalCursor {
+    return if (view.cursor_visible) .{
+        .x = view.cursor_col,
+        .y = view.cursor_row,
+        .shape = switch (view.cursor_style) {
+            c.PHUX_CURSOR_BAR => .bar,
+            c.PHUX_CURSOR_UNDERLINE => .underline,
+            c.PHUX_CURSOR_BLOCK_HOLLOW => .block_hollow,
+            else => .block,
+        },
+    } else null;
 }
 
 fn saturatingU32(value: u64) u32 {
     return @intCast(@min(value, @as(u64, std.math.maxInt(u32))));
+}
+
+test {
+    _ = @import("presentation_tests.zig");
+    _ = @import("grid_metadata_tests.zig");
 }
 
 test "dense text is compacted from a hyperlink-heavy remote UTF-8 arena" {

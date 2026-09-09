@@ -1,0 +1,12 @@
+# GUARD ts-remote-measured-pointer
+# Restore the former proportional column mapping instead of the canvas's
+# measured advance. A fractional-pitch fixture must select the wrong cells.
+test: shipping remote pointer maps the canvas measured fractional cell pitch
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+red: 2026-09-07 at 0d8b183
+diff --git a/src/cockpit/native/shipping_pointer.zig b/src/cockpit/native/shipping_pointer.zig
+--- a/src/cockpit/native/shipping_pointer.zig
++++ b/src/cockpit/native/shipping_pointer.zig
+@@ -253,1 +253,1 @@
+-        .column = cellAt(point.x - frame.x, measured.width, presentation.cols),
++        .column = cellAt(point.x - frame.x, frame.width / @as(f32, @floatFromInt(presentation.cols)), presentation.cols),

@@ -2,7 +2,9 @@ const std = @import("std");
 const model_module = @import("../model.zig");
 const projection = @import("workspace_projection.zig");
 const protocol = @import("ts_protocol.zig");
+const navigation = @import("ts_navigation.zig");
 const theme_module = @import("../../config/theme.zig");
+const signals = @import("remote_signals.zig");
 
 const Model = model_module.Model;
 
@@ -13,8 +15,9 @@ const Model = model_module.Model;
 /// projection's rule for it (`visibleTabRun`); the core slices its tab list
 /// to the run and shows a cue for the rest.
 pub const header_len: usize = protocol.snapshot_header_len + 10;
-pub const max_title_bytes: usize = 128;
-pub const max_cwd_bytes: usize = 128;
+// Compact strip labels; the paginated navigation catalog carries full labels.
+pub const max_title_bytes: usize = 24;
+pub const max_cwd_bytes: usize = 8;
 pub const max_bytes: usize = 4096;
 
 pub const Error = error{BufferTooSmall};
@@ -34,6 +37,14 @@ pub const ConfigProbe = struct {
 };
 
 pub const max_config_path_bytes: usize = 200;
+
+comptime {
+    var theme_bytes: usize = 0;
+    for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows;
+    const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
+    std.debug.assert(fixed + tabs <= max_bytes);
+}
 
 /// Serialize the active window's chrome projection. Raw cells, process state,
 /// provider slots, and platform window ids deliberately never cross this seam.
@@ -57,7 +68,7 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     out[20] = @intCast(workspace.tab_count);
     out[21] = @intCast(workspace.selected_tab);
     out[22] = snapshotFlags(model);
-    out[23] = 0;
+    out[23] = @intFromEnum(navigation.connection(model));
     out[24] = run.first;
     out[25] = run.count;
     std.mem.writeInt(u16, out[26..28], run.extent, .little);
@@ -66,6 +77,9 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeTabs(model, workspace, out, written);
     written = try encodeSettings(model, probe, out, written);
     written = try encodeSecondaryWindows(model, runs, out, written);
+    if (written + model_module.max_windows > out.len) return error.BufferTooSmall;
+    for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
+    written += model_module.max_windows;
     return out[0..written];
 }
 
@@ -100,11 +114,13 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
     var written = start;
     for (0..workspace.tab_count) |index| {
         const terminal = workspace.tabTerminal(index) orelse continue;
-        var title_buffer: [max_title_bytes]u8 = undefined;
+        var title_buffer: [512]u8 = undefined;
         const title = projection.terminalTitleInto(model, terminal, &title_buffer);
-        const bounded = title[0..@min(title.len, max_title_bytes)];
+        var title_display: [max_title_bytes]u8 = undefined;
+        const bounded = navigation.displayText(title, &title_display);
         const cwd_all = if (model.provider.terminalConst(terminal)) |pane| pane.pwd() else "";
-        const cwd = cwd_all[0..@min(cwd_all.len, max_cwd_bytes)];
+        var cwd_display: [max_cwd_bytes]u8 = undefined;
+        const cwd = navigation.displayText(cwd_all, &cwd_display);
         const needed = 7 + bounded.len + cwd.len;
         if (written + needed > out.len) return error.BufferTooSmall;
 
@@ -162,4 +178,37 @@ fn snapshotFlags(model: *const Model) u8 {
     if (workspace.palette.open) flags |= 1 << 5;
     if (workspace.settings.open) flags |= 1 << 6;
     return flags;
+}
+
+test "navigation snapshot remains bounded across windows with maximum terminal labels" {
+    const engine_module = @import("ts_engine.zig");
+    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    for (1..model_module.max_tabs) |_| {
+        const intent = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0, .window = 0 });
+        try std.testing.expect(engine.applyIntent(&intent, &engine_module.NoShells{}));
+    }
+    for (1..2) |window| {
+        const open_window = protocol.encodeIntent(.{ .kind = .new_window, .expected_revision = engine.revision, .argument = 0 });
+        try std.testing.expect(engine.applyIntent(&open_window, &engine_module.NoShells{}));
+        for (1..model_module.max_tabs) |_| {
+            const intent = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0, .window = @intCast(window) });
+            try std.testing.expect(engine.applyIntent(&intent, &engine_module.NoShells{}));
+        }
+    }
+    for (0..2) |window| {
+        const workspace = engine.model.wsAtConst(window).?;
+        for (0..model_module.max_tabs) |index| {
+            const ref = workspace.tabTerminal(index).?;
+            const pane = engine.model.provider.terminal(ref).?;
+            pane.session.feed("\x1b]2;" ++ "T" ** 128 ++ "\x07");
+            pane.session.feed("\x1b]7;file://host/" ++ "d" ** 127 ++ "\x1b\\");
+            try std.testing.expectEqual(@as(usize, 128), pane.pwd().len);
+        }
+    }
+    var buffer: [max_bytes]u8 = undefined;
+    const response = try engine.snapshot(&buffer);
+    try std.testing.expect(response.len <= max_bytes);
+    try std.testing.expectEqual(@as(u8, model_module.max_tabs), response[20]);
+    try std.testing.expect(std.mem.indexOf(u8, response, "…") != null);
 }

@@ -9,7 +9,263 @@ const createDefaultSession = support.createDefaultSession;
 const startCockpit = support.startCockpit;
 const startFocusedTerminal = support.startFocusedTerminal;
 const stopCockpit = support.stopCockpit;
-const remoteRef = support.remoteTerminalRef;
+const topology = @import("../cockpit/topology.zig");
+const contract = @import("provider_contract");
+
+fn remoteRef(id: u32) !contract.TerminalRef {
+    return .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteTerminalId.fromPhux(0, id, "") } };
+}
+
+// GUARD: durable-mixed-attachments
+test "v5 mixed attachments round trip without allocating remote shells" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    try model.setAttachmentContext("/tmp/coordinator a.sock", "server\x00incarnation", 71);
+    const remote = try remoteRef(72);
+    const tree = model.tree(0).?;
+    _ = try tree.split(tree.focus, .vertical, remote);
+    tree.setFraction(tree.root, 0.63);
+    const satellite: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
+        .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "h" ** 255),
+    } };
+    try testing.expect(model.admitTab(satellite));
+
+    const snapshot = try model.topologySnapshot();
+    try testing.expectEqual(@as(u8, 2), snapshot.tab_count);
+    try testing.expectEqual(@as(u8, 2), snapshot.references.count);
+    var bytes: [app.max_state_bytes]u8 = undefined;
+    const encoded = try app.serializeWorkspaceState(&snapshot, &bytes);
+    var parsed: app.PersistedTopologySnapshot = undefined;
+    try testing.expect(app.parseWorkspaceState(encoded, &parsed));
+    try testing.expectEqualDeep(snapshot, try app.migrateTopologySnapshot(parsed));
+    var restored = try app.restoreModel(testing.allocator, testing.io, parsed);
+    defer app.deinitModel(&restored);
+    try testing.expectEqual(@as(usize, 1), restored.provider.liveShellCount());
+    try testing.expect(restored.tree(0).?.find(remote) != null);
+    try testing.expect(restored.tree(1).?.find(satellite) != null);
+    try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
+}
+
+test "pending restored attachments survive normalization without live readiness" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    const remote = try remoteRef(72);
+    try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
+    const tree = model.tree(0).?;
+    _ = try tree.split(tree.focus, .horizontal, remote);
+    const snapshot = try model.topologySnapshot();
+    var restored = try app.restoreModel(testing.allocator, testing.io, .{ .v5 = snapshot });
+    defer app.deinitModel(&restored);
+    restored.normalizeTopology();
+    try testing.expect(restored.tree(0).?.find(remote) != null);
+    try testing.expect(restored.attachmentPending(remote));
+    try testing.expect(!restored.containsTerminal(remote));
+    try testing.expect(restored.terminalOwner(remote) == null);
+    try testing.expect(restored.remotePresentation(remote) == null);
+    try testing.expect(restored.selectedTerminalRef() == null);
+    var refs: [32]contract.TerminalRef = undefined;
+    try testing.expectEqual(@as(usize, 1), restored.pendingRestoredRefs(&refs));
+    try testing.expect(refs[0].eql(remote));
+    try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
+}
+
+test "restored contexts fence reused IDs and never infer satellite incarnation" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    const remote = try remoteRef(72);
+    try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
+    try testing.expect(model.admitTab(remote));
+    const satellite: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
+        .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "satellite"),
+    } };
+    try testing.expect(model.admitTab(satellite));
+    const snapshot = try model.topologySnapshot();
+    var restored = try app.restoreModel(testing.allocator, testing.io, .{ .v5 = snapshot });
+    defer app.deinitModel(&restored);
+    try testing.expect(!restored.restoredAttachmentMatches(remote));
+    const evidence = restored.restoredAttachmentContext(remote).?;
+    try testing.expectEqual(@as(u32, 71), evidence.session_id);
+    try testing.expectEqualStrings("server-a", evidence.server_id.slice());
+    try restored.setAttachmentContext("/tmp/b.sock", "server-a", 71);
+    try testing.expect(!restored.restoredAttachmentMatches(remote));
+    try restored.setAttachmentContext("/tmp/a.sock", "server-b", 71);
+    try testing.expect(!restored.restoredAttachmentMatches(remote));
+    try restored.setAttachmentContext("/tmp/a.sock", "server-a", 72);
+    try testing.expect(!restored.restoredAttachmentMatches(remote));
+    try restored.setAttachmentContext("/tmp/a.sock", "server-a", 71);
+    try testing.expect(restored.restoredAttachmentMatches(remote));
+    try testing.expect(!restored.restoredAttachmentMatches(satellite));
+    try testing.expect(!restored.resolveRestoredAttachment(remote));
+    try testing.expect(restored.attachmentPending(remote));
+    restored.rejectAttachmentContext();
+    try testing.expect(!restored.restoredAttachmentMatches(remote));
+    try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
+}
+
+// GUARD: durable-attachment-fingerprint
+test "attachment fingerprint includes full provider host ID and context" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    const tree = model.tree(0).?;
+    const leaf = tree.focus;
+    const remote = try remoteRef(72);
+    tree.nodes[leaf].terminal = remote;
+    const original = model.topologyFingerprint();
+    tree.nodes[leaf].terminal = try remoteRef(73);
+    try testing.expect(original != model.topologyFingerprint());
+    tree.nodes[leaf].terminal = remote;
+    tree.nodes[leaf].terminal.?.provider_id = @enumFromInt(123);
+    try testing.expect(original != model.topologyFingerprint());
+    tree.nodes[leaf].terminal = .{ .provider_id = .phux, .terminal_id = .{ .phux = try contract.RemoteTerminalId.fromPhux(1, 72, "a" ** 255) } };
+    const host_a = model.topologyFingerprint();
+    tree.nodes[leaf].terminal.?.terminal_id.phux.host_storage[254] = 'b';
+    try testing.expect(host_a != model.topologyFingerprint());
+    const unknown = model.topologyFingerprint();
+    // Vary the saved evidence directly: reconnect must keep old placement
+    // context immutable rather than silently relabeling it.
+    model.attachment_context = try topology.attachments.Context.init("/tmp/a.sock", "server-a", 71);
+    try testing.expect(unknown != model.topologyFingerprint());
+    const known = model.topologyFingerprint();
+    model.attachment_context = try topology.attachments.Context.init("/tmp/a.sock", "server-b", 71);
+    try testing.expect(known != model.topologyFingerprint());
+}
+
+test "context changes retain original live placement evidence before resaving" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
+    const remote = try remoteRef(72);
+    try testing.expect(model.admitTab(remote));
+    const snapshot = try model.topologySnapshot();
+    try model.setAttachmentContext("/tmp/a.sock", "server-b", 71);
+    try testing.expect(model.attachmentPending(remote));
+    try testing.expect(!model.restoredAttachmentMatches(remote));
+    model.normalizeTopology();
+    try testing.expectEqualDeep(snapshot, try model.topologySnapshot());
+    model.rejectAttachmentContext();
+    try testing.expectEqualDeep(snapshot, try model.topologySnapshot());
+}
+
+test "explicit removal retires old context before a reused ID is admitted" {
+    const session = try createDefaultSession();
+    var model = app.initialModel(session);
+    defer app.deinitModel(&model);
+    const remote = try remoteRef(72);
+    try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
+    try testing.expect(model.admitTab(remote));
+    const saved = try model.topologySnapshot();
+    var restored = try app.restoreModel(testing.allocator, testing.io, .{ .v5 = saved });
+    defer app.deinitModel(&restored);
+    try restored.setAttachmentContext("/tmp/b.sock", "server-b", 71);
+    restored.dropTab(1);
+    try testing.expect(restored.restoredAttachmentContext(remote) == null);
+    try testing.expect(restored.admitTab(remote));
+    try testing.expect(!restored.attachmentPending(remote));
+    const fresh = try restored.topologySnapshot();
+    try testing.expectEqualStrings("server-b", fresh.references.entries[0].?.context.server_id.slice());
+}
+
+test "v5 reference table validates bounds duplicates and required usage" {
+    var snapshot: app.TopologySnapshot = .{};
+    const remote = try remoteRef(1);
+    _ = try snapshot.references.append(.{ .terminal_ref = remote });
+    try testing.expectError(error.InvalidTopology, snapshot.validate());
+    snapshot.tab_count = 1;
+    snapshot.window_count = 1;
+    snapshot.windows[0] = .{ .tab_count = 1, .selection = .{ .tab = 0 } };
+    snapshot.tabs[0] = topology.singleLeafTab(.terminal_1);
+    snapshot.tabs[0].nodes[0].remote_ref = 0;
+    try snapshot.validate();
+    snapshot.tabs[0].nodes[0].remote_ref = 31;
+    try testing.expectError(error.InvalidTopology, snapshot.validate());
+    snapshot.tabs[0].nodes[0].remote_ref = 0;
+    _ = try snapshot.references.append(.{ .terminal_ref = remote });
+    try testing.expectError(error.InvalidTopology, snapshot.validate());
+    snapshot.references.count = 255;
+    try testing.expectError(error.InvalidTopology, snapshot.validate());
+    try testing.expectError(error.AttachmentContextTooLong, topology.attachments.Context.init("e" ** 257, "s", 1));
+    try testing.expectError(error.AttachmentContextTooLong, topology.attachments.Context.init("e", "s" ** 256, 1));
+}
+
+test "local v4 files migrate without attachment context or remote substitutions" {
+    const bytes = "phux-cockpit-state 4\nplacement side\nwindow tab 0\ntab 0 0\nnode 0 leaf - 3\ncwd 3 /a directory\nend\n";
+    var parsed: app.PersistedTopologySnapshot = undefined;
+    try testing.expect(app.parseWorkspaceState(bytes, &parsed));
+    const snapshot = try app.migrateTopologySnapshot(parsed);
+    try testing.expectEqual(@as(u16, 5), snapshot.version);
+    try testing.expectEqual(@as(u8, 0), snapshot.references.count);
+    try testing.expectEqualStrings("/a directory", snapshot.cwds[3].slice());
+    var restored = try app.restoreModel(testing.allocator, testing.io, parsed);
+    defer app.deinitModel(&restored);
+    try testing.expectEqual(@as(usize, 1), restored.provider.liveShellCount());
+    try testing.expect(restored.selectedTerminalRef().?.eql(app.initialTerminalRef(3)));
+}
+
+test "maximal remote reference state fits its byte ceiling and restores no shells" {
+    var snapshot: app.TopologySnapshot = .{ .window_count = 2, .tab_count = 32 };
+    snapshot.windows[0] = .{ .tab_count = 16, .selection = .{ .tab = 15 } };
+    snapshot.windows[1] = .{ .tab_count = 16, .selection = .{ .tab = 0 } };
+    const context = try topology.attachments.Context.init("e" ** 256, "s" ** 255, std.math.maxInt(u32));
+    for (0..32) |index| {
+        const ref: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
+            .phux = try contract.RemoteTerminalId.fromPhux(1, @intCast(index), "h" ** 255),
+        } };
+        const slot = try snapshot.references.append(.{ .terminal_ref = ref, .context = context });
+        snapshot.tabs[index] = topology.singleLeafTab(.terminal_1);
+        snapshot.tabs[index].nodes[0].remote_ref = slot;
+        snapshot.cwds[index].set("/" ++ "d" ** 255);
+    }
+    var bytes: [app.max_state_bytes]u8 = undefined;
+    const encoded = try app.serializeWorkspaceState(&snapshot, &bytes);
+    try testing.expect(encoded.len < app.max_state_bytes);
+    var parsed: app.PersistedTopologySnapshot = undefined;
+    try testing.expect(app.parseWorkspaceState(encoded, &parsed));
+    try testing.expectEqualDeep(snapshot, try app.migrateTopologySnapshot(parsed));
+    var restored = try app.restoreModel(testing.allocator, testing.io, parsed);
+    defer app.deinitModel(&restored);
+    try testing.expectEqual(@as(usize, 0), restored.provider.liveShellCount());
+    var refs: [32]contract.TerminalRef = undefined;
+    try testing.expectEqual(@as(usize, 32), restored.pendingRestoredRefs(&refs));
+    restored.normalizeTopology();
+    try testing.expectEqual(@as(usize, 32), restored.pendingRestoredRefs(&refs));
+    try testing.expect(!restored.canAddPane());
+    try testing.expect(!restored.admitTab(app.initialTerminalRef(0)));
+    restored.dropTab(0);
+    try testing.expect(restored.canAddPane());
+    try testing.expect(restored.admitTab(app.initialTerminalRef(0)));
+}
+
+test "v5 parser rejects oversized malformed and unsupported reference records" {
+    var parsed: app.PersistedTopologySnapshot = undefined;
+    const provider_id = @intFromEnum(contract.ProviderId.phux);
+    var bytes: [app.max_state_bytes]u8 = undefined;
+    const records = [_][]const u8{
+        "0 0 - - - 1", // valid local tagged identity, handled separately below
+        "2 0 - - - 1",
+        "1 0 - - - 1",
+        "0 -1 - - - 1",
+        "0 4294967296 - - - 1",
+        "0 1 z0 - - 1",
+        "0 1 0 - - 1",
+        "0 1 61 - - 1",
+        "1 1 ff - - 1",
+        "0 1 " ++ "61" ** 256 ++ " - - 1",
+        "0 1 - " ++ "61" ** 257 ++ " - 1",
+        "0 1 - - " ++ "61" ** 256 ++ " 1",
+    };
+    for (records, 0..) |record, index| {
+        const encoded = try std.fmt.bufPrint(&bytes, "phux-cockpit-state 5\nref 0 {d} {s}\nwindow tab 0\ntab 0 0\nnode 0 remote - 0\nend\n", .{ provider_id, record });
+        const accepted = app.parseWorkspaceState(encoded, &parsed);
+        try testing.expectEqual(index == 0, accepted);
+    }
+    try testing.expect(!app.parseWorkspaceState("phux-cockpit-state 4\nref 0 1 0 1 - - - 1\nend\n", &parsed));
+    try testing.expect(!app.parseWorkspaceState("phux-cockpit-state 5\nref 0 1 0 1 - - - 1\nend\n", &parsed));
+}
 
 test "versioned snapshot restores the tab trees into fresh sessions without process state" {
     const harness = try native_sdk.TestHarness().create(testing.allocator, .{});
@@ -217,7 +473,7 @@ test "the state file round trips a split workspace, its divider, and its working
     try testing.expectEqualDeep(snapshot, try app.migrateTopologySnapshot(parsed));
 
     // And the file is text a person can read, not an opaque blob.
-    try testing.expect(std.mem.startsWith(u8, encoded, "phux-cockpit-state 4\n"));
+    try testing.expect(std.mem.startsWith(u8, encoded, "phux-cockpit-state 5\n"));
     try testing.expect(std.mem.indexOf(u8, encoded, "placement side\n") != null);
     try testing.expect(std.mem.indexOf(u8, encoded, "\ncwd 2 /Users/phall/my dir\n") != null);
     try testing.expect(std.mem.endsWith(u8, encoded, "\nend\n"));

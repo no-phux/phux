@@ -1,10 +1,11 @@
 # GUARD switcher-stable-id
 #
-# Describe the defect this test exists to catch, and what removing the
-# fix below puts back. Prose here is preserved across re-runs.
+# Retained native switcher guard: rebuilding the catalog must not redirect
+# Enter to the new occupant of the highlighted row. Shipping TS navigation
+# has separate ts-navigation-* guards.
 test: keyboard session activation keeps the highlighted id across catalog rebuilds
-red: 2026-09-02 at 67e1439
-build: test -Dphux-enabled=true -Dphux-client-ffi-include-dir=/Users/phall/workspace/phux/crates/phux-client-ffi/include -Dphux-client-ffi-lib-dir=/Users/phall/workspace/phux/target/ffi-release
+red: 2026-09-07 at 99ae22b
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/update.zig b/src/cockpit/update.zig
 index 47e3ba4..f488637 100644
 --- a/src/cockpit/update.zig

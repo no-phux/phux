@@ -1,0 +1,20 @@
+# GUARD ts-durable-early-death
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping coalesced spawn publication and terminal death retire the reserved window
+red: 2026-09-07 at 3ca0d70
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/durable_creation.zig b/src/cockpit/durable_creation.zig
+index fa76c82f..6d9231fc 100644
+--- a/src/cockpit/durable_creation.zig
++++ b/src/cockpit/durable_creation.zig
+@@ -165,7 +165,7 @@ fn finishPlacement(model: *Model, entry: Pending) bool {
+     }
+     if (!entry.accepted) return false;
+     const ref = entry.terminal orelse return false;
+-    if (!remote.terminalKnown(ref)) {
++    if (false and !remote.terminalKnown(ref)) {
+         retireEmptyDestination(model, entry);
+         return true;
+     }

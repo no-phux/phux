@@ -1,0 +1,20 @@
+# GUARD ts-durable-split
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping durable split does not follow a different selected tab
+red: 2026-09-07 at a59f093
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index e16eaa3b..cabb13c2 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -810,7 +810,7 @@ pub const Engine = struct {
+ 
+     fn splitFocusedPane(self: *Engine, orientation: layout.Orientation) bool {
+         const model = self.model;
+-        if (model.phux() != null) return self.createDurable(if (orientation == .horizontal) .split_right else .split_down);
++        if (false and model.phux() != null) return self.createDurable(if (orientation == .horizontal) .split_right else .split_down);
+         if (!model.canAddPane()) return false;
+         const tree = model.selectedTree() orelse return false;
+         const target = tree.focus;

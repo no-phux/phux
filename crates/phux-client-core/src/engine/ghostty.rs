@@ -5,7 +5,7 @@
 //! delegated to libghostty's safe incremental wrapper.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     marker::PhantomData,
     rc::Rc,
@@ -28,8 +28,8 @@ use thiserror::Error;
 use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch,
-    EngineSend, HistoryApplyOutcome,
+    EngineHistoryProjection, EnginePresentationAdapter, EngineProjectionOrigin,
+    EngineProjectionRow, EngineSearchMatch, EngineSend, HistoryApplyOutcome,
 };
 use crate::history::DocumentAnchorId;
 
@@ -98,6 +98,7 @@ pub struct GhosttyAdapter {
     decoder_options: DecoderOptions,
     native_available: bool,
     next_anchor_id: u64,
+    search_case_sensitive: bool,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -124,6 +125,7 @@ impl GhosttyAdapter {
             },
             native_available: native.is_some(),
             next_anchor_id: 1,
+            search_case_sensitive: true,
             _not_send_or_sync: PhantomData,
         }
     }
@@ -132,6 +134,12 @@ impl GhosttyAdapter {
     #[must_use]
     pub const fn limits(&self) -> BootstrapLimits {
         self.limits
+    }
+
+    /// Configure loaded-history matching. Insensitive matching folds ASCII only,
+    /// matching Ghostty's native scrollback search without altering text/anchors.
+    pub const fn set_search_case_sensitive(&mut self, case_sensitive: bool) {
+        self.search_case_sensitive = case_sensitive;
     }
 
     /// Convert scanned history ranges into tracked anchor pairs.
@@ -191,7 +199,9 @@ impl GhosttyAdapter {
 /// ```
 #[derive(Debug)]
 pub struct GhosttyReplica {
+    bell_pending: Rc<Cell<bool>>,
     profile: BootstrapStreamProfile,
+    reported_title: Option<String>,
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
     state: ReplicaState,
     history_max_bytes: Option<usize>,
@@ -200,6 +210,23 @@ pub struct GhosttyReplica {
 }
 
 impl GhosttyReplica {
+    fn publish_title(
+        &mut self,
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<(), GhosttyEngineError> {
+        let Some(terminal) = self.terminal() else {
+            return Ok(());
+        };
+        let title = terminal.title()?;
+        if Some(title) == self.reported_title.as_deref() {
+            return Ok(());
+        }
+        let title = title.to_owned();
+        self.reported_title = Some(title.clone());
+        effects.push(EngineEffect::Status(super::EngineStatus::Title(title)));
+        Ok(())
+    }
+
     /// Exact stream profile used to allocate this replica.
     #[must_use]
     pub const fn profile(&self) -> BootstrapStreamProfile {
@@ -274,6 +301,24 @@ impl GhosttyReplica {
         }
         Ok(())
     }
+
+    /// Mutate screen/history directly; the live parser may be mid-sequence.
+    fn clear_presentation(&mut self) -> Result<(), GhosttyEngineError> {
+        match &mut self.state {
+            ReplicaState::Synthesized {
+                terminal,
+                protocol_finished,
+                ..
+            } => {
+                if !*protocol_finished {
+                    return Err(GhosttyEngineError::LiveOutputBeforeReady);
+                }
+                terminal.clear_presentation();
+            }
+            ReplicaState::Native(native) => native.clear_presentation()?,
+        }
+        Ok(())
+    }
 }
 
 type PtyResponses = Rc<RefCell<Vec<Vec<u8>>>>;
@@ -296,12 +341,31 @@ enum ReplicaState {
 
 #[derive(Debug)]
 struct NativeReplica {
+    bell_pending: Rc<Cell<bool>>,
     decoder: NativeDecoderState,
     protocol_finished: bool,
     pty_responses: PtyResponses,
 }
 
 impl NativeReplica {
+    fn clear_presentation(&mut self) -> Result<(), GhosttyEngineError> {
+        // Keep the publication fence previously supplied by apply_output.
+        if !self.protocol_finished {
+            return Err(GhosttyEngineError::LiveOutputBeforeReady);
+        }
+        match &mut self.decoder {
+            NativeDecoderState::AfterReady(stream) => stream.clear_presentation(),
+            NativeDecoderState::Finished(terminal) | NativeDecoderState::Failed(Some(terminal)) => {
+                terminal.clear_presentation();
+            }
+            NativeDecoderState::BeforeReady(_) => {
+                return Err(GhosttyEngineError::LiveOutputBeforeReady);
+            }
+            NativeDecoderState::Failed(None) => return Err(GhosttyEngineError::DecoderFailed),
+        }
+        Ok(())
+    }
+
     fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match &self.decoder {
             NativeDecoderState::BeforeReady(_) | NativeDecoderState::Failed(None) => None,
@@ -409,6 +473,7 @@ impl EngineAdapter for GhosttyAdapter {
         profile: BootstrapStreamProfile,
         geometry: CanonicalGeometry,
     ) -> Result<Self::Replica, Self::Error> {
+        let bell_pending = Rc::new(Cell::new(false));
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
@@ -422,6 +487,10 @@ impl EngineAdapter for GhosttyAdapter {
                     let pty_responses = Rc::clone(&pty_responses);
                     move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                 })?;
+                terminal.on_bell({
+                    let bell_pending = Rc::clone(&bell_pending);
+                    move |_terminal| bell_pending.set(true)
+                })?;
                 ReplicaState::Synthesized {
                     terminal,
                     protocol_finished: false,
@@ -434,6 +503,7 @@ impl EngineAdapter for GhosttyAdapter {
                 let decoder = Decoder::new(self.decoder_options)
                     .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
                 ReplicaState::Native(NativeReplica {
+                    bell_pending: Rc::clone(&bell_pending),
                     decoder: NativeDecoderState::BeforeReady(decoder),
                     protocol_finished: false,
                     pty_responses: Rc::new(RefCell::new(Vec::new())),
@@ -442,6 +512,8 @@ impl EngineAdapter for GhosttyAdapter {
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
+            bell_pending,
+            reported_title: None,
             profile,
             state,
             anchors: HashMap::new(),
@@ -550,6 +622,9 @@ impl EngineAdapter for GhosttyAdapter {
         };
         drain_pty_responses(pty_responses, effects);
         enforce_history_budget(replica)?;
+        replica.publish_title(effects)?;
+        // Synthesized bootstrap bytes are history, not new attention events.
+        replica.bell_pending.set(false);
         Ok(progress)
     }
 
@@ -615,7 +690,19 @@ impl EngineAdapter for GhosttyAdapter {
             }
         };
         drain_pty_responses(pty_responses, effects);
+        replica.publish_title(effects)?;
+        if replica.bell_pending.replace(false) {
+            effects.push(EngineEffect::Status(super::EngineStatus::Bell));
+        }
         effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(())
+    }
+}
+
+impl EnginePresentationAdapter for GhosttyAdapter {
+    fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error> {
+        replica.clear_presentation()?;
+        self.clear_document_state(replica);
         Ok(())
     }
 }
@@ -702,7 +789,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             let terminal = replica
                 .terminal()
                 .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
-            scan_history_for_needle(terminal, needle, max_matches)?
+            scan_history_for_needle(terminal, needle, max_matches, self.search_case_sensitive)?
         };
         self.track_search_matches(replica, ranges)
     }
@@ -728,8 +815,13 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             return Ok(None);
         };
         let selection = Selection::new(start, end, selection.rectangle);
-        let formatted = terminal
-            .format_selection_alloc(None, FormatOptions::new().with_selection(&selection))?;
+        let formatted = terminal.format_selection_alloc(
+            None,
+            FormatOptions::new()
+                .with_selection(&selection)
+                .with_unwrap(true)
+                .with_trim(true),
+        )?;
         Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 }
@@ -740,15 +832,17 @@ struct NeedleScan<'needle> {
     max_matches: usize,
     window: VecDeque<(char, DocumentPoint)>,
     ranges: Vec<(DocumentPoint, DocumentPoint)>,
+    case_sensitive: bool,
 }
 
 impl<'needle> NeedleScan<'needle> {
-    fn new(needle: &'needle [char], max_matches: usize) -> Self {
+    fn new(needle: &'needle [char], max_matches: usize, case_sensitive: bool) -> Self {
         Self {
             needle,
             max_matches,
             window: VecDeque::with_capacity(needle.len()),
             ranges: Vec::new(),
+            case_sensitive,
         }
     }
 
@@ -762,8 +856,8 @@ impl<'needle> NeedleScan<'needle> {
             && self
                 .window
                 .iter()
-                .map(|(value, _)| *value)
-                .eq(self.needle.iter().copied())
+                .zip(self.needle)
+                .all(|((value, _), expected)| self.scalar_matches(*value, *expected))
         {
             let (Some((_, start)), Some((_, end))) = (self.window.front(), self.window.back())
             else {
@@ -776,6 +870,14 @@ impl<'needle> NeedleScan<'needle> {
 
     fn into_ranges(self) -> Vec<(DocumentPoint, DocumentPoint)> {
         self.ranges
+    }
+
+    const fn scalar_matches(&self, value: char, expected: char) -> bool {
+        if self.case_sensitive {
+            value == expected
+        } else {
+            value.eq_ignore_ascii_case(&expected)
+        }
     }
 }
 
@@ -827,9 +929,10 @@ fn scan_history_for_needle(
     terminal: &GhosttyTerminal<'_, '_>,
     needle: &str,
     max_matches: usize,
+    case_sensitive: bool,
 ) -> Result<Vec<(DocumentPoint, DocumentPoint)>, GhosttyEngineError> {
     let needle: Vec<char> = needle.chars().collect();
-    let mut scan = NeedleScan::new(&needle, max_matches);
+    let mut scan = NeedleScan::new(&needle, max_matches, case_sensitive);
     let cols = terminal.cols()?;
     let mut y = 0_u32;
     loop {
@@ -1182,6 +1285,10 @@ fn push_native(
                         let pty_responses = Rc::clone(&native.pty_responses);
                         move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                     })?;
+                    stream.on_bell({
+                        let bell_pending = Rc::clone(&native.bell_pending);
+                        move |_terminal| bell_pending.set(true)
+                    })?;
                     let trailing_result = remaining(input, progress);
                     native.decoder = NativeDecoderState::AfterReady(stream);
                     let trailing = trailing_result?.len();
@@ -1480,6 +1587,18 @@ mod tests {
     }
 
     #[test]
+    fn unpublished_synthesized_clear_is_rejected() {
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .unwrap();
+        assert!(matches!(
+            adapter.clear_presentation(&mut replica),
+            Err(GhosttyEngineError::LiveOutputBeforeReady)
+        ));
+    }
+
+    #[test]
     fn synthesized_profiles_write_borrowed_bytes_and_reject_history() {
         for profile in [
             BootstrapStreamProfile::SynthesizedVtRaw,
@@ -1535,6 +1654,11 @@ mod tests {
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("publish synthesized terminal");
+        assert!(matches!(
+            effects.as_slice(),
+            [EngineEffect::Status(super::super::EngineStatus::Title(title))] if title.is_empty()
+        ));
+        effects.clear();
         adapter
             .apply_output(&mut replica, b"\x1b[5n", &mut effects)
             .expect("live DSR query");
@@ -1545,6 +1669,72 @@ mod tests {
                 EngineEffect::Damage(EngineDamage::Full),
             ] if bytes == b"\x1b[0n"
         ));
+    }
+
+    #[test]
+    fn live_bells_reach_effects_in_synthesized_and_native_replicas() {
+        let (bootstrap, history) = split_capture(&capture_records());
+        for profile in [BootstrapStreamProfile::SynthesizedVtRaw, native_profile()] {
+            let mut adapter = native_adapter();
+            let mut replica = adapter.start_replica(profile, geometry()).unwrap();
+            let mut effects = EngineEffectBuffer::new();
+            let bytes = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
+                b"historical bell\x07".as_slice()
+            } else {
+                &bootstrap
+            };
+            adapter
+                .apply_bootstrap_chunk(&mut replica, bytes, &mut effects)
+                .unwrap();
+            adapter
+                .finish_bootstrap(&mut replica, &mut effects)
+                .unwrap();
+            assert!(!effects.as_slice().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::Status(super::super::EngineStatus::Bell)
+            )));
+            assert_live_bell(&mut adapter, &mut replica, &mut effects);
+            if profile != BootstrapStreamProfile::SynthesizedVtRaw {
+                adapter
+                    .apply_history_page(&mut replica, &history, &mut effects)
+                    .unwrap();
+                assert_live_bell(&mut adapter, &mut replica, &mut effects);
+            }
+        }
+    }
+
+    fn assert_live_bell(
+        adapter: &mut GhosttyAdapter,
+        replica: &mut GhosttyReplica,
+        effects: &mut EngineEffectBuffer,
+    ) {
+        effects.clear();
+        adapter
+            .apply_output(replica, b"\x1b]2;title\x07", effects)
+            .unwrap();
+        assert!(!effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::Status(super::super::EngineStatus::Bell)
+        )));
+        effects.clear();
+        adapter.apply_output(replica, b"\x07", effects).unwrap();
+        assert_eq!(
+            effects
+                .as_slice()
+                .iter()
+                .filter(|effect| matches!(
+                    effect,
+                    EngineEffect::Status(super::super::EngineStatus::Bell)
+                ))
+                .count(),
+            1
+        );
+        effects.clear();
+        adapter.apply_output(replica, b"quiet", effects).unwrap();
+        assert!(!effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::Status(super::super::EngineStatus::Bell)
+        )));
     }
 
     #[test]
@@ -1623,6 +1813,10 @@ mod tests {
         assert!(replica.terminal().is_some());
         assert!(matches!(
             adapter.apply_output(&mut replica, b"not published", &mut effects),
+            Err(GhosttyEngineError::LiveOutputBeforeReady)
+        ));
+        assert!(matches!(
+            adapter.clear_presentation(&mut replica),
             Err(GhosttyEngineError::LiveOutputBeforeReady)
         ));
         assert!(matches!(
@@ -1890,6 +2084,24 @@ mod tests {
             assert!(projection.rows.len() <= 2);
         }
         assert!(physical_high_water <= crate::history::MAX_HISTORY_PAGE_ROWS as usize);
+    }
+
+    #[test]
+    fn search_case_policy_preserves_unicode_and_original_document_points() {
+        let needle: Vec<char> = "éx".chars().collect();
+        let start = history_point(7, 4);
+        let end = history_point(8, 4);
+        let mut insensitive = NeedleScan::new(&needle, 2, false);
+        insensitive.push('é', start);
+        insensitive.push('X', end);
+        insensitive.push('É', history_point(9, 4));
+        insensitive.push('x', history_point(10, 4));
+        assert_eq!(insensitive.into_ranges(), vec![(start, end)]);
+
+        let mut sensitive = NeedleScan::new(&needle, 2, true);
+        sensitive.push('é', start);
+        sensitive.push('X', end);
+        assert!(sensitive.into_ranges().is_empty());
     }
 
     #[test]

@@ -1,0 +1,13 @@
+# GUARD ts-remote-pointer-suspended
+# The keyboard's input suspension did not fence raw pointer/drop input.
+# Remove that shared gate; background scrolling and drops remain permitted.
+test: shipping input suspension gates pointer and file drops
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+red: 2026-09-07 at 0d8b183
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -1351,1 +1351,2 @@
+-        return !self.input_suspended;
++        _ = self;
++        return true;

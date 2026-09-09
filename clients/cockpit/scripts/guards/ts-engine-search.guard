@@ -1,20 +1,20 @@
 # GUARD ts-engine-search
 #
-# cmd+F must open the scrollback search so typed text feeds the needle
-# instead of the shell. The break drops the open, so "bet" goes to the ring.
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
 test: cmd+F opens the scrollback search, typing feeds the needle, Escape closes it
-red: 2026-09-02 at d7dc724
-build: test -Dplatform=null
+red: 2026-09-07 at 6e3913b
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
-index c5489f5..b71299d 100644
+index f47d8461..c3fd87ec 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
-@@ -298,7 +298,7 @@ pub const Engine = struct {
-                 pane.selecting = false;
-                 pane.session.clearSelection();
-             }
--            pane.session.searchOpen();
-+            if (false) pane.session.searchOpen();
-             return;
-         }
-         if (primary and !mods.alt and !mods.control and keyIs(event.key, "g")) {
+@@ -920,7 +920,7 @@ pub const Engine = struct {
+         if (event.modifiers.alt or event.modifiers.control) return null;
+         if (keyIs(event.key, "g")) return if (event.modifiers.shift) .find_previous else .find_next;
+         if (event.modifiers.shift) return null;
+-        if (keyIs(event.key, "f")) return .find;
++        if (keyIs(event.key, "f")) return null;
+         if (keyIs(event.key, "a")) return .select_all;
+         return null;
+     }

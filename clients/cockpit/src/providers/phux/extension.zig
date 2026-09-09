@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const transport = @import("phux_transport");
+const startup = @import("startup.zig");
 const posix = std.posix;
 const max_flush_batch: usize = 16;
 
@@ -47,7 +48,9 @@ pub const Worker = struct {
     bridge: *transport.Bridge,
     handle: native_sdk.ChannelHandle,
     endpoint: Endpoint,
+    startup_options: startup.Options = .{},
     thread: ?std.Thread = null,
+    outgoing_wake_fd: posix.fd_t = -1,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     // The lock prevents a descriptor from being closed and reused between a
@@ -62,9 +65,25 @@ pub const Worker = struct {
         handle: native_sdk.ChannelHandle,
         endpoint: Endpoint,
     ) !*Worker {
+        return startWithOptions(io, gpa, bridge, handle, endpoint, .{});
+    }
+
+    /// Options borrow their path until stop returns; fixtures must explicitly
+    /// name their helper rather than invoking the user's installed coordinator.
+    pub fn startWithOptions(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        options: startup.Options,
+    ) !*Worker {
         const worker = try gpa.create(Worker);
         errdefer gpa.destroy(worker);
         worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint };
+        worker.startup_options = options;
+        worker.outgoing_wake_fd = try bridge.outgoing.enableWake();
+        errdefer bridge.outgoing.disableWake();
         worker.thread = try std.Thread.spawn(.{}, run, .{worker});
         return worker;
     }
@@ -74,10 +93,12 @@ pub const Worker = struct {
     /// guarantees that no channel post can occur after this method returns.
     pub fn stop(worker: *Worker) void {
         worker.stopping.store(true, .release);
+        worker.bridge.outgoing.signalWake();
         worker.lockFd();
         if (worker.fd >= 0) _ = std.c.shutdown(worker.fd, std.c.SHUT.RDWR);
         worker.unlockFd();
         if (worker.thread) |thread| thread.join();
+        worker.bridge.outgoing.disableWake();
         worker.gpa.destroy(worker);
     }
 
@@ -106,10 +127,25 @@ pub const Worker = struct {
     }
 
     fn run(worker: *Worker) void {
+        worker.ensureCoordinator() catch {
+            worker.disconnected(.socket_lost);
+            return;
+        };
         const fd = connect(worker) catch {
             worker.disconnected(.socket_lost);
             return;
         };
+        worker.runSocket(fd);
+    }
+
+    fn ensureCoordinator(worker: *Worker) !void {
+        switch (worker.endpoint) {
+            .unix => |path| try startup.ensure(worker.gpa, worker.io, path, &worker.stopping, worker.startup_options),
+            .tcp => {},
+        }
+    }
+
+    fn runSocket(worker: *Worker, fd: posix.fd_t) void {
         configureSocket(fd) catch {
             worker.closeFd(fd);
             worker.disconnected(.socket_lost);
@@ -120,48 +156,40 @@ pub const Worker = struct {
             worker.disconnected(.socket_lost);
         }
 
-        var header: [4]u8 = undefined;
         while (!worker.stopping.load(.acquire)) {
+            worker.bridge.outgoing.drainWake();
             if (!flushOutgoing(worker, fd, null)) return;
-            var poll_fds = [_]posix.pollfd{.{
-                .fd = fd,
-                .events = posix.POLL.IN,
-                .revents = 0,
-            }};
-            const timeout: i32 = if (worker.bridge.outgoing.hasPending()) 0 else 50;
-            const ready = posix.poll(&poll_fds, timeout) catch return;
-            if (ready == 0) continue;
-            if (poll_fds[0].revents & posix.POLL.IN == 0) {
-                if (poll_fds[0].revents & (posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL) != 0) return;
-                continue;
+            switch (waitReadable(worker, fd, -1) catch return) {
+                .retry, .outgoing => continue,
+                .readable => if (!worker.receiveFrame(fd)) return,
             }
-
-            var frame_started: ?posix.timespec = monotonicTime() orelse return;
-            if (!readExact(worker, fd, &header, &frame_started)) return;
-            const len: usize = std.mem.readInt(u32, &header, .big);
-            if (len == 0 or len > transport.max_frame_bytes - header.len) {
-                worker.bridge.incoming.markDisconnected(.oversized_frame);
-                worker.wake();
-                return;
-            }
-
-            const frame = worker.gpa.alloc(u8, header.len + len) catch {
-                worker.bridge.incoming.markDisconnected(.queue_overflow);
-                worker.wake();
-                return;
-            };
-            @memcpy(frame[0..header.len], &header);
-            if (!readExact(worker, fd, frame[header.len..], &frame_started)) {
-                worker.gpa.free(frame);
-                return;
-            }
-            if (!worker.bridge.incoming.stageOwned(frame)) {
-                worker.wake();
-                return;
-            }
-            worker.wake();
         }
         worker.bridge.incoming.markDisconnected(.stopped);
+    }
+
+    fn receiveFrame(worker: *Worker, fd: posix.fd_t) bool {
+        var header: [4]u8 = undefined;
+        var frame_started: ?posix.timespec = monotonicTime() orelse return false;
+        if (!readExact(worker, fd, &header, &frame_started)) return false;
+        const len: usize = std.mem.readInt(u32, &header, .big);
+        if (len == 0 or len > transport.max_frame_bytes - header.len) {
+            worker.bridge.incoming.markDisconnected(.oversized_frame);
+            worker.wake();
+            return false;
+        }
+        const frame = worker.gpa.alloc(u8, header.len + len) catch {
+            worker.bridge.incoming.markDisconnected(.queue_overflow);
+            worker.wake();
+            return false;
+        };
+        @memcpy(frame[0..header.len], &header);
+        if (!readExact(worker, fd, frame[header.len..], &frame_started)) {
+            worker.gpa.free(frame);
+            return false;
+        }
+        const staged = worker.bridge.incoming.stageOwned(frame);
+        worker.wake();
+        return staged;
     }
 
     fn disconnected(worker: *Worker, reason: transport.DisconnectReason) void {
@@ -175,6 +203,27 @@ pub const Worker = struct {
         _ = worker.handle.post(&transport.wake_payload);
     }
 };
+
+const Readiness = enum { retry, readable, outgoing };
+
+/// Outgoing readiness interrupts both idle and partial-frame reads. Only an
+/// in-progress frame needs a finite timeout to recheck its existing deadline.
+fn waitReadable(worker: *Worker, fd: posix.fd_t, timeout_ms: i32) !Readiness {
+    var poll_fds = [_]posix.pollfd{
+        .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = worker.outgoing_wake_fd, .events = posix.POLL.IN, .revents = 0 },
+    };
+    const timeout = if (worker.bridge.outgoing.hasPending()) 0 else timeout_ms;
+    const ready = try posix.poll(&poll_fds, timeout);
+    if (ready == 0) return .retry;
+    // Prefer readable data over HUP, preserving the peer's final full frame.
+    if (poll_fds[0].revents & posix.POLL.IN != 0) return .readable;
+    const failures = posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL;
+    if ((poll_fds[0].revents | poll_fds[1].revents) & failures != 0)
+        return error.SocketLost;
+    if (poll_fds[1].revents & posix.POLL.IN != 0) return .outgoing;
+    return .retry;
+}
 
 fn flushOutgoing(worker: *Worker, fd: posix.fd_t, frame_started: ?posix.timespec) bool {
     for (0..max_flush_batch) |_| {
@@ -194,31 +243,32 @@ fn flushOutgoing(worker: *Worker, fd: posix.fd_t, frame_started: ?posix.timespec
 fn readExact(worker: *Worker, fd: posix.fd_t, output: []u8, frame_started: *?posix.timespec) bool {
     var offset: usize = 0;
     while (offset < output.len) {
-        if (frame_started.*) |value| {
-            const now = monotonicTime() orelse return false;
-            if (elapsedNanos(value, now) >= 5 * std.time.ns_per_s) return false;
-        }
+        if (frameExpired(frame_started.*)) return false;
         if (worker.stopping.load(.acquire)) return false;
         // Replies are flushed between partial reads so a peer waiting for a
         // response cannot deadlock a large incoming frame.
+        worker.bridge.outgoing.drainWake();
         if (!flushOutgoing(worker, fd, frame_started.*)) return false;
-        var poll_fds = [_]posix.pollfd{.{
-            .fd = fd,
-            .events = posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = posix.poll(&poll_fds, 50) catch return false;
-        if (ready == 0) continue;
-        if (poll_fds[0].revents & posix.POLL.IN == 0) {
-            if (poll_fds[0].revents & (posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL) != 0) return false;
-            continue;
+        switch (waitReadable(worker, fd, 50) catch return false) {
+            .retry, .outgoing => continue,
+            .readable => {},
         }
-        const count = posix.read(fd, output[offset..]) catch return false;
-        if (count == 0) return false;
-        offset += count;
-        if (frame_started.* == null) frame_started.* = monotonicTime() orelse return false;
+        offset += readFrameChunk(fd, output[offset..], frame_started) orelse return false;
     }
     return true;
+}
+
+fn readFrameChunk(fd: posix.fd_t, output: []u8, frame_started: *?posix.timespec) ?usize {
+    const count = posix.read(fd, output) catch return null;
+    if (count == 0) return null;
+    if (frame_started.* == null) frame_started.* = monotonicTime() orelse return null;
+    return count;
+}
+
+fn frameExpired(started: ?posix.timespec) bool {
+    const value = started orelse return false;
+    const now = monotonicTime() orelse return true;
+    return elapsedNanos(value, now) >= 5 * std.time.ns_per_s;
 }
 
 /// Send `input` in full within one second, or give up and report failure.
@@ -616,4 +666,205 @@ test "localhost resolves without requiring a numeric TCP address" {
     try std.testing.expect(addresses.len > 0);
     for (addresses.items[0..addresses.len]) |address|
         try std.testing.expectEqual(@as(u16, 4321), address.getPort());
+}
+
+// GUARD: outgoing-socket-wake
+test "staging after the idle flush makes socket wait outgoing-ready" {
+    const sockets = try socketPair();
+    defer _ = std.c.close(sockets[0]);
+    defer _ = std.c.close(sockets[1]);
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    var worker: Worker = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .bridge = &bridge,
+        .handle = .{},
+        .endpoint = .{ .unix = "unused" },
+        .outgoing_wake_fd = try bridge.outgoing.enableWake(),
+    };
+    bridge.outgoing.drainWake();
+    try std.testing.expect(flushOutgoing(&worker, sockets[0], null));
+    try std.testing.expectEqual(Readiness.retry, try waitReadable(&worker, sockets[0], 0));
+
+    // Exactly the flush-to-poll race window, with a silent peer. A zero-time
+    // poll proves readiness without relying on scheduling or a latency bound.
+    const frame = "\x00\x00\x00\x01k";
+    try std.testing.expect(bridge.outgoing.stage(frame));
+    try std.testing.expectEqual(Readiness.outgoing, try waitReadable(&worker, sockets[0], 0));
+    bridge.outgoing.drainWake();
+    try std.testing.expect(flushOutgoing(&worker, sockets[0], null));
+    var received: [frame.len]u8 = undefined;
+    try std.testing.expectEqual(frame.len, try posix.read(sockets[1], &received));
+    try std.testing.expectEqualSlices(u8, frame, &received);
+    try std.testing.expectEqual(Readiness.retry, try waitReadable(&worker, sockets[0], 0));
+
+    // Queue failure must interrupt idle IO too, even when no frame was added.
+    bridge.outgoing.markDisconnected(.queue_overflow);
+    try std.testing.expectEqual(Readiness.outgoing, try waitReadable(&worker, sockets[0], 0));
+    bridge.outgoing.drainWake();
+    try std.testing.expect(!flushOutgoing(&worker, sockets[0], null));
+}
+
+/// Bypass only address resolution/connect: exercise the production connected
+/// worker, its real poll loop, and Worker.stop over a real Unix socket pair.
+fn startSocketWorker(bridge: *transport.Bridge, fd: posix.fd_t) !*Worker {
+    const gpa = std.testing.allocator;
+    const worker = try gpa.create(Worker);
+    errdefer gpa.destroy(worker);
+    worker.* = .{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .bridge = bridge,
+        .handle = .{},
+        .endpoint = .{ .unix = "unused" },
+        .fd = fd,
+        .outgoing_wake_fd = try bridge.outgoing.enableWake(),
+    };
+    errdefer bridge.outgoing.disableWake();
+    worker.thread = try std.Thread.spawn(.{}, Worker.runSocket, .{ worker, fd });
+    return worker;
+}
+
+fn receiveTestFrame(fd: posix.fd_t, expected: []const u8) !void {
+    var received: [64]u8 = undefined;
+    var offset: usize = 0;
+    while (offset < expected.len) {
+        var polls = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+        try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 1000));
+        const count = try posix.read(fd, received[offset..expected.len]);
+        try std.testing.expect(count > 0);
+        offset += count;
+    }
+    try std.testing.expectEqualSlices(u8, expected, received[0..expected.len]);
+}
+
+test "idle socket worker sends staged keys and stops with no peer traffic" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const sockets = try socketPair();
+    defer _ = std.c.close(sockets[1]);
+    const worker = startSocketWorker(&bridge, sockets[0]) catch |err| {
+        _ = std.c.close(sockets[0]);
+        return err;
+    };
+    var stopped = false;
+    defer if (!stopped) worker.stop();
+
+    const frame = "\x00\x00\x00\x01k";
+    var samples: [32]i128 = undefined;
+    for (&samples) |*sample| {
+        // Measurement-only dwell lets the real worker park. Correctness is
+        // asserted by the zero-time readiness guard, not a tight timing limit.
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake);
+        const started = monotonicTime().?;
+        try std.testing.expect(bridge.outgoing.stage(frame));
+        try receiveTestFrame(sockets[1], frame);
+        sample.* = elapsedNanos(started, monotonicTime().?);
+    }
+    std.mem.sort(i128, &samples, {}, std.sort.asc(i128));
+    std.debug.print("idle socket key staging-to-peer: n=32 p50={d}us p99={d}us\n", .{
+        @divTrunc(samples[16], 1000), @divTrunc(samples[31], 1000),
+    });
+    try std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake);
+    const started = monotonicTime().?;
+    worker.stop();
+    stopped = true;
+    try std.testing.expect(elapsedNanos(started, monotonicTime().?) < std.time.ns_per_s);
+    // Detached staging must not touch closed descriptors; a replacement worker
+    // receives this queued frame through its own freshly attached wake pipe.
+    try std.testing.expect(bridge.outgoing.stage(frame));
+    const replacement = try socketPair();
+    defer _ = std.c.close(replacement[1]);
+    const next = startSocketWorker(&bridge, replacement[0]) catch |err| {
+        _ = std.c.close(replacement[0]);
+        return err;
+    };
+    defer next.stop();
+    try receiveTestFrame(replacement[1], frame);
+}
+
+test "partial inbound frame does not hold outgoing bursts behind its read" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const sockets = try socketPair();
+    defer _ = std.c.close(sockets[1]);
+    const frame = "\x00\x00\x00\x01k";
+    // Exceed a flush batch under one coalesced token, and leave the peer's
+    // incoming frame incomplete while the worker must continue sending.
+    for (0..2 * max_flush_batch) |_| try std.testing.expect(bridge.outgoing.stage(frame));
+    try std.testing.expect(writeExact(null, sockets[1], frame[0..4], null));
+    const worker = startSocketWorker(&bridge, sockets[0]) catch |err| {
+        _ = std.c.close(sockets[0]);
+        return err;
+    };
+    defer worker.stop();
+    for (0..2 * max_flush_batch) |_| try receiveTestFrame(sockets[1], frame);
+    try std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake);
+    try std.testing.expect(bridge.outgoing.stage(frame));
+    try receiveTestFrame(sockets[1], frame);
+    try std.testing.expect(writeExact(null, sockets[1], frame[4..], null));
+
+    const started = monotonicTime().?;
+    while (!bridge.incoming.hasPending()) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
+    const incoming = bridge.incoming.take().?;
+    defer bridge.incoming.release(incoming);
+    try std.testing.expectEqualSlices(u8, frame, incoming);
+}
+
+// GUARD: local-coordinator-before-connect
+test "Unix worker ensures selected coordinator before attempting its socket" {
+    var fixture = try startup.TestFixture.init();
+    defer fixture.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    defer worker.stop();
+    const started = monotonicTime().?;
+    var reason: ?transport.DisconnectReason = null;
+    while (!fixture.ready() and reason == null) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+        reason = bridge.incoming.takeDisconnect();
+    }
+    // The selected socket does not exist. Connecting before ensure finishes
+    // would already have posted a disconnect; the live worker must still wait.
+    try std.testing.expect(fixture.ready());
+    try std.testing.expectEqual(null, reason);
+    try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
+    try fixture.checkArguments();
+    try fixture.release("0");
+    while (reason == null) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+        reason = bridge.incoming.takeDisconnect();
+    }
+    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, reason.?);
+    try fixture.expectExitCode("0");
+}
+
+test "stopping during coordinator ensure cancels and reaps helper without posting" {
+    var fixture = try startup.TestFixture.init();
+    defer fixture.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    var stopped = false;
+    defer if (!stopped) worker.stop();
+    const started = monotonicTime().?;
+    while (!fixture.ready()) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
+    const stopping_started = monotonicTime().?;
+    worker.stop();
+    stopped = true;
+    try std.testing.expect(elapsedNanos(stopping_started, monotonicTime().?) < std.time.ns_per_s);
+    try std.testing.expect(!bridge.incoming.hasPending());
+    try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
+    try fixture.checkArguments();
+    try fixture.expectReaped();
 }

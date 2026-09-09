@@ -41,6 +41,8 @@ export interface SecondaryWindow {
 }
 
 export interface EngineSnapshot extends Invalidation {
+  readonly connection: number;
+  readonly terminalStates: Uint8Array;
   readonly activeWindow: number;
   readonly tabPlacement: number;
   readonly selectedTab: number;
@@ -129,29 +131,20 @@ function readTabs(bytes: Uint8Array, start: number, count: number, selected: num
   return { tabs, at };
 }
 
-export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
-  if (bytes.length < 28) return null;
-  if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== SNAPSHOT) return null;
-  const count = bytes[20];
-  const selected = bytes[21];
-  // ScriptC proves every integer slot ahead of time: a byte read past the
-  // end is NaN in TypeScript, so each value is fenced with an ordered
-  // comparison before it may enter the model. The bounds are the wire's own
-  // (u8 count, u32 id), not guesses.
-  if (!(count >= 0 && count <= 255)) return null;
-  if (!(selected >= 0 && selected <= 255)) return null;
-  if (selected >= count && count !== 0) return null;
-  const runStart = bytes[24];
-  const runCount = bytes[25];
-  const tabWidth = bytes[26] + bytes[27] * 256;
-  if (!(runStart >= 0 && runStart <= 255) || !(runCount >= 0 && runCount <= 255)) return null;
-  if (!(tabWidth >= 0 && tabWidth <= 65535)) return null;
-  if (runStart + runCount > count) return null;
-  const main = readTabs(bytes, 28, count, selected);
-  if (main === null) return null;
-  const tabs = main.tabs;
-  let at = main.at;
-  // The settings trailer.
+interface ThemeRecords {
+  readonly themes: readonly ThemeEntry[];
+  readonly at: number;
+}
+
+function readThemeName(bytes: Uint8Array, at: number): Uint8Array | null {
+  if (at + 1 > bytes.length) return null;
+  const length = bytes[at];
+  if (!(length >= 1 && length <= 32) || at + 1 + length > bytes.length) return null;
+  return bytes.subarray(at + 1, at + 1 + length);
+}
+
+function readThemes(bytes: Uint8Array, start: number): ThemeRecords | null {
+  let at = start;
   if (at + 1 > bytes.length) return null;
   const themeCount = bytes[at];
   if (!(themeCount >= 0 && themeCount <= 32)) return null;
@@ -159,12 +152,23 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   const themes: ThemeEntry[] = [];
   for (let index = 0; index < themeCount; index += 1) {
     if (!(index >= 0 && index <= 32)) return null;
-    if (at + 1 > bytes.length) return null;
-    const nameLength = bytes[at];
-    if (!(nameLength >= 1 && nameLength <= 32) || at + 1 + nameLength > bytes.length) return null;
-    themes.push({ index, name: bytes.subarray(at + 1, at + 1 + nameLength) });
-    at += 1 + nameLength;
+    const name = readThemeName(bytes, at);
+    if (name === null) return null;
+    themes.push({ index, name });
+    at += 1 + name.length;
   }
+  return { themes, at };
+}
+
+interface SettingsRecords {
+  readonly activeTheme: number;
+  readonly configFlags: number;
+  readonly configPath: Uint8Array;
+  readonly at: number;
+}
+
+function readSettings(bytes: Uint8Array, start: number): SettingsRecords | null {
+  let at = start;
   if (at + 2 > bytes.length) return null;
   const activeTheme = bytes[at];
   const configFlags = bytes[at + 1];
@@ -175,49 +179,94 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (!(pathLength >= 0 && pathLength <= 255) || at + 1 + pathLength > bytes.length) return null;
   const configPath = bytes.subarray(at + 1, at + 1 + pathLength);
   at += 1 + pathLength;
-  // The secondary window sections.
+  return { activeTheme, configFlags, configPath, at };
+}
+
+function validRun(count: number, selected: number, first: number, shown: number): boolean {
+  if (selected >= count && count !== 0) return false;
+  return first + shown <= count;
+}
+
+function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
+  if (at + 7 > bytes.length) return null;
+  const index = bytes[at];
+  const count = bytes[at + 1];
+  const selected = bytes[at + 2];
+  const first = bytes[at + 3];
+  const shown = bytes[at + 4];
+  const width = bytes[at + 5] + bytes[at + 6] * 256;
+  if (!(index >= 1 && index <= 4)) return null;
+  if (!validRun(count, selected, first, shown)) return null;
+  const section = readTabs(bytes, at + 7, count, selected);
+  if (section === null) return null;
+  return { index, selectedTab: selected, runStart: first, runCount: shown, tabWidth: width, tabs: section.tabs };
+}
+
+interface SecondaryRecords {
+  readonly windows: readonly SecondaryWindow[];
+  readonly terminalStates: Uint8Array;
+}
+
+function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | null {
+  let at = start;
   if (at + 1 > bytes.length) return null;
   const secondaryCount = bytes[at];
   if (!(secondaryCount >= 0 && secondaryCount <= 4)) return null;
   at += 1;
   const secondary: SecondaryWindow[] = [];
   for (let slot = 0; slot < secondaryCount; slot += 1) {
-    if (at + 7 > bytes.length) return null;
-    const index = bytes[at];
-    const tabCount = bytes[at + 1];
-    const selectedIn = bytes[at + 2];
-    const runStart = bytes[at + 3];
-    const runCount = bytes[at + 4];
-    const tabWidth = bytes[at + 5] + bytes[at + 6] * 256;
-    if (!(index >= 1 && index <= 4) || !(tabCount >= 0 && tabCount <= 255) || !(selectedIn >= 0 && selectedIn <= 255)) return null;
-    if (!(runStart >= 0 && runStart <= 255) || !(runCount >= 0 && runCount <= 255) || !(tabWidth >= 0 && tabWidth <= 65535)) return null;
-    if (selectedIn >= tabCount && tabCount !== 0) return null;
-    if (runStart + runCount > tabCount) return null;
-    const section = readTabs(bytes, at + 7, tabCount, selectedIn);
+    const section = readWindow(bytes, at);
     if (section === null) return null;
-    secondary.push({ index, selectedTab: selectedIn, runStart, runCount, tabWidth, tabs: section.tabs });
-    at = section.at;
+    secondary.push(section);
+    at += 7;
+    for (const tab of section.tabs) at += 7 + tab.title.length + tab.cwd.length;
   }
-  if (at !== bytes.length) return null;
+  // Older snapshots carried no per-window terminal status trailer.
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5) };
+  if (at + 5 !== bytes.length) return null;
+  const terminalStates = bytes.subarray(at);
+  for (const state of terminalStates) if (state > 7) return null;
+  return { windows: secondary, terminalStates };
+}
+
+function snapshotHeaderValid(bytes: Uint8Array): boolean {
+  if (bytes.length < 28 || bytes.length > 4096) return false;
+  if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== SNAPSHOT) return false;
+  if (!(bytes[23] >= 0 && bytes[23] <= 3)) return false;
+  return validRun(bytes[20], bytes[21], bytes[24], bytes[25]);
+}
+
+export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
+  if (!snapshotHeaderValid(bytes)) return null;
+  const main = readTabs(bytes, 28, bytes[20], bytes[21]);
+  if (main === null) return null;
+  const catalog = readThemes(bytes, main.at);
+  if (catalog === null) return null;
+  const settings = readSettings(bytes, catalog.at);
+  if (settings === null) return null;
+  const secondary = readSecondary(bytes, settings.at);
+  if (secondary === null) return null;
   return {
-    secondary,
-    themes,
-    activeTheme,
-    configEnabled: (configFlags & 1) !== 0,
-    configExists: (configFlags & 2) !== 0,
-    configWritable: (configFlags & 4) !== 0,
-    configProbed: (configFlags & 8) !== 0,
-    configPath,
+    connection: bytes[23],
+    secondary: secondary.windows,
+    terminalStates: secondary.terminalStates,
+    themes: catalog.themes,
+    activeTheme: settings.activeTheme,
+    configEnabled: (settings.configFlags & 1) !== 0,
+    configExists: (settings.configFlags & 2) !== 0,
+    configWritable: (settings.configFlags & 4) !== 0,
+    configProbed: (settings.configFlags & 8) !== 0,
+    configPath: settings.configPath,
     sequence: readU64(bytes, 2),
     revision: readU64(bytes, 10),
     activeWindow: bytes[18],
     tabPlacement: bytes[19],
-    selectedTab: selected,
+    selectedTab: bytes[21],
     flags: bytes[22],
-    runStart,
-    runCount,
-    tabWidth,
-    tabs,
+    runStart: bytes[24],
+    runCount: bytes[25],
+    tabWidth: bytes[26] + bytes[27] * 256,
+    tabs: main.tabs,
   };
 }
 
@@ -238,4 +287,84 @@ export function intent(kind: number, revision: WireU64, argument: number, window
   out[10] = argument;
   out[11] = window;
   return out;
+}
+
+export interface NavigationRow {
+  readonly id: number;
+  readonly index: number;
+  readonly label: Uint8Array;
+  readonly highlighted: boolean;
+}
+
+export interface NavigationPage {
+  readonly revision: WireU64;
+  readonly offset: number;
+  readonly total: number;
+  readonly query: Uint8Array;
+  readonly rows: readonly NavigationRow[];
+}
+
+export function navigationRequest(revision: WireU64, offset: number, query: Uint8Array): Uint8Array {
+  const out = new Uint8Array(13 + query.length);
+  out[0] = PROTOCOL_VERSION;
+  out[1] = 3;
+  writeU32(out, 2, revision.lo);
+  writeU32(out, 6, revision.hi);
+  out[10] = offset % 256;
+  out[11] = Math.floor(offset / 256);
+  out[12] = query.length;
+  for (let i = 0; i < query.length; i += 1) out[13 + i] = query[i];
+  return out;
+}
+
+export function navigationIntent(revision: WireU64, index: number): Uint8Array {
+  const out = intent(13, revision, 0, 0);
+  out[10] = index % 256;
+  out[11] = Math.floor(index / 256);
+  return out;
+}
+
+function navigationRows(bytes: Uint8Array, start: number, count: number): readonly NavigationRow[] | null {
+  const rows: NavigationRow[] = [];
+  let at = start;
+  for (let i = 0; i < count; i += 1) {
+    if (at + 3 > bytes.length) return null;
+    const rawIndex = bytes[at] + bytes[at + 1] * 256;
+    const length = bytes[at + 2];
+    if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
+    if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
+    const index = Math.trunc(rawIndex);
+    rows.push({ id: index, index, label: bytes.subarray(at + 3, at + 3 + length), highlighted: i === 0 });
+    at += 3 + length;
+  }
+  return at === bytes.length ? rows : null;
+}
+
+function navigationHeaderValid(bytes: Uint8Array): boolean {
+  if (bytes.length < 16 || bytes.length > 4096) return false;
+  if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== 3) return false;
+  const queryLength = bytes[12];
+  return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
+}
+
+export function navigationPage(bytes: Uint8Array): NavigationPage | null {
+  if (!navigationHeaderValid(bytes)) return null;
+  const queryLength = bytes[12];
+  const at = 13 + queryLength;
+  const offset = bytes[10] + bytes[11] * 256;
+  const total = bytes[at] + bytes[at + 1] * 256;
+  const count = bytes[at + 2];
+  if (!(count >= 0 && count <= 4) || offset + count > total) return null;
+  if (count !== Math.min(4, total - offset)) return null;
+  const rows = navigationRows(bytes, at + 3, count);
+  if (rows === null) return null;
+  return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, at), rows };
+}
+
+export function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
 }

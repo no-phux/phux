@@ -47,6 +47,12 @@
 //!   splicing the stub child's stdio onto the satellite's real UDS —
 //!   the exact splice `phux stdio-bridge` performs, proven against the
 //!   real binary in `crates/phux/tests/fleet/stdio_bridge_e2e.rs`.
+//! * `satellite_spawn` — exact-owner spawns select the owner's window across
+//!   sessions and preserve initial dimensions; invalid owners and agent-session
+//!   provenance are refused without creating local or satellite panes.
+//! * `detach_fence` — twenty continuously writing remote PTYs survive two
+//!   consumers' detach/reattach cycles, with no post-success proxy output and
+//!   no interruption to a still-subscribed peer.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -72,6 +78,12 @@ use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+
+#[path = "hub_relay_federation/satellite_spawn.rs"]
+mod satellite_spawn;
+
+#[path = "hub_relay_federation/detach_fence.rs"]
+mod detach_fence;
 
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).

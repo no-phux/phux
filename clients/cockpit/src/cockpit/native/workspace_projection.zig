@@ -1003,6 +1003,9 @@ fn distinctStringCount(values: []const []const u8) usize {
 
 pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     if (model.provider.terminalConst(id)) |pane| return paneNeedsAttention(model, pane);
+    if (comptime support.phux_enabled) {
+        if (model.phuxConst()) |remote| if (remote.bellRung(id)) return true;
+    }
     const presentation = model.remotePresentation(id) orelse return true;
     return presentation.phase == .failed or presentation.phase == .tombstoned;
 }
@@ -1074,8 +1077,9 @@ pub fn searchRevealed(model: *const Model) bool {
 
 pub fn searchRevealedIn(model: *const Model, workspace: *const Workspace) bool {
     const terminal_ref = workspaceTerminalRef(model, workspace) orelse return false;
-    const pane = model.provider.terminalConst(terminal_ref) orelse return false;
-    return pane.session.search.open;
+    if (model.provider.terminalConst(terminal_ref)) |pane| return pane.session.search.open;
+    const state = model.remoteUiConst(terminal_ref) orelse return false;
+    return state.search.open;
 }
 
 /// The config band's height. The SEARCH band's height, deliberately: two bands
@@ -1505,6 +1509,7 @@ pub fn workspaceChrome(model: *const Model, size: geometry.SizeF) WorkspaceChrom
 }
 
 pub fn workspaceChromeIn(model: *const Model, workspace: *const Workspace, size: geometry.SizeF) WorkspaceChrome {
+    if (workspace.shipping_terminal_space) |space| return shippingChromeIn(model, workspace, space);
     const inset = windowPadding(model);
     const titlebar = @max(inset, workspace.chrome_top + 4);
     const revealed = chromeRevealedIn(model, workspace);
@@ -1552,6 +1557,25 @@ pub fn workspaceChromeIn(model: *const Model, workspace: *const Workspace, size:
             body_width,
             @max(0, size.height - titlebar - top_extent - notice_extent - search_extent - inset),
         ),
+    };
+}
+
+/// The compiled chrome is measured independently of the terminal layer. The
+/// remaining bands and all three terminal consumers share this one derivation.
+fn shippingChromeIn(model: *const Model, workspace: *const Workspace, space: geometry.RectF) WorkspaceChrome {
+    const inset = windowPadding(model);
+    const x = space.x + @min(inset, space.width / 2);
+    const y = space.y + @min(inset, space.height / 2);
+    const width = @max(0, space.width - inset * 2);
+    const height = @max(0, space.height - inset * 2);
+    const notice = if (configNoticeRevealed(model)) @min(height, config_notice_height) else 0;
+    const search = if (searchRevealedIn(model, workspace)) @min(height - notice, search_bar_height) else 0;
+    return .{
+        .titlebar_height = space.y,
+        .header = .init(0, 0, space.width, space.y),
+        .notice = .init(x, y, width, notice),
+        .search = .init(x, y + notice, width, search),
+        .content = .init(x, y + notice + search, width, height - notice - search),
     };
 }
 
@@ -1648,8 +1672,8 @@ pub fn proposedViewportsIn(
             result.count += 1;
             continue;
         }
-        const remote = model.phuxConst() orelse continue;
-        if (remote.presentation(pane.terminal) == null) continue;
+        const presentation = model.remotePresentation(pane.terminal) orelse continue;
+        if (presentation.phase != .live) continue;
         const proposed = grid.Session.clampGrid(
             @intFromFloat(@max(2, inner.width / metrics.width)),
             @intFromFloat(@max(2, inner.height / metrics.height)),

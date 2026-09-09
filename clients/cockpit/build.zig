@@ -628,6 +628,38 @@ fn buildVerdict(
 
 // ----------------------------------------------------------------- build
 
+/// All app entry points ship the same-checkout CLI next to the executable. The
+/// package copy runs after the SDK assembles its skeleton; test builds do not
+/// build or run the CLI. Cargo provides incremental source freshness.
+fn addCoordinatorCli(b: *std.Build, artifacts: native_sdk.AppArtifacts, profile: []const u8) void {
+    const cli_path = b.getInstallPath(.bin, "phux");
+    const cli = b.addSystemCommand(&.{ "bash", rootPath(b, "scripts/build-phux-cli.sh"), profile, cli_path });
+    cli.has_side_effects = true;
+    b.getInstallStep().dependOn(&cli.step);
+    // The SDK's default run points into the compiler cache. Run the installed
+    // pair instead, where runtime sibling discovery is identical to the bundle.
+    artifacts.run.argv.items[0] = .{ .bytes = b.dupe(b.getInstallPath(.bin, "phux-cockpit")) };
+    artifacts.run.step.dependOn(&artifacts.install.step);
+    artifacts.run.step.dependOn(&cli.step);
+    if (b.top_level_steps.get("package")) |package| {
+        const copy = b.addSystemCommand(&.{ "bash", rootPath(b, "scripts/stage-phux-cli.sh"), cli_path, rootPath(b, "zig-out/package/phux-cockpit.app/Contents/MacOS/phux") });
+        copy.has_side_effects = true;
+        for (package.step.dependencies.items) |dependency| copy.step.dependOn(dependency);
+        copy.step.dependOn(&cli.step);
+        // Sign only after all nested executables have been staged. Dev packages
+        // must be runnable too; release packaging replaces this
+        // ad-hoc signature with its configured identity after adding resources.
+        const app_path = rootPath(b, "zig-out/package/phux-cockpit.app");
+        const sign = b.addSystemCommand(&.{ "/usr/bin/codesign", "--force", "--deep", "--timestamp=none", "--sign", "-", app_path });
+        sign.has_side_effects = true;
+        sign.step.dependOn(&copy.step);
+        const verify = b.addSystemCommand(&.{ "/usr/bin/codesign", "--verify", "--deep", "--strict", app_path });
+        verify.has_side_effects = true;
+        verify.step.dependOn(&sign.step);
+        package.step.dependOn(&verify.step);
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const dependency = b.dependency("native_sdk", .{});
     const phux_enabled = b.option(
@@ -684,6 +716,7 @@ pub fn build(b: *std.Build) void {
     if (app_module.resolved_target.?.result.os.tag != .macos)
         @panic("phux-cockpit supports macOS only");
     addTsEngineModules(b, artifacts, measure, phux_enabled, ffi);
+    if (phux_enabled) addCoordinatorCli(b, artifacts, ffi_profile);
 
     if (b.top_level_steps.get("test")) |top_level| {
         const test_step = &top_level.step;

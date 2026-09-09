@@ -1,0 +1,23 @@
+# GUARD partial-outgoing-no-replay
+#
+# stageOutgoing used to leave the entire FFI queue intact if a later frame's
+# payload allocation failed after an earlier frame had already been copied.
+# Removing the shared error finalizer reinstates that retained-prefix replay.
+# The allocator-controlled real-host tests recover allocation after consuming
+# the staged prefix and failure signal. Key, paste, and publication tests all
+# failed at the replay assertion in this red run; all restored green.
+test: key partial outgoing staging cannot replay after allocator recovery
+red: 2026-09-07 at c40cde2
+build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+index e0628f63..bcc6885a 100644
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -923,7 +923,6 @@ pub const Host = struct {
+         // A worker may already have taken an earlier copy when a later one
+         // fails. Retiring this connection clears both queues and prevents any
+         // caller from replaying the retained FFI prefix after allocator recovery.
+-        errdefer host.disconnect();
+         if (host.bridge.incoming.takeDisconnect() != null) {
+             host.disconnect();
+             return error.Protocol;

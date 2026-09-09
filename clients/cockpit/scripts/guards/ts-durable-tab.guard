@@ -1,0 +1,20 @@
+# GUARD ts-durable-tab
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping durable tab waits for exact publication and keeps its original window
+red: 2026-09-07 at cd717ba
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index e16eaa3b..71a4b581 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -576,7 +576,7 @@ pub const Engine = struct {
+     /// same model flags the shipping app uses.
+     fn newTerminal(self: *Engine) bool {
+         const model = self.model;
+-        if (model.phux() != null) return self.createDurable(.tab);
++        if (false and model.phux() != null) return self.createDurable(.tab);
+         if (!model.canAddPane()) return false;
+         const pane = model.provider.createTerminal() catch {
+             model.terminal_limit_refused = true;

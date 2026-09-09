@@ -4,18 +4,18 @@
 # only on its rising edge. The break drops the notification from the shell
 # event path, so a background bell rings into nothing.
 test: a bell while the app is deactivated notifies once, on its rising edge
-red: 2026-09-02 at d7dc724
+red: 2026-09-07 at 39ba720
 build: test -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index c5489f5..43a5a08 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
 @@ -257,7 +257,7 @@ pub const Engine = struct {
-                     pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
-                 }
-                 pane.session.refreshScreenText();
--                self.notifyBackgroundBell(fx, pane, bell_before);
-+                if (false) self.notifyBackgroundBell(fx, pane, bell_before);
-                 if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
-                 terminal_runtime.flushOutbound(pane, fx);
-                 terminal_runtime.moveResponsesToOutbound(pane, fx);
+             pointer_input.endMismatchedMouseCaptures(self.model, fx, pane);
+         }
+         pane.session.refreshScreenText();
+-        self.notifyBackgroundBell(fx, pane, bell_before);
++        if (false) self.notifyBackgroundBell(fx, pane, bell_before);
+         if (pane.selecting and !pane.session.rebaseSelection()) pane.selecting = false;
+         terminal_runtime.flushOutbound(pane, fx);
+         terminal_runtime.moveResponsesToOutbound(pane, fx);

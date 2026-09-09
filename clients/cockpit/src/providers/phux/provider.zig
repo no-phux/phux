@@ -7,6 +7,10 @@ const host_mod = @import("phux_host");
 const transport = @import("phux_transport");
 const extension = @import("phux_extension");
 
+test {
+    _ = @import("color_policy_tests.zig");
+}
+
 pub const enabled = true;
 pub const max_sessions = host_mod.max_sessions;
 pub const Endpoint = extension.Endpoint;
@@ -19,6 +23,8 @@ pub const SearchResult = host_mod.SearchResult;
 pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
 pub const Error = host_mod.Error;
+pub const OperationResult = host_mod.OperationResult;
+pub const ColorPolicy = host_mod.ColorPolicy;
 
 const OwnedEndpoint = union(enum) {
     tcp: struct { host: []u8, port: u16 },
@@ -45,6 +51,9 @@ const OwnedEndpoint = union(enum) {
 };
 
 pub const PhuxProvider = struct {
+    pub const test_support = host_mod.test_support;
+    pub const SessionSummary = host_mod.SessionSummary;
+    pub const OperationResult = host_mod.OperationResult;
     gpa: std.mem.Allocator,
     io: std.Io,
     bridge: *transport.Bridge,
@@ -98,7 +107,7 @@ pub const PhuxProvider = struct {
     pub fn stop(self: *PhuxProvider) void {
         if (self.worker) |worker| worker.stop();
         self.worker = null;
-        self.host.freezePublished();
+        self.host.disconnect();
     }
 
     /// Preserve provider identity, terminal order, and the last complete canvas
@@ -164,10 +173,39 @@ pub const PhuxProvider = struct {
         return self.host.state();
     }
 
+    pub fn requestSpawn(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport) !u32 {
+        return self.host.requestSpawn(owner_ref, viewport);
+    }
+    pub fn requestAttach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
+        return self.host.requestAttach(terminal_ref);
+    }
+
+    pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
+        return self.host.requestDetach(terminal_ref);
+    }
+
+    pub fn catalogRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
+        return self.host.catalogRefs(out);
+    }
+    pub fn takeOperationResult(self: *PhuxProvider) ?host_mod.OperationResult {
+        return self.host.takeOperationResult();
+    }
+    pub fn connectionEpoch(self: *const PhuxProvider) u64 {
+        return self.host.connectionEpoch();
+    }
+    /// Opaque borrowed bytes; copy before a mutable provider call.
+    pub fn serverId(self: *const PhuxProvider) ?[]const u8 {
+        return self.host.serverId();
+    }
+    /// The canonical descriptor used by the socket worker, borrowed until destroy.
+    pub fn endpointDescriptor(self: *const PhuxProvider) Endpoint {
+        return self.endpoint.borrowed();
+    }
+
     pub fn terminalRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
         return self.host.terminalRefs(out);
     }
-    pub fn sessionCatalog(self: *const PhuxProvider) []const SessionSummary {
+    pub fn sessionCatalog(self: *const PhuxProvider) []const host_mod.SessionSummary {
         return self.host.sessionCatalog();
     }
     pub fn selectedSessionId(self: *const PhuxProvider) ?u32 {
@@ -186,6 +224,22 @@ pub const PhuxProvider = struct {
     pub fn presentation(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) ?provider.Presentation {
         return self.host.presentation(terminal_ref);
     }
+
+    pub const FrozenPresentation = host_mod.FrozenPresentation;
+
+    pub fn capturePresentation(self: *const PhuxProvider, expected: provider.ReplicaOwner) !*FrozenPresentation {
+        return self.host.capturePresentation(expected);
+    }
+
+    pub fn terminalKnown(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.terminalKnown(ref);
+    }
+
+    /// Logical constness matches local Session.snapshot: update the owned
+    /// paint cache, without changing provider identity or engine state.
+    pub fn setColorPolicy(self: *const PhuxProvider, policy: ColorPolicy) void {
+        self.host.setColorPolicy(policy);
+    }
     pub fn lastViewport(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) ?provider.Viewport {
         return self.host.lastViewport(terminal_ref);
     }
@@ -202,6 +256,14 @@ pub const PhuxProvider = struct {
     pub fn mouseTracking(self: *const PhuxProvider, owner_value: provider.ReplicaOwner) !bool {
         return self.host.mouseTracking(owner_value);
     }
+
+    pub fn mouseMode(self: *const PhuxProvider, owner_value: provider.ReplicaOwner) !provider.MouseMode {
+        return self.host.mouseMode(owner_value);
+    }
+
+    pub fn selectionGesture(self: *PhuxProvider, owner_value: provider.ReplicaOwner, event: provider.SelectionGesture) !provider.SelectionGestureResult {
+        return self.host.selectionGesture(owner_value, event);
+    }
     pub fn sendFocus(self: *PhuxProvider, owner_value: provider.ReplicaOwner, focused: bool) !void {
         return self.host.sendFocus(owner_value, focused);
     }
@@ -216,6 +278,12 @@ pub const PhuxProvider = struct {
     }
     pub fn releaseAnchor(self: *PhuxProvider, owner_value: provider.ReplicaOwner, anchor: Anchor) void {
         self.host.releaseAnchor(owner_value, anchor);
+    }
+    pub fn pinViewport(self: *PhuxProvider, owner_value: provider.ReplicaOwner, anchor: Anchor) !void {
+        return self.host.pinViewport(owner_value, anchor);
+    }
+    pub fn clearPresentation(self: *PhuxProvider, owner_value: provider.ReplicaOwner) !void {
+        return self.host.clearPresentation(owner_value);
     }
     pub fn setSelection(self: *PhuxProvider, owner_value: provider.ReplicaOwner, start_anchor: Anchor, end_anchor: Anchor, rectangle: bool) !void {
         return self.host.setSelection(owner_value, start_anchor, end_anchor, rectangle);
@@ -234,6 +302,22 @@ pub const PhuxProvider = struct {
     }
     pub fn takeNotice(self: *PhuxProvider) ?Notice {
         return self.host.takeNotice();
+    }
+
+    pub fn phase(self: *const PhuxProvider, ref: provider.TerminalRef) ?provider.Phase {
+        return self.host.phase(ref);
+    }
+
+    pub fn bellRung(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.bellRung(ref);
+    }
+
+    pub fn ringBell(self: *PhuxProvider, owner_value: provider.ReplicaOwner) bool {
+        return self.host.ringBell(owner_value);
+    }
+
+    pub fn acknowledgeBell(self: *PhuxProvider, ref: provider.TerminalRef) void {
+        self.host.acknowledgeBell(ref);
     }
     pub fn releaseNotice(self: *PhuxProvider, notice: Notice) void {
         self.host.releaseNotice(notice);
@@ -418,4 +502,33 @@ test "every declaration in this module is compiled, not merely reachable" {
     // graph with its signatures never checked. Nothing calls PhuxProvider.search.
     // See ref.zig.
     @import("phux_ref").refAllDeclsRecursive(@This());
+}
+
+test "provider operations expose owned outcomes and borrowed endpoint incarnation" {
+    var path = [_]u8{ '/', 's', 'o', 'c', 'k', 'e', 't' };
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = &path }, null, "operations-test");
+    defer self.destroy();
+    path[1] = 'X';
+    try std.testing.expectEqualStrings("/socket", self.endpointDescriptor().unix);
+    try std.testing.expect(self.serverId() == null);
+    try std.testing.expectError(error.InvalidState, self.requestSpawn(null, .{ .cols = 80, .rows = 24 }));
+    try host_mod.test_support.attachHost(self.host);
+    try std.testing.expectEqualStrings("cockpit-fixture", self.serverId().?);
+    const epoch = self.connectionEpoch();
+    const request_id = try self.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    try host_mod.test_support.stageFixture(self.bridge, "spawn-local.bin");
+    _ = try self.drainReadiness();
+    const result = self.takeOperationResult().?;
+    try std.testing.expectEqual(request_id, result.request_id);
+    try std.testing.expectEqual(epoch, result.connection_epoch);
+    try std.testing.expect(!self.contains(result.terminal_ref.?));
+    try host_mod.test_support.stageFixture(self.bridge, "local-ready.bin");
+    _ = try self.drainReadiness();
+    try std.testing.expect(self.contains(result.terminal_ref.?));
+    const pending = try self.requestSpawn(result.terminal_ref, .{ .cols = 80, .rows = 24 });
+    self.stop();
+    const unknown = self.takeOperationResult().?;
+    try std.testing.expectEqual(pending, unknown.request_id);
+    try std.testing.expectEqual(.unknown_outcome, unknown.status);
+    try std.testing.expectEqual(epoch, unknown.connection_epoch);
 }

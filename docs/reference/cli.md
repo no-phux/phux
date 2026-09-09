@@ -2182,13 +2182,18 @@ Options:
 ## `phux server`
 
 ```text
-Run a phux server in the foreground.
+Run a phux server, or ensure one is accepting without attaching.
 
 Binds a Unix domain socket, pre-seeds a session whose initial pane spawns the user's `$SHELL` inside a real PTY, and serves `ATTACH` requests until Ctrl-C.
 
 Usage: phux server [OPTIONS]
 
 Options:
+      --ensure
+          Ensure the selected local socket accepts, then exit without a TUI.
+
+          Reuses a live coordinator or starts one with the same session-name template and spawn-on-attach policy as naked `phux`. Uses `--socket`, then `PHUX_SOCKET`, then the profile default (`PHUX_PROFILE`). Exits 0 only after a successful socket connection; startup or timeout failures exit 1 with a diagnostic on stderr. Startup is bounded to 10 seconds, including lock contention. Does not attach or create another session on an existing server.
+
       --session <SESSION>
           Name of the pre-seeded session. Matches what `phux attach <name>` will request
 
@@ -2197,11 +2202,11 @@ Options:
       --listen <HOST:PORT>
           Also accept WebSocket clients on this `HOST:PORT` (the UDS stays on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local browser dev; any routable address (e.g. `0.0.0.0:8787`) auto-provisions TLS and requires a `phux pair` token. Overrides `$PHUX_WS_ADDR`
 
-      --quic <HOST:PORT>
-          Also accept QUIC clients on this `HOST:PORT` (the UDS stays on). QUIC is always TLS 1.3-encrypted; a loopback address skips token auth (local dev), while any routable address requires a `phux pair` token sent as the stream's opening preamble. Overrides `$PHUX_QUIC_ADDR`
-
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --quic <HOST:PORT>
+          Also accept QUIC clients on this `HOST:PORT` (the UDS stays on). QUIC is always TLS 1.3-encrypted; a loopback address skips token auth (local dev), while any routable address requires a `phux pair` token sent as the stream's opening preamble. Overrides `$PHUX_QUIC_ADDR`
 
       --webtransport <HOST:PORT>
           Also accept WebTransport (HTTP/3 over QUIC) clients on this `HOST:PORT` (the UDS stays on) — the browser's door to QUIC-class transport; the browser client dials it, falling back to WebSocket. Always TLS 1.3-encrypted; a loopback address skips token auth (local dev), while any routable address requires a `phux pair` token carried in the CONNECT request (`Authorization: Bearer` from native consumers, `?token=<hex>` on the session URL from browsers). Overrides `$PHUX_WT_ADDR`

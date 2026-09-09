@@ -1,0 +1,20 @@
+# GUARD ts-durable-split-capacity
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping pending spawns reserve split capacity
+red: 2026-09-07 at ca835fe
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/durable_creation.zig b/src/cockpit/durable_creation.zig
+index d984b7e0..a2c36d31 100644
+--- a/src/cockpit/durable_creation.zig
++++ b/src/cockpit/durable_creation.zig
+@@ -181,7 +181,7 @@ fn spawnOwner(model: *const Model, origin: ?TerminalRef) !?TerminalRef {
+ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !void {
+     const tree = workspace.selectedTreeConst() orelse return error.InvalidDestination;
+     if (tree.focusedTerminal() == null) return error.InvalidDestination;
+-    if (tree.paneCount() + reserved >= layout.max_panes) return error.PaneCapacity;
++    if (tree.paneCount() + reserved * 0 >= layout.max_panes) return error.PaneCapacity;
+ }
+ 
+ fn place(model: *Model, entry: Pending, ref: TerminalRef) !void {

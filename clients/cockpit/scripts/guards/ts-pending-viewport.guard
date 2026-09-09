@@ -1,0 +1,21 @@
+# GUARD ts-pending-viewport
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: pending attachment cannot propose a viewport for a reused remote identity
+red: 2026-09-07 at 2fca62e
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/workspace_projection.zig b/src/cockpit/native/workspace_projection.zig
+index 88f0c963..71db8fad 100644
+--- a/src/cockpit/native/workspace_projection.zig
++++ b/src/cockpit/native/workspace_projection.zig
+@@ -1648,7 +1648,8 @@ pub fn proposedViewportsIn(
+             result.count += 1;
+             continue;
+         }
+-        const presentation = model.remotePresentation(pane.terminal) orelse continue;
++        const remote = model.phuxConst() orelse continue;
++        const presentation = remote.presentation(pane.terminal) orelse continue;
+         if (presentation.phase != .live) continue;
+         const proposed = grid.Session.clampGrid(
+             @intFromFloat(@max(2, inner.width / metrics.width)),

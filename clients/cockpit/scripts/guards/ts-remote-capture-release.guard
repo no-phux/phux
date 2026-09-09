@@ -1,0 +1,12 @@
+# GUARD ts-remote-capture-release
+#
+# Review caught an early-return path that stranded capture when pointer-up
+# geometry was invalid. Removing unconditional release restores that defect.
+test: shipping remote captures balance reports and Shift retains native selection
+red: 2026-09-07 at 0d8b183
+build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/shipping_pointer.zig b/src/cockpit/native/shipping_pointer.zig
+--- a/src/cockpit/native/shipping_pointer.zig
++++ b/src/cockpit/native/shipping_pointer.zig
+@@ -133 +132,0 @@
+-        defer if (raw.kind == .pointer_up) self.finish(model, index);

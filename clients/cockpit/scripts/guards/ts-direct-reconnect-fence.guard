@@ -1,0 +1,19 @@
+# GUARD ts-direct-reconnect-fence
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping direct reconnect fences attachments and retires pending creation on open failure
+red: 2026-09-07 at a072790
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index 06cc0e92..8b43cbdc 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -563,7 +563,6 @@ pub const Engine = struct {
+     pub fn restartNavigationConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
+         const model = self.model;
+         const remote = model.phux() orelse return false;
+-        self.providerDisconnected();
+         remote.stop();
+         model.phux_connection_unavailable = false;
+         if (fx.phuxChannelLive()) {

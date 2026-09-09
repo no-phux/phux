@@ -1,0 +1,20 @@
+# GUARD ts-detach-refused-close-progress
+#
+# Restore false close-tab progress on a refused detach. The test checks that
+# refusal before entering close-window, where the former retry loop hung UI.
+test: shipping close window makes bounded progress when remote detach is locally refused
+red: 2026-09-07 at 3361eec
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/workspace_lifecycle.zig b/src/cockpit/workspace_lifecycle.zig
+index 26d0c308..9a19b501 100644
+--- a/src/cockpit/workspace_lifecycle.zig
++++ b/src/cockpit/workspace_lifecycle.zig
+@@ -58,7 +58,7 @@ pub fn closeTab(model: *Model, fx: anytype, window: usize, index: usize) bool {
+     const count = tree.terminals(&refs);
+     var changed = false;
+     for (refs[0..count]) |ref| changed = closePane(model, fx, ref, true) or changed;
+-    return changed;
++    return count != 0;
+ }
+ 
+ pub fn closeWindow(model: *Model, fx: anytype, index: usize) bool {

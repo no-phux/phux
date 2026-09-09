@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::ptr;
 
 use libghostty_vt::render::{
@@ -7,7 +7,7 @@ use libghostty_vt::render::{
 use libghostty_vt::screen::{Cell, CellContentTag};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, Style, StyleColor};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
 use phux_client_core::history::{
@@ -22,6 +22,7 @@ use phux_protocol::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::error::BridgeError;
+use crate::grid_metadata::{GridMetadataCache, PhuxGridCellMetadata, cell_metadata};
 use crate::types::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
     CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, OwnedEffect, PhuxBytes,
@@ -45,6 +46,12 @@ pub(crate) struct SessionSummary {
 }
 
 const NO_HYPERLINK: (u32, u32) = (0, 0);
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RENDER_CACHE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static EFFECT_VIEW_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[allow(
     clippy::redundant_pub_crate,
@@ -80,10 +87,13 @@ pub(crate) struct RenderCache {
     pub utf8: Vec<u8>,
     pub terminal_host: Vec<u8>,
     pub view: PhuxTerminalGridView,
+    pub metadata: GridMetadataCache,
 }
 
 impl RenderCache {
     fn new() -> Result<Self, BridgeError> {
+        #[cfg(test)]
+        RENDER_CACHE_BUILDS.set(RENDER_CACHE_BUILDS.get() + 1);
         Ok(Self {
             state: RenderState::new().map_err(BridgeError::ghostty)?,
             rows: RowIterator::new().map_err(BridgeError::ghostty)?,
@@ -92,7 +102,57 @@ impl RenderCache {
             utf8: Vec::new(),
             terminal_host: Vec::new(),
             view: PhuxTerminalGridView::default(),
+            metadata: GridMetadataCache::default(),
         })
+    }
+
+    /// Populate the dense cell arenas while the snapshot and both iterators
+    /// borrow disjoint cache fields together.
+    fn populate_grid(
+        &mut self,
+        terminal: &libghostty_vt::Terminal<'static, 'static>,
+        inputs: &GridViewInputs,
+    ) -> Result<(u16, u16, CursorView), BridgeError> {
+        let snapshot = self.state.update(terminal).map_err(BridgeError::ghostty)?;
+        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
+        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
+        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
+        self.grid_cells.clear();
+        self.utf8.clear();
+        self.metadata.cells.clear();
+        self.grid_cells
+            .reserve(usize::from(cols) * usize::from(rows));
+        fill_grid_cells(
+            &mut self.rows,
+            &mut self.cells,
+            &snapshot,
+            &CellContext {
+                terminal,
+                colors: &colors,
+            },
+            &mut GridSink {
+                cells: &mut self.grid_cells,
+                utf8: &mut self.utf8,
+                metadata: &mut self.metadata.cells,
+            },
+        )?;
+        ensure_dense_viewport(self.grid_cells.len(), cols, rows)?;
+        let cursor = read_cursor_view(&snapshot)?;
+        let identity = PhuxTerminalGridView {
+            stream_id: inputs.key.stream_id.get(),
+            bootstrap_id: inputs.key.bootstrap_id.get(),
+            last_seq: inputs.last_seq,
+            document_revision: inputs.document_revision,
+            cols,
+            rows,
+            cursor_col: cursor.col,
+            cursor_row: cursor.row,
+            cursor_visible: cursor.visible,
+            ..PhuxTerminalGridView::default()
+        };
+        self.metadata
+            .publish(&snapshot, terminal, &colors, &identity, &self.grid_cells)?;
+        Ok((cols, rows, cursor))
     }
 }
 
@@ -109,7 +169,9 @@ pub(crate) struct Client {
     pub effects: EffectBuffer,
     pub outgoing: Vec<Vec<u8>>,
     pub owned_effects: Vec<OwnedEffect>,
-    pub effect_views: Vec<PhuxClientEffect>,
+    /// Published prefix of `owned_effects`. Failed processing leaves newly
+    /// staged effects hidden until the next successful publication.
+    pub effect_count: usize,
     pub render: HashMap<TerminalId, RenderCache>,
     pub selection_buf: Vec<u8>,
     /// Backing store for `phux_client_perf_json`; valid until the next call.
@@ -120,9 +182,13 @@ pub(crate) struct Client {
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
     pub sessions: Vec<SessionSummary>,
+    pub operations: crate::operations::Operations,
+    pub server_id: Vec<u8>,
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
     pub selections: HashMap<TerminalId, EngineDocumentSelection>,
+    pub gestures: HashMap<TerminalId, crate::pointer::PointerGesture>,
+    pub next_gesture: u64,
     pub viewport_anchors: HashMap<TerminalId, DocumentAnchorId>,
     pub last_error: Vec<u8>,
     pub limits: Limits,
@@ -157,7 +223,7 @@ impl Client {
             effects: EffectBuffer::new(),
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
-            effect_views: Vec::new(),
+            effect_count: 0,
             render: HashMap::new(),
             selection_buf: Vec::new(),
             perf_buf: Vec::new(),
@@ -166,11 +232,15 @@ impl Client {
             next_document_revision: 1,
             search_results: Vec::new(),
             sessions: Vec::new(),
+            operations: crate::operations::Operations::default(),
+            server_id: Vec::new(),
             last_error: Vec::new(),
             limits,
             anchors: HashMap::new(),
             next_anchor_handle: 1,
             selections: HashMap::new(),
+            gestures: HashMap::new(),
+            next_gesture: 1,
             viewport_anchors: HashMap::new(),
             protocol_ready: false,
             hello_queued: false,
@@ -207,6 +277,9 @@ impl Client {
     }
 
     pub(crate) fn reset_borrows(&mut self) {
+        for cache in self.render.values_mut() {
+            cache.metadata.valid = false;
+        }
         self.selection_buf.clear();
         self.search_results.clear();
     }
@@ -276,7 +349,8 @@ impl Client {
                 "terminal state frame arrived outside an active ATTACH phase",
             ));
         }
-        if self.session.active_attach_contains(terminal_id) {
+        if self.session.active_attach_contains(terminal_id) || self.operations.admitted(terminal_id)
+        {
             Ok(())
         } else {
             Err(BridgeError::protocol(
@@ -286,6 +360,9 @@ impl Client {
     }
 
     pub(crate) fn detach(&mut self) {
+        self.reset_gestures();
+        self.operations.disconnect();
+        self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();
         self.render.clear();
@@ -400,6 +477,26 @@ impl Client {
         Ok(())
     }
 
+    pub(crate) fn clear_presentation(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: u64,
+        bootstrap_id: u64,
+    ) -> Result<(), BridgeError> {
+        let key = self.terminal_key(terminal_id)?;
+        if key.stream_id.get() != stream_id || key.bootstrap_id.get() != bootstrap_id {
+            return Err(BridgeError::state(
+                "clear targets a stale terminal generation",
+            ));
+        }
+        self.session
+            .clear_presentation(terminal_id)
+            .map_err(|error| BridgeError::engine(error.to_string()))?;
+        self.invalidate_terminal_handles(terminal_id);
+        self.bump_document_revision(terminal_id)?;
+        Ok(())
+    }
+
     pub(crate) fn pin_viewport(
         &mut self,
         terminal_id: &TerminalId,
@@ -407,25 +504,22 @@ impl Client {
     ) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         let engine_anchor = self.resolve_anchor(terminal_id, anchor)?;
-        self.session
-            .pin_history_viewport(terminal_id, engine_anchor)
-            .map_err(|error| BridgeError::engine(error.to_string()))
+        let point = self
+            .session
+            .document_anchor_point(terminal_id, engine_anchor, DocumentSpace::History)
+            .map_err(|error| BridgeError::engine(error.to_string()))?
+            .ok_or_else(|| BridgeError::state("viewport anchor is no longer available"))?;
+        // Use the same engine scroll and independently owned viewport pin as
+        // wheel navigation. Search results may release their anchors immediately.
+        self.scroll(terminal_id, 3, i64::from(point.y))
     }
 
     pub(crate) fn follow_live(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
-        self.ensure_attached()?;
-        self.session
-            .follow_history_tail(terminal_id)
-            .map_err(|error| BridgeError::engine(error.to_string()))?;
-        if let Some(old) = self.viewport_anchors.remove(terminal_id) {
-            self.session
-                .release_document_anchor(terminal_id, old)
-                .map_err(|error| BridgeError::engine(error.to_string()))?;
-        }
-        Ok(())
+        self.scroll(terminal_id, 1, 0)
     }
 
     pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
+        self.reset_gesture(terminal_id);
         self.anchors.retain(|_, (owner, _)| owner != terminal_id);
         self.selections.remove(terminal_id);
         self.viewport_anchors.remove(terminal_id);
@@ -449,7 +543,12 @@ impl Client {
     }
 
     pub(crate) fn process_effects(&mut self) -> Result<(), BridgeError> {
-        let mut effects = self.effects.take();
+        let effects = self.effects.take();
+        self.process_effect_batch(effects)
+    }
+
+    /// Consume a detached kernel batch and return its allocation even on error.
+    fn process_effect_batch(&mut self, mut effects: Vec<KernelEffect>) -> Result<(), BridgeError> {
         effects.reverse();
         let result: Result<(), BridgeError> = (|| {
             while let Some(effect) = effects.pop() {
@@ -485,11 +584,18 @@ impl Client {
         effects.clear();
         self.effects.restore_allocation(effects);
         result?;
-        self.rebuild_effect_views();
+        self.publish_effects();
         Ok(())
     }
 
-    fn process_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
+    pub(crate) fn process_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
+        if self.operations.fence_send(&send) {
+            return Ok(());
+        }
+        self.encode_kernel_send(send)
+    }
+
+    fn encode_kernel_send(&mut self, send: KernelSend) -> Result<(), BridgeError> {
         match send {
             KernelSend::Input { terminal_id, event } => {
                 let frame = match event {
@@ -594,31 +700,14 @@ impl Client {
                 let mut out = OwnedEffect::simple(2, 6, key.terminal_id);
                 out.stream_id = key.stream_id.get();
                 out.bootstrap_id = key.bootstrap_id.get();
-                out.status_code = match status.state {
-                    HistoryLoadState::Idle => 0,
-                    HistoryLoadState::Loading => 1,
-                    HistoryLoadState::Complete => 2,
-                    HistoryLoadState::Gap => 3,
-                    HistoryLoadState::Stale => 4,
-                    HistoryLoadState::Pruned => 5,
-                    HistoryLoadState::Tombstoned => 6,
-                };
+                out.status_code = history_state_code(status.state);
                 self.owned_effects.push(out);
             }
             KernelStatus::HistoryUnavailable { key, reason } => {
                 let mut out = OwnedEffect::simple(2, 7, key.terminal_id);
                 out.stream_id = key.stream_id.get();
                 out.bootstrap_id = key.bootstrap_id.get();
-                out.status_code = match reason {
-                    phux_client_core::session::HistoryUnavailableReason::Stale => 0,
-                    phux_client_core::session::HistoryUnavailableReason::Pruned => 1,
-                    phux_client_core::session::HistoryUnavailableReason::Reset => 2,
-                    phux_client_core::session::HistoryUnavailableReason::Resize => 3,
-                    phux_client_core::session::HistoryUnavailableReason::Expired => 4,
-                    phux_client_core::session::HistoryUnavailableReason::Released => 5,
-                    phux_client_core::session::HistoryUnavailableReason::Limit => 6,
-                    phux_client_core::session::HistoryUnavailableReason::CodecFailure => 7,
-                };
+                out.status_code = history_unavailable_code(reason);
                 self.owned_effects.push(out);
             }
         }
@@ -635,21 +724,31 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn rebuild_effect_views(&mut self) {
-        self.effect_views.clear();
-        self.effect_views
-            .extend(self.owned_effects.iter().map(|effect| PhuxClientEffect {
-                kind: effect.kind,
-                detail: effect.detail,
-                status_code: effect.status_code,
-                terminal_id: terminal_id_out(&effect.terminal_id),
-                stream_id: effect.stream_id,
-                bootstrap_id: effect.bootstrap_id,
-                seq: effect.seq,
-                first_row: effect.first_row,
-                last_row: effect.last_row,
-                bytes: bytes_out(&effect.bytes),
-            }));
+    pub(crate) const fn publish_effects(&mut self) {
+        self.effect_count = self.owned_effects.len();
+    }
+
+    /// Project only the requested record. Its byte spans borrow immutable
+    /// owned payloads until the next mutable C call, as before.
+    pub(crate) fn effect_view(&self, index: usize) -> Option<PhuxClientEffect> {
+        self.owned_effects[..self.effect_count]
+            .get(index)
+            .map(|effect| {
+                #[cfg(test)]
+                EFFECT_VIEW_BUILDS.set(EFFECT_VIEW_BUILDS.get() + 1);
+                PhuxClientEffect {
+                    kind: effect.kind,
+                    detail: effect.detail,
+                    status_code: effect.status_code,
+                    terminal_id: terminal_id_out(&effect.terminal_id),
+                    stream_id: effect.stream_id,
+                    bootstrap_id: effect.bootstrap_id,
+                    seq: effect.seq,
+                    first_row: effect.first_row,
+                    last_row: effect.last_row,
+                    bytes: bytes_out(&effect.bytes),
+                }
+            })
     }
 
     pub(crate) fn build_grid(
@@ -708,37 +807,14 @@ impl Client {
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
         let terminal =
             self.terminal(terminal_id)? as *const libghostty_vt::Terminal<'static, 'static>;
-        let cache = self
-            .render
-            .entry(terminal_id.clone())
-            .or_insert(RenderCache::new()?);
+        let cache = match self.render.entry(terminal_id.clone()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(RenderCache::new()?),
+        };
         // SAFETY: terminal is owned by session; render cache is disjoint bridge state and no
         // session mutation occurs until this method returns.
         let terminal = unsafe { &*terminal };
-        let snapshot = cache.state.update(terminal).map_err(BridgeError::ghostty)?;
-        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
-        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
-        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
-        cache.grid_cells.clear();
-        cache.utf8.clear();
-        cache
-            .grid_cells
-            .reserve(usize::from(cols) * usize::from(rows));
-        fill_grid_cells(
-            &mut cache.rows,
-            &mut cache.cells,
-            &snapshot,
-            &CellContext {
-                terminal,
-                colors: &colors,
-            },
-            &mut GridSink {
-                cells: &mut cache.grid_cells,
-                utf8: &mut cache.utf8,
-            },
-        )?;
-        ensure_dense_viewport(cache.grid_cells.len(), cols, rows)?;
-        let cursor = read_cursor_view(&snapshot)?;
+        let (cols, rows, cursor) = cache.populate_grid(terminal, inputs)?;
         let scrollbar = terminal.scrollbar().map_err(BridgeError::ghostty)?;
         let history = history_counters(inputs.history.as_ref());
         cache.terminal_host.clear();
@@ -866,22 +942,22 @@ impl Client {
         };
         let start_point = self
             .session
-            .document_anchor_point(terminal_id, start, DocumentSpace::Viewport)
+            .document_anchor_point(terminal_id, start, DocumentSpace::History)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
         let end_point = self
             .session
-            .document_anchor_point(terminal_id, end, DocumentSpace::Viewport)
+            .document_anchor_point(terminal_id, end, DocumentSpace::History)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
         let terminal = self.terminal(terminal_id)?;
         if let (Some(start_point), Some(end_point)) = (start_point, end_point) {
             let start = terminal
-                .grid_ref(Point::Viewport(PointCoordinate {
+                .grid_ref(Point::History(PointCoordinate {
                     x: start_point.x,
                     y: start_point.y,
                 }))
                 .map_err(BridgeError::ghostty)?;
             let end = terminal
-                .grid_ref(Point::Viewport(PointCoordinate {
+                .grid_ref(Point::History(PointCoordinate {
                     x: end_point.x,
                     y: end_point.y,
                 }))
@@ -897,6 +973,7 @@ impl Client {
     }
 
     pub(crate) fn clear_selection(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+        self.reset_gesture(terminal_id);
         self.terminal(terminal_id)?
             .set_selection(None)
             .map_err(BridgeError::ghostty)?;
@@ -939,15 +1016,14 @@ impl Client {
         if query.is_empty() {
             return Err(BridgeError::invalid("search query is empty"));
         }
-        if !case_sensitive {
-            return Err(BridgeError::invalid(
-                "case-insensitive native search is unsupported",
-            ));
-        }
-        let matches = self
-            .session
-            .search_loaded_history(terminal_id, query, 4096)
-            .map_err(|error| BridgeError::engine(error.to_string()))?;
+        self.session
+            .adapter_mut()
+            .set_search_case_sensitive(case_sensitive);
+        let matches = self.session.search_loaded_history(terminal_id, query, 4096);
+        // Preserve the adapter's default for non-FFI kernel callers, including
+        // when this search failed. The native client is single-thread owned.
+        self.session.adapter_mut().set_search_case_sensitive(true);
+        let matches = matches.map_err(|error| BridgeError::engine(error.to_string()))?;
         let mut found = Vec::with_capacity(matches.len());
         for matched in matches {
             let start = self.register_anchor(terminal_id, matched.start)?;
@@ -977,14 +1053,8 @@ fn resolve_color(color: StyleColor, fallback: RgbColor, palette: &[RgbColor; 256
 }
 
 fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
-    [
-        Mode::X10_MOUSE,
-        Mode::NORMAL_MOUSE,
-        Mode::BUTTON_MOUSE,
-        Mode::ANY_MOUSE,
-    ]
-    .into_iter()
-    .any(|mode| terminal.mode(mode).unwrap_or(false))
+    libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
+        .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
 }
 
 const fn cursor_style(style: CursorVisualStyle) -> u32 {
@@ -1015,6 +1085,7 @@ struct CellContext<'a> {
 struct GridSink<'a> {
     cells: &'a mut Vec<PhuxTerminalCell>,
     utf8: &'a mut Vec<u8>,
+    metadata: &'a mut Vec<PhuxGridCellMetadata>,
 }
 
 /// Reusable per-cell scratch so flattening allocates at most once per grapheme
@@ -1113,7 +1184,7 @@ fn push_flattened_cell(
     let bg = cell_background(raw, content_tag, style, colors)?;
     let underline_color = resolve_color(style.underline_color, fg, &colors.palette);
     let flags = cell_flags(style, cell, raw, has_hyperlink)?;
-    sink.cells.push(PhuxTerminalCell {
+    let cell_record = PhuxTerminalCell {
         utf8_offset: u32::try_from(start)
             .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?,
         utf8_len: u16::try_from(cell_utf8_len)
@@ -1135,7 +1206,9 @@ fn push_flattened_cell(
         background_b: bg.b,
         underline: style.underline as u8,
         reserved: 0,
-    });
+    };
+    sink.metadata.push(cell_metadata(style, content_tag));
+    sink.cells.push(cell_record);
     Ok(())
 }
 
@@ -1339,6 +1412,35 @@ fn view_terminal_id(terminal_id: &TerminalId, host_arena: &mut Vec<u8>) -> PhuxT
     }
 }
 
+const fn history_state_code(state: HistoryLoadState) -> u32 {
+    match state {
+        HistoryLoadState::Idle => 0,
+        HistoryLoadState::Loading => 1,
+        HistoryLoadState::Complete => 2,
+        HistoryLoadState::Gap => 3,
+        HistoryLoadState::Stale => 4,
+        HistoryLoadState::Pruned => 5,
+        HistoryLoadState::Tombstoned => 6,
+        HistoryLoadState::Cleared => 7,
+    }
+}
+
+const fn history_unavailable_code(
+    reason: phux_client_core::session::HistoryUnavailableReason,
+) -> u32 {
+    use phux_client_core::session::HistoryUnavailableReason as Reason;
+    match reason {
+        Reason::Stale => 0,
+        Reason::Pruned => 1,
+        Reason::Reset => 2,
+        Reason::Resize => 3,
+        Reason::Expired => 4,
+        Reason::Released => 5,
+        Reason::Limit => 6,
+        Reason::CodecFailure => 7,
+    }
+}
+
 /// Decode the C ABI's viewport scroll kind and value.
 fn viewport_scroll(kind: u32, value: i64) -> Result<ScrollViewport, BridgeError> {
     match kind {
@@ -1358,6 +1460,88 @@ fn viewport_scroll(kind: u32, value: i64) -> Result<ScrollViewport, BridgeError>
 mod tests {
     use super::*;
     use crate::types::PhuxClientResult;
+
+    #[test]
+    fn failed_effect_batch_keeps_the_previous_published_prefix() {
+        let mut bridge = crate::PhuxClient {
+            _not_send_sync: std::marker::PhantomData,
+            inner: Client::new(Limits {
+                bootstrap_chunk: 1024,
+                history_page: 1024,
+                history_page_rows: 128,
+                history_cache_bytes: 4096,
+                history_materialized_rows: 1024,
+                history_prefetch_rows: 64,
+            }),
+        };
+        let terminal_id = TerminalId::local(7);
+        bridge
+            .inner
+            .owned_effects
+            .push(OwnedEffect::simple(2, 1, terminal_id.clone()));
+        bridge.inner.publish_effects();
+        let error = bridge
+            .inner
+            .process_effect_batch(vec![
+                KernelEffect::Damage(phux_client_core::session::KernelDamage {
+                    terminal_id: terminal_id.clone(),
+                    kind: KernelDamageKind::Rows { first: 2, last: 4 },
+                }),
+                KernelEffect::Send(KernelSend::PtyWrite {
+                    terminal_id,
+                    bytes: b"\x1b[0n".to_vec(),
+                }),
+            ])
+            .expect_err("PTY replies require negotiated support");
+        assert_eq!(error.result, PhuxClientResult::EngineError);
+        assert_eq!(
+            bridge.inner.owned_effects.len(),
+            2,
+            "damage was staged before failure"
+        );
+        assert!(bridge.inner.effects.is_empty());
+        assert!(
+            bridge.inner.effects.capacity() >= 2,
+            "failed batches return their allocation"
+        );
+        let mut effect = PhuxClientEffect::default();
+        // SAFETY: the stack-owned bridge and writable output remain live on this thread.
+        unsafe {
+            assert_eq!(crate::phux_client_effect_count(&raw const bridge), 1);
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 0, &raw mut effect),
+                PhuxClientResult::Ok
+            );
+            assert_eq!((effect.kind, effect.detail), (2, 1));
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 1, &raw mut effect),
+                PhuxClientResult::NoValue
+            );
+        }
+        // Preserve the existing rebuild-on-next-success behavior: a later
+        // successful batch publishes the retained prefix, including its damage.
+        bridge
+            .inner
+            .process_effects()
+            .expect("empty successful batch");
+        // SAFETY: the bridge and output still live on their owning thread.
+        unsafe {
+            assert_eq!(crate::phux_client_effect_count(&raw const bridge), 2);
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 1, &raw mut effect),
+                PhuxClientResult::Ok
+            );
+        }
+        assert_eq!(
+            (
+                effect.kind,
+                effect.detail,
+                effect.first_row,
+                effect.last_row
+            ),
+            (1, 2, 2, 4)
+        );
+    }
 
     #[test]
     fn terminal_reply_requires_explicit_hello_ok_feature() {

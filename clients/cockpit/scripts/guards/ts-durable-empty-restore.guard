@@ -1,0 +1,20 @@
+# GUARD ts-durable-empty-restore
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping empty persisted Phux workspace does not spawn a synthetic local shell
+red: 2026-09-07 at b17828e
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index e16eaa3b..2f77b270 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -170,7 +170,7 @@ pub const Engine = struct {
+             model_module.applyRestoredWorkingDirectories(model, &initialized.restored_snapshot);
+             if (model.saved_attachments.count != 0) model.phux_admit_on_ready = false;
+         }
+-        const synthetic_seed = initialized.provenance != .restored or initialized.restored_snapshot.tab_count == 0;
++        const synthetic_seed = initialized.provenance != .restored;
+         if (synthetic_seed and model.phux() != null) {
+             // Fresh configured launches await coordinator-owned work. The
+             // unspawned local seed is only for the explicit ephemeral path.
