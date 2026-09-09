@@ -11,6 +11,7 @@ last-reviewed: 2026-05-28
 Status: Accepted
 Date: 2026-05-26
 Superseded in part by [ADR-0030](./0030-engine-delegated-wire-and-projection-consumers.md): the L2 Collection tier is dissolved; the wire is L1 plus optional L3, grouping is L3 metadata plus client logic, and the one atomic group operation is the L1 verb KILL_TERMINALS.
+See [ADR-0102](./0102-resources-the-server-serves-kinds.md) for L1's current scope: it is the resource substrate, not Terminals alone.
 
 ## Context
 

@@ -14,7 +14,7 @@ tagged event stream, and an L3 scope. The PTY-plus-libghostty Terminal is kind
 bytes in protocol 0.9.0. Terminal-only operations fail on other kinds with
 `WRONG_RESOURCE_KIND`.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-09-09
 
 ## Context
@@ -124,7 +124,8 @@ ADR-0102, 0103, and 0104; everything optional in 0.9.0 sits behind the bit.
 
 ## Tradeoffs
 
-- **Not built.** Nothing here ships today; `docs/spec/` carries the markers.
+- **The Cockpit projection lags the rename.** Cockpit still shows Terminal-only
+  panes; wiring the AgentSession row is tracked as phux-am9y.25.
 - **The rename touches every crate, the C ABI, Cockpit, and phux-web.**
   Golden snapshots survive where discriminants and prefixes are kept.
 - **The no-window sentinel is a compromise.** `ResourceInfo` is positional

@@ -14,7 +14,7 @@ bounded ring, replays it as the bootstrap, and derives working, blocked, and
 done from record types. Screen scraping and hook reports become fallbacks
 below the stream.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-09-09
 
 ## Context
@@ -88,7 +88,7 @@ has to append.
    keeps its `report-state` and `agent set/clear` calls.
 8. **Consumers.** `phux agent session open|close`, `phux agent emit TARGET
    --type T [--data JSON|-]`, and `phux agent log TARGET [--follow] [--json]
-   [--tail N]`; `agent show` and `agent list` add `session`; MCP gains
+   [--tail N]`; `agent show` and `agent list` add `agent_session`; MCP gains
    `phux_agent_log` and `phux_agent_emit`. `%name`
    ([ADR-0075](./0075-agent-name-addressing.md)) resolves `AgentSession`
    resources, which gives that ADR its production caller.
@@ -125,8 +125,8 @@ not lifecycle; the stream carries lengths and names by default.
 
 ## Tradeoffs
 
-- **Not built.** Kind, codec, command, ring, arbiter rank, and shim arms are
-  all program work; nothing here ships today.
+- **The Cockpit projection lags the stream.** Cockpit does not yet show an
+  AgentSession row under its parent Terminal; tracked as phux-am9y.25.
 - **The server parses one codec it serves** to validate and derive state, an
   opacity exception confined to this codec as ADR-0046 confined its to a key.
 - **The stream is only as good as its producer.** A harness with no shim

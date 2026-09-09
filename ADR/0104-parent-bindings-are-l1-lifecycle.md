@@ -13,7 +13,7 @@ closing a child never affects the parent. One level only in v1; an
 `AgentSession` requires a Terminal parent and a Terminal has none. The
 relation is lifecycle, not metadata, so it lives on L1 beside atomic teardown.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-09-09
 
 ## Context
@@ -102,9 +102,8 @@ mid-tree kill means, for no caller.
 
 ## Tradeoffs
 
-- **Not built.** The field, the reason enum, the graph, and the cascade are
-  program work; today a Terminal closing leaves nothing behind because
-  nothing lives under it.
+- **The Cockpit projection lags the cascade.** Cockpit does not yet drop the
+  child row on `ParentClosed`; tracked as phux-am9y.25.
 - **A parent's exit is a fan-out under the lock.** One Terminal closing
   now also closes its children before the lock releases. Bounded by the
   one-level rule and by there being one session per harness in practice.

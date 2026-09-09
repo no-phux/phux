@@ -16,6 +16,7 @@ compatibility fallbacks; the record, when present, outranks both.
 
 Status: Accepted
 Date: 2026-07-09
+See [ADR-0103](./0103-agent-session-resource-and-producer-fed-streams.md) for the current scope: when an AgentSession exists, `phux.agent/v1` is a projection of its stream.
 
 ## Context
 
