@@ -16,7 +16,7 @@ on:
 concurrency:
   # PRs are latest-wins. Main SHAs keep their own validation because a release
   # can depend on any of them; a later push must not strand that release draft.
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: mini-v1-ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
   changes:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
@@ -58,7 +58,7 @@ jobs:
   workflow-gate:
     name: workflow gate
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -80,7 +80,7 @@ jobs:
     name: agent integrations
     needs: changes
     if: needs.changes.outputs.integrations_needed == 'true' && needs.changes.outputs.validated != 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -104,7 +104,7 @@ jobs:
   # features so dhat's allocator does not distort the performance e2e gates.
   check:
     name: check
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
@@ -140,7 +140,7 @@ jobs:
   # selection. nextest filters select execution after one workspace build.
   test:
     name: test
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
@@ -176,7 +176,7 @@ jobs:
     name: ci
     needs: [changes, check, test, workflow-gate, integrations]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: aggregate lane results

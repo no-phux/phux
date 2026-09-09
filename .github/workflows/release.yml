@@ -62,13 +62,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: mini-v1-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   prepare:
     name: prepare release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -120,21 +120,37 @@ jobs:
     name: build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-6vcpu-macos-26
+          - os: macos-26
             target: aarch64-apple-darwin
-          # Build Linux on the oldest supported Ubuntu runner instead of
-          # `ubuntu-latest` to keep the glibc baseline as low as GitHub's
-          # hosted fleet currently allows.
-          - os: blacksmith-4vcpu-ubuntu-2204
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: blacksmith-4vcpu-ubuntu-2204-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
     steps:
+      - name: Verify native release platform and Linux baseline
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$TARGET" in
+            aarch64-apple-darwin) test "$(uname -s)/$(uname -m)" = Darwin/arm64 ;;
+            x86_64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/x86_64 ;;
+            aarch64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/aarch64 ;;
+            *) exit 1 ;;
+          esac
+          if [[ "$TARGET" == *-linux-gnu ]]; then
+            . /etc/os-release
+            test "$ID/$VERSION_ID" = ubuntu/22.04
+            test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check out release tag
@@ -268,7 +284,7 @@ jobs:
     # the release as a private draft and attach nothing; a manual rerun against
     # the same tag repairs it atomically.
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.build.result == 'success' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -301,7 +317,7 @@ jobs:
     name: publish complete release
     needs: [prepare, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -338,7 +354,7 @@ jobs:
     # matters. If this job fails, the release is already out and the tap's own
     # scheduled update workflow picks it up within fifteen minutes.
     if: ${{ !cancelled() && needs.publish.result == 'success' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # Pushes Formula/phux.rb to no-phux/homebrew-tap with HOMEBREW_TAP_TOKEN,
     # a credential authorized to write that repository.
     # Skipped automatically if the secret is unset; the release is already

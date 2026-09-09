@@ -7,11 +7,11 @@
 # multi-core box vs ~13 min on the 2-core runner — pure CPU starvation, not
 # a code defect). Gating PRs on that is a ~25-min wall for no added safety
 # signal a fast machine wouldn't already give. So the stress suite runs here
-# instead: nightly (catch environment drift) and on-demand —
+# instead: on-demand —
 # `workflow_dispatch`, or by adding the `stress` label to a PR — never on
 # every push. (It used to also run post-merge on every `main` push; that was
 # the biggest Actions-minute sink for little signal, so it was dropped in
-# favor of the nightly + opt-in lanes.)
+# favor of opt-in lanes.)
 #
 # Build+run stay on one runner (matching ci.yml): libghostty-vt's build.rs
 # lets zig auto-detect the host CPU, so an artifact built on one runner can
@@ -24,8 +24,6 @@
 name: stress
 
 on:
-  schedule:
-    - cron: "0 7 * * *" # nightly 07:00 UTC
   workflow_dispatch:
   # Opt-in per-PR: add the `stress` label to run this lane against a risky
   # change. The job-level `if` below filters to that label so other labels
@@ -34,9 +32,9 @@ on:
     types: [labeled]
 
 # Don't pile up: re-labeling a PR supersedes its in-flight stress run on the
-# same ref. Never cancel a scheduled run (we want the nightly coverage).
+# same ref. A manual dispatch does not cancel an active run.
 concurrency:
-  group: stress-${{ github.ref }}
+  group: mini-v1-stress-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -45,20 +43,17 @@ permissions:
 jobs:
   stress:
     name: stress
-    # schedule + workflow_dispatch always run; a pull_request fires this lane
+    # workflow_dispatch always runs; a pull_request fires this lane
     # only when tagged with the `stress` label.
     if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'stress' }}
-    # Matches ci.yml's check/test lanes: the homogeneous Cobalt 100 arm fleet
-    # gives one stable CPU_KEY, so this lane's rust-cache entries share warmth
-    # with what ci.yml saves on main pushes instead of scattering across the
-    # mixed x64 fleet.
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    # Match ci.yml's standard ARM runner and CPU-fingerprinted cache.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Shared lane setup (disk headroom, CPU fingerprint, Nix + Cachix,
       # sccache, rust-cache): .github/actions/setup-rust-lane. This lane
       # builds the nextest test profile, so it shares ci.yml's `test`
-      # rust-cache key — the nightly run reuses what main's CI saved instead
+      # rust-cache key — the opt-in run reuses what main's CI saved instead
       # of maintaining a third copy.
       - uses: ./.github/actions/setup-rust-lane
         id: setup

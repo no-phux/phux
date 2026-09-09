@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   # A newer main push cannot cancel validation/artifacts needed by a release.
-  group: cockpit-ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: mini-v1-cockpit-ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
   changes:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
@@ -36,9 +36,8 @@ jobs:
     name: Zig 0.16 macOS
     if: needs.changes.outputs.cockpit_needed == 'true'
     needs: changes
-    # Blacksmith's macOS fleet is Apple-silicon-only and homogeneous, so the
-    # caches below key on runner.os alone without a CPU fingerprint.
-    runs-on: blacksmith-6vcpu-macos-26
+    # Standard public GitHub Apple-silicon runner; no paid larger-runner label.
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -68,7 +67,7 @@ jobs:
       # warm base (same policy as ci.yml's lanes).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: cockpit-ffi
+          shared-key: mini-v1-cockpit-ffi
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Zig compilation dominates the rest of the job (the materialized SDK
@@ -77,8 +76,7 @@ jobs:
       # the build manifest and Zig version, rotating by revision so immutable
       # cache entries can accumulate new compilation work after source changes.
       # The stable prefix restores the most recent compatible base.
-      # zig-build.sh compiles in .zig-global-cache; ~/.cache/zig supplies its
-      # shared package directory. Persist both halves along with .zig-cache.
+      # Cache the shared Zig package directory and checkout-owned build caches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: zig-cache
         with:
@@ -86,9 +84,9 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
-            cockpit-zig-0.16.0-${{ runner.os }}-
+            mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check release, SDK, and measurement contracts
         working-directory: clients/cockpit
@@ -165,4 +163,4 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}

@@ -6,14 +6,11 @@
 # CPU fingerprint identical everywhere they run.
 #
 # Steps, in order:
-#   1. Drop preinstalled hosted-runner toolchains this repo never uses; the
-#      restore stack (nix store + rust-cache + sccache) otherwise sits near
-#      the runner's free-space floor and has died ENOSPC before (phux-a5g7).
+#   1. Drop unused preinstalled toolchains from the ephemeral hosted runner.
 #   2. Fingerprint the CPU into CPU_KEY: libghostty-vt's build.rs lets zig
 #      auto-detect the host CPU, so a rust-cache entry restored onto leaner
 #      hardware can SIGILL. Covers both cpuinfo dialects (x86 flags / aarch64
-#      Features). On Blacksmith's homogeneous fleets this is stable, but the
-#      key stays cheap insurance against a fleet change.
+#      Features). The key protects against hosted fleet CPU changes.
 #   3. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny).
 #   4. sccache (optional): wraps rustc so unchanged workspace crates hit the
 #      GHA cache across commits; CARGO_INCREMENTAL=0 because sccache cannot
@@ -89,6 +86,6 @@ runs:
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       id: rust-cache
       with:
-        shared-key: ${{ inputs.rust-cache-shared-key }}
+        shared-key: mini-v1-${{ inputs.rust-cache-shared-key }}
         key: ${{ env.RUST_CACHE_KEY }}
         save-if: ${{ github.ref == 'refs/heads/main' }}

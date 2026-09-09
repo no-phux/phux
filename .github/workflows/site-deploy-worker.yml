@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: site-deploy-worker
+  group: mini-v1-site-deploy-worker
   cancel-in-progress: false
 
 jobs:

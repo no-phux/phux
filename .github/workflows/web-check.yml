@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: web-check-${{ github.ref }}
+  group: mini-v1-web-check-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
   engine-and-adapters:
     needs: classify
     if: needs.classify.outputs.web_needed == 'true' && needs.classify.outputs.validated != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: 2

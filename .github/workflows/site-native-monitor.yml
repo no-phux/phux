@@ -19,7 +19,7 @@ permissions:
 concurrency:
   # A routine probe may replace an older routine probe, but must never cancel
   # an operator's explicit two-session fallback exercise.
-  group: site-native-monitor-${{ github.event_name == 'workflow_dispatch' && inputs.exercise_fallback && 'fallback' || 'probe' }}
+  group: mini-v1-site-native-monitor-${{ github.event_name == 'workflow_dispatch' && inputs.exercise_fallback && 'fallback' || 'probe' }}
   cancel-in-progress: true
 
 jobs:

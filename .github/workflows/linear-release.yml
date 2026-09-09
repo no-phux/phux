@@ -56,13 +56,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: linear-release-${{ inputs.tag }}-${{ inputs.stage }}
+  group: mini-v1-linear-release-${{ inputs.tag }}-${{ inputs.stage }}
   cancel-in-progress: false
 
 jobs:
   report:
     name: report ${{ inputs.tag }} to Linear (${{ inputs.stage }})
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -77,9 +77,9 @@ jobs:
             *) echo "::error::stage must be 'building' or 'released', got '${STAGE}'"; exit 1 ;;
           esac
 
-      # Full history of the default branch, NOT `ref: <tag>`. On Blacksmith
-      # every fetch is served from a transparent git mirror, and a tag that
-      # release-please created through the API seconds ago is not in it yet:
+      # Full history of the default branch, NOT `ref: <tag>`. On the former
+      # Blacksmith runners, fetches used a transparent git mirror; a tag that
+      # release-please had just created through the API was not in it yet:
       # v0.24.0's `building` report died in checkout with "A branch or tag with
       # the name 'v0.24.0' could not be found" thirty seconds after the tag was
       # created, and the `released` update then had nothing to update. The tag

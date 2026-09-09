@@ -10,20 +10,18 @@ on:
         type: choice
         default: both
         options: [both, zig, rust]
-  schedule:
-    - cron: '23 5 1 * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: scoped-mutation-${{ github.ref }}-${{ inputs.language || 'both' }}
+  group: mini-v1-scoped-mutation-${{ github.ref }}-${{ inputs.language || 'both' }}
   cancel-in-progress: true
 
 jobs:
   zig:
-    if: github.event_name == 'schedule' || inputs.language != 'rust'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: inputs.language != 'rust'
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -47,8 +45,8 @@ jobs:
           retention-days: 14
 
   rust:
-    if: github.event_name == 'schedule' || inputs.language != 'zig'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: inputs.language != 'zig'
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
