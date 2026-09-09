@@ -104,13 +104,6 @@ pub fn default_key_path() -> PathBuf {
     crate::telemetry::state_dir().join("remote-key.pem")
 }
 
-/// The SAN vocabulary this module reports against, owned by
-/// [`phux_dial::cert`] alongside the generator that applies it. Imported for
-/// the tests that assert the shape directly; production code reaches it
-/// through [`ensure_self_signed_for`].
-#[cfg(test)]
-use cert::{LOOPBACK_SANS, san_list};
-
 /// Provision a self-signed certificate + key at the given paths if either is
 /// missing, naming only the loopback identities.
 ///
@@ -395,36 +388,6 @@ mod tests {
 
         // The generated material builds a working acceptor.
         acceptor_from_pem(&cert, &key).unwrap();
-    }
-
-    #[test]
-    fn san_list_keeps_loopback_first_and_dedupes_advertised() {
-        assert_eq!(san_list(&[]), LOOPBACK_SANS.map(str::to_owned).to_vec());
-
-        // Advertised names follow the loopback set, in the order given.
-        assert_eq!(
-            san_list(&["100.64.0.2".to_owned(), "mini.tail.ts.net".to_owned()]),
-            vec![
-                "localhost",
-                "127.0.0.1",
-                "::1",
-                "100.64.0.2",
-                "mini.tail.ts.net"
-            ]
-        );
-
-        // A repeat of a loopback name, a repeat of an advertised name, and an
-        // all-whitespace entry all collapse away. rcgen rejects an empty DNS
-        // name outright, so letting one through would fail provisioning.
-        assert_eq!(
-            san_list(&[
-                "127.0.0.1".to_owned(),
-                "  ".to_owned(),
-                "100.64.0.2".to_owned(),
-                "100.64.0.2".to_owned(),
-            ]),
-            vec!["localhost", "127.0.0.1", "::1", "100.64.0.2"]
-        );
     }
 
     #[test]

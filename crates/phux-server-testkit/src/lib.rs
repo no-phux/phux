@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     AttachTarget, DetachReason, FrameKind, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
@@ -425,6 +426,25 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf
+}
+
+/// Build a `KeyEvent` for an ASCII printable, matching what a real client
+/// sends: the text and unshifted codepoint both carry the character, and no
+/// modifiers are set or consumed.
+///
+/// Eleven test files each had a byte-identical private copy of this before it
+/// was promoted here.
+#[must_use]
+pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: Some(c.to_string()),
+        unshifted_codepoint: Some(c as u32),
+    }
 }
 
 /// Build the canonical `ATTACH { ByName(name) }` used by the byc.6 tests.

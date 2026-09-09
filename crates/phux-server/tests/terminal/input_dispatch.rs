@@ -19,23 +19,9 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
-
-/// Build a `KeyEvent` for an ASCII printable matching `phux-byc.6.5`'s
-/// fixture shape: press, no modifiers, no composition.
-fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: Some(c.to_string()),
-        unshifted_codepoint: Some(c as u32),
-    }
-}
 
 /// Build an Enter key — no `text`, libghostty's encoder synthesizes the
 /// CR. Matches `pty_pump.rs::input_keystroke_reaches_pty_and_echoes_back`.

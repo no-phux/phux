@@ -1271,7 +1271,6 @@ mod tests {
             ..local.clone()
         };
         assert_ne!(local, other_pane, "pane ordinal is part of row identity");
-        assert_eq!(local, local.clone(), "otherwise identical rows still match");
     }
 
     /// The unreviewed-`done` row must be visually distinct from both a

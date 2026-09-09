@@ -38,7 +38,7 @@ use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, run_local,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame, run_local,
     spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -257,19 +257,6 @@ fn hello(client_name: &str) -> FrameKind {
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
         client_caps: ClientCapabilities::default(),
-    }
-}
-
-/// An ASCII printable key press (crib of `input_dispatch.rs`).
-fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: Some(c.to_string()),
-        unshifted_codepoint: Some(c as u32),
     }
 }
 

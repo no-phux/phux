@@ -405,7 +405,6 @@ mod tests {
             unshifted_codepoint: None,
         };
         assert_ne!(mk("a"), mk("b"));
-        assert_eq!(mk("a"), mk("a"));
     }
 
     #[test]

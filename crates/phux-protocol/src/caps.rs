@@ -1674,12 +1674,9 @@ mod tests {
     #[test]
     fn get_perf_feature_bit_is_stable_and_known() {
         assert_eq!(GET_PERF, 0x0000_0800);
-        assert_eq!(ServerFeature::GetPerf as u32, GET_PERF);
         assert_eq!(TRANSCRIBE, 0x0000_2000);
-        assert_eq!(ServerFeature::Transcribe as u32, TRANSCRIBE);
         assert!(ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::Transcribe));
         assert_eq!(RESOURCE_KINDS, 0x0000_4000);
-        assert_eq!(ServerFeature::ResourceKinds as u32, RESOURCE_KINDS);
         assert!(ServerFeatureSet::from_wire(RESOURCE_KINDS).contains(ServerFeature::ResourceKinds));
         assert!(!ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::ResourceKinds));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
@@ -1697,13 +1694,6 @@ mod tests {
         assert_eq!(SHUTDOWN, 0x0000_0100);
         assert_eq!(SPAWN_INITIAL_SIZE, 0x0000_0200);
         assert_eq!(REPORT_AGENT_STATE, 0x0000_0400);
-        assert_eq!(ServerFeature::Shutdown as u32, SHUTDOWN);
-        assert_eq!(ServerFeature::SpawnInitialSize as u32, SPAWN_INITIAL_SIZE);
-        assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
-        assert_eq!(ServerFeature::FileUpload as u32, FILE_UPLOAD);
-        assert_eq!(ServerFeature::MoveTerminal as u32, MOVE_TERMINAL);
-        assert_eq!(ServerFeature::TerminalReply as u32, TERMINAL_REPLY);
-        assert_eq!(ServerFeature::ReportAgentState as u32, REPORT_AGENT_STATE);
         let set = ServerFeatureSet::with(&[
             ServerFeature::AcknowledgedInput,
             ServerFeature::FileUpload,

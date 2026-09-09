@@ -28,7 +28,7 @@
 )]
 
 use phux_protocol::TerminalId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
 };
@@ -39,21 +39,9 @@ use tokio::time::timeout;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
-
-fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: Some(c.to_string()),
-        unshifted_codepoint: Some(c as u32),
-    }
-}
 
 /// Attach a fresh socket to `default` and drain the opening
 /// `ATTACHED + TERMINAL_SNAPSHOT` pair. Returns the stream and the pane's

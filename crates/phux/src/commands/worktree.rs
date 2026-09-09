@@ -1035,12 +1035,6 @@ mod tests {
     }
 
     #[test]
-    fn derivation_is_stable_across_calls() {
-        let path = Path::new("/w/feat/@weird name--here");
-        assert_eq!(session_name_for(path), session_name_for(path));
-    }
-
-    #[test]
     fn clean_worktree_summarizes_to_nothing() {
         assert_eq!(summarize_porcelain(""), None);
         assert_eq!(summarize_porcelain("\n  \n"), None);

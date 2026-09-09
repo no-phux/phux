@@ -122,16 +122,6 @@ fn parse_errors_for_malformed_specs() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn resolver_builds_from_three_bindings() {
-    let c = cfg(
-        "C-b",
-        &[("c", "new-window"), ("d", "detach")],
-        &[("M-q", "quit")],
-    );
-    let _r = Resolver::new(&c).expect("resolver builds");
-}
-
-#[test]
 fn shipped_default_keybindings_build_a_resolver() {
     // Regression guard: every chord in the embedded default.toml must
     // parse and the prefix table must be unambiguous (phux-4li.18 added

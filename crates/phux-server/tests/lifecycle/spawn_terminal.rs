@@ -52,8 +52,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server, spawn_server_seed_pty_no_cmd, spawn_server_with_seed_cmd,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, run_local,
+    send_frame, spawn_server, spawn_server_seed_pty_no_cmd, spawn_server_with_seed_cmd,
     spawn_server_with_seed_cmd_and_cwd_mode, wait_for_socket,
 };
 
@@ -162,20 +162,6 @@ async fn await_terminal_closed(
         }
     }
     panic!("timed out waiting for TERMINAL_CLOSED for {pane:?}");
-}
-
-/// `KeyEvent` for an ASCII printable. Matches `input_dispatch.rs`'s
-/// `ascii_key` fixture so the wire encoding is identical.
-fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: Some(c.to_string()),
-        unshifted_codepoint: Some(c as u32),
-    }
 }
 
 /// Enter key — no `text`, libghostty's encoder synthesizes the CR.
