@@ -50,7 +50,7 @@ surface (ADR-0030 §2).
 
 ### 0.1 Resources and kinds
 
-<!-- impl-status: spec-only; probe: RESOURCE_KINDS -->
+<!-- impl-status: partial; probe: RESOURCE_KINDS -->
 > **Status: landing on the resource-model branch.** The server does not yet
 > advertise `RESOURCE_KINDS`; every resource a released binary serves is a
 > Terminal, and the verbs in this file that address an agent session are
@@ -608,7 +608,7 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   settings, manifest, and marked shell-rc block. User shell configuration and
   the real Claude installation are otherwise untouched.
 
-<!-- impl-status: spec-only; probe: APPEND_RESOURCE_OUTPUT,phux_agent_emit -->
+<!-- impl-status: partial; probe: COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
 > **Status: landing on the resource-model branch.** The four agent-session
 > verbs below are documented from the resource-model contract (ADR-0103). A
 > released binary has none of them; against a server that does not advertise
@@ -1830,7 +1830,7 @@ established session retains its admission until it disconnects.
 
 ### 4.19 Agent session documents — `phux agent session open`, `emit`, `log`
 
-<!-- impl-status: spec-only; probe: AgentEventsJsonlV1 -->
+<!-- impl-status: partial; probe: AgentEventsJsonlV1 -->
 > **Status: landing on the resource-model branch.** The shapes below are the
 > resource-model contract for the agent-session verbs (§2); no released
 > binary emits them. Each is `schema_version` 1 and additive from here.

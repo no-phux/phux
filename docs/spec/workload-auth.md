@@ -393,19 +393,19 @@ and channel binding; it SHALL not be serialized as a reusable bearer credential.
 The terminal protocol adds:
 
 ```text
-HELLO field 6: workload_profile optional<str>
-HELLO field 7: workload_client_nonce optional<bytes32>
+HELLO field 7: workload_profile optional<str>
+HELLO field 8: workload_client_nonce optional<bytes32>
 
 WORKLOAD_RESPONSE  C -> S  type 0x04
 WORKLOAD_CHALLENGE S -> C  type 0x84
 
-HELLO_OK field 9: workload_grant optional<WorkloadGrant>
+HELLO_OK field 10: workload_grant optional<WorkloadGrant>
 ServerFeature::WORKLOAD_AUTH = 0x00001000
 ```
 
 The two HELLO fields form `WorkloadOffer` and SHALL be both absent or both
-present. When present, field 6 contains the ordinary leaf-string image
-`U32(16) || "phux-workload/v1"`, and field 7 contains exactly 32 nonce bytes.
+present. When present, field 7 contains the ordinary leaf-string image
+`U32(16) || "phux-workload/v1"`, and field 8 contains exactly 32 nonce bytes.
 The strict challenge fields are:
 
 | Field id | Field value inside the TLV `BYTES` envelope |
@@ -529,11 +529,11 @@ point before any handler or satellite branch:
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
 
-<!-- impl-status: partial; probe: ResourceKind -->
-> **Status: spec-only.** The kind-bearing spawn rows and the
-> `APPEND_RESOURCE_OUTPUT` row classify frames no codec decodes yet; they
-> bind the classifier the day the `AGENT_SESSION` kind lands
-> ([L1.md §1.1](./L1.md)).
+<!-- impl-status: partial; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
+> **Status: partial.** The kind-bearing spawn rows and the
+> `APPEND_RESOURCE_OUTPUT` row classify frames the codec decodes but no
+> server serves; they bind the classifier the day the `AGENT_SESSION` kind
+> lands ([L1.md §1.1](./L1.md)).
 
 A resource bound to a parent ([L1.md §1.2](./L1.md)) is admitted through
 that parent: for every row above whose subject is "named Terminal", a child

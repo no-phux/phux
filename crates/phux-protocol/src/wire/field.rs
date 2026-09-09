@@ -443,6 +443,22 @@ pub mod spawn_terminal {
     /// followed by `rows: u16`, both big-endian. Absent (or zero on either
     /// axis) leaves the server's default grid in force.
     pub const INITIAL_SIZE: u32 = 10;
+    /// Optional `ResourceKind` tag (`u8`); absent = `Terminal`.
+    ///
+    /// Every pre-kind body therefore decodes as a Terminal spawn. Decoders
+    /// validate the remaining fields per kind: an `AgentSession` spawn
+    /// requires `PARENT` and `PROVIDER` and carries none of `COMMAND`,
+    /// `CWD`, `ENV`, `TERM`, `OWNER_TERMINAL`, or `INITIAL_SIZE`; a
+    /// `Terminal` spawn carries none of fields 12-14.
+    pub const KIND: u32 = 11;
+    /// Optional parent resource (positional tagged `TerminalId`). Required
+    /// for `AgentSession`, which is always bound to a Terminal parent.
+    pub const PARENT: u32 = 12;
+    /// Optional agent provider name (`str`, e.g. `claude`). Required for
+    /// `AgentSession`.
+    pub const PROVIDER: u32 = 13;
+    /// Optional opaque provider-native session id (`str`).
+    pub const NATIVE_ID: u32 = 14;
 }
 
 /// `TERMINAL_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
@@ -479,6 +495,10 @@ pub mod terminal_closed {
     pub const TERMINAL_ID: u32 = 1;
     /// Optional exit status (absent field = signal / unknown).
     pub const EXIT_STATUS: u32 = 2;
+    /// Optional `CloseReason` tag (`u8`). Absent = the server stated no
+    /// reason (`CloseReason::Unknown`), which is what every pre-reason body
+    /// decodes as.
+    pub const REASON: u32 = 3;
 }
 
 /// `TERMINAL_RESIZE` body fields (`docs/spec/L1.md` §10.2).
@@ -542,6 +562,19 @@ pub mod event_asked {
     /// Optional seconds the agent has been waiting (`u64`); an absent field is
     /// `0` / unknown.
     pub const ELAPSED_SECONDS: u32 = 4;
+}
+
+/// `AgentEvent::PaneSpawned` body fields (`docs/spec/L1.md` §7.1).
+///
+/// Field-tagged TLV like [`event_asked`]: a body that predates the fields is
+/// empty and decodes as a root Terminal, and an older decoder ignores the
+/// body entirely, so both fields are additive.
+pub mod event_pane_spawned {
+    /// `ResourceKind` tag (`u8`). Absent = `Terminal`; the encoder writes it
+    /// only for another kind.
+    pub const KIND: u32 = 1;
+    /// Parent resource (positional tagged `TerminalId`). Absent = a root.
+    pub const PARENT: u32 = 2;
 }
 
 // -----------------------------------------------------------------------------

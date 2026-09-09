@@ -22,9 +22,9 @@ use std::cell::Cell;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
-    FrameKind, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES,
-    TYPE_BOOTSTRAP_CHUNK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE,
-    TYPE_INPUT_TERMINAL_REPLY,
+    FrameKind, MAX_APPEND_BYTES, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
+    MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_BOOTSTRAP_CHUNK, TYPE_COMMAND, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_TERMINAL_REPLY,
 };
 
 mod common;
@@ -218,6 +218,78 @@ fn oversized_terminal_reply_rejects_before_owned_bytes_allocation() {
         max, 0,
         "oversized terminal reply must fail before Bytes allocation"
     );
+}
+
+#[test]
+fn oversized_append_resource_output_rejects_before_owned_bytes_allocation() {
+    // COMMAND (0x31) carrying APPEND_RESOURCE_OUTPUT (tag 0x1a): the payload
+    // is a u32-prefixed leaf `bytes` inside the positional command value. One
+    // byte over the cap must be refused before the Vec copy is made.
+    let mut command = vec![0x1au8];
+    command.push(0); // TerminalId::Local tag
+    command.extend_from_slice(&1_u32.to_be_bytes());
+    let payload_len = MAX_APPEND_BYTES + 1;
+    command.extend_from_slice(&u32::try_from(payload_len).unwrap().to_be_bytes());
+    command.extend(std::iter::repeat_n(0xA5u8, payload_len));
+    let mut body = vec![TYPE_COMMAND];
+    tlv_field(&mut body, 1, &5_u32.to_be_bytes());
+    tlv_field(&mut body, 2, &command);
+    let frame = framed(&body);
+
+    let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    assert_eq!(
+        result.unwrap_err(),
+        DecodeError::AppendResourceOutputLimitExceeded
+    );
+    assert_eq!(
+        max, 0,
+        "oversized append must fail before the owned bytes allocation"
+    );
+}
+
+#[test]
+fn append_resource_output_declared_length_past_frame_rejects_without_reserving() {
+    // A u32 length prefix far larger than the bytes present must error on the
+    // leaf read (LengthOverflow / EOF), never reserve.
+    let mut command = vec![0x1au8];
+    command.push(0);
+    command.extend_from_slice(&1_u32.to_be_bytes());
+    command.extend_from_slice(&u32::MAX.to_be_bytes());
+    command.extend_from_slice(b"abc");
+    let mut body = vec![TYPE_COMMAND];
+    tlv_field(&mut body, 1, &5_u32.to_be_bytes());
+    tlv_field(&mut body, 2, &command);
+    let frame = framed(&body);
+
+    let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    assert!(matches!(
+        result,
+        Err(DecodeError::LengthOverflow | DecodeError::UnexpectedEof)
+    ));
+    assert!(max < 1 << 20, "declared-length append reserved {max} bytes");
+}
+
+#[test]
+fn snapshot_huge_resource_facet_count_does_not_over_reserve() {
+    // ATTACHED (0x81): a well-formed empty snapshot followed by a trailing
+    // resource-facet list declaring u32::MAX rows and carrying none.
+    let mut snap = Vec::new();
+    snap.extend_from_slice(&0_u32.to_be_bytes()); // sessions
+    snap.extend_from_slice(&0_u32.to_be_bytes()); // windows
+    snap.extend_from_slice(&0_u32.to_be_bytes()); // panes
+    snap.extend_from_slice(&1_u32.to_be_bytes()); // focused_session
+    snap.extend_from_slice(&1_u32.to_be_bytes()); // focused_window
+    snap.push(0); // focused_pane tag local
+    snap.extend_from_slice(&1_u32.to_be_bytes());
+    snap.extend_from_slice(&u32::MAX.to_be_bytes()); // facet rows: huge
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &snap);
+    tlv_field(&mut fields, 2, &7_u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1_u32.to_be_bytes());
+    let frame = framed_tlv(0x81, &fields);
+    let max = largest_alloc_during(&frame);
+    assert!(FrameKind::decode(&frame).is_err());
+    assert!(max < 1 << 20, "facet rows reserved {max} bytes");
 }
 
 #[test]

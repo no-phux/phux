@@ -21,14 +21,14 @@ use crate::wire::framing::LENGTH_PREFIX_LEN;
 use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapshot};
 
 use super::{
-    AgentEvent, AttachTarget, Command, CommandResult, DetachReason, ErrorCode,
-    HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN, MoveResult, Scope, SpawnResult,
-    TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
-    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
-    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
-    TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK,
-    TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE,
-    TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
+    AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason, ErrorCode,
+    HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN, MoveResult, Scope,
+    SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE,
+    TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED,
+    TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
+    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
+    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
     TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
     TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA,
     TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED,
@@ -662,6 +662,15 @@ pub enum FrameKind {
         /// what lets a client know whether the resize it sends next is
         /// redundant. A zero on either axis is ignored by the receiver.
         initial_size: Option<(u16, u16)>,
+        /// What kind of resource to spawn and, for a child kind, its binding
+        /// and facet: the additive fields 11 (`kind`), 12 (`parent`),
+        /// 13 (`provider`), and 14 (`native_id`) of `docs/spec/L1.md` §1.2.
+        /// `None` is the plain Terminal spawn: no field is written, and a
+        /// body that carries none of the four decodes to `None`, so a
+        /// Terminal spawn's bytes are unchanged from before the fields
+        /// existed. See [`SpawnResource`] for the per-kind rules the
+        /// decoder enforces and the feature bit that gates the fields.
+        resource: Option<Box<SpawnResource>>,
     },
 
     /// `TERMINAL_SPAWNED` — server reply to a prior `SpawnTerminal`
@@ -731,6 +740,11 @@ pub enum FrameKind {
         terminal_id: TerminalId,
         /// Process exit code (`_exit(n)`), or `None` for signals / unknown.
         exit_status: Option<i32>,
+        /// Why the resource closed. Additive optional field id 3: the
+        /// encoder omits the field for [`CloseReason::Unknown`] and the
+        /// decoder reads an absent field as `Unknown`, so a body from a peer
+        /// that predates the field carries no reason rather than failing.
+        reason: CloseReason,
     },
 
     /// `TERMINAL_RESIZE` — client signals a per-Terminal PTY resize
@@ -1258,6 +1272,7 @@ impl FrameKind {
                 owner_terminal,
                 agent_session,
                 initial_size,
+                resource,
             } => {
                 Self::encode_spawn_terminal_request(enc, *request_id, *group);
                 Self::encode_spawn_terminal_process(
@@ -1274,6 +1289,9 @@ impl FrameKind {
                     agent_session.as_deref(),
                     *initial_size,
                 );
+                if let Some(resource) = resource.as_deref() {
+                    Self::encode_spawn_terminal_resource(enc, resource);
+                }
             }
             Self::TerminalSpawned { request_id, result } => {
                 Self::encode_terminal_spawned(enc, *request_id, result);
@@ -1289,7 +1307,8 @@ impl FrameKind {
             Self::TerminalClosed {
                 terminal_id,
                 exit_status,
-            } => Self::encode_terminal_closed(enc, terminal_id, *exit_status),
+                reason,
+            } => Self::encode_terminal_closed(enc, terminal_id, *exit_status, *reason),
             Self::TerminalResize {
                 terminal_id,
                 cols,
@@ -1619,6 +1638,9 @@ impl FrameKind {
             }
             BootstrapStreamProfile::SynthesizedVtStateSync => {
                 (BootstrapCodec::SynthesizedVtV1, OutputMode::StateSync)
+            }
+            BootstrapStreamProfile::AgentEventsJsonlV1 => {
+                (BootstrapCodec::AgentEventsJsonlV1, OutputMode::Raw)
             }
         };
         enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
@@ -2012,6 +2034,29 @@ impl FrameKind {
         }
     }
 
+    /// Write what kind of resource the spawn creates and, for a child kind,
+    /// its binding and facet (fields 11-14).
+    ///
+    /// `kind` is written only when it is not the Terminal default, so a
+    /// Terminal spawn's byte image is identical to one encoded before the
+    /// field existed; the other three are absent-is-`None` optionals.
+    fn encode_spawn_terminal_resource(enc: &mut Encoder<'_>, resource: &SpawnResource) {
+        if !resource.kind.is_terminal() {
+            enc.write_field(field::spawn_terminal::KIND, &[resource.kind.as_wire()]);
+        }
+        if let Some(parent) = &resource.parent {
+            enc.write_field_with(field::spawn_terminal::PARENT, |e| {
+                encode_terminal_id(parent, e);
+            });
+        }
+        if let Some(provider) = &resource.provider {
+            enc.write_field(field::spawn_terminal::PROVIDER, provider.as_bytes());
+        }
+        if let Some(native_id) = &resource.native_id {
+            enc.write_field(field::spawn_terminal::NATIVE_ID, native_id.as_bytes());
+        }
+    }
+
     /// Write the `TERMINAL_SPAWNED` payload.
     fn encode_terminal_spawned(enc: &mut Encoder<'_>, request_id: u32, result: &SpawnResult) {
         enc.write_field_with(field::terminal_spawned::REQUEST_ID, |e| {
@@ -2055,6 +2100,7 @@ impl FrameKind {
         enc: &mut Encoder<'_>,
         terminal_id: &TerminalId,
         exit_status: Option<i32>,
+        reason: CloseReason,
     ) {
         enc.write_field_with(field::terminal_closed::TERMINAL_ID, |e| {
             encode_terminal_id(terminal_id, e);
@@ -2064,6 +2110,11 @@ impl FrameKind {
             enc.write_field_with(field::terminal_closed::EXIT_STATUS, |e| {
                 e.write_u32_be(u32::from_be_bytes(status.to_be_bytes()));
             });
+        }
+        // Optional reason: absent field = unstated, so an unstated reason
+        // leaves the body byte-identical to a pre-reason encoder's.
+        if !reason.is_unknown() {
+            enc.write_field(field::terminal_closed::REASON, &[reason.as_wire()]);
         }
     }
 

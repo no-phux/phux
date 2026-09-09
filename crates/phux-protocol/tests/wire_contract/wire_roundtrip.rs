@@ -21,8 +21,8 @@ use phux_protocol::caps::{
     TerminalDefaultColors,
 };
 use phux_protocol::ids::{
-    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, SessionId, StreamId,
-    TerminalId, WindowId,
+    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind, SessionId,
+    StreamId, TerminalId, WindowId,
 };
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -30,13 +30,15 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, DetachReason,
-    ErrorCode, FileUploadAck, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, MoveError, MoveResult, ReportedAgentState, Scope,
-    SpawnError, SpawnResult, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
+    AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
+    DetachReason, ErrorCode, FileUploadAck, InputMode, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
+    MoveResult, ReportedAgentState, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
+    TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
-    LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
+    AgentFacet, LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
 };
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
@@ -168,6 +170,35 @@ fn arb_pane_info() -> impl Strategy<Value = TerminalInfo> {
             TerminalInfo::new(TerminalId::local(id), WindowId::new(window_id), cols, rows)
                 .with_title(title)
                 .with_cwd(cwd)
+        })
+}
+
+fn arb_resource_kind() -> impl Strategy<Value = ResourceKind> {
+    prop_oneof![
+        Just(ResourceKind::Terminal),
+        Just(ResourceKind::AgentSession),
+        (2_u8..=u8::MAX).prop_map(|tag| ResourceKind::Unknown { tag }),
+    ]
+}
+
+fn arb_agent_facet() -> impl Strategy<Value = AgentFacet> {
+    (".{0,16}", proptest::option::of(".{0,32}"), ".{0,16}").prop_map(
+        |(provider, native_id, state)| AgentFacet::new(provider, state).with_native_id(native_id),
+    )
+}
+
+/// A snapshot entry carrying resource facets: any kind, an optional parent,
+/// an optional agent facet. Ids are drawn from a small space so a snapshot
+/// of several entries still has distinct ids (the facet join is by id).
+fn arb_resource_info() -> impl Strategy<Value = TerminalInfo> {
+    (
+        arb_pane_info(),
+        arb_resource_kind(),
+        proptest::option::of(arb_terminal_id()),
+        proptest::option::of(arb_agent_facet()),
+    )
+        .prop_map(|(info, kind, parent, agent)| {
+            info.with_kind(kind).with_parent(parent).with_agent(agent)
         })
 }
 
@@ -361,6 +392,11 @@ fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::InputDeliveryUnknown),
         Just(ErrorCode::InputLeaseHeld),
         Just(ErrorCode::CanonicalLimitExceeded),
+        Just(ErrorCode::InputNotWritten),
+        Just(ErrorCode::WrongResourceKind),
+        Just(ErrorCode::NotProducer),
+        Just(ErrorCode::RecordInvalid),
+        Just(ErrorCode::Overflow),
         Just(ErrorCode::InternalError),
     ]
 }
@@ -899,6 +935,34 @@ proptest! {
         prop_assert!(tail.is_empty());
     }
 
+    /// Snapshot entries with resource facets round-trip through the trailing
+    /// facet list, and a mix of plain and faceted entries keeps every entry
+    /// on the right id.
+    #[test]
+    fn roundtrip_resource_info(
+        infos in proptest::collection::vec(arb_resource_info(), 1..4),
+    ) {
+        // Dedupe ids: the facet join is by id, so two entries sharing an id
+        // would legitimately collapse.
+        let mut seen = std::collections::HashSet::new();
+        let panes: Vec<TerminalInfo> = infos
+            .into_iter()
+            .filter(|info| seen.insert(info.id.clone()))
+            .collect();
+        let snap = SessionSnapshot::new(SessionId::new(0), WindowId::new(0), TerminalId::new(0))
+            .with_panes(panes);
+        let frame = FrameKind::Attached {
+            attach_id: 1,
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        };
+        let mut buf = BytesMut::new();
+        frame.encode(&mut buf);
+        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+        prop_assert_eq!(decoded, frame);
+        prop_assert!(tail.is_empty());
+    }
+
     #[test]
     fn roundtrip_layout_node(layout in arb_layout_node()) {
         let win = WindowInfo::new(WindowId::new(1), SessionId::new(1), "w")
@@ -1029,26 +1093,35 @@ fn error_unknown_code_is_rejected() {
 fn error_code_wire_values_match_spec() {
     // SPEC §14 names these wire values; lock them in so a refactor cannot
     // silently renumber the enum.
-    assert_eq!(ErrorCode::VersionIncompatible.as_wire(), 1);
-    assert_eq!(ErrorCode::UnknownMessageType.as_wire(), 2);
-    assert_eq!(ErrorCode::MalformedMessage.as_wire(), 3);
-    assert_eq!(ErrorCode::FrameTooLarge.as_wire(), 4);
-    assert_eq!(ErrorCode::NotAttached.as_wire(), 100);
-    assert_eq!(ErrorCode::AlreadyAttached.as_wire(), 101);
-    assert_eq!(ErrorCode::SessionNotFound.as_wire(), 102);
-    assert_eq!(ErrorCode::WindowNotFound.as_wire(), 103);
-    assert_eq!(ErrorCode::TerminalNotFound.as_wire(), 104);
-    assert_eq!(ErrorCode::ClientNotFound.as_wire(), 105);
-    assert_eq!(ErrorCode::UnsupportedSatelliteRoute.as_wire(), 106);
-    assert_eq!(ErrorCode::SatelliteUnreachable.as_wire(), 107);
-    assert_eq!(ErrorCode::InvalidCommand.as_wire(), 200);
-    assert_eq!(ErrorCode::PermissionDenied.as_wire(), 201);
-    assert_eq!(ErrorCode::ResourceExhausted.as_wire(), 202);
-    assert_eq!(ErrorCode::UnsafePaste.as_wire(), 203);
-    assert_eq!(ErrorCode::InputLeaseHeld.as_wire(), 204);
-    assert_eq!(ErrorCode::InputDeliveryUnknown.as_wire(), 205);
-    assert_eq!(ErrorCode::CanonicalLimitExceeded.as_wire(), 206);
-    assert_eq!(ErrorCode::InternalError.as_wire(), 65535);
+    for (code, wire) in [
+        (ErrorCode::VersionIncompatible, 1),
+        (ErrorCode::UnknownMessageType, 2),
+        (ErrorCode::MalformedMessage, 3),
+        (ErrorCode::FrameTooLarge, 4),
+        (ErrorCode::NotAttached, 100),
+        (ErrorCode::AlreadyAttached, 101),
+        (ErrorCode::SessionNotFound, 102),
+        (ErrorCode::WindowNotFound, 103),
+        (ErrorCode::TerminalNotFound, 104),
+        (ErrorCode::ClientNotFound, 105),
+        (ErrorCode::UnsupportedSatelliteRoute, 106),
+        (ErrorCode::SatelliteUnreachable, 107),
+        (ErrorCode::InvalidCommand, 200),
+        (ErrorCode::PermissionDenied, 201),
+        (ErrorCode::ResourceExhausted, 202),
+        (ErrorCode::UnsafePaste, 203),
+        (ErrorCode::InputLeaseHeld, 204),
+        (ErrorCode::InputDeliveryUnknown, 205),
+        (ErrorCode::CanonicalLimitExceeded, 206),
+        (ErrorCode::InputNotWritten, 207),
+        (ErrorCode::WrongResourceKind, 208),
+        (ErrorCode::NotProducer, 209),
+        (ErrorCode::RecordInvalid, 210),
+        (ErrorCode::Overflow, 211),
+        (ErrorCode::InternalError, 65535),
+    ] {
+        assert_eq!(code.as_wire(), wire, "{code:?}");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1331,6 +1404,19 @@ fn arb_spawn_error() -> impl Strategy<Value = SpawnError> {
         ".{0,128}".prop_map(SpawnError::SpawnFailed),
         Just(SpawnError::UnsupportedSatelliteRoute),
         ".{0,128}".prop_map(SpawnError::SatelliteUnreachable),
+        Just(SpawnError::UnsupportedKind),
+        Just(SpawnError::ParentNotFound),
+        Just(SpawnError::ParentKindMismatch),
+    ]
+}
+
+fn arb_close_reason() -> impl Strategy<Value = CloseReason> {
+    prop_oneof![
+        Just(CloseReason::Unknown),
+        Just(CloseReason::Exited),
+        Just(CloseReason::Killed),
+        Just(CloseReason::ParentClosed),
+        Just(CloseReason::ServerShutdown),
     ]
 }
 
@@ -1379,6 +1465,82 @@ proptest! {
             owner_terminal: owner_terminal.map(TerminalId::local),
             agent_session,
             initial_size,
+            resource: None,
+        });
+    }
+
+    /// An `AgentSession` spawn carries fields 11-14 and none of the PTY
+    /// shape; `parent` and `provider` are required, `native_id` optional,
+    /// and `satellite` (7) and `agent_session` (9) stay legal for it.
+    #[test]
+    fn roundtrip_spawn_agent_session(
+        request_id in any::<u32>(),
+        group in any::<u32>(),
+        satellite in proptest::option::of(".{1,16}"),
+        agent_session in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
+        parent in arb_terminal_id(),
+        provider in ".{1,32}",
+        native_id in proptest::option::of(".{1,64}"),
+    ) {
+        prop_assume!(provider.len() <= MAX_RESOURCE_PROVIDER_BYTES);
+        prop_assume!(native_id.as_ref().is_none_or(|id| id.len() <= MAX_RESOURCE_NATIVE_ID_BYTES));
+        assert_round_trip(&FrameKind::SpawnTerminal {
+            request_id,
+            group: GroupId::new(group),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
+            owner_terminal: None,
+            agent_session,
+            initial_size: None,
+            resource: Some(Box::new(
+                SpawnResource::agent_session(parent, provider).with_native_id(native_id),
+            )),
+        });
+    }
+
+    /// A kind this build does not recognise round-trips its tag verbatim and
+    /// is not validated, so the server can answer `UnsupportedKind`.
+    #[test]
+    fn roundtrip_spawn_unknown_kind(
+        request_id in any::<u32>(),
+        tag in 2_u8..=u8::MAX,
+        parent in proptest::option::of(arb_terminal_id()),
+        cwd in proptest::option::of(".{0,32}"),
+    ) {
+        assert_round_trip(&FrameKind::SpawnTerminal {
+            request_id,
+            group: GroupId::new(1),
+            command: None,
+            cwd,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: Some(Box::new(SpawnResource {
+                kind: ResourceKind::Unknown { tag },
+                parent,
+                provider: None,
+                native_id: None,
+            })),
+        });
+    }
+
+    /// `pane_spawned` carries the new resource's kind and parent as
+    /// additive TLV fields; every combination round-trips.
+    #[test]
+    fn roundtrip_event_pane_spawned(
+        terminal in arb_terminal_id(),
+        kind in arb_resource_kind(),
+        parent in proptest::option::of(arb_terminal_id()),
+    ) {
+        assert_round_trip(&FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::PaneSpawned { kind, parent },
         });
     }
 
@@ -1416,8 +1578,9 @@ proptest! {
     fn roundtrip_terminal_closed(
         terminal_id in arb_terminal_id(),
         exit_status in proptest::option::of(any::<i32>()),
+        reason in arb_close_reason(),
     ) {
-        assert_round_trip(&FrameKind::TerminalClosed { terminal_id, exit_status });
+        assert_round_trip(&FrameKind::TerminalClosed { terminal_id, exit_status, reason });
     }
 
     /// Zero dims are in-range: SPEC §10.2 leaves them implementation-defined
@@ -2088,7 +2251,8 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
             .prop_map(|exit_code| AgentEvent::CommandFinished { exit_code }),
         ".{0,128}".prop_map(|title| AgentEvent::TitleChanged { title }),
         Just(AgentEvent::Bell),
-        Just(AgentEvent::PaneSpawned),
+        (arb_resource_kind(), proptest::option::of(arb_terminal_id()))
+            .prop_map(|(kind, parent)| AgentEvent::PaneSpawned { kind, parent }),
         proptest::option::of(any::<i32>())
             .prop_map(|exit_status| AgentEvent::PaneClosed { exit_status }),
         Just(AgentEvent::Dirty),
@@ -2275,6 +2439,484 @@ fn terminal_spawned_unknown_result_tag_is_rejected() {
             value: 0xFE,
         }
     );
+}
+
+// -----------------------------------------------------------------------------
+// Resource kinds: the additive spawn / close / snapshot / command shapes.
+// -----------------------------------------------------------------------------
+
+/// Build a `SPAWN_TERMINAL` body by hand from `(field_id, value)` pairs.
+fn spawn_terminal_frame(fields: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut body = Vec::new();
+    tlv_field(&mut body, 1, &1u32.to_be_bytes()); // request_id
+    tlv_field(&mut body, 2, &1u32.to_be_bytes()); // group
+    for (id, value) in fields {
+        tlv_field(&mut body, *id, value);
+    }
+    framed_tlv(0x22, &body)
+}
+
+/// A local `TerminalId` as positional bytes: tag 0 + u32.
+fn local_id_bytes(raw: u32) -> Vec<u8> {
+    let mut out = vec![0u8];
+    out.extend_from_slice(&raw.to_be_bytes());
+    out
+}
+
+#[test]
+fn spawn_terminal_without_kind_field_decodes_as_terminal() {
+    // A pre-kind body (fields 1-10 only) is a Terminal spawn with every
+    // resource field at its default. This is the byte image every existing
+    // spawn golden pins.
+    let bytes = spawn_terminal_frame(&[]);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
+        panic!("expected SpawnTerminal");
+    };
+    assert_eq!(resource, None);
+    // Spelling the defaults out is the same spawn: it encodes to the same
+    // bytes and decodes back to `None`.
+    let spelled = FrameKind::SpawnTerminal {
+        request_id: 1,
+        group: GroupId::new(1),
+        command: None,
+        cwd: None,
+        env: None,
+        term: None,
+        satellite: None,
+        owner_terminal: None,
+        agent_session: None,
+        initial_size: None,
+        resource: Some(Box::new(SpawnResource::default())),
+    };
+    let mut buf = BytesMut::new();
+    spelled.encode(&mut buf);
+    assert_eq!(buf.as_ref(), bytes.as_slice());
+    let (decoded, _) = FrameKind::decode(&buf).unwrap();
+    assert!(matches!(
+        decoded,
+        FrameKind::SpawnTerminal { resource: None, .. }
+    ));
+}
+
+#[test]
+fn spawn_terminal_explicit_terminal_kind_is_accepted_and_reencodes_absent() {
+    // `kind = 0` written explicitly is legal on the wire and decodes to the
+    // same value as an absent field; the encoder then omits it, so the
+    // canonical Terminal image stays the pre-kind one.
+    let bytes = spawn_terminal_frame(&[(11, &[0u8])]);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    let mut buf = BytesMut::new();
+    decoded.encode(&mut buf);
+    assert_eq!(buf.as_ref(), spawn_terminal_frame(&[]).as_slice());
+}
+
+#[test]
+fn spawn_terminal_kind_rules_are_enforced_per_kind() {
+    let parent = local_id_bytes(42);
+    // Terminal-kind spawn may not carry the child / facet fields.
+    for (field, value) in [
+        (12u32, parent.as_slice()),
+        (13, b"claude".as_slice()),
+        (14, b"session-42".as_slice()),
+    ] {
+        let bytes = spawn_terminal_frame(&[(field, value)]);
+        assert_eq!(
+            FrameKind::decode(&bytes).unwrap_err(),
+            DecodeError::InvalidSpawnForKind {
+                kind: 0,
+                field,
+                required: false,
+            },
+            "Terminal kind must refuse field {field}"
+        );
+    }
+    // AgentSession requires parent (12) and provider (13).
+    let bytes = spawn_terminal_frame(&[(11, &[1u8]), (13, b"claude")]);
+    assert_eq!(
+        FrameKind::decode(&bytes).unwrap_err(),
+        DecodeError::InvalidSpawnForKind {
+            kind: 1,
+            field: 12,
+            required: true,
+        }
+    );
+    let bytes = spawn_terminal_frame(&[(11, &[1u8]), (12, &parent)]);
+    assert_eq!(
+        FrameKind::decode(&bytes).unwrap_err(),
+        DecodeError::InvalidSpawnForKind {
+            kind: 1,
+            field: 13,
+            required: true,
+        }
+    );
+    // AgentSession forbids the PTY-shape fields 3..=6 and 10, and the
+    // window placement field 8.
+    let mut cmd = Vec::new();
+    cmd.extend_from_slice(&1u32.to_be_bytes());
+    cmd.extend_from_slice(&3u32.to_be_bytes());
+    cmd.extend_from_slice(b"zsh");
+    let mut env = Vec::new();
+    env.extend_from_slice(&0u32.to_be_bytes());
+    let mut size = Vec::new();
+    size.extend_from_slice(&80u16.to_be_bytes());
+    size.extend_from_slice(&24u16.to_be_bytes());
+    for (field, value) in [
+        (3u32, cmd.as_slice()),
+        (4, b"/tmp".as_slice()),
+        (5, env.as_slice()),
+        (6, b"xterm".as_slice()),
+        (8, parent.as_slice()),
+        (10, size.as_slice()),
+    ] {
+        let bytes =
+            spawn_terminal_frame(&[(11, &[1u8]), (12, &parent), (13, b"claude"), (field, value)]);
+        assert_eq!(
+            FrameKind::decode(&bytes).unwrap_err(),
+            DecodeError::InvalidSpawnForKind {
+                kind: 1,
+                field,
+                required: false,
+            },
+            "AgentSession kind must refuse field {field}"
+        );
+    }
+    // The minimal legal AgentSession spawn decodes.
+    let bytes = spawn_terminal_frame(&[(11, &[1u8]), (12, &parent), (13, b"claude")]);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
+        panic!("expected SpawnTerminal");
+    };
+    assert_eq!(
+        resource.as_deref(),
+        Some(&SpawnResource::agent_session(
+            TerminalId::local(42),
+            "claude"
+        ))
+    );
+    // An unknown kind is passed through with whatever fields it carries.
+    let bytes = spawn_terminal_frame(&[(11, &[9u8]), (13, b"whatever")]);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    let FrameKind::SpawnTerminal { resource, .. } = decoded else {
+        panic!("expected SpawnTerminal");
+    };
+    assert_eq!(
+        resource.as_deref().map(|r| r.kind),
+        Some(ResourceKind::Unknown { tag: 9 })
+    );
+}
+
+#[test]
+fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
+    // The pre-kind body is empty; it decodes as a root Terminal and a root
+    // Terminal re-encodes to the same empty body.
+    let mut event = vec![0x04u8]; // EVENT_TAG_PANE_SPAWNED
+    event.extend_from_slice(&0u32.to_be_bytes()); // empty body
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &local_id_bytes(0x2A));
+    tlv_field(&mut fields, 2, &event);
+    let bytes = framed_tlv(0xB3, &fields);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    let expected = FrameKind::Event {
+        terminal: Some(TerminalId::local(0x2A)),
+        event: AgentEvent::PaneSpawned {
+            kind: ResourceKind::Terminal,
+            parent: None,
+        },
+    };
+    assert_eq!(decoded, expected);
+    let mut buf = BytesMut::new();
+    expected.encode(&mut buf);
+    assert_eq!(buf.as_ref(), bytes.as_slice());
+    // An unknown field id inside the body is skipped by length.
+    let mut body = Vec::new();
+    tlv_field(&mut body, 1, &[1u8]);
+    tlv_field(&mut body, 200, b"future");
+    tlv_field(&mut body, 2, &local_id_bytes(7));
+    let mut event = vec![0x04u8];
+    event.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    event.extend_from_slice(&body);
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &local_id_bytes(0x2B));
+    tlv_field(&mut fields, 2, &event);
+    let (decoded, _) = FrameKind::decode(&framed_tlv(0xB3, &fields)).unwrap();
+    assert_eq!(
+        decoded,
+        FrameKind::Event {
+            terminal: Some(TerminalId::local(0x2B)),
+            event: AgentEvent::PaneSpawned {
+                kind: ResourceKind::AgentSession,
+                parent: Some(TerminalId::local(7)),
+            },
+        }
+    );
+}
+
+/// The server wraps `FrameKind` in broadcast enums whose other variants are
+/// empty, under clippy's 200-byte `large_enum_variant` threshold. The
+/// Terminal-era frame enum was 192 bytes; additive resource fields must not
+/// push it past that, which is why the spawn's fields 11-14 ride behind one
+/// `Option<Box<SpawnResource>>` and `SatelliteHost` is a boxed str.
+#[test]
+fn frame_kind_stays_within_its_size_budget() {
+    assert!(
+        std::mem::size_of::<FrameKind>() <= 192,
+        "FrameKind is {} bytes; keep it at or under 192",
+        std::mem::size_of::<FrameKind>()
+    );
+    assert_eq!(std::mem::size_of::<TerminalId>(), 24);
+}
+
+#[test]
+fn spawn_terminal_agent_facet_strings_are_bounded() {
+    let parent = local_id_bytes(42);
+    let base: [(u32, &[u8]); 2] = [(11, &[1u8]), (12, &parent)];
+    for (field, len) in [
+        (13u32, 0usize),
+        (13, MAX_RESOURCE_PROVIDER_BYTES + 1),
+        (14, 0),
+        (14, MAX_RESOURCE_NATIVE_ID_BYTES + 1),
+    ] {
+        let value = vec![b'a'; len];
+        let mut fields: Vec<(u32, &[u8])> = base.to_vec();
+        if field == 14 {
+            fields.push((13, b"claude"));
+        }
+        fields.push((field, &value));
+        let bytes = spawn_terminal_frame(&fields);
+        assert_eq!(
+            FrameKind::decode(&bytes).unwrap_err(),
+            DecodeError::AgentFacetLimitExceeded,
+            "field {field} with {len} bytes must be refused"
+        );
+    }
+    let provider = vec![b'p'; MAX_RESOURCE_PROVIDER_BYTES];
+    let native_id = vec![b'n'; MAX_RESOURCE_NATIVE_ID_BYTES];
+    let bytes = spawn_terminal_frame(&[
+        (11, &[1u8]),
+        (12, &parent),
+        (13, &provider),
+        (14, &native_id),
+    ]);
+    assert!(FrameKind::decode(&bytes).is_ok());
+}
+
+#[test]
+fn terminal_closed_reason_is_additive_and_forgiving() {
+    // No field 3: the pre-reason body decodes as Unknown.
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &local_id_bytes(42));
+    let bytes = framed_tlv(0xA1, &fields);
+    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
+    assert_eq!(
+        decoded,
+        FrameKind::TerminalClosed {
+            terminal_id: TerminalId::local(42),
+            exit_status: None,
+            reason: CloseReason::Unknown,
+        }
+    );
+    // A stated reason decodes to its variant.
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &local_id_bytes(42));
+    tlv_field(&mut fields, 3, &[2u8]);
+    let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
+    assert!(matches!(
+        decoded,
+        FrameKind::TerminalClosed {
+            reason: CloseReason::ParentClosed,
+            ..
+        }
+    ));
+    // A reason tag from the future is Unknown, never a decode error, and
+    // the frame re-encodes with the field absent.
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &local_id_bytes(42));
+    tlv_field(&mut fields, 3, &[200u8]);
+    let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
+    assert!(matches!(
+        decoded,
+        FrameKind::TerminalClosed {
+            reason: CloseReason::Unknown,
+            ..
+        }
+    ));
+    let mut buf = BytesMut::new();
+    decoded.encode(&mut buf);
+    assert_eq!(buf.as_ref(), bytes.as_slice());
+}
+
+#[test]
+fn command_append_resource_output_round_trips_and_is_bounded() {
+    assert_round_trip(&FrameKind::Command {
+        request_id: 5,
+        command: Command::AppendResourceOutput {
+            terminal_id: TerminalId::local(0x2B),
+            bytes: b"{\"type\":\"stop\",\"data\":{}}\n".to_vec(),
+        },
+    });
+    assert_round_trip(&FrameKind::Command {
+        request_id: 6,
+        command: Command::AppendResourceOutput {
+            terminal_id: TerminalId::satellite("devbox", 0x2B),
+            bytes: vec![b'x'; MAX_APPEND_BYTES],
+        },
+    });
+    // Hand-rolled: tag 0x1a, local id, u32-prefixed bytes. Empty and
+    // over-limit payloads are refused.
+    for len in [0usize, MAX_APPEND_BYTES + 1] {
+        let mut command = vec![0x1au8];
+        command.extend_from_slice(&local_id_bytes(0x2B));
+        command.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+        command.extend(std::iter::repeat_n(b'x', len));
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, &5u32.to_be_bytes());
+        tlv_field(&mut fields, 2, &command);
+        assert_eq!(
+            FrameKind::decode(&framed_tlv(0x31, &fields)).unwrap_err(),
+            DecodeError::AppendResourceOutputLimitExceeded,
+            "{len}-byte append must be refused"
+        );
+    }
+}
+
+#[test]
+fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
+    // A Terminal-only snapshot writes no trailing facet list: its bytes end
+    // at `focused_pane`, exactly as before the list existed.
+    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
+        .with_panes(vec![TerminalInfo::new(
+            TerminalId::local(1),
+            WindowId::new(1),
+            80,
+            24,
+        )]);
+    let frame = FrameKind::Attached {
+        attach_id: 1,
+        snapshot: plain,
+        initial_client_id: ClientId::new(1),
+    };
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    // The SNAPSHOT field value ends with focused_pane = tag 0 + u32 1.
+    let expected_tail = local_id_bytes(1);
+    let field_end = {
+        // Fields: 1 SNAPSHOT (first), 2 INITIAL_CLIENT_ID, 3 ATTACH_ID; the
+        // last two are 4 bytes each plus a 3-byte TLV header.
+        buf.len() - 2 * (3 + 4)
+    };
+    assert_eq!(
+        &buf[field_end - expected_tail.len()..field_end],
+        &expected_tail[..]
+    );
+    let (decoded, _) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(decoded, frame);
+}
+
+#[test]
+fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
+    // Hand-roll a snapshot: one pane, then a trailing facet list with a row
+    // for it and a row for an id no pane carries.
+    let mut pane = Vec::new();
+    pane.extend_from_slice(&local_id_bytes(7));
+    pane.extend_from_slice(&0u32.to_be_bytes()); // window 0 (sentinel)
+    pane.extend_from_slice(&0u16.to_be_bytes()); // cols 0
+    pane.extend_from_slice(&0u16.to_be_bytes()); // rows 0
+    pane.push(0); // title None
+    pane.push(0); // cwd None
+    let mut snap = Vec::new();
+    snap.extend_from_slice(&0u32.to_be_bytes()); // sessions
+    snap.extend_from_slice(&0u32.to_be_bytes()); // windows
+    snap.extend_from_slice(&1u32.to_be_bytes()); // panes
+    snap.extend_from_slice(&pane);
+    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
+    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
+    snap.extend_from_slice(&local_id_bytes(7)); // focused_pane
+    // Trailing facets: two rows.
+    snap.extend_from_slice(&2u32.to_be_bytes());
+    // Row for an id with no pane entry: ignored.
+    snap.extend_from_slice(&local_id_bytes(99));
+    snap.push(1); // AgentSession
+    snap.push(0); // parent None
+    snap.push(0); // agent None
+    // Row for pane 7.
+    snap.extend_from_slice(&local_id_bytes(7));
+    snap.push(1); // AgentSession
+    snap.push(1); // parent Some
+    snap.extend_from_slice(&local_id_bytes(3));
+    snap.push(1); // agent Some
+    snap.extend_from_slice(&6u32.to_be_bytes());
+    snap.extend_from_slice(b"claude");
+    snap.push(0); // native_id None
+    snap.extend_from_slice(&7u32.to_be_bytes());
+    snap.extend_from_slice(b"blocked");
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &snap);
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+    let (decoded, _) = FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap();
+    let FrameKind::Attached { snapshot, .. } = decoded else {
+        panic!("expected Attached");
+    };
+    assert_eq!(snapshot.panes.len(), 1);
+    let info = &snapshot.panes[0];
+    assert_eq!(info.kind, ResourceKind::AgentSession);
+    assert_eq!(info.parent, Some(TerminalId::local(3)));
+    assert_eq!(info.agent, Some(AgentFacet::new("claude", "blocked")));
+    assert_eq!(info.window_id, WindowId::new(0));
+    assert_eq!((info.cols, info.rows), (0, 0));
+}
+
+#[test]
+fn bootstrap_begin_agent_events_jsonl_v1_round_trips_and_rejects_state_sync() {
+    assert_round_trip(&FrameKind::BootstrapBegin {
+        terminal_id: TerminalId::local(0x2B),
+        stream_id: StreamId::new(1).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
+        profile: BootstrapStreamProfile::AgentEventsJsonlV1,
+        cols: 0,
+        rows: 0,
+        base_seq: 0,
+    });
+    // codec tag 3 + StateSync output mode is not a legal stream profile, and
+    // neither is a gridless stream that claims a grid.
+    for (cols, output_mode) in [(0u16, 1u8), (80, 0)] {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, &local_id_bytes(0x2B));
+        tlv_field(&mut fields, 2, &1u64.to_be_bytes());
+        tlv_field(&mut fields, 3, &1u64.to_be_bytes());
+        tlv_field(&mut fields, 4, &[3u8]);
+        tlv_field(&mut fields, 5, &cols.to_be_bytes());
+        tlv_field(&mut fields, 6, &0u16.to_be_bytes());
+        tlv_field(&mut fields, 7, &[output_mode]);
+        tlv_field(&mut fields, 8, &0u64.to_be_bytes());
+        assert_eq!(
+            FrameKind::decode(&framed_tlv(0x93, &fields)).unwrap_err(),
+            DecodeError::InvalidBootstrapProfile
+        );
+    }
+}
+
+#[test]
+fn resource_kinds_feature_bit_round_trips_in_hello_ok() {
+    let frame = FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 8,
+        protocol_patch: 0,
+        server_caps: ServerCapabilities::new()
+            .with_features(ServerFeatureSet::with(&[ServerFeature::ResourceKinds])),
+        server_id: vec![1, 2, 3],
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
+    };
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    let (decoded, _) = FrameKind::decode(&buf).unwrap();
+    let FrameKind::HelloOk { server_caps, .. } = decoded else {
+        panic!("expected HelloOk");
+    };
+    assert!(server_caps.features.contains(ServerFeature::ResourceKinds));
+    assert_eq!(server_caps.features.as_wire(), 0x4000);
 }
 
 #[test]

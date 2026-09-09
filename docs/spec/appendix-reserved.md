@@ -33,7 +33,15 @@ For implementers extending the protocol:
   `0x9B..=0x9F` remain open for hot-path messages.
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1
   Terminal lifecycle / per-pane control frames (phux-4li.10 allocated
-  `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges).
+  `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges; ADR-0056
+  allocated `MOVE_TERMINAL = 0x2A` and `TERMINAL_MOVED = 0xA8`). The
+  `SPAWN_PROCESS` / `KILL_PROCESS` / `PROCESS_SPAWNED` / `PROCESS_CLOSED` /
+  `PROCESS_OUTPUT` family once pencilled into `0x24..=0x25` /
+  `0xA3..=0xA5`, and the `FORWARD_PORT` / `CLOSE_PORT_FORWARD` /
+  `PORT_FORWARD_STATUS` family into `0x28..=0x29` / `0xA6`, are subsumed by
+  `ResourceKind` ([L1.md §1.1](./L1.md)): a non-PTY process or a forwarded
+  port is a kind served through the existing spawn / output / close frames,
+  not a parallel frame family. Those discriminants stay unallocated.
 - Message IDs `0x31..=0x3F` and `0xC2..=0xCF`: reserved for control
   plane.
 - Message IDs `0x41..=0x4F` and `0xB3..=0xBF`: reserved for events
@@ -62,6 +70,9 @@ their own one-byte tag inside it. Allocated tags:
 | `0x15` | `PUT_FILE`                  | [L1.md](./L1.md) | shipped |
 | `0x16` | `SHUTDOWN`                  | [L1.md](./L1.md) | shipped |
 | `0x17` | `REPORT_AGENT_STATE`        | [L1.md](./L1.md) | shipped |
+| `0x18` | `GET_PERF`                  | [L1.md](./L1.md) | shipped |
+| `0x19` | `TRANSCRIBE`                | [L1.md](./L1.md) | shipped |
+| `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | partial |
 
 `KILL_TERMINALS` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
@@ -88,6 +99,24 @@ this document.
 
 `ErrorCode = 5` is permanently reserved for the withdrawn `OUT_OF_TIER`
 proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
+`WRONG_RESOURCE_KIND = 208`, `NOT_PRODUCER = 209`, `RECORD_INVALID = 210`,
+and `OVERFLOW = 211` are allocated by the resource model
+([proto.md §9](./proto.md); [L1.md §1.1, §5.5](./L1.md)).
+
+`SpawnError` ([L1.md §3.1](./L1.md)) allocates sequentially from `0x00`:
+`0x00..=0x03` are the group / spawn / satellite codes and `0x04
+UNSUPPORTED_KIND`, `0x05 PARENT_NOT_FOUND`, `0x06 PARENT_KIND_MISMATCH` are
+the resource-binding codes ([L1.md §1.2](./L1.md)). `ResourceKind` allocates
+`TERMINAL = 0` and `AGENT_SESSION = 1`; a tag once allocated is never reused,
+and a decoder maps an unallocated tag to `Unknown { tag }` ([L1.md §1.1](./L1.md)).
+`BootstrapCodec` ([L1.md §4.3](./L1.md)) allocates `0` (synthesized VT v1),
+`1` (native, followed by the engine version byte), and `3`
+(`AgentEventsJsonlV1`); `2` is skipped so the codec tag never shares a value
+with the native v2 version byte that follows tag `1` in a dump.
+
+`CloseReason` ([L1.md §1.2](./L1.md)) allocates sequentially from `0` —
+`0..=3` are taken — and follows the `DetachReason` decode rule below: an
+absent field and an unallocated value both read as an *unstated* reason.
 
 `DetachReason` ([proto.md §7.2](./proto.md)) allocates sequentially from `0`
 — `0..=7` are taken, with workload-auth values `5..=7` still spec-only — and

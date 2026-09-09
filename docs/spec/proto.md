@@ -273,8 +273,9 @@ HELLO {
     protocol_minor: u16,              // field 3
     protocol_patch: u16,              // field 4
     client_caps: ClientCapabilities,  // field 5, required positional sub-record
-    workload_profile: optional<str>,  // field 6; §6.1.1
-    workload_client_nonce: optional<bytes32>, // field 7; §6.1.1
+    compression: optional<u8>,        // field 6; §6.4 (CompressionSet bitset)
+    workload_profile: optional<str>,  // field 7; §6.1.1
+    workload_client_nonce: optional<bytes32>, // field 8; §6.1.1
 }
 
 HELLO_OK {
@@ -286,7 +287,8 @@ HELLO_OK {
     selected_profile: BootstrapProfile, // field 6, required
     max_chunk_bytes: u32,             // field 7, required
     max_history_page_bytes: u32,      // field 8, required
-    workload_grant: optional<WorkloadGrant>, // field 9; §6.1.1
+    compression: optional<u8>,        // field 9; §6.4 (selected Compression tag)
+    workload_grant: optional<WorkloadGrant>, // field 10; §6.1.1
 }
 ```
 
@@ -326,7 +328,7 @@ HELLO
 ```
 
 The terminal service string is `phux-terminal`. No frame may interleave between
-challenge and response. HELLO_OK field 9 carries the strict `WorkloadGrant`
+challenge and response. HELLO_OK field 10 carries the strict `WorkloadGrant`
 image defined by the profile, and `server_id` SHALL equal the 16-byte
 incarnation signed in the challenge. A paired client requires
 `ServerFeature::WORKLOAD_AUTH`, a valid challenge, and the grant; receiving
@@ -380,6 +382,9 @@ ServerFeature = bitset (u32) {
     GET_PERF           = 0x00000800, // GET_PERF (L1.md §5.1; ADR-0096)
     WORKLOAD_AUTH      = 0x00001000, // phux-workload/v1 (§6.1.1; ADR-0098)
     TRANSCRIBE         = 0x00002000, // TRANSCRIBE (L1.md §5.1)
+    RESOURCE_KINDS     = 0x00004000, // ResourceKind spawns and facets, TERMINAL_CLOSED.reason,
+                                     //   APPEND_RESOURCE_OUTPUT, AgentEventsJsonlV1
+                                     //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -443,8 +448,8 @@ optional `features: u32`. A one-byte legacy value therefore decodes with an
 empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_TERMINAL = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
-`GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, and `TRANSCRIBE = 0x2000`;
-unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
+`GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`, and
+`RESOURCE_KINDS = 0x4000`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
 `INPUT_TERMINAL_REPLY`.
@@ -941,6 +946,19 @@ ErrorCode = enum {
                                  //   206 is: 205 means delivery could not be
                                  //   confirmed, this one means delivery is
                                  //   known never to have been attempted
+    WRONG_RESOURCE_KIND  = 208,  // L1.md §1.1: the resource exists but its
+                                 //   kind does not answer this frame or
+                                 //   command (a Terminal-facet verb aimed at
+                                 //   an AGENT_SESSION, or APPEND_RESOURCE_OUTPUT
+                                 //   aimed at a Terminal)
+    NOT_PRODUCER         = 209,  // L1.md §5.5: the caller lacks producer
+                                 //   authority on the resource's parent
+    RECORD_INVALID       = 210,  // L1.md §5.5: a record fails the §4.8
+                                 //   grammar or exceeds 16,384 bytes;
+                                 //   nothing was appended
+    OVERFLOW             = 211,  // L1.md §5.5: the call exceeds 65,536 bytes
+                                 //   or the bounded append lane is full;
+                                 //   nothing was appended
 
     INTERNAL_ERROR       = 65535,
 }
@@ -975,8 +993,8 @@ What a code does tell a receiver is its scope: how far to degrade.
 
 | Scope | Codes | What the receiver keeps |
 |---|---|---|
-| Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
-| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
+| Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `WRONG_RESOURCE_KIND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
+| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
 | Connection | `VERSION_INCOMPATIBLE`, `FRAME_TOO_LARGE`, `INVALID_COMMAND`, admission/revocation/expiry `PERMISSION_DENIED` | nothing beyond the frames still in flight |
 
 `Connection` scope means the consumer SHOULD expect the server to close the
@@ -1075,11 +1093,11 @@ definitions.
 
 #### 11.2.1 Resource kinds
 
-<!-- impl-status: partial; probe: ResourceKind -->
-> **Status: spec-only.** No `kind` is on the wire and the reference server
-> serves Terminals only, so every requirement below is vacuously met by a
-> current consumer. The requirements bind a consumer the day a server
-> advertises `RESOURCE_KINDS`.
+<!-- impl-status: partial; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: partial.** The codec carries `kind`, but the reference server
+> serves Terminals only and does not advertise `RESOURCE_KINDS`, so every
+> requirement below is vacuously met by a current consumer. The
+> requirements bind a consumer the day a server advertises the bit.
 
 An L1 identity names a resource of some `ResourceKind`; a Terminal is the
 first kind and an `AGENT_SESSION` the second ([L1.md §1.1](./L1.md)). Every

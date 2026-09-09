@@ -77,7 +77,7 @@ either surface, with no opt-in flag — passwords do not belong in a recording),
 and kitty-graphics images do not survive a re-render, because the replayer
 draws cells and an image is not one.
 
-<!-- impl-status: spec-only; probe: AgentEventsJsonlV1 -->
+<!-- impl-status: partial; probe: AgentEventsJsonlV1 -->
 > **Status: landing on the resource-model branch.** The decision below is
 > made in ADR-0103 and applies once a server serves agent sessions; a
 > released server has no agent-session stream to record or to skip.

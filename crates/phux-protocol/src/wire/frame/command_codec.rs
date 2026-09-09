@@ -3,7 +3,7 @@
 
 use bytes::BytesMut;
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId};
+use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind};
 use crate::input::InputEvent;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
@@ -16,20 +16,21 @@ use crate::wire::info::{
 use super::codec::encode_optional_u32;
 use super::{
     AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
-    COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_TERMINAL,
-    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_TERMINAL, COMMAND_TAG_GET_PERF,
-    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
-    COMMAND_TAG_KILL_TERMINAL, COMMAND_TAG_KILL_TERMINALS, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
-    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_STATE, COMMAND_VALUE_TAG_TERMINAL_ID, Command,
-    CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
-    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE, EVENT_TAG_PANE_CLOSED, EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
-    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
-    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPLY_INPUT_COMMAND_BODY,
+    COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
+    COMMAND_TAG_ATTACH_TERMINAL, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_TERMINAL,
+    COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
+    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_TERMINAL, COMMAND_TAG_KILL_TERMINALS,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
+    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_STATE,
+    COMMAND_VALUE_TAG_TERMINAL_ID, Command, CommandResult, CommandValue, ControlAction,
+    EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED,
+    EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_PANE_CLOSED,
+    EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
+    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
+    INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY,
     MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState,
     STATE_SCOPE_TAG_SERVER, StateScope, TerminalEventType, TerminalLifecycle, TerminalSignal,
     decode_focus_event, decode_key_event, decode_mouse_event, decode_optional_u32,
@@ -234,6 +235,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             encode_terminal_id(terminal_id, enc);
             enc.write_u8(state.to_u8());
         }
+        Command::AppendResourceOutput { terminal_id, bytes } => {
+            enc.write_u8(COMMAND_TAG_APPEND_RESOURCE_OUTPUT);
+            encode_terminal_id(terminal_id, enc);
+            enc.write_bytes(bytes);
+        }
     }
 }
 
@@ -294,9 +300,40 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if let Some(command) = decode_session_command(tag, dec)? {
         return Ok(command);
     }
+    if let Some(command) = decode_resource_command(tag, dec)? {
+        return Ok(command);
+    }
     Err(DecodeError::UnknownEnumValue {
         field: "Command",
         value: u32::from(tag),
+    })
+}
+
+/// Decode the producer verbs of a producer-fed resource:
+/// `APPEND_RESOURCE_OUTPUT`.
+///
+/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
+/// another family.
+fn decode_resource_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Command>, DecodeError> {
+    let command = match tag {
+        COMMAND_TAG_APPEND_RESOURCE_OUTPUT => decode_append_resource_output_command(dec)?,
+        _ => return Ok(None),
+    };
+    Ok(Some(command))
+}
+
+/// Decode `APPEND_RESOURCE_OUTPUT`, bounding the payload before it is copied
+/// out of the borrowed frame: an empty append and one over
+/// [`MAX_APPEND_BYTES`] are both refused with no owned allocation made.
+fn decode_append_resource_output_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let terminal_id = decode_terminal_id(dec)?;
+    let bytes = dec.read_bytes()?;
+    if bytes.is_empty() || bytes.len() > MAX_APPEND_BYTES {
+        return Err(DecodeError::AppendResourceOutputLimitExceeded);
+    }
+    Ok(Command::AppendResourceOutput {
+        terminal_id,
+        bytes: bytes.to_vec(),
     })
 }
 
@@ -844,7 +881,9 @@ pub(in crate::wire) fn decode_optional_i32(
 //   COMMAND_FINISHED (0x01) → optional<i32> exit_code
 //   TITLE_CHANGED    (0x02) → str title
 //   BELL             (0x03) → empty
-//   PANE_SPAWNED     (0x04) → empty (the id rides the EVENT envelope)
+//   PANE_SPAWNED     (0x04) → field-tagged TLV: optional u8 kind (absent =
+//                            Terminal), optional TerminalId parent; empty
+//                            for a root Terminal (the id rides the envelope)
 //   PANE_CLOSED      (0x05) → optional<i32> exit_status
 //   DIRTY            (0x06) → empty
 //   IDLE             (0x07) → empty
@@ -871,7 +910,17 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 EVENT_TAG_TITLE_CHANGED
             }
             AgentEvent::Bell => EVENT_TAG_BELL,
-            AgentEvent::PaneSpawned => EVENT_TAG_PANE_SPAWNED,
+            AgentEvent::PaneSpawned { kind, parent } => {
+                if !kind.is_terminal() {
+                    body_enc.write_field(field::event_pane_spawned::KIND, &[kind.as_wire()]);
+                }
+                if let Some(parent) = parent {
+                    body_enc.write_field_with(field::event_pane_spawned::PARENT, |e| {
+                        encode_terminal_id(parent, e);
+                    });
+                }
+                EVENT_TAG_PANE_SPAWNED
+            }
             AgentEvent::PaneClosed { exit_status } => {
                 encode_optional_i32(*exit_status, &mut body_enc);
                 EVENT_TAG_PANE_CLOSED
@@ -963,7 +1012,7 @@ pub(in crate::wire) fn decode_agent_event(
             title: body_dec.read_str()?.to_owned(),
         },
         EVENT_TAG_BELL => AgentEvent::Bell,
-        EVENT_TAG_PANE_SPAWNED => AgentEvent::PaneSpawned,
+        EVENT_TAG_PANE_SPAWNED => decode_pane_spawned_event(&mut body_dec)?,
         EVENT_TAG_PANE_CLOSED => AgentEvent::PaneClosed {
             exit_status: decode_optional_i32(&mut body_dec)?,
         },
@@ -1008,6 +1057,28 @@ fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, De
         action,
         actor,
     })
+}
+
+/// Decode an [`AgentEvent::PaneSpawned`] body (field-tagged TLV).
+///
+/// An empty body, which is what every pre-kind encoder wrote and what a
+/// root Terminal still gets, decodes as `Terminal` with no parent; an
+/// unrecognised field id is skipped by its length.
+fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
+    let mut kind = ResourceKind::Terminal;
+    let mut parent = None;
+    while let Some((field_id, value)) = dec.read_field()? {
+        match field_id {
+            field::event_pane_spawned::KIND => {
+                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?);
+            }
+            field::event_pane_spawned::PARENT => {
+                parent = Some(decode_terminal_id(&mut Decoder::new(value))?);
+            }
+            _ => {}
+        }
+    }
+    Ok(AgentEvent::PaneSpawned { kind, parent })
 }
 
 /// Decode an [`AgentEvent::Asked`] body (field-tagged TLV).

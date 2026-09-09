@@ -22,9 +22,11 @@ use super::{
     ATTACH_TARGET_LAST, AttachTarget, MOVE_ERROR_TAG_MOVE_FAILED,
     MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, MOVE_RESULT_ERR, MOVE_RESULT_OK, MoveError,
     MoveResult, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP, SCOPE_TAG_TERMINAL,
-    SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
-    SPAWN_ERROR_TAG_SPAWN_FAILED, SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, SPAWN_RESULT_ERR,
-    SPAWN_RESULT_OK, Scope, SpawnError, SpawnResult, ViewportInfo,
+    SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH,
+    SPAWN_ERROR_TAG_PARENT_NOT_FOUND, SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
+    SPAWN_ERROR_TAG_SPAWN_FAILED, SPAWN_ERROR_TAG_UNSUPPORTED_KIND,
+    SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, SPAWN_RESULT_ERR, SPAWN_RESULT_OK, Scope,
+    SpawnError, SpawnResult, ViewportInfo,
 };
 
 // -----------------------------------------------------------------------------
@@ -39,6 +41,9 @@ pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut E
         BootstrapCodec::Native(version) => {
             enc.write_u8(BootstrapCodec::NATIVE_TAG);
             enc.write_u8(version.as_wire());
+        }
+        BootstrapCodec::AgentEventsJsonlV1 => {
+            enc.write_u8(BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG);
         }
     }
 }
@@ -57,6 +62,7 @@ pub(in crate::wire) fn decode_bootstrap_codec(
                 })?;
             Ok(BootstrapCodec::Native(codec))
         }
+        BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
         value => Err(DecodeError::UnknownEnumValue {
             field: "BootstrapCodec",
             value: u32::from(value),
@@ -116,6 +122,7 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
         (BootstrapCodec::Native(codec), 0) => Ok(BootstrapStreamProfile::NativeState { codec }),
         (BootstrapCodec::SynthesizedVtV1, 0) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
         (BootstrapCodec::SynthesizedVtV1, 1) => Ok(BootstrapStreamProfile::SynthesizedVtStateSync),
+        (BootstrapCodec::AgentEventsJsonlV1, 0) => Ok(BootstrapStreamProfile::AgentEventsJsonlV1),
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
@@ -653,6 +660,9 @@ pub(in crate::wire) fn decode_metadata_scope_key(
 //                    tag 0x01 SpawnFailed               → length-prefixed UTF-8
 //                    tag 0x02 UnsupportedSatelliteRoute → no further bytes
 //                    tag 0x03 SatelliteUnreachable      → length-prefixed UTF-8
+//                    tag 0x04 UnsupportedKind           → no further bytes
+//                    tag 0x05 ParentNotFound            → no further bytes
+//                    tag 0x06 ParentKindMismatch        → no further bytes
 //
 // The `Ok = 0x00 / Err = 0x01` convention deliberately mirrors the
 // `Option` tag convention (`None = 0x00 / Some = 0x01`) so hex-dump
@@ -702,6 +712,9 @@ fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
             enc.write_u8(SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE);
             enc.write_str(msg);
         }
+        SpawnError::UnsupportedKind => enc.write_u8(SPAWN_ERROR_TAG_UNSUPPORTED_KIND),
+        SpawnError::ParentNotFound => enc.write_u8(SPAWN_ERROR_TAG_PARENT_NOT_FOUND),
+        SpawnError::ParentKindMismatch => enc.write_u8(SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH),
     }
 }
 
@@ -714,6 +727,9 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE => {
             Ok(SpawnError::SatelliteUnreachable(dec.read_str()?.to_owned()))
         }
+        SPAWN_ERROR_TAG_UNSUPPORTED_KIND => Ok(SpawnError::UnsupportedKind),
+        SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
+        SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
         other => Err(DecodeError::UnknownEnumValue {
             field: "SpawnError",
             value: u32::from(other),

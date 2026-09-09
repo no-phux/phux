@@ -433,6 +433,13 @@ pub enum BootstrapCodec {
     SynthesizedVtV1,
     /// Exact libghostty checkpoint grammar.
     Native(EngineCodec),
+    /// Newline-delimited JSON agent-event records, grammar version 1: the
+    /// bootstrap and live output codec of an `AgentSession` resource.
+    /// `BOOTSTRAP_CHUNK`s carry the retained records, live
+    /// `TERMINAL_OUTPUT.bytes` carry one or more complete records, and the
+    /// stream is always raw (`FRAME_ACK` is forbidden). Gated on
+    /// `ServerFeature::ResourceKinds`.
+    AgentEventsJsonlV1,
 }
 
 impl BootstrapCodec {
@@ -440,6 +447,10 @@ impl BootstrapCodec {
     pub const SYNTHESIZED_VT_V1_TAG: u8 = 0;
     /// Wire tag for a native engine codec followed by its exact version byte.
     pub const NATIVE_TAG: u8 = 1;
+    /// Wire tag for agent-event JSONL v1. Tag `2` is skipped so the tag
+    /// space never collides with the `EngineCodec` version byte that follows
+    /// [`Self::NATIVE_TAG`] in a hex dump.
+    pub const AGENT_EVENTS_JSONL_V1_TAG: u8 = 3;
 }
 
 /// Additive set of exact native engine codecs.
@@ -716,8 +727,10 @@ pub struct CodecUnavailable;
 /// Per-stream profile repeated in `BOOTSTRAP_BEGIN`.
 ///
 /// This is the stream-local projection of the connection's selected
-/// [`BootstrapProfile`]. The three variants are the legal codec/output-mode
-/// matrix, so a native `StateSync` stream cannot be constructed.
+/// [`BootstrapProfile`] for a Terminal stream, or the kind-fixed codec of a
+/// non-Terminal resource stream. The variants are the legal
+/// codec/output-mode matrix, so a native `StateSync` stream cannot be
+/// constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapStreamProfile {
@@ -730,6 +743,10 @@ pub enum BootstrapStreamProfile {
     SynthesizedVtRaw,
     /// Synthesized VT bootstrap followed by `StateSync` bytes.
     SynthesizedVtStateSync,
+    /// Retained agent-event JSONL records followed by raw live records: the
+    /// only profile an `AgentSession` stream ever selects, regardless of the
+    /// connection's negotiated Terminal profile.
+    AgentEventsJsonlV1,
 }
 
 /// Select one explicit profile and the negotiated payload bounds.
@@ -917,6 +934,12 @@ pub const GET_PERF: u32 = 0x0000_0800;
 /// Wire bit advertising the `TRANSCRIBE` voice passthrough command. `0x1000`
 /// is reserved for `WORKLOAD_AUTH` (ADR-0098) and skipped.
 pub const TRANSCRIBE: u32 = 0x0000_2000;
+/// Wire bit advertising non-Terminal `ResourceKind`s.
+///
+/// Covers `SPAWN_TERMINAL` fields 11-14, `TERMINAL_CLOSED.reason`, the
+/// snapshot resource facets, the `APPEND_RESOURCE_OUTPUT` command, and the
+/// `AgentEventsJsonlV1` codec.
+pub const RESOURCE_KINDS: u32 = 0x0000_4000;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -955,6 +978,17 @@ pub enum ServerFeature {
     /// The server answers `TRANSCRIBE` by running its configured
     /// transcriber on a finished upload and pasting the text.
     Transcribe = TRANSCRIBE,
+    /// The server serves more than one `ResourceKind`: it accepts
+    /// `SPAWN_TERMINAL` with `kind = AgentSession` plus its `parent` /
+    /// `provider` / `native_id` fields, feeds such a resource through
+    /// `APPEND_RESOURCE_OUTPUT`, bootstraps it under the
+    /// `AgentEventsJsonlV1` codec, reports `TERMINAL_CLOSED.reason`, and
+    /// carries kind / parent / agent facets in the `ATTACHED` and
+    /// `GET_STATE` snapshots. Every one of those shapes is skip-by-length
+    /// additive, so sending them unadvertised degrades rather than breaks
+    /// (an older server spawns a Terminal and ignores the facets); the bit
+    /// is what tells a client the kind it asked for is the kind it got.
+    ResourceKinds = RESOURCE_KINDS,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -970,7 +1004,8 @@ impl ServerFeatureSet {
         | (ServerFeature::SpawnInitialSize as u32)
         | (ServerFeature::ReportAgentState as u32)
         | (ServerFeature::GetPerf as u32)
-        | (ServerFeature::Transcribe as u32);
+        | (ServerFeature::Transcribe as u32)
+        | (ServerFeature::ResourceKinds as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1643,6 +1678,10 @@ mod tests {
         assert_eq!(TRANSCRIBE, 0x0000_2000);
         assert_eq!(ServerFeature::Transcribe as u32, TRANSCRIBE);
         assert!(ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::Transcribe));
+        assert_eq!(RESOURCE_KINDS, 0x0000_4000);
+        assert_eq!(ServerFeature::ResourceKinds as u32, RESOURCE_KINDS);
+        assert!(ServerFeatureSet::from_wire(RESOURCE_KINDS).contains(ServerFeature::ResourceKinds));
+        assert!(!ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::ResourceKinds));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

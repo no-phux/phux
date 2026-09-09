@@ -8,9 +8,10 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    DetachReason, ErrorCode, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
-    MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES,
-    TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
+    CloseReason, DetachReason, ErrorCode, FrameKind, HistoryRejectionReason,
+    HistoryTombstoneReason, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
+    MAX_INPUT_TERMINAL_REPLY_BYTES, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
+    SpawnResource, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
     TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
     TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
     TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK,
@@ -32,7 +33,7 @@ use crate::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
 };
-use crate::ids::{BootstrapId, GroupId, StreamId, TerminalId};
+use crate::ids::{BootstrapId, GroupId, ResourceKind, StreamId, TerminalId};
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
@@ -945,11 +946,11 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        let (cols, rows) = checked_bootstrap_dimensions(cols, rows)?;
         let profile = decode_bootstrap_stream_profile(
             codec.ok_or(DecodeError::UnexpectedEof)?,
             output_mode.ok_or(DecodeError::UnexpectedEof)?,
         )?;
+        let (cols, rows) = checked_bootstrap_dimensions(profile, cols, rows)?;
         Ok(FrameKind::BootstrapBegin {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
@@ -1548,6 +1549,10 @@ impl<'a> Decoder<'a> {
         let mut owner_terminal: Option<crate::ids::TerminalId> = None;
         let mut agent_session: Option<Vec<u8>> = None;
         let mut initial_size: Option<(u16, u16)> = None;
+        let mut kind = ResourceKind::Terminal;
+        let mut parent: Option<TerminalId> = None;
+        let mut provider: Option<String> = None;
+        let mut native_id: Option<String> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::spawn_terminal::REQUEST_ID => {
@@ -1592,10 +1597,32 @@ impl<'a> Decoder<'a> {
                         Ok((cols, rows))
                     }));
                 }
+                field::spawn_terminal::KIND => {
+                    kind = ResourceKind::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+                }
+                field::spawn_terminal::PARENT => {
+                    parent = Some(sub!(value, decode_terminal_id));
+                }
+                field::spawn_terminal::PROVIDER => {
+                    provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
+                }
+                field::spawn_terminal::NATIVE_ID => {
+                    native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
+                }
                 _ => {}
             }
         }
-        Ok(FrameKind::SpawnTerminal {
+        let resource = SpawnResource {
+            kind,
+            parent,
+            provider,
+            native_id,
+        };
+        // A body carrying none of fields 11-14 is the plain Terminal spawn,
+        // and so is one that spells the defaults out; both decode to `None`
+        // so the value is canonical and re-encodes to the pre-kind bytes.
+        let resource = (!resource.is_default()).then(|| Box::new(resource));
+        let frame = FrameKind::SpawnTerminal {
             request_id,
             group,
             command,
@@ -1606,7 +1633,10 @@ impl<'a> Decoder<'a> {
             owner_terminal,
             agent_session,
             initial_size,
-        })
+            resource,
+        };
+        validate_spawn_for_kind(&frame)?;
+        Ok(frame)
     }
 
     /// Decode a `TERMINAL_SPAWNED` message body into [`FrameKind::TerminalSpawned`].
@@ -1681,6 +1711,7 @@ impl<'a> Decoder<'a> {
     fn decode_terminal_closed(&mut self) -> Result<FrameKind, DecodeError> {
         let mut terminal_id: Option<TerminalId> = None;
         let mut exit_status: Option<i32> = None;
+        let mut reason = CloseReason::Unknown;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_closed::TERMINAL_ID => {
@@ -1690,12 +1721,16 @@ impl<'a> Decoder<'a> {
                     let bits = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
                     exit_status = Some(i32::from_be_bytes(bits.to_be_bytes()));
                 }
+                field::terminal_closed::REASON => {
+                    reason = CloseReason::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+                }
                 _ => {}
             }
         }
         Ok(FrameKind::TerminalClosed {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             exit_status,
+            reason,
         })
     }
 
@@ -1792,6 +1827,99 @@ impl<'a> Decoder<'a> {
             event: event.ok_or(DecodeError::UnexpectedEof)?,
         })
     }
+}
+
+/// Decode one of `SPAWN_TERMINAL`'s agent-facet strings (`provider`,
+/// `native_id`), refusing an empty value or one over `max_bytes` before the
+/// bytes are copied out of the frame.
+fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, DecodeError> {
+    if value.is_empty() || value.len() > max_bytes {
+        return Err(DecodeError::AgentFacetLimitExceeded);
+    }
+    Ok(core::str::from_utf8(value)
+        .map_err(|_| DecodeError::InvalidUtf8)?
+        .to_owned())
+}
+
+/// Enforce `SPAWN_TERMINAL`'s per-kind field rules (`docs/spec/L1.md` §3.1).
+///
+/// A `Terminal` spawn carries none of the child-binding / agent-facet fields
+/// (12-14). An `AgentSession` spawn requires `parent` (12) and `provider`
+/// (13) and carries none of the process-shape fields `command` (3), `cwd`
+/// (4), `env` (5), `term` (6), or `initial_size` (10), which describe a PTY
+/// it does not have, nor `owner_terminal` (8), since no window places it.
+/// An `Unknown` kind is passed through unvalidated so the server can answer
+/// `SpawnError::UnsupportedKind` instead of the connection failing on a
+/// malformed frame.
+fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
+    let FrameKind::SpawnTerminal {
+        command,
+        cwd,
+        env,
+        term,
+        owner_terminal,
+        initial_size,
+        resource,
+        ..
+    } = frame
+    else {
+        return Ok(());
+    };
+    // `None` is the plain Terminal spawn, which carries nothing to check.
+    let Some(resource) = resource.as_deref() else {
+        return Ok(());
+    };
+    let SpawnResource {
+        kind,
+        parent,
+        provider,
+        native_id,
+    } = resource;
+    let rule = |field: u32, required: bool| DecodeError::InvalidSpawnForKind {
+        kind: kind.as_wire(),
+        field,
+        required,
+    };
+    match kind {
+        ResourceKind::Terminal => {
+            for (field, present) in [
+                (field::spawn_terminal::PARENT, parent.is_some()),
+                (field::spawn_terminal::PROVIDER, provider.is_some()),
+                (field::spawn_terminal::NATIVE_ID, native_id.is_some()),
+            ] {
+                if present {
+                    return Err(rule(field, false));
+                }
+            }
+        }
+        ResourceKind::AgentSession => {
+            for (field, present) in [
+                (field::spawn_terminal::PARENT, parent.is_some()),
+                (field::spawn_terminal::PROVIDER, provider.is_some()),
+            ] {
+                if !present {
+                    return Err(rule(field, true));
+                }
+            }
+            for (field, present) in [
+                (field::spawn_terminal::COMMAND, command.is_some()),
+                (field::spawn_terminal::CWD, cwd.is_some()),
+                (field::spawn_terminal::ENV, env.is_some()),
+                (field::spawn_terminal::TERM, term.is_some()),
+                (
+                    field::spawn_terminal::OWNER_TERMINAL,
+                    owner_terminal.is_some(),
+                ),
+                (field::spawn_terminal::INITIAL_SIZE, initial_size.is_some()),
+            ] {
+                if present {
+                    return Err(rule(field, false));
+                }
+            }
+        }
+        ResourceKind::Unknown { .. } => {}
+    }
+    Ok(())
 }
 
 /// Decode a `HELLO` frame's `client_caps` field value.
@@ -1942,15 +2070,23 @@ fn checked_history_cursor(value: &[u8]) -> Result<bytes::Bytes, DecodeError> {
     Ok(bytes::Bytes::copy_from_slice(value))
 }
 
-/// Validate a `BOOTSTRAP_BEGIN` body's required grid dimensions. A zero
-/// column or row count is not a profile any stream can replay.
+/// Validate a `BOOTSTRAP_BEGIN` body's required grid dimensions against its
+/// stream profile. A Terminal stream (native or synthesized VT) replays into
+/// a grid, so a zero column or row count is not a profile it can replay; an
+/// `AgentEventsJsonlV1` stream has no grid and carries the `0 x 0` sentinel,
+/// so a non-zero geometry there is equally malformed.
 fn checked_bootstrap_dimensions(
+    profile: crate::caps::BootstrapStreamProfile,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<(u16, u16), DecodeError> {
     let cols = cols.ok_or(DecodeError::UnexpectedEof)?;
     let rows = rows.ok_or(DecodeError::UnexpectedEof)?;
-    if cols == 0 || rows == 0 {
+    let gridless = matches!(
+        profile,
+        crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1
+    );
+    if gridless != (cols == 0 && rows == 0) {
         return Err(DecodeError::InvalidBootstrapProfile);
     }
     Ok((cols, rows))
