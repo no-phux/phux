@@ -529,7 +529,7 @@ point before any handler or satellite branch:
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
 
-<!-- impl-status: spec-only; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
+<!-- impl-status: partial; probe: ResourceKind -->
 > **Status: spec-only.** The kind-bearing spawn rows and the
 > `APPEND_RESOURCE_OUTPUT` row classify frames no codec decodes yet; they
 > bind the classifier the day the `AGENT_SESSION` kind lands

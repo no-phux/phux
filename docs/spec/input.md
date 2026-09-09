@@ -474,7 +474,7 @@ boundary; per-connection `PRIMARY` / `VIEWER` roles gate attached input.
 
 ## 9. Non-terminal targets
 
-<!-- impl-status: spec-only; probe: ResourceKind -->
+<!-- impl-status: partial; probe: ResourceKind -->
 > **Status: spec-only.** Every id on the wire today names a Terminal, so the
 > refusal below is unreachable against the reference server. It binds a
 > server that advertises `RESOURCE_KINDS`.
