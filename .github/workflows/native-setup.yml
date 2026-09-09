@@ -3,48 +3,38 @@ name: native-setup
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'scripts/*setup*'
-      - 'scripts/doctor.sh'
-      - 'scripts/install-zig.sh'
-      - 'scripts/native-smoke.sh'
-      - 'scripts/lib/dev-toolchain.sh'
-      - 'docs/SETUP.md'
-      - '.github/workflows/native-setup.yml'
-      - '.github/workflows/release.yml'
   push:
     branches: [main]
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'scripts/*setup*'
-      - 'scripts/doctor.sh'
-      - 'scripts/install-zig.sh'
-      - 'scripts/native-smoke.sh'
-      - 'scripts/lib/dev-toolchain.sh'
-      - 'docs/SETUP.md'
-      - '.github/workflows/native-setup.yml'
-      - '.github/workflows/release.yml'
+  merge_group:
   workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 1'
 
 permissions:
   contents: read
 
 concurrency:
   group: native-setup-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
-  linux:
+  # One shared detector, no outer path allowlist to silently lose coverage.
+  changes:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    outputs:
+      native_needed: ${{ steps.detect.outputs.native_needed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: detect
+        uses: ./.github/actions/classify-changes
+
+  linux:
+    needs: changes
+    if: needs.changes.outputs.native_needed == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:

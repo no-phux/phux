@@ -1,216 +1,63 @@
-# phux CI — fmt + clippy + nextest + cargo-deny + doc.
-#
-# All cargo invocations run inside `nix develop -c` so CI uses the exact
-# toolchain pinned by `rust-toolchain.toml` and the devshell from `flake.nix`
-# (which provides cargo-nextest and cargo-deny).
-#
-# TWO compiling jobs, not six. libghostty-vt's build.rs shells out to `zig`
-# to compile libghostty — the dominant build cost. The previous layout ran
-# fmt/clippy/test/e2e/deny/doc as six independent runners, four of which
-# compiled the whole workspace (and that zig blob) from scratch in parallel.
-# Here the work is grouped so the zig blob builds at most twice per run:
-#   * `check` — fmt + clippy + doc + deny, sharing one target dir (one zig
-#     build for the check/doc profile), plus the compile-free guard rails
-#     (docs, generated font, e2e lane coverage, formula) which add seconds
-#     and no compilation.
-#   * `test`  — unit tests + the `#[ignore]`d e2e/stress lane, sharing one
-#     target dir (one zig build for the test profile). Merging these two was
-#     pure waste before: `e2e` recompiled the exact test binaries `test`
-#     had already built, just to run the ignored ones. The hermetic
-#     examples/agents smoke (`just agents-fleet-smoke`) rides this job too:
-#     it stubs `phux` with a fake, so it adds zero compilation — never a
-#     third compiling job.
-# Within each job the cargo steps share a SINGLE `nix develop` invocation
-# (one flake eval) instead of paying the eval per check.
-# We deliberately do NOT split build-from-run across runners (e.g. `nextest
-# archive`): libghostty's zig build auto-detects the host CPU, so a binary
-# built on one runner can SIGILL on another in the hosted fleet. Keeping
-# build+run on the same runner sidesteps that (see CPU_KEY below).
-#
-# Runners: the compile lanes run on `ubuntu-24.04-arm` — free for public
-# repos at the same 4 vCPU as the x64 standard runner, but the arm fleet is
-# homogeneous (Cobalt 100), so the CPU_KEY cache fingerprint stops
-# fragmenting across CPU generations. On the mixed x64 fleet that
-# fragmentation held the rust-cache hit rate to ~40%: each CPU generation
-# needed its own warm cache entry, and the 10 GB LRU evicted the cold ones.
-# (GitHub's LARGER runners are org-only — Team/Enterprise — and cannot be
-# attached to a personal account at any price; this is the biggest free
-# upgrade available.) The cheap `changes` gate runs on the smallest
-# Blacksmith x64 label.
-# macOS can be added to a matrix later when a contributor needs it (the
-# devshell already supports darwin systems via eachDefaultSystem).
-#
-# Caching, two layers:
-#   * Nix store — Cachix persists the realized devshell (rustc, zig, nextest,
-#     deny) across runs without consuming GitHub's shared Actions cache.
-#   * Rust artifacts — `rust-cache` holds the compiled workspace + the zig
-#     `.a`. Its key includes a CPU fingerprint (`CPU_KEY`): libghostty-vt's
-#     build.rs lets zig auto-detect the host CPU for native builds, so the
-#     resulting `.a` carries instructions specific to whichever runner
-#     compiled it. GitHub's hosted fleet spans CPU generations; restoring
-#     such an artifact onto a leaner runner aborts with SIGILL at load time.
-#     Keying on /proc/cpuinfo keeps native artifacts pinned to matching
-#     hardware. `flake.lock` is in the key too — it governs the nix-provided
-#     zig that builds the blob. rust-cache separates the lanes by an explicit
-#     `shared-key` per cargo profile (check vs test — different profiles must
-#     not clobber); the whole setup block lives in the
-#     `.github/actions/setup-rust-lane` composite so ci's lanes and the
-#     stress lane cannot drift apart.
-#
-# Cache RETENTION: `save-if` restricts Rust artifact cache writes to pushes
-# on `main`. GitHub's Actions cache is a hard 10 GB/repo with LRU eviction;
-# letting every PR save would thrash the store and evict the warm `main` base,
-# whose hot entry is the zig blob. Cachix separately stores the Nix closure.
-#
-#   * Workspace crates — sccache (GHA backend) EXPERIMENT (phux-mmxz child
-#     bead): rust-cache deliberately strips workspace-crate artifacts before
-#     saving (own code changes every commit), so phux's 11 crates recompile
-#     from scratch every run — measured at 8m54s of the test job. sccache
-#     hashes each rustc invocation's inputs, so crates whose source did NOT
-#     change in a given PR hit cache across commits. `CARGO_INCREMENTAL=0`
-#     because sccache cannot cache incremental artifacts (CI never profits
-#     from incremental anyway). sccache writes do count against the same
-#     10 GB LRU as rust-cache; per-object entries are small, but if the
-#     `main` zig-blob entry starts getting evicted, this experiment is the
-#     first thing to revert. Judge hit-rate via the `sccache stats` step.
-#
-# Docs-only fast path: the `changes` gate skips the compile-heavy steps when
-# EVERY changed file is documentation (`docs/`, `ADR/`, or `*.md`, except
-# `skills/**`, whose Markdown is compiled into release binaries). It is
-# deliberately fail-safe — any file outside that set, an empty diff, or a
-# non-PR event all resolve to "run everything." The jobs themselves still
-# run (and report green), so the gate never breaks a required status check;
-# only the expensive lanes are elided. `docs-check` always runs.
-#
-# Draft fast path: draft PRs skip ALL of ci (the `changes` gate carries a
-# job-level draft condition and check/test follow via `needs`). Marking the
-# PR "Ready for review" runs everything — that event is in the trigger
-# types. Rationale and safety analysis on the `changes` job comment.
-#
-# Cockpit-only fast path: `clients/cockpit/**` and Cockpit's three dedicated
-# workflows are owned by cockpit-ci.yml. The required `check` and `test` jobs
-# remain in this workflow but are skipped before runner allocation, so their
-# required contexts resolve without compiling the Rust workspace. Any unknown
-# root path or shared FFI/protocol/Cargo input fails closed into full Phux CI.
-#
-# Workflow-only fast path: a PR whose every changed file is CI infrastructure
-# (`.github/workflows/*.yml`, the composite action manifests, actionlint.yaml)
-# runs only the compile-free `workflow-gate` job. Dependabot's grouped action
-# bumps are exactly this shape — before this gate they paid the full compile
-# for a pin change. cockpit-ci.yml runs the same classifier so its macOS job
-# skips on the same PRs. See ADR-0099.
-#
-# OBSERVABILITY (ADR-0082): each cargo phase runs under scripts/ci/timed.sh,
-# and a trailing `lane signal` step renders the phase timings, cache
-# effectiveness, and slowest tests into the job's step summary. That is the
-# whole of it — the run page is the dashboard. The recorded store this used
-# to feed (the `ci-metrics` branch and its collector) is retired; see
-# ADR-0082. The instrumentation adds no compilation and only seconds of
-# wall; keep it `if: always()` so a red lane still reports where the time
-# went.
-
+# Root validation: compile-free guards, independently routed Node integrations,
+# and two Rust lanes. All compile/run phases retain their own target directory:
+# check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. Native
+# artifacts remain CPU-keyed by setup-rust-lane (libghostty detects host CPU).
+# The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-    # The default types plus ready_for_review: DRAFT PRs skip the compile
-    # lanes entirely (see the `changes` gate below), and marking a draft
-    # "Ready for review" is the trigger that runs them. Without
-    # ready_for_review in this list, undrafting would raise no event and
-    # the PR would sit with skipped checks until the next push.
+    # Drafts cost no build; undrafting must produce a fresh validation run.
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
-# Cancel superseded runs on the same ref to keep queue times sane.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # PRs are latest-wins. Main SHAs keep their own validation because a release
+  # can depend on any of them; a later push must not strand that release draft.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  # Cheap gate: decide whether the expensive compile lanes are needed.
-  # Fail-safe — empty/unknown diffs request full Phux CI unless the classifier
-  # positively identifies the narrow Cockpit-only skip case below.
-  #
-  # DRAFT PRs skip this job — and, through `needs`, the whole check/test
-  # chain — so a draft never pays the nix + zig + workspace build. This is
-  # what makes release-please's draft release PRs (draft-pull-request: true
-  # in release-please-config.json) free while they idle between releasable
-  # commits: undraft the PR to run CI, merge to ship. GitHub counts skipped
-  # required checks as satisfied, so drafts don't wedge; the merge is still
-  # safe because a draft PR cannot be merged and ready_for_review triggers the
-  # real CI run before it becomes eligible.
   changes:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # Git diff and two shell classifiers need no paid build machine.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
       phux_needed: ${{ steps.detect.outputs.phux_needed }}
-      release_only: ${{ steps.detect.outputs.release_only }}
       workflow_only: ${{ steps.detect.outputs.workflow_only }}
       cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
+      web_needed: ${{ steps.detect.outputs.web_needed }}
+      web_engine_needed: ${{ steps.detect.outputs.web_engine_needed }}
+      integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
+      native_needed: ${{ steps.detect.outputs.native_needed }}
+      validated: ${{ steps.receipt.outputs.validated }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - id: detect
-        run: |
-          set -euo pipefail
-          echo "release_only=false" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/classify-changes
+      - id: receipt
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: check
+          workflow: .github/workflows/ci.yml
+          coverage: phux=${{ steps.detect.outputs.phux_needed }},integrations=${{ steps.detect.outputs.integrations_needed }}
 
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # A release-please squash merge has already passed required PR CI.
-            # Its merge commit has the exact PR tree and changes only generated
-            # release metadata, so compiling that tree again adds no coverage.
-            # Keep this match intentionally narrow and fail closed.
-            before='${{ github.event.before }}'
-            if [[ "$before" =~ ^0+$ ]] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              files=$(git diff-tree --no-commit-id --name-only -r HEAD)
-            else
-              files=$(git diff --name-only "$before" HEAD)
-            fi
-            subject=$(git log -1 --pretty=%s)
-            expected=$(printf '%s\n' \
-              .release-please-manifest.json \
-              CHANGELOG.md \
-              Cargo.lock \
-              Cargo.toml)
-            if [[ "$subject" =~ ^chore\(main\):\ release\ [0-9]+\.[0-9]+\.[0-9]+\ \(#[0-9]+\)$ ]] \
-               && [ "$(printf '%s\n' "$files" | sort)" = "$(printf '%s\n' "$expected" | sort)" ]; then
-              echo "release_only=true" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ "${{ github.event_name }}" = "merge_group" ]; then
-            # A merge group may contain multiple PRs and has no base_ref. Empty
-            # input makes the classifier fail closed into complete root CI.
-            files=''
-          else
-            git fetch --quiet origin "${{ github.base_ref }}"
-            base=$(git merge-base HEAD "origin/${{ github.base_ref }}")
-            files=$(git diff --name-only "$base" HEAD)
-          fi
-
-          printf '%s\n' "$files" | bash scripts/ci/classify-changes.sh >> "$GITHUB_OUTPUT"
-
-  # Workflow-only fast path: actionlint, the SHA-pin check, the change
-  # classifier truth table, and the release-orchestration/drift assertions,
-  # on the pinned devshell — NO Rust compile, NO zig blob, NO rust-cache.
-  # Dependabot's grouped action bumps touch nothing but workflow files and
-  # used to pay for the full compile lanes before failing on an unrelated
-  # step; now they cost minutes instead of a quarter hour. The composite
-  # action manifests are deliberately in scope: a bumped action changes
-  # runtime steps, not compilation, and the next code PR exercises the lanes
-  # against it. Anything outside the workflow set fails closed into full CI.
+  # Always check cheap contracts, including mixed and docs-only changes. Resolve
+  # only these tools from the pinned nixpkgs input: no devshell, Rust or Zig
+  # realization, sccache setup, or target-cache restore on this runner.
   workflow-gate:
     name: workflow gate
     needs: changes
-    if: needs.changes.outputs.workflow_only == 'true'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
@@ -219,60 +66,56 @@ jobs:
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: phux
-          # Read-only: no auth token, so nothing here can push to Cachix even
-          # in principle — the gate only needs the devshell's actionlint,
-          # just, and node. Fork PRs therefore work identically.
           pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - name: workflow checks
-        run: nix develop -c just workflow-check
+      - name: compile-free guards
+        run: |
+          nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck \
+            nixpkgs#just nixpkgs#nodejs_24 nixpkgs#python3 nixpkgs#jq \
+            -c bash -euo pipefail <<'EOF'
+          just workflow-check docs-check font-check e2e-lane-check formula-check zig-pin-check install-surface-check
+          timeout 120 just agents-fleet-smoke
+          EOF
 
-  # Lint + docs + license lane. clippy and rustdoc each compile the workspace
-  # (check / doc profiles); running them in one job — and one `nix develop` —
-  # shares the dependency build (including the zig blob) instead of paying for
-  # it (and the flake eval) per check. fmt and deny are near-free and ride
-  # along for a single pass/fail signal.
-  #
-  # clippy and doc run `--all-features` here to match `just lint` / `just doc`
-  # exactly. They previously ran with DEFAULT features while `just ci` used
-  # `--all-features`, which made the local bar STRICTER than CI: a change that
-  # broke `phux-server/tokio-console` or `phux/dhat-heap` (the entire
-  # `--all-features` delta) could merge green and then break every
-  # contributor's `just ci`. Compiling the default feature set is still covered
-  # — the `test` lane below builds the workspace with default features.
-  #
-  # `--all-features` belongs HERE and not in the `test` lane: it enables
-  # `phux/dhat-heap`, which installs dhat as the global allocator, and the e2e
-  # lane's `perf_latency` / `perf_colored_output` gates are wall-clock ceilings
-  # that exec the real `phux` binary. Building them with an instrumented
-  # allocator would measure dhat, not phux.
+  integrations:
+    name: agent integrations
+    needs: changes
+    if: needs.changes.outputs.integrations_needed == 'true' && needs.changes.outputs.validated != 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: integrations/*/package-lock.json
+      - name: agent integration gates
+        run: |
+          set -euo pipefail
+          bash scripts/doctor.sh integrations
+          node scripts/check-agent-integration-versions.mjs
+          export npm_config_audit=false npm_config_fund=false
+          for package in opencode pi claude; do
+            npm --prefix "integrations/$package" ci
+            npm --prefix "integrations/$package" run gates
+          done
+
+  # Clippy/rustdoc exercise all features; tests deliberately use default
+  # features so dhat's allocator does not distort the performance e2e gates.
   check:
     name: check
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.release_only != 'true' && needs.changes.outputs.phux_needed == 'true'
+    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Nix owns Node as well as Rust. Cache npm downloads without injecting
-      # a second runtime ahead of the pinned shell's PATH.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('integrations/*/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
-      # Disk headroom, CPU fingerprint, Nix + Cachix, sccache, and rust-cache
-      # all live in the shared composite; see .github/actions/setup-rust-lane.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           rust-cache-shared-key: check
-      # `just` is provided by the pinned dev shell, not the hosted runner.
-      # Keep this after Nix setup or every PR fails before reaching Rust.
-      - name: agent integration gates
-        run: nix develop -c just agent-integrations-check
       - name: rust checks (fmt + clippy + doc + deny)
-        if: needs.changes.outputs.docs_only != 'true'
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
@@ -283,50 +126,6 @@ jobs:
           timed features python3 scripts/check-build-features.py
           timed feature-compile just build-features-compile
           EOF
-      # Compile-free guard rails. None of these build anything (bash, python3,
-      # jq — all from the devshell), so they run in seconds and stay OUTSIDE
-      # the `docs_only` gate: they are cheap enough that skipping them buys
-      # nothing, and a docs-only PR that somehow touched them should still
-      # fail. Each has a matching `just` target so the local bar covers it.
-      - name: docs-check
-        run: nix develop -c bash scripts/check-docs.sh
-      # The generated glyph table (crates/phux-record/src/font/spleen_8x16.rs)
-      # is committed rather than built by a build.rs, which means nothing links
-      # it to its .bdf source. Regenerate and byte-compare so a hand edit or a
-      # bumped face without a regen cannot merge green.
-      - name: generated-font check
-        run: nix develop -c bash scripts/check-generated-font.sh
-      # `#[ignore]`d tests run only where a lane names their binary. Assert
-      # every crates/*/tests/*_e2e.rs is named somewhere, so a new e2e binary
-      # cannot sit unrun and green.
-      - name: e2e lane coverage
-        run: nix develop -c bash scripts/check-e2e-lanes.sh
-      # `just ci` has gated on this since it was written; CI never did, so the
-      # formula generator was strictly better covered locally than on the
-      # release path that actually consumes it.
-      - name: formula-check
-        run: nix develop -c bash scripts/check-formula.sh
-      # release.yml pins Zig tarball digests by hand (a checksum fetched at
-      # build time verifies nothing). Nothing tied those digests to
-      # ZIG_VERSION, so v0.10.0 shipped with the version bumped to 0.16.0 and
-      # all three shas still on 0.15.2 — the whole build matrix died at
-      # `shasum -c` and the release was published with zero assets. release.yml
-      # only runs after the tag exists, so this is the last gate that can catch
-      # it while it is still fixable. Skips itself if ziglang.org is unreachable.
-      - name: zig-pin-check
-        run: nix develop -c bash scripts/check-zig-pins.sh
-      # This one existed for a long time and CI never ran it — it was reachable
-      # only from `just release-preflight` and the manual parity gate, so it
-      # rotted in place: two of its docs/INSTALL.md contracts went stale in the
-      # curated-docs truth pass and `release-preflight` was already red on main
-      # before anyone tried to cut a release. A release-path gate that runs only
-      # on the release path is a gate you discover during a release.
-      - name: install-surface check
-        run: nix develop -c bash scripts/check-install-surface.sh
-      # Workflow syntax and the path-router truth table are executable release
-      # infrastructure. Keep them in the always-on, compile-free guard set.
-      - name: workflow check
-        run: nix develop -c just workflow-check
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
@@ -337,73 +136,27 @@ jobs:
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
 
-  # Test lane: the default unit pool, then the FAST `#[ignore]`d e2e set
-  # (`run_wait_e2e` + `agent_record_e2e` + the perf gates). Both steps use the
-  # SAME cargo BUILD selection (`--workspace`, default features), so the e2e
-  # step reuses this job's one test-profile build and the workspace compiles
-  # exactly once here.
-  #
-  # That invariant is load-bearing and was NOT true until recently: `just e2e`
-  # used to narrow the build with `-p`/`--test`, which changes the resolved
-  # dev-dependency feature union, re-keys `tokio`, and forced a full recompile
-  # of everything downstream of it (~87s every run). `just e2e` now picks its
-  # tests with a nextest filterset, which is applied after the build. Keep the
-  # two steps' build selections identical — do NOT add `--all-features` (or any
-  # other feature/package narrowing) to one without the other.
-  #
-  # The e2e set drives real PTY-backed server spawns and is `#[ignore]`d out
-  # of the default pool because those spawns starve the latency-sensitive
-  # timing tests; without this lane a regression in the headless agent
-  # surface (e.g. a ROUTE_INPUT gate rejecting `phux run`) would ship green.
-  #
-  # The heavy stress storms (`stress_*`) are NOT here — they are CPU-starved
-  # on small hosted runners (a sub-second test grinds for minutes) and run in
-  # the separate `stress` workflow (post-merge on main + nightly), off the
-  # PR critical path. So is `perf_bursty_output`: not starvation-sensitive,
-  # just ~110s of CPU-bound full-churn synthesis that was the single longest
-  # test in this unit pool. See `just e2e` / `just stress`.
+  # Unit and ignored e2e selections must keep identical Cargo feature/package
+  # selection. nextest filters select execution after one workspace build.
   test:
     name: test
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.release_only != 'true' && needs.changes.outputs.phux_needed == 'true'
+    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Disk headroom, CPU fingerprint, Nix + Cachix, sccache, and rust-cache
-      # all live in the shared composite; see .github/actions/setup-rust-lane.
-      # This is the lane where the 8m54s workspace compile lives, so it gets
-      # its own rust-cache profile key (test, not check).
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           rust-cache-shared-key: test
-      # NEXTEST_PROFILE=ci on the unit pool only: behavior-identical to the
-      # default profile (see .config/nextest.toml), it just adds the junit
-      # report the `lane signal` step turns into a slowest-tests table. The
-      # e2e step keeps the default profile — its two nextest invocations
-      # would overwrite each other's junit, and its signal is the phase wall.
       - name: tests (unit + e2e)
-        if: needs.changes.outputs.docs_only != 'true'
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
           timed unit env NEXTEST_PROFILE=ci cargo nextest run --workspace
           timed e2e  just e2e
-          EOF
-      # Hermetic argv/control-flow smoke for the agent-facing example scripts
-      # (phux-2inh): a fake `phux` binary, no server, no TTY, no compilation —
-      # seconds of wall. The script bounds its own watch streams, but a
-      # coreutils `timeout` caps the whole run so a wedged subprocess cannot
-      # hang the lane. The live variant (`just agents-fleet-live`) spawns a
-      # real server and stays out of CI by design.
-      - name: agents smoke
-        if: needs.changes.outputs.docs_only != 'true'
-        run: |
-          nix develop -c bash -euo pipefail <<'EOF'
-          source scripts/ci/timed.sh
-          timed agents-smoke timeout 120 just agents-fleet-smoke
           EOF
       - name: sccache stats
         if: always()
@@ -416,31 +169,12 @@ jobs:
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
 
-  # Aggregation gate: ONE required context with an explicit skip policy,
-  # instead of requiring each lane's raw context.
-  #
-  # The fast paths above work by SKIPPING lanes (docs-only PRs skip the
-  # compile steps; cockpit-only PRs skip check and test entirely; drafts skip
-  # everything). Branch protection that requires the raw `check`/`test`
-  # contexts couples the merge contract to however GitHub happens to score a
-  # skipped job, and every new gate condition becomes a ruleset change. This
-  # job converts the lane results into a single deliberate verdict:
-  #
-  #   success — lane ran and passed
-  #   skipped — lane was gated off by the classifier; a PASS by policy
-  #   failure / cancelled — a red lane that ran; FAIL
-  #
-  # Require the `ci` context in the ruleset and leave `check`/`test`
-  # unrequired-but-reported; the per-lane signals stay visible on every PR
-  # while the merge contract lives in exactly one place. `if: always()` is
-  # load-bearing: without it a failed lane would skip this job and GitHub
-  # would score the aggregate as skipped-green instead of red.
+  # Live main rules require ci + commitlint (verified 2026-09-09). Retain raw
+  # check/test names for visibility. A crashed classifier or cheap guard cannot
+  # become skipped-green; only product lanes may be intentionally skipped.
   ci:
     name: ci
-    needs: [changes, check, test, workflow-gate]
-    # always(): a red lane must not skip this job into a green-by-skip. The
-    # draft exclusion keeps drafts quiet without weakening the gate — a draft
-    # cannot merge, and ready_for_review re-runs the full graph.
+    needs: [changes, check, test, workflow-gate, integrations]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
@@ -454,10 +188,8 @@ jobs:
             const needs = JSON.parse(process.env.RESULTS);
             let bad = false;
             for (const [job, { result }] of Object.entries(needs)) {
-              // The classifier is the gate every skip decision flows from, so
-              // it may never be skipped/failed itself: a crashed `changes`
-              // job must read as red, not as "lanes gated off".
-              const ok = job === "changes"
+              const required = ["changes", "workflow-gate"].includes(job);
+              const ok = required
                 ? result === "success"
                 : result === "success" || result === "skipped";
               console.log(`${ok ? "pass" : "FAIL"} ${job}: ${result}`);
@@ -465,3 +197,14 @@ jobs:
             }
             process.exit(bad ? 1 : 0);
           '
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: needs.changes.outputs.validated != 'true'
+        with:
+          persist-credentials: false
+      - name: Record successful validation of this tree and coverage
+        if: needs.changes.outputs.validated != 'true'
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: write
+          workflow: .github/workflows/ci.yml
+          coverage: phux=${{ needs.changes.outputs.phux_needed }},integrations=${{ needs.changes.outputs.integrations_needed }}

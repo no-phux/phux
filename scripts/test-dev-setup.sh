@@ -7,11 +7,11 @@ scratch="$(cd "$scratch" && pwd)"
 trap 'rm -rf "$scratch"' EXIT
 repo="$scratch/repo"
 bin="$scratch/bin"
-mkdir -p "$repo/scripts/lib" "$repo/.github/workflows" "$bin"
+mkdir -p "$repo/scripts/lib" "$repo/.config" "$bin"
 cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
-cp "$root/.github/workflows/release.yml" "$repo/.github/workflows/"
+cp "$root/.config/zig-toolchain.json" "$repo/.config/"
 source "$root/scripts/lib/dev-toolchain.sh"
 bash_bin="$BASH"
 for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr; do
@@ -158,10 +158,16 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
     sha="$(shasum -a 256 "$SETUP_TEST_ARCHIVE" | awk '{print $1}')"
 fi
-cat >"$repo/.github/workflows/release.yml" <<SH
-ZIG_VERSION: $ZIG_VERSION
-archive="zig-aarch64-macos-\${ZIG_VERSION}.tar.xz"
-sha="$sha"
+cat >"$repo/.config/zig-toolchain.json" <<SH
+{
+  "version": "$ZIG_VERSION",
+  "archives": {
+    "aarch64-macos": {
+      "archive": "zig-aarch64-macos-$ZIG_VERSION.tar.xz",
+      "sha256": "$sha"
+    }
+  }
+}
 SH
 expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 grep -Fxq "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" "$scratch/output"

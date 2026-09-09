@@ -145,6 +145,14 @@
             '';
         };
 
+        # Browser CI gets a browser matched to chromedriver without making
+        # every native Linux lane download Chromium. Darwin uses host Chrome
+        # and an explicitly matching driver (see docs/SETUP.md).
+        devShells.browser = self.devShells.${system}.default.overrideAttrs (old: {
+          nativeBuildInputs =
+            old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
+        });
+
         formatter = pkgs.nixfmt-rfc-style;
       }
     );

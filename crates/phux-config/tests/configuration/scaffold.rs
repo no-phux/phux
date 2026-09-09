@@ -13,7 +13,7 @@ use phux_config::scaffold::{
     write_scaffold,
 };
 
-mod common;
+use crate::common;
 use common::path;
 
 /// A scaffolded file with nothing uncommented must parse to the same

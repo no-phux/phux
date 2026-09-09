@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use phux_config::{SatelliteConfigEntry, parse_str};
 
-mod common;
+use crate::common;
 use common::path;
 
 #[test]

@@ -41,7 +41,7 @@ use phux_protocol::wire::info::{
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
 
-mod common;
+use crate::common;
 use common::{framed_tlv, tlv_field};
 
 /// The shared body of every round-trip test in this file: encoding then

@@ -154,39 +154,31 @@ jobs:
 
       - name: Install Zig
         shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          ZIG_VERSION: 0.16.0
         run: |
-          set -euo pipefail
-          # Every sha below must be the digest ziglang.org publishes for THIS
-          # ZIG_VERSION. Bumping the version without re-pinning all three fails
-          # the whole matrix at `shasum -c` and ships a release with no assets;
-          # scripts/check-zig-pins.sh gates that in CI.
-          case "$TARGET" in
-            aarch64-apple-darwin)
-              archive="zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
-              sha="b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-              ;;
-            x86_64-unknown-linux-gnu)
-              archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-              sha="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
-              ;;
-            aarch64-unknown-linux-gnu)
-              archive="zig-aarch64-linux-${ZIG_VERSION}.tar.xz"
-              sha="ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
-              ;;
-            *)
-              echo "::error::unsupported Zig target: ${TARGET}"
-              exit 1
-              ;;
+          if [[ -f scripts/install-zig.sh ]]; then
+            bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          # Historical tags predate setup helpers. Read their audited compiler
+          # pins from that tag's workflow; never install current-main pins over
+          # an older release source tree.
+          workflow=.github/workflows/release.yml
+          version="$(sed -n 's/^[[:space:]]*ZIG_VERSION: \([^[:space:]]*\).*/\1/p' "$workflow" | head -n 1)"
+          case "$(uname -s)/$(uname -m)" in
+            Darwin/arm64) target=aarch64-macos ;;
+            Linux/x86_64) target=x86_64-linux ;;
+            Linux/aarch64|Linux/arm64) target=aarch64-linux ;;
+            *) exit 1 ;;
           esac
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/${archive}"
-          echo "${sha}  ${archive}" | shasum -a 256 -c -
-          tar -xf "$archive"
-          zig_dir="${archive%.tar.xz}"
-          echo "${PWD}/${zig_dir}" >> "$GITHUB_PATH"
-          "${zig_dir}/zig" version
+          sha="$(awk -v target="$target" '
+            index($0, "archive=\"zig-" target "-${ZIG_VERSION}.tar.xz\"") { found=1; next }
+            found && /sha="/ { split($0, parts, "\""); print parts[2]; exit }
+          ' "$workflow")"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$sha" =~ ^[0-9a-f]{64}$ ]]
+          archive="zig-${target}-${version}.tar.xz"
+          curl -fSL --retry 3 "https://ziglang.org/download/$version/$archive" -o "$RUNNER_TEMP/$archive"
+          (cd "$RUNNER_TEMP" && echo "$sha  $archive" | shasum -a 256 -c - && tar -xf "$archive")
+          echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
         run: |

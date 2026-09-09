@@ -2,60 +2,61 @@ name: web-check
 
 on:
   pull_request:
-    paths:
-      - 'clients/phux-web/**'
-      - 'clients/phux-vt-web/**'
-      - 'crates/phux-protocol/**'
-      - 'crates/phux-client-core/**'
-      - 'crates/phux-perf/**'
-      - 'scripts/build-vt-wasm.sh'
-      - 'scripts/prepare-vt-wasm.mjs'
-      - 'scripts/test-vt-wasm.mjs'
-      - 'scripts/lib/dev-toolchain.sh'
-      - 'rust-toolchain.toml'
-      - 'flake.*'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/web-check.yml'
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
-    paths:
-      - 'clients/phux-web/**'
-      - 'clients/phux-vt-web/**'
-      - 'crates/phux-protocol/**'
-      - 'crates/phux-client-core/**'
-      - 'crates/phux-perf/**'
-      - 'scripts/build-vt-wasm.sh'
-      - 'scripts/prepare-vt-wasm.mjs'
-      - 'scripts/test-vt-wasm.mjs'
-      - 'scripts/lib/dev-toolchain.sh'
-      - 'rust-toolchain.toml'
-      - 'flake.*'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/web-check.yml'
   workflow_dispatch:
+  merge_group:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
   group: web-check-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
+  classify:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      web_needed: ${{ steps.changes.outputs.web_needed }}
+      web_engine_needed: ${{ steps.changes.outputs.web_engine_needed }}
+      validated: ${{ steps.receipt.outputs.validated }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/classify-changes
+      - id: receipt
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: check
+          workflow: .github/workflows/web-check.yml
+          coverage: web=${{ steps.changes.outputs.web_needed }},engine=${{ steps.changes.outputs.web_engine_needed }}
+
   engine-and-adapters:
+    needs: classify
+    if: needs.classify.outputs.web_needed == 'true' && needs.classify.outputs.validated != 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       # The engine's byte-for-byte contract is pinned to the official Zig
-      # release binary that release.yml and native-setup.yml install. nixpkgs'
+      # release binary in .config/zig-toolchain.json. nixpkgs'
       # zig_0_16 on x86_64 Linux links a different LLVM build and compiles one
       # function differently from the same source, so the Nix shell supplies
       # Node here while Zig comes from scripts/install-zig.sh.
       - name: Reproduce committed engine and verify checkpoint ABI
+        if: needs.classify.outputs.web_engine_needed == 'true'
         run: |
           PHUX_ZIG_DIR="$(bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains")"
           export PHUX_ZIG_DIR
@@ -65,6 +66,8 @@ jobs:
           nix develop -c bash -c 'PATH="$PHUX_ZIG_DIR:$PATH" exec bash scripts/build-vt-wasm.sh --check'
       - name: Metadata normalization regression
         run: nix develop -c node --test scripts/test-vt-wasm.mjs
+      - name: Browser runner regression
+        run: python3 -m unittest discover -s scripts/ci -p 'test_web_browser.py' -v
       - name: Engine adapter tests
         working-directory: clients/phux-vt-web
         run: nix develop ../.. -c wasm-pack test --node --locked
@@ -74,3 +77,11 @@ jobs:
       - name: Shipping browser package
         working-directory: clients/phux-web
         run: nix develop ../.. -c wasm-pack build --target web --release --out-dir pkg --locked
+      - name: Headless Chrome canvas and live-server tests
+        run: nix develop .#browser -c python3 scripts/ci/web-browser.py
+      - name: Record successful browser validation
+        uses: ./.github/actions/validation-receipt
+        with:
+          mode: write
+          workflow: .github/workflows/web-check.yml
+          coverage: web=${{ needs.classify.outputs.web_needed }},engine=${{ needs.classify.outputs.web_engine_needed }}

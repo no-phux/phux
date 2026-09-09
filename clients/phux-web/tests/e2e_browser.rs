@@ -14,7 +14,10 @@ use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-const WS_URL: &str = "ws://127.0.0.1:47654/";
+const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
+    Some(url) => url,
+    None => "ws://127.0.0.1:47654/",
+};
 const MARKER: &str = "PHUX_WEB_OK";
 const POLL: Duration = Duration::from_millis(50);
 const POLLS: usize = 120;

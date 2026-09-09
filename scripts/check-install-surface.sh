@@ -150,7 +150,9 @@ require_fixed .github/workflows/release.yml 'target: aarch64-unknown-linux-gnu'
 # public repos. If this target is ever added, the guards above must come out
 # together with it.
 forbid_fixed .github/workflows/release.yml 'target: x86_64-apple-darwin'
-require_fixed .github/workflows/release.yml 'https://ziglang.org/download/${ZIG_VERSION}/${archive}'
+require_fixed .github/workflows/release.yml 'bash scripts/install-zig.sh'
+require_fixed scripts/install-zig.sh 'https://ziglang.org/download/${ZIG_VERSION}/${archive}'
+require_fixed scripts/lib/dev-toolchain.sh '.config/zig-toolchain.json'
 # The link check must run on every matrix leg. It was macOS-only for its whole
 # life, so the Linux artifacts shipped unchecked; pin both the call and the
 # Linux half of the script it calls.

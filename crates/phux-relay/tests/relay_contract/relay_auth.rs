@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

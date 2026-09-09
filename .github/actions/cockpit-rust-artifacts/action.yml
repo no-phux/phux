@@ -1,0 +1,43 @@
+name: Cockpit Rust artifacts
+description: Build or restore exact-input FFI and coordinator artifacts; save only after validation
+inputs:
+  mode:
+    description: build before tests, save after successful main validation
+    default: build
+runs:
+  using: composite
+  steps:
+    - id: identity
+      shell: bash
+      run: python3 scripts/ci/cockpit_artifacts.py key
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'build'
+      with:
+        path: target/ci-cockpit-artifacts
+        key: ${{ steps.identity.outputs.key }}
+    - id: restore
+      if: inputs.mode == 'build'
+      shell: bash
+      run: python3 scripts/ci/cockpit_artifacts.py restore
+    - name: Build same-checkout artifacts on a miss
+      if: inputs.mode == 'build' && steps.restore.outputs.restored != 'true'
+      shell: bash
+      run: bash clients/cockpit/scripts/build-phux-artifacts.sh
+    - name: Record verified build outputs for fresh CLI staging
+      if: inputs.mode == 'build'
+      shell: bash
+      run: |
+        python3 scripts/ci/cockpit_artifacts.py save
+        echo 'PHUX_CI_ARTIFACTS_VERIFIED=true' >> "$GITHUB_ENV"
+    - id: existing
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      with:
+        path: target/ci-cockpit-artifacts
+        key: ${{ steps.identity.outputs.key }}
+        lookup-only: true
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.cache-hit != 'true'
+      with:
+        path: target/ci-cockpit-artifacts
+        key: ${{ steps.identity.outputs.key }}

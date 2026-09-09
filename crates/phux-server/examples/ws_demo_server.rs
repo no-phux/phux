@@ -40,6 +40,6 @@ fn main() {
 
     eprintln!("ws-demo-server listening on ws://{addr}/  (seed: default)");
     ServerRuntime::new(cfg)
-        .run(std::future::pending::<()>())
+        .run(async { tokio::signal::ctrl_c().await.expect("shutdown signal") })
         .expect("server run");
 }

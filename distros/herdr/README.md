@@ -27,7 +27,7 @@ simply not a distro's job to hold the settings that everyone should have:
 a starter distribution exists to offer a *choice*, and there was no
 choice being offered here, only a good default sitting behind an opt-in.
 
-`crates/phux-config/tests/herdr_distro.rs` pins that in both directions —
+`crates/phux-config/tests/configuration/herdr_distro.rs` pins that in both directions —
 a config with no distro must carry every one of those opinions, and
 extending this layer must not change any of them.
 

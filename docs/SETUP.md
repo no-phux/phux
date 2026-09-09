@@ -30,8 +30,8 @@ the shell, Cargo, and npm commands below also work directly.
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
 availability/versions and prints remedies; it does not install, compile, or
 claim your change passes tests. `docs` and `integrations` do not invoke Rust or
-Zig. The scripts work with macOS's Bash 3.2; workflow routing checks require
-Bash 4+.
+Zig. The scripts work with macOS's Bash 3.2; workflow routing checks additionally
+use Python 3.11+ and Node.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
 wire codec and input atoms are pure Rust. Its `server` feature adds libghostty
@@ -117,8 +117,8 @@ bash scripts/doctor.sh native
 cargo build --locked -p phux -p phux-mcp
 ```
 
-The helper reads the version and SHA-256 digests from the existing
-`.github/workflows/release.yml` matrix, verifies the official download before
+The helper reads the version and SHA-256 digests from
+`.config/zig-toolchain.json`, verifies the official download before
 extracting it, and installs only under the directory you supplied. Repeating it
 reuses that compiler. It does not change shell startup files or replace a
 system Zig. Keep the printed directory on PATH in subsequent shells.

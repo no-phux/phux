@@ -105,8 +105,9 @@ build-release:
     cargo build --locked -p phux -p phux-mcp --release
 
 # Build the stable C ABI and the native macOS Cockpit from this checkout.
-cockpit-build: cockpit-ffi
-    cd clients/cockpit && ./scripts/zig-build.sh -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
+cockpit-build:
+    bash clients/cockpit/scripts/build-phux-artifacts.sh ffi-dev
+    cd clients/cockpit && bash ./scripts/build-shipping-app.sh -Dphux-client-ffi-profile=ffi-dev --summary all
 
 # Run the shipping TypeScript graph, native engine regressions, and repository
 # and release contract checks.
@@ -144,7 +145,8 @@ cockpit-ffi-release:
     cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
 
 # Run the isolated developer app with the Phux-backed production graph.
-cockpit-dev: cockpit-ffi
+cockpit-dev:
+    bash clients/cockpit/scripts/build-phux-artifacts.sh ffi-dev
     cd clients/cockpit && ./scripts/dev-run.sh --phux --ffi-profile ffi-dev
 
 # Build the current checkout and atomically install its developer binaries.
@@ -403,6 +405,7 @@ workflow-check:
     bash scripts/test-dev-setup.sh
     node --test scripts/test-vt-wasm.mjs
     bash scripts/ci/check-classify-changes.sh
+    python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh
     node scripts/check-release-orchestration.mjs
     node scripts/check-release-drift-policy.mjs

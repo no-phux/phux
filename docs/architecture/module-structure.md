@@ -208,7 +208,7 @@ src/
     driver/           — tokio::select! lifecycle, RawModeGuard RAII. A
                         one-way orchestrator: it owns no shared vocabulary,
                         so no sibling imports from it (phux-4fbs.4, guarded
-                        by tests/attach_layering.rs)
+                        by tests/rendering/attach_layering.rs)
       entry.rs, main_loop.rs, loop_state.rs, chrome.rs, config_ui.rs,
       headless.rs, overlay_paint.rs, session_io.rs, subscriptions.rs,
       terminal.rs, viewport.rs

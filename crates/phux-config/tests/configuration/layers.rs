@@ -23,7 +23,7 @@ use std::path::Path;
 use phux_config::{ConfigError, MAX_EXTENDS_DEPTH, loader, parse_with_defaults};
 use tempfile::TempDir;
 
-mod common;
+use crate::common;
 use common::write;
 
 #[test]

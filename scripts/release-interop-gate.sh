@@ -96,8 +96,8 @@ run_shell_step checkpoint-exchange "$PHUX_CHECKPOINT_FIXTURE_VERIFY \"$PHUX_MACO
 cd "$ROOT"
 # Ordinary cargo integration tests: no nextest retry profile and no shell retry.
 run_step uds cargo test -p phux-server --test attach concurrent_attach_l2::
-run_step wss cargo test -p phux-client --test ws_dial wss_with_pinned_cert_sends_bearer_token
-run_step quic cargo test -p phux-client --test quic_dial
+run_step wss cargo test -p phux-client --test connection ws_dial::wss_with_pinned_cert_sends_bearer_token
+run_step quic cargo test -p phux-client --test connection quic_dial::
 run_step relay cargo test -p phux-server --test relay_e2e
 run_step warm-fullscreen-eight-client-reconnect cargo test -p phux-server --test attach release_bootstrap_milestones::
 run_step tui-record-play-surface env PHUX_SMOKE_ARTIFACT_DIR="$ARTIFACT_DIR" bash scripts/tui-probe.sh 80 24

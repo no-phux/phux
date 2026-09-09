@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use phux_config::{ConfigProvenance, KeyOrigin, LayerSource, merged_config_with_provenance};
 use tempfile::TempDir;
 
-mod common;
+use crate::common;
 use common::write;
 
 /// The root (user) input of the three-layer fixture.

@@ -71,15 +71,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - name: Contributor Zig setup
+        if: hashFiles('scripts/install-zig.sh') != ''
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+      - name: Historical tag Zig setup
+        if: hashFiles('scripts/install-zig.sh') == ''
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
+      - name: Contributor Rust setup
+        if: hashFiles('scripts/setup-rust.sh') != ''
+        run: bash scripts/setup-rust.sh cockpit
 
-      # A release tag is normally cut on a main commit cockpit-ci just built,
-      # so these hit the exact entries cockpit-ci saved: the FFI build reuses
-      # the shared macOS `cockpit-ffi` cache, and the Zig caches key on the
-      # release manifest the same way. Replays against an older tag fall back
-      # to the prefix and still skip the toolchain/stdlib compile.
+      # Dependency caches are best-effort. The separate artifact receipt below
+      # retains the two final Rust outputs with exact input and byte hashes.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: cockpit-ffi
@@ -94,6 +99,10 @@ jobs:
             cockpit-zig-0.16.0-${{ runner.os }}-
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
+        if: hashFiles('.github/actions/cockpit-rust-artifacts/action.yml') != ''
+        uses: ./.github/actions/cockpit-rust-artifacts
+      - name: Build historical tag artifacts
+        if: hashFiles('.github/actions/cockpit-rust-artifacts/action.yml') == ''
         run: |
           cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
           cargo build --locked --profile ffi-release -p phux

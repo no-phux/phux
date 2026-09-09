@@ -3,7 +3,7 @@
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::FrameKind;
 
-mod common;
+use crate::common;
 use common::{framed_tlv, tlv_field};
 
 fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
