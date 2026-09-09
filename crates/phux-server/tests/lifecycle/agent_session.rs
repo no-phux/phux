@@ -980,6 +980,142 @@ fn wrong_kind_refusals() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. A child's lifecycle edges reach the parent's event subscribers.
+// ---------------------------------------------------------------------------
+
+/// Subscribe `stream` to each scope in `scopes`, then prove the server
+/// installed them with a `GET_STATE` round trip.
+///
+/// `SUBSCRIBE_EVENTS` carries no request id and is answered with no frame,
+/// so the barrier is the only thing that makes "subscribed before the spawn"
+/// a fact rather than a race. The per-connection frame loop handles frames in
+/// order, so a `COMMAND_RESULT` for a request sent after the subscribes is
+/// proof they already ran.
+async fn subscribe_events(stream: &mut UnixStream, request_id: u32, scopes: &[Option<TerminalId>]) {
+    for terminal in scopes {
+        send_frame(
+            stream,
+            &FrameKind::SubscribeEvents {
+                terminal: terminal.clone(),
+            },
+        )
+        .await;
+    }
+    send_frame(stream, &state_barrier(request_id)).await;
+    assert!(
+        !matches!(
+            await_command_result(stream, request_id).await,
+            CommandResult::Error { .. }
+        ),
+        "the subscribe barrier must succeed",
+    );
+}
+
+/// Count the `pane_spawned` and `pane_closed` EVENT frames naming `wanted`
+/// that arrive before the `COMMAND_RESULT` for `barrier_request_id`.
+///
+/// Counting to a barrier rather than returning on the first match is what
+/// makes the "once each" half provable: a fan-out that put a client on the
+/// list twice would deliver two copies, and a test that stopped at the first
+/// would never see the second.
+async fn count_child_events(
+    stream: &mut UnixStream,
+    wanted: &TerminalId,
+    barrier_request_id: u32,
+) -> (usize, usize) {
+    let mut spawned = 0_usize;
+    let mut closed = 0_usize;
+    loop {
+        let (_type_byte, frame) = recv_typed(stream).await;
+        match frame {
+            FrameKind::Event {
+                terminal: Some(id),
+                event,
+            } if &id == wanted => match event {
+                phux_protocol::wire::frame::AgentEvent::PaneSpawned { kind, parent } => {
+                    assert_eq!(
+                        kind,
+                        WireResourceKind::AgentSession,
+                        "the announcement names the child's kind"
+                    );
+                    assert!(parent.is_some(), "and the pane it lives in");
+                    spawned = spawned.saturating_add(1);
+                }
+                phux_protocol::wire::frame::AgentEvent::PaneClosed { .. } => {
+                    closed = closed.saturating_add(1);
+                }
+                _ => {}
+            },
+            FrameKind::CommandResult { request_id, .. } if request_id == barrier_request_id => {
+                return (spawned, closed);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A watcher scoped to the PANE learns that a session opened inside it, and
+/// that it closed again — the two edges of a child's life (ADR-0104 §2).
+///
+/// The event names the child, because the child is the resource that
+/// appeared; its audience is the parent's, because a consumer cannot
+/// subscribe to an id it is being told about for the first time. Before this,
+/// `phux watch @pane` saw neither edge: the fan-out matched the envelope id
+/// alone, so a `pane_spawned` addressed to the session reached only clients
+/// already watching the session — of which, by construction, there are none.
+///
+/// The watcher holds BOTH scopes so the delivery is also pinned as once
+/// each: two matching scopes on one client are one subscription entry and
+/// must produce one frame, not two.
+#[test]
+fn a_childs_spawn_and_close_reach_the_parents_event_watchers() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut owner, shutdown_tx, server_handle) = connect_and_attach(&tmp).await;
+        let parent = spawn_parent_terminal(&mut owner, 1).await;
+
+        // A pure `watch` client: never attached, subscribed to the pane and
+        // server-wide, exactly as `phux watch @pane` is.
+        let mut watcher = connect_bare(&tmp).await;
+        subscribe_events(&mut watcher, 100, &[Some(parent.clone()), None]).await;
+
+        let session = match spawn_session(&mut owner, 2, parent.clone(), "claude").await {
+            SpawnResult::Ok(id) => id,
+            other => panic!("spawn session failed: {other:?}"),
+        };
+        assert_ne!(session, parent, "the session is its own resource");
+
+        send_frame(
+            &mut owner,
+            &FrameKind::Command {
+                request_id: 3,
+                command: Command::KillTerminal {
+                    terminal_id: session.clone(),
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            await_command_result(&mut owner, 3).await,
+            CommandResult::Ok
+        ));
+
+        // The barrier runs on the watcher's own connection, after both edges
+        // were emitted on the owner's, so anything the fan-out sent has
+        // already been queued ahead of the result being counted to.
+        send_frame(&mut watcher, &state_barrier(101)).await;
+        let (spawned, closed) = count_child_events(&mut watcher, &session, 101).await;
+        assert_eq!(
+            spawned, 1,
+            "the parent's watcher must learn a session opened inside the pane, once",
+        );
+        assert_eq!(closed, 1, "and that it closed again, once");
+
+        shutdown(owner, shutdown_tx, server_handle).await;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // 6. Kill parent cascades the child with ParentClosed.
 // ---------------------------------------------------------------------------
 

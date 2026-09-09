@@ -136,23 +136,48 @@ fn report_from_record(
     }
 }
 
-/// The `stream` source: the pane's agent session derived `state` from its
+/// The `stream` source: the pane's agent session derived a state from its
 /// own event stream (ADR-0103), the top rung of the precedence ladder.
-/// `None` when the pane has no session, or the session's stream has said
-/// nothing yet (its facet state is `unknown`) or disagrees with the state
-/// being reported.
-fn stream_source(evidence: &PaneEvidence, state: AgentState) -> Option<AgentSource> {
+///
+/// Reported whenever a live session has said anything at all — `None` only
+/// for a pane with no session, or one whose stream has not spoken yet (its
+/// facet state is `unknown`). It is NOT withheld when the stream and the
+/// record disagree: "the top rung last said `working` and the record says
+/// something else" is the single most useful line this document can carry,
+/// and hiding it is how a clobbered record read as a plain detector verdict
+/// with no sign that a stream was ever involved. A disagreement is surfaced
+/// in the `why`, and demoted below the record so the authoritative source
+/// still sorts first.
+fn stream_source(evidence: &PaneEvidence, reported: AgentState) -> Option<AgentSource> {
     let session = evidence.agent_session.as_ref()?;
-    if session.state == AgentMetaState::Unknown || record_state(session.state) != state {
+    if session.state == AgentMetaState::Unknown {
         return None;
     }
+    let derived = record_state(session.state);
+    let (why, confidence) = if derived == reported {
+        (
+            format!(
+                "agent session {} ({}) derived the state from its event stream",
+                session.resource, session.provider
+            ),
+            1.0,
+        )
+    } else {
+        (
+            format!(
+                "agent session {} ({}) last derived '{}' from its event stream, which is not \
+                 the state reported here",
+                session.resource,
+                session.provider,
+                derived.as_str()
+            ),
+            0.5,
+        )
+    };
     Some(AgentSource::new(
         "stream",
-        format!(
-            "agent session {} ({}) derived the state from its event stream",
-            session.resource, session.provider
-        ),
-        1.0,
+        why,
+        confidence,
         session.state.as_str(),
     ))
 }
@@ -451,7 +476,7 @@ fn contains_token(haystack: &str, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::infer_agent_state;
-    use crate::commands::agent::model::{AgentKind, AgentState, PaneEvidence};
+    use crate::commands::agent::model::{AgentKind, AgentState, PaneEvidence, SessionEvidence};
     use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 
     /// A REAL committed golden: the Claude Code permission dialog the server
@@ -465,6 +490,75 @@ mod tests {
     fn claude_blocked_pane() -> PaneEvidence {
         let lines: Vec<&str> = CLAUDE_BLOCKED.lines().collect();
         PaneEvidence::for_test("@4", None, &lines)
+    }
+
+    /// ADR-0103: with a live session under the pane, `agent show` names the
+    /// `stream` source and the state that stream derived — including when
+    /// the record beside it says something else.
+    ///
+    /// The withheld-on-disagreement version of this is what made the
+    /// screen-tick clobber invisible from the reporting verbs: the record
+    /// read `idle`, the session's own facet still said `working`, and the
+    /// document listed `agent_record` and `detector_fallback` with no hint
+    /// that the top rung of the ladder had ever spoken.
+    #[test]
+    fn a_live_session_is_named_as_a_stream_source_even_when_it_disagrees() {
+        for (facet, record, agrees) in [
+            (AgentMetaState::Working, AgentMetaState::Working, true),
+            (AgentMetaState::Working, AgentMetaState::Idle, false),
+        ] {
+            let mut evidence = PaneEvidence::for_test("@7", Some("Claude Code"), &[""]);
+            evidence.record = Some(AgentRecord {
+                name: "worker".to_owned(),
+                kind: Some("claude".to_owned()),
+                state: record,
+                ..AgentRecord::default()
+            });
+            evidence.agent_session = Some(SessionEvidence {
+                resource: "@8".to_owned(),
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: facet,
+            });
+
+            let report = infer_agent_state(&evidence, &[]);
+            let stream = report
+                .sources
+                .iter()
+                .find(|source| source.kind == "stream")
+                .unwrap_or_else(|| panic!("a live session must be named: {:?}", report.sources));
+            assert_eq!(
+                stream.observed,
+                facet.as_str(),
+                "the stream source carries the state the stream derived",
+            );
+            assert_eq!(
+                report.sources[0].kind,
+                if agrees { "stream" } else { "agent_record" },
+                "the record stays authoritative when the two disagree",
+            );
+        }
+    }
+
+    /// A pane with no session at all names no stream source — the ladder's
+    /// top rung is absent, not silent.
+    #[test]
+    fn a_pane_without_a_session_names_no_stream_source() {
+        let mut evidence = PaneEvidence::for_test("@9", Some("Claude Code"), &[""]);
+        evidence.record = Some(AgentRecord {
+            name: "worker".to_owned(),
+            kind: Some("claude".to_owned()),
+            state: AgentMetaState::Idle,
+            ..AgentRecord::default()
+        });
+
+        let report = infer_agent_state(&evidence, &[]);
+
+        assert!(
+            !report.sources.iter().any(|source| source.kind == "stream"),
+            "{:?}",
+            report.sources
+        );
     }
 
     /// ADR-0040: a declared record outranks every other signal — the title is

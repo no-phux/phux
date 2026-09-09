@@ -399,6 +399,16 @@ pub(crate) struct AgentDetector {
     /// edge the detector can act on rather than a level it merely stops
     /// reading. See [`Self::tick_for_pane`] for what it does with it.
     live_session_held: bool,
+    /// The last state a live stream published, or `None` when no stream has
+    /// spoken or the last thing it said was a retraction.
+    ///
+    /// The screen's side of ADR-0103 decision 5 needs more than "is there a
+    /// child": a stream that has said `working` is *asserting* something the
+    /// screen may not contradict, while one whose last word was `stop` (or a
+    /// `session_end` retraction) has stopped asserting and can no longer say
+    /// that the turn has since gone quiet. Only the second admits a
+    /// screen-derived `idle`. See [`Self::tick_for_pane`] step 4b.
+    stream_state: Option<DetectedState>,
     cadence: Cadence,
     /// Test seam: where [`Self::reidentify`] gets identity from.
     #[cfg(test)]
@@ -490,6 +500,7 @@ impl AgentDetector {
         state: Option<DetectedState>,
         now: Instant,
     ) -> Option<AgentReport> {
+        self.stream_state = state;
         let Some(state) = state else {
             // A `session_end` withdraws the stream's claim; it does not
             // assert a final state. Dropping the rank is the whole of the
@@ -542,6 +553,7 @@ impl AgentDetector {
             published_source: crate::agent_state::EvidenceSource::Screen,
             live_session: None,
             live_session_held: false,
+            stream_state: None,
             cadence: Cadence::Unidentified,
             #[cfg(test)]
             identity_source: IdentitySource::Kernel,
@@ -588,6 +600,32 @@ impl AgentDetector {
     /// muted for a pane that is once again the only thing describing itself.
     fn live_session_active(&self) -> bool {
         self.live_session.as_ref().is_some_and(|probe| probe())
+    }
+
+    /// Whether a screen derivation may be published while a live
+    /// `AgentSession` child exists. See step 4b of [`Self::tick_for_pane`]
+    /// for what each arm is protecting.
+    const fn screen_may_publish(&self, derived: DetectedState, matched: bool) -> bool {
+        let idle = matches!(derived, DetectedState::Idle);
+        match self.stream_state {
+            // The stream has opened but asserted nothing yet, or has
+            // retracted. There is no stream state to overwrite, so the
+            // detector keeps the pane exactly as it had it: `idle` is
+            // detector-owned (ADR-0085) and a lifecycle state is still the
+            // stream's to make. This is also the write that carries IDENTITY
+            // — `name` and `kind` ride on the same record — so suppressing it
+            // would leave a pane with a live session and no agent record at
+            // all until its first record landed.
+            None => idle,
+            // `stop`: the stream has said its last word and cannot say that
+            // the pane has since gone quiet, so a POSITIVE idle takes over.
+            // The fail-safe idle may not — `done` is a real state and "no
+            // rule matched" is not evidence against it.
+            Some(DetectedState::Done) => idle && matched,
+            // Still asserting `working` or `blocked`. Nothing the screen
+            // guessed outranks the agent describing itself.
+            Some(_) => false,
+        }
     }
 
     /// The interval the actor should re-arm its detector timer at.
@@ -680,6 +718,7 @@ impl AgentDetector {
             // forever, because the next screen derivation matches the stale
             // filter and is swallowed.
             self.invalidate_published();
+            self.stream_state = None;
         }
         self.live_session_held = live_session;
 
@@ -724,15 +763,24 @@ impl AgentDetector {
         let name = manifest.name.clone();
 
         // 3. Derive.
-        let (derived, visible_idle) = match screen {
+        //
+        // `matched` is the third answer this step has always computed and
+        // never carried out: whether a state-bearing rule actually fired, as
+        // opposed to the fail-safe below inventing `idle` from silence. The
+        // precedence gate in 4b needs it, because "the screen positively says
+        // idle" and "the screen says nothing at all" are the same
+        // `DetectedState::Idle` and must not be the same evidence.
+        let (derived, visible_idle, matched) = match screen {
             // Scan skipped and nothing has ever been derived: we have no
             // evidence at all. HOLD, do not guess. Inventing `idle` here is
             // what latched a freshly-identified agent to `idle` forever —
             // `wants_screen` would then see `current == Some(Idle)` and never
             // ask for the scan that would have corrected it.
             None if self.current.is_none() => return DetectOutcome::Quiet,
-            // Scan skipped: hold the last derivation, do not guess.
-            None => (self.current.unwrap_or(DetectedState::Idle), false),
+            // Scan skipped: hold the last derivation, do not guess. A held
+            // derivation is not a fresh match, so it carries no evidence a
+            // live stream could be outranked by.
+            None => (self.current.unwrap_or(DetectedState::Idle), false, false),
             Some(lines) => {
                 let evaluation = manifest.evaluate(&regions::Screen {
                     title,
@@ -775,6 +823,7 @@ impl AgentDetector {
                 (
                     evaluation.state.unwrap_or(DetectedState::Idle),
                     evaluation.visible_idle,
+                    evaluation.state.is_some(),
                 )
             }
         };
@@ -793,23 +842,32 @@ impl AgentDetector {
             return DetectOutcome::Quiet;
         }
 
-        // 4b. Precedence. A live child outranks the screen, so a screen-derived
-        //     `working` / `blocked` / `done` is not published while one exists
-        //     - the stream is saying the same thing from the inside, and a
-        //     contradiction resolved in the screen's favour is the ladder
-        //     inverted. What survives is exactly what ADR-0103 decision 5
+        // 4b. Precedence. A live child outranks the screen (ADR-0103 decision
+        //     5, `docs/spec/L1.md` agent state derivation), so while one
+        //     exists the screen publishes only what the stream cannot say
+        //     about itself. What survives is exactly what that decision
         //     names: identity (the process probe above, which still acquires,
-        //     corrects and retracts), the idle confirmation - `idle` stays
-        //     detector-owned per ADR-0085, because a stream that has stopped
-        //     emitting cannot itself say so - and departure, which is the only
-        //     path back to truth for an agent that was `kill -9`'d.
+        //     corrects and retracts), departure, and a POSITIVE idle.
+        //
+        //     A screen-derived `working` / `blocked` / `done` never survives:
+        //     that is the stream saying the same thing from the outside, and
+        //     a contradiction resolved in the screen's favour is the ladder
+        //     inverted. What `idle` may do depends on what the stream last
+        //     said, which is what `screen_may_publish` decides — the key
+        //     line being that the fail-safe `idle` of step 3 is the ABSENCE
+        //     of evidence, not evidence of absence. A blank pane matches no
+        //     rule every 300 ms forever, and publishing that over the
+        //     stream's `working` is how a pane mid-turn read `idle` a third
+        //     of a second after its own agent said otherwise.
         //
         //     `published` is deliberately NOT advanced here: it models this
         //     detector's own emissions, and suppressing one is not making one.
-        if live_session && derived != DetectedState::Idle {
+        if live_session && !self.screen_may_publish(derived, matched) {
             trace!(
                 %kind,
                 ?derived,
+                matched,
+                stream = ?self.stream_state,
                 "agent-detect: a live agent session outranks the screen; not publishing",
             );
             return DetectOutcome::Quiet;
@@ -1362,6 +1420,14 @@ match = { contains = "WORKING" }
         /// only source describing the pane again.
         fn session_end(&self) {
             self.live_session.set(false);
+        }
+
+        /// The live child's stream derives a state and the arbiter publishes
+        /// it at rank `Stream` — the producer half of ADR-0103 decision 5,
+        /// which in production is `publish_stream_evidence`.
+        fn stream_says(&mut self, state: DetectedState) {
+            let now = self.now;
+            self.detector.report_stream_state(Some(state), now);
         }
     }
 
@@ -2418,6 +2484,10 @@ match = { contains = "IDLE" }
     /// record saying so — silence is not a record — so if the screen did not
     /// keep the idle confirmation, an agent that finished would sit on its
     /// last stream-published state forever.
+    ///
+    /// A session that has opened and said nothing yet has published no state
+    /// to protect, so this is also the write that gives such a pane its
+    /// agent record at all: `name` and `kind` ride on it.
     #[test]
     fn a_live_agent_session_leaves_the_idle_confirmation_to_the_screen() {
         let mut h = Harness::new().past_grace();
@@ -2425,8 +2495,98 @@ match = { contains = "IDLE" }
         assert_eq!(
             published(&h.tick("a quiet prompt")),
             DetectedState::Idle,
-            "idle is detector-owned even while a session is live",
+            "idle is detector-owned while a session is live but silent",
         );
+    }
+
+    /// `stop` is a real state, and "no rule matched" is not evidence against
+    /// it. A blank pane after the stream's last word keeps `done` — this is
+    /// the exact level `phux agent show` reads back once the turn ends.
+    #[test]
+    fn the_fail_safe_idle_does_not_overwrite_a_streams_done() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(DetectedState::Done);
+        for _ in 0..IDLE_CONFIRMATIONS.saturating_add(2) {
+            assert_eq!(h.tick("a screen no rule matches"), DetectOutcome::Quiet);
+        }
+        assert_eq!(h.state(), Some(DetectedState::Done));
+    }
+
+    /// The defect the e2e lane caught, in one case: the fail-safe `idle` of
+    /// step 3 is the absence of evidence, and the absence of evidence must
+    /// not overwrite the stream's own word about itself.
+    ///
+    /// A blank pane — an agent whose UI paints nothing this manifest knows —
+    /// matches no rule on every tick forever. Without the gate, the very next
+    /// 300 ms tick after `prompt` published `working` reverts the record to
+    /// `idle`, and `phux agent show` reports an agent mid-turn as idle with
+    /// no stream source in sight.
+    #[test]
+    fn the_fail_safe_idle_does_not_overwrite_a_live_stream() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(DetectedState::Working);
+        assert_eq!(h.state(), Some(DetectedState::Working));
+
+        for _ in 0..IDLE_CONFIRMATIONS.saturating_add(2) {
+            assert_eq!(
+                h.tick("a screen no rule matches"),
+                DetectOutcome::Quiet,
+                "no-rule-matched is not evidence that the turn ended",
+            );
+        }
+        assert_eq!(
+            h.state(),
+            Some(DetectedState::Working),
+            "the stream's state survives the screen tick",
+        );
+    }
+
+    /// And the stronger half: even a rule that positively asserts `idle` is
+    /// not allowed to talk over a stream that is still asserting `working`.
+    /// The stream is inside the agent; the screen is guessing at pixels the
+    /// agent painted, and one of them has to lose.
+    #[test]
+    fn a_positive_idle_does_not_overwrite_a_stream_still_working() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(DetectedState::Working);
+        assert_eq!(h.tick("IDLE"), DetectOutcome::Quiet);
+        assert_eq!(h.state(), Some(DetectedState::Working));
+
+        h.stream_says(DetectedState::Blocked);
+        assert_eq!(h.tick("IDLE"), DetectOutcome::Quiet, "nor a blocked one");
+        assert_eq!(h.state(), Some(DetectedState::Blocked));
+    }
+
+    /// Once the stream says `stop` it has stopped asserting, and the pane
+    /// going quiet afterwards is exactly the thing no record can carry. That
+    /// is where ADR-0085's detector-owned idle takes over, and it is the only
+    /// place a screen derivation outlives a live session.
+    #[test]
+    fn a_positive_idle_publishes_once_the_stream_has_stopped() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(DetectedState::Working);
+        h.stream_says(DetectedState::Done);
+        assert_eq!(
+            published(&h.tick("IDLE")),
+            DetectedState::Idle,
+            "after `stop` the screen owns the idle confirmation again",
+        );
+    }
+
+    /// A `session_end` retraction leaves the stream asserting nothing, so the
+    /// screen resumes even before the child is reaped and the probe falls.
+    #[test]
+    fn a_retracted_stream_hands_the_idle_confirmation_straight_back() {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(DetectedState::Working);
+        let now = h.now;
+        h.detector.report_stream_state(None, now);
+        assert_eq!(published(&h.tick("IDLE")), DetectedState::Idle);
     }
 
     /// And the other exception: departure. A `kill -9` runs no `session_end`,

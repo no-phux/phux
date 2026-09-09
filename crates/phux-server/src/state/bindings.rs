@@ -46,6 +46,20 @@ impl ServerState {
         self.sessions.registry.children(parent)
     }
 
+    /// The resource `child` was parented to at spawn, if it named one.
+    ///
+    /// The inverse of [`Self::resource_children`], and it exists for the same
+    /// reason the cascade does: a child's lifecycle edges are addressed to
+    /// the child but concern the parent, so the close path has to resolve the
+    /// parent BEFORE the reap retires the binding.
+    #[must_use]
+    pub fn resource_parent(&self, child: ResourceId) -> Option<ResourceId> {
+        self.sessions
+            .registry
+            .resource(child)
+            .and_then(|resource| resource.parent)
+    }
+
     /// `true` when `parent` has at least one live `AgentSession` child.
     ///
     /// The query ADR-0103 §5 gives the detector: while a session is

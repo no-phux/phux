@@ -582,6 +582,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             wire_terminal_id,
             reason,
             cascaded,
+            parent,
             targets,
             server_empty,
             served,
@@ -596,6 +597,13 @@ pub(crate) fn spawn_terminal_exit_watcher(
             // is reaped, so no client observes a child whose parent has
             // left. Each child's frame is emitted here rather than by its
             // own watcher, which by then finds the child already claimed.
+            // Interned before the cascade so each child's close can name
+            // the parent it is leaving with, and before the reap because a
+            // retired resource has no wire id left to intern.
+            let wire_terminal_id = s.intern_terminal_wire(pane);
+            let parent = s
+                .resource_parent(pane)
+                .map(|parent| s.intern_terminal_wire(parent));
             let mut cascaded = Vec::new();
             for child in s.resource_children(pane) {
                 let Some(recorded) = s.begin_resource_close(child) else {
@@ -614,11 +622,11 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 s.reap_terminal(child);
                 cascaded.push(CascadedClose {
                     wire_terminal_id: wire_child_id,
+                    parent: wire_terminal_id.clone(),
                     targets: child_targets,
                     reason: child_reason,
                 });
             }
-            let wire_terminal_id = s.intern_terminal_wire(pane);
             // phux-w7z2.56: resolve every subscriber's mailbox, not just
             // the session-attached ones. This used to filter through
             // `attached()`, which an `ATTACH_TERMINAL`-only consumer never
@@ -639,6 +647,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 wire_terminal_id,
                 reason,
                 cascaded,
+                parent,
                 targets,
                 server_empty,
                 served,
@@ -674,13 +683,22 @@ pub(crate) fn spawn_terminal_exit_watcher(
             broadcast_terminal_closed(
                 &state,
                 &child.wire_terminal_id,
+                Some(&child.parent),
                 &child.targets,
                 None,
                 child.reason,
             )
             .await;
         }
-        broadcast_terminal_closed(&state, &wire_terminal_id, &targets, exit_status, reason).await;
+        broadcast_terminal_closed(
+            &state,
+            &wire_terminal_id,
+            parent.as_ref(),
+            &targets,
+            exit_status,
+            reason,
+        )
+        .await;
 
         // phux-60s: when the last session is gone the server has nothing
         // left to serve, so fire the root token — the tmux server-exit
@@ -721,6 +739,10 @@ struct ReapAndNotify {
     /// The children this pane took with it, already reaped, each waiting
     /// only for its off-lock frame.
     cascaded: Vec<CascadedClose>,
+    /// The resource this one was parented to, resolved before the reap
+    /// retired the binding, so its `pane_closed` reaches whoever is
+    /// watching the parent (ADR-0104 §2). `None` for a root pane.
+    parent: Option<phux_protocol::ids::TerminalId>,
     /// Outbound mailboxes of every client subscribed to the pane at reap
     /// time. The L1 `TERMINAL_CLOSED` fanout targets exactly this set.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
@@ -736,6 +758,9 @@ struct ReapAndNotify {
 struct CascadedClose {
     /// The child's wire id, interned before its reap retired it.
     wire_terminal_id: phux_protocol::ids::TerminalId,
+    /// The closing pane it hung off, so its `pane_closed` reaches the
+    /// parent's watchers as well as its own.
+    parent: phux_protocol::ids::TerminalId,
     /// Mailboxes subscribed to the child at reap time.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
     /// The reason its `TERMINAL_CLOSED` carries.
@@ -768,6 +793,7 @@ struct CascadedClose {
 pub(crate) async fn broadcast_terminal_closed(
     state: &SharedState,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    parent: Option<&phux_protocol::ids::TerminalId>,
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
     exit_status: Option<i32>,
     reason: phux_protocol::wire::frame::CloseReason,
@@ -794,9 +820,14 @@ pub(crate) async fn broadcast_terminal_closed(
     // subscribers (SPEC §7.5) regardless of L1 subscribers — a
     // `watch`-only client that never attached must still learn the pane
     // died, so this MUST run even when the L1 fanout above was empty.
-    broadcast_event(
+    // The child half goes to the parent's watchers too, for the reason the
+    // spawn's does (ADR-0104 §2): a consumer following a pane is following
+    // the sessions inside it, and it learned of them from an event addressed
+    // the same way.
+    broadcast_child_event(
         state,
-        Some(wire_terminal_id),
+        wire_terminal_id,
+        parent,
         &AgentEvent::PaneClosed { exit_status },
     );
 }
@@ -3275,6 +3306,38 @@ pub(crate) fn broadcast_event(
     event: &AgentEvent,
 ) {
     let targets = state.with(|s| s.event_targets(terminal));
+    fan_out_event(&targets, terminal, event);
+}
+
+/// Push a child resource's lifecycle event to that child's subscribers AND
+/// to the parent's (ADR-0104 §2), once each.
+///
+/// `pane_spawned` and `pane_closed` for a child are the two events whose
+/// audience is not the resource they name. A consumer learns an
+/// `AgentSession` exists *from* the spawn event, so it cannot have
+/// subscribed to it beforehand; the subscription it does hold is on the pane
+/// the session was parented to, which is the one thing the event body says.
+/// Delivering only to the child's own scope made `phux watch @parent` blind
+/// to every session opened inside the pane it was watching.
+///
+/// The frame is unchanged — it still names the child, and the body still
+/// names the parent. Only the fan-out is widened, and only for these two.
+pub(crate) fn broadcast_child_event(
+    state: &SharedState,
+    terminal: &phux_protocol::ids::TerminalId,
+    parent: Option<&phux_protocol::ids::TerminalId>,
+    event: &AgentEvent,
+) {
+    let targets = state.with(|s| s.child_event_targets(terminal, parent));
+    fan_out_event(&targets, Some(terminal), event);
+}
+
+/// The shared best-effort fan-out both broadcasters end in.
+fn fan_out_event(
+    targets: &[tokio::sync::mpsc::Sender<Outbound>],
+    terminal: Option<&phux_protocol::ids::TerminalId>,
+    event: &AgentEvent,
+) {
     if targets.is_empty() {
         return;
     }

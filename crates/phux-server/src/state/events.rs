@@ -73,7 +73,30 @@ impl ServerState {
     /// attach) is still reached.
     #[must_use]
     pub fn event_targets(&self, terminal: Option<&WireTerminalId>) -> Vec<mpsc::Sender<Outbound>> {
-        self.clients.event_targets(terminal)
+        self.clients.event_targets(terminal, None)
+    }
+
+    /// As [`Self::event_targets`], and also the subscribers watching
+    /// `parent`.
+    ///
+    /// The child-lifecycle fan-out (ADR-0104 §2). A `pane_spawned` for an
+    /// `AgentSession` is addressed to the session — the resource it
+    /// announces — but the consumer that needs it is watching the PANE: an
+    /// orchestrator cannot subscribe to an id the server has not told it
+    /// about yet, and the whole content of that event is "this new resource
+    /// lives inside the one you already follow". The same holds for its
+    /// close. Everything else about the child stays the child's, so a
+    /// `watch @parent` does not become a firehose of its children's output.
+    ///
+    /// Once each: a client watching both scopes has one subscription entry
+    /// and therefore one mailbox in the result.
+    #[must_use]
+    pub fn child_event_targets(
+        &self,
+        terminal: &WireTerminalId,
+        parent: Option<&WireTerminalId>,
+    ) -> Vec<mpsc::Sender<Outbound>> {
+        self.clients.event_targets(Some(terminal), parent)
     }
 
     /// Drop `client`'s per-terminal agent-event subscription for `wire`

@@ -610,6 +610,46 @@ mod tests {
         ));
     }
 
+    /// `docs/consumers/agents.md` §2 promises a producer that a `--type`
+    /// outside the closed v1 set comes back as the `record_invalid` refusal
+    /// document — exit 2, nothing written, a `code` it can branch on. A clap
+    /// `value_parser` on `--type` answered first, with a usage error on
+    /// stderr and no document at all, so the one refusal of this verb a
+    /// harness is most likely to hit was the one shape it could not read.
+    ///
+    /// Two halves, and both are the fix: argv must ACCEPT the unknown word,
+    /// and the record validator must then refuse it.
+    #[test]
+    fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
+        use clap::Parser as _;
+
+        let cli = crate::Cli::try_parse_from([
+            "phux",
+            "agent",
+            "emit",
+            "@1",
+            "--type",
+            "not_a_type",
+            "--json",
+        ])
+        .expect("an unknown --type must reach the verb, not die at argv");
+        let Some(crate::commands::Command::Agent {
+            action: super::super::AgentAction::Emit { event_type, .. },
+        }) = cli.command
+        else {
+            panic!("`agent emit` must parse to the emit action");
+        };
+        assert_eq!(event_type, "not_a_type", "argv carries the word verbatim");
+
+        assert!(
+            matches!(
+                EmitRecord::new(&event_type, serde_json::json!({})),
+                Err(AgentSessionError::RecordInvalid(_))
+            ),
+            "the closed set is enforced by the record validator",
+        );
+    }
+
     #[test]
     fn every_library_error_lands_on_its_registered_code_and_exit() {
         let socket = Path::new("/tmp/unused.sock");
