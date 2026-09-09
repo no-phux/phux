@@ -138,6 +138,11 @@ patch or a 100% kill quota. See the repository's
 
 ### Running it
 
+For live UI iteration, use the pinned SDK's `native dev` from the app source
+root; see [Native SDK live development](../../docs/SETUP.md#native-sdk-live-development).
+Debug enables the existing fragment watcher. Verify `markup_watch=armed` and
+the publisher PID before using `native automate` inspection or source edits.
+
 ```sh
 ./scripts/dev-run.sh            # ReleaseSafe, foreground; ctrl-c ends it
 ./scripts/dev-run.sh --debug --detach

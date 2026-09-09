@@ -69,6 +69,11 @@ claims to check what the terminal looks like.
 
 ## Running the App
 
+For live UI iteration, use the pinned SDK's `native dev` from the app source
+root; see [Native SDK live development](../../docs/SETUP.md#native-sdk-live-development).
+Debug enables the existing fragment watcher. Verify `markup_watch=armed` and
+the publisher PID before using `native automate` inspection or source edits.
+
 For prerequisites, use the canonical [Contributor setup](../../docs/SETUP.md#cockpit).
 Native tools and Nix are supported. From the root, run `just doctor cockpit`,
 then `just cockpit-test` / `just cockpit-build`; these include same-checkout
