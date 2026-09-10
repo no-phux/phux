@@ -745,9 +745,15 @@ or session comes into being:
 - **`spawn-on-attach`** (string, default unset) is the command `phux`
   spawns when it auto-creates a session on attach. Unset ⇒ honor
   `defaults.shell` (which honors `$SHELL`).
-- **`session-name-template`** (string, default `"default"`) names
+- **`session-name-template`** (string, default `"${cwd-basename}"`) names
   auto-created sessions. Supports `${cwd-basename}` substitution against
-  the client's working directory at session-create time. Unknown
+  the client's working directory at session-create time, and
+  `${random-name}`, which expands to a generated adjective-noun pair such
+  as `drifting-cedar` from two small built-in word lists. Each resolution
+  draws a fresh pick; when `phux new` finds the pick already taken it
+  redraws a few times, then falls back to the numeric suffix (`-2`, `-3`),
+  so the name is always unique. A generated name is a display label only:
+  the session's stable identity is its server-assigned id. Unknown
   placeholders pass through verbatim.
 - **`window-size`** (string enum, default `"smallest"`) picks one
   geometry when concurrent *views* of a single Terminal disagree on size.

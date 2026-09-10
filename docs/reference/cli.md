@@ -1587,7 +1587,7 @@ Options:
 ```text
 Create a new session and attach to it.
 
-Creates the named session if it does not already exist, then attaches. Auto-starts a server if none is running. A name already in use is an error; omit the name to take the configured `session-name-template`, disambiguated with a numeric suffix.
+Creates the named session if it does not already exist, then attaches. Auto-starts a server if none is running. A name already in use is an error; omit the name to take the configured `session-name-template`, disambiguated with fresh `${random-name}` picks when the template draws one, then a numeric suffix.
 
 With `--json`, creates the session *without* attaching and prints the seed pane's id as JSON instead. This neither attaches nor resizes, and the create is atomic server-side (no attach race). `--json` requires an explicit `-s NAME`, and a name already in use is an error (create-only, never create-or-attach).
 
@@ -1595,7 +1595,7 @@ Usage: phux new [OPTIONS] [NAME] [-- <COMMAND>...]
 
 Arguments:
   [NAME]
-          Session name. `phux new work` creates a session named "work". Omitted ⇒ the `session-name-template` (e.g. "default"), disambiguated with a numeric suffix if that name is taken
+          Session name. `phux new work` creates a session named "work". Omitted ⇒ the `session-name-template` (default: the cwd basename), redrawn if it uses `${random-name}` and the pick is taken, then disambiguated with a numeric suffix
 
   [COMMAND]...
           Command (and arguments) to run in the seed pane instead of the default shell. Must follow `--`: `phux new work -- htop`

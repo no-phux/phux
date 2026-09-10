@@ -10,10 +10,17 @@ use phux_protocol::wire::frame::{
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
-    DEFAULT_SESSION_NAME, attach::client_cwd, attach::interactive_tty_preflight,
-    attach::report_attach_end, attach::resolved_default_session_name, attach::run_attach_once,
-    cli_runtime, json_err, partial, print_attach_error, server::ensure_server,
+    DEFAULT_SESSION_NAME, attach::client_cwd, attach::configured_session_name_template,
+    attach::interactive_tty_preflight, attach::render_default_session_name,
+    attach::report_attach_end, attach::run_attach_once, cli_runtime, json_err, partial,
+    print_attach_error, server::ensure_server,
 };
+
+/// How many generated names an omitted-name `phux new` tries against the
+/// live session list before falling back to a numeric suffix. With ~8000
+/// adjective-noun pairs a miss this many times in a row means the space is
+/// crowded, and the suffix still guarantees a distinct name.
+const RANDOM_NAME_ATTEMPTS: usize = 8;
 
 /// `phux new` — create a *new* session and attach to it.
 ///
@@ -114,8 +121,14 @@ pub(crate) fn run_new(
         }
         // No name given: start from the configured session-name-template
         // (e.g. "default"), the same base every auto-create path uses, and
-        // disambiguate with a numeric suffix instead of emitting a bare "0".
-        None => unique_session_name(&existing, &resolved_default_session_name()),
+        // disambiguate with fresh `${random-name}` picks, then a numeric
+        // suffix, instead of emitting a bare "0".
+        None => fresh_session_name(
+            &existing,
+            &configured_session_name_template(),
+            &std::env::current_dir().unwrap_or_default(),
+            &mut phux_config::NameRng::from_entropy(),
+        ),
     };
 
     // phux-07y: `phux new` never seeds with spawn-on-attach — an
@@ -550,6 +563,48 @@ fn new_session_target(name: String, command: Vec<String>, cwd: Option<PathBuf>) 
     }
 }
 
+/// A session name for an omitted-name `phux new` that is not in `existing`.
+///
+/// Renders `template` once; a free result wins. A taken result from a
+/// `${random-name}` template is re-rendered with fresh picks up to
+/// [`RANDOM_NAME_ATTEMPTS`] times in all. When every pick is taken, or the
+/// template is deterministic, the first render gets the numeric suffix
+/// [`unique_session_name`] guarantees.
+fn fresh_session_name(
+    existing: &[String],
+    template: &str,
+    cwd: &Path,
+    rng: &mut phux_config::NameRng,
+) -> String {
+    let first = render_default_session_name(template, cwd, rng);
+    if !is_taken(existing, &first) {
+        return first;
+    }
+    if phux_config::template_has_random_name(template)
+        && let Some(retry) = retry_random_name(existing, template, cwd, rng)
+    {
+        return retry;
+    }
+    unique_session_name(existing, &first)
+}
+
+/// Re-render a `${random-name}` template until a pick is free, spending the
+/// attempts left after the first render.
+fn retry_random_name(
+    existing: &[String],
+    template: &str,
+    cwd: &Path,
+    rng: &mut phux_config::NameRng,
+) -> Option<String> {
+    (1..RANDOM_NAME_ATTEMPTS)
+        .map(|_| render_default_session_name(template, cwd, rng))
+        .find(|candidate| !is_taken(existing, candidate))
+}
+
+fn is_taken(existing: &[String], name: &str) -> bool {
+    existing.iter().any(|e| e == name)
+}
+
 /// `base` if it is free, otherwise `base-2`, `base-3`, … — the first
 /// available name. Lets `phux new` (no name given) reuse the configured
 /// session-name-template as its base and still guarantee a distinct
@@ -570,7 +625,80 @@ pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttachTarget, PathBuf, new_session_json, new_session_target, unique_session_name};
+    use super::{
+        AttachTarget, Path, PathBuf, RANDOM_NAME_ATTEMPTS, fresh_session_name, new_session_json,
+        new_session_target, unique_session_name,
+    };
+    use phux_config::{NameRng, random_name};
+
+    const CWD: &str = "/home/me/proj";
+
+    /// The first `count` names a generator seeded with `seed` will produce.
+    fn picks(seed: u64, count: usize) -> Vec<String> {
+        let mut rng = NameRng::seeded(seed);
+        (0..count).map(|_| random_name(&mut rng)).collect()
+    }
+
+    /// A free generated name is taken as-is on the first draw.
+    #[test]
+    fn fresh_session_name_takes_a_free_random_pick() {
+        let expected = picks(4, 1).remove(0);
+        let name = fresh_session_name(
+            &["other".to_owned()],
+            "${random-name}",
+            Path::new(CWD),
+            &mut NameRng::seeded(4),
+        );
+        assert_eq!(name, expected);
+    }
+
+    /// A taken pick is retried with the next draw rather than suffixed.
+    #[test]
+    fn fresh_session_name_retries_a_taken_random_pick() {
+        let sequence = picks(4, 2);
+        assert_ne!(sequence[0], sequence[1], "seed must yield distinct picks");
+        let name = fresh_session_name(
+            &[sequence[0].clone()],
+            "${random-name}",
+            Path::new(CWD),
+            &mut NameRng::seeded(4),
+        );
+        assert_eq!(name, sequence[1]);
+    }
+
+    /// Every attempt taken ⇒ the first pick gets the numeric suffix, so
+    /// uniqueness holds however crowded the name space is.
+    #[test]
+    fn fresh_session_name_falls_back_to_a_numeric_suffix() {
+        let existing = picks(4, RANDOM_NAME_ATTEMPTS);
+        let name = fresh_session_name(
+            &existing,
+            "${random-name}",
+            Path::new(CWD),
+            &mut NameRng::seeded(4),
+        );
+        assert_eq!(name, format!("{}-2", existing[0]));
+        assert!(!existing.contains(&name));
+    }
+
+    /// A deterministic template keeps the historical `base`, `base-2` shape.
+    #[test]
+    fn fresh_session_name_suffixes_a_deterministic_template() {
+        let mut rng = NameRng::seeded(4);
+        assert_eq!(
+            fresh_session_name(&[], "default", Path::new(CWD), &mut rng),
+            "default"
+        );
+        assert_eq!(
+            fresh_session_name(
+                &["proj".to_owned()],
+                "${cwd-basename}",
+                Path::new(CWD),
+                &mut rng
+            ),
+            "proj-2"
+        );
+    }
 
     /// `phux new --json` pins `schema_version` 1 plus the two documented
     /// fields — the shape `docs/consumers/agents.md` §4.4 promises.

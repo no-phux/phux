@@ -83,7 +83,10 @@ cwd-inheritance = "inherit-focused"
 # Template for auto-created session names (naked `phux` / `phux attach`
 # with no name). ${cwd-basename} expands to the basename of the client's
 # working directory at session-create time (`:` in it becomes `_` so the
-# name stays selector-safe); unknown placeholders pass through verbatim.
+# name stays selector-safe); ${random-name} expands to a generated
+# adjective-noun pair such as drifting-cedar (`phux new` redraws a taken
+# pick, then falls back to a numeric suffix); unknown placeholders pass
+# through verbatim.
 #
 # We ship ${cwd-basename} rather than a literal "default": a bench of
 # project checkouts then reads as its directories in the session picker,

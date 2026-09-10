@@ -136,7 +136,7 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
         &dial,
         AttachTarget::Last,
         predict_cfg,
-        Some(&default_name),
+        fallback_lookup_name(&default_name),
         rec,
     ));
     finalize_recording(rec);
@@ -157,20 +157,49 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
     }
 }
 
+/// `name` as the lookup-only retry for a server that cannot resolve
+/// `Last`, or `None` when the template draws `${random-name}`: a fresh
+/// pick names no existing session, so retrying it would only print a name
+/// nobody chose (phux-c2td.6).
+fn fallback_lookup_name(name: &str) -> Option<&str> {
+    let template = configured_session_name_template();
+    (!phux_config::template_has_random_name(&template)).then_some(name)
+}
+
 /// Resolve the name for an auto-created default session from
 /// `defaults.session-name-template`, substituting `${cwd-basename}`
-/// against the client's current working directory (phux-4li.1).
+/// against the client's current working directory (phux-4li.1) and
+/// `${random-name}` with a fresh adjective-noun pick (phux-c2td.6).
 ///
 /// Falls back to [`DEFAULT_SESSION_NAME`] when the config can't be
 /// loaded, the cwd can't be read, or the template renders empty (e.g. a
 /// `${cwd-basename}`-only template invoked from `/`).
 pub(crate) fn resolved_default_session_name() -> String {
-    let template = config_loader::load().map_or_else(
+    let cwd = std::env::current_dir().unwrap_or_default();
+    render_default_session_name(
+        &configured_session_name_template(),
+        &cwd,
+        &mut phux_config::NameRng::from_entropy(),
+    )
+}
+
+/// The configured `defaults.session-name-template`, or
+/// [`DEFAULT_SESSION_NAME`] when the config can't be loaded.
+pub(crate) fn configured_session_name_template() -> String {
+    config_loader::load().map_or_else(
         |_| DEFAULT_SESSION_NAME.to_owned(),
         |cfg| cfg.defaults.session_name_template,
-    );
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let name = phux_config::render_session_name_template(&template, &cwd);
+    )
+}
+
+/// Render `template` against `cwd` with `rng` for `${random-name}`,
+/// falling back to [`DEFAULT_SESSION_NAME`] when it renders empty.
+pub(crate) fn render_default_session_name(
+    template: &str,
+    cwd: &std::path::Path,
+    rng: &mut phux_config::NameRng,
+) -> String {
+    let name = phux_config::render_session_name_template_with(template, cwd, rng);
     if name.is_empty() {
         DEFAULT_SESSION_NAME.to_owned()
     } else {
@@ -869,7 +898,7 @@ pub(crate) fn run_attach_rec(
             &dial,
             AttachTarget::Last,
             predict_cfg,
-            Some(&default_name),
+            fallback_lookup_name(&default_name),
             rec,
         )),
         other => rt.block_on(attach_with_reconnect(&dial, other, predict_cfg, None, rec)),
@@ -1083,7 +1112,9 @@ pub(crate) fn run_attach_quic(
     let default_name = resolved_default_session_name();
     let use_default = session.is_none();
     let attach_target = requested_attach_target(session);
-    let default = use_default.then_some(default_name.as_str());
+    let default = use_default
+        .then(|| fallback_lookup_name(&default_name))
+        .flatten();
 
     let result = rt.block_on(attach_with_reconnect(
         &dial,
@@ -1167,7 +1198,9 @@ pub(crate) fn run_attach_ws(
     let default_name = resolved_default_session_name();
     let use_default = session.is_none();
     let target = requested_attach_target(session);
-    let default = use_default.then_some(default_name.as_str());
+    let default = use_default
+        .then(|| fallback_lookup_name(&default_name))
+        .flatten();
 
     let result = rt.block_on(attach_with_reconnect(
         &dial,

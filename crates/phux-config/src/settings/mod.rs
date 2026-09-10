@@ -431,8 +431,10 @@ pub const CATALOG: &[SettingSpec] = &[
         summary: "Name template for auto-created sessions",
         detail: "${cwd-basename} expands to the basename of the client's working directory \
                  at session-create time (a colon in it becomes an underscore so the name \
-                 stays selector-safe); unknown placeholders pass through verbatim. Set \
-                 \"default\" for a fixed name.",
+                 stays selector-safe); ${random-name} expands to a generated \
+                 adjective-noun pair such as drifting-cedar, and phux new redraws a \
+                 taken pick before adding a numeric suffix; unknown placeholders pass \
+                 through verbatim. Set \"default\" for a fixed name.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

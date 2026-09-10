@@ -27,6 +27,7 @@ pub mod plugin;
 pub mod remote;
 pub mod satellite;
 mod schema;
+pub mod session_name; // phux-c2td.6 (`${random-name}` adjective-noun generator)
 pub mod settings; // phux-u1tq.3 (scalar settings catalogue, provenance snapshot, comment-preserving writer)
 pub mod socket; // phux-93b (shared default socket path: daemon + thin clients)
 pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
@@ -51,6 +52,7 @@ pub use schema::{
     MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
     StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
+pub use session_name::{NameRng, RANDOM_NAME_PLACEHOLDER, random_name, template_has_random_name};
 pub use settings::{
     Applies, CATALOG, Edit, EditOutcome, SettingEntry, SettingKind, SettingSection, SettingSpec,
     SettingsSnapshot,
@@ -199,7 +201,9 @@ pub fn merged_config_table(user_input: &str, path: &Path) -> Result<toml::Table,
 /// session name for an auto-created session (phux-4li.1).
 ///
 /// Substitutes the `${cwd-basename}` placeholder with the final path
-/// component of `cwd`. Session names double as selector tokens
+/// component of `cwd`, and `${random-name}` with a freshly generated
+/// adjective-noun pair (see [`render_session_name_template_with`] for a
+/// caller-supplied generator). Session names double as selector tokens
 /// (`name:N.M`, see `docs/consumers/tui.md` §3), and `:` is the
 /// session→window delimiter, so any `:` in the basename is replaced with
 /// `_` to keep an auto-name from colliding with the selector grammar.
@@ -212,17 +216,96 @@ pub fn merged_config_table(user_input: &str, path: &Path) -> Result<toml::Table,
 /// final component); the caller decides the fallback.
 #[must_use]
 pub fn render_session_name_template(template: &str, cwd: &Path) -> String {
+    render_session_name_template_with(template, cwd, &mut NameRng::from_entropy())
+}
+
+/// [`render_session_name_template`] with the `${random-name}` generator
+/// supplied by the caller, so a collision retry can draw fresh candidates
+/// from one generator and a test can seed it.
+///
+/// Every `${random-name}` in one render expands to the same pick. It is
+/// expanded before `${cwd-basename}` so a directory whose name happens to
+/// contain the placeholder text is never re-expanded.
+#[must_use]
+pub fn render_session_name_template_with(template: &str, cwd: &Path, rng: &mut NameRng) -> String {
     let basename = cwd
         .file_name()
         .map(|os| os.to_string_lossy().replace(':', "_"))
         .unwrap_or_default();
-    template.replace("${cwd-basename}", &basename)
+    expand_random_name(template, rng).replace("${cwd-basename}", &basename)
+}
+
+/// Replace `${random-name}` with one generated name; a template without the
+/// placeholder is returned unchanged and draws nothing from `rng`.
+fn expand_random_name(template: &str, rng: &mut NameRng) -> String {
+    if !template_has_random_name(template) {
+        return template.to_owned();
+    }
+    template.replace(RANDOM_NAME_PLACEHOLDER, &random_name(rng))
 }
 
 #[cfg(test)]
 mod session_name_tests {
-    use super::render_session_name_template;
+    use super::{
+        NameRng, random_name, render_session_name_template, render_session_name_template_with,
+    };
     use std::path::Path;
+
+    #[test]
+    fn random_name_placeholder_expands_to_the_seeded_pick() {
+        let expected = random_name(&mut NameRng::seeded(9));
+        assert_eq!(
+            render_session_name_template_with(
+                "${random-name}",
+                Path::new("/tmp/x"),
+                &mut NameRng::seeded(9)
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn random_name_composes_with_literal_text_and_cwd_basename() {
+        let expected = random_name(&mut NameRng::seeded(3));
+        assert_eq!(
+            render_session_name_template_with(
+                "${cwd-basename}-${random-name}",
+                Path::new("/home/me/notes"),
+                &mut NameRng::seeded(3)
+            ),
+            format!("notes-{expected}")
+        );
+    }
+
+    #[test]
+    fn repeated_random_name_placeholders_share_one_pick() {
+        let rendered = render_session_name_template_with(
+            "${random-name}/${random-name}",
+            Path::new("/tmp/x"),
+            &mut NameRng::seeded(5),
+        );
+        let (a, b) = rendered.split_once('/').expect("two halves");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn basename_containing_the_placeholder_is_not_expanded() {
+        assert_eq!(
+            render_session_name_template_with(
+                "${cwd-basename}",
+                Path::new("/tmp/${random-name}"),
+                &mut NameRng::seeded(1)
+            ),
+            "${random-name}"
+        );
+    }
+
+    #[test]
+    fn template_without_random_name_draws_nothing() {
+        let mut rng = NameRng::seeded(11);
+        let _ = render_session_name_template_with("default", Path::new("/tmp/x"), &mut rng);
+        assert_eq!(random_name(&mut rng), random_name(&mut NameRng::seeded(11)));
+    }
 
     #[test]
     fn literal_template_passes_through_unchanged() {

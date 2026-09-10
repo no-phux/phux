@@ -689,7 +689,8 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   [-e KEY=VALUE]... [--socket P]`** — create a new session. Without `--json`
   it creates and attaches: an explicit `-s NAME` that already exists is an
   error (like tmux's duplicate-session refusal); an omitted name starts from
-  `defaults.session-name-template` and gains a numeric suffix when needed; a
+  `defaults.session-name-template`, redraws a taken `${random-name}` pick a
+  few times, and otherwise gains a numeric suffix when needed; a
   server is auto-spawned if none is running. With `--json` it creates the
   session without attaching (no attach, no resize), then prints the seed pane
   id as JSON and exits. `--json` requires an explicit `-s NAME` — enforced by

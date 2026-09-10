@@ -231,9 +231,10 @@ pub struct DefaultsCfg {
     /// working directory, resolved at session-creation time. A bench of
     /// project checkouts then reads as its directories in the session
     /// picker, which is the only thing that makes the picker useful with
-    /// more than one session open. Set `"default"` for a fixed name.
-    /// Other placeholders may be added later; unknown placeholders are
-    /// passed through verbatim.
+    /// more than one session open. Set `"default"` for a fixed name, or
+    /// `"${random-name}"` for a generated adjective-noun name such as
+    /// `drifting-cedar` (phux-c2td.6). Unknown placeholders are passed
+    /// through verbatim.
     #[serde(
         default = "default_session_name_template",
         rename = "session-name-template"

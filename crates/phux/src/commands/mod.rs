@@ -523,7 +523,8 @@ pub(crate) enum Command {
     /// Creates the named session if it does not already exist, then
     /// attaches. Auto-starts a server if none is running. A name already
     /// in use is an error; omit the name to take the configured
-    /// `session-name-template`, disambiguated with a numeric suffix.
+    /// `session-name-template`, disambiguated with fresh `${random-name}`
+    /// picks when the template draws one, then a numeric suffix.
     ///
     /// With `--json`, creates the session *without* attaching and prints
     /// the seed pane's id as JSON instead. This neither attaches nor
@@ -538,8 +539,9 @@ pub(crate) enum Command {
     #[command(group = clap::ArgGroup::new("json_mode").arg("json").requires("session"))]
     New {
         /// Session name. `phux new work` creates a session named "work".
-        /// Omitted ⇒ the `session-name-template` (e.g. "default"),
-        /// disambiguated with a numeric suffix if that name is taken.
+        /// Omitted ⇒ the `session-name-template` (default: the cwd
+        /// basename), redrawn if it uses `${random-name}` and the pick is
+        /// taken, then disambiguated with a numeric suffix.
         #[arg(value_name = "NAME")]
         name: Option<String>,
 
