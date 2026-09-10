@@ -404,6 +404,7 @@ export interface NavigationRow {
   readonly id: number;
   readonly index: number;
   readonly label: Uint8Array;
+  readonly target: Uint8Array;
   readonly highlighted: boolean;
 }
 
@@ -435,18 +436,33 @@ export function navigationIntent(revision: WireU64, index: number): Uint8Array {
   return out;
 }
 
+interface NavigationRecord {
+  readonly row: NavigationRow;
+  readonly end: number;
+}
+
+function navigationRecord(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRecord | null {
+  if (at + 5 > bytes.length) return null;
+  const rawIndex = bytes[at] + bytes[at + 1] * 256;
+  const length = bytes[at + 2];
+  const targetLength = bytes[at + 3] + bytes[at + 4] * 256;
+  if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
+  if (!(targetLength >= 38 && targetLength <= 298)) return null;
+  const labelAt = at + 5 + targetLength;
+  if (!(length >= 1 && length <= 240) || labelAt + length > bytes.length) return null;
+  const index = Math.trunc(rawIndex);
+  const row: NavigationRow = { id: index, index, target: bytes.slice(at + 5, labelAt), label: bytes.subarray(labelAt, labelAt + length), highlighted };
+  return { row, end: labelAt + length };
+}
+
 function navigationRows(bytes: Uint8Array, start: number, count: number): readonly NavigationRow[] | null {
   const rows: NavigationRow[] = [];
   let at = start;
   for (let i = 0; i < count; i += 1) {
-    if (at + 3 > bytes.length) return null;
-    const rawIndex = bytes[at] + bytes[at + 1] * 256;
-    const length = bytes[at + 2];
-    if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
-    if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
-    const index = Math.trunc(rawIndex);
-    rows.push({ id: index, index, label: bytes.subarray(at + 3, at + 3 + length), highlighted: i === 0 });
-    at += 3 + length;
+    const record = navigationRecord(bytes, at, i === 0);
+    if (record === null) return null;
+    rows.push(record.row);
+    at = record.end;
   }
   return at === bytes.length ? rows : null;
 }

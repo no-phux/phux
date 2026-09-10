@@ -18,6 +18,7 @@ pub const RemoteResourceId = @import("provider_contract").RemoteResourceId;
 pub const measured = @import("tests/measured.zig");
 pub const Engine = engine.Engine;
 pub const durable_tests = @import("cockpit/durable_creation_tests.zig");
+pub const catalog_tests = @import("cockpit/catalog_navigation_tests.zig");
 pub const shared_mutation_tests = @import("cockpit/shared_mutations_test.zig");
 pub const NoShells = engine.NoShells;
 pub const selection_autoscroll_timer_id: u64 = @import("cockpit/app_types.zig").selection_autoscroll_timer_id;

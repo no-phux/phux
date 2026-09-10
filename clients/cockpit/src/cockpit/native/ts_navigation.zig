@@ -1,12 +1,12 @@
-//! Bounded, read-only catalog pages. Selection resolves an UNFILTERED catalog
-//! index only behind the engine revision fence; query/page changes cannot
-//! retarget a click. No platform ids or provider pointers cross the wire.
+//! Bounded catalog pages with a read revision fence and captured opaque targets.
+//! Display indices never authorize identity-qualified command selection.
 const std = @import("std");
 const model_module = @import("../model.zig");
 const projection = @import("workspace_projection.zig");
 const support = @import("../phux_support.zig");
 const Model = model_module.Model;
 const Entry = projection.PaletteEntry;
+pub const targets = @import("catalog_targets.zig");
 
 pub const request_name = "cockpit.navigation";
 // At the 420pt minimum height: 48 outer + 32 panel + 32 heading + 40
@@ -14,7 +14,7 @@ pub const request_name = "cockpit.navigation";
 pub const page_size = 4;
 pub const max_label_bytes = 240;
 pub const max_bytes = 4096;
-pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge };
+pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge, UnavailableContext };
 const empty_workspace: model_module.Workspace = .{};
 
 pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3, workspace_unavailable = 4 };
@@ -34,7 +34,7 @@ pub fn connection(model: *const Model) Connection {
 
 comptime {
     // Header + longest query + four longest labels, bounded by the host limit.
-    std.debug.assert(16 + model_module.max_palette_query_bytes + page_size * (3 + max_label_bytes) <= max_bytes);
+    std.debug.assert(16 + model_module.max_palette_query_bytes + page_size * (5 + targets.max_len + max_label_bytes) <= max_bytes);
 }
 
 /// Explicit visual elision, on a UTF-8 boundary. Inventory is never elided.
@@ -103,16 +103,22 @@ fn encodeEntry(model: *const Model, entry: Entry, out: []u8, start: usize) Error
     var full: [1024]u8 = undefined;
     var bounded: [max_label_bytes]u8 = undefined;
     const label = displayText(entryLabel(model, entry, &full), &bounded);
-    if (start + 3 + label.len > out.len) return error.BufferTooSmall;
+    const target = targets.capture(model, entry) orelse return error.UnavailableContext;
+    var target_buffer: [targets.max_len]u8 = undefined;
+    const bytes = target.encode(&target_buffer);
+    if (start + 5 + label.len + bytes.len > out.len) return error.BufferTooSmall;
     std.mem.writeInt(u16, out[start..][0..2], index, .little);
     out[start + 2] = @intCast(label.len);
-    @memcpy(out[start + 3 ..][0..label.len], label);
-    return start + 3 + label.len;
+    std.mem.writeInt(u16, out[start + 3 ..][0..2], @intCast(bytes.len), .little);
+    @memcpy(out[start + 5 ..][0..bytes.len], bytes);
+    @memcpy(out[start + 5 + bytes.len ..][0..label.len], label);
+    return start + 5 + bytes.len + label.len;
 }
 
 /// Request: version=1, kind=3, revision:u64, offset:u16, query_len:u8,
 /// query UTF-8 (<=64). Reply echoes those 13+query bytes, followed by
-/// total:u16, count:u8, then count records (index:u16, label_len:u8, label).
+/// total:u16, count:u8, then records (index:u16, label_len:u8, target_len:u16,
+/// opaque target bytes, label). Only the target authorizes activation.
 fn validateRequest(revision: u64, request: []const u8) Error!void {
     if (request.len < 13 or request[0] != 1 or request[1] != 3) return error.InvalidRequest;
     const query_len = request[12];
@@ -176,7 +182,7 @@ test "navigation catalog pages include every window and resolve only the fenced 
             const destination = resolve(engine.model, engine.revision, engine.revision, index).?;
             if (index == 8) try std.testing.expectEqual(@as(u8, 1), destination.placed_terminal.window);
             try std.testing.expect(resolve(engine.model, engine.revision + 1, engine.revision, index) == null);
-            at += 3 + @as(usize, response[at + 2]);
+            at += 5 + @as(usize, std.mem.readInt(u16, response[at + 3 ..][0..2], .little)) + @as(usize, response[at + 2]);
         }
         try std.testing.expectEqual(response.len, at);
     }

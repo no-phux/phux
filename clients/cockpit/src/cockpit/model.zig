@@ -1974,8 +1974,9 @@ pub fn restoreModelWithScrollback(
     max_scrollback_bytes: usize,
 ) !Model {
     const snapshot = try topology.migrateTopologySnapshot(persisted);
+    const context_id = try @import("provider_contract").context.allocate();
     const provider = try gpa.create(LocalProvider);
-    provider.* = .{ .gpa = gpa, .io = io, .max_scrollback_bytes = max_scrollback_bytes };
+    provider.* = .{ .gpa = gpa, .io = io, .max_scrollback_bytes = max_scrollback_bytes, .context_id = context_id };
 
     var model: Model = .{
         .provider = provider,

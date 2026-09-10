@@ -7,6 +7,7 @@
 
 const std = @import("std");
 pub const workspace = @import("workspace.zig");
+pub const context = @import("context.zig");
 const native_sdk = @import("native_sdk");
 
 const canvas = native_sdk.canvas;

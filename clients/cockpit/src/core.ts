@@ -1,7 +1,7 @@
 import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
-import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
 import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
@@ -13,7 +13,6 @@ import {
   snapshot,
   navigationRequest,
   navigationPage,
-  navigationIntent,
   sameBytes,
   type SnapshotAgentRow,
 } from "./protocol.ts";
@@ -56,12 +55,13 @@ export interface Tab {
   readonly target: Uint8Array;
 }
 
-/// One row of the terminal switcher: the tab's position as the person reads
-/// it off the strip, and its title, matched against the typed needle.
+/// One catalog row: display bookkeeping and label beside the captured native
+/// target. Only those opaque bytes authorize selection.
 export interface SwitcherRow {
   readonly id: number;
   readonly index: number;
   readonly label: Uint8Array;
+  readonly target: Uint8Array;
   readonly highlighted: boolean;
 }
 
@@ -191,7 +191,7 @@ export type Msg =
   | { readonly kind: "palette_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "palette_move"; readonly delta: number }
   | { readonly kind: "palette_submit" }
-  | { readonly kind: "palette_pick"; readonly index: number }
+  | { readonly kind: "palette_pick"; readonly target: Uint8Array }
   | { readonly kind: "palette_previous" }
   | { readonly kind: "palette_next" }
   | { readonly kind: "palette_retry" }
@@ -339,12 +339,11 @@ function refreshNavigation(model: Model): Model {
   return { ...refreshed, paletteCursor: model.paletteCursor };
 }
 
-function validNavigationPick(model: Model, index: number): boolean {
-  if (!model.paletteOpen || model.paletteLoading) return false;
-  for (const row of model.paletteRows) {
-    if (row.index === index) return true;
-  }
-  return false;
+function navigationTarget(model: Model, msg: Msg): Uint8Array {
+  if (!model.paletteOpen) return NO_BYTES;
+  if (msg.kind === "palette_pick") return msg.target;
+  if (model.paletteLoading || model.paletteRows.length === 0) return NO_BYTES;
+  return model.paletteRows[model.paletteCursor].target;
 }
 
 function loadedNavigation(model: Model, body: Uint8Array): Model {
@@ -866,10 +865,11 @@ function speculateTabTarget(model: Model, target: Uint8Array): Model {
 }
 
 function tabCommandNotice(outcome: number): Uint8Array {
-  if (outcome === 3) return asciiBytes("Tab selection refused. Select a current tab.");
-  if (outcome === 4) return asciiBytes("Tab selection queue full. New selection not sent.");
+  if (outcome === 3) return asciiBytes("Selection refused. Select a current target.");
+  if (outcome === 4) return asciiBytes("Selection queue full. New selection not sent.");
   if (outcome === 5) return asciiBytes("Selection outcome unknown; queued selections canceled.");
   if (outcome === 6) return asciiBytes("Selection command IDs exhausted. Restart Cockpit.");
+  if (outcome === 7) return asciiBytes("Selection accepted; attachment or placement pending.");
   return NO_BYTES;
 }
 
@@ -974,12 +974,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [closePalette(model), Cmd.host("cockpit.committed", NO_BYTES)];
     case "palette_submit":
     case "palette_pick": {
-      if (model.paletteRows.length === 0) return model;
-      const index = msg.kind === "palette_pick" ? msg.index : model.paletteRows[model.paletteCursor].index;
-      if (!validNavigationPick(model, index)) return model;
-      return [closePalette(model), Cmd.batch([
+      const target = navigationTarget(model, msg);
+      if (target.length === 0) return model;
+      const decision = enqueueCatalogCommand(model.tabCommands, target);
+      const next = tabCommandModel(model, decision);
+      if (decision.state.outcome !== 1) return next;
+      if (decision.request.length === 0) return [closePalette(next), Cmd.host("cockpit.committed", NO_BYTES)];
+      return [closePalette(next), Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index)),
+        Cmd.request("cockpit.tab-command", decision.request, {
+          key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed",
+        }),
       ])];
     }
     case "navigation_loaded":

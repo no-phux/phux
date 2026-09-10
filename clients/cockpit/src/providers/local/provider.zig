@@ -345,6 +345,7 @@ pub fn replicaOwnerForPane(pane: *const Pane) ReplicaOwner {
 }
 
 pub const LocalProvider = struct {
+    context_id: u64,
     gpa: std.mem.Allocator,
     io: std.Io,
     /// ONE uniform array. The old split between an eager `terminals[2]` and
@@ -399,7 +400,8 @@ pub const LocalProvider = struct {
     /// no longer pre-allocates emulators for panes nobody asked for.
     pub fn createWithIo(gpa: std.mem.Allocator, io: std.Io, session: *grid.Session) !*LocalProvider {
         const provider = try gpa.create(LocalProvider);
-        provider.* = .{ .gpa = gpa, .io = io };
+        errdefer gpa.destroy(provider);
+        provider.* = .{ .gpa = gpa, .io = io, .context_id = try @import("provider_contract").context.allocate() };
         provider.slots[0] = .{
             .id = initialTerminalRef(0),
             .session = session,
