@@ -144,6 +144,15 @@ pub const Creation = struct {
         }
     }
 
+    /// Successful admission may supersede older focus without canceling itself.
+    pub fn supersedeFocusExcept(self: *Creation, ref: TerminalRef) void {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.terminal) |terminal| if (terminal.eql(ref)) continue;
+            entry.may_focus = false;
+        }
+    }
+
     /// Called by the engine's focus synchronization, including local gestures.
     /// Once the user leaves, returning before completion does not revive focus
     /// authority for an earlier command.
@@ -622,4 +631,16 @@ fn stageCreationConfirmation(bridge: anytype, name: []const u8, old_id: u32, new
     try std.testing.expectEqual(index, std.mem.lastIndexOf(u8, bytes, &encoded).?);
     std.mem.writeInt(u32, bytes[index..][0..4], 0x8000_0000 + new_id, .big);
     try std.testing.expect(bridge.incoming.stage(bytes));
+}
+
+test "superseding older focus preserves newly admitted terminal focus" {
+    const testing = @import("std").testing;
+    var creation: Creation = .{};
+    creation.pending[0] = ConfirmationFixture.entry();
+    creation.pending[1] = ConfirmationFixture.entry();
+    const newer: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 10 } } };
+    creation.pending[1].?.terminal = newer;
+    creation.supersedeFocusExcept(newer);
+    try testing.expect(!creation.pending[0].?.may_focus);
+    try testing.expect(creation.pending[1].?.may_focus);
 }
