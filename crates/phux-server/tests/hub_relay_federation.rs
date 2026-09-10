@@ -56,6 +56,11 @@
 //! * `detach_fence` — twenty continuously writing remote PTYs survive two
 //!   consumers' detach/reattach cycles, with no post-success proxy output and
 //!   no interruption to a still-subscribed peer.
+//! * `list_directory` (phux-c2td.8) — `LIST_DIRECTORY.host` relays to the
+//!   named satellite and returns its listing (and its typed refusals); an
+//!   unknown host, a host on a non-hub server, a down satellite, and a
+//!   satellite that never answers all resolve to a `DIRECTORY_LISTING`
+//!   refusal naming the host, the last at the 10 s relay deadline.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -87,6 +92,9 @@ mod satellite_spawn;
 
 #[path = "hub_relay_federation/detach_fence.rs"]
 mod detach_fence;
+
+#[path = "hub_relay_federation/list_directory.rs"]
+mod list_directory;
 
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).

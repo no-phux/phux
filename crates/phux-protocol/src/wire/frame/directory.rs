@@ -7,6 +7,7 @@
 //! reply frame, like `GET_METADATA` / `METADATA_VALUE`) and are gated on
 //! [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
 
+use crate::ids::SatelliteHost;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
@@ -94,12 +95,21 @@ pub struct DirectoryListingError {
 /// The body of one `DIRECTORY_LISTING` reply.
 pub type DirectoryListingResult = Result<DirectoryListing, DirectoryListingError>;
 
-/// Write the `LIST_DIRECTORY` payload.
-pub(super) fn encode_list_directory(enc: &mut Encoder<'_>, request_id: u32, path: &str) {
+/// Write the `LIST_DIRECTORY` payload. An absent `host` writes no field 3,
+/// so a serving-host request is byte-identical to the pre-field frame.
+pub(super) fn encode_list_directory(
+    enc: &mut Encoder<'_>,
+    request_id: u32,
+    path: &str,
+    host: Option<&SatelliteHost>,
+) {
     enc.write_field_with(field::list_directory::REQUEST_ID, |e| {
         e.write_u32_be(request_id);
     });
     enc.write_field(field::list_directory::PATH, path.as_bytes());
+    if let Some(host) = host {
+        enc.write_field(field::list_directory::HOST, host.as_str().as_bytes());
+    }
 }
 
 /// Write the `DIRECTORY_LISTING` payload.
@@ -161,20 +171,25 @@ fn read_u8(value: &[u8]) -> Result<u8, DecodeError> {
     Decoder::new(value).read_u8()
 }
 
-/// Decode the `LIST_DIRECTORY` body into `(request_id, path)`.
+/// A decoded `LIST_DIRECTORY` body: `(request_id, path, host)`.
+pub(in crate::wire) type ListDirectoryBody = (u32, String, Option<SatelliteHost>);
+
+/// Decode the `LIST_DIRECTORY` body into `(request_id, path, host)`.
 pub(in crate::wire) fn decode_list_directory(
     d: &mut Decoder<'_>,
-) -> Result<(u32, String), DecodeError> {
+) -> Result<ListDirectoryBody, DecodeError> {
     let mut request_id = 0u32;
     let mut path = String::new();
+    let mut host = None;
     while let Some((id, value)) = d.read_field()? {
         match id {
             field::list_directory::REQUEST_ID => request_id = read_u32(value)?,
             field::list_directory::PATH => path = utf8(value)?,
+            field::list_directory::HOST => host = Some(SatelliteHost::new(utf8(value)?)),
             _ => {}
         }
     }
-    Ok((request_id, path))
+    Ok((request_id, path, host))
 }
 
 /// Decode the positional `entries` list: a `u32` count, then per entry a
@@ -275,6 +290,56 @@ mod tests {
         assert_eq!(
             DirectoryErrorCode::from_wire(200),
             DirectoryErrorCode::Other
+        );
+    }
+
+    fn encode_request(host: Option<&SatelliteHost>) -> Vec<u8> {
+        let mut buf = bytes::BytesMut::new();
+        let mut enc = Encoder::new(&mut buf);
+        encode_list_directory(&mut enc, 7, "/srv", host);
+        buf.to_vec()
+    }
+
+    /// The serving-host request carries no field 3, so it is byte-identical
+    /// to the frame every pre-`host` server has always decoded.
+    #[test]
+    fn a_serving_host_request_writes_no_host_field() {
+        let bytes = encode_request(None);
+        let mut d = Decoder::new(&bytes);
+        let mut ids = Vec::new();
+        while let Some((id, _)) = d.read_field().expect("field") {
+            ids.push(id);
+        }
+        assert_eq!(
+            ids,
+            [
+                field::list_directory::REQUEST_ID,
+                field::list_directory::PATH
+            ]
+        );
+        assert_eq!(
+            decode_list_directory(&mut Decoder::new(&bytes)),
+            Ok((7, "/srv".to_owned(), None))
+        );
+    }
+
+    /// A named host rides field 3 as UTF-8 and decodes back to the same host.
+    #[test]
+    fn a_satellite_request_carries_the_host_as_field_three() {
+        let host = SatelliteHost::new("devbox");
+        let bytes = encode_request(Some(&host));
+        let mut d = Decoder::new(&bytes);
+        let mut last = None;
+        while let Some((id, value)) = d.read_field().expect("field") {
+            last = Some((id, value.to_vec()));
+        }
+        assert_eq!(
+            last,
+            Some((field::list_directory::HOST, b"devbox".to_vec()))
+        );
+        assert_eq!(
+            decode_list_directory(&mut Decoder::new(&bytes)),
+            Ok((7, "/srv".to_owned(), Some(host)))
         );
     }
 

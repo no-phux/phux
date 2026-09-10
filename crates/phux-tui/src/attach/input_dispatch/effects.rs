@@ -17,6 +17,7 @@ use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
 
 use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
+use crate::attach::directory_picker::PendingDirectory;
 use crate::attach::focus::FocusHistory;
 use crate::attach::outcome::AttachError;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
@@ -249,14 +250,14 @@ async fn send_parked_spawns(
 /// the `LIST_DIRECTORY`. Recording first means the reply can never race
 /// ahead of the id it has to match.
 async fn send_directory_request(
-    request: Option<(u32, FrameKind)>,
+    request: Option<(PendingDirectory, FrameKind)>,
     conn: &mut Connection,
-    pending_directory: &mut Option<u32>,
+    pending_directory: &mut Option<PendingDirectory>,
 ) -> Result<(), AttachError> {
-    let Some((request_id, frame)) = request else {
+    let Some((pending, frame)) = request else {
         return Ok(());
     };
-    *pending_directory = Some(request_id);
+    *pending_directory = Some(pending);
     conn.send(&frame).await
 }
 
@@ -479,9 +480,9 @@ pub(super) struct ActionEffects {
     /// spawned pane.
     pub(super) spawn_window: Option<(u32, PendingWindow, FrameKind)>,
     /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
-    /// async caller records its id as the pending listing, then sends it;
-    /// the reply opens the directory picker.
-    pub(super) list_directory: Option<(u32, FrameKind)>,
+    /// async caller records it (id and listed host) as the pending listing,
+    /// then sends it; the reply opens the directory picker.
+    pub(super) list_directory: Option<(PendingDirectory, FrameKind)>,
     /// phux-4li.12: a `kill-pane` action ships a sequence of frames to
     /// the focused Terminal (the "soft-kill via shell-exit" — see
     /// `run_action`). The async caller sends them in order; the

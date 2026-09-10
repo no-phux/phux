@@ -1683,7 +1683,8 @@ The **directory picker** (`go-to-directory`, `C-a G`, also offered in the
 palette under **Window**) browses directories on the host of the
 server this client is attached to and opens a new window there. It starts at
 an explicit `path` arg, else at the focused pane's working directory when the
-client knows it, else at the server user's home. The rows are the listing the
+client knows it and the pane lives on the listed host, else at that host
+user's home. The rows are the listing the
 server returns for `LIST_DIRECTORY` ([L3.md](../spec/L3.md) §4): **open new
 window here** first, then `..`, then the child directories (dot-directories
 last, symlinked ones marked `symlink`). Typing filters. Enter on a directory
@@ -1697,9 +1698,26 @@ discarded. A refused listing (not found,
 permission denied, not a directory) shows the reason and keeps `..` and `~`
 selectable. Over `phux --remote` the attached server is the remote machine, so
 the picker browses the remote host with no extra configuration. Against a
-server that does not advertise the query the action bells. Attached to a
-federation hub, it lists the hub's own host: a satellite pane's directory is
-not routed, so the picker starts at the hub user's home instead.
+server that does not advertise the query the action bells.
+
+Attached to a federation hub, the picker follows the focused pane's host.
+With a satellite pane focused, and a hub that advertises
+`LIST_DIRECTORY_HOST`, the picker lists that satellite through the hub
+([L3.md](../spec/L3.md) §4.1). It starts at the pane's directory on the
+satellite, or at the satellite user's home when the client does not know it.
+The title names the host (`go to directory on devbox: /home/me`), every row
+stays on that satellite, and **open new window here** commits
+`new-window { cwd, host }`: the new window is spawned on the satellite, at
+that path, through the hub relay. The window opens once that pane attaches;
+a refused attach bells and names the host instead of leaving a blank
+window. A
+`host` arg on `go-to-directory` or `new-window` picks a satellite by name
+the same way. A refusal from the hub (an unknown host, an unreachable
+satellite, one that did not answer in time) shows its reason with `..` and
+`~` still on that satellite. Against a hub without the bit the picker lists
+the hub's own host from the hub user's home: the title says `on this host`
+and a header row says the satellite cannot be listed, so the hub's paths are
+not mistaken for the satellite's.
 
 ### 5.6 Agent-fleet dashboard
 

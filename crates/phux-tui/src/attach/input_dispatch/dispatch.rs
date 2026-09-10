@@ -437,7 +437,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// once no stacked overlay awaits the pending request, forget it, so the
     /// late reply is dropped as stale instead of opening a picker.
     fn release_abandoned_listing(&mut self) {
-        let pending = *self.ctx.pending_directory;
+        let pending = self
+            .ctx
+            .pending_directory
+            .as_ref()
+            .map(|pending| pending.request_id);
         if pending.is_some_and(|id| !self.ctx.overlays.awaits(id)) {
             *self.ctx.pending_directory = None;
         }

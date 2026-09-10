@@ -615,6 +615,9 @@ pub(crate) trait LinkTransport {
 pub(crate) struct NegotiatedBootstrap {
     profile: BootstrapProfile,
     limits: BootstrapLimits,
+    /// Features the satellite advertised in `HELLO_OK`; the relay consults
+    /// them before relaying a frame an older satellite would drop.
+    server_features: phux_protocol::caps::ServerFeatureSet,
 }
 /// An established hub link: a duplex of complete encoded phux frames
 /// (length prefix included, the `FrameKind::encode`/`decode` unit) the
@@ -642,6 +645,12 @@ pub(crate) trait LinkConn {
     /// Returns an error if a transport violates the connection-construction
     /// contract and returns before installing its negotiated selection.
     fn bootstrap_profile(&self) -> Result<BootstrapProfile, String>;
+
+    /// Features the satellite advertised in its `HELLO_OK`.
+    ///
+    /// Returns an error if a transport violates the connection-construction
+    /// contract and returns before installing its negotiated selection.
+    fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
 
     /// Transport-level liveness probe, driven by the supervisor's
     /// [`LINK_KEEPALIVE_INTERVAL`] tick while the link is up. WS links
@@ -824,8 +833,13 @@ async fn run_relay_session<C: LinkConn>(
         Ok(limits) => limits,
         Err(error) => return Some(error),
     };
+    let features = match conn.server_features() {
+        Ok(features) => features,
+        Err(error) => return Some(error),
+    };
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    let mut session = super::relay::RelaySession::new_negotiated(host.clone(), limits, profile);
+    let mut session =
+        super::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(
@@ -945,7 +959,7 @@ async fn send_bounded<C: LinkConn>(conn: &mut C, frame: &[u8]) -> Result<(), Str
 /// Complete the mandatory network-transport version handshake before the
 /// relay session can send commands.
 async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap, String> {
-    let offered = ClientCapabilities::default();
+    let offered = hub_link_capabilities();
     let mut encoded = bytes::BytesMut::new();
     FrameKind::Hello {
         client_name: "phux-hub".to_owned(),
@@ -976,6 +990,7 @@ async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap
             protocol_major,
             protocol_minor,
             protocol_patch,
+            server_caps,
             selected_profile,
             bootstrap_limits,
             ..
@@ -991,6 +1006,7 @@ async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap
             Ok(NegotiatedBootstrap {
                 profile: selected_profile,
                 limits: bootstrap_limits,
+                server_features: server_caps.features,
             })
         }
         FrameKind::Error { code, message, .. } => {
@@ -998,6 +1014,18 @@ async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap
         }
         other => Err(format!("expected HELLO_OK from satellite, got {other:?}")),
     }
+}
+
+/// What the hub offers a satellite: the default capability set plus L3, so
+/// the satellite answers the relayed `LIST_DIRECTORY` (`docs/spec/L3.md`
+/// §4.1), which a server drops from a consumer that never negotiated L3
+/// (§1.2). The hub sends no metadata frames of its own on the link (L3
+/// metadata does not federate, §1.3), so the extra layer changes nothing
+/// else the satellite does for it.
+fn hub_link_capabilities() -> ClientCapabilities {
+    ClientCapabilities::default().with_layers(phux_protocol::caps::LayerSet::with(&[
+        phux_protocol::caps::Layer::L3,
+    ]))
 }
 
 fn validate_link_hello_ok(
@@ -1328,6 +1356,10 @@ impl LinkConn for NetLinkConn {
 
     fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
         self.negotiated().map(|selection| selection.profile)
+    }
+
+    fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
+        self.negotiated().map(|selection| selection.server_features)
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
@@ -1992,6 +2024,12 @@ mod tests {
 
         fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
             Ok(BootstrapProfile::SynthesizedVtRaw)
+        }
+
+        fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
+            Ok(phux_protocol::caps::ServerFeatureSet::with(&[
+                phux_protocol::caps::ServerFeature::ListDirectory,
+            ]))
         }
 
         async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {

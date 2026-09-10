@@ -1467,13 +1467,19 @@ proptest! {
     }
 
     /// LIST_DIRECTORY — the host query (L3.md §4). Carries the request_id
-    /// and the requested path verbatim, including the empty home request.
+    /// and the requested path verbatim, including the empty home request,
+    /// and the optional satellite `host` (§4.1), absent or named.
     #[test]
     fn roundtrip_list_directory(
         request_id in any::<u32>(),
         path in ".{0,64}",
+        host in proptest::option::of("[a-z0-9.-]{0,32}"),
     ) {
-        assert_round_trip(&FrameKind::ListDirectory { request_id, path });
+        assert_round_trip(&FrameKind::ListDirectory {
+            request_id,
+            path,
+            host: host.map(phux_protocol::ids::SatelliteHost::new),
+        });
     }
 
     /// DIRECTORY_LISTING — reply to LIST_DIRECTORY (L3.md §4): a listing

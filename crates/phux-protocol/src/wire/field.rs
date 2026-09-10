@@ -421,6 +421,10 @@ pub mod list_directory {
     pub const REQUEST_ID: u32 = 1;
     /// Requested path (UTF-8). Empty or `~` = the serving user's home.
     pub const PATH: u32 = 2;
+    /// Optional satellite host name (UTF-8): list on that satellite through
+    /// the hub instead of on the serving host. Gated on
+    /// `ServerFeature::LIST_DIRECTORY_HOST`.
+    pub const HOST: u32 = 3;
 }
 
 /// `DIRECTORY_LISTING` body fields (`docs/spec/L3.md` §4).

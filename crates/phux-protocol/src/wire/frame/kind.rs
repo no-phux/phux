@@ -590,6 +590,14 @@ pub enum FrameKind {
         request_id: u32,
         /// Absolute path, `~` / `~/rest`, or empty (the serving user's home).
         path: String,
+        /// List on this satellite instead of the serving host: a federation
+        /// hub relays the request over its link and answers with the
+        /// satellite's listing (`docs/spec/L3.md` §4.1). `None` (field
+        /// absent) is the serving host, byte-identical to the pre-field
+        /// frame. Gated on
+        /// [`ServerFeature::ListDirectoryHost`](crate::caps::ServerFeature::ListDirectoryHost):
+        /// an older server skips the field and lists its own host.
+        host: Option<SatelliteHost>,
     },
 
     /// `DIRECTORY_LISTING` — server reply to a prior `LIST_DIRECTORY`
@@ -1287,8 +1295,12 @@ impl FrameKind {
             Self::MetadataKeys { request_id, keys } => {
                 Self::encode_metadata_keys(enc, *request_id, keys);
             }
-            Self::ListDirectory { request_id, path } => {
-                encode_list_directory(enc, *request_id, path);
+            Self::ListDirectory {
+                request_id,
+                path,
+                host,
+            } => {
+                encode_list_directory(enc, *request_id, path, host.as_ref());
             }
             Self::DirectoryListing { request_id, result } => {
                 encode_directory_listing(enc, *request_id, result);

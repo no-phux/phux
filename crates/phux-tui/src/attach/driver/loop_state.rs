@@ -401,9 +401,9 @@ pub(super) struct SessionLoop {
     /// name, rather than at its own default? Fixed for the life of the
     /// connection, like the reply bit above.
     spawn_initial_size_supported: bool,
-    /// Does this server answer `LIST_DIRECTORY` (the `go-to-directory`
-    /// picker)? Fixed for the connection.
-    list_directory_supported: bool,
+    /// What the `go-to-directory` picker can list on this server: nothing,
+    /// its own host, or a satellite through it too. Fixed for the connection.
+    directory_support: crate::attach::directory_picker::DirectorySupport,
     /// Whether the server advertised `ACKNOWLEDGED_INPUT`, the bit the
     /// ADR-0053 paste journal needs before it may route a batch.
     acknowledged_input_supported: bool,
@@ -463,9 +463,9 @@ pub(super) struct SessionLoop {
     /// same lifecycle as `pending_splits`. The `ResourceSpawned` arm checks
     /// this map first; a hit opens a new window on the spawned pane.
     pending_windows: HashMap<u32, PendingWindow>,
-    /// The `LIST_DIRECTORY` the directory picker is waiting on; a reply with
-    /// any other id is stale and dropped.
-    pending_directory: Option<u32>,
+    /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
+    /// it reads; a reply with any other id is stale and dropped.
+    pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
     /// phux-i0e8.2.2: Terminals whose close THIS client requested
     /// (kill-pane / kill-window). The action dispatcher parks ids here at
     /// the kill seam; the `ResourceClosed` arm drains them to suppress the
@@ -676,9 +676,9 @@ impl SessionLoop {
             spawn_initial_size_supported: negotiated
                 .server_features
                 .contains(ServerFeature::SpawnInitialSize),
-            list_directory_supported: negotiated
-                .server_features
-                .contains(ServerFeature::ListDirectory),
+            directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
+                negotiated.server_features,
+            ),
             host_sessions_supported: negotiated
                 .server_features
                 .contains(ServerFeature::HostSessions),
@@ -905,14 +905,16 @@ impl SessionLoop {
         let Some((request_id, result)) = reply else {
             return;
         };
-        if self.pending_directory != Some(request_id) {
+        let Some(pending) = self
+            .pending_directory
+            .take_if(|pending| pending.request_id == request_id)
+        else {
             tracing::debug!(request_id, "dropping stale DIRECTORY_LISTING");
             return;
-        }
-        self.pending_directory = None;
+        };
         let picker = crate::render::overlay::SelectList::new(
-            crate::attach::directory_picker::picker_title(&result),
-            crate::attach::directory_picker::picker_items(&result),
+            crate::attach::directory_picker::picker_title(&result, &pending.host),
+            crate::attach::directory_picker::picker_items(&result, &pending.host),
             &self.settings.theme,
         );
         // Only over its own placeholder: if the user cancelled it or opened
@@ -1890,7 +1892,7 @@ impl SessionLoop {
             spawn_initial_size_supported: self.spawn_initial_size_supported,
             pending_splits: &mut self.pending_splits,
             pending_windows: &mut self.pending_windows,
-            list_directory_supported: self.list_directory_supported,
+            directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             expected_closes: &mut self.expected_closes,
             overlays: &mut self.overlays,
@@ -2281,6 +2283,8 @@ impl SessionLoop {
         }
         self.attach_discovered_panes(conn, &outcome.attach_panes)
             .await?;
+        self.attach_spawned_windows(conn, std::mem::take(&mut outcome.adopt_windows))
+            .await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(&mut outcome, repaint);
         self.finish_paint(outcome.status_bar_painted);
@@ -2346,6 +2350,34 @@ impl SessionLoop {
                     command: Command::AttachResource {
                         terminal_id: terminal_id.clone(),
                     },
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Park each window spawned on a satellite through the hub and attach its
+    /// pane under a tracked request id. The reply decides the window
+    /// (`server_frame::handler::handle_window_adopt_reply`): it opens on
+    /// success, and a refusal bells and names the host.
+    async fn attach_spawned_windows(
+        &mut self,
+        conn: &mut Connection,
+        windows: Vec<PendingWindow>,
+    ) -> Result<(), AttachError> {
+        for window in windows {
+            let Some(terminal_id) = window.adopt.clone() else {
+                continue;
+            };
+            let request_id = self.next_request_id;
+            self.next_request_id = self.next_request_id.wrapping_add(1);
+            self.pending_windows.insert(request_id, window);
+            send_unless_peer_gone(
+                conn,
+                &FrameKind::Command {
+                    request_id,
+                    command: Command::AttachResource { terminal_id },
                 },
             )
             .await?;

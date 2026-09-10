@@ -18,6 +18,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::connection::Connection;
+use crate::attach::directory_picker::ListingHost;
 use crate::attach::focus::FocusHistory;
 use crate::attach::pane_state::{AttentionNavigation, PaneSlot};
 use crate::attach::plugin_panes::{HostedPlacement, PluginPaneEntry};
@@ -196,6 +197,7 @@ fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace)
 const ALL_FEATURES: ServerFeatureSet = ServerFeatureSet::with(&[
     ServerFeature::SpawnInitialSize,
     ServerFeature::ListDirectory,
+    ServerFeature::ListDirectoryHost,
 ]);
 
 /// [`run`] against a server that did NOT advertise
@@ -252,6 +254,26 @@ fn run_with_last_features_and_hosts(
     features: ServerFeatureSet,
     hosts: &[phux_protocol::wire::info::HostInventory],
 ) -> ActionEffects {
+    run_in(
+        action,
+        workspace,
+        last_focused,
+        features,
+        hosts,
+        &HashMap::new(),
+    )
+}
+
+/// [`run_with_last_features_and_hosts`] with the dispatcher's pane slots,
+/// for actions that read a pane's state (its cwd).
+fn run_in(
+    action: &phux_config::keybind::ResolvedAction,
+    workspace: &mut Workspace,
+    last_focused: Option<ResourceId>,
+    features: ServerFeatureSet,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> ActionEffects {
     let mut next_request_id = 100;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -285,7 +307,9 @@ fn run_with_last_features_and_hosts(
         spawn_initial_size_supported: features.contains(ServerFeature::SpawnInitialSize),
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: features.contains(ServerFeature::ListDirectory),
+        directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
+            features,
+        ),
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -318,7 +342,7 @@ fn run_with_last_features_and_hosts(
         vcs: &mut fleet_vcs,
     };
     let focused = ctx.workspace.active_window().and_then(|w| w.focus.clone());
-    run_action(action, &mut ctx, focused.as_ref(), &HashMap::new())
+    run_action(action, &mut ctx, focused.as_ref(), panes)
 }
 
 #[test]
@@ -510,23 +534,25 @@ fn new_window_cwd_arg_rides_the_spawn() {
 fn go_to_directory_requests_a_listing() {
     let mut workspace = Workspace::single(tid(1));
     let effects = run(&bare_action("go-to-directory"), &mut workspace);
-    let (request_id, frame) = effects
+    let (pending, frame) = effects
         .list_directory
         .expect("go-to-directory sends LIST_DIRECTORY");
     assert_eq!(
         frame,
         FrameKind::ListDirectory {
-            request_id,
-            path: String::new()
+            request_id: pending.request_id,
+            path: String::new(),
+            host: None,
         }
     );
+    assert_eq!(pending.host, ListingHost::Attached);
 
     let mut action = bare_action("go-to-directory");
     action
         .args
         .insert("path".to_owned(), toml::Value::String("/srv".into()));
     let effects = run(&action, &mut workspace);
-    let (_request_id, frame) = effects
+    let (_pending, frame) = effects
         .list_directory
         .expect("go-to-directory sends LIST_DIRECTORY");
     assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
@@ -534,6 +560,121 @@ fn go_to_directory_requests_a_listing() {
     assert!(
         effects.layout_mutated,
         "the listing placeholder overlay needs a repaint"
+    );
+}
+
+fn edge() -> phux_protocol::ids::SatelliteHost {
+    phux_protocol::ids::SatelliteHost::new("edge")
+}
+
+/// A focused satellite pane and its slot, with `cwd` as the pane's directory.
+fn satellite_pane(cwd: Option<&str>) -> (Workspace, HashMap<ResourceId, PaneSlot>) {
+    let pane = ResourceId::satellite(edge(), 9);
+    let mut slot = PaneSlot::new().expect("pane slot");
+    slot.cwd = cwd.map(str::to_owned);
+    (
+        Workspace::single(pane.clone()),
+        HashMap::from([(pane, slot)]),
+    )
+}
+
+/// On a satellite pane the listing is asked of that satellite through the
+/// hub (`LIST_DIRECTORY.host`), starting at the pane's own directory there.
+#[test]
+fn go_to_directory_on_a_satellite_pane_names_its_host_and_cwd() {
+    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
+    let effects = run_in(
+        &bare_action("go-to-directory"),
+        &mut workspace,
+        None,
+        ALL_FEATURES,
+        &[],
+        &panes,
+    );
+    let (pending, frame) = effects
+        .list_directory
+        .expect("go-to-directory sends LIST_DIRECTORY");
+    assert_eq!(
+        frame,
+        FrameKind::ListDirectory {
+            request_id: pending.request_id,
+            path: "/home/e/src".to_owned(),
+            host: Some(edge()),
+        }
+    );
+    assert_eq!(pending.host, ListingHost::Satellite(edge()));
+}
+
+/// With no directory known for the satellite pane the listing starts at the
+/// satellite user's home (the empty path), still on the satellite.
+#[test]
+fn a_satellite_pane_without_a_cwd_lists_the_satellites_home() {
+    let (mut workspace, panes) = satellite_pane(None);
+    let effects = run_in(
+        &bare_action("go-to-directory"),
+        &mut workspace,
+        None,
+        ALL_FEATURES,
+        &[],
+        &panes,
+    );
+    let (_pending, frame) = effects.list_directory.expect("LIST_DIRECTORY");
+    assert!(
+        matches!(&frame, FrameKind::ListDirectory { path, host: Some(host), .. }
+            if path.is_empty() && *host == edge()),
+        "{frame:?}"
+    );
+}
+
+/// A hub that predates `LIST_DIRECTORY.host` would skip the field and list
+/// itself, so the request stays on the hub: no host, and not the satellite
+/// pane's cwd (a satellite path). The pending listing remembers why, for the
+/// picker's title.
+#[test]
+fn a_hub_without_host_listing_keeps_the_request_on_itself() {
+    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
+    let features = ServerFeatureSet::with(&[
+        ServerFeature::SpawnInitialSize,
+        ServerFeature::ListDirectory,
+    ]);
+    let effects = run_in(
+        &bare_action("go-to-directory"),
+        &mut workspace,
+        None,
+        features,
+        &[],
+        &panes,
+    );
+    let (pending, frame) = effects.list_directory.expect("LIST_DIRECTORY");
+    assert_eq!(
+        frame,
+        FrameKind::ListDirectory {
+            request_id: pending.request_id,
+            path: String::new(),
+            host: None,
+        }
+    );
+    assert_eq!(pending.host, ListingHost::AttachedInsteadOf(edge()));
+}
+
+/// The confirm row of a satellite listing commits `new-window { cwd, host }`:
+/// the window spawns on that satellite through the hub, at that path.
+#[test]
+fn new_window_with_a_host_spawns_on_that_satellite() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut action = bare_action("new-window");
+    action
+        .args
+        .insert("cwd".to_owned(), toml::Value::String("/home/e/src".into()));
+    action
+        .args
+        .insert("host".to_owned(), toml::Value::String("edge".into()));
+    let effects = run(&action, &mut workspace);
+    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), satellite: Some(host), .. }
+            if cwd == "/home/e/src" && *host == edge()),
+        "{frame:?}"
     );
 }
 
@@ -904,7 +1045,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: true,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -986,7 +1127,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: true,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -1105,7 +1246,7 @@ fn run_capturing_with_sessions(
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
-            list_directory_supported: true,
+            directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
             pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
@@ -1286,7 +1427,7 @@ fn run_with_panes(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: true,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -1763,7 +1904,7 @@ fn run_attention(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: true,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -2489,7 +2630,7 @@ fn detach_action_requests_detach_effect() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
-        list_directory_supported: true,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
         pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
@@ -2592,7 +2733,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
-            list_directory_supported: true,
+            directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
             pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,

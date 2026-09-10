@@ -2654,6 +2654,100 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
     );
     assert!(panes.contains_key(&tid(2)), "new pane got a slot");
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
+    assert!(
+        outcome.adopt_windows.is_empty(),
+        "a local spawn already streams to its spawner"
+    );
+}
+
+/// A window spawned on a satellite through the hub (the directory picker's
+/// "open new window here" on a satellite listing) does not open yet: the
+/// relayed pane streams to no one until it is attached, and the attach can be
+/// refused. The reply hands the driver the window to park on that attach.
+#[test]
+fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
+    use super::handle_window_spawned;
+    use crate::attach::actions::PendingWindow;
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let mut workspace = Workspace::single(tid(1));
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1)]);
+    let mut out: Vec<u8> = Vec::new();
+
+    let outcome = handle_window_spawned(
+        &mut out,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &PendingWindow {
+            name: "2".to_owned(),
+            adopt: None,
+        },
+        SpawnResult::Ok(sat.clone()),
+    )
+    .expect("handle_window_spawned");
+
+    assert_eq!(
+        workspace.windows.len(),
+        1,
+        "nothing opens before the attach"
+    );
+    assert_eq!(focused, Some(tid(1)));
+    assert!(!outcome.layout_replaced && !outcome.emit_set_metadata);
+    assert_eq!(outcome.adopt_windows.len(), 1);
+    assert_eq!(outcome.adopt_windows[0].name, "2");
+    assert_eq!(outcome.adopt_windows[0].adopt, Some(sat));
+}
+
+/// The parked satellite window opens, focused and saved, once its attach
+/// succeeds.
+#[test]
+fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
+        "2",
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+    );
+    assert_eq!(workspace.windows.len(), 2);
+    assert_eq!(workspace.windows[1].name, "2");
+    assert_eq!(focused, Some(sat));
+    assert!(outcome.layout_replaced && outcome.emit_set_metadata);
+    assert!(!out.contains(&0x07), "success does not bell");
+    assert_eq!(parked, 0);
+}
+
+/// A refused attach of a spawned satellite window opens nothing, saves
+/// nothing, bells, and names the host.
+#[test]
+fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
+        "2",
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite edge is unreachable: link is down".to_owned(),
+            },
+        },
+    );
+    assert_eq!(workspace.windows.len(), 1, "no blank window is left behind");
+    assert_eq!(focused, Some(tid(1)));
+    assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
+    assert!(out.contains(&0x07), "a refusal bells");
+    assert_eq!(outcome.notices.len(), 1);
+    assert!(
+        outcome.notices[0].text.contains("on satellite edge"),
+        "the notice names the host: {}",
+        outcome.notices[0].text
+    );
+    assert_eq!(parked, 0);
 }
 
 /// phux-c2td.3: drive one reply through the dispatcher with a parked
@@ -2661,6 +2755,14 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
 /// outcome, the workspace, focus, the bytes written, and how many windows
 /// are still parked.
 fn drive_satellite_adopt_reply(
+    frame: FrameKind,
+) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
+    drive_adopt_reply("edge/build", frame)
+}
+
+/// [`drive_satellite_adopt_reply`] with the parked window named `name`.
+fn drive_adopt_reply(
+    name: &str,
     frame: FrameKind,
 ) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
     use crate::attach::actions::PendingWindow;
@@ -2679,7 +2781,7 @@ fn drive_satellite_adopt_reply(
     pending_windows.insert(
         9,
         PendingWindow {
-            name: "edge/build".to_owned(),
+            name: name.to_owned(),
             adopt: Some(sat),
         },
     );

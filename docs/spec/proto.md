@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-10
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -393,6 +393,7 @@ ServerFeature = bitset (u32) {
     LIST_DIRECTORY     = 0x00008000, // LIST_DIRECTORY host query (L3.md §4)
     HOST_SESSIONS      = 0x00010000, // GET_STATE host-session inventory (L1.md §9.1)
     WHOAMI             = 0x00040000, // read-only phux.whoami/v1 Global key (L3.md §3.9; ADR-0106)
+    LIST_DIRECTORY_HOST = 0x00080000, // LIST_DIRECTORY.host satellite route (L3.md §4.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -457,8 +458,10 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
 `GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
-`RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`, and
-`HOST_SESSIONS = 0x10000`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
+`RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`,
+`HOST_SESSIONS = 0x10000`, `WHOAMI = 0x40000`, and
+`LIST_DIRECTORY_HOST = 0x80000`; unknown
+feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
 `INPUT_TERMINAL_REPLY`.
@@ -481,6 +484,14 @@ satellites", which is a complete answer; without it, empty is
 indistinguishable from a hub that never had the field. A client that groups
 sessions by host SHOULD require the bit before reporting a fleet as
 satellite-free.
+
+`LIST_DIRECTORY_HOST = 0x80000` gates a field, `LIST_DIRECTORY.host`
+([L3.md](./L3.md) §4.1). Sending it unadvertised is misleading rather than
+dangerous. A server without the bit skips the field by length and answers
+with its own host's listing, which a consumer could take for the satellite's.
+A client MUST therefore require the bit before presenting a reply as the
+named host's listing. Without it, a client lists the serving host and says
+so.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

@@ -321,6 +321,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
             FrameKind::ListDirectory {
                 request_id: 0x0000_0021,
                 path: String::new(),
+                host: None,
             },
         ),
         (

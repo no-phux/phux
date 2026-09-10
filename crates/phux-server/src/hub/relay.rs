@@ -53,16 +53,29 @@
 //! local attach's snapshot gate (`RelaySession::fan_out` /
 //! `flush_pending_snapshots`). Still no head-of-line stall: the retry is
 //! per-consumer, not a link-wide await.
+//!
+//! **Directory listings** (`docs/spec/L3.md` §4.1). A `LIST_DIRECTORY`
+//! naming this satellite rides the same link as a correlated request of its
+//! own: the session allocates the link-side `request_id`, the satellite
+//! answers from its own filesystem, and the `DIRECTORY_LISTING` resolves the
+//! consumer's waiter, which replies under the consumer's own `request_id`.
+//! Every failure (saturated or dead link, a satellite without
+//! `LIST_DIRECTORY`, a correlated `ERROR`, teardown, or
+//! `RELAY_LIST_DEADLINE`) resolves to a typed `DIRECTORY_LISTING` refusal
+//! naming the host, never a hang.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerFeature, ServerFeatureSet,
+};
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
+    Command, CommandResult, DirectoryErrorCode, DirectoryListingError, DirectoryListingResult,
+    ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
@@ -97,6 +110,26 @@ const RETAINED_FRAME_OVERHEAD: usize = 256;
 /// never answers. Elapsing resolves to a typed `SatelliteUnreachable`
 /// error, never an indefinite wait (L1 §9.1).
 pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Upper bound on one relayed `LIST_DIRECTORY` round trip, measured at
+/// [`RelayHandle::list_directory`]. The satellite bounds its own walk at 5 s
+/// and answers a slow filesystem with a refusal (`docs/spec/L3.md` §4), so a
+/// healthy link always answers well inside this; the extra 5 s covers the
+/// link round trip. It is shorter than [`RELAY_COMMAND_TIMEOUT`] because a
+/// person is watching the picker's placeholder: a satellite that reads the
+/// request and never answers must turn into a refusal they can act on.
+pub(crate) const RELAY_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A `DIRECTORY_LISTING` refusal for `path` with [`DirectoryErrorCode::Other`]:
+/// the one code a routing failure maps to (`docs/spec/L3.md` §4.1). The
+/// message names the host, which is what tells the user why.
+pub(crate) fn listing_refusal(path: &str, message: impl Into<String>) -> DirectoryListingError {
+    DirectoryListingError {
+        path: path.to_owned(),
+        code: DirectoryErrorCode::Other,
+        message: message.into(),
+    }
+}
 
 /// One hub-side consumer's registration on the return leg of a link:
 /// which satellite-local terminal it observes and where re-tagged frames
@@ -297,6 +330,18 @@ pub(crate) enum RelayRequest {
         /// (already rewritten satellite-local).
         forward: FrameKind,
     },
+    /// Relay a `LIST_DIRECTORY` to this satellite (`docs/spec/L3.md` §4.1).
+    /// Like [`Self::Command`] the session allocates the link-side
+    /// `request_id`; `reply` resolves with the satellite's
+    /// `DIRECTORY_LISTING` result, or a refusal naming the host. The frame
+    /// put on the wire carries no `host`: the satellite lists its own
+    /// filesystem, and hub-and-spoke never chains.
+    ListDirectory {
+        /// The requested path, verbatim.
+        path: String,
+        /// Resolved with the listing or a typed refusal.
+        reply: oneshot::Sender<DirectoryListingResult>,
+    },
 }
 
 /// The receiving half of one satellite's relay: the bounded request
@@ -476,6 +521,45 @@ impl RelayHandle {
         }
     }
 
+    /// Relay a `LIST_DIRECTORY` for `path` and await the satellite's
+    /// listing (`docs/spec/L3.md` §4.1). Fails fast on a saturated or dead
+    /// link and fails bounded at [`RELAY_LIST_DEADLINE`] against a satellite
+    /// that never answers; every failure is a refusal whose message names
+    /// the host. Timing out drops the oneshot receiver, which marks the
+    /// pending entry for [`RelaySession::prune_abandoned`].
+    pub(crate) async fn list_directory(&self, path: String) -> DirectoryListingResult {
+        let attempted = path.clone();
+        let (reply, rx) = oneshot::channel();
+        if let Err(err) = self
+            .tx
+            .try_send(RelayRequest::ListDirectory { path, reply })
+        {
+            let why = match err {
+                mpsc::error::TrySendError::Full(_) => "link is saturated; retry",
+                mpsc::error::TrySendError::Closed(_) => "link is down",
+            };
+            return Err(listing_refusal(
+                &attempted,
+                format!("satellite {} {why}", self.host),
+            ));
+        }
+        match tokio::time::timeout(RELAY_LIST_DEADLINE, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(listing_refusal(
+                &attempted,
+                format!("satellite {} link dropped before the listing", self.host),
+            )),
+            Err(_) => Err(listing_refusal(
+                &attempted,
+                format!(
+                    "satellite {} did not answer the listing within {}s",
+                    self.host,
+                    RELAY_LIST_DEADLINE.as_secs()
+                ),
+            )),
+        }
+    }
+
     /// Relay `command` without awaiting the result (the idempotent batch
     /// path — `KILL_RESOURCES` semantics tolerate a silent skip).
     pub(crate) fn command_detached(&self, command: Command) {
@@ -649,6 +733,12 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
         }
         RelayRequest::Forward { frame } => {
             trace!(satellite = %host, kind = ?frame_label(&frame), why, "relay frame dropped while disconnected");
+        }
+        RelayRequest::ListDirectory { path, reply } => {
+            let _ = reply.send(Err(listing_refusal(
+                &path,
+                format!("satellite {host} is unreachable: {why}"),
+            )));
         }
         RelayRequest::Subscribe { subscription, .. } => {
             // A subscription to an unreachable satellite gets the same
@@ -869,6 +959,14 @@ const fn stream_frame_scope(frame: &FrameKind) -> Option<&ResourceId> {
         _ => None,
     }
 }
+/// A relayed `LIST_DIRECTORY` awaiting its `DIRECTORY_LISTING`.
+#[derive(Debug)]
+struct PendingListing {
+    /// The requested path, for a refusal that has to name it.
+    path: String,
+    reply: oneshot::Sender<DirectoryListingResult>,
+}
+
 #[derive(Debug)]
 struct PendingDetach {
     terminal: u32,
@@ -887,6 +985,13 @@ pub(crate) struct RelaySession {
     /// (phux-v45.6). Shares the link-side `request_id` space with
     /// [`Self::pending`] so one allocator covers both reply frames.
     pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
+    /// Relayed `LIST_DIRECTORY`s awaiting their `DIRECTORY_LISTING`
+    /// (`docs/spec/L3.md` §4.1), in the same link-side id space.
+    pending_listings: HashMap<u32, PendingListing>,
+    /// Features the satellite advertised in its `HELLO_OK`. A listing is
+    /// relayed only when it names `LIST_DIRECTORY`: an older satellite would
+    /// drop the frame and the consumer would wait out the deadline.
+    satellite_features: ServerFeatureSet,
     /// Upstream detach barriers. Old frames may still arrive until the
     /// correlated reply, including after a downstream proxy has reattached.
     pending_detaches: HashMap<u32, PendingDetach>,
@@ -911,8 +1016,12 @@ impl RelaySession {
     /// Fresh session state for one established connection to `host`.
     #[cfg(test)]
     pub(crate) fn new(host: SatelliteHost, bootstrap_limits: BootstrapLimits) -> Self {
-        let mut session =
-            Self::new_negotiated(host, bootstrap_limits, BootstrapProfile::SynthesizedVtRaw);
+        let mut session = Self::new_negotiated(
+            host,
+            bootstrap_limits,
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         session.enforce_bootstrap_flow = false;
         session
     }
@@ -922,6 +1031,7 @@ impl RelaySession {
         host: SatelliteHost,
         bootstrap_limits: BootstrapLimits,
         bootstrap_profile: BootstrapProfile,
+        satellite_features: ServerFeatureSet,
     ) -> Self {
         Self {
             host,
@@ -930,6 +1040,8 @@ impl RelaySession {
             next_request_id: 1,
             pending: HashMap::new(),
             pending_spawns: HashMap::new(),
+            pending_listings: HashMap::new(),
+            satellite_features,
             pending_detaches: HashMap::new(),
             enforce_bootstrap_flow: true,
             subscribers: HashMap::new(),
@@ -1048,7 +1160,38 @@ impl RelaySession {
                 subscription,
                 forward,
             } => self.subscribe_forward(subscription, &forward),
+            RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
         }
+    }
+
+    /// Put one relayed `LIST_DIRECTORY` on the wire under a link-side id,
+    /// or refuse it at once when the satellite never advertised the query
+    /// (it would drop the frame and the consumer would wait out the
+    /// deadline for nothing).
+    fn enqueue_listing(
+        &mut self,
+        path: String,
+        reply: oneshot::Sender<DirectoryListingResult>,
+    ) -> Option<Vec<u8>> {
+        if !self
+            .satellite_features
+            .contains(ServerFeature::ListDirectory)
+        {
+            let _ = reply.send(Err(listing_refusal(
+                &path,
+                format!("satellite {} does not answer LIST_DIRECTORY", self.host),
+            )));
+            return None;
+        }
+        let request_id = self.allocate_request_id();
+        let frame = FrameKind::ListDirectory {
+            request_id,
+            path: path.clone(),
+            host: None,
+        };
+        self.pending_listings
+            .insert(request_id, PendingListing { path, reply });
+        Some(self.encode(&frame))
     }
 
     /// Register and remember event scope atomically with its forward frame.
@@ -1299,6 +1442,9 @@ impl RelaySession {
             FrameKind::ResourceSpawned { request_id, result } => {
                 self.resolve_pending_spawn(request_id, result);
             }
+            FrameKind::DirectoryListing { request_id, result } => {
+                self.resolve_pending_listing(request_id, result);
+            }
             FrameKind::Error {
                 request_id: Some(request_id),
                 code,
@@ -1368,9 +1514,36 @@ impl RelaySession {
                     "satellite refused the spawn: {code:?}: {message}"
                 ))),
             );
-        } else {
-            self.resolve_pending(request_id, CommandResult::Error { code, message });
+            return;
         }
+        if let Some(pending) = self.pending_listings.remove(&request_id) {
+            let refusal = listing_refusal(
+                &pending.path,
+                format!(
+                    "satellite {} refused the listing: {code:?}: {message}",
+                    self.host
+                ),
+            );
+            let _ = pending.reply.send(Err(refusal));
+            return;
+        }
+        self.resolve_pending(request_id, CommandResult::Error { code, message });
+    }
+
+    /// Resolve a link-side listing id back to its waiting consumer. The
+    /// listing passes through untouched: its paths are the satellite's own,
+    /// which is exactly what the consumer asked for.
+    fn resolve_pending_listing(&mut self, request_id: u32, result: DirectoryListingResult) {
+        let Some(pending) = self.pending_listings.remove(&request_id) else {
+            debug!(
+                satellite = %self.host,
+                request_id,
+                "satellite directory listing with no pending request; dropping"
+            );
+            return;
+        };
+        // A dropped receiver (consumer timed out / disconnected) is fine.
+        let _ = pending.reply.send(result);
     }
 
     /// Forward one terminal-scoped return-leg stream frame: resolve its
@@ -1555,6 +1728,12 @@ impl RelaySession {
                 self.host
             ))));
         }
+        for (_, pending) in self.pending_listings.drain() {
+            let _ = pending.reply.send(Err(listing_refusal(
+                &pending.path,
+                format!("satellite {} is unreachable: {why}", self.host),
+            )));
+        }
         // One typed ERROR per consumer (not per subscription): the frame
         // names the host, and every terminal of that host is gone at once.
         let mut notified: Vec<ClientId> = Vec::new();
@@ -1597,19 +1776,27 @@ impl RelaySession {
     /// the pending map without bound (only [`RELAY_MAILBOX`] entries drain
     /// per mailbox refill, and nothing else removes them).
     pub(crate) fn prune_abandoned(&mut self) -> usize {
-        let before = self.pending.len() + self.pending_spawns.len();
+        let before = self.pending_request_count();
         self.pending.retain(|_, pending| !pending.reply.is_closed());
         self.pending_spawns.retain(|_, reply| !reply.is_closed());
-        let pruned = before - self.pending.len() - self.pending_spawns.len();
+        self.pending_listings
+            .retain(|_, pending| !pending.reply.is_closed());
+        let remaining = self.pending_request_count();
+        let pruned = before - remaining;
         if pruned > 0 {
             debug!(
                 satellite = %self.host,
                 pruned,
-                remaining = self.pending.len() + self.pending_spawns.len(),
+                remaining,
                 "pruned relayed commands whose consumer stopped waiting"
             );
         }
         pruned
+    }
+
+    /// Correlated requests still waiting on the satellite, of every kind.
+    fn pending_request_count(&self) -> usize {
+        self.pending.len() + self.pending_spawns.len() + self.pending_listings.len()
     }
 
     /// A peer that remains alive but never acknowledges teardown must not
@@ -2237,13 +2424,18 @@ impl RelaySession {
         loop {
             let id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
-            if !self.pending.contains_key(&id)
-                && !self.pending_spawns.contains_key(&id)
-                && !self.pending_detaches.contains_key(&id)
-            {
+            if !self.request_id_in_use(id) {
                 return id;
             }
         }
+    }
+
+    /// Whether any reply map still holds the link-side id `id`.
+    fn request_id_in_use(&self, id: u32) -> bool {
+        self.pending.contains_key(&id)
+            || self.pending_spawns.contains_key(&id)
+            || self.pending_listings.contains_key(&id)
+            || self.pending_detaches.contains_key(&id)
     }
 
     fn encode(&mut self, frame: &FrameKind) -> Vec<u8> {
@@ -2693,8 +2885,12 @@ mod tests {
 
     #[test]
     fn relay_rejects_bootstrap_profile_mismatch_before_fanout() {
-        let mut session =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         let (out_tx, mut out_rx) = mpsc::channel(8);
         attach(&mut session, 7, ClientId(1), out_tx);
         let error = session
@@ -2718,8 +2914,12 @@ mod tests {
         let stream_id = StreamId::new(2).expect("stream");
         let bootstrap_id = BootstrapId::new(3).expect("bootstrap");
 
-        let mut gapped =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut gapped = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         gapped
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {
                 terminal_id: ResourceId::local(7),
@@ -2742,8 +2942,12 @@ mod tests {
             .expect_err("gapped chunk must fail the link");
         assert!(error.contains("expected 0"));
 
-        let mut early_live =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut early_live = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         early_live
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {
                 terminal_id: ResourceId::local(7),
@@ -2769,8 +2973,12 @@ mod tests {
 
     #[test]
     fn relay_fans_out_complete_native_prefix_before_live_delta() {
-        let mut session =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         let (out_tx, mut out_rx) = mpsc::channel(8);
         attach(&mut session, 7, ClientId(1), out_tx);
         let stream_id = StreamId::new(4).expect("stream");
@@ -2836,7 +3044,12 @@ mod tests {
     #[test]
     fn content_subscription_requires_exact_downstream_profile_and_bounds() {
         let limits = BootstrapLimits::default();
-        let mut session = RelaySession::new_negotiated(host(), limits, native_profile());
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            limits,
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         let (out_tx, _out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request_checked(RelayRequest::Command {
@@ -2901,8 +3114,12 @@ mod tests {
 
     #[test]
     fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
-        let mut session =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         let (out_tx, mut out_rx) = mpsc::channel(8);
         attach(&mut session, 7, ClientId(1), out_tx);
         let stream_id = StreamId::new(4).expect("stream");
@@ -2947,8 +3164,12 @@ mod tests {
 
     #[test]
     fn generation_byte_budget_fails_without_allocating_chunk_payloads() {
-        let mut session =
-            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
         let stream_id = StreamId::new(1).expect("stream");
         let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
         session
@@ -4219,6 +4440,7 @@ mod tests {
             host(),
             BootstrapLimits::default(),
             BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
         );
         session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
         session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
@@ -4314,6 +4536,7 @@ mod tests {
             host(),
             BootstrapLimits::default(),
             BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
         );
         session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
         session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
@@ -4748,5 +4971,149 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // --- relayed LIST_DIRECTORY (docs/spec/L3.md §4.1) ---------------------
+
+    fn listing_request(path: &str) -> (RelayRequest, oneshot::Receiver<DirectoryListingResult>) {
+        let (reply, rx) = oneshot::channel();
+        (
+            RelayRequest::ListDirectory {
+                path: path.to_owned(),
+                reply,
+            },
+            rx,
+        )
+    }
+
+    fn refusal_message(result: DirectoryListingResult) -> String {
+        let refusal = result.expect_err("expected a refusal");
+        assert_eq!(refusal.code, DirectoryErrorCode::Other);
+        refusal.message
+    }
+
+    #[test]
+    fn session_relays_a_listing_under_its_own_id_and_resolves_the_reply() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        // Occupy id 1 so the listing proves it shares the allocator.
+        let _ = session.handle_request(RelayRequest::Command {
+            command: Command::Upgrade,
+            reply: oneshot::channel().0,
+            subscribe: None,
+        });
+        let (request, mut rx) = listing_request("/srv");
+        let wire = session.handle_request(request);
+        let FrameKind::ListDirectory {
+            request_id,
+            path,
+            host: forwarded_host,
+        } = decode(&wire)
+        else {
+            panic!("expected LIST_DIRECTORY on the link");
+        };
+        assert_eq!(
+            request_id, 2,
+            "link-side id comes from the shared allocator"
+        );
+        assert_eq!(path, "/srv");
+        assert_eq!(forwarded_host, None, "the satellite lists its own host");
+
+        let listing = phux_protocol::wire::frame::DirectoryListing {
+            path: "/srv".to_owned(),
+            parent: Some("/".to_owned()),
+            entries: Vec::new(),
+            truncated: false,
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::DirectoryListing {
+                request_id,
+                result: Ok(listing.clone()),
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(rx.try_recv().expect("resolved"), Ok(listing));
+    }
+
+    #[test]
+    fn a_satellite_without_list_directory_is_refused_before_the_link() {
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::new(),
+        );
+        let (request, mut rx) = listing_request("/srv");
+        assert!(session.handle_request_checked(request).is_none());
+        let message = refusal_message(rx.try_recv().expect("resolved at once"));
+        assert!(
+            message.contains("devbox") && message.contains("LIST_DIRECTORY"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_correlated_error_and_teardown_both_refuse_pending_listings() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (first, mut first_rx) = listing_request("/a");
+        let FrameKind::ListDirectory { request_id, .. } = decode(&session.handle_request(first))
+        else {
+            panic!("expected LIST_DIRECTORY");
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::InvalidCommand,
+                message: "nope".to_owned(),
+            }))
+            .expect("valid satellite frame");
+        let message = refusal_message(first_rx.try_recv().expect("resolved"));
+        assert!(message.contains("refused the listing"), "{message}");
+
+        let (second, mut second_rx) = listing_request("/b");
+        let _ = session.handle_request(second);
+        session.teardown("link lost");
+        let refusal = second_rx
+            .try_recv()
+            .expect("resolved")
+            .expect_err("refused");
+        assert_eq!(refusal.path, "/b");
+        assert!(
+            refusal.message.contains("unreachable: link lost"),
+            "{}",
+            refusal.message
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_fast_refuses_a_listing_naming_the_host() {
+        let (request, rx) = listing_request("/srv");
+        fail_fast(request, &host(), "backoff");
+        let message = refusal_message(rx.await.expect("resolved"));
+        assert!(
+            message.contains("devbox is unreachable: backoff"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_listing_times_out_against_a_silent_satellite() {
+        let (handle, rx) = RelayHandle::new(host());
+        // The mailbox accepts, nothing ever answers: paused time advances to
+        // the listing deadline, which resolves as a refusal, not a hang.
+        let message = refusal_message(handle.list_directory("/srv".to_owned()).await);
+        assert!(
+            message.contains("did not answer the listing within 10s"),
+            "{message}"
+        );
+        drop(rx);
+    }
+
+    #[test]
+    fn prune_abandoned_drops_listings_whose_consumer_gave_up() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (request, rx) = listing_request("/srv");
+        let _ = session.handle_request(request);
+        assert_eq!(session.prune_abandoned(), 0);
+        drop(rx);
+        assert_eq!(session.prune_abandoned(), 1);
     }
 }

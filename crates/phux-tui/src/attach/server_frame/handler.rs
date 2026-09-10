@@ -1741,11 +1741,12 @@ fn handle_window_adopt_reply<W: crate::attach::RenderSink>(
         return Ok(FrameOutcome::default());
     };
     if let Some(reason) = refusal {
-        tracing::warn!(window = %pending.name, %reason, "satellite session attach refused");
+        tracing::warn!(window = %pending.name, %reason, "satellite window attach refused");
         let _ = actions::write_bell(ctx.out);
+        let host = pane.host().map_or_else(String::new, ToString::to_string);
         return Ok(FrameOutcome {
             notices: vec![Notice::warn(format!(
-                "could not open satellite session {}: {reason}",
+                "could not open {} on satellite {host}: {reason}",
                 pending.name
             ))],
             ..FrameOutcome::default()
@@ -1783,6 +1784,18 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
     match result {
+        // A pane spawned on a satellite through the hub streams to no one
+        // until it is attached (the relay drops automatic spawn output no
+        // proxy observes), and that attach can be refused. Hand the window
+        // back to be parked on the attach, the satellite-session open path:
+        // it opens only when the attach succeeds.
+        SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
+            adopt_windows: vec![PendingWindow {
+                name: pending.name.clone(),
+                adopt: Some(new_id),
+            }],
+            ..FrameOutcome::default()
+        }),
         SpawnResult::Ok(new_id) => {
             workspace.add_window(pending.name.clone(), new_id.clone());
             if let std::collections::hash_map::Entry::Vacant(v) = panes.entry(new_id) {

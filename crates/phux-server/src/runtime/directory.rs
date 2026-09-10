@@ -10,14 +10,28 @@
 //! entries are read, and at most [`MAX_DIRECTORY_ENTRIES`] child
 //! directories are returned. Hitting either bound sets `truncated`.
 //!
+//! A request naming a satellite `host` (`docs/spec/L3.md` §4.1) is not
+//! walked here at all: a federation hub relays it over that satellite's
+//! link ([`crate::hub::relay::RelayHandle::list_directory`]) and replies with
+//! the satellite's listing; an unknown host, and any host sent to a server
+//! that is not a hub, is refused with a `DIRECTORY_LISTING` naming it. The
+//! relayed path is bounded the same way as the local one: the path-length
+//! cap, server-wide and per-satellite in-flight caps, and a deadline. A
+//! request whose client disconnects is abandoned and its permits released.
+//!
 //! Security: this exposes nothing a connected client could not already learn
 //! by spawning a shell as the same user (`docs/operations.md`, "Security
-//! model and trust boundaries").
+//! model and trust boundaries"). A relayed listing reads the satellite as
+//! the satellite's user, which the hub can already reach by spawning a
+//! relayed shell there.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
     DirectoryListingResult, FrameKind, MAX_DIRECTORY_ENTRIES,
@@ -25,6 +39,7 @@ use phux_protocol::wire::frame::{
 use tokio::sync::Semaphore;
 use tracing::{debug, trace};
 
+use crate::hub::relay::{RelayHandle, listing_refusal};
 use crate::state::{ClientId, Outbound, SharedState};
 
 /// Most raw directory entries one listing reads before it stops and reports
@@ -36,33 +51,69 @@ const MAX_SCANNED_ENTRIES: usize = 16 * 1024;
 /// [`DirectoryErrorCode::Other`].
 const LIST_DEADLINE: Duration = Duration::from_secs(5);
 
+/// One decoded `LIST_DIRECTORY`.
+pub(super) struct ListRequest {
+    /// The consumer's correlation id; the reply carries it back unchanged,
+    /// relayed or not.
+    pub(super) request_id: u32,
+    /// The requested path, verbatim.
+    pub(super) path: String,
+    /// The satellite to list on, or `None` for this server's own host.
+    pub(super) host: Option<SatelliteHost>,
+}
+
+/// Where a request is answered: this host's filesystem, a satellite over its
+/// hub link, or nowhere (the refusal message says why).
+enum ListingRoute {
+    Local,
+    Relay(RelayHandle),
+    Refused(String),
+}
+
 /// Dispatch one `LIST_DIRECTORY`.
 ///
 /// Replies only to an L3 consumer, matching the `GET_METADATA` gating
 /// (`docs/spec/L3.md` §1.2). The reply is produced on a spawned task so the
-/// caller's frame loop keeps running while the filesystem is walked.
+/// caller's frame loop keeps running while the filesystem is walked or the
+/// satellite answers. Either way it lands in the same per-client outbound
+/// mailbox as every other reply.
 pub(super) fn handle_list_directory(
     state: &SharedState,
     client_id: ClientId,
-    request_id: u32,
-    path: String,
+    request: ListRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
+    let ListRequest {
+        request_id,
+        path,
+        host,
+    } = request;
     let speaks_l3 = state.with(|s| s.client_speaks_l3(client_id));
     debug!(
         ?client_id,
         request_id,
         path = log_prefix(&path),
         path_bytes = path.len(),
+        host = ?host,
         speaks_l3,
         "LIST_DIRECTORY"
     );
     if !speaks_l3 {
         return;
     }
+    let route = listing_route(state, host);
     let out_tx = out_tx.clone();
     tokio::spawn(async move {
-        let result = list_request(path).await;
+        // A client that goes away stops waiting: dropping the answer releases
+        // its relay permits at once (a local walk's permit returns when its
+        // blocking worker does).
+        let result = tokio::select! {
+            result = answer(route, path) => result,
+            () = out_tx.closed() => {
+                trace!(?client_id, request_id, "LIST_DIRECTORY abandoned: client gone");
+                return;
+            }
+        };
         let reply = FrameKind::DirectoryListing { request_id, result };
         if out_tx.send(Outbound::Frame(reply)).await.is_err() {
             trace!(
@@ -93,6 +144,150 @@ const MAX_LISTINGS_IN_FLIGHT: usize = 8;
 
 /// Permits for [`MAX_LISTINGS_IN_FLIGHT`], server-wide across connections.
 static LISTINGS: Semaphore = Semaphore::const_new(MAX_LISTINGS_IN_FLIGHT);
+
+/// Most relayed listings allowed to wait on a satellite at once, server-wide.
+/// Each holds a spawned task for up to the relay deadline
+/// ([`crate::hub::relay::RELAY_LIST_DEADLINE`]); the cap keeps a client that
+/// hammers a silent satellite from growing that set without bound, the same
+/// shape as [`MAX_LISTINGS_IN_FLIGHT`] for the local walk.
+const MAX_RELAYED_LISTINGS_IN_FLIGHT: usize = 8;
+
+/// Permits for [`MAX_RELAYED_LISTINGS_IN_FLIGHT`].
+static RELAYED_LISTINGS: Semaphore = Semaphore::const_new(MAX_RELAYED_LISTINGS_IN_FLIGHT);
+
+/// Most relayed listings one satellite may hold at once. A satellite that
+/// never answers pins its permits for the whole relay deadline; this cap
+/// keeps it from taking the server-wide pool and starving listings on
+/// healthy satellites.
+const MAX_RELAYED_LISTINGS_PER_HOST: usize = 2;
+
+/// Per-satellite counts for [`MAX_RELAYED_LISTINGS_PER_HOST`].
+static RELAYED_PER_HOST: HostSlots = HostSlots::new(MAX_RELAYED_LISTINGS_PER_HOST);
+
+/// In-flight relayed listings per satellite, capped at `per_host` each.
+struct HostSlots {
+    per_host: usize,
+    in_flight: Mutex<BTreeMap<SatelliteHost, usize>>,
+}
+
+impl HostSlots {
+    const fn new(per_host: usize) -> Self {
+        Self {
+            per_host,
+            in_flight: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Take one of `host`'s slots, or `None` when it already holds all of
+    /// them. The slot returns when the permit drops.
+    fn try_acquire(&'static self, host: &SatelliteHost) -> Option<HostPermit> {
+        let mut in_flight = self.lock();
+        let held = in_flight.get(host).copied().unwrap_or(0);
+        if held >= self.per_host {
+            return None;
+        }
+        in_flight.insert(host.clone(), held + 1);
+        drop(in_flight);
+        Some(HostPermit {
+            slots: self,
+            host: host.clone(),
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<SatelliteHost, usize>> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One held per-satellite slot; dropping it returns the slot and forgets a
+/// host with none left.
+struct HostPermit {
+    slots: &'static HostSlots,
+    host: SatelliteHost,
+}
+
+impl Drop for HostPermit {
+    fn drop(&mut self) {
+        let mut in_flight = self.slots.lock();
+        let remaining = in_flight.get_mut(&self.host).map(|held| {
+            *held = held.saturating_sub(1);
+            *held
+        });
+        if remaining == Some(0) {
+            in_flight.remove(&self.host);
+        }
+    }
+}
+
+/// Resolve where a request is answered. A named host routes through this
+/// hub's relay for it; an unknown host, or any host on a server that is not
+/// a hub, is refused (`docs/spec/L3.md` §4.1).
+fn listing_route(state: &SharedState, host: Option<SatelliteHost>) -> ListingRoute {
+    let Some(host) = host else {
+        return ListingRoute::Local;
+    };
+    state.with(|s| match s.hub_relay(&host) {
+        Some(relay) => ListingRoute::Relay(relay),
+        None if s.hub_table().is_some() => {
+            ListingRoute::Refused(format!("no satellite named {host} in this hub's registry"))
+        }
+        None => ListingRoute::Refused(format!(
+            "this server is not a federation hub; it has no route to satellite {host}"
+        )),
+    })
+}
+
+/// Produce the reply for one request along its route.
+async fn answer(route: ListingRoute, path: String) -> DirectoryListingResult {
+    match route {
+        ListingRoute::Local => list_request(path).await,
+        ListingRoute::Relay(relay) => {
+            relay_request(&RELAYED_LISTINGS, &RELAYED_PER_HOST, &relay, path).await
+        }
+        // The full requested path, as L3 §4.1 requires: the consumer's `..`
+        // row is computed from it. Only logging truncates.
+        ListingRoute::Refused(message) => Err(listing_refusal(&path, message)),
+    }
+}
+
+/// Refuse an oversized path, then relay under the per-satellite and
+/// server-wide caps. The permits are held until the satellite answers, the
+/// relay deadline passes, or the client goes away.
+async fn relay_request(
+    slots: &'static Semaphore,
+    hosts: &'static HostSlots,
+    relay: &RelayHandle,
+    path: String,
+) -> DirectoryListingResult {
+    if path.len() > MAX_REQUEST_PATH_BYTES {
+        return Err(other(
+            log_prefix(&path),
+            format!("path exceeds {MAX_REQUEST_PATH_BYTES} bytes"),
+        ));
+    }
+    let Some(_host_permit) = hosts.try_acquire(relay.host()) else {
+        return Err(listing_refusal(
+            &path,
+            format!(
+                "satellite {} already has {} directory listings in flight; retry",
+                relay.host(),
+                hosts.per_host
+            ),
+        ));
+    };
+    let Ok(_permit) = slots.try_acquire() else {
+        return Err(listing_refusal(
+            &path,
+            format!(
+                "too many relayed directory listings in flight; satellite {} was not asked",
+                relay.host()
+            ),
+        ));
+    };
+    relay.list_directory(path).await
+}
 
 /// Refuse an oversized path, then list under the server-wide cap.
 async fn list_request(path: String) -> DirectoryListingResult {
@@ -500,6 +695,107 @@ mod tests {
         assert_eq!(refusal.code, DirectoryErrorCode::Other);
         assert!(refusal.message.contains("exceeds 4096 bytes"));
         assert_eq!(refusal.path.len(), LOG_PATH_BYTES);
+    }
+
+    #[tokio::test]
+    async fn a_refused_route_names_the_host_without_touching_the_filesystem() {
+        let refusal = answer(
+            ListingRoute::Refused("no satellite named ghost in this hub's registry".to_owned()),
+            "/".to_owned(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refusal.code, DirectoryErrorCode::Other);
+        assert_eq!(refusal.path, "/");
+        assert!(refusal.message.contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn a_relayed_listing_is_refused_when_the_relay_pool_is_full() {
+        static EXHAUSTED: Semaphore = Semaphore::const_new(0);
+        static HOSTS: HostSlots = HostSlots::new(2);
+        let (relay, _mailbox) = RelayHandle::new(SatelliteHost::new("devbox"));
+        let refusal = relay_request(&EXHAUSTED, &HOSTS, &relay, "/srv".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.code, DirectoryErrorCode::Other);
+        assert!(
+            refusal.message.contains("devbox was not asked"),
+            "{}",
+            refusal.message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overlong_relayed_path_is_refused_before_the_link() {
+        static ONE: Semaphore = Semaphore::const_new(1);
+        static HOSTS: HostSlots = HostSlots::new(2);
+        let (relay, mut mailbox) = RelayHandle::new(SatelliteHost::new("devbox"));
+        let path = format!("/{}", "a".repeat(MAX_REQUEST_PATH_BYTES));
+        let refusal = relay_request(&ONE, &HOSTS, &relay, path).await.unwrap_err();
+        assert!(refusal.message.contains("exceeds 4096 bytes"));
+        assert!(
+            mailbox.requests.try_recv().is_err(),
+            "nothing reached the link"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_route_keeps_the_full_requested_path() {
+        let path = format!("/{}", "d".repeat(LOG_PATH_BYTES * 2));
+        let refusal = answer(ListingRoute::Refused("no route".to_owned()), path.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.path, path, "only logging truncates");
+    }
+
+    #[tokio::test]
+    async fn one_saturated_satellite_does_not_refuse_another() {
+        use crate::hub::relay::RelayRequest;
+
+        static POOL: Semaphore = Semaphore::const_new(8);
+        static HOSTS: HostSlots = HostSlots::new(2);
+        let (hung, _hung_mailbox) = RelayHandle::new(SatelliteHost::new("hung"));
+        let first = HOSTS.try_acquire(hung.host()).unwrap();
+        let second = HOSTS.try_acquire(hung.host()).unwrap();
+
+        let refused = relay_request(&POOL, &HOSTS, &hung, "/".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            refused.message.contains("hung already has 2"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(
+            POOL.available_permits(),
+            8,
+            "the shared pool was not touched"
+        );
+
+        let (healthy, mut mailbox) = RelayHandle::new(SatelliteHost::new("healthy"));
+        let satellite = async {
+            let Some(RelayRequest::ListDirectory { path, reply }) = mailbox.requests.recv().await
+            else {
+                panic!("the healthy satellite must be asked");
+            };
+            reply
+                .send(Ok(DirectoryListing {
+                    path,
+                    parent: None,
+                    entries: Vec::new(),
+                    truncated: false,
+                }))
+                .unwrap();
+        };
+        let (listing, ()) = tokio::join!(
+            relay_request(&POOL, &HOSTS, &healthy, "/srv".to_owned()),
+            satellite
+        );
+        assert_eq!(listing.unwrap().path, "/srv");
+
+        drop((first, second));
+        assert!(HOSTS.lock().is_empty(), "returned slots forget the host");
     }
 
     #[test]

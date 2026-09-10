@@ -55,6 +55,7 @@ async fn list(stream: &mut UnixStream, request_id: u32, path: &str) -> Directory
         &FrameKind::ListDirectory {
             request_id,
             path: path.to_owned(),
+            host: None,
         },
     )
     .await;

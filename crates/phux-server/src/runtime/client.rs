@@ -69,6 +69,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::ListDirectory,
         ServerFeature::HostSessions,
         ServerFeature::Whoami,
+        ServerFeature::ListDirectoryHost,
     ])
 }
 
@@ -2416,12 +2417,19 @@ where
             FrameKind::ListMetadata { request_id, scope } => {
                 handle_list_metadata(&state, client_id, request_id, &scope, &plumbing.out_tx).await;
             }
-            FrameKind::ListDirectory { request_id, path } => {
+            FrameKind::ListDirectory {
+                request_id,
+                path,
+                host,
+            } => {
                 super::directory::handle_list_directory(
                     &state,
                     client_id,
-                    request_id,
-                    path,
+                    super::directory::ListRequest {
+                        request_id,
+                        path,
+                        host,
+                    },
                     &plumbing.out_tx,
                 );
             }

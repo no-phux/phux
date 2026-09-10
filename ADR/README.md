@@ -143,6 +143,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0105](./0105-sessions-can-outlive-their-last-window.md) | Sessions can outlive their last window | Accepted (amends [0063](./0063-ephemeral-server-lifetime.md)) |
 | [0106](./0106-identity-is-the-serving-user.md) | Identity is the serving user; whoami reports it | Accepted (builds on [0003](./0003-server-process-model.md)) |
 | [0107](./0107-satellite-sessions-are-listed-never-adopted.md) | Satellite sessions are listed, never adopted | Accepted (builds on [0066](./0066-host-namespace.md)) |
+| [0108](./0108-a-hub-relays-host-queries-per-request.md) | A hub relays host queries to satellites per request | Accepted (builds on [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
 
 ## When to write an ADR
 

@@ -396,8 +396,12 @@ impl<'a> Decoder<'a> {
             TYPE_METADATA_VALUE => self.decode_metadata_value(),
             TYPE_METADATA_KEYS => self.decode_metadata_keys(),
             TYPE_LIST_DIRECTORY => {
-                let (request_id, path) = decode_list_directory(self)?;
-                Ok(FrameKind::ListDirectory { request_id, path })
+                let (request_id, path, host) = decode_list_directory(self)?;
+                Ok(FrameKind::ListDirectory {
+                    request_id,
+                    path,
+                    host,
+                })
             }
             TYPE_DIRECTORY_LISTING => {
                 let (request_id, result) = decode_directory_listing(self)?;

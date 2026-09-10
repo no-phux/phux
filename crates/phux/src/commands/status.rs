@@ -143,6 +143,7 @@ fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
         (ServerFeature::ListDirectory, "list_directory"),
         (ServerFeature::HostSessions, "host_sessions"),
         (ServerFeature::Whoami, "whoami"),
+        (ServerFeature::ListDirectoryHost, "list_directory_host"),
     ];
     NAMED
         .iter()
@@ -595,10 +596,14 @@ mod tests {
         assert!(feature_names(ServerFeatureSet::new()).is_empty());
         let all = ServerFeatureSet::from_wire(u32::MAX);
         let names = feature_names(all);
-        assert_eq!(names.len(), 13, "one name per known bit: {names:?}");
+        assert_eq!(names.len(), 14, "one name per known bit: {names:?}");
         assert!(
             names.contains(&"resource_kinds"),
             "the agent session verbs' probe bit must be nameable: {names:?}"
+        );
+        assert!(
+            names.contains(&"list_directory_host"),
+            "the host-aware listing bit must be nameable: {names:?}"
         );
         for name in &names {
             assert!(

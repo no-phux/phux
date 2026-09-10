@@ -951,6 +951,13 @@ pub const HOST_SESSIONS: u32 = 0x0001_0000;
 /// (`docs/spec/L3.md` §3.9, ADR-0106).
 pub const WHOAMI: u32 = 0x0004_0000;
 
+/// Wire bit advertising `LIST_DIRECTORY.host` (`docs/spec/L3.md` §4.1).
+///
+/// The server answers a listing for a named satellite, relayed through the
+/// hub, or refuses it with a typed `DIRECTORY_LISTING`. `0x2_0000` is left
+/// for an in-flight draft.
+pub const LIST_DIRECTORY_HOST: u32 = 0x0008_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1020,6 +1027,16 @@ pub enum ServerFeature {
     /// value, which a client cannot tell from "no identity"; the bit is what
     /// makes the absence meaningful.
     Whoami = WHOAMI,
+    /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md`
+    /// §4.1). A federation hub relays a request naming one of its
+    /// satellites over that satellite's link and answers with the
+    /// satellite's own listing; an unknown or unreachable host, and any
+    /// `host` sent to a server that is not a hub, is refused with a typed
+    /// `DIRECTORY_LISTING` naming the host. Without the bit an older server
+    /// skips the unknown field by length and lists its own host, so a
+    /// client MUST see the bit before trusting that a listing came from the
+    /// host it named.
+    ListDirectoryHost = LIST_DIRECTORY_HOST,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1039,7 +1056,8 @@ impl ServerFeatureSet {
         | (ServerFeature::ResourceKinds as u32)
         | (ServerFeature::ListDirectory as u32)
         | (ServerFeature::HostSessions as u32)
-        | (ServerFeature::Whoami as u32);
+        | (ServerFeature::Whoami as u32)
+        | (ServerFeature::ListDirectoryHost as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1721,6 +1739,14 @@ mod tests {
         assert_eq!(WHOAMI, 0x0004_0000);
         assert!(ServerFeatureSet::from_wire(WHOAMI).contains(ServerFeature::Whoami));
         assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::Whoami));
+        assert_eq!(LIST_DIRECTORY_HOST, 0x0008_0000);
+        assert!(
+            ServerFeatureSet::from_wire(LIST_DIRECTORY_HOST)
+                .contains(ServerFeature::ListDirectoryHost)
+        );
+        assert!(
+            !ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectoryHost)
+        );
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

@@ -783,8 +783,12 @@ impl Connection {
         path: String,
     ) -> Result<Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>, AttachError>
     {
-        self.send(&FrameKind::ListDirectory { request_id, path })
-            .await?;
+        self.send(&FrameKind::ListDirectory {
+            request_id,
+            path,
+            host: None,
+        })
+        .await?;
         let mut interleaved = Vec::new();
         let result = self
             .await_answer(request_id, &mut interleaved, |frame| match frame {

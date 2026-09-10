@@ -13,9 +13,11 @@
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
 use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow};
+use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::HostedPlacement;
 use crate::layout::{LayoutState, SplitDir, Workspace};
@@ -345,7 +347,11 @@ fn set_pane(
 ///
 /// An optional `cwd` arg starts the window's shell there. The path is
 /// interpreted by the attached server, on its own host — the confirm row of
-/// the `go-to-directory` picker commits exactly this.
+/// the `go-to-directory` picker commits exactly this. An optional `host` arg
+/// spawns the window on that satellite through the attached hub
+/// (`SPAWN_RESOURCE.satellite`), `cwd` then naming a path on the satellite:
+/// the confirm row of a satellite listing. The reply attaches the relayed
+/// pane (`server_frame::handler::handle_window_spawned`).
 fn new_window(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -360,7 +366,7 @@ fn new_window(
         cwd: str_arg(resolved, "cwd"),
         env: None,
         term: None,
-        satellite: None,
+        satellite: host_arg(resolved),
         owner_terminal: None,
         agent_session: None,
         // phux-a5xj: the new window holds one leaf, so the pane
@@ -372,12 +378,14 @@ fn new_window(
     effects.spawn_window = Some((request_id, PendingWindow { name, adopt: None }, frame));
 }
 
-/// Browse directories on the attached server's host (`docs/spec/L3.md` §4).
+/// Browse directories on the host a listing reads (`docs/spec/L3.md` §4).
 ///
-/// Sends `LIST_DIRECTORY` for the `path` arg, else the focused pane's
-/// directory, else the server user's home (the empty path); the reply opens
-/// the picker (`crate::attach::directory_picker`). Against a server that
-/// does not advertise the query the action bells and sends nothing.
+/// The host is the `host` arg, else the focused pane's satellite, else the
+/// attached server ([`listing_host`]). The listing starts at the `path` arg,
+/// else the focused pane's directory when that pane lives on the listed
+/// host, else that host user's home (the empty path); the reply opens the
+/// picker (`crate::attach::directory_picker`). Against a server that does
+/// not advertise the query the action bells and sends nothing.
 fn go_to_directory(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -385,37 +393,77 @@ fn go_to_directory(
     panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
-    if !ctx.list_directory_supported {
+    if ctx.directory_support == DirectorySupport::Unsupported {
         tracing::warn!(
             "go-to-directory: server does not advertise LIST_DIRECTORY; dropping action"
         );
         effects.bell = true;
         return;
     }
+    let host = listing_host(host_arg(resolved), focused, ctx.directory_support);
     let path = str_arg(resolved, "path")
-        .or_else(|| local_pane_cwd(focused, panes))
+        .or_else(|| pane_cwd_on(host.satellite(), focused, panes))
         .unwrap_or_default();
     let request_id = take_request_id(ctx);
     // Modal from the moment the request leaves: the placeholder swallows
     // keystrokes and Escape cancels, so nothing typed during a slow listing
     // reaches the pane and a cancelled listing never opens late.
     ctx.overlays.push(Box::new(PendingOverlay::listing(
-        &path, request_id, ctx.theme,
+        &placeholder_label(&host, &path),
+        request_id,
+        ctx.theme,
     )));
     effects.layout_mutated = true;
-    effects.list_directory = Some((request_id, FrameKind::ListDirectory { request_id, path }));
+    let frame = FrameKind::ListDirectory {
+        request_id,
+        path,
+        host: host.satellite().cloned(),
+    };
+    effects.list_directory = Some((PendingDirectory { request_id, host }, frame));
 }
 
-/// The focused pane's working directory, when it lives on the attached
-/// server's own host. A satellite pane's cwd names a path on another
-/// machine, which the attached server would list on the wrong host, so it
-/// falls back to home instead.
-fn local_pane_cwd(
+/// A non-empty `host` arg as a satellite name.
+fn host_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<SatelliteHost> {
+    str_arg(resolved, "host")
+        .filter(|host| !host.is_empty())
+        .map(SatelliteHost::new)
+}
+
+/// The host one listing reads: `wanted` (the `host` arg), else the focused
+/// pane's satellite, else the attached server. A hub that predates
+/// `LIST_DIRECTORY.host` would skip the field and list itself, so against
+/// one the request stays on the attached server and the picker says so.
+fn listing_host(
+    wanted: Option<SatelliteHost>,
+    focused: Option<&ResourceId>,
+    support: DirectorySupport,
+) -> ListingHost {
+    let wanted = wanted.or_else(|| focused.and_then(ResourceId::host).cloned());
+    match wanted {
+        None => ListingHost::Attached,
+        Some(host) if support == DirectorySupport::HostAware => ListingHost::Satellite(host),
+        Some(host) => ListingHost::AttachedInsteadOf(host),
+    }
+}
+
+/// The focused pane's working directory, when that pane lives on `host`
+/// (`None` is the attached server). A pane on any other host names a path
+/// the listed host does not have, so the listing starts at home instead.
+fn pane_cwd_on(
+    host: Option<&SatelliteHost>,
     focused: Option<&ResourceId>,
     panes: &HashMap<ResourceId, PaneSlot>,
 ) -> Option<String> {
-    let focused = focused.filter(|id| id.is_local())?;
+    let focused = focused.filter(|id| id.host() == host)?;
     panes.get(focused)?.cwd.clone()
+}
+
+/// What the "Listing ..." placeholder names: the path (`~` for home), and
+/// the satellite when the listing is relayed to one.
+fn placeholder_label(host: &ListingHost, path: &str) -> String {
+    let shown = if path.is_empty() { "~" } else { path };
+    host.satellite()
+        .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
 /// phux-4li.15: soft-kill every pane in the active window, the
