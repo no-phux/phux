@@ -15,6 +15,10 @@ behavior, follow the cross-link to the ADR or to the relevant
 
 ## Files
 
+- [`2026-09-09-superlogical-demo/`](./2026-09-09-superlogical-demo/README.md) —
+  evidence-labeled reconstruction of a Superlogical remote-host terminal demo:
+  transcript, screenshots, 24-feature inventory, UX flows and mockups, plus the
+  phux gap map that turned it into beads.
 - [`2026-09-09-cockpit-recovery-design.md`](./2026-09-09-cockpit-recovery-design.md) —
   version-correct Cockpit input investigation, runtime ownership recommendation,
   live-development loop and shipping-path acceptance plan (`phux-h8x2`).

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Superlogical — terminal demo reconstruction</title>
+  <link rel="stylesheet" href="viewer.css">
+  <script src="evidence.js" defer></script>
+  <script src="viewer.js" defer></script>
+</head>
+<body>
+  <header class="page-header">
+    <div><span class="eyebrow">VIDEO → PRODUCT REFERENCE · 09 SEP 2026</span><h1>One terminal.<br>Local and remote.</h1>
+      <p>A reconstruction of the Superlogical / Rex demo.<br>Source evidence, generated narration, and editable interaction mocks.</p></div>
+    <div class="summary"><strong>06:16</strong><span>source video</span><strong>32</strong><span>evidence frames</span><strong>08</strong><span>mockup scenes</span></div>
+  </header>
+  <nav class="page-nav" aria-label="Reference sections"><a href="#source">Watch & read</a><a href="#gallery">Screenshots</a><a href="#mockups">Interactive mocks</a><a href="SPEC.md">Feature spec</a><a href="UX.md">UX & design</a><a href="README.md">Method & limits</a></nav>
+  <main>
+    <section id="source">
+      <div class="section-heading"><div><span class="eyebrow">01 / SOURCE</span><h2>Watch the evidence</h2></div><span class="badge">540 × 360 original</span></div>
+      <div class="source-layout">
+        <div><video id="video" controls preload="auto"><source src="source.mp4" type="video/mp4"><track kind="captions" src="transcript.vtt" srclang="en" label="English — generated">Your browser cannot play this MP4. <a href="source.mp4">Download video</a>.</video>
+          <p class="small">Captions are machine-generated, terminology-normalized, and not human audio-verified. <a href="TRANSCRIPT.md">Read provenance</a>.</p>
+          <div class="downloads"><a href="transcript.txt" download>Transcript .txt</a><a href="transcript.vtt" download>Captions .vtt</a><a href="source.json">Source metadata</a></div>
+        </div>
+        <div><label for="transcript-search">Search narration</label><input id="transcript-search" type="search" placeholder="Try directory, session, identity…"><div id="transcript" class="transcript" aria-label="Timestamped narration"></div></div>
+      </div>
+    </section>
+    <section id="gallery">
+      <div class="section-heading"><div><span class="eyebrow">02 / OBSERVATIONS</span><h2>The demonstrated interface</h2></div><label class="search-label">Filter screenshots<input id="gallery-search" type="search" placeholder="Search features or S01…"></label></div>
+      <p>Each frame is an original-resolution extraction. Open it for the source image, or jump to its exact point in the video. Presenter and keystroke overlays belong to the recording.</p>
+      <p id="gallery-count" class="small" aria-live="polite"></p><div id="screenshots" class="gallery"></div>
+    </section>
+    <section id="mockups">
+      <div class="section-heading"><div><span class="eyebrow">03 / RECONSTRUCTION</span><h2>Try the interaction model</h2></div><span class="badge inferred">INFERRED MOCKUPS</span></div>
+      <p>Legible reconstructions of eight surfaces, with representative text and approximate styling. Actions below change mock state only. No shell commands, network connections, or real files are involved.</p>
+      <p class="small"><a href="mockups/contact-sheet.jpg">Exported mockup contact sheet</a> · <a href="UX.md#exported-mockups">Individual PNGs and design notes</a></p>
+      <div class="scene-controls" aria-label="Mockup scenes">
+        <button data-scene="local">01 Local</button><button data-scene="remote">02 Remote split</button><button data-scene="sessions">03 Switcher</button><button data-scene="commands">04 Palette</button><button data-scene="host">05 Add host</button><button data-scene="rename">06 Rename</button><button data-scene="empty">07 Empty</button><button data-scene="directory">08 Directory</button>
+      </div>
+      <p id="scene-note" class="small" aria-live="polite"></p>
+      <div class="mock-desktop">
+        <p class="mock-label">RECONSTRUCTED MOCKUP · APPROXIMATE DESIGN, REPRESENTATIVE CONTENT</p>
+        <div class="terminal-window" id="terminal-window">
+          <div class="terminal-chrome"><span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+            <button id="session-trigger" class="session-trigger"><strong id="session-name">Demo</strong><small id="host-name">hill.example.ts.net</small></button>
+            <div id="tabs" class="tabs"></div><button id="new-tab" aria-label="New terminal tab">+</button>
+          </div>
+          <div id="pane-layout" class="pane-layout">
+            <section class="terminal-pane"><header>shell <span>terminal pane</span></header><pre id="left-terminal"></pre></section>
+            <section class="terminal-pane" id="right-pane"><header>shell <span>terminal pane</span></header><pre>[mitchellh@hill:~]$ cd /
+[mitchellh@hill:/]$ <span class="cursor"> </span></pre></section>
+          </div>
+          <div id="empty-state" class="empty-state" hidden><span class="empty-icon" aria-hidden="true">&gt;_</span><h3>Empty session</h3><p>Open a new tab to start a terminal.</p><button id="empty-new-tab" class="primary">+ New Tab</button><small>Cmd+T</small></div>
+          <div id="mock-overlay" class="mock-overlay" hidden>
+            <div class="popover" id="popover" role="dialog" aria-label="Mock interaction panel">
+              <div class="popover-top"><span id="popover-title">Change session</span><button id="dismiss" aria-label="Dismiss panel">×</button></div>
+              <div data-panel="sessions" hidden>
+                <input id="session-filter" placeholder="Filter or create…" aria-label="Filter sessions">
+                <div id="session-options"><p class="group-label">This Mac</p><button data-context="local">cosmic-summit <kbd>Cmd+1</kbd></button><p class="group-label" id="remote-group">hill.example.ts.net</p><button data-context="remote" id="remote-session-row">Demo <kbd>Cmd+2</kbd></button><button data-context="empty">crisp-sierra <kbd>Cmd+3</kbd></button></div>
+                <hr><button data-scene="empty">+ New Session</button><button data-scene="host">Add Remote Host…</button>
+              </div>
+              <div data-panel="commands" hidden><input id="command-filter" placeholder="Search commands…" aria-label="Search commands"><div id="command-options"><button data-scene="sessions">Change Session</button><button data-scene="rename">Rename Session</button><button data-scene="host">Add Remote Host…</button><button data-scene="directory">Go to Directory… <kbd>Cmd+Shift+G</kbd></button><button data-scene="empty">New Session</button><button id="command-new-tab">New Tab <kbd>Cmd+T</kbd></button></div></div>
+              <form data-panel="host" hidden id="host-form"><label for="host-input">Add Host</label><input id="host-input" value="hill.example.ts.net" required><button class="selected" type="submit">Connect to entered host</button><p class="panel-note">Simulated connection; hostname is illustrative.</p></form>
+              <form data-panel="rename" hidden id="rename-form"><label for="rename-input">Rename Session</label><input id="rename-input" value="Demo" required><button class="selected" type="submit">Rename session</button></form>
+              <form data-panel="directory" hidden id="directory-form"><label for="directory-input">Go to Directory</label><input id="directory-input" value="/" required><p id="directory-host" class="group-label"></p><button class="selected" type="submit">Open selected directory in new tab</button><div id="directory-options"></div><p class="panel-note">Example filesystem. Select a child to browse; confirm above to open a new tab.</p></form>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="small">Mock shortcuts while focused inside the terminal: Cmd/Ctrl+K (sessions), Cmd/Ctrl+Shift+P (palette), Cmd/Ctrl+Shift+G (directory), Escape (dismiss). Browser-reserved shortcuts may take precedence. Every action also has a button.</p>
+      <div class="principles"><article><h3>Context follows the host</h3><p>Session switching and directory browsing use the same visual language on both machines.</p></article><article><h3>Sessions outlive windows</h3><p>Quitting the app preserves work. Explicit session deletion is a separate lifecycle action.</p></article><article><h3>CLI and GUI share state</h3><p>A remotely created session appears in the selector; killing it removes the entry.</p></article></div>
+    </section>
+  </main>
+  <footer>Research artifact · Source footage is evidence; mockups are interpretation. <a href="SPEC.md">24-feature inventory</a> · <a href="UX.md">Design details</a> · <a href="TRANSCRIPT.md">Full transcript</a></footer>
+</body>
+</html>
