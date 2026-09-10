@@ -460,7 +460,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
             Some(name.to_owned()),
             Some(cwd.to_path_buf()),
             super::server_target::ServerSpec::local(socket),
-            false,
+            super::new::NewMode::default(),
             command,
             Vec::new(),
         );

@@ -2706,6 +2706,22 @@ ending just gets words. (Internally the `run_*` attach entry points
 return an `AttachEnd` — `Detached { reason }` vs
 `LastPaneClosed { exit_status }` — that the CLI callers format.)
 
+**Keep-empty sessions do not detach**
+([ADR-0105](../../ADR/0105-sessions-can-outlive-their-last-window.md)). A
+session created with `phux new --empty`, or marked through
+`phux.session.keep_empty/v1` ([L3.md](../spec/L3.md) §3.1), survives its last
+window. When its last pane dies the client stays attached and paints an
+empty state in the content area: `Empty session`, then `Open a new window to
+start a terminal.`, then the chord bound to `new-window` (`C-a c` by default;
+the command palette is named when nothing is bound). `new-window` works from
+there and spawns into the same session. Attaching to a session that is
+already empty shows the same state. On the way in the client deletes the
+session's stored layout key, which names only dead panes by then. The mark is
+followed live, so setting or clearing it after attach still decides what the
+last pane's close does. Default sessions detach exactly as described above,
+and `phux kill NAME` on an empty session detaches its clients with
+`SESSION_KILLED`.
+
 A detach the user did *not* ask for is explained the same way
 (phux-l83x). `DETACHED` carries an optional `DetachReason`
 ([proto.md §7.2](../spec/proto.md)), and any reason other than

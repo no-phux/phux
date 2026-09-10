@@ -23,4 +23,10 @@ pub struct Session {
     pub active: Option<WindowId>,
     /// When this session was created.
     pub created_at: SystemTime,
+    /// Whether this session survives its last window (ADR-0105).
+    ///
+    /// A keep-empty session is not reaped when its last window closes; it
+    /// stays with zero windows until an explicit kill removes it. The
+    /// registry never reads this flag itself: the server's reap cascade does.
+    pub keep_empty: bool,
 }

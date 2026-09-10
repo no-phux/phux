@@ -99,6 +99,12 @@ impl ServerState {
         self.sessions.seed(name)
     }
 
+    /// Create a keep-empty session named `name` with zero windows and return
+    /// its id (ADR-0105). The caller checks the name is free first.
+    pub fn seed_empty_session(&mut self, name: &str) -> SessionId {
+        self.sessions.seed_empty(name)
+    }
+
     /// Add a new pane (Terminal) to `session`'s first window — the spawn
     /// counterpart to [`Self::seed_session`] that does NOT create a new
     /// session.

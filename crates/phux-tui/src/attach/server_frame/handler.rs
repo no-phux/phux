@@ -8,7 +8,8 @@ use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind,
-    ResourceLifecycle, Scope, SpawnError, SpawnResult,
+    ResourceLifecycle, SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult,
+    decode_session_keep_empty,
 };
 
 use crate::attach::actions::{
@@ -57,6 +58,10 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     // reads (focus reconcile) keep using the REAL `active_window`.
     zoomed: &'a mut Option<ResourceId>,
     session_name: &'a mut String,
+    /// ADR-0105: whether the attached session is keep-empty. Set from
+    /// ATTACHED and from `phux.session.keep_empty/v1` broadcasts; read when
+    /// the last pane closes, to show the empty state instead of detaching.
+    keep_empty_session: &'a mut bool,
     // phux-k0cw: this client's own session, so the layout arm can tell OUR
     // layout broadcast from a peer's. No layout is attributed locally until
     // ATTACHED resolves the session.
@@ -166,6 +171,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     focused_resource: &mut Option<ResourceId>,
     zoomed: &mut Option<ResourceId>,
     session_name: &mut String,
+    keep_empty_session: &mut bool,
     focused_session: Option<SessionId>,
     status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
@@ -210,6 +216,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         focused_resource,
         zoomed,
         session_name,
+        keep_empty_session,
         focused_session,
         status_bar,
         sidebar,
@@ -417,6 +424,16 @@ fn handle_attached<W: crate::attach::RenderSink>(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     initial_client_id: ClientId,
 ) -> Result<FrameOutcome, AttachError> {
+    // ADR-0105: the focused session's keep-empty mark decides what the last
+    // pane's close does, and an empty session has no pane to focus at all.
+    *ctx.keep_empty_session = snapshot
+        .sessions
+        .iter()
+        .find(|s| s.id == snapshot.focused_session)
+        .is_some_and(|s| s.keep_empty);
+    if focused_session_is_empty(snapshot) {
+        return Ok(attach_empty_session(ctx, snapshot, initial_client_id));
+    }
     // Capture the initial focused pane so subsequent INPUT_* frames
     // know where to route.
     let bootstrap = snapshot.focused_resource.clone();
@@ -490,6 +507,45 @@ fn handle_attached<W: crate::attach::RenderSink>(
         pane_cwds,
         ..FrameOutcome::default()
     })
+}
+
+/// Whether an `ATTACHED` snapshot's focused session holds no windows
+/// (ADR-0105): it reports zero windows AND its focus is the `0` sentinel
+/// rather than a listed resource. Requiring both keeps a snapshot that merely
+/// left `window_count` unset from reading as empty.
+fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> bool {
+    let reports_no_windows = snapshot
+        .sessions
+        .iter()
+        .find(|s| s.id == snapshot.focused_session)
+        .is_some_and(phux_protocol::wire::info::SessionInfo::is_empty);
+    let focus_is_listed = snapshot
+        .resources
+        .iter()
+        .any(|r| r.id == snapshot.focused_resource);
+    reports_no_windows && !focus_is_listed
+}
+
+/// ADR-0105: ATTACHED to a session with no windows. There is no pane to
+/// focus or to seed a mirror for, so the workspace starts empty and the
+/// driver paints the empty state; the session graph, client id, and layout
+/// subscription are recorded exactly as for a populated attach.
+fn attach_empty_session<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    initial_client_id: ClientId,
+) -> FrameOutcome {
+    tracing::debug!("ATTACHED: session has no windows; starting in the empty state");
+    *ctx.focused_resource = None;
+    *ctx.workspace = Workspace::default();
+    *ctx.session_name = focused_session_name(snapshot);
+    FrameOutcome {
+        subscribe_layout: true,
+        sessions: Some((snapshot.sessions.clone(), snapshot.focused_session)),
+        own_client_id: Some(initial_client_id),
+        layout_replaced: true,
+        ..FrameOutcome::default()
+    }
 }
 
 /// Point the pane's slot at the geometry `BOOTSTRAP_BEGIN` advertises,
@@ -1030,6 +1086,16 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
         });
     };
     match ctx.decode_own_layout(&bytes) {
+        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes) => {
+            tracing::debug!(
+                "persisted layout names only panes absent from the snapshot; discarding"
+            );
+            Ok(FrameOutcome {
+                layout_replaced: true,
+                layout_get_answered: true,
+                ..FrameOutcome::default()
+            })
+        }
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
             Ok(FrameOutcome {
@@ -1072,6 +1138,9 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
             config_reload: value.is_some(),
             ..FrameOutcome::default()
         });
+    }
+    if key == SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
+        return Ok(apply_keep_empty_broadcast(ctx, value.as_deref()));
     }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
@@ -1393,7 +1462,11 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // old server-baked "EOF ⇒ DETACHED" (the seed pane closes
     // ⇒ client exits), but now multi-Terminal-ready: closing
     // one of several panes folds it out and keeps the attach
-    // alive.
+    // alive. ADR-0105: a keep-empty session outlives its last
+    // pane, so the attach stays and shows the empty state.
+    if ctx.workspace.windows.is_empty() && *ctx.keep_empty_session {
+        return last_pane_closed_keep_empty(ctx, terminal_id, exit_status, expected);
+    }
     if ctx.workspace.windows.is_empty() {
         tracing::info!("ResourceClosed folded the last pane; detaching");
         return FrameOutcome {
@@ -1423,6 +1496,41 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
         notices: pane_exit_notices(terminal_id, exit_status, expected),
         ..FrameOutcome::default()
     }
+}
+
+/// ADR-0105: the last pane of a keep-empty session closed. The session is
+/// still on the server, so the client stays attached with nothing focused
+/// and the driver paints the empty state. The stored layout now names only
+/// dead panes, so it is tombstoned rather than left for the next attach.
+fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+    exit_status: Option<i32>,
+    expected: bool,
+) -> FrameOutcome {
+    tracing::info!("ResourceClosed folded the last pane of a keep-empty session; staying attached");
+    *ctx.focused_resource = None;
+    *ctx.zoomed = None;
+    FrameOutcome {
+        layout_replaced: true,
+        clear_layout: true,
+        notices: pane_exit_notices(terminal_id, exit_status, expected),
+        ..FrameOutcome::default()
+    }
+}
+
+/// ADR-0105: a `phux.session.keep_empty/v1` broadcast. Only a mark on this
+/// client's own session changes what its last pane's close does.
+fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    if let Some((name, keep)) = value.and_then(decode_session_keep_empty)
+        && name == ctx.session_name.as_str()
+    {
+        *ctx.keep_empty_session = keep;
+    }
+    FrameOutcome::default()
 }
 
 /// phux-i0e8.2.2: survivors get a transient Warn notice naming the dead pane
@@ -1872,6 +1980,24 @@ pub(super) fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Layou
 /// workspace or pane-slot set. Checking all known panes, rather than only the
 /// currently focused pane, lets a sibling legitimately remove that focused leaf
 /// without making the surviving topology look foreign.
+/// Whether a persisted layout names at least one pane and none of them is in
+/// the `ATTACHED` snapshot (ADR-0105). Every pane alive at attach time is in
+/// the snapshot, so such a layout is a stale tree of dead panes, left by a
+/// keep-empty session that lost its last window. Adopting it would hide the
+/// empty state behind panes that never bootstrap.
+fn layout_names_only_absent_panes(
+    incoming: &Workspace,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> bool {
+    let mut leaves = incoming
+        .windows
+        .iter()
+        .filter_map(|window| window.state.tree.as_ref())
+        .flat_map(crate::layout::leaves)
+        .peekable();
+    leaves.peek().is_some() && leaves.all(|leaf| !panes.contains_key(&leaf))
+}
+
 pub(super) fn unknown_layout_leaves(
     incoming: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,

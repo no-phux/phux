@@ -496,6 +496,15 @@ phux: the running server is 0.13.0, this binary is 0.14.0 — upgrading it in pl
 `phux doctor` reports the same skew if you want to check without
 attaching.
 
+**Keep-empty sessions and downgrades.** The handoff carries each session's
+keep-empty mark
+([ADR-0105](../ADR/0105-sessions-can-outlive-their-last-window.md)), so an
+upgrade keeps it. Handing off to an *older* binary that predates the mark
+drops it: a populated keep-empty session falls back to the default cascade,
+and an empty one comes back with no windows and no mark, which that older
+server has no way to remove except `phux kill --server`. Kill empty sessions
+(`phux kill NAME`) before downgrading.
+
 ### Putting a server that is already running under supervision
 
 `phux service install` refuses while a server holds the socket, because

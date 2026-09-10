@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-03
+last-reviewed: 2026-09-10
 ---
 
 # phux-workload/v1 — workload authentication and scoped authority
@@ -482,10 +482,13 @@ Terminal, current Group, owning Host, or Global selector according to §6.
 | `SUBSCRIBE_EVENTS { terminal: None }` | `OBSERVE` | installs a filtered subscription over all observable Terminals; server-global events require Global |
 | `GET_METADATA` | `OBSERVE` | encoded metadata Scope; `{ Global, "phux.whoami/v1" }` answers only the asking connection's own identity |
 | `SET_METADATA { Global, "phux.session.create/v1" }` | `CREATE` and `BIND` | Global; BIND alone MUST NOT create a process |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true` | `CREATE` and `BIND` | Global; the mark keeps a session, and so the server, alive with zero processes (ADR-0105) |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | `SIGNAL` | Global; clearing the mark on a windowless session destroys it, like `KILL_RESOURCES` |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | default-deny | malformed; the value is classified before the handler parses it |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | `SIGNAL` | Global |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | default-deny | server-owned result namespace is non-writable |
 | `SUBSCRIBE_METADATA` targeting that result namespace | default-deny | server-owned connection-private results are non-subscribable |
-| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` | default-deny | server-owned keys are non-writable |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` or `phux.session.keep_empty/v1` | default-deny | server-owned keys are non-writable |
 | Other `SET_METADATA`, `DELETE_METADATA` | `BIND` | encoded metadata Scope |
 | `LIST_METADATA` | `INVENTORY` | encoded metadata Scope; server-owned result keys remain excluded |
 | `LIST_DIRECTORY` | `INVENTORY` | Global; the serving host's filesystem is server-global data, so no Terminal, Group, or Host grant reaches it |

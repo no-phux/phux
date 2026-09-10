@@ -1629,6 +1629,9 @@ Options:
       --remote <[USER@]HOST[:PORT]>
           Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
 
+      --empty
+          Create the session with no terminal. An empty session is keep-empty: it survives its last window and only `phux kill` removes it. Without `--json` the new session is attached and shows an empty state; open a window from there
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -2353,11 +2356,11 @@ Options:
 
           [default: default]
 
-      --listen <HOST:PORT>
-          Also accept WebSocket clients on this `HOST:PORT` (the UDS stays on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local browser dev; any routable address (e.g. `0.0.0.0:8787`) auto-provisions TLS and requires a `phux pair` token. Overrides `$PHUX_WS_ADDR`
-
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --listen <HOST:PORT>
+          Also accept WebSocket clients on this `HOST:PORT` (the UDS stays on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local browser dev; any routable address (e.g. `0.0.0.0:8787`) auto-provisions TLS and requires a `phux pair` token. Overrides `$PHUX_WS_ADDR`
 
       --quic <HOST:PORT>
           Also accept QUIC clients on this `HOST:PORT` (the UDS stays on). QUIC is always TLS 1.3-encrypted; a loopback address skips token auth (local dev), while any routable address requires a `phux pair` token sent as the stream's opening preamble. Overrides `$PHUX_QUIC_ADDR`

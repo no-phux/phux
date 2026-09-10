@@ -4,7 +4,10 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{Command as WireCommand, CommandResult};
+use phux_protocol::wire::frame::{
+    Command as WireCommand, CommandResult, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
+    encode_session_keep_empty,
+};
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
@@ -197,6 +200,9 @@ async fn kill_selected(
     // KILL_RESOURCE path below.
     if let Some(session_name) = selector::whole_session_name(selector, &snapshot) {
         let ids = selector::resolve(selector, &snapshot);
+        if ids.is_empty() && session_is_empty(&snapshot, &session_name) {
+            return kill_empty_session(&mut conn, server, &session_name).await;
+        }
         if ids.is_empty() {
             // A named session is hub-local by construction —
             // `handle_get_state_federated` discards a satellite's
@@ -242,6 +248,51 @@ async fn resolve_terminals(
         return selector::resolve_with_tags(selector, snapshot, &index);
     }
     selector::resolve(selector, snapshot)
+}
+
+/// Whether the session named `name` holds no windows (ADR-0105).
+fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
+    snapshot
+        .sessions
+        .iter()
+        .any(|session| session.name == name && session.is_empty())
+}
+
+/// Kill an empty session (ADR-0105).
+///
+/// It has no pane for `KILL_RESOURCES` to name, so the kill clears its
+/// keep-empty mark, which makes the server remove a session holding no
+/// windows. `SET_METADATA` has no reply, so a `GET_STATE` on the same ordered
+/// connection confirms the session is gone. A disconnect in its place means
+/// the server self-exited after its last session went, which is success.
+async fn kill_empty_session(
+    conn: &mut Connection,
+    server: &ServerTarget,
+    session_name: &str,
+) -> ExitCode {
+    let clear = FrameKind::SetMetadata {
+        request_id: 1,
+        scope: Scope::Global,
+        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+        value: encode_session_keep_empty(session_name, false),
+    };
+    if let Err(err) = conn.send(&clear).await {
+        return server.report_unreachable(false, &err, "kill");
+    }
+    match phux_client::state::get_state_on(conn).await {
+        Ok(view)
+            if view
+                .snapshot()
+                .sessions
+                .iter()
+                .any(|s| s.name == session_name) =>
+        {
+            eprintln!("phux: kill refused for session {session_name:?}: the server kept it");
+            ExitCode::from(2)
+        }
+        Ok(_) | Err(AttachError::Disconnected) => ExitCode::SUCCESS,
+        Err(err) => server.report_unreachable(false, &err, "kill"),
+    }
 }
 
 /// Send one `KILL_RESOURCES` for a whole session and report its outcome.

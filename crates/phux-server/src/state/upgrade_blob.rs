@@ -135,6 +135,7 @@ impl ServerState {
                     .map_or(0, |duration| duration.as_nanos()),
                 last_touched: self.sessions.last_touched_at(sid),
                 root: self.sessions.root(sid).cloned(),
+                keep_empty: session.keep_empty,
             });
 
             for &wid in &session.windows {
@@ -338,6 +339,11 @@ impl ServerState {
                 && let Some(created) = unix_nanos_to_systemtime(s.created_at_unix_nanos)
             {
                 sess.created_at = created;
+            }
+            // ADR-0105: a keep-empty session, including one with no windows,
+            // survives the upgrade with its mark.
+            if let Some(sess) = self.sessions.registry.session_mut(core) {
+                sess.keep_empty = s.keep_empty;
             }
             if let Some(ts) = s.last_touched {
                 self.sessions.bind_last_touched(core, ts);
@@ -649,6 +655,16 @@ mod tests {
                 tokio::task::spawn_local(bundle.actor.run());
                 state.register_resource_handle(tid, bundle.handle, bundle.token);
 
+                // ADR-0105: a keep-empty mark, and a keep-empty session with
+                // no windows at all, must both survive the round trip.
+                state
+                    .registry_mut()
+                    .session_mut(sid)
+                    .expect("session")
+                    .keep_empty = true;
+                let parked = state.seed_empty_session("parked");
+                state.idspace.intern_session(parked);
+
                 let blob = state.build_upgrade_blob(7).await;
 
                 // Rebuild into a brand-new state, then re-emit a blob from it.
@@ -662,6 +678,17 @@ mod tests {
                 let blob2 = fresh.build_upgrade_blob(7).await;
 
                 assert_eq!(blob.sessions, blob2.sessions, "sessions round-trip");
+                assert!(
+                    blob2.sessions.iter().all(|s| s.keep_empty),
+                    "keep-empty marks round-trip"
+                );
+                assert!(
+                    blob2
+                        .sessions
+                        .iter()
+                        .any(|s| s.name == "parked" && s.window_wire_ids.is_empty()),
+                    "an empty keep-empty session survives with zero windows"
+                );
                 assert_eq!(blob.windows, blob2.windows, "windows + layout round-trip");
                 assert_eq!(blob.counters, blob2.counters, "id allocators round-trip");
                 assert_eq!(blob.panes.len(), blob2.panes.len());

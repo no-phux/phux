@@ -85,7 +85,7 @@ pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
-pub use metadata::{MetadataSetOutcome, MetadataStore, RenameOutcome};
+pub use metadata::{KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome};
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;

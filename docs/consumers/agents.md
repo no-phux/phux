@@ -687,9 +687,16 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   explicit resize holds ([`tui.md`](./tui.md) §4.2). You do not have to guess
   which happened — the verb reads the server's real geometry back before
   exiting and exits `1` when it is not the requested one. Shape in §4.15.
-- **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json]
+- **`phux new [-s NAME] [-c CWD] [--empty] [-- COMMAND...] [--json]
   [-e KEY=VALUE]... [--socket P | --remote [USER@]HOST[:PORT]]`** — create a
-  new session. With `--remote` the session is created on a registered host
+  new session. `--empty`
+  ([ADR-0105](../../ADR/0105-sessions-can-outlive-their-last-window.md))
+  creates it with no terminal: the session is keep-empty, survives its last
+  window, holds the server up with zero processes, and is removed only by
+  `phux kill NAME`. It conflicts with `-c`, `--env`, and `-- COMMAND`, and
+  refuses a server that does not advertise keep-empty sessions (exit `1`)
+  rather than let an older server seed a shell under the name. Without
+  `--json` the new empty session is attached. With `--remote` the session is created on a registered host
   over its QUIC/WSS endpoint: nothing is auto-spawned there, and an omitted
   `-c` leaves the far server's default directory rather than sending this
   machine's cwd. Without `--json`
@@ -944,6 +951,20 @@ empty**, deliberately: an absent key is what a pre-v3 `phux` produces, and a
 consumer cannot tell that apart from a degraded answer. Treat `sessions` and
 `terminals` as a lower bound whenever it is non-empty.
 
+**`keep_empty` and `empty` (ADR-0105; additive, `schema_version` stays 3).**
+Every session row also carries `keep_empty`, whether the session survives its
+last window, and `empty`, whether it holds no windows right now (always
+`windows == 0`). The human listing marks the same fact as `(empty)`, so a
+server that stays up with zero processes says why:
+
+```json
+{ "name": "parked", "windows": 0, "attached": false, "attached_clients": 0,
+  "keep_empty": true, "empty": true }
+```
+
+A payload from an older `phux` lacks both keys, and an older server reports
+`keep_empty: false` for every session; read an absent key as `false`.
+
 The MCP `phux_ls` tool ([`mcp.md`](./mcp.md) §3.1) executes and parses this
 same canonical CLI document, so one parser covers both surfaces.
 
@@ -1150,6 +1171,23 @@ omitting `-s` is a usage error, exit `2`) and errors (exit `1`)
 if that name is already in use. Repeat `--env KEY=VALUE` to inject environment
 entries into the seed process; values may contain additional `=` characters.
 The wire decomposition behind it is in §2.
+
+`phux new --empty --json -s NAME` creates a keep-empty session with no
+terminal (ADR-0105). There is no seed pane, so `terminal_id` is `null`, and
+the document adds `empty` and `keep_empty`:
+
+```json
+{ "schema_version": 1, "session": "NAME", "terminal_id": null,
+  "empty": true, "keep_empty": true }
+```
+
+Fill it with `phux spawn`, which lands in the most recently active session,
+or by attaching and opening a window. Terminal-facet verbs aimed at an empty
+session (`phux wait NAME`, `snapshot`, `send-keys`, `run`) have no pane to
+act on: they resolve no target and fail at once with `no_such_target`
+(exit `1`) instead of waiting. `phux kill NAME` removes an empty session by
+clearing its keep-empty mark, and a `KILL_RESOURCES` that names every pane of
+a keep-empty session removes the session with its panes.
 
 ### 4.5 Plugin registry — `phux plugin ... --json`
 

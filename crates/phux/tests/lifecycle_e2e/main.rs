@@ -5,6 +5,7 @@
     reason = "retain each suite's common-module tests and state when consolidating binaries"
 )]
 
+mod empty_session_e2e;
 mod failure_ux_e2e;
 mod idle_exit_e2e;
 mod remote_session_verbs_e2e;

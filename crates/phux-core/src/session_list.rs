@@ -53,6 +53,19 @@ pub struct SessionJson {
     /// `phux` deserializable (the count reads as `0`).
     #[serde(default)]
     pub attached_clients: u16,
+    /// Whether the session survives its last window (ADR-0105).
+    ///
+    /// **Additive** (no [`LS_SCHEMA_VERSION`] bump). A payload from a `phux`
+    /// that predates keep-empty sessions lacks the key and reads as `false`,
+    /// which is also what an older server reports for every session.
+    #[serde(default)]
+    pub keep_empty: bool,
+    /// Whether the session holds no windows right now: a keep-empty session
+    /// whose last window closed, or one created with `phux new --empty`.
+    /// Always `windows == 0`; spelled out so a consumer can read it
+    /// positively. Additive, like [`Self::keep_empty`].
+    #[serde(default)]
+    pub empty: bool,
 }
 
 /// One resource's row in [`SessionListJson::resources`]: the canonical
@@ -244,12 +257,16 @@ mod tests {
                 windows: 2,
                 attached: true,
                 attached_clients: 1,
+                keep_empty: false,
+                empty: false,
             },
             SessionJson {
                 name: "beta".to_owned(),
                 windows: 1,
                 attached: false,
                 attached_clients: 0,
+                keep_empty: false,
+                empty: false,
             },
         ]);
 
@@ -269,6 +286,8 @@ mod tests {
             windows: 3,
             attached: true,
             attached_clients: 2,
+            keep_empty: false,
+            empty: false,
         }])
         .with_terminals(vec!["@7".to_owned(), "devbox/@42".to_owned()]);
 
@@ -374,6 +393,8 @@ mod tests {
             windows: 3,
             attached: true,
             attached_clients: 2,
+            keep_empty: false,
+            empty: false,
         }])
         .with_hosts(vec![local, satellite, down]);
 
@@ -456,6 +477,8 @@ mod tests {
             windows: 1,
             attached: false,
             attached_clients: 0,
+            keep_empty: false,
+            empty: false,
         }])
         .with_unreachable(vec![
             "satellite build-box is unreachable: link is down".to_owned(),

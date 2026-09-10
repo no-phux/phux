@@ -2906,6 +2906,19 @@ pub(crate) fn handle_kill_terminals(
                 debug!(?wire_id, "KILL_RESOURCES: unknown / dead id; skipping");
             }
         }
+        // ADR-0105: a batch naming every pane of a keep-empty session is a
+        // group teardown, so the session's mark is released and the ordinary
+        // cascade removes it as its panes are reaped. The release is
+        // broadcast in this same borrow, ahead of any RESOURCE_CLOSED, so an
+        // attached TUI stops treating the session as keep-empty before its
+        // last pane's close arrives.
+        for name in s.release_keep_empty_covered_by(&targets) {
+            let _ = s.metadata_broadcast(
+                &phux_protocol::wire::frame::Scope::Global,
+                phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY,
+                &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
+            );
+        }
         // The closure — targets plus everything bound to one of them — is
         // computed and closed in this one borrow (ADR-0104 §2). An id named
         // twice, or named alongside its own parent, is closed exactly once.
@@ -3059,6 +3072,24 @@ pub(crate) fn create_named_session(
             Err(format!("failed to create session {name:?}: {err}"))
         }
     }
+}
+
+/// Create a keep-empty session named `name` with zero windows (ADR-0105) —
+/// the `empty: true` form of the `SESSION_CREATE_KEY` write.
+///
+/// Like [`create_named_session`], the existence check and the insert share one
+/// state borrow, so two racing creates cannot both succeed, and success arms
+/// the last-session self-exit. No terminal is spawned, so there is no seed
+/// pane to announce. `Err` carries a log-only message.
+pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<(), String> {
+    state.with_mut(|s| {
+        if s.session_by_name(name).is_some() {
+            return Err(format!("session {name:?} already exists"));
+        }
+        s.seed_empty_session(name);
+        s.arm_self_exit();
+        Ok(())
+    })
 }
 
 /// Build the `OK_WITH(STATE(..))` reply for `GET_STATE`.

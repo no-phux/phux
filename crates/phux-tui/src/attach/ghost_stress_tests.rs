@@ -198,6 +198,7 @@ impl Rig {
             &mut self.focused,
             &mut self.zoomed,
             &mut self.session_name,
+            &mut false,
             None,
             None,
             self.sidebar,

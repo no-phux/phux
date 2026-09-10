@@ -130,6 +130,13 @@ pub struct SessionInfo {
     /// Drives multi-attach UX (status-bar indicators, etc.). Like
     /// `window_count`, denormalized at snapshot time.
     pub attached_client_count: u16,
+    /// Whether the session survives its last window (ADR-0105).
+    ///
+    /// A keep-empty session is not reaped when its last window closes; only
+    /// an explicit kill removes it. Rides the snapshot's trailing session
+    /// facet list (see [`SessionSnapshot`]), so an older peer decodes it as
+    /// `false`. Advertised by `ServerFeature::KeepEmptySessions`.
+    pub keep_empty: bool,
 }
 
 impl SessionInfo {
@@ -137,7 +144,8 @@ impl SessionInfo {
     ///
     /// `active_window`, `created_at_unix_secs`, `window_count`, and
     /// `attached_client_count` default to "unknown" sentinels (`None` / `0`);
-    /// fill them via the `with_*` setters when the server has the data.
+    /// `keep_empty` defaults to `false`. Fill them via the `with_*` setters
+    /// when the server has the data.
     #[must_use]
     pub fn new(id: SessionId, name: impl Into<String>) -> Self {
         Self {
@@ -147,7 +155,22 @@ impl SessionInfo {
             created_at_unix_secs: 0,
             window_count: 0,
             attached_client_count: 0,
+            keep_empty: false,
         }
+    }
+
+    /// Builder setter for [`Self::keep_empty`].
+    #[must_use]
+    pub const fn with_keep_empty(mut self, keep_empty: bool) -> Self {
+        self.keep_empty = keep_empty;
+        self
+    }
+
+    /// Whether the session currently holds no windows: a keep-empty session
+    /// whose last window closed, or one created with no seed terminal.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.window_count == 0
     }
 
     /// Builder setter for [`Self::active_window`].
@@ -604,11 +627,26 @@ impl HostInventory {
 ///             || attached_client_count: u16 || active_resource: optional<ResourceId>
 /// ```
 ///
-/// It is written only when non-empty, and then the facet list is written
-/// first even when it has no rows (a zero count), so the two trailing lists
-/// stay in a fixed order. A decoder reads each list only while bytes remain,
-/// so a snapshot without hosts is byte-identical to one encoded before the
-/// list existed, and an older decoder stops early and never sees it.
+/// # The trailing session facets
+///
+/// After the host inventory an encoder appends a third `u32`-counted list,
+/// the *session facets* (ADR-0105, `ServerFeature::KeepEmptySessions`), one
+/// row per `sessions` entry whose [`SessionInfo::keep_empty`] is set:
+///
+/// ```text
+/// session_row = id: SessionId (u32) || flags: u8   // bit 0 = keep_empty
+/// ```
+///
+/// # Order of the trailing lists
+///
+/// The order is fixed: resource facets, then hosts, then session facets.
+/// Each list is written only when it or a later list is non-empty, and every
+/// earlier list is then written explicitly, with a zero count when it has no
+/// rows, so a later list never aliases an earlier one. A decoder reads each
+/// list only while bytes remain. A snapshot with no later list is therefore
+/// byte-identical to one encoded before that list existed, and an older
+/// decoder that stops after the facets or after the hosts is still correct.
+/// Unknown session-facet flag bits and rows naming no session are ignored.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 ///
@@ -870,6 +908,8 @@ pub(super) fn decode_session_info(dec: &mut Decoder<'_>) -> Result<SessionInfo, 
         created_at_unix_secs,
         window_count,
         attached_client_count,
+        // Not positional: it rides the snapshot's trailing session facets.
+        keep_empty: false,
     })
 }
 
@@ -927,6 +967,9 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
         agent: None,
     })
 }
+
+/// Session-facet flag bit: the session is keep-empty (ADR-0105).
+const SESSION_FACET_KEEP_EMPTY: u8 = 0x01;
 
 /// Write the trailing resource-facet list (see [`SessionSnapshot`]), or
 /// nothing when every entry is a plain Terminal and no later trailing list
@@ -1011,8 +1054,12 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
-    encode_resource_facets(&snap.resources, !snap.hosts().is_empty(), enc);
-    encode_host_inventory(snap.hosts(), enc);
+    let session_rows = snap.sessions.iter().filter(|s| s.keep_empty).count();
+    let session_facets_follow = session_rows > 0;
+    let hosts_follow = !snap.hosts().is_empty() || session_facets_follow;
+    encode_resource_facets(&snap.resources, hosts_follow, enc);
+    encode_host_inventory(snap.hosts(), session_facets_follow, enc);
+    encode_session_facets(&snap.sessions, session_rows, enc);
 }
 
 /// Store an inventory canonically: `None` when empty, so a snapshot built
@@ -1022,9 +1069,10 @@ fn boxed_hosts(hosts: Vec<HostInventory>) -> Option<Box<[HostInventory]>> {
 }
 
 /// Write the trailing host-session inventory (see [`SessionSnapshot`]), or
-/// nothing when it is empty.
-fn encode_host_inventory(hosts: &[HostInventory], enc: &mut Encoder<'_>) {
-    if hosts.is_empty() {
+/// nothing when it is empty and no later trailing list (`more_follow`)
+/// needs its count as a positional anchor.
+fn encode_host_inventory(hosts: &[HostInventory], more_follow: bool, enc: &mut Encoder<'_>) {
+    if hosts.is_empty() && !more_follow {
         return;
     }
     encode_list_len(hosts.len(), enc);
@@ -1092,6 +1140,39 @@ fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeE
     })
 }
 
+/// Write the trailing session-facet list (see [`SessionSnapshot`]), or
+/// nothing when no session carries a facet.
+fn encode_session_facets(sessions: &[SessionInfo], rows: usize, enc: &mut Encoder<'_>) {
+    if rows == 0 {
+        return;
+    }
+    encode_list_len(rows, enc);
+    for session in sessions.iter().filter(|s| s.keep_empty) {
+        enc.write_u32_be(session.id.get());
+        enc.write_u8(SESSION_FACET_KEEP_EMPTY);
+    }
+}
+
+/// Read the trailing session-facet list if bytes remain, joining each row
+/// onto its `sessions` entry by id. Unknown flag bits are ignored.
+fn decode_session_facets(
+    dec: &mut Decoder<'_>,
+    sessions: &mut [SessionInfo],
+) -> Result<(), DecodeError> {
+    if dec.at_body_end() {
+        return Ok(());
+    }
+    let rows = decode_list_len(dec)?;
+    for _ in 0..rows {
+        let id = SessionId::new(dec.read_u32_be()?);
+        let flags = dec.read_u8()?;
+        if let Some(session) = sessions.iter_mut().find(|s| s.id == id) {
+            session.keep_empty = flags & SESSION_FACET_KEEP_EMPTY != 0;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn decode_session_snapshot(
     dec: &mut Decoder<'_>,
 ) -> Result<SessionSnapshot, DecodeError> {
@@ -1120,6 +1201,7 @@ pub(super) fn decode_session_snapshot(
     let focused_resource = decode_terminal_id(dec)?;
     decode_resource_facets(dec, &mut resources)?;
     let hosts = boxed_hosts(decode_host_inventory(dec)?);
+    decode_session_facets(dec, &mut sessions)?;
     Ok(SessionSnapshot {
         sessions,
         windows,

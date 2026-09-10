@@ -190,6 +190,10 @@ pub struct SessionBlob {
     /// Frozen session-creation directory (cwd-inheritance = session-root).
     #[serde(default)]
     pub root: Option<PathBuf>,
+    /// Whether the session survives its last window (ADR-0105). Additive: a
+    /// blob from an image that predates keep-empty sessions reads as `false`.
+    #[serde(default)]
+    pub keep_empty: bool,
 }
 
 /// A window in the blob.
@@ -309,6 +313,7 @@ mod tests {
                 created_at_unix_nanos: 1_700_000_000_000_000_000,
                 last_touched: Some(7),
                 root: Some(PathBuf::from("/home/u/proj")),
+                keep_empty: true,
             }],
             windows: vec![WindowBlob {
                 wire_id: 1,

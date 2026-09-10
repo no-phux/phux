@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
+use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
     SESSION_CREATE_RESULT_KEY_PREFIX, Scope,
@@ -12,6 +13,7 @@ use crate::commands::{
     DEFAULT_SESSION_NAME, attach::client_cwd, attach::configured_session_name_template,
     attach::interactive_tty_preflight, attach::render_default_session_name,
     attach::report_attach_end, attach::run_attach_once, partial, server::ensure_server,
+    server::ensure_server_unseeded,
 };
 
 /// How many generated names an omitted-name `phux new` tries against the
@@ -35,15 +37,20 @@ const RANDOM_NAME_ATTEMPTS: usize = 8;
 /// `server` is the local socket or a `--remote` host (see `server_target`).
 /// Only the local server is auto-spawned: a remote one is the far host's to
 /// run.
+///
+/// `mode.empty` (ADR-0105) creates the session with no terminal; it is
+/// keep-empty by construction. With `--json` it prints the empty-session
+/// document; without, it attaches to the new session's empty state.
 pub(crate) fn run_new(
     name: Option<String>,
     session: Option<String>,
     cwd: Option<PathBuf>,
     server: ServerSpec,
-    json: bool,
+    mode: NewMode,
     command: Vec<String>,
     env: Vec<(String, String)>,
 ) -> ExitCode {
+    let NewMode { json, empty } = mode;
     let requested = match requested_session_name(name, session) {
         Ok(requested) => requested,
         Err(code) => return code,
@@ -59,6 +66,9 @@ pub(crate) fn run_new(
     };
 
     if !json {
+        if empty {
+            return run_new_empty_attached(&rt, &target, requested);
+        }
         return run_new_attached(&rt, &target, requested, command, cwd);
     }
     // The `--json` ⇒ `-s NAME` rule is clap-enforced on the `new` verb
@@ -69,7 +79,105 @@ pub(crate) fn run_new(
         eprintln!("phux: `phux new --json` requires an explicit -s NAME");
         return ExitCode::from(2);
     };
+    if empty {
+        return run_new_empty_json(&rt, &target, &name);
+    }
     run_new_json(&rt, &target, &name, cwd, command, env)
+}
+
+/// How `phux new` runs: headless (`--json`), and whether the session starts
+/// with no terminal (`--empty`, ADR-0105).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NewMode {
+    /// `--json`: create without attaching and print a document.
+    pub(crate) json: bool,
+    /// `--empty`: create a keep-empty session with zero windows.
+    pub(crate) empty: bool,
+}
+
+/// `phux new --empty [NAME]`: create an empty session, then attach to it. The
+/// TUI renders its empty state, from which a new window starts a terminal.
+fn run_new_empty_attached(
+    rt: &tokio::runtime::Runtime,
+    target: &ServerTarget,
+    requested: Option<String>,
+) -> ExitCode {
+    let existing = existing_session_names(rt, target);
+    let name = match choose_session_name(requested, &existing) {
+        Ok(name) => name,
+        Err(code) => return code,
+    };
+    ensure_local_unseeded_server(target, false);
+    if let Err(code) = rt.block_on(create_empty_session_via_metadata(target, &name, false)) {
+        return code;
+    }
+    let dial = target.dial();
+    let predict_cfg = super::attach::predictive_config_for(&dial);
+    match rt.block_on(run_attach_once(
+        &dial,
+        AttachTarget::ByName(name.clone()),
+        predict_cfg,
+    )) {
+        Ok(attach_end) => {
+            report_attach_end(attach_end);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            target.report_attach_failure(&err, &name);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `phux new --empty --json -s NAME`: create an empty session without
+/// attaching and print [`empty_session_json`].
+fn run_new_empty_json(rt: &tokio::runtime::Runtime, target: &ServerTarget, name: &str) -> ExitCode {
+    ensure_local_unseeded_server(target, true);
+    match rt.block_on(create_empty_session_via_metadata(target, name, true)) {
+        Ok(()) => print_json_document(&empty_session_json(name)),
+        Err(code) => code,
+    }
+}
+
+/// Make sure a local server is running to host a create-without-attach.
+///
+/// Auto-spawn seeds a throwaway session under [`DEFAULT_SESSION_NAME`] (kept
+/// distinct from the requested name so the create write that follows does
+/// not collide with the seed) and keeps the server alive. A remote server is
+/// never spawned from here. Failure is only logged: the create that follows
+/// fails with its own diagnostic, and under `--json` a prose line would make
+/// stderr unparseable for a caller that asked for machine output.
+fn ensure_local_server(target: &ServerTarget, json: bool) {
+    if let Some(path) = target.socket_path()
+        && let Err(err) = ensure_server(path, DEFAULT_SESSION_NAME, None, json)
+    {
+        tracing::debug!(error = %err, "auto-spawn failed on a create-without-attach path");
+    }
+}
+
+/// [`ensure_local_server`] for `phux new --empty` (ADR-0105): a server started
+/// here carries no seed session, so the empty session is the only one, and a
+/// requested name of `default` does not collide with a seed.
+fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
+    if let Some(path) = target.socket_path()
+        && let Err(err) = ensure_server_unseeded(path, json)
+    {
+        tracing::debug!(error = %err, "auto-spawn failed on the --empty create path");
+    }
+}
+
+/// Pretty-print a `--json` result document on stdout.
+fn print_json_document(payload: &serde_json::Value) -> ExitCode {
+    match serde_json::to_string_pretty(payload) {
+        Ok(s) => {
+            outln!("{s}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("phux: failed to serialize create result as JSON: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The session name from the positional NAME or the `-s` flag.
@@ -232,20 +340,9 @@ pub(crate) fn run_new_json(
     command: Vec<String>,
     env: Vec<(String, String)>,
 ) -> ExitCode {
-    // A local server must be running to host the new session. Auto-spawn
-    // seeds a throwaway session under DEFAULT_SESSION_NAME (kept distinct
-    // from the requested name so the create write below does not collide
-    // with the seed) and keeps the server alive; the real session is then
-    // created without attaching. A remote server is never spawned from here.
-    // Failure is deliberately silent here, unlike the prose paths: `--json`
-    // promises stderr carries the error document and nothing else, and the
-    // create below fails with that document anyway. A prose line would make
-    // stderr unparseable for the caller that asked for machine output.
-    if let Some(path) = target.socket_path()
-        && let Err(err) = ensure_server(path, DEFAULT_SESSION_NAME, None, true)
-    {
-        tracing::debug!(error = %err, "auto-spawn failed on the --json create path");
-    }
+    // A local server must be running to host the new session; the real
+    // session is then created without attaching (see `ensure_local_server`).
+    ensure_local_server(target, true);
 
     let cwd = seed_cwd(cwd, target.is_remote());
     let command = if command.is_empty() {
@@ -258,19 +355,7 @@ pub(crate) fn run_new_json(
     match rt.block_on(create_session_via_metadata(
         target, name, command, cwd, env, None, false, true,
     )) {
-        Ok(terminal_id) => {
-            let payload = new_session_json(name, terminal_id);
-            match serde_json::to_string_pretty(&payload) {
-                Ok(s) => {
-                    outln!("{s}");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => {
-                    eprintln!("phux: failed to serialize create result as JSON: {err}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        Ok(terminal_id) => print_json_document(&new_session_json(name, terminal_id)),
         Err(code) => code,
     }
 }
@@ -283,6 +368,89 @@ fn new_session_json(session: &str, terminal_id: u64) -> serde_json::Value {
         "schema_version": 1,
         "session": session,
         "terminal_id": terminal_id,
+    })
+}
+
+/// The `phux new --empty --json` result document (ADR-0105): the same keys
+/// as [`new_session_json`], with `terminal_id` null because no terminal was
+/// started, plus `empty` and `keep_empty`, both `true`.
+fn empty_session_json(session: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "session": session,
+        "terminal_id": null,
+        "empty": true,
+        "keep_empty": true,
+    })
+}
+
+/// Create an empty, keep-empty session named `name` (ADR-0105) through the
+/// same `SESSION_CREATE_KEY` write and nonce-correlated read-back as
+/// [`create_session_via_metadata`].
+///
+/// Refuses before writing when the server does not advertise
+/// `KeepEmptySessions`: an older server ignores the unknown `empty` field
+/// and would seed a shell under the name instead.
+pub(crate) async fn create_empty_session_via_metadata(
+    server: &ServerTarget,
+    name: &str,
+    json: bool,
+) -> Result<(), ExitCode> {
+    let request_token = uuid::Uuid::new_v4().to_string();
+    let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
+    let create_bytes =
+        serde_json::to_vec(&empty_create_request(name, &request_token)).map_err(|err| {
+            eprintln!("phux: failed to serialize create request: {err}");
+            ExitCode::FAILURE
+        })?;
+    let mut conn = server
+        .connect()
+        .await
+        .map_err(|err| server.report_unreachable(json, &err, "new"))?;
+    require_keep_empty_support(&conn)?;
+    reject_duplicate_session_name(&mut conn, server, name, json).await?;
+    send_create_request(&mut conn, server, create_bytes, json).await?;
+    let (bytes, _) = read_create_result(&mut conn, server, name, json, result_key, false).await?;
+    if empty_session_result_matches(&bytes, name, &request_token) {
+        Ok(())
+    } else {
+        Err(report_session_not_registered(name))
+    }
+}
+
+/// The `SESSION_CREATE_KEY` document for an empty session.
+fn empty_create_request(name: &str, request_token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "empty": true,
+        "keep_empty": true,
+        "request_token": request_token,
+    })
+}
+
+/// Refuse when the connected server does not advertise keep-empty sessions.
+fn require_keep_empty_support(conn: &Connection) -> Result<(), ExitCode> {
+    let supported = conn.negotiated_bootstrap().is_some_and(|bootstrap| {
+        bootstrap
+            .server_features
+            .contains(ServerFeature::KeepEmptySessions)
+    });
+    if supported {
+        return Ok(());
+    }
+    eprintln!(
+        "phux: create-session failed: the server does not support empty sessions; upgrade it"
+    );
+    Err(ExitCode::FAILURE)
+}
+
+/// Whether a create-result document answers this empty-session request: the
+/// name and nonce match, and the server confirms it created no terminal.
+fn empty_session_result_matches(bytes: &[u8], name: &str, request_token: &str) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|v| {
+        v.get("name").and_then(serde_json::Value::as_str) == Some(name)
+            && v.get("request_token").and_then(serde_json::Value::as_str) == Some(request_token)
+            && v.get("empty").and_then(serde_json::Value::as_bool) == Some(true)
     })
 }
 
@@ -680,10 +848,47 @@ pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttachTarget, Path, PathBuf, RANDOM_NAME_ATTEMPTS, choose_session_name, fresh_session_name,
+        AttachTarget, Path, PathBuf, RANDOM_NAME_ATTEMPTS, choose_session_name,
+        empty_create_request, empty_session_json, empty_session_result_matches, fresh_session_name,
         new_session_json, new_session_target, requested_session_name, seed_cwd,
         unique_session_name,
     };
+
+    /// ADR-0105: `phux new --empty --json` keeps the three documented keys,
+    /// with `terminal_id` null, and adds `empty` and `keep_empty`.
+    #[test]
+    fn empty_session_json_pins_the_contract_shape() {
+        let doc = empty_session_json("parked");
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["session"], "parked");
+        assert!(doc["terminal_id"].is_null());
+        assert_eq!(doc["empty"], true);
+        assert_eq!(doc["keep_empty"], true);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
+    }
+
+    /// The create request asks for an empty, keep-empty session and carries
+    /// no command, so a server cannot mistake it for a seeded create.
+    #[test]
+    fn empty_create_request_carries_no_command() {
+        let doc = empty_create_request("parked", "tok");
+        assert_eq!(doc["name"], "parked");
+        assert_eq!(doc["empty"], true);
+        assert_eq!(doc["keep_empty"], true);
+        assert_eq!(doc["request_token"], "tok");
+        assert!(doc.get("command").is_none());
+    }
+
+    /// Only a result naming this request, with `empty: true`, confirms it.
+    #[test]
+    fn empty_session_result_requires_name_nonce_and_empty() {
+        let ok = br#"{"name":"parked","terminal_id":null,"request_token":"tok","empty":true}"#;
+        assert!(empty_session_result_matches(ok, "parked", "tok"));
+        let other_nonce = br#"{"name":"parked","request_token":"x","empty":true}"#;
+        assert!(!empty_session_result_matches(other_nonce, "parked", "tok"));
+        let seeded = br#"{"name":"parked","terminal_id":3,"request_token":"tok"}"#;
+        assert!(!empty_session_result_matches(seeded, "parked", "tok"));
+    }
     use phux_config::{NameRng, random_name};
 
     const CWD: &str = "/home/me/proj";

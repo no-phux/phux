@@ -867,8 +867,9 @@ fn dispatch(
             daemonize,
             seed_command,
             resume,
+            no_seed,
         }) => commands::server::run_server(
-            &session,
+            (!no_seed).then_some(session.as_str()),
             socket,
             listen,
             quic,
@@ -902,13 +903,17 @@ fn dispatch(
             json,
             env,
             remote,
+            empty,
             command,
         }) => commands::new::run_new(
             name,
             session,
             cwd,
             remote.with_socket(socket),
-            json.json,
+            commands::new::NewMode {
+                json: json.json,
+                empty,
+            },
             command,
             env,
         ),
@@ -2371,6 +2376,8 @@ mod tests {
             "phux server --daemonize",
             "phux server --seed-command",
             "phux server --resume",
+            // `phux new --empty` starts its server unseeded (ADR-0105).
+            "phux server --no-seed",
             // `phux play`'s in-pane writer half.
             "phux play --pty-writer",
             // The Claude shim's stdin JSON reader: invoked only by the

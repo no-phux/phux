@@ -54,7 +54,7 @@
 //! accessor pair, which is exactly as permissive as the bare field it
 //! replaces.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use phux_core::ids::{ResourceId, SessionId, WindowId};
@@ -106,6 +106,14 @@ pub(super) struct SessionTable {
     /// new panes in that window inherit the latest value. Cleared by
     /// [`Self::forget_window`] with the window's bookkeeping on teardown.
     window_last_cwd: HashMap<WindowId, PathBuf>,
+    /// ADR-0105: sessions whose keep-empty mark a group `KILL_RESOURCES`
+    /// released. When the cascade removes one, its attached clients are
+    /// detached with `SESSION_KILLED` instead of being left on a session that
+    /// no longer exists.
+    released_keep_empty: HashSet<SessionId>,
+    /// Released sessions the cascade has removed whose attached clients have
+    /// not been detached yet; drained by the reap path.
+    killed_pending: Vec<SessionId>,
 }
 
 impl Default for SessionTable {
@@ -124,6 +132,8 @@ impl SessionTable {
             next_touch_timestamp: 1,
             roots: HashMap::new(),
             window_last_cwd: HashMap::new(),
+            released_keep_empty: HashSet::new(),
+            killed_pending: Vec::new(),
         }
     }
 
@@ -251,14 +261,28 @@ impl SessionTable {
         (sid, wid, pid)
     }
 
+    /// Create a keep-empty session with zero windows and return its id
+    /// (ADR-0105): the create-with-no-seed-terminal path.
+    pub(super) fn seed_empty(&mut self, name: &str) -> SessionId {
+        let sid = self.registry.new_session(name.to_owned());
+        if let Some(session) = self.registry.session_mut(sid) {
+            session.keep_empty = true;
+        }
+        sid
+    }
+
     /// Add a new pane to `session`'s first window.
     ///
-    /// Returns `None` if `session` is unknown or has no window —
-    /// unreachable for a seeded session, which always has at least one
-    /// window.
+    /// A session with no window left (a keep-empty session whose last
+    /// window closed, or one created empty, ADR-0105) gets a fresh window to
+    /// host the pane. Returns `None` only if `session` is unknown.
     #[must_use]
     pub(super) fn add_pane(&mut self, session: SessionId) -> Option<ResourceId> {
-        let wid = self.registry.session(session)?.windows.first().copied()?;
+        let existing = self.registry.session(session)?.windows.first().copied();
+        let wid = match existing {
+            Some(wid) => wid,
+            None => self.registry.new_window(session).ok()?,
+        };
         self.registry.new_terminal(wid).ok()
     }
 
@@ -315,6 +339,29 @@ impl SessionTable {
     pub(super) fn forget_session(&mut self, session: SessionId) {
         self.last_touched.remove(&session);
         self.roots.remove(&session);
+        // A released session's removal is recorded before this runs (see
+        // `note_removed`); anything left here is a mark that never got reaped.
+        self.released_keep_empty.remove(&session);
+    }
+
+    // -- ADR-0105 group-kill ledger -------------------------------------
+
+    /// Remember that a group kill released `session`'s keep-empty mark.
+    pub(super) fn mark_released(&mut self, session: SessionId) {
+        self.released_keep_empty.insert(session);
+    }
+
+    /// The cascade removed `session`: queue its attached clients for a
+    /// `SESSION_KILLED` detach if a group kill released it.
+    pub(super) fn note_removed(&mut self, session: SessionId) {
+        if self.released_keep_empty.remove(&session) {
+            self.killed_pending.push(session);
+        }
+    }
+
+    /// Drain the removed, released sessions whose clients still need a detach.
+    pub(super) fn take_killed(&mut self) -> Vec<SessionId> {
+        std::mem::take(&mut self.killed_pending)
     }
 
     // -- graceful-upgrade round trip (ADR-0032) -------------------------

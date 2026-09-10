@@ -420,6 +420,12 @@ pub(crate) enum Command {
         #[arg(long, default_value = DEFAULT_SESSION_NAME)]
         session: String,
 
+        /// Start with no pre-seeded session. `phux new --empty` starts a
+        /// server this way when none is running, so the only session is the
+        /// empty one it asked for.
+        #[arg(long, hide = true, conflicts_with = "seed_command")]
+        no_seed: bool,
+
         /// Also accept WebSocket clients on this `HOST:PORT` (the UDS stays
         /// on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local
         /// browser dev; any routable address (e.g. `0.0.0.0:8787`)
@@ -639,6 +645,13 @@ pub(crate) enum Command {
 
         #[command(flatten)]
         remote: RemoteOpt,
+
+        /// Create the session with no terminal. An empty session is
+        /// keep-empty: it survives its last window and only `phux kill`
+        /// removes it. Without `--json` the new session is attached and shows
+        /// an empty state; open a window from there.
+        #[arg(long, conflicts_with_all = ["command", "env", "cwd"])]
+        empty: bool,
 
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.

@@ -535,6 +535,9 @@ pub(super) struct SessionLoop {
     cell_px_dims: (u16, u16),
     /// The attached session's name, from ATTACHED.
     session_name: String,
+    /// ADR-0105: whether the attached session is keep-empty, from ATTACHED
+    /// and `phux.session.keep_empty/v1` broadcasts.
+    keep_empty_session: bool,
     /// The peer-session caches the roster and window picker read.
     peers: PeerCaches,
     /// phux-foz.8: the deferred window select of a one-step cross-session
@@ -720,6 +723,7 @@ impl SessionLoop {
             viewport_dims,
             cell_px_dims,
             session_name: String::new(),
+            keep_empty_session: false,
             peers: PeerCaches {
                 sweep_pending: true,
                 ..PeerCaches::default()
@@ -838,7 +842,9 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         level: RepaintLevel,
     ) -> Option<StatusBarPaint> {
-        let ls = self.workspace.render_window(self.zoomed.as_ref())?;
+        let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
+            return self.paint_empty_state(out, sidebar, level);
+        };
         Some(match level {
             RepaintLevel::None => StatusBarPaint::NotPublished,
             RepaintLevel::Chrome => paint_chrome_in_place(
@@ -867,6 +873,39 @@ impl SessionLoop {
                 &self.settings.theme,
             ),
         })
+    }
+
+    /// ADR-0105: with no window to render, a keep-empty session paints its
+    /// empty state and the `new-window` hint; anything else has nothing to
+    /// paint.
+    fn paint_empty_state<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        level: RepaintLevel,
+    ) -> Option<StatusBarPaint> {
+        let showing = self.keep_empty_session && self.workspace.windows.is_empty();
+        if !showing || matches!(level, RepaintLevel::None) {
+            return None;
+        }
+        let new_window = phux_config::keybind::ResolvedAction {
+            action: "new-window".to_owned(),
+            args: std::collections::BTreeMap::new(),
+        };
+        let chord = crate::attach::action_registry::bound_chord_for(
+            self.settings.keybindings.as_ref(),
+            &new_window,
+        );
+        let lines = crate::attach::paint::empty_session_lines(chord.as_deref());
+        Some(crate::attach::paint::paint_empty_session(
+            out,
+            self.viewport_dims,
+            self.settings.status_bar.as_mut(),
+            sidebar,
+            Some(&mut self.sidebar_painter),
+            &self.session_name,
+            &lines,
+        ))
     }
 
     /// Paint the active overlay layer over the current pane composition.
@@ -1093,6 +1132,7 @@ impl SessionLoop {
             &mut self.focused_resource,
             &mut self.zoomed,
             &mut self.session_name,
+            &mut self.keep_empty_session,
             self.peers.focused_session,
             self.settings.status_bar.as_mut(),
             sidebar,
@@ -1236,6 +1276,13 @@ impl SessionLoop {
         conn.send(&FrameKind::SubscribeMetadata {
             scope: Scope::Global,
             key: CONFIG_RELOAD_KEY.to_owned(),
+        })
+        .await?;
+        // ADR-0105: follow the keep-empty mark, so a mark set or cleared after
+        // attach still decides whether the last pane's close detaches.
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
         })
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
@@ -2572,6 +2619,9 @@ impl SessionLoop {
         if outcome.emit_set_metadata {
             self.broadcast_layout(conn).await?;
         }
+        if outcome.clear_layout {
+            self.clear_stored_layout(conn).await?;
+        }
         // `ATTACHED` initially exposes a one-pane fallback. The persisted
         // multi-window layout lands later as this correlated metadata reply.
         // Reflow every restored window here, before `settle_frame_view`
@@ -2609,6 +2659,26 @@ impl SessionLoop {
                 scope: Scope::Group(DEFAULT_GROUP_ID),
                 key: layout_key(session),
                 value: bytes,
+            },
+        )
+        .await
+    }
+
+    /// ADR-0105: tombstone the session's stored layout once the last pane of
+    /// a keep-empty session closed, so the next attach does not adopt a tree
+    /// of dead panes. Sibling clients fold the tombstone to an empty workspace.
+    async fn clear_stored_layout(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        let Some(session) = self.peers.focused_session else {
+            return Ok(());
+        };
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::DeleteMetadata {
+                request_id,
+                scope: Scope::Group(DEFAULT_GROUP_ID),
+                key: layout_key(session),
             },
         )
         .await

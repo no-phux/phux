@@ -675,6 +675,40 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 )),
             },
         ),
+        // GET_STATE reply carrying all three trailing lists in the L1.md
+        // §9.1 order (ADR-0105): a zero-count resource-facet list, one
+        // satellite in the host inventory, then one keep-empty session row.
+        (
+            "snap_command_result_state_with_keep_empty_session",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0015,
+                result: CommandResult::OkWith(CommandValue::State(
+                    SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
+                        .with_sessions(vec![
+                            SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+                            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+                        ])
+                        .with_hosts(vec![HostInventory::reachable(
+                            SatelliteHost::new("edge"),
+                            vec![HostSessionInfo::new(SessionId::new(1), "build")],
+                        )]),
+                )),
+            },
+        ),
+        // GET_STATE reply with a keep-empty session and no hosts: the facet
+        // and host lists are written as zero-count anchors.
+        (
+            "snap_command_result_state_with_keep_empty_no_hosts",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0016,
+                result: CommandResult::OkWith(CommandValue::State(
+                    SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
+                        .with_sessions(vec![
+                            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+                        ]),
+                )),
+            },
+        ),
         // BOOTSTRAP_BEGIN for an AgentSession stream: codec tag 3, raw
         // output mode, no grid.
         (

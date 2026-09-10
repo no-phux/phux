@@ -78,6 +78,21 @@ pub enum RenameOutcome {
     NameTaken,
 }
 
+/// Outcome of [`super::ServerState::set_session_keep_empty`], the write behind
+/// `phux.session.keep_empty/v1` (ADR-0105).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepEmptyOutcome {
+    /// The session's mark flipped to the requested value; the session stays.
+    Changed,
+    /// The session already carried the requested mark; nothing changed.
+    Unchanged,
+    /// The mark was cleared on a session holding no windows, so the session
+    /// was removed: an empty session that reaps normally is meaningless.
+    Removed,
+    /// No session matched the name.
+    NotFound,
+}
+
 impl MetadataStore {
     /// Get the value at `(scope, key)`, if any.
     #[must_use]

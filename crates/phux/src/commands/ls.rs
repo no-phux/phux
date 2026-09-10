@@ -254,6 +254,9 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
 /// wire already carries (`(2 clients attached)`) rather than collapsing it
 /// to a boolean `(attached)`. Zero clients says nothing.
 ///
+/// A session with no windows (ADR-0105) is marked `(empty)`, so a server
+/// that stays up with zero processes says why.
+///
 /// `pub(crate)` so `phux status` renders its per-session lines through the
 /// same formatter and the two views cannot drift.
 pub(crate) fn format_session_line(s: &SessionInfo) -> String {
@@ -262,8 +265,9 @@ pub(crate) fn format_session_line(s: &SessionInfo) -> String {
     } else {
         "windows"
     };
+    let empty = if s.is_empty() { " (empty)" } else { "" };
     format!(
-        "{}: {} {windows}{}",
+        "{}: {} {windows}{empty}{}",
         s.name,
         s.window_count,
         attached_note(s.attached_client_count)
@@ -277,6 +281,19 @@ fn attached_note(clients: u16) -> String {
         0 => String::new(),
         1 => " (1 client attached)".to_owned(),
         n => format!(" ({n} clients attached)"),
+    }
+}
+
+/// One session's [`SessionJson`] row. `keep_empty` and `empty` (ADR-0105)
+/// are additive keys; `empty` is exactly `windows == 0`.
+fn session_json(s: &SessionInfo) -> SessionJson {
+    SessionJson {
+        name: s.name.clone(),
+        windows: s.window_count,
+        attached: s.attached_client_count > 0,
+        attached_clients: s.attached_client_count,
+        keep_empty: s.keep_empty,
+        empty: s.is_empty(),
     }
 }
 
@@ -298,15 +315,7 @@ pub(crate) fn print_sessions_json(
 ) -> ExitCode {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
-    let entries = sessions
-        .into_iter()
-        .map(|s| SessionJson {
-            name: s.name.clone(),
-            windows: s.window_count,
-            attached: s.attached_client_count > 0,
-            attached_clients: s.attached_client_count,
-        })
-        .collect();
+    let entries = sessions.into_iter().map(session_json).collect();
     // `terminals` stays the Terminal-kind inventory — the ids a Terminal-facet
     // verb accepts — so a consumer that iterates it and calls `snapshot` on
     // each keeps working; every resource, with its kind and parent, is the
@@ -447,12 +456,47 @@ mod tests {
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
-    use super::{EMPTY_STATE, format_session_line, session_lines};
+    use super::{EMPTY_STATE, format_session_line, session_json, session_lines};
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
         SessionInfo::new(SessionId::new(1), name)
             .with_window_count(windows)
             .with_attached_client_count(clients)
+    }
+
+    /// ADR-0105: a session with no windows says so, so a server that stays
+    /// up with zero processes explains itself.
+    #[test]
+    fn an_empty_session_is_marked() {
+        assert_eq!(
+            format_session_line(&session("parked", 0, 0).with_keep_empty(true)),
+            "parked: 0 windows (empty)"
+        );
+        assert_eq!(
+            format_session_line(&session("parked", 0, 1).with_keep_empty(true)),
+            "parked: 0 windows (empty) (1 client attached)"
+        );
+        assert_eq!(
+            format_session_line(&session("work", 1, 0).with_keep_empty(true)),
+            "work: 1 window",
+            "a populated keep-empty session is not marked empty"
+        );
+    }
+
+    /// `--json` carries `keep_empty` and `empty` as added keys.
+    #[test]
+    fn json_rows_carry_keep_empty_and_empty() {
+        let parked =
+            serde_json::to_value(session_json(&session("parked", 0, 0).with_keep_empty(true)))
+                .expect("serialize");
+        assert_eq!(parked["keep_empty"], true);
+        assert_eq!(parked["empty"], true);
+        assert_eq!(parked["windows"], 0);
+
+        let work = serde_json::to_value(session_json(&session("work", 2, 1))).expect("serialize");
+        assert_eq!(work["keep_empty"], false);
+        assert_eq!(work["empty"], false);
+        assert_eq!(work["attached_clients"], 1);
     }
 
     #[test]

@@ -496,6 +496,77 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     seal_frame(block, painted, composed, status_bar)
 }
 
+/// ADR-0105: the empty state's title line.
+pub(super) const EMPTY_SESSION_TITLE: &str = "Empty session";
+/// ADR-0105: the empty state's explanation line.
+pub(super) const EMPTY_SESSION_BODY: &str = "Open a new window to start a terminal.";
+
+/// The lines a keep-empty session with no windows shows (ADR-0105). The hint
+/// names the chord bound to `new-window`, or the command palette when no
+/// chord is bound.
+pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3] {
+    let hint = new_window_chord.map_or_else(
+        || "Run new-window from the command palette.".to_owned(),
+        |chord| format!("{chord}  new window"),
+    );
+    [
+        EMPTY_SESSION_TITLE.to_owned(),
+        EMPTY_SESSION_BODY.to_owned(),
+        hint,
+    ]
+}
+
+/// Paint a keep-empty session that holds no windows (ADR-0105): the chrome
+/// as usual and [`empty_session_lines`] centered in the content area. One
+/// frame block like [`paint_full_frame`]; the cursor ends parked and hidden
+/// at the content origin, since there is no pane to own it.
+pub(super) fn paint_empty_session<W: super::RenderSink>(
+    out: &mut W,
+    viewport_dims: (u16, u16),
+    mut status_bar: Option<&mut StatusBarPainter>,
+    sidebar: Option<SidebarReservation>,
+    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
+    session_name: &str,
+    lines: &[String],
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let bar = status_bar.as_ref().map(|p| p.position());
+    let content = content_layout(viewport_dims, bar, sidebar).rect;
+    let origin = Some((content.x, content.y));
+    let _ = block.write_all(b"\x1b[2J\x1b[H");
+    write_centered_lines(&mut block, content, lines);
+    if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
+        painter.invalidate();
+        let _ = painter.paint(&mut block, sidebar_rect(viewport_dims, res));
+    }
+    let painted = paint_bar_after_pane(
+        status_bar.as_deref_mut(),
+        &mut block,
+        viewport_dims,
+        sidebar,
+        session_name,
+        None,
+        origin,
+        true,
+    );
+    let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
+    seal_frame(block, painted, composed, status_bar)
+}
+
+/// Write `lines` centered in `rect`, each clipped to the rect's width.
+fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines: &[String]) {
+    let count = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let top = rect.y.saturating_add(rect.h.saturating_sub(count) / 2);
+    let bottom = rect.y.saturating_add(rect.h);
+    for (row, line) in (top..bottom).zip(lines) {
+        let text: String = line.chars().take(usize::from(rect.w)).collect();
+        let width = u16::try_from(text.chars().count()).unwrap_or(rect.w);
+        let col = rect.x.saturating_add(rect.w.saturating_sub(width) / 2);
+        let _ = super::render::write_cup(out, row, col);
+        let _ = out.write_all(text.as_bytes());
+    }
+}
+
 /// Ship a composited frame and reconcile the bar cache with what actually
 /// reached the sink: a frame whose composition or delivery failed reports
 /// `NotPublished` and invalidates the painter, so the bar re-emits next time
@@ -1215,6 +1286,28 @@ mod tests {
     use super::*;
     use crate::attach::render::SYNC_OUTPUT_END;
     use crate::render::ChromeBreakpoints;
+
+    /// ADR-0105: the empty state says what happened and what to do next,
+    /// naming the `new-window` chord or falling back to the palette.
+    #[test]
+    fn empty_session_state_names_the_new_window_action() {
+        let lines = empty_session_lines(Some("C-a c"));
+        assert_eq!(lines[0], "Empty session");
+        assert_eq!(lines[1], "Open a new window to start a terminal.");
+        assert_eq!(lines[2], "C-a c  new window");
+        assert!(empty_session_lines(None)[2].contains("command palette"));
+
+        let mut out: Vec<u8> = Vec::new();
+        let _ = paint_empty_session(&mut out, (80, 24), None, None, None, "parked", &lines);
+        let text = String::from_utf8_lossy(&out);
+        for line in &lines {
+            assert!(text.contains(line.as_str()), "missing {line:?}");
+        }
+        assert!(
+            text.contains("\x1b[?25l"),
+            "no pane owns the cursor, so it hides"
+        );
+    }
 
     fn leaf_layout(id: &ResourceId) -> LayoutState {
         LayoutState {

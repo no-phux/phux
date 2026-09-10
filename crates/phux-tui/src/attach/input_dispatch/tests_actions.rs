@@ -192,6 +192,25 @@ fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace)
     run_with_last(action, workspace, None)
 }
 
+/// ADR-0105: `new-window` works from the empty state of a keep-empty
+/// session. With no window and nothing focused it still parks a spawn, and
+/// the spawn names no owner, so the server places it in the attached session.
+#[test]
+fn new_window_from_an_empty_workspace_parks_a_spawn() {
+    let mut workspace = Workspace::default();
+    let effects = run(&bare_action("new-window"), &mut workspace);
+    let (_, _, frame) = effects
+        .spawn_window
+        .expect("new-window must spawn from the empty state");
+    assert!(matches!(
+        frame,
+        phux_protocol::wire::frame::FrameKind::SpawnResource {
+            owner_terminal: None,
+            ..
+        }
+    ));
+}
+
 /// Every server feature the dispatcher consults, as a current server
 /// advertises them.
 const ALL_FEATURES: ServerFeatureSet = ServerFeatureSet::with(&[

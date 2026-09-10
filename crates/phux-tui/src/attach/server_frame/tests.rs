@@ -469,6 +469,7 @@ fn dispatch_engine_frame(
         &mut focused_resource,
         &mut zoomed,
         &mut session_name,
+        &mut false,
         None,
         None,
         None,
@@ -805,6 +806,7 @@ fn handle_server_frame<W: crate::attach::RenderSink>(
         focused_resource,
         zoomed,
         session_name,
+        &mut false,
         focused_session,
         status_bar,
         sidebar,
@@ -1619,6 +1621,7 @@ fn drive_output_deferred(
         focused,
         &mut zoomed,
         &mut session_name,
+        &mut false,
         None,
         None,
         None,
@@ -1704,6 +1707,7 @@ fn drive_output_seq_with_viewport(
         focused,
         &mut zoomed,
         &mut session_name,
+        &mut false,
         None,
         None,
         None,
@@ -2392,6 +2396,7 @@ fn drive_snapshot(
                 focused,
                 &mut zoomed,
                 &mut session_name,
+                &mut false,
                 None,
                 None,
                 None,
@@ -3174,6 +3179,280 @@ fn last_pane_closed_detaches_the_client() {
         !panes.contains_key(&pane),
         "the closed pane's slot must be dropped",
     );
+}
+
+/// Drive one frame through the dispatcher with a caller-owned keep-empty
+/// mark and session name (ADR-0105).
+fn drive_keep_empty(
+    frame: FrameKind,
+    workspace: &mut Workspace,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    session_name: &mut String,
+    keep_empty: &mut bool,
+) -> FrameOutcome {
+    drive_keep_empty_with(
+        frame,
+        workspace,
+        focused,
+        panes,
+        session_name,
+        keep_empty,
+        None,
+    )
+}
+
+/// [`drive_keep_empty`] with a pending layout `GET_METADATA` request id, so
+/// the attach-time layout reply can be driven.
+fn drive_keep_empty_with(
+    frame: FrameKind,
+    workspace: &mut Workspace,
+    focused: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    session_name: &mut String,
+    keep_empty: &mut bool,
+    pending_layout_request: Option<u32>,
+) -> FrameOutcome {
+    let mut kernel = phux_client_core::session::SessionKernel::new(
+        phux_client_core::engine::ghostty::GhosttyAdapter::new(
+            phux_protocol::BootstrapLimits::default(),
+        ),
+        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+    );
+    let mut effects = phux_client_core::session::EffectBuffer::new();
+    let mut out: Vec<u8> = Vec::new();
+    let mut zoomed = None;
+    let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+    let overlay = Overlay;
+    handle_server_frame_with_kernel(
+        &mut kernel,
+        &mut effects,
+        &mut out,
+        frame,
+        panes,
+        workspace,
+        focused,
+        &mut zoomed,
+        session_name,
+        keep_empty,
+        None,
+        None,
+        None,
+        (80, 24),
+        &mut predict,
+        &overlay,
+        pending_layout_request,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+        &mut AgentMetaIndex::default(),
+        false,
+        false,
+    )
+    .expect("handle_server_frame")
+}
+
+fn closed_cleanly(pane: &ResourceId) -> FrameKind {
+    FrameKind::ResourceClosed {
+        terminal_id: pane.clone(),
+        exit_status: Some(0),
+        reason: CloseReason::Unknown,
+    }
+}
+
+/// ADR-0105: the last pane of a keep-empty session closing keeps the attach
+/// and leaves an empty workspace for the empty state, and asks the driver
+/// to tombstone the layout that now names only dead panes.
+#[test]
+fn keep_empty_last_pane_close_stays_attached_in_the_empty_state() {
+    let pane = tid(1);
+    let mut workspace = Workspace::single(pane.clone());
+    let mut focused = Some(pane.clone());
+    let mut panes = panes_for(&[&pane]);
+    let mut name = "parked".to_owned();
+    let mut keep = true;
+
+    let outcome = drive_keep_empty(
+        closed_cleanly(&pane),
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+
+    assert!(!outcome.exit, "a keep-empty session must not detach");
+    assert!(outcome.exit_reason.is_none());
+    assert!(outcome.clear_layout, "the dead layout is tombstoned");
+    assert!(outcome.layout_replaced, "the empty state is painted");
+    assert!(workspace.windows.is_empty());
+    assert_eq!(focused, None);
+    assert!(!panes.contains_key(&pane));
+}
+
+/// A `phux.session.keep_empty/v1` broadcast moves the mark only for this
+/// client's own session, and the moved mark decides the last pane's close.
+#[test]
+fn keep_empty_mark_follows_broadcasts_for_this_session_only() {
+    use phux_protocol::wire::frame::{SESSION_KEEP_EMPTY_KEY, Scope};
+
+    let pane = tid(1);
+    let mut workspace = Workspace::single(pane.clone());
+    let mut focused = Some(pane.clone());
+    let mut panes = panes_for(&[&pane]);
+    let mut name = "work".to_owned();
+    let mut keep = false;
+    let mark = |value: &[u8]| FrameKind::MetadataChanged {
+        scope: Scope::Global,
+        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+        value: Some(value.to_vec()),
+    };
+
+    drive_keep_empty(
+        mark(b"other\0true"),
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+    assert!(!keep, "another session's mark is not ours");
+    drive_keep_empty(
+        mark(b"work\0true"),
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+    assert!(keep);
+
+    let outcome = drive_keep_empty(
+        closed_cleanly(&pane),
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+    assert!(!outcome.exit, "the broadcast mark keeps the attach");
+}
+
+/// Attaching to a session that is already empty starts in the empty state:
+/// no workspace, no focus, and no pane slot for the sentinel focus id.
+#[test]
+fn attached_to_an_empty_session_starts_in_the_empty_state() {
+    let sid = SessionId::new(4);
+    let snapshot = SessionSnapshot::new(sid, WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![SessionInfo::new(sid, "parked").with_keep_empty(true)]);
+    let mut workspace = Workspace::single(tid(9));
+    let mut focused = Some(tid(9));
+    let mut panes = HashMap::new();
+    let mut name = String::new();
+    let mut keep = false;
+
+    let outcome = drive_keep_empty(
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot,
+            initial_client_id: ClientId::new(3),
+        },
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+
+    assert!(keep, "the snapshot's keep-empty mark is adopted");
+    assert_eq!(name, "parked");
+    assert!(workspace.windows.is_empty());
+    assert_eq!(focused, None);
+    assert!(
+        panes.is_empty(),
+        "the sentinel focus must not get a pane slot"
+    );
+    assert!(outcome.subscribe_layout);
+    assert_eq!(outcome.own_client_id, Some(ClientId::new(3)));
+}
+
+/// A persisted layout whose every leaf is absent from the snapshot (left by a
+/// keep-empty session that lost its last window with no client attached) is
+/// discarded on attach, so the empty state shows instead of a dead pane.
+#[test]
+fn a_layout_of_only_dead_panes_is_discarded_on_attach() {
+    let sid = SessionId::new(4);
+    let snapshot = SessionSnapshot::new(sid, WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![SessionInfo::new(sid, "parked").with_keep_empty(true)]);
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    let mut panes = HashMap::new();
+    let mut name = String::new();
+    let mut keep = false;
+    drive_keep_empty(
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot,
+            initial_client_id: ClientId::new(3),
+        },
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+
+    let stale = Workspace::single(tid(9)).encode_cbor().expect("encode");
+    let outcome = drive_keep_empty_with(
+        FrameKind::MetadataValue {
+            request_id: 7,
+            value: Some(stale),
+        },
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+        Some(7),
+    );
+
+    assert!(outcome.layout_get_answered, "the GET is still answered");
+    assert!(outcome.attach_panes.is_empty(), "no dead pane is attached");
+    assert!(workspace.windows.is_empty(), "the empty state stays");
+    assert_eq!(focused, None);
+}
+
+/// `new-window` from the empty state: the spawn reply opens the first
+/// window, focused on the new pane, and broadcasts the layout.
+#[test]
+fn new_window_from_the_empty_state_opens_the_first_window() {
+    use super::handle_window_spawned;
+    use crate::attach::actions::PendingWindow;
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let mut workspace = Workspace::default();
+    let mut focused = None;
+    let mut panes = HashMap::new();
+    let mut out: Vec<u8> = Vec::new();
+
+    let outcome = handle_window_spawned(
+        &mut out,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &PendingWindow {
+            name: "1".to_owned(),
+            adopt: None,
+        },
+        SpawnResult::Ok(tid(5)),
+    )
+    .expect("handle_window_spawned");
+
+    assert_eq!(workspace.windows.len(), 1);
+    assert_eq!(workspace.active, 0);
+    assert_eq!(focused, Some(tid(5)));
+    assert!(panes.contains_key(&tid(5)));
+    assert!(outcome.emit_set_metadata && outcome.reflow_panes);
 }
 
 /// phux-i0e8.2.2: a last-pane death by signal (or unknown cause)
@@ -4224,6 +4503,7 @@ fn drive_kind_frame(
         focused,
         &mut zoomed,
         &mut session_name,
+        &mut false,
         Some(SessionId::new(1)),
         None,
         None,

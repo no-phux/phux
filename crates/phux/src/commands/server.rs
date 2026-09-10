@@ -198,7 +198,7 @@ fn load_config() -> Result<phux_config::Config, ExitCode> {
 /// Compose the `ServerConfig` the runtime binds from, out of the single
 /// config snapshot's `defaults` and the flags that override them.
 fn build_server_config(
-    session: &str,
+    session: Option<&str>,
     socket_path: &Path,
     defaults: phux_config::DefaultsCfg,
     voice: phux_config::VoiceCfg,
@@ -253,7 +253,9 @@ fn build_server_config(
     // (phux-nk07).
     ServerConfig {
         socket_path: socket_path.to_path_buf(),
-        pre_seeded_session: Some(session.to_owned()),
+        // `None` under `--no-seed` (ADR-0105): `phux new --empty` wants only
+        // the session it creates.
+        pre_seeded_session: session.map(str::to_owned),
         seed_with_pty: true,
         seed_command,
         scrollback: defaults.scrollback_limits(),
@@ -375,7 +377,7 @@ fn report_shutdown<E: std::fmt::Display>(result: Result<(), E>) -> ExitCode {
     reason = "1:1 mirror of the `phux server` clap surface; bundling into a struct would just restate the clap enum"
 )]
 pub(crate) fn run_server(
-    session: &str,
+    session: Option<&str>,
     socket: Option<PathBuf>,
     listen: Option<std::net::SocketAddr>,
     quic: Option<std::net::SocketAddr>,
@@ -441,8 +443,9 @@ pub(crate) fn run_server(
         exit_after_idle,
     );
     eprintln!(
-        "phux server listening on {}{extra} (session={session}; Ctrl-C to stop)",
-        socket_path.display()
+        "phux server listening on {}{extra} (session={}; Ctrl-C to stop)",
+        socket_path.display(),
+        session.unwrap_or("none")
     );
     // Attribution line for the (possibly shared) server log — see
     // `log_startup`. After the human banner so an interactive stderr
@@ -646,7 +649,7 @@ fn parse_auto_spawn_idle(raw: &str) -> Option<u64> {
 /// Returns `Ok` if the socket showed up within the timeout.
 pub(crate) fn maybe_auto_spawn_server(
     socket_path: &Path,
-    session: &str,
+    session: Option<&str>,
     seed_command: Option<&str>,
     quiet: bool,
 ) -> std::io::Result<()> {
@@ -659,8 +662,9 @@ pub(crate) fn maybe_auto_spawn_server(
     // error document and nothing else.
     if !quiet {
         eprintln!(
-            "phux: starting server at {} (auto-spawn, session={session}; log: {})",
+            "phux: starting server at {} (auto-spawn, session={}; log: {})",
             socket_path.display(),
+            session.unwrap_or("none"),
             log_path.display()
         );
     }
@@ -674,11 +678,17 @@ pub(crate) fn maybe_auto_spawn_server(
     cmd.arg("server")
         .arg("--socket")
         .arg(socket_path)
-        .arg("--session")
-        .arg(session)
         .arg("--daemonize")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
+    match session {
+        Some(name) => {
+            cmd.arg("--session").arg(name);
+        }
+        None => {
+            cmd.arg("--no-seed");
+        }
+    }
     // phux-07y: forward the pre-seed command (naked `phux` passes
     // `defaults.spawn-on-attach`; other callers pass `None`).
     if let Some(seed) = seed_command {
@@ -766,6 +776,25 @@ fn wait_until_accepting(socket_path: &Path, what: &str, log_path: &Path) -> std:
 pub(crate) fn ensure_server(
     socket_path: &Path,
     session: &str,
+    seed_command: Option<&str>,
+    quiet: bool,
+) -> std::io::Result<()> {
+    ensure_server_with(socket_path, Some(session), seed_command, quiet)
+}
+
+/// [`ensure_server`] for a caller that must not get a seed session: a server
+/// started here runs `phux server --no-seed`, so `phux new --empty` ends up
+/// with only the empty session it creates (ADR-0105). A server that is
+/// already running is used as it is.
+pub(crate) fn ensure_server_unseeded(socket_path: &Path, quiet: bool) -> std::io::Result<()> {
+    ensure_server_with(socket_path, None, None, quiet)
+}
+
+/// The shared body of [`ensure_server`] and [`ensure_server_unseeded`].
+/// `session: None` starts a server with no seed session.
+fn ensure_server_with(
+    socket_path: &Path,
+    session: Option<&str>,
     seed_command: Option<&str>,
     quiet: bool,
 ) -> std::io::Result<()> {

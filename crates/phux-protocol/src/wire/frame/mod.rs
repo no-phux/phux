@@ -219,6 +219,36 @@ pub const SESSION_CREATE_RESULT_KEY: &str = "phux.session.created/v1";
 /// legacy uncorrelated [`SESSION_CREATE_RESULT_KEY`] remains for old clients.
 pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 
+/// Conventional L3 metadata key that sets a session's keep-empty mark
+/// (ADR-0105).
+///
+/// Scope: `Global`. Value: `name\0true` or `name\0false` (NUL-separated
+/// UTF-8, the same shape as [`SESSION_NAME_KEY`]). The server intercepts the
+/// write, applies it to the named session, and broadcasts the applied value
+/// to subscribers when the mark actually changed; the value is not stored.
+/// Clearing the mark on a session that holds no windows removes that session,
+/// which is how an empty session is killed. Advertised by
+/// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
+pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
+
+/// Encode a [`SESSION_KEEP_EMPTY_KEY`] value: `name\0true` or `name\0false`.
+#[must_use]
+pub fn encode_session_keep_empty(name: &str, keep: bool) -> Vec<u8> {
+    format!("{name}\0{keep}").into_bytes()
+}
+
+/// Decode a [`SESSION_KEEP_EMPTY_KEY`] value into the session name and the
+/// mark. `None` for anything other than UTF-8 `name\0true` or `name\0false`.
+#[must_use]
+pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
+    let (name, flag) = std::str::from_utf8(value).ok()?.split_once('\0')?;
+    match flag {
+        "true" => Some((name, true)),
+        "false" => Some((name, false)),
+        _ => None,
+    }
+}
+
 /// Conventional L3 metadata key holding a Terminal's freeform string tags
 /// (ADR-0027 decision point 4, `phux-p0yq`).
 ///

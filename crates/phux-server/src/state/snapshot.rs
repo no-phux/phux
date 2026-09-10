@@ -16,9 +16,10 @@ impl ServerState {
     /// `focus_session` is the resolved target of the ATTACH request;
     /// the attaching client's focused window/pane fall back to the
     /// session's `active` / window's `active` (tmux semantics).
-    /// Returns `None` if `focus_session` has no active window or pane,
-    /// since `SessionSnapshot::focused_window` / `focused_resource` are
-    /// required fields on the wire.
+    /// Returns `None` only if `focus_session` is unknown. A session with no
+    /// active window or pane (a keep-empty session with zero windows,
+    /// ADR-0105) carries the `0` sentinel ids in the required
+    /// `focused_window` / `focused_resource` fields.
     #[allow(clippy::too_many_lines)]
     pub fn build_session_snapshot(
         &mut self,
@@ -63,7 +64,8 @@ impl ServerState {
                     .with_active_window(active_window_wire)
                     .with_created_at_unix_secs(created_at_unix_secs)
                     .with_window_count(u16::try_from(session.windows.len()).unwrap_or(u16::MAX))
-                    .with_attached_client_count(attached_counts.get(sid).copied().unwrap_or(0)),
+                    .with_attached_client_count(attached_counts.get(sid).copied().unwrap_or(0))
+                    .with_keep_empty(session.keep_empty),
             );
 
             for (index, wid) in session.windows.iter().enumerate() {
@@ -134,12 +136,25 @@ impl ServerState {
         }
 
         let session = self.sessions.registry.session(focus_session)?;
-        let focused_window = session.active?;
-        let focused_resource = self.sessions.registry.window(focused_window)?.active?;
+        let focus_pair = session.active.and_then(|window| {
+            let pane = self.sessions.registry.window(window)?.active?;
+            Some((window, pane))
+        });
 
         let focused_session_wire = self.idspace.intern_session(focus_session);
-        let focused_window_wire = self.intern_window_wire(focused_window);
-        let focused_pane_wire = self.intern_terminal_wire(focused_resource);
+        // A keep-empty session with no window left (ADR-0105) has nothing to
+        // focus; the wire still requires the pair, so it carries the `0`
+        // sentinels no allocator ever mints.
+        let (focused_window_wire, focused_pane_wire) = match focus_pair {
+            Some((window, pane)) => (
+                self.intern_window_wire(window),
+                self.intern_terminal_wire(pane),
+            ),
+            None => (
+                phux_protocol::ids::WindowId::new(0),
+                phux_protocol::ids::ResourceId::local(0),
+            ),
+        };
 
         Some(
             SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)

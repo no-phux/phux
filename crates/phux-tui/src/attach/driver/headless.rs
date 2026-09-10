@@ -181,6 +181,9 @@ struct HeadlessSession {
     zoomed: Option<ResourceId>,
     /// The session name, learned from ATTACHED.
     session_name: String,
+    /// ADR-0105: the attached session's keep-empty mark, learned from
+    /// ATTACHED; threaded for the shared signature.
+    keep_empty_session: bool,
     /// The status-bar painter, absent when the config disables it.
     status_bar: Option<StatusBarPainter>,
     /// The sidebar reservation the panes tile inside of.
@@ -224,6 +227,7 @@ impl HeadlessSession {
             focused_resource: None,
             zoomed: None,
             session_name: String::new(),
+            keep_empty_session: false,
             status_bar: chrome.status_bar,
             sidebar: chrome.sidebar,
             sidebar_theme: chrome.sidebar_theme,
@@ -262,6 +266,7 @@ impl HeadlessSession {
             &mut self.focused_resource,
             &mut self.zoomed,
             &mut self.session_name,
+            &mut self.keep_empty_session,
             focused_session,
             self.status_bar.as_mut(),
             self.sidebar,

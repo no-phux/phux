@@ -392,6 +392,9 @@ ServerFeature = bitset (u32) {
                                      //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
     LIST_DIRECTORY     = 0x00008000, // LIST_DIRECTORY host query (L3.md §4)
     HOST_SESSIONS      = 0x00010000, // GET_STATE host-session inventory (L1.md §9.1)
+    KEEP_EMPTY_SESSIONS = 0x00020000, // keep-empty sessions: session.create/v1 keep_empty
+                                     //   and empty, phux.session.keep_empty/v1, snapshot
+                                     //   session facets (L3.md §3.1; ADR-0105)
     WHOAMI             = 0x00040000, // read-only phux.whoami/v1 Global key (L3.md §3.9; ADR-0106)
     LIST_DIRECTORY_HOST = 0x00080000, // LIST_DIRECTORY.host satellite route (L3.md §4.1)
 }

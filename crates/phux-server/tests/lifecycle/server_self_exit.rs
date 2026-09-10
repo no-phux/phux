@@ -93,6 +93,93 @@ fn server_self_exits_after_serving_a_client() {
     });
 }
 
+/// ADR-0105: a keep-empty session holds the server up. Its last pane exits
+/// after a client has been served, the session stays with zero windows, and
+/// the server does not self-exit; the attached client is not detached.
+#[test]
+fn keep_empty_session_holds_the_server_up_after_its_last_pane_exits() {
+    use phux_protocol::wire::frame::{
+        Command, CommandResult, CommandValue, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope, StateScope,
+        encode_session_keep_empty,
+    };
+
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let release = tmp.path().join("release");
+        let cfg = seeded_cfg(
+            socket_path.clone(),
+            &format!(
+                "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
+                release.display()
+            ),
+        );
+        let handle = tokio::task::spawn_local(async move {
+            ServerRuntime::new(cfg)
+                .run_async(std::future::pending::<()>())
+                .await
+        });
+
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut stream, &attach_by_name("solo")).await;
+        let (type_byte, _attached) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_ATTACHED);
+
+        send_frame(
+            &mut stream,
+            &FrameKind::SetMetadata {
+                request_id: 1,
+                scope: Scope::Global,
+                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+                value: encode_session_keep_empty("solo", true),
+            },
+        )
+        .await;
+        std::fs::write(&release, b"go").expect("release the seed pane");
+
+        // Poll until the pane is reaped; the session must stay, empty.
+        let deadline = tokio::time::Instant::now() + phux_server_testkit::SERVER_JOIN_DEADLINE;
+        let mut request_id = 10;
+        loop {
+            send_frame(
+                &mut stream,
+                &FrameKind::Command {
+                    request_id,
+                    command: Command::GetState {
+                        scope: StateScope::Server,
+                    },
+                },
+            )
+            .await;
+            let result = phux_server_testkit::recv_command_result(&mut stream, request_id).await;
+            let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+                panic!("GET_STATE failed: {result:?}");
+            };
+            let solo = snapshot
+                .sessions
+                .iter()
+                .find(|s| s.name == "solo")
+                .expect("the keep-empty session must survive its last pane");
+            if solo.window_count == 0 {
+                assert!(solo.keep_empty);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the seed pane was never reaped"
+            );
+            request_id += 1;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let still_running = timeout(Duration::from_secs(1), handle).await.is_err();
+        assert!(
+            still_running,
+            "a keep-empty session must hold the server up with zero processes",
+        );
+    });
+}
+
 /// Auto-spawn grace: a server that has NEVER served a client must NOT
 /// self-exit when its seed pane dies immediately — otherwise `phux`'s
 /// auto-spawn races the server's exit and the user sees "no server".

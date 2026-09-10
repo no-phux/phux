@@ -3120,3 +3120,268 @@ fn terminal_spawned_unknown_spawn_error_tag_is_rejected() {
         }
     );
 }
+
+/// ADR-0105: a keep-empty session round-trips through the trailing session
+/// facets, both in `ATTACHED` and in a `GET_STATE` reply, and the flag stays
+/// on the session it was set on.
+#[test]
+fn keep_empty_session_round_trips_in_attached_and_get_state() {
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let snapshot = SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "busy").with_window_count(1),
+            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+        ]);
+    let attached = FrameKind::Attached {
+        attach_id: 3,
+        snapshot: snapshot.clone(),
+        initial_client_id: ClientId::new(1),
+    };
+    let mut buf = BytesMut::new();
+    attached.encode(&mut buf);
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert!(tail.is_empty());
+    assert_eq!(decoded, attached);
+
+    let reply = FrameKind::CommandResult {
+        request_id: 9,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    };
+    let mut buf = BytesMut::new();
+    reply.encode(&mut buf);
+    let (decoded, _) = FrameKind::decode(&buf).unwrap();
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::State(state)),
+        ..
+    } = decoded
+    else {
+        panic!("expected a GET_STATE reply");
+    };
+    assert!(!state.sessions[0].keep_empty, "the flag must not leak");
+    assert!(state.sessions[1].keep_empty);
+    assert!(state.sessions[1].is_empty());
+}
+
+/// A snapshot with no keep-empty session is byte-identical to one encoded
+/// before session facets existed: nothing trails `focused_resource`.
+#[test]
+fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")]);
+    let marked = plain.clone().with_sessions(vec![
+        SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
+    ]);
+    let encode = |snapshot: SessionSnapshot| {
+        let mut buf = BytesMut::new();
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot,
+            initial_client_id: ClientId::new(0),
+        }
+        .encode(&mut buf);
+        buf
+    };
+    let plain_len = encode(plain).len();
+    // A marked snapshot adds a zero-count resource-facet list (4 bytes), a
+    // zero-count hosts list (4 bytes), a one-row session-facet count
+    // (4 bytes) and the row itself (5 bytes).
+    assert_eq!(encode(marked).len(), plain_len + 4 + 4 + 4 + 5);
+}
+
+/// All three trailing lists at once (L1.md §9.1 order: facets, hosts,
+/// session facets) round-trip, in `ATTACHED` and in a `GET_STATE` reply.
+#[test]
+fn facets_hosts_and_session_facets_round_trip_together() {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::info::{
+        HostInventory, HostSessionInfo, ResourceInfo, SessionInfo, SessionSnapshot,
+    };
+
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(7))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+        ])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(7), WindowId::new(10), 80, 24),
+            ResourceInfo::resource(ResourceId::local(8), ResourceKind::AgentSession)
+                .with_parent(Some(ResourceId::local(7))),
+        ])
+        .with_hosts(vec![
+            HostInventory::reachable(
+                SatelliteHost::new("edge"),
+                vec![HostSessionInfo::new(SessionId::new(2), "build").with_window_count(1)],
+            ),
+            HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
+        ]);
+    assert_round_trip(&FrameKind::Attached {
+        attach_id: 1,
+        snapshot: snapshot.clone(),
+        initial_client_id: ClientId::new(0),
+    });
+    assert_round_trip(&FrameKind::CommandResult {
+        request_id: 4,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    });
+}
+
+/// Session facets with no hosts and no resource facets: both earlier lists
+/// are written as explicit zero counts, and the field cut off after either
+/// earlier list (what an older decoder reads) still decodes, with the mark
+/// simply unseen.
+#[test]
+fn keep_empty_without_hosts_writes_zero_count_anchors() {
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let snapshot = SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+        ]);
+    let reply = FrameKind::CommandResult {
+        request_id: 4,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    };
+    assert_round_trip(&reply);
+
+    let mut buf = BytesMut::new();
+    reply.encode(&mut buf);
+    // The field ends: facets count 0, hosts count 0, rows 1, id 2, flags 1.
+    let mut tail = Vec::new();
+    tail.extend_from_slice(&0u32.to_be_bytes());
+    tail.extend_from_slice(&0u32.to_be_bytes());
+    tail.extend_from_slice(&1u32.to_be_bytes());
+    tail.extend_from_slice(&2u32.to_be_bytes());
+    tail.push(1);
+    assert!(buf.ends_with(&tail), "zero-count facet and host anchors");
+
+    // What an older decoder reads: the same snapshot field cut off after the
+    // facets, and after the hosts. Hand-rolled like the host-inventory test:
+    // one session, "parked" (id 2), then the trailing lists.
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(&1u32.to_be_bytes()); // sessions: one
+    prefix.extend_from_slice(&2u32.to_be_bytes()); // id
+    prefix.extend_from_slice(&6u32.to_be_bytes());
+    prefix.extend_from_slice(b"parked");
+    prefix.push(0); // no active window
+    prefix.extend_from_slice(&0i64.to_be_bytes()); // created_at
+    prefix.extend_from_slice(&0u16.to_be_bytes()); // window_count
+    prefix.extend_from_slice(&0u16.to_be_bytes()); // attached clients
+    prefix.extend_from_slice(&0u32.to_be_bytes()); // windows
+    prefix.extend_from_slice(&0u32.to_be_bytes()); // resources
+    prefix.extend_from_slice(&2u32.to_be_bytes()); // focused_session
+    prefix.extend_from_slice(&0u32.to_be_bytes()); // focused_window
+    prefix.extend_from_slice(&local_id_bytes(0)); // focused_resource
+    let after_facets = [prefix.as_slice(), &0u32.to_be_bytes()].concat();
+    let after_hosts = [after_facets.as_slice(), &0u32.to_be_bytes()].concat();
+    let full = [
+        after_hosts.as_slice(),
+        &1u32.to_be_bytes(),
+        &2u32.to_be_bytes(),
+        &[1],
+    ]
+    .concat();
+
+    let decode = |snap: &[u8]| {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, snap);
+        tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+        tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+        let (decoded, _) = FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap();
+        let FrameKind::Attached { snapshot, .. } = decoded else {
+            panic!("expected Attached");
+        };
+        snapshot
+    };
+    for cut in [&prefix, &after_facets, &after_hosts] {
+        let snapshot = decode(cut);
+        assert_eq!(snapshot.sessions[0].name, "parked");
+        assert!(
+            !snapshot.sessions[0].keep_empty,
+            "the mark is simply unseen"
+        );
+        assert!(snapshot.hosts().is_empty());
+    }
+    assert!(decode(&full).sessions[0].keep_empty);
+}
+
+/// Session facets and resource facets coexist: an agent-session facet row
+/// still lands on its resource when a session-facet list follows it.
+#[test]
+fn session_facets_follow_resource_facets_without_aliasing() {
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(7))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work")
+                .with_window_count(1)
+                .with_keep_empty(true),
+        ])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(7), WindowId::new(10), 80, 24),
+            ResourceInfo::resource(ResourceId::local(8), ResourceKind::AgentSession)
+                .with_parent(Some(ResourceId::local(7))),
+        ]);
+    let frame = FrameKind::Attached {
+        attach_id: 1,
+        snapshot,
+        initial_client_id: ClientId::new(0),
+    };
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert!(tail.is_empty());
+    assert_eq!(decoded, frame);
+}
+
+/// The `phux.session.keep_empty/v1` value codec round-trips and refuses
+/// anything but `name\0true` / `name\0false`.
+#[test]
+fn session_keep_empty_value_codec() {
+    use phux_protocol::wire::frame::{decode_session_keep_empty, encode_session_keep_empty};
+
+    assert_eq!(encode_session_keep_empty("work", true), b"work\0true");
+    assert_eq!(
+        decode_session_keep_empty(&encode_session_keep_empty("work", false)),
+        Some(("work", false))
+    );
+    assert_eq!(
+        decode_session_keep_empty(b"work\0true"),
+        Some(("work", true))
+    );
+    assert_eq!(decode_session_keep_empty(b"work\0yes"), None);
+    assert_eq!(decode_session_keep_empty(b"work"), None);
+    assert_eq!(decode_session_keep_empty(&[0xFF, 0, b't']), None);
+}
+
+/// An unknown session-facet flag bit is ignored rather than refused, so the
+/// flag byte can grow additively.
+#[test]
+fn unknown_session_facet_flag_bits_are_ignored() {
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
+        ]);
+    let reply = FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    };
+    let mut buf = BytesMut::new();
+    reply.encode(&mut buf);
+    // The session row is the frame's last five bytes: id (u32) then flags.
+    let flags = buf.len() - 1;
+    buf[flags] = 0xFF;
+    let (decoded, _) = FrameKind::decode(&buf).unwrap();
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::State(state)),
+        ..
+    } = decoded
+    else {
+        panic!("expected a GET_STATE reply");
+    };
+    assert!(state.sessions[0].keep_empty);
+}

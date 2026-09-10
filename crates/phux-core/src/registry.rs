@@ -76,7 +76,7 @@ impl Registry {
     /// Insert a new session with the given name and return its ID.
     ///
     /// `created_at` is stamped with [`SystemTime::now`]. The new session has
-    /// no windows and no active window.
+    /// no windows, no active window, and is not keep-empty.
     pub fn new_session(&mut self, name: String) -> SessionId {
         self.sessions.insert_with_key(|id| Session {
             id,
@@ -84,6 +84,7 @@ impl Registry {
             windows: Vec::new(),
             active: None,
             created_at: SystemTime::now(),
+            keep_empty: false,
         })
     }
 

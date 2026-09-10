@@ -100,6 +100,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// the driver should broadcast the new envelope via
     /// `SET_METADATA` so sibling clients reconcile.
     pub(in crate::attach) emit_set_metadata: bool,
+    /// ADR-0105: `true` ⇒ the last pane of a keep-empty session closed. The
+    /// stored layout names only dead panes now, so the driver deletes the
+    /// session's layout key instead of leaving it for the next attach to
+    /// adopt (an empty workspace has no encodable envelope to write instead).
+    pub(in crate::attach) clear_layout: bool,
     /// phux-tnh: `true` ⇒ a pane lifecycle event (close/spawn) changed
     /// surviving panes' dimensions. The driver must diff the new layout
     /// against the pre-frame rects and emit a `RESIZE_TERMINAL` per

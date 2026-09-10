@@ -946,6 +946,12 @@ pub const LIST_DIRECTORY: u32 = 0x0000_8000;
 /// `SessionSnapshot.hosts` list a federation hub fills with each satellite's
 /// sessions (`docs/spec/L1.md` §9.1).
 pub const HOST_SESSIONS: u32 = 0x0001_0000;
+/// Wire bit advertising keep-empty sessions (ADR-0105).
+///
+/// Covers the `keep_empty` / `empty` fields of `phux.session.create/v1`, the
+/// `phux.session.keep_empty/v1` key, and the snapshot's session facets
+/// (`docs/spec/L3.md` §3.1).
+pub const KEEP_EMPTY_SESSIONS: u32 = 0x0002_0000;
 
 /// Wire bit advertising the read-only `phux.whoami/v1` Global metadata key
 /// (`docs/spec/L3.md` §3.9, ADR-0106).
@@ -1020,6 +1026,13 @@ pub enum ServerFeature {
     /// so a server may send it unasked; the bit is what lets a client read
     /// an empty list as "no satellites" rather than "an older hub".
     HostSessions = HOST_SESSIONS,
+    /// The server keeps sessions that are marked keep-empty (ADR-0105): it
+    /// honors `keep_empty` and `empty` in `phux.session.create/v1`, applies
+    /// `phux.session.keep_empty/v1`, reports the mark in the snapshot's
+    /// session facets, and accepts an attach to a session with no windows.
+    /// A client MUST see this bit before sending `empty: true`: an older
+    /// server ignores the unknown JSON field and seeds a shell.
+    KeepEmptySessions = KEEP_EMPTY_SESSIONS,
     /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with
     /// the identity of the asking connection: its principal, auth route,
     /// peer uid, and the serving OS user and host (`docs/spec/L3.md` §3.9,
@@ -1056,6 +1069,7 @@ impl ServerFeatureSet {
         | (ServerFeature::ResourceKinds as u32)
         | (ServerFeature::ListDirectory as u32)
         | (ServerFeature::HostSessions as u32)
+        | (ServerFeature::KeepEmptySessions as u32)
         | (ServerFeature::Whoami as u32)
         | (ServerFeature::ListDirectoryHost as u32);
 
@@ -1736,6 +1750,15 @@ mod tests {
         assert_eq!(HOST_SESSIONS, 0x0001_0000);
         assert!(ServerFeatureSet::from_wire(HOST_SESSIONS).contains(ServerFeature::HostSessions));
         assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::HostSessions));
+        assert_eq!(KEEP_EMPTY_SESSIONS, 0x0002_0000);
+        assert!(
+            ServerFeatureSet::from_wire(KEEP_EMPTY_SESSIONS)
+                .contains(ServerFeature::KeepEmptySessions)
+        );
+        assert_eq!(
+            ServerFeatureSet::with(&[ServerFeature::KeepEmptySessions]).as_wire(),
+            KEEP_EMPTY_SESSIONS
+        );
         assert_eq!(WHOAMI, 0x0004_0000);
         assert!(ServerFeatureSet::from_wire(WHOAMI).contains(ServerFeature::Whoami));
         assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::Whoami));

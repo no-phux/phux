@@ -68,6 +68,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::ResourceKinds,
         ServerFeature::ListDirectory,
         ServerFeature::HostSessions,
+        ServerFeature::KeepEmptySessions,
         ServerFeature::Whoami,
         ServerFeature::ListDirectoryHost,
     ])
@@ -590,6 +591,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             targets,
             server_empty,
             served,
+            killed_clients,
         }) = state.with_mut(|s| {
             // ADR-0104 §2: claim this resource before touching anything. A
             // cascading parent reaps its children inside its own lock, so a
@@ -647,6 +649,15 @@ pub(crate) fn spawn_terminal_exit_watcher(
             // between "gather" and "reap".
             let server_empty = s.reap_terminal(pane);
             let served = s.has_served_client();
+            // ADR-0105: a session a group kill released is gone once its last
+            // pane is reaped. Its session-attached clients are gathered here,
+            // under the same lock, and detached below rather than left on a
+            // session that no longer exists.
+            let killed_clients: Vec<_> = s
+                .take_killed_sessions()
+                .into_iter()
+                .flat_map(|session| s.attached_clients_in_session(session))
+                .collect();
             Some(ReapAndNotify {
                 wire_terminal_id,
                 reason,
@@ -654,6 +665,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 parent,
                 targets,
                 server_empty,
+                killed_clients,
                 served,
             })
         })
@@ -704,6 +716,10 @@ pub(crate) fn spawn_terminal_exit_watcher(
         )
         .await;
 
+        // ADR-0105: after the closes, so a client sees its last pane go
+        // before the session that held it.
+        detach_clients_of_killed_session(&state, killed_clients);
+
         // phux-60s: when the last session is gone the server has nothing
         // left to serve, so fire the root token — the tmux server-exit
         // model. Without this the server lingers forever after every
@@ -753,7 +769,10 @@ struct ReapAndNotify {
     /// `true` iff the reap emptied the last session — the server self-exit
     /// signal (phux-60s).
     server_empty: bool,
-    /// Whether any client has ever attached (arms the phux-60s self-exit).
+    /// ADR-0105: the session-attached clients of a released keep-empty
+    /// session this reap removed, to be detached with `SESSION_KILLED`.
+    killed_clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
+    ///Whether any client has ever attached (arms the phux-60s self-exit).
     served: bool,
 }
 
@@ -2691,11 +2710,214 @@ struct SessionCreateRequest {
     agent_session: Option<Vec<u8>>,
     #[serde(default)]
     request_token: Option<String>,
+    /// ADR-0105: the session survives its last window.
+    #[serde(default)]
+    keep_empty: bool,
+    /// ADR-0105: create the session with no seed terminal (implies
+    /// `keep_empty`); refused alongside a `command`.
+    #[serde(default)]
+    empty: bool,
 }
 
 /// Parse the typed JSON body of a `SESSION_CREATE_KEY` write.
 fn parse_session_create_request(value: &[u8]) -> Option<SessionCreateRequest> {
     serde_json::from_slice(value).ok()
+}
+
+/// Run the create a `SESSION_CREATE_KEY` request asked for: an empty,
+/// keep-empty session (ADR-0105), or a seeded one that is optionally marked
+/// keep-empty afterwards in the same single-threaded turn. Returns the seed
+/// pane's wire id, or `None` for an empty session.
+fn run_session_create(
+    state: &SharedState,
+    request: SessionCreateRequest,
+    root_token: &tokio_util::sync::CancellationToken,
+) -> Result<Option<phux_protocol::ids::ResourceId>, String> {
+    if request.empty {
+        return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
+    }
+    let wire = crate::runtime::commands::create_named_session(
+        state,
+        &request.name,
+        request.command,
+        request.cwd.as_deref(),
+        request.env,
+        request.agent_session,
+        root_token,
+    )?;
+    if request.keep_empty {
+        state.with_mut(|s| s.set_session_keep_empty(&request.name, true));
+    }
+    Ok(Some(wire))
+}
+
+/// The result document published under a create's result key. `terminal_id`
+/// is `null` and `empty` is `true` for an empty session; a seeded session's
+/// document keeps its pre-ADR-0105 shape.
+fn session_create_payload(
+    name: &str,
+    wire: Option<&phux_protocol::ids::ResourceId>,
+    request_token: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "name": name,
+        "terminal_id": wire.map(phux_protocol::ids::ResourceId::local_id),
+        "request_token": request_token,
+    });
+    if wire.is_none() {
+        payload["empty"] = serde_json::Value::Bool(true);
+    }
+    payload
+}
+
+/// Parse a `phux.session.keep_empty/v1` value, `name\0true` or
+/// `name\0false`.
+fn parse_keep_empty_value(value: &[u8]) -> Option<(String, bool)> {
+    phux_protocol::wire::frame::decode_session_keep_empty(value)
+        .map(|(name, keep)| (name.to_owned(), keep))
+}
+
+/// Apply a `phux.session.keep_empty/v1` write (ADR-0105). The server owns
+/// the mark, so the write is applied to the registry rather than stored.
+///
+/// A write that changed the mark, or cleared it on an empty session and so
+/// removed that session, is broadcast to subscribers of the written key with
+/// the applied value. A removal detaches clients attached to the session
+/// (`SESSION_KILLED`) and, when it leaves the server with no sessions after
+/// serving a client, self-exits exactly as the reap cascade does.
+fn apply_session_keep_empty(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+    value: &[u8],
+    root_token: &tokio_util::sync::CancellationToken,
+) {
+    use crate::state::KeepEmptyOutcome;
+
+    let Some((name, keep)) = parse_keep_empty_value(value) else {
+        warn!(
+            ?client_id,
+            request_id,
+            "SET_METADATA(session-keep-empty): malformed value (want name\\0true|false); ignoring",
+        );
+        return;
+    };
+    let (outcome, clients, server_drained) = state.with_mut(|s| {
+        let session = s.find_session_by_name(&name);
+        let outcome = s.set_session_keep_empty(&name, keep);
+        if matches!(
+            outcome,
+            KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
+        ) {
+            let _ = s.metadata_broadcast(scope, key, value);
+        }
+        let removed = outcome == KeepEmptyOutcome::Removed;
+        let clients = match session {
+            Some(session) if removed => s.attached_clients_in_session(session),
+            _ => Vec::new(),
+        };
+        let drained = removed && s.registry().session_count() == 0 && s.has_served_client();
+        (outcome, clients, drained)
+    });
+    debug!(
+        ?client_id,
+        request_id,
+        %name,
+        keep,
+        ?outcome,
+        "SET_METADATA(session-keep-empty): applied",
+    );
+    detach_clients_of_killed_session(state, clients);
+    if server_drained && !root_token.is_cancelled() {
+        info!("last session killed after serving clients; server self-exit");
+        root_token.cancel();
+    }
+}
+
+/// Detach the clients attached to a session that was just killed, with
+/// `DETACHED { SESSION_KILLED }`. Each delivery waits in its own task, so a
+/// wedged client's full mailbox cannot block the write that killed it.
+fn detach_clients_of_killed_session(
+    state: &SharedState,
+    clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
+) {
+    for (detached_client, tx) in clients {
+        let detached_state = state.clone();
+        tokio::task::spawn_local(async move {
+            let _ = tx
+                .send(Outbound::Frame(FrameKind::Detached {
+                    reason: Some(DetachReason::SessionKilled),
+                    message: "the session this attach was rooted in was killed".to_owned(),
+                }))
+                .await;
+            detach_and_release_consumer_state(&detached_state, detached_client);
+        });
+    }
+}
+
+/// Why a parsed `SESSION_CREATE_KEY` request is ignored, if it is. Each
+/// refusal is silent on the wire (`SET_METADATA` has no reply) and logged by
+/// the caller.
+fn session_create_refusal(request: &SessionCreateRequest) -> Option<&'static str> {
+    use phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES;
+
+    // ADR-0105: an empty session has no seed terminal to run a command in or
+    // to bind an agent-session record to.
+    if request.empty && (request.command.is_some() || request.agent_session.is_some()) {
+        return Some("`empty` cannot carry a command or agent session");
+    }
+    if request
+        .agent_session
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
+    {
+        return Some("invalid agent session record size");
+    }
+    if request
+        .request_token
+        .as_deref()
+        .is_some_and(|token| !valid_session_create_token(token))
+    {
+        return Some("invalid request token");
+    }
+    None
+}
+
+/// The key a create publishes its result under: a one-shot, request-specific
+/// key for a nonce-bearing client, the original global key for a legacy one.
+fn session_create_result_key(request_token: Option<&str>) -> String {
+    use phux_protocol::wire::frame::{SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX};
+
+    request_token.map_or_else(
+        || SESSION_CREATE_RESULT_KEY.to_owned(),
+        |token| format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{token}"),
+    )
+}
+
+/// Publish a successful create's result document under `result_key`, and
+/// track a one-shot key so it is consumed on its owner's first read.
+fn publish_session_create_result(
+    state: &SharedState,
+    client_id: ClientId,
+    result_key: String,
+    payload: &serde_json::Value,
+    one_shot: bool,
+) {
+    let Ok(bytes) = serde_json::to_vec(payload) else {
+        return;
+    };
+    state.with_mut(|s| {
+        let _ = s.metadata_set(
+            &phux_protocol::wire::frame::Scope::Global,
+            &result_key,
+            bytes,
+        );
+        if one_shot {
+            s.track_session_create_result(client_id, result_key);
+        }
+    });
 }
 
 fn valid_session_create_token(token: &str) -> bool {
@@ -2721,51 +2943,24 @@ fn handle_session_create_metadata(
     value: &[u8],
     root_token: &tokio_util::sync::CancellationToken,
 ) {
-    use phux_protocol::wire::frame::{
-        MAX_AGENT_SESSION_RECORD_BYTES, SESSION_CREATE_RESULT_KEY,
-        SESSION_CREATE_RESULT_KEY_PREFIX, Scope,
-    };
-
-    let Some(SessionCreateRequest {
-        agent_session,
-        name,
-        command,
-        cwd,
-        env,
-        request_token,
-    }) = parse_session_create_request(value)
-    else {
+    let Some(request) = parse_session_create_request(value) else {
         warn!(
             ?client_id,
             request_id,
-            "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?, env?, request_token?, agent_session?}}); ignoring",
+            "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?, env?, request_token?, agent_session?, keep_empty?, empty?}}); ignoring",
         );
         return;
     };
-    if agent_session
-        .as_ref()
-        .is_some_and(|value| value.is_empty() || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
-    {
+    if let Some(reason) = session_create_refusal(&request) {
         warn!(
             ?client_id,
-            request_id, "SET_METADATA(session-create): invalid agent session record size; ignoring"
+            request_id, reason, "SET_METADATA(session-create): refused; ignoring"
         );
         return;
     }
-    if request_token
-        .as_deref()
-        .is_some_and(|token| !valid_session_create_token(token))
-    {
-        warn!(
-            ?client_id,
-            request_id, "SET_METADATA(session-create): invalid request token; ignoring"
-        );
-        return;
-    }
-    let result_key = request_token.as_ref().map_or_else(
-        || SESSION_CREATE_RESULT_KEY.to_owned(),
-        |token| format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{token}"),
-    );
+    let name = request.name.clone();
+    let request_token = request.request_token.clone();
+    let result_key = session_create_result_key(request_token.as_deref());
     if request_token.is_some() && state.with(|s| s.session_create_result_is_pending(&result_key)) {
         warn!(
             ?client_id,
@@ -2774,32 +2969,16 @@ fn handle_session_create_metadata(
         );
         return;
     }
-    let outcome = crate::runtime::commands::create_named_session(
-        state,
-        &name,
-        command,
-        cwd.as_deref(),
-        env,
-        agent_session,
-        root_token,
-    );
+    let outcome = run_session_create(state, request, root_token);
     if let Ok(wire) = &outcome {
-        // A nonce-bearing client gets a one-shot, request-specific result key.
-        // Legacy requests retain the original global key.
-        let payload = serde_json::json!({
-            "name": name,
-            "terminal_id": wire.local_id(),
-            "request_token": request_token,
-        });
-        if let Ok(bytes) = serde_json::to_vec(&payload) {
-            // `result_key` was reserved above before the synchronous create.
-            state.with_mut(|s| {
-                let _ = s.metadata_set(&Scope::Global, &result_key, bytes);
-                if request_token.is_some() {
-                    s.track_session_create_result(client_id, result_key);
-                }
-            });
-        }
+        let payload = session_create_payload(&name, wire.as_ref(), request_token.as_deref());
+        publish_session_create_result(
+            state,
+            client_id,
+            result_key,
+            &payload,
+            request_token.is_some(),
+        );
     }
     debug!(
         ?client_id,
@@ -3021,6 +3200,12 @@ pub(crate) fn handle_set_metadata(
     // `Scope::Global`, replacing the removed `RENAME_SESSION` verb.
     if key == phux_protocol::wire::frame::SESSION_NAME_KEY && matches!(scope, Scope::Global) {
         apply_session_rename(state, client_id, request_id, scope, key, &value);
+        return;
+    }
+    // ADR-0105: the keep-empty mark is server-owned session state, applied
+    // like a rename and never stored as an opaque blob.
+    if key == phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
+        apply_session_keep_empty(state, client_id, request_id, scope, key, &value, root_token);
         return;
     }
     store_metadata_value(state, client_id, request_id, scope, key, value);
