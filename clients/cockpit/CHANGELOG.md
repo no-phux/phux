@@ -3,6 +3,29 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/no-phux/phux/compare/cockpit-v0.19.0...cockpit-v0.20.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** `PROTOCOL_VERSION` is 0.9.0 and `PHUX_CLIENT_ABI_VERSION` is 2. A 0.8 peer and a 0.9 peer refuse each other at HELLO, and every embedder of the C ABI must rebuild against the renamed header. No frame bytes changed.
+
+### Features
+
+* **cockpit:** draw agent session rows under their terminals ([3d94247](https://github.com/no-phux/phux/commit/3d94247d7d9e47e2f6c83780217e015e3f1c89ad))
+* **cockpit:** project agent sessions under their terminals ([ccbdf49](https://github.com/no-phux/phux/commit/ccbdf4973c342c2d6e01908f751548fc4b07197d))
+* **cockpit:** qualify catalog navigation command targets ([#573](https://github.com/no-phux/phux/issues/573)) ([bdd8df1](https://github.com/no-phux/phux/commit/bdd8df17b2a65309a5d1b34f61ae8cc567cf0795))
+* **cockpit:** qualify tab commands by identity and correlate receipts ([#569](https://github.com/no-phux/phux/issues/569)) ([3f2f978](https://github.com/no-phux/phux/commit/3f2f97818a3f3c9fbb8ecde2a178c783fa4b0b54))
+* **cockpit:** retain correlated operation and placement outcomes ([#574](https://github.com/no-phux/phux/issues/574)) ([c1ed7ff](https://github.com/no-phux/phux/commit/c1ed7ff3c48983ccbff4ed241f3c948f0efa6410))
+* **protocol:** rename the wire primary to ResourceId and cut protocol 0.9.0 ([0e355cf](https://github.com/no-phux/phux/commit/0e355cf733f87e687bd8d18932f1ecb91a1e4a8b))
+
+
+### Bug Fixes
+
+* **cockpit:** bring the shipping extension harness to protocol 0.9 ([d93ee09](https://github.com/no-phux/phux/commit/d93ee09667792acad122a66bbaefa310046efa84))
+* **cockpit:** commit interaction ownership before native effects ([#565](https://github.com/no-phux/phux/issues/565)) ([43e01ba](https://github.com/no-phux/phux/commit/43e01ba46355c0d1684645ebbc239f703a78e36e))
+* **cockpit:** publish native focus and persistence transitions ([#566](https://github.com/no-phux/phux/issues/566)) ([f5b07fa](https://github.com/no-phux/phux/commit/f5b07fa0aa752bf41c1ed4fbaf60304f0b9bd973))
+
 ## [0.19.0](https://github.com/no-phux/phux/compare/cockpit-v0.18.0...cockpit-v0.19.0) (2026-09-09)
 
 

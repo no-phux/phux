@@ -9,6 +9,32 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.30.0](https://github.com/no-phux/phux/compare/v0.29.0...v0.30.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** `PROTOCOL_VERSION` is 0.9.0 and `PHUX_CLIENT_ABI_VERSION` is 2. A 0.8 peer and a 0.9 peer refuse each other at HELLO, and every embedder of the C ABI must rebuild against the renamed header. No frame bytes changed.
+
+### Features
+
+* **install:** serve a POSIX-clean installer at phux.sh/install ([7470793](https://github.com/no-phux/phux/commit/747079340c5ce87a85c424f87a06a912fa56bcb8))
+* **protocol:** rename the wire primary to ResourceId and cut protocol 0.9.0 ([0e355cf](https://github.com/no-phux/phux/commit/0e355cf733f87e687bd8d18932f1ecb91a1e4a8b))
+* **server:** agent session resources with producer-fed streams and parent cascade ([6203e03](https://github.com/no-phux/phux/commit/6203e03e991a6846a4ce403dc91743e1151cc216))
+
+
+### Bug Fixes
+
+* **ci:** stop pull-request lanes from evicting the shared cache budget ([4f279f3](https://github.com/no-phux/phux/commit/4f279f395faf5223e933abbe6a0cc2a7d8704d14))
+* **cockpit:** bring the shipping extension harness to protocol 0.9 ([d93ee09](https://github.com/no-phux/phux/commit/d93ee09667792acad122a66bbaefa310046efa84))
+* **server:** stream state survives the screen tick; child spawn reaches the parent's watchers ([bccfc23](https://github.com/no-phux/phux/commit/bccfc231cbf75eda98cf2c39641a1493a0571d36))
+
+
+### Documentation
+
+* **adr:** accept the resource model and supersede its predecessors ([c4407a8](https://github.com/no-phux/phux/commit/c4407a80cdc395dff008cea0f0339636cb75ec4b))
+* **reference:** regenerate the config reference for agent-log-bytes ([d1ea191](https://github.com/no-phux/phux/commit/d1ea19195d6a8b154be20bbd39b5e1dd4366c547))
+
 ## [0.29.0](https://github.com/no-phux/phux/compare/v0.28.0...v0.29.0) (2026-09-09)
 
 

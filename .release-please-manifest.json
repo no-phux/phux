@@ -1,6 +1,6 @@
 {
-  ".": "0.29.0",
-  "clients/cockpit": "0.19.0",
+  ".": "0.30.0",
+  "clients/cockpit": "0.20.0",
   "integrations/opencode": "0.2.2",
   "integrations/pi": "0.2.3",
   "integrations/claude": "0.4.0"
