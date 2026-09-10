@@ -333,14 +333,24 @@ the protocol epic):
    ```
 
 Shared registries are where disjoint-file merges bite: two wave-3 branches
-each created a different ADR-0086 with zero git conflicts, and a wave-2
-branch re-added a manifest key its sibling had just deleted. For ADRs the
-defense is the index row — every ADR adds its row to `ADR/README.md` at
-its numeric position (see docs/CONVENTIONS.md §"The index row"), so a
-same-number claim becomes a textual conflict at rebase and a
-`just docs-check` failure either way. For any other shared registry,
-rebase onto the integration branch and re-run the relevant gate before
-declaring a branch done.
+each created a different ADR-0086 with zero git conflicts, a wave-2 branch
+re-added a manifest key its sibling had just deleted, and two branches both
+claimed spec CHANGELOG row `0.8.0-draft.4`. The defense is a shared row every
+claimant has to edit, so a duplicate claim becomes a textual conflict at
+rebase and a `just docs-check` failure either way. Two registries are
+mechanically enforced, both by `check_registry_rows` in
+`scripts/check-docs.sh`:
+
+| Registry | Key | Order | Gate |
+|---|---|---|---|
+| `ADR/README.md` index (see docs/CONVENTIONS.md §"The index row") | ADR number `NNNN` | ascending, and the row's link must resolve to that ADR | `adr-index-sync` |
+| `docs/spec/CHANGELOG.md` | wire version, e.g. `0.9.0-draft.1` | descending, newest at the top | `spec-version-sync` |
+
+Each enforces unique keys and strict ordering, so a second claim on the same
+identifier fails the gate whether or not git noticed. When you add a third
+such registry, instantiate the helper for it rather than hand-rolling a gate.
+For any registry not yet covered, rebase onto the integration branch and
+re-run the relevant gate before declaring a branch done.
 
 ## Observability: CI itself
 

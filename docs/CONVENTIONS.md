@@ -270,6 +270,11 @@ files, which git merges silently; the shared index row turns that claim
 into an ordinary textual conflict at rebase, and the `adr-index-sync`
 gate in `just docs-check` fails any tree where a file and its row have
 drifted apart. Write the row when you write the ADR.
+The index is one instance of a general shape: `docs/spec/CHANGELOG.md`'s
+version rows are the other, and both are checked by the same
+`check_registry_rows` helper in `scripts/check-docs.sh` (unique keys,
+strict ordering, and, where a row links, a link that resolves). See
+[CONTRIBUTING.md](../CONTRIBUTING.md) §"Multi-agent fan-out" for why.
 Every Proposed or Accepted ADR also has exactly one line in
 [`ADR/IN-FORCE.md`](../ADR/IN-FORCE.md), the topic-ordered view of the
 decisions currently in force, and a Superseded or Deprecated ADR has none;
@@ -450,7 +455,7 @@ The discipline layer is mechanically checked. See
 | adr-index-sync | An ADR file with no row in `ADR/README.md`'s index, an index row that does not resolve to its file, or rows out of numeric order |
 | adr-length | An ADR over 150 lines that is not in `ADR/.length-baseline`, a baselined ADR that now fits the cap, or a baseline entry with no ADR file |
 | adr-in-force-sync | A Proposed or Accepted ADR missing from or duplicated in `ADR/IN-FORCE.md`, a Superseded or Deprecated ADR still listed there, or a link that does not resolve to its file |
-| spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version |
+| spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version, plus a version claimed by two rows or rows out of descending order |
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 
 All run under `just docs-check`, which is in `just ci`. Adding a check

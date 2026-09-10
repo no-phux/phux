@@ -29,7 +29,8 @@
 #                           Deprecated ADR is linked, and every link
 #                           resolves to its file
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
-#                           with phux-protocol's PROTOCOL_VERSION
+#                           with phux-protocol's PROTOCOL_VERSION, and its
+#                           version rows are unique and strictly descending
 #                           (skipped while the SPEC split is in flight)
 #   - impl-status         : every shipped/partial/spec-only claim in
 #                           docs/spec/ and docs/consumers/ agrees with
@@ -595,6 +596,173 @@ gate_adr_number_unique() {
 }
 
 # ---------------------------------------------------------------------------
+# Shared: registry rows
+# ---------------------------------------------------------------------------
+
+# A *shared registry* is a tracked file carrying one row per hand-allocated
+# identifier: ADR/README.md's index (one row per ADR number) and
+# docs/spec/CHANGELOG.md (one row per wire version). Parallel branches collide
+# in them without git noticing — each branch reads the same "next free"
+# identifier, claims it, and if the rows land in different places the merge is
+# clean and the collision is silent. It has happened here: two different
+# ADR-0086 files in wave 3, and — one batch after the ADR index gate landed —
+# two branches both claiming spec CHANGELOG row 0.8.0-draft.4, which the
+# head-row-only version check passed.
+#
+# The primary defense is still textual: a registry row is an anchor every
+# claimant edits, so two claims usually conflict at rebase. This helper is the
+# backstop for when they do not, and the overlap with the per-file gates
+# (adr-number-unique) is deliberate — see docs/CONVENTIONS.md §"The index row".
+#
+# What it enforces on any registry:
+#
+#   (a) no key appears in two rows
+#   (b) keys run strictly in the declared direction down the file
+#   (c) where a row carries a link, the link resolves to a real file whose
+#       name starts with the key
+#
+# Arguments:
+#   $1 file       registry file to read
+#   $2 label      gate label passed to `violate`
+#   $3 unit       what a key is, for messages ("ADR number", "version")
+#   $4 row_re     ERE matched per line; capture 1 = key, capture 2 = link
+#                 target (omit the second group for a linkless registry)
+#   $5 rank_fn    function mapping a key to a non-negative integer on stdout,
+#                 distinct keys to distinct integers; non-zero exit means
+#                 "not a well-formed key"
+#   $6 direction  `ascending` or `descending`
+#   $7 link_base  directory capture 2 resolves against, "" when linkless
+#   $8 hint       remediation sentence appended to duplicate/order messages
+#
+# Fills REGISTRY_ROW_TARGET (rank -> link target, "" when linkless) for callers
+# that need the reverse direction or a row count; cleared on entry. It is an
+# indexed array keyed by rank, not an associative one, because the script runs
+# on the Bash 3.2 shipped with macOS. Callers wanting a "the table went
+# missing" check test its size afterwards — this helper does not, because an
+# empty registry is legitimate for some (an ADR-less tree).
+
+REGISTRY_ROW_TARGET=()
+
+check_registry_rows() {
+    local file="$1" label="$2" unit="$3" row_re="$4" rank_fn="$5"
+    local direction="$6" link_base="$7" hint="$8"
+
+    REGISTRY_ROW_TARGET=()
+
+    local line key target rank prev_key="" prev_rank=""
+    while IFS= read -r line; do
+        [[ "$line" =~ $row_re ]] || continue
+        key="${BASH_REMATCH[1]}"
+        target="${BASH_REMATCH[2]:-}"
+
+        registry_check_link "$file" "$label" "$key" "$target" "$link_base"
+
+        if ! rank="$("$rank_fn" "$key")"; then
+            violate "$label" "$file" \
+                "row $unit '$key' is not a well-formed key for this registry"
+            continue
+        fi
+
+        # A rank already in the map *is* the second-row signal: two parallel
+        # counters said the same thing twice. The first row wins, so a caller
+        # checking the reverse direction compares against the row a reader
+        # would actually follow.
+        if [[ -n "${REGISTRY_ROW_TARGET[$rank]+set}" ]]; then
+            violate "$label" "$file" \
+                "more than one row for $unit $key — two branches allocated the same identifier; $hint"
+        else
+            REGISTRY_ROW_TARGET[$rank]="$target"
+        fi
+
+        if [[ -n "$prev_rank" ]] && registry_out_of_order "$direction" "$prev_rank" "$rank"; then
+            violate "$label" "$file" \
+                "row $key appears after row $prev_key — rows must run $direction; $hint"
+        fi
+        prev_key="$key"
+        prev_rank="$rank"
+    done < "$file"
+}
+
+# Check (c) for one row: a linked row must resolve under $link_base to a file
+# whose name starts with the row's key. No-op for a linkless registry or row.
+registry_check_link() {
+    local file="$1" label="$2" key="$3" target="$4" link_base="$5"
+    [[ -n "$link_base" && -n "$target" ]] || return 0
+    if [[ ! -f "$link_base/$target" ]]; then
+        violate "$label" "$file" \
+            "row $key links to ./$target, which does not exist"
+    elif [[ "$target" != "$key-"* ]]; then
+        violate "$label" "$file" \
+            "row $key links to ./$target, whose filename does not start with $key-"
+    fi
+}
+
+# Check (b) for one adjacent pair: succeeds when `rank` does not strictly
+# follow `prev_rank` in `direction` (equal ranks are out of order too).
+registry_out_of_order() {
+    local direction="$1" prev_rank="$2" rank="$3"
+    if [[ "$direction" == "ascending" ]]; then
+        (( rank <= prev_rank ))
+    else
+        (( rank >= prev_rank ))
+    fi
+}
+
+# Rank for an ADR index key: the number itself. `10#` forces decimal, so a
+# leading zero (0086) is not read as octal.
+registry_rank_adr() {
+    [[ "$1" =~ ^[0-9]{4}$ ]] || return 1
+    printf '%d\n' "$((10#$1))"
+}
+
+# Rank for a docs/spec/CHANGELOG.md version key.
+#
+# The ordering rule is DERIVED FROM THE FILE, not from semver precedence,
+# which disagrees with it. Reading the table top to bottom:
+#
+#   0.9.0-draft.1, 0.9.0, 0.8.0-draft.17 … 0.8.0-draft.1, 0.8.0,
+#   0.7.0-draft.11 … 0.7.0, …, 0.2.0-draft.1, 0.2.0-draft,
+#   0.1.0-draft.7 … 0.1.0-draft
+#
+# so, newest first:
+#
+#   1. compare major, then minor, then patch, numerically;
+#   2. within one version the DRAFTS SIT ABOVE THE BARE ROW. The bare row
+#      records the version bump itself; each `-draft.N` after it is a wire
+#      change made under that version and therefore newer. (Semver says the
+#      opposite — 0.8.0 > 0.8.0-draft.6 — which is why this comparator is
+#      hand-written rather than delegated to a version sort.)
+#   3. the draft suffix is a NUMBER: draft.11 is newer than draft.9, not
+#      older as a string sort would have it.
+#   4. an unnumbered `-draft` (0.2.0-draft, 0.1.0-draft, from before the
+#      suffix was numbered) is the oldest draft of its version, still above
+#      a bare row for that version.
+#
+# Rank = ((major*1000 + minor)*1000 + patch) * 100000 + draft_rank, with
+# draft_rank 0 for a bare release, 1 for `-draft`, N+2 for `-draft.N` (so
+# `-draft` and `-draft.0` stay distinct keys).
+registry_rank_spec_version() {
+    local key="$1" core suffix draft
+    core="${key%%-*}"
+    [[ "$core" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    local major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+
+    suffix="${key#"$core"}"
+    case "$suffix" in
+        "")      draft=0 ;;
+        -draft)  draft=1 ;;
+        -draft.*)
+            [[ "$suffix" =~ ^-draft\.([0-9]{1,4})$ ]] || return 1
+            draft=$((10#${BASH_REMATCH[1]} + 2))
+            ;;
+        *)       return 1 ;;
+    esac
+
+    printf '%d\n' \
+        "$(( ((10#$major * 1000 + 10#$minor) * 1000 + 10#$patch) * 100000 + draft ))"
+}
+
+# ---------------------------------------------------------------------------
 # Gate 5c: adr-index-sync
 # ---------------------------------------------------------------------------
 
@@ -622,58 +790,37 @@ gate_adr_index_sync() {
         return
     fi
 
-    # Collect index rows: `| [NNNN](./NNNN-slug.md) | ... |`.
-    local line num index target prev=""
-    local -a row_target=()
-    local row_re='^\|[[:space:]]*\[([0-9]{4})\]\(\./([^)]+)\)'
-    while IFS= read -r line; do
-        [[ "$line" =~ $row_re ]] || continue
-        num="${BASH_REMATCH[1]}"
-        index=$((10#$num))
-        target="${BASH_REMATCH[2]}"
+    # Checks 2-3, plus no number claimed by two rows, are the shared registry
+    # contract over index rows `| [NNNN](./NNNN-slug.md) | ... |`: ascending,
+    # link-resolving.
+    check_registry_rows \
+        "$readme" \
+        adr-index-sync \
+        "ADR number" \
+        '^\|[[:space:]]*\[([0-9]{4})\]\(\./([^)]+)\)' \
+        registry_rank_adr \
+        ascending \
+        "$ROOT/ADR" \
+        "insert each new ADR's row at its numeric position, and renumber if a sibling branch took the number first"
 
-        # A number already in `row_target` *is* the second-row signal; a
-        # parallel counter said the same thing twice. The first row wins, so
-        # the reverse direction below compares against the row a reader would
-        # follow.
-        if [[ -n "${row_target[$index]:-}" ]]; then
-            violate adr-index-sync "$readme" \
-                "index has more than one row for ADR number $num"
-        else
-            row_target[$index]="$target"
-        fi
-
-        if [[ ! -f "$ROOT/ADR/$target" ]]; then
-            violate adr-index-sync "$readme" \
-                "index row $num links to ./$target, which does not exist"
-        elif [[ "$target" != "$num-"* ]]; then
-            violate adr-index-sync "$readme" \
-                "index row $num links to ./$target, whose filename does not start with $num-"
-        fi
-
-        if [[ -n "$prev" ]] && (( 10#$num <= 10#$prev )); then
-            violate adr-index-sync "$readme" \
-                "index row $num appears after row $prev — rows must ascend numerically (insert each new ADR's row at its numeric position)"
-        fi
-        prev="$num"
-    done < "$readme"
-
-    # Reverse direction: every ADR file has its row, and the row points at
-    # this file (not at a same-numbered sibling — the duplicate-claim case
-    # adr-number-unique also reports).
-    local file base
+    # Check 1, the reverse direction, is specific to this registry because
+    # only ADRs have a file per row: every ADR file has its row, and the row
+    # points at this file (not at a same-numbered sibling — the
+    # duplicate-claim case adr-number-unique also reports). Reads the map the
+    # helper just filled; an ADR's rank is its number.
+    local file base num index
     while IFS= read -r file; do
         base="$(basename "$file")"
         # Reads the number out of the name; `adr_files` decides membership.
         [[ "$base" =~ ^([0-9]{4})- ]] || continue
         num="${BASH_REMATCH[1]}"
         index=$((10#$num))
-        if [[ -z "${row_target[$index]:-}" ]]; then
+        if [[ -z "${REGISTRY_ROW_TARGET[$index]:-}" ]]; then
             violate adr-index-sync "$file" \
                 "no index row in ADR/README.md for ADR number $num — every ADR adds exactly one row at its numeric position (see the comment above the index)"
-        elif [[ "${row_target[$index]}" != "$base" ]]; then
+        elif [[ "${REGISTRY_ROW_TARGET[$index]}" != "$base" ]]; then
             violate adr-index-sync "$file" \
-                "index row $num links to ./${row_target[$index]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
+                "index row $num links to ./${REGISTRY_ROW_TARGET[$index]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
         fi
     done < <(adr_files)
 }
@@ -862,9 +1009,17 @@ gate_adr_in_force_sync() {
 # Gate 6: spec-version-sync
 # ---------------------------------------------------------------------------
 
-# Compare the head version listed in docs/spec/CHANGELOG.md (first table
-# row that starts with `| <version> |`) against the PROTOCOL_VERSION
-# constant in crates/phux-protocol/src/lib.rs.
+# Two things about docs/spec/CHANGELOG.md, both about the version column:
+#
+#   1. the table is a well-formed shared registry — no version claimed by two
+#      rows, rows strictly descending (newest first);
+#   2. the head version (first table row that starts with `| <version> |`)
+#      agrees with the PROTOCOL_VERSION constant in
+#      crates/phux-protocol/src/lib.rs.
+#
+# (1) was added after two parallel branches both landed 0.8.0-draft.4: the
+# head-row check says nothing about rows further down, so a duplicate one row
+# from the top passed clean. See the `check_registry_rows` comment.
 #
 # CONVENTIONS.md notes the SPEC split is in flight; docs/spec/CHANGELOG.md
 # does not yet exist. While that's true, this gate emits a single NOTE
@@ -876,6 +1031,25 @@ gate_spec_version_sync() {
     if [[ ! -f "$changelog" ]]; then
         echo "[spec-version-sync] NOTE: $changelog does not exist yet; gate is dormant until the SPEC split lands." >&2
         return
+    fi
+
+    # The registry contract first, so that a PROTOCOL_VERSION parse failure
+    # below (which returns early) cannot mask a duplicate row. Version rows
+    # carry no link, so there is no link base; ordering is descending — see
+    # `registry_rank_spec_version` for the rule and where it comes from.
+    check_registry_rows \
+        "$changelog" \
+        spec-version-sync \
+        version \
+        '^\|[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[^|[:space:]]*)[[:space:]]*\|' \
+        registry_rank_spec_version \
+        descending \
+        "" \
+        "the newest version goes at the top of the table; if a sibling branch already claimed this version, bump yours"
+
+    if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+        violate spec-version-sync "$changelog" \
+            "no version rows matched — the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
     fi
 
     # First table row: a line beginning with `| ` followed by a non-pipe
