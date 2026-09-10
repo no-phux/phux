@@ -100,6 +100,7 @@ by a newer one, the newer line is the operative reading.
 ## Agents
 
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
+- [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable work rides a separate, fenced, bounded `phux-coordinator/1` endpoint, never L1 or L3.
 - [0095](./0095-the-blackbird-boundary.md) phux and Blackbird never connect; one optional field in the agent record joins their ledgers.
 - [0085](./0085-hook-sourced-agent-state.md) Hook-reported working, blocked, and done states are detector evidence, published immediately.
 - [0084](./0084-starting-an-agent-in-an-existing-shell.md) `phux agent start` types the integration argv into a live shell; detection verifies the kind.

@@ -132,6 +132,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) | Per-pane scrollback is bounded in bytes, by phux, explicitly | Accepted |
 | [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Accepted (builds on [0040](./0040-agent-identity-metadata.md)) |
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
+| [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) | Durable coordinator is a separate bounded endpoint | Accepted (forward-compat; builds on [0092](./0092-durable-work-coordinator-authority.md), still Proposed) |
 | [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted |
 | [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (builds on [0020](./0020-layered-render.md)) |

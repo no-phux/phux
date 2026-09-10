@@ -58,7 +58,7 @@ as a TUI inside another terminal, as a native GUI, as an agent harness,
 or as something else entirely. The Terminal is the wire's primary
 primitive; everything else is an optional layered service on top of it.
 
-The protocol described here is the contract between server and client.
+The terminal protocol described here is the contract between server and client.
 The wire is **asymmetric**:
 
 - **Server → Client (Terminal content):** VT bytes. The server
@@ -91,6 +91,11 @@ session-window-pane-layout-focus vocabulary is a convention of the
 reference TUI consumer, not a wire concept
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)). See those
 ADRs for the rationale that shapes this document.
+
+Durable work coordination is a separate application-protocol endpoint with its
+own framing, HELLO, version, capabilities, and authenticated scopes. It is
+specified in [coordinator.md](./coordinator.md); coordinator frames are never
+legal on this terminal connection.
 
 [ADR-0013]: ../../ADR/0013-libghostty-bytes-on-wire.md
 
