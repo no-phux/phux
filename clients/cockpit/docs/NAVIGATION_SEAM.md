@@ -7,9 +7,11 @@ last-reviewed: 2026-09-10
 # Shipping navigation seam
 
 **TL;DR.** The TypeScript core presents a four-row native catalog with
-revision-fenced page reads and captured provider-qualified selection targets.
-Selection and its admission receipt use the bounded interaction command FIFO.
-Snapshot byte 23 reports provider connectivity independently of engine readiness.
+revision-fenced page reads, optional session and host scopes, and captured
+provider-qualified selection targets. Selection and its admission receipt use
+the bounded interaction command FIFO; known-host rows carry a filter token that
+only narrows the view. Snapshot byte 23 reports provider connectivity
+independently of engine readiness.
 
 ## Engine hook contract
 
@@ -69,7 +71,7 @@ All multibyte integers are little-endian. The request is:
 | Offset | Value |
 |---|---|
 | 0 | version 1 |
-| 1 | kind 3 |
+| 1 | kind 3, or 4 for a scoped request |
 | 2 | expected revision, u64 |
 | 10 | filtered offset, u16 |
 | 12 | UTF-8 query length, u8, at most 64 |
@@ -82,21 +84,49 @@ bounded record and target layout lives in the
 The index refers to the unfiltered catalog for display bookkeeping only;
 activation echoes captured target bytes rather than reconstructing identity.
 
+Scoped requests use kind 4 and append `scope:u8, host_length:u8, raw_host` after
+the query. Scopes are all work (0), sessions (1), known terminal hosts (2), and
+exact host (3). Only exact-host requests carry a host, up to 255 bytes; empty
+host denotes the coordinator. Local ephemeral PTYs do not appear in host lists.
+`navigationRequest` retains the original three-argument TS API;
+`navigationScopedRequest` takes explicit scope and host arguments.
+
+Responses append marker `0x4e` after the records, followed by one metadata
+record per row: `kind:u8, selectable:u8, detail_length:u8`, then at most 160
+detail bytes. Kinds distinguish open terminals (0), available terminals (1),
+sessions (2), and hosts (3).
+
+Terminal and session rows carry a captured catalog target (tag 2); only those
+rows enqueue a catalog command. A known-host row instead carries the filter
+token `3, host_length:u8, raw_host` in its target slot, and kind 3 must pair
+with exactly that token. Activating it switches to the exact-host scope with
+the token's raw host. It never enters the command FIFO or sends a catalog
+activation, even when held across a replacement page.
+
+Unknown ownership makes an available row disabled. The core refuses keyboard
+or painted submission of a current disabled row, and the engine refuses any
+target it cannot admit. A held painted action is not revision-bound: it echoes
+its captured identity, so a replacement page that reuses its index cannot
+retarget it.
+
 The existing workspace projection supplies enumeration and matching: every
 placed pane in every open window, every unplaced remote ref, then every remote
-session. Display labels identify window/tab, provider, availability, or session.
+session. Display labels are the terminal title or session name. Window, tab,
+host and directory are carried in the metadata detail, and availability in the
+row kind and selectable flag.
 Search uses the projection's full metadata rather than the compact strip label.
 An inventory larger than u16 is an explicit error, never a silently shortened
 result. Current bounded model/provider inventories fit comfortably.
 
-Four 32pt rows leave room at the 420pt minimum for the 40pt search field,
-32pt heading and paging controls, notice, token gaps, and panel/outer padding.
+Four 40pt two-line rows fit the 420pt minimum: 32pt outer padding, 32pt panel
+padding, 32pt heading, 32pt scope controls, 40pt input, 160pt results, up to 20pt
+notice, 32pt paging controls, and five 8pt gaps. The compiled layout gate checks
+populated results at the minimum size.
 Previous/Next work by pointer; arrow navigation crosses page boundaries. The
-query, offset, and revision are echoed so late responses cannot replace newer
-results. Invalidation withdraws current rows and disables keyboard submission;
-a held painted action retains its original authority for native validation.
-Refresh is always
-reachable, including an error or empty result.
+query, offset, revision, scope and raw host are echoed so late responses cannot
+replace newer results. Invalidation withdraws current rows and disables keyboard
+submission; a held painted action retains its original authority for native
+validation. Refresh is always reachable, including an error or empty result.
 
 ## Snapshot and connection state
 
@@ -108,12 +138,15 @@ An unavailable engine withdraws the connectivity claim. An offline provider
 exposes Reconnect in main and secondary window chrome.
 
 The toolkit's 4096-byte limit is unchanged. Every tab identity is retained;
-strip titles/CWD are explicitly elided on UTF-8 boundaries to 24/8 bytes.
+strip titles/CWD are explicitly elided on UTF-8 boundaries to 20/8 bytes.
 The compile-time budget covers all five windows at sixteen tabs each, every
 tab record, all built-in theme names, configuration path, and framing. Full
-inventory navigation uses separate bounded pages (at most 2252 bytes:
-`16 + 64 + 4 * (5 + 298 + 240)` for framing, query, four opaque targets and
-display labels).
+inventory navigation uses separate bounded pages (at most 3162 bytes:
+`19 + 64 + 255 + 4 * (8 + 298 + 240 + 160)` for the scoped request echo, page
+framing and metadata marker, then four opaque targets, display labels and
+metadata details). Snapshot extension 3 carries current attached session,
+coordinator endpoint and connection detail; it describes real provider state
+rather than startup session configuration.
 
 ## Focused validation
 

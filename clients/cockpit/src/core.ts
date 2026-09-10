@@ -3,6 +3,7 @@ import { type WindowDescriptor } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
 import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
 import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
+import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
@@ -12,8 +13,11 @@ import {
   intent,
   sameU64,
   snapshot,
-  navigationRequest,
+  navigationScopedRequest,
+  type NavigationRow,
+  type NavigationPage,
   navigationPage,
+  navigationHostFilter,
   sameBytes,
   type SnapshotAgentRow,
 } from "./protocol.ts";
@@ -64,6 +68,11 @@ export interface SwitcherRow {
   readonly label: Uint8Array;
   readonly target: Uint8Array;
   readonly highlighted: boolean;
+  readonly detail: Uint8Array;
+  readonly kind: number;
+  readonly host: Uint8Array;
+  readonly selectable: boolean;
+  readonly disabled: boolean;
 }
 
 export interface ThemeRow {
@@ -71,6 +80,11 @@ export interface ThemeRow {
   readonly label: Uint8Array;
   readonly active: boolean;
   readonly highlighted: boolean;
+}
+
+export interface SettingsChoice {
+  readonly index: number;
+  readonly label: Uint8Array;
 }
 
 /// One secondary window slot, as the engine's snapshot reports it. `open`
@@ -109,12 +123,23 @@ export interface Model {
   /// field of a `for` item, so the nesting is expressed here as order and
   /// depth rather than as a loop inside a loop.
   readonly railRows: readonly RailRow[];
+  readonly workspaceLabel: Uint8Array;
+  readonly window1RailRows: readonly RailRow[];
+  readonly window2RailRows: readonly RailRow[];
+  readonly window3RailRows: readonly RailRow[];
+  readonly window4RailRows: readonly RailRow[];
   /// Native projection slot for the platform window that owns modal chrome.
   /// Platform ids never cross the seam; the snapshot carries only 0..4.
   readonly activeWindow: number;
   readonly paletteOpen: boolean;
   readonly mainPaletteOpen: boolean;
   readonly paletteQuery: Uint8Array;
+  readonly paletteScope: number;
+  readonly paletteHost: Uint8Array;
+  readonly paletteHostLabel: Uint8Array;
+  readonly navigationScopes: readonly SettingsChoice[];
+  readonly coordinatorEndpoint: Uint8Array;
+  readonly connectionDetail: Uint8Array;
   readonly paletteAnchor: number;
   readonly paletteFocus: number;
   readonly paletteRows: readonly SwitcherRow[];
@@ -137,6 +162,18 @@ export interface Model {
   readonly settingsCursor: number;
   readonly configExists: boolean;
   readonly configNotice: Uint8Array;
+  readonly appearance: Appearance;
+  readonly appearanceBusy: boolean;
+  readonly settingsSection: number;
+  readonly settingsSections: readonly SettingsChoice[];
+  readonly cursorChoices: readonly SettingsChoice[];
+  readonly placementChoices: readonly SettingsChoice[];
+  readonly fontDecrease: number;
+  readonly fontIncrease: number;
+  readonly navigationAfterSettings: boolean;
+  /// A rollback (Cancel, Escape, or leaving for the switcher) is in flight;
+  /// if it fails, Settings still closes rather than trapping the keyboard.
+  readonly appearanceClosing: boolean;
   // Each secondary slot flattened: a markup template takes scalars and
   // slices as arguments, not records, so the slot's markup binds these.
   readonly window1Open: boolean;
@@ -191,6 +228,7 @@ export type Msg =
   | { readonly kind: "close_selected_tab" }
   | { readonly kind: "toggle_tab_placement" }
   | { readonly kind: "palette_open" }
+  | { readonly kind: "palette_scope"; readonly scope: number }
   | { readonly kind: "palette_close" }
   | { readonly kind: "palette_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "palette_move"; readonly delta: number }
@@ -208,6 +246,12 @@ export type Msg =
   | { readonly kind: "settings_pick"; readonly index: number }
   | { readonly kind: "settings_commit" }
   | { readonly kind: "settings_reveal" }
+  | { readonly kind: "settings_section"; readonly section: number }
+  | { readonly kind: "settings_font"; readonly direction: number }
+  | { readonly kind: "settings_cursor"; readonly index: number }
+  | { readonly kind: "settings_placement"; readonly index: number }
+  | { readonly kind: "appearance_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "appearance_failed"; readonly error: Uint8Array }
   | { readonly kind: "native_command"; readonly command: number }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
@@ -249,6 +293,10 @@ export const viewUnbound = [
   "settingsCursor",
   "palette_move",
   "settings_move",
+  "appearance_loaded",
+  "appearance_failed",
+  "navigationAfterSettings",
+  "appearanceClosing",
   "engineConnected",
   "engineSequence",
   "engineRevision",
@@ -346,24 +394,75 @@ function refreshNavigation(model: Model): Model {
   return { ...refreshed, paletteCursor: model.paletteCursor };
 }
 
+/// A painted pick carries its own captured bytes; keyboard submission uses the
+/// highlighted current row. A current row the engine marked unselectable never
+/// submits. A held pick absent from the page stays native-validated.
 function navigationTarget(model: Model, msg: Msg): Uint8Array {
   if (!model.paletteOpen) return NO_BYTES;
-  if (msg.kind === "palette_pick") return msg.target;
+  if (msg.kind === "palette_pick") return currentRowRefuses(model, msg.target) ? NO_BYTES : msg.target;
   if (model.paletteLoading || model.paletteRows.length === 0) return NO_BYTES;
-  return model.paletteRows[model.paletteCursor].target;
+  const row = model.paletteRows[model.paletteCursor];
+  return row.selectable ? row.target : NO_BYTES;
+}
+
+function currentRowRefuses(model: Model, target: Uint8Array): boolean {
+  for (const row of model.paletteRows) {
+    if (sameBytes(row.target, target)) return !row.selectable;
+  }
+  return false;
 }
 
 function loadedNavigation(model: Model, body: Uint8Array): Model {
   if (!model.paletteOpen || !model.engineConnected) return model;
   const page = navigationPage(body);
   if (page === null) return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
-  if (!sameU64(page.revision, model.engineRevision)) return model;
-  if (page.offset !== model.paletteOffset || !sameBytes(page.query, model.paletteQuery)) return model;
+  if (!currentNavigationPage(model, page)) return model;
   const total = page.total >= 0 && page.total <= 65535 ? Math.trunc(page.total) : 0;
-  const loaded: Model = { ...model, paletteRows: page.rows, paletteTotal: total, paletteLoading: false,
+  const loaded: Model = { ...model, paletteRows: switcherRows(page.rows), paletteTotal: total, paletteLoading: false,
     palettePrevious: page.offset > 0, paletteNext: page.offset + page.rows.length < total,
-    paletteNotice: total === 0 ? asciiBytes("No matching terminals or sessions") : asciiBytes("Open panes / Available terminals / Sessions") };
+    paletteNotice: navigationNotice(model.paletteScope, total) };
   return highlightNavigation(loaded, Math.min(model.paletteCursor, page.rows.length - 1));
+}
+
+function currentNavigationPage(model: Model, page: NavigationPage): boolean {
+  return sameU64(page.revision, model.engineRevision) && page.offset === model.paletteOffset &&
+    sameBytes(page.query, model.paletteQuery) && page.scope === model.paletteScope && sameBytes(page.host, model.paletteHost);
+}
+
+function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
+  const result: SwitcherRow[] = [];
+  for (const row of rows) {
+    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
+    const kind = row.kind >= 0 && row.kind <= 3 ? Math.trunc(row.kind) : 0;
+    result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
+      highlighted: row.highlighted, selectable: row.selectable, disabled: !row.selectable, target: row.target });
+  }
+  return result;
+}
+
+function navigationNotice(scope: number, total: number): Uint8Array {
+  if (scope === 2) return total === 0 ? asciiBytes("No known terminal hosts on this connection") : asciiBytes("Hosts represented by known terminals");
+  if (scope === 1) return total === 0 ? asciiBytes("No matching Phux sessions") : asciiBytes("Select a session to open its workspace");
+  return total === 0 ? asciiBytes("No matching terminals or sessions") : asciiBytes("Enter to open  /  Escape to return");
+}
+
+function scopedNavigationRequest(model: Model): Uint8Array {
+  return navigationScopedRequest(model.engineRevision, model.paletteOffset, model.paletteQuery, model.paletteScope, model.paletteHost);
+}
+
+function chooseNavigationScope(model: Model, scope: number): Model {
+  if (!model.paletteOpen || !(scope >= 0 && scope <= 2)) return model;
+  return requestNavigation({ ...model, paletteScope: Math.trunc(scope), paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES,
+    paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0 }, 0);
+}
+
+/// A known-host token only narrows the view to its exact raw host; it is never
+/// enqueued as catalog authority, even when held across a replacement page.
+function hostNavigation(model: Model, host: Uint8Array): Model {
+  const exact = host.slice();
+  const label = exact.length === 0 ? asciiBytes("Coordinator") : exact;
+  return requestNavigation({ ...model, paletteScope: 3, paletteHost: exact, paletteHostLabel: label,
+    paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0 }, 0);
 }
 
 function moveNavigation(model: Model, delta: number): Model {
@@ -413,7 +512,9 @@ function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
       if (model.paletteOpen) return model;
-      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0 }), 0);
+      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
+        paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
+    case "palette_scope": return chooseNavigationScope(model, msg.scope);
     case "palette_edit": return editNavigation(model, msg.edit);
     case "palette_move": return moveNavigation(model, msg.delta);
     default: return browseNavigation(model, msg);
@@ -785,10 +886,21 @@ export function initialModel(): [Model, Cmd<Msg>] {
       selectedTab: 0,
       tabPlacement: "top",
       railRows: NO_RAIL_ROWS,
+      workspaceLabel: asciiBytes("Workspace"),
+      window1RailRows: NO_RAIL_ROWS,
+      window2RailRows: NO_RAIL_ROWS,
+      window3RailRows: NO_RAIL_ROWS,
+      window4RailRows: NO_RAIL_ROWS,
       activeWindow: 0,
       paletteOpen: false,
       mainPaletteOpen: false,
       paletteQuery: new Uint8Array(0),
+      paletteScope: 0,
+      paletteHost: NO_BYTES,
+      paletteHostLabel: NO_BYTES,
+      navigationScopes: [{ index: 0, label: asciiBytes("All work") }, { index: 1, label: asciiBytes("Sessions") }, { index: 2, label: asciiBytes("Known hosts") }],
+      coordinatorEndpoint: NO_BYTES,
+      connectionDetail: NO_BYTES,
       paletteAnchor: 0,
       paletteFocus: 0,
       paletteRows: NO_ROWS,
@@ -811,6 +923,20 @@ export function initialModel(): [Model, Cmd<Msg>] {
       settingsCursor: 0,
       configExists: false,
       configNotice: new Uint8Array(0),
+      appearance: initialAppearance(),
+      appearanceBusy: false,
+      settingsSection: 0,
+      settingsSections: [
+        { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Workspace") }, { index: 2, label: asciiBytes("Connection") },
+      ],
+      cursorChoices: [
+        { index: 0, label: asciiBytes("Block") }, { index: 1, label: asciiBytes("Bar") }, { index: 2, label: asciiBytes("Underline") },
+      ],
+      placementChoices: [{ index: 0, label: asciiBytes("Top strip") }, { index: 1, label: asciiBytes("Workspace rail") }],
+      fontDecrease: 0,
+      fontIncrease: 1,
+      navigationAfterSettings: false,
+      appearanceClosing: false,
       window1Open: false,
       window1Tabs: NO_TABS,
       window1TabWidth: 168,
@@ -966,6 +1092,115 @@ function legacySlotIntent(revision: WireU64, slot: number): Uint8Array {
   return intent(1, revision, index, window);
 }
 
+interface AppearanceDecision {
+  readonly model: Model;
+  readonly request: Uint8Array;
+  readonly opening: boolean;
+  readonly closed: boolean;
+  readonly navigate: boolean;
+}
+
+function appearanceDecision(model: Model): AppearanceDecision {
+  return { model, request: NO_BYTES, opening: false, closed: false, navigate: false };
+}
+
+function requestAppearance(model: Model, action: number, argument: number): AppearanceDecision {
+  return { ...appearanceDecision({ ...model, appearanceBusy: true }), request: appearanceRequest(action, argument) };
+}
+
+function openAppearance(model: Model): AppearanceDecision {
+  if (model.settingsOpen) return appearanceDecision(model);
+  const next = scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false, settingsSection: 0,
+    navigationAfterSettings: false, appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true });
+  return { ...requestAppearance(next, 0, 0), opening: true };
+}
+
+function loadedAppearance(model: Model, body: Uint8Array): AppearanceDecision {
+  if (!model.settingsOpen) return appearanceDecision(model);
+  const appearance = appearanceResponse(body);
+  if (appearance === null) return appearanceFailure(model);
+  const cursor = appearance.theme < model.themes.length ? appearance.theme : model.settingsCursor;
+  const next = scopeOverlays({ ...model, appearance, appearanceBusy: false, appearanceClosing: false, settingsCursor: cursor,
+    themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active });
+  if (appearance.active) return appearanceDecision(next);
+  if (model.navigationAfterSettings) return openNavigationAfterAppearance(next);
+  return { ...appearanceDecision(next), closed: true };
+}
+
+function openNavigationAfterAppearance(model: Model): AppearanceDecision {
+  const next = changeNavigation(model, { kind: "palette_open" });
+  return { ...appearanceDecision(next), navigate: true };
+}
+
+function failedAppearance(model: Model): Model {
+  return { ...model, appearanceBusy: false, appearance: { ...model.appearance,
+    notice: asciiBytes("Appearance unavailable. Retry Save or Cancel before continuing.") } };
+}
+
+/// Dismissal never depends on a native round trip: a transaction that never
+/// began has nothing to roll back, and a failed rollback must still release
+/// Settings and the keyboard. A failed edit or Save keeps the preview open.
+function dismissLocally(model: Model): AppearanceDecision {
+  const next = scopeOverlays({ ...model, settingsOpen: false, appearanceBusy: false, appearanceClosing: false,
+    appearance: initialAppearance() });
+  if (model.navigationAfterSettings) return openNavigationAfterAppearance(next);
+  return { ...appearanceDecision(next), closed: true };
+}
+
+function appearanceFailure(model: Model): AppearanceDecision {
+  if (!model.settingsOpen) return appearanceDecision(model);
+  if (model.appearanceClosing) return dismissLocally(model);
+  return appearanceDecision(failedAppearance(model));
+}
+
+function dismissAppearance(model: Model): AppearanceDecision {
+  if (!model.appearance.active && !model.appearanceBusy) return dismissLocally(model);
+  return requestAppearance({ ...model, appearanceClosing: true }, 6, 0);
+}
+
+/// The placement menu command joins the open transaction so Cancel, Save and
+/// the Settings selector all see it; with no transaction it is ignored.
+function togglePreviewPlacement(model: Model): AppearanceDecision {
+  if (!model.appearance.active) return appearanceDecision(model);
+  return requestAppearance(model, 5, model.appearance.placement === 1 ? 0 : 1);
+}
+
+function previewTheme(model: Model, index: number): AppearanceDecision {
+  if (!(index >= 0 && index < model.themes.length && index <= 32)) return appearanceDecision(model);
+  const cursor = Math.trunc(index);
+  return requestAppearance({ ...model, settingsCursor: cursor, themes: highlightThemes(model.themes, cursor) }, 1, cursor);
+}
+
+function editAppearance(model: Model, msg: Msg): AppearanceDecision | null {
+  switch (msg.kind) {
+    case "settings_pick": return previewTheme(model, msg.index);
+    case "settings_move": return model.settingsSection === 0 ? previewTheme(model, model.settingsCursor + (msg.delta >= 0 ? 1 : -1)) : appearanceDecision(model);
+    case "settings_font": return requestAppearance(model, msg.direction > 0 ? 2 : 3, 0);
+    case "settings_cursor": return requestAppearance(model, 4, msg.index);
+    case "settings_placement": return requestAppearance(model, 5, msg.index);
+    case "toggle_tab_placement": return togglePreviewPlacement(model);
+    case "settings_commit": return requestAppearance(model, 7, 0);
+    default: return null;
+  }
+}
+
+function updateAppearance(model: Model, msg: Msg): AppearanceDecision | null {
+  if (msg.kind === "settings_open") return openAppearance(model);
+  if (msg.kind === "appearance_loaded") return loadedAppearance(model, msg.body);
+  if (msg.kind === "appearance_failed") return appearanceFailure(model);
+  if (!model.settingsOpen) return null;
+  return updateOpenAppearance(model, msg);
+}
+
+function updateOpenAppearance(model: Model, msg: Msg): AppearanceDecision | null {
+  if (msg.kind === "settings_section") return appearanceDecision({ ...model, settingsSection: msg.section });
+  if (msg.kind === "settings_close") return dismissAppearance(model);
+  if (msg.kind === "palette_open") return dismissAppearance({ ...model, navigationAfterSettings: true });
+  const edited = editAppearance(model, msg);
+  if (edited === null) return null;
+  return model.appearanceBusy ? appearanceDecision(model) : edited;
+}
+
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   const result = resultTransition(model, msg);
   if (result !== null) {
@@ -973,6 +1208,23 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     return [result.model, Cmd.request("cockpit.command-results", result.request, {
       key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
     })];
+  }
+  const appearance = updateAppearance(model, msg);
+  if (appearance !== null) {
+    const next = appearance.model;
+    if (appearance.opening) return [next, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
+    ])];
+    if (appearance.navigate) return [next, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.request("cockpit.navigation", scopedNavigationRequest(next), {
+        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+      }),
+    ])];
+    if (appearance.closed) return [next, Cmd.host("cockpit.committed", NO_BYTES)];
+    if (appearance.request.length === 0) return next;
+    return [next, Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" })];
   }
   const command = tabCommandTransition(model, msg);
   if (command !== null) {
@@ -1010,11 +1262,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
       return [
         { ...model, tabPlacement: placement },
-        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 0)),
+        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255)),
       ];
     }
     case "palette_open":
     case "palette_edit":
+    case "palette_scope":
     case "palette_move":
     case "palette_previous":
     case "palette_next":
@@ -1023,7 +1276,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (next === model || !next.paletteLoading) return next;
       return [next, Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.navigation", navigationRequest(next.engineRevision, next.paletteOffset, next.paletteQuery), {
+        Cmd.request("cockpit.navigation", scopedNavigationRequest(next), {
           key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
         }),
       ])];
@@ -1034,6 +1287,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "palette_pick": {
       const target = navigationTarget(model, msg);
       if (target.length === 0) return model;
+      const host = navigationHostFilter(target);
+      if (host !== null) {
+        const filtered = hostNavigation(model, host);
+        return [filtered, Cmd.request("cockpit.navigation", scopedNavigationRequest(filtered), {
+          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+        })];
+      }
       const decision = enqueueCatalogCommand(model.tabCommands, target);
       const next = freshCommandModel(model, decision);
       if (decision.state.outcome !== 1) return next;
@@ -1048,49 +1308,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "navigation_loaded":
       return loadedNavigation(model, msg.body);
     case "navigation_failed":
-      if (model.paletteOffset > 0) return [requestNavigation(model, 0), Cmd.request("cockpit.navigation", navigationRequest(model.engineRevision, 0, model.paletteQuery), {
+      if (model.paletteOffset > 0) return [requestNavigation(model, 0), Cmd.request("cockpit.navigation", scopedNavigationRequest(requestNavigation(model, 0)), {
         key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
       })];
       return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
-    case "settings_open": {
-      if (model.settingsOpen) return model;
-      // The probe is the engine's, once per opening, exactly as the shipping
-      // app asks the disk once when the panel opens and never per frame.
-      return [
-        scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false }),
-        Cmd.batch([
-          Cmd.host("cockpit.committed", NO_BYTES),
-          Cmd.host("cockpit.intent", intent(7, model.engineRevision, 0, 0)),
-        ]),
-      ];
-    }
-    case "settings_close":
-      return [scopeOverlays({ ...model, settingsOpen: false }), Cmd.host("cockpit.committed", NO_BYTES)];
-    case "settings_move": {
-      if (!model.settingsOpen || model.themes.length === 0) return model;
-      const step = msg.delta >= 0 ? 1 : -1;
-      const last = model.themes.length - 1;
-      const raw = model.settingsCursor + step < 0 ? 0 : model.settingsCursor + step > last ? last : model.settingsCursor + step;
-      const cursor = raw >= 0 && raw <= 32 ? Math.trunc(raw) : 0;
-      return { ...model, settingsCursor: cursor, themes: highlightThemes(model.themes, cursor) };
-    }
-    case "settings_pick": {
-      if (!model.settingsOpen) return model;
-      const index = msg.index;
-      if (!(index >= 0 && index < model.themes.length && index <= 32)) return model;
-      const cursor = Math.trunc(index);
-      return { ...model, settingsCursor: cursor, themes: highlightThemes(model.themes, cursor) };
-    }
-    case "settings_commit": {
-      if (!model.settingsOpen) return model;
-      return [
-        scopeOverlays({ ...model, settingsOpen: false }),
-        Cmd.batch([
-          Cmd.host("cockpit.committed", NO_BYTES),
-          Cmd.host("cockpit.intent", intent(5, model.engineRevision, model.settingsCursor, 0)),
-        ]),
-      ];
-    }
     case "settings_reveal":
       if (!model.settingsOpen || !model.configExists) return model;
       return [model, Cmd.host("cockpit.intent", intent(6, model.engineRevision, 0, 0))];
@@ -1161,7 +1382,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
         tabs: mainTabs,
         visibleTabs: mainVisible,
-        railRows: railRows(mainVisible),
+        railRows: railRows(mainTabs),
+        workspaceLabel: projected.currentSession.length > 0 ? projected.currentSession : asciiBytes("Local workspace"),
+        coordinatorEndpoint: projected.coordinatorEndpoint,
+        connectionDetail: projected.connectionDetail,
+        window1RailRows: railRows(w1.tabs),
+        window2RailRows: railRows(w2.tabs),
+        window3RailRows: railRows(w3.tabs),
+        window4RailRows: railRows(w4.tabs),
         tabWidth,
         hasOverflow: hidden > 0,
         overflowLabel: hidden > 0 ? overflowLabel(hidden) : new Uint8Array(0),
@@ -1180,7 +1408,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       };
       const scoped = scopeOverlays(synced);
       if (!model.paletteOpen) return scoped;
-      return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", navigationRequest(scoped.engineRevision, model.paletteOffset, model.paletteQuery), {
+      return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", scopedNavigationRequest(scoped), {
         key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
       })];
     }

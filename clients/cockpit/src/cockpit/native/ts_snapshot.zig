@@ -17,7 +17,7 @@ const Model = model_module.Model;
 /// to the run and shows a cue for the rest.
 pub const header_len: usize = protocol.snapshot_header_len + 10;
 // Compact strip labels; the paginated navigation catalog carries full labels.
-pub const max_title_bytes: usize = 24;
+pub const max_title_bytes: usize = 20;
 pub const max_cwd_bytes: usize = 8;
 pub const max_bytes: usize = 4096;
 
@@ -27,7 +27,11 @@ pub const Error = error{BufferTooSmall};
 /// byte, a `u16` length, then that many payload bytes. A decoder that does
 /// not know a kind steps over it by its length instead of reading what
 /// follows as something it is not, so a later kind costs the seam nothing.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2 };
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3 };
+pub const max_session_bytes: usize = 64;
+pub const max_endpoint_bytes: usize = 160;
+pub const max_connection_detail_bytes: usize = 80;
+const navigation_context_bytes = 6 + max_session_bytes + max_endpoint_bytes + max_connection_detail_bytes;
 
 /// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
 /// what keeps the record inside `max_bytes` beside a full workspace; the
@@ -56,7 +60,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -97,7 +101,60 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written += model_module.max_windows;
     written = try encodeTargetContexts(model, out, written);
     written = try encodeAgentRows(model, out, written);
+    written = try encodeNavigationContext(model, out, written);
     return out[0..written];
+}
+
+fn currentSession(model: *const Model, out: []u8) []const u8 {
+    const remote = model.phuxConst() orelse return if (navigation.connection(model) == .local) "Local terminals" else "";
+    const id = remote.selectedSessionId() orelse return "";
+    for (remote.sessionCatalog()) |session| {
+        if (session.id != id) continue;
+        if (session.name.len > 0) return session.name;
+        break;
+    }
+    return std.fmt.bufPrint(out, "Session #{d}", .{id}) catch "Session";
+}
+
+fn coordinatorEndpoint(model: *const Model, out: []u8) []const u8 {
+    const remote = model.phuxConst() orelse return "";
+    return switch (remote.endpointDescriptor()) {
+        .unix => |path| path,
+        .tcp => |address| std.fmt.bufPrint(out, "{s}:{d}", .{ address.host, address.port }) catch address.host,
+    };
+}
+
+fn connectionDetail(model: *const Model) []const u8 {
+    return switch (navigation.connection(model)) {
+        .local => "Ephemeral local PTYs",
+        .connecting => "Connecting to coordinator",
+        .connected => "Connected to coordinator",
+        .offline => "Coordinator unavailable",
+        .workspace_unavailable => "Connected; shared workspace unavailable",
+    };
+}
+
+fn encodeContextText(text: []const u8, display: []u8, out: []u8, start: usize) Error!usize {
+    const bounded = navigation.displayText(text, display);
+    if (start + 1 + bounded.len > out.len) return error.BufferTooSmall;
+    out[start] = @intCast(bounded.len);
+    @memcpy(out[start + 1 ..][0..bounded.len], bounded);
+    return start + 1 + bounded.len;
+}
+
+/// Display context only: endpoint elision never changes an execution identity.
+fn encodeNavigationContext(model: *const Model, out: []u8, start: usize) Error!usize {
+    if (start + 3 > out.len) return error.BufferTooSmall;
+    var full: [512]u8 = undefined;
+    var session: [max_session_bytes]u8 = undefined;
+    var endpoint: [max_endpoint_bytes]u8 = undefined;
+    var detail: [max_connection_detail_bytes]u8 = undefined;
+    var at = try encodeContextText(currentSession(model, &full), &session, out, start + 3);
+    at = try encodeContextText(coordinatorEndpoint(model, &full), &endpoint, out, at);
+    at = try encodeContextText(connectionDetail(model), &detail, out, at);
+    out[start] = @intFromEnum(ExtensionKind.navigation_context);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], @intCast(at - start - 3), .little);
+    return at;
 }
 
 /// The agent sessions running under each window's tabs, as one extension
@@ -287,4 +344,27 @@ test "navigation snapshot remains bounded across windows with maximum terminal l
     try std.testing.expect(response.len <= max_bytes);
     try std.testing.expectEqual(@as(u8, model_module.max_tabs), response[20]);
     try std.testing.expect(std.mem.indexOf(u8, response, "…") != null);
+}
+
+test "navigation snapshot context reflects selected session and real endpoint" {
+    if (comptime !@import("../phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const engine_module = @import("ts_engine.zig");
+    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const remote = try model_module.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/real/coordinator.sock" }, "startup-session", "navigation");
+    engine.model.phux_provider = remote;
+    remote.host.attached_session_id = 42;
+    try remote.host.sessions.append(std.testing.allocator, .{ .id = 42, .name = try std.testing.allocator.dupe(u8, "selected-session"), .created_at_unix_secs = 0, .window_count = 1, .attached_client_count = 1, .focused = true });
+    var scratch: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("selected-session", currentSession(engine.model, &scratch));
+    try std.testing.expectEqualStrings("/real/coordinator.sock", coordinatorEndpoint(engine.model, &scratch));
+    remote.host.attached_session_id = 43;
+    try std.testing.expectEqualStrings("Session #43", currentSession(engine.model, &scratch));
+    remote.host.attached_session_id = null;
+    try std.testing.expectEqualStrings("", currentSession(engine.model, &scratch));
+    var encoded: [navigation_context_bytes]u8 = undefined;
+    const length = try encodeNavigationContext(engine.model, &encoded, 0);
+    try std.testing.expectEqual(@as(u8, 3), encoded[0]);
+    try std.testing.expectEqual(length - 3, std.mem.readInt(u16, encoded[1..3], .little));
+    try std.testing.expectError(error.BufferTooSmall, encodeNavigationContext(engine.model, encoded[0 .. length - 1], 0));
 }

@@ -7,6 +7,7 @@ const INVALIDATION_LENGTH = 18;
 /// `ts_snapshot.ExtensionKind.agent_rows`.
 const EXTENSION_AGENT_ROWS = 1;
 const EXTENSION_TAB_CONTEXTS = 2;
+const EXTENSION_NAVIGATION_CONTEXT = 3;
 
 const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 
@@ -60,6 +61,9 @@ export interface SecondaryWindow {
 
 export interface EngineSnapshot extends Invalidation {
   readonly connection: number;
+  readonly currentSession: Uint8Array;
+  readonly coordinatorEndpoint: Uint8Array;
+  readonly connectionDetail: Uint8Array;
   readonly terminalStates: Uint8Array;
   readonly activeWindow: number;
   readonly tabPlacement: number;
@@ -229,6 +233,7 @@ interface SecondaryRecords {
   readonly terminalStates: Uint8Array;
   readonly contexts: Uint8Array;
   readonly agents: readonly SnapshotAgentRow[];
+  readonly navigation: NavigationSnapshotContext;
 }
 
 /// The `agent_rows` payload: a row count, then `[window][tab][state][flags]
@@ -271,28 +276,62 @@ function readAgentRows(bytes: Uint8Array, start: number, length: number): readon
 interface SnapshotExtensions {
   readonly agents: readonly SnapshotAgentRow[];
   readonly contexts: Uint8Array;
+  readonly navigation: NavigationSnapshotContext;
+}
+
+interface NavigationSnapshotContext {
+  readonly currentSession: Uint8Array;
+  readonly coordinatorEndpoint: Uint8Array;
+  readonly connectionDetail: Uint8Array;
+}
+
+function emptyNavigationContext(): NavigationSnapshotContext {
+  return { currentSession: new Uint8Array(0), coordinatorEndpoint: new Uint8Array(0), connectionDetail: new Uint8Array(0) };
+}
+
+function readNavigationSnapshotContext(bytes: Uint8Array): NavigationSnapshotContext | null {
+  const fields: Uint8Array[] = [];
+  let at = 0;
+  for (const limit of [64, 160, 80]) {
+    if (at >= bytes.length) return null;
+    const length = bytes[at];
+    if (length > limit || at + 1 + length > bytes.length) return null;
+    fields.push(bytes.subarray(at + 1, at + 1 + length));
+    at += 1 + length;
+  }
+  if (at !== bytes.length) return null;
+  return { currentSession: fields[0], coordinatorEndpoint: fields[1], connectionDetail: fields[2] };
+}
+
+function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: Uint8Array): SnapshotExtensions | null {
+  if (kind === EXTENSION_AGENT_ROWS) {
+    const agents = readAgentRows(payload, 0, payload.length);
+    return agents === null ? null : { ...previous, agents };
+  }
+  if (kind === EXTENSION_TAB_CONTEXTS) {
+    return payload.length === 80 ? { ...previous, contexts: payload } : null;
+  }
+  if (kind === EXTENSION_NAVIGATION_CONTEXT) {
+    const navigation = readNavigationSnapshotContext(payload);
+    return navigation === null ? null : { ...previous, navigation };
+  }
+  return previous;
 }
 
 function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
-  let agents: readonly SnapshotAgentRow[] = NO_AGENTS;
-  let contexts: Uint8Array = new Uint8Array(0);
+  let result: SnapshotExtensions = { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext() };
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
     const kind = bytes[at];
     const length = bytes[at + 1] + bytes[at + 2] * 256;
     if (!(length >= 0 && length <= 4096) || at + 3 + length > bytes.length) return null;
-    if (kind === EXTENSION_AGENT_ROWS) {
-      const rows = readAgentRows(bytes, at + 3, length);
-      if (rows === null) return null;
-      agents = rows;
-    } else if (kind === EXTENSION_TAB_CONTEXTS) {
-      if (length !== 80) return null;
-      contexts = bytes.subarray(at + 3, at + 3 + length);
-    }
+    const updated = snapshotExtension(result, kind, bytes.subarray(at + 3, at + 3 + length));
+    if (updated === null) return null;
+    result = updated;
     at += 3 + length;
   }
-  return { agents, contexts };
+  return result;
 }
 
 function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | null {
@@ -314,13 +353,13 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
 
 function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly SecondaryWindow[]): SecondaryRecords | null {
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0) };
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext() };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
   const extensions = readExtensions(bytes, at + 5);
   if (extensions === null) return null;
-  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts };
+  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts, navigation: extensions.navigation };
 }
 
 function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
@@ -358,6 +397,9 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (secondary === null) return null;
   return {
     connection: bytes[23],
+    currentSession: secondary.navigation.currentSession,
+    coordinatorEndpoint: secondary.navigation.coordinatorEndpoint,
+    connectionDetail: secondary.navigation.connectionDetail,
     secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, secondary.contexts, window.index) })),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
@@ -406,27 +448,56 @@ export interface NavigationRow {
   readonly label: Uint8Array;
   readonly target: Uint8Array;
   readonly highlighted: boolean;
+  readonly detail: Uint8Array;
+  /// 0 open, 1 available, 2 session, 3 known host.
+  readonly kind: number;
+  readonly host: Uint8Array;
+  readonly selectable: boolean;
 }
+
+/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host.
+export type NavigationScope = number;
 
 export interface NavigationPage {
   readonly revision: WireU64;
   readonly offset: number;
   readonly total: number;
   readonly query: Uint8Array;
+  readonly scope: NavigationScope;
+  readonly host: Uint8Array;
   readonly rows: readonly NavigationRow[];
 }
 
+/// The native compiler requires fixed arity; retain the original caller API.
 export function navigationRequest(revision: WireU64, offset: number, query: Uint8Array): Uint8Array {
-  const out = new Uint8Array(13 + query.length);
+  return navigationScopedRequest(revision, offset, query, 0, new Uint8Array(0));
+}
+
+export function navigationScopedRequest(revision: WireU64, offset: number, query: Uint8Array, scope: NavigationScope, host: Uint8Array): Uint8Array {
+  if (!validNavigationRequest(offset, query, scope, host)) return new Uint8Array(0);
+  const scoped = scope !== 0;
+  const out = new Uint8Array(13 + query.length + (scoped ? 2 + host.length : 0));
   out[0] = PROTOCOL_VERSION;
-  out[1] = 3;
+  out[1] = scoped ? 4 : 3;
   writeU32(out, 2, revision.lo);
   writeU32(out, 6, revision.hi);
   out[10] = offset % 256;
   out[11] = Math.floor(offset / 256);
   out[12] = query.length;
   for (let i = 0; i < query.length; i += 1) out[13 + i] = query[i];
+  if (scoped) {
+    out[13 + query.length] = scope;
+    out[14 + query.length] = host.length;
+    for (let i = 0; i < host.length; i += 1) out[15 + query.length + i] = host[i];
+  }
   return out;
+}
+
+function validNavigationRequest(offset: number, query: Uint8Array, scope: number, host: Uint8Array): boolean {
+  if (offset < 0 || offset > 65535 || offset !== Math.trunc(offset)) return false;
+  if (scope < 0 || scope > 3 || scope !== Math.trunc(scope)) return false;
+  if (query.length > 64 || host.length > 255) return false;
+  return scope === 3 || host.length === 0;
 }
 
 export function navigationIntent(revision: WireU64, index: number): Uint8Array {
@@ -441,17 +512,35 @@ interface NavigationRecord {
   readonly end: number;
 }
 
+/// Known-host rows carry `3, host_len, raw host` in the target slot: a filter
+/// token, never catalog authority (catalog targets begin with 2).
+const HOST_FILTER_TAG = 3;
+
+/// The raw host a known-host filter token names, or null for any other target.
+export function navigationHostFilter(target: Uint8Array): Uint8Array | null {
+  if (target.length < 2 || target[0] !== HOST_FILTER_TAG) return null;
+  return target.length === 2 + target[1] ? target.subarray(2) : null;
+}
+
+function validNavigationTarget(target: Uint8Array): boolean {
+  if (navigationHostFilter(target) !== null) return true;
+  return target.length >= 38 && target.length <= 298 && target[0] === 2;
+}
+
 function navigationRecord(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRecord | null {
   if (at + 5 > bytes.length) return null;
   const rawIndex = bytes[at] + bytes[at + 1] * 256;
   const length = bytes[at + 2];
   const targetLength = bytes[at + 3] + bytes[at + 4] * 256;
   if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
-  if (!(targetLength >= 38 && targetLength <= 298)) return null;
+  if (!(targetLength >= 2 && targetLength <= 298)) return null;
   const labelAt = at + 5 + targetLength;
   if (!(length >= 1 && length <= 240) || labelAt + length > bytes.length) return null;
+  const target = bytes.slice(at + 5, labelAt);
+  if (!validNavigationTarget(target)) return null;
   const index = Math.trunc(rawIndex);
-  const row: NavigationRow = { id: index, index, target: bytes.slice(at + 5, labelAt), label: bytes.subarray(labelAt, labelAt + length), highlighted };
+  const row: NavigationRow = { id: index, index, target, label: bytes.subarray(labelAt, labelAt + length), highlighted,
+    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true };
   return { row, end: labelAt + length };
 }
 
@@ -464,12 +553,42 @@ function navigationRows(bytes: Uint8Array, start: number, count: number): readon
     rows.push(record.row);
     at = record.end;
   }
-  return at === bytes.length ? rows : null;
+  if (at === bytes.length) return bytes[1] === 3 ? rows : null;
+  return navigationMetadata(bytes, at, rows);
+}
+
+function navigationRowMetadata(bytes: Uint8Array, at: number, row: NavigationRow): NavigationRow | null {
+  if (at + 3 > bytes.length) return null;
+  const kind = bytes[at];
+  const selectable = bytes[at + 1];
+  const detailLength = bytes[at + 2];
+  if (!(kind >= 0 && kind <= 3)) return null;
+  if (selectable > 1 || detailLength > 160) return null;
+  const end = at + 3 + detailLength;
+  if (end > bytes.length) return null;
+  // Exactly the host rows carry a filter token instead of catalog authority.
+  const host = navigationHostFilter(row.target);
+  if ((kind === 3) !== (host !== null)) return null;
+  return { ...row, kind: Math.trunc(kind), selectable: selectable !== 0, detail: bytes.subarray(at + 3, end), host: host ?? new Uint8Array(0) };
+}
+
+function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly NavigationRow[]): readonly NavigationRow[] | null {
+  if (bytes[start] !== 0x4e) return null;
+  let at = start + 1;
+  const result: NavigationRow[] = [];
+  for (const row of rows) {
+    const detailed = navigationRowMetadata(bytes, at, row);
+    if (detailed === null) return null;
+    result.push(detailed);
+    at += 3 + detailed.detail.length;
+  }
+  return at === bytes.length ? result : null;
 }
 
 function navigationHeaderValid(bytes: Uint8Array): boolean {
   if (bytes.length < 16 || bytes.length > 4096) return false;
-  if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== 3) return false;
+  if (bytes[0] !== PROTOCOL_VERSION) return false;
+  if (bytes[1] !== 3 && bytes[1] !== 4) return false;
   const queryLength = bytes[12];
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
 }
@@ -477,7 +596,9 @@ function navigationHeaderValid(bytes: Uint8Array): boolean {
 export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   if (!navigationHeaderValid(bytes)) return null;
   const queryLength = bytes[12];
-  const at = 13 + queryLength;
+  const context = navigationContext(bytes, 13 + queryLength);
+  if (context === null) return null;
+  const at = context.at;
   const offset = bytes[10] + bytes[11] * 256;
   const total = bytes[at] + bytes[at + 1] * 256;
   const count = bytes[at + 2];
@@ -485,7 +606,20 @@ export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   if (count !== Math.min(4, total - offset)) return null;
   const rows = navigationRows(bytes, at + 3, count);
   if (rows === null) return null;
-  return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, at), rows };
+  return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
+}
+
+interface NavigationContext { readonly scope: number; readonly host: Uint8Array; readonly at: number; }
+
+function navigationContext(bytes: Uint8Array, at: number): NavigationContext | null {
+  if (bytes[1] === 3) return { scope: 0, host: new Uint8Array(0), at };
+  if (at + 2 > bytes.length) return null;
+  const scope = bytes[at];
+  const length = bytes[at + 1];
+  if (!(scope >= 0 && scope <= 3)) return null;
+  if (at + 5 + length > bytes.length) return null;
+  if (scope !== 3 && length !== 0) return null;
+  return { scope: Math.trunc(scope), host: bytes.subarray(at + 2, at + 2 + length), at: at + 2 + length };
 }
 
 export function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

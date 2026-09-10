@@ -35,6 +35,15 @@ The SDK's own guidance, quoted:
 
 ## 1. The register this app is on
 
+The shipping shared canvas (`phux-dhcb`) uses the 50pt Geist tab header in
+every window. Small controls are 32pt; 4/8/16pt spacing stays on the token
+ladder. The 224pt workspace rail is a deliberate 4pt-grid composition: 24pt
+horizontal padding leaves 200pt for terminal labels and agent summaries.
+The 640pt Settings/picker maximum is a composition choice on the same grid;
+the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
+Healthy windows give footer space back to the terminal. Failure notices retain
+their measured band, and terminal geometry is measured from the compiled tree.
+
 `cockpitTokens` resolves `.pack = .geist`, so these are the live numbers, read
 out of `primitives/canvas/themes/geist.zig` at the pinned SDK:
 

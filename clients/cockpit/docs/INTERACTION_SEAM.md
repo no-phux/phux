@@ -138,7 +138,11 @@ Local host/epoch fields are zero. Catalog pages retain the revision/query/offset
 read fence and the 4096-byte response bound. A row record is display index u16,
 label length u8, target length u16, opaque target bytes, and bounded UTF-8 label.
 The index is only for page/display bookkeeping. The shipping core does not emit
-the compatibility positional navigation intent.
+the compatibility positional navigation intent. Every engine reply, scoped or
+not, appends the `0x4e` marker and per-row metadata, and known-host rows carry
+a host filter token (tag 3) instead of a catalog target; the core never
+enqueues that token. See
+[`NAVIGATION_SEAM.md`](NAVIGATION_SEAM.md#read-only-page-wire).
 
 The 27-byte receipt remains version, status, reason, command ID u64, sequence
 u64, revision u64. Status 1 is `applied`, 2 `rejected`, and 3

@@ -177,7 +177,8 @@ test "the snapshot carries agent rows as an extension record the TS core decodes
     // `agent_sessions.State`, which `AGENT_STATE_WORDS` in core.ts indexes.
     const payload = [_]u8{ 2, 0, tab, 1, 0, 6 } ++ "claude".* ++ [_]u8{ 0, tab, 2, 1, 5 } ++ "codex".*;
     const record = [_]u8{ @intFromEnum(ts_snapshot.ExtensionKind.agent_rows), payload.len, 0 } ++ payload;
-    try testing.expect(std.mem.endsWith(u8, bytes, &record));
+    // Additive navigation context may follow the agent extension.
+    try testing.expect(std.mem.indexOf(u8, bytes, &record) != null);
     try testing.expectEqual(quiet_len + record.len, bytes.len);
 
     // The parent terminal asks for attention because one of its rows does.

@@ -168,6 +168,11 @@ const Bridge = struct {
     result_ok: bool = false,
     result_len: usize = 0,
     result_buffer: [result_wire.max_bytes]u8 = undefined,
+    appearance: cockpit.engine.appearance.State = .{},
+    appearance_pending: bool = false,
+    appearance_key: u64 = 0,
+    appearance_len: usize = 0,
+    appearance_buffer: [cockpit.engine.appearance.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -254,6 +259,10 @@ const Bridge = struct {
         if (std.mem.eql(u8, name, result_wire.request_name)) {
             const result_bridge: *Bridge = @ptrCast(@alignCast(context));
             return result_bridge.requestResults(key, payload);
+        }
+        if (std.mem.eql(u8, name, cockpit.engine.appearance.request_name)) {
+            const appearance_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return appearance_bridge.requestAppearance(key, payload);
         }
         if (std.mem.eql(u8, name, cockpit.engine.tab_commands.request_name)) {
             const command_bridge: *Bridge = @ptrCast(@alignCast(context));
@@ -367,16 +376,36 @@ const Bridge = struct {
         return text.len;
     }
 
+    fn requestAppearance(self: *Bridge, key: u64, payload: []const u8) void {
+        self.appearance_pending = true;
+        self.appearance_key = key;
+        self.appearance_len = 0;
+        const engine = self.engine orelse return;
+        // Probe inside Begin. A separate revision-fenced host command races
+        // the request's revision increment in the effects batch.
+        if (std.mem.eql(u8, payload, &.{ 1, 0, 0 })) _ = engine.probeConfig();
+        self.appearance.apply(engine.model, payload);
+        self.appearance_len = self.appearance.encode(engine.model, &self.appearance_buffer).len;
+        engine.sequence +%= 1;
+        engine.revision +%= 1;
+        self.announce(engine);
+    }
+
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *Bridge = @ptrCast(@alignCast(context));
         if (self.pending and self.pending_key == key) self.pending = false;
         if (self.navigation_pending and self.navigation_key == key) self.navigation_pending = false;
         if (self.command_pending and self.command_key == key) self.command_pending = false;
         if (self.result_pending and self.result_key == key) self.result_pending = false;
+        if (self.appearance_pending and self.appearance_key == key) self.appearance_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *Bridge = @ptrCast(@alignCast(context));
+        if (self.appearance_pending) {
+            self.appearance_pending = false;
+            return .{ .key = self.appearance_key, .ok = self.appearance_len != 0, .bytes = self.appearance_buffer[0..self.appearance_len] };
+        }
         if (self.command_pending) {
             self.command_pending = false;
             return .{ .key = self.command_key, .ok = true, .bytes = &self.command_buffer };
@@ -398,7 +427,7 @@ const Bridge = struct {
 
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending or self.result_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -408,6 +437,137 @@ const Bridge = struct {
 };
 
 var bridge = Bridge{};
+
+test "appearance preview is reversible and preserves unnamed themes and explicit overrides" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    model.config.background = .{ .r = 22, .g = 33, .b = 44 };
+    model.font_size_offset = 2;
+    const initial_size = model.fontSize();
+    const initial_topology = model.topologyFingerprint();
+    var state: cockpit.engine.appearance.State = .{};
+    state.apply(model, &.{ 1, 0, 0 });
+    state.apply(model, &.{ 1, 1, 2 });
+    state.apply(model, &.{ 1, 2, 0 });
+    state.apply(model, &.{ 1, 4, 1 });
+    state.apply(model, &.{ 1, 5, 1 });
+    try std.testing.expect(model.config.theme.slice().len > 0);
+    try std.testing.expect(model.fontSize() > initial_size);
+    try std.testing.expectEqual(.side, model.tab_placement);
+    try std.testing.expectEqual(initial_topology, model.topologyFingerprint());
+    try std.testing.expectEqual(.top, (try model.topologySnapshot()).tab_placement);
+    const pane = model.provider.terminal(model.focusedTerminalRef().?).?;
+    try std.testing.expectEqual(.bar, pane.session.term.cursor.default_style);
+    state.apply(model, &.{ 1, 0, 0 }); // repeated open cannot move the rollback point
+    state.apply(model, &.{ 1, 6, 0 });
+    try std.testing.expectEqualStrings("", model.config.theme.slice());
+    try std.testing.expectEqual(initial_size, model.fontSize());
+    try std.testing.expectEqual(.block, model.config.cursor_style);
+    try std.testing.expectEqual(.block, pane.session.term.cursor.default_style);
+    try std.testing.expectEqual(.top, model.tab_placement);
+    try std.testing.expectEqual(@as(u8, 22), model.config.background.?.r);
+    try std.testing.expectEqual(.canceled, state.outcome);
+}
+
+test "appearance save edits only changed keys and keeps a failed save cancellable" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const original = "# my theme\nbackground = #010203\ntheme = nord\ncustom-future-key = untouched\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = original });
+    const path = try tmp.dir.realPathFileAlloc(io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const model = engine.model;
+    model.config_file.setPath(path);
+    var state: cockpit.engine.appearance.State = .{};
+    state.apply(model, &.{ 1, 0, 0 });
+    state.apply(model, &.{ 1, 2, 0 });
+    var file = try tmp.dir.openFile(io, "config", .{});
+    var buffer: [1024]u8 = undefined;
+    var length = try file.readPositionalAll(io, &buffer, 0);
+    file.close(io);
+    try std.testing.expectEqualStrings(original, buffer[0..length]);
+    state.apply(model, &.{ 1, 7, 0 });
+    try std.testing.expectEqual(.saved, state.outcome);
+    try std.testing.expectEqual(@as(f32, 14), model.config.font_size);
+    try std.testing.expectEqual(@as(f32, 0), model.font_size_offset);
+    file = try tmp.dir.openFile(io, "config", .{});
+    length = try file.readPositionalAll(io, &buffer, 0);
+    file.close(io);
+    try std.testing.expect(std.mem.startsWith(u8, buffer[0..length], original));
+    try std.testing.expect(std.mem.indexOf(u8, buffer[0..length], "font-size = 14") != null);
+    model.config_file.setPath("/dev/null/impossible/config");
+    state.apply(model, &.{ 1, 0, 0 });
+    state.apply(model, &.{ 1, 2, 0 });
+    state.apply(model, &.{ 1, 7, 0 });
+    try std.testing.expectEqual(.refused, state.outcome);
+    try std.testing.expect(state.initial != null);
+    state.apply(model, &.{ 1, 6, 0 });
+    try std.testing.expectEqual(@as(f32, 14), model.fontSize());
+}
+
+test "appearance refuses malformed configs and dangling links without replacing them" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const original = "font-size = not-a-number\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = original });
+    const path = try tmp.dir.realPathFileAlloc(io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    engine.model.config_file.setPath(path);
+    var state: cockpit.engine.appearance.State = .{};
+    state.apply(engine.model, &.{ 1, 0, 0 });
+    state.apply(engine.model, &.{ 1, 2, 0 });
+    state.apply(engine.model, &.{ 1, 7, 0 });
+    try std.testing.expectEqual(.refused, state.outcome);
+    const file = try tmp.dir.openFile(io, "config", .{});
+    var buffer: [128]u8 = undefined;
+    const length = try file.readPositionalAll(io, &buffer, 0);
+    file.close(io);
+    try std.testing.expectEqualStrings(original, buffer[0..length]);
+    try tmp.dir.deleteFile(io, "config");
+    try tmp.dir.symLink(io, "missing-target", "config", .{});
+    state.apply(engine.model, &.{ 1, 7, 0 });
+    try std.testing.expectEqual(.refused, state.outcome);
+    const link_length = try tmp.dir.readLink(io, "config", &buffer);
+    try std.testing.expectEqualStrings("missing-target", buffer[0..link_length]);
+    state.apply(engine.model, &.{ 1, 6, 0 });
+    try std.testing.expectEqual(@as(f32, 13), engine.model.fontSize());
+}
+
+test "appearance creates an absent configuration and restores system-following mode on cancel" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const parent = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(parent);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ parent, "nested/config" });
+    defer std.testing.allocator.free(path);
+    engine.model.config_file.setPath(path);
+    engine.model.config.follow_system_theme = true;
+    var state: cockpit.engine.appearance.State = .{};
+    state.apply(engine.model, &.{ 1, 0, 0 });
+    state.apply(engine.model, &.{ 1, 1, 3 });
+    try std.testing.expect(!engine.model.config.follow_system_theme);
+    state.apply(engine.model, &.{ 1, 6, 0 });
+    try std.testing.expect(engine.model.config.follow_system_theme);
+    state.apply(engine.model, &.{ 1, 0, 0 });
+    state.apply(engine.model, &.{ 1, 1, 3 });
+    state.apply(engine.model, &.{ 1, 7, 0 });
+    try std.testing.expectEqual(.saved, state.outcome);
+    const file = try tmp.dir.openFile(io, "nested/config", .{});
+    defer file.close(io);
+    var buffer: [128]u8 = undefined;
+    const length = try file.readPositionalAll(io, &buffer, 0);
+    try std.testing.expectEqualStrings("theme = nord\n", buffer[0..length]);
+}
 
 // ------------------------------------------------- native seams (no TS)
 
@@ -700,7 +860,7 @@ fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, 
     var tab_strip_width: f32 = 0;
     for (measured.nodes) |entry| {
         if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) terminal = entry.frame;
-        if (entry.widget.kind == .tabs) tab_strip_width = entry.frame.width;
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Terminal tabs")) tab_strip_width = entry.frame.width;
     }
     return .{ .terminal = terminal orelse return error.MissingTerminalSpace, .tab_strip_width = tab_strip_width };
 }
@@ -1207,6 +1367,15 @@ const Rig = struct {
         return error.TestNavigationDidNotComplete;
     }
 
+    fn settleAppearance(self: *Rig) !void {
+        for (0..8) |_| {
+            const model = self.app_state.model;
+            if (!model.appearanceBusy and model.engineConnected and model.engineSequence.lo == bridge.engine.?.sequence) return;
+            try self.harness.runtime.dispatchPlatformEvent(self.decorated, .wake);
+        }
+        return error.TestAppearanceDidNotComplete;
+    }
+
     /// Present a frame at `size`; the engine re-derives the run and, when it
     /// moved, announces so the core resyncs. Settled either way.
     fn resize(self: *Rig, size: native_sdk.geometry.SizeF) !void {
@@ -1229,6 +1398,10 @@ const Rig = struct {
     /// Drive the real core and engine into `state`: the tab count through
     /// intents and resync, the placement and overlays through their Msgs.
     fn reach(self: *Rig, state: ChromeState) !void {
+        if (self.app_state.model.settingsOpen) {
+            try self.dispatch(.settings_close);
+            try self.settleAppearance();
+        }
         const engine = bridge.engine.?;
         while (engine.model.wsConst().tab_count < state.tabs) {
             const before = self.app_state.model.engineSequence.lo;
@@ -1253,11 +1426,18 @@ const Rig = struct {
         // Opening settings probes the config file through the seam, which
         // is one announcement to wait for.
         try self.dispatch(if (state.palette) .palette_open else .palette_close);
-        if (state.settings != self.app_state.model.settingsOpen) {
-            const before = self.app_state.model.engineSequence.lo;
-            try self.dispatch(if (state.settings) .settings_open else .settings_close);
-            if (state.settings) try self.settle(before + 1, "READY");
+        if (state.palette) {
+            try self.settleNavigation();
+            if (state.tabs >= 5) {
+                try std.testing.expectEqual(@as(usize, 4), self.app_state.model.paletteRows.len);
+                try std.testing.expect(self.app_state.model.paletteNext);
+            }
         }
+        if (state.settings != self.app_state.model.settingsOpen) {
+            try self.dispatch(if (state.settings) .settings_open else .settings_close);
+            try self.settleAppearance();
+        }
+        if (state.settings) try self.dispatch(.{ .settings_section = state.settings_section });
         try std.testing.expectEqual(state.tabs, self.app_state.model.tabs.len);
     }
 };
@@ -1979,6 +2159,8 @@ test "shipping overlay commit suspends remote focus and input before a frame" {
     }));
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
     try rig.dispatch(.settings_close);
+    try std.testing.expect(bridge.engine.?.input_suspended);
+    try rig.settleAppearance();
     try std.testing.expect(!bridge.engine.?.input_suspended);
     try expectOutgoingTag(remote, 0x14);
 }
@@ -2049,6 +2231,10 @@ test "replayed modality routes fallback keys without live terminal effects" {
     try std.testing.expectEqual(.settings, bridge.interaction_mode);
     try std.testing.expectEqual(core.Msg.settings_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
     try rig.dispatch(.palette_open);
+    // Replay supplies the recorded rollback acknowledgement, not a live disk
+    // or provider effect. Until that record arrives Settings owns the keys.
+    try std.testing.expectEqual(core.Msg.settings_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
+    try rig.dispatch(.{ .appearance_loaded = &.{ 1, 0, 2, 0, 255, 0, 0, 0, 0, 0 } });
     try std.testing.expectEqual(core.Msg.palette_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
     _ = onText(.{ .phase = .text_input, .key = "a", .text = "a" });
     routeNativeInput(.{ .files_dropped = .{ .window_id = 1, .view_label = canvas_label, .paths = &.{"/blocked"} } });
@@ -2355,6 +2541,20 @@ test "new terminal click hands typing and Enter to the created pane" {
     try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
 }
 
+test "changing placement preserves the adopted secondary window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try rig.dispatch(.toggle_tab_placement);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try rig.settle(2, "READY");
+    try std.testing.expectEqual(core.TabPlacement.side, rig.app_state.model.tabPlacement);
+}
+
 test "clicking the selected tab returns Enter to its focused split pane in strip and rail" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2608,7 +2808,11 @@ test "shipping failed reconnect publishes the retired pending window" {
 // the composite tree; its transparent pane leaves carry accessibility and
 // consume the exact geometry the shipping painter uses.
 
-const CompiledChrome = canvas.CompiledMarkupView(core.Model, core.Msg, @embedFile("app.native"));
+const main_sources = [_]canvas.ui_markup.SourceFile{
+    .{ .path = "app.native", .source = @embedFile("app.native") },
+    .{ .path = "windows/components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+};
+const CompiledChrome = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &main_sources);
 const compiled_fragments = [_]canvas.MarkupFragment{
     CompiledChrome.fragment("src/app.native"),
     WindowView1.fragment("src/windows/phux-window-1.native"),
@@ -2629,6 +2833,7 @@ const ChromeState = struct {
     tabs: usize = 1,
     palette: bool = false,
     settings: bool = false,
+    settings_section: i64 = 0,
 };
 
 const parity_states = [_]ChromeState{
@@ -2637,7 +2842,10 @@ const parity_states = [_]ChromeState{
     .{ .label = "full strip", .tabs = 16 },
     .{ .label = "full rail", .tabs = 16, .placement = .side },
     .{ .label = "palette over strip", .palette = true },
+    .{ .label = "full palette with paging", .palette = true, .tabs = 5 },
     .{ .label = "settings over rail", .settings = true, .placement = .side },
+    .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
+    .{ .label = "connection settings", .settings = true, .settings_section = 2 },
     .{ .label = "both overlays, full strip", .tabs = 16, .palette = true, .settings = true },
 };
 
@@ -2723,7 +2931,7 @@ test "crowded tab strip keeps every tab and overflow cue inside its allocated ch
     }
 }
 
-test "secondary tab strip stays horizontal when the main window uses the rail" {
+test "secondary windows expose every tab in the shared workspace rail" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -2742,11 +2950,9 @@ test "secondary tab strip stays horizontal when the main window uses the rail" {
     workspace.surface_size = size;
     syncTerminalSpace(&rig.app_state.model, 1, size, cockpit.projection.cockpitTokens(engine.model));
     const run = engine.currentRuns()[1];
-    try std.testing.expect(run.count < workspace.tab_count);
-    // Compare the entire run (including its one cue and intervening gaps)
-    // against the actual secondary markup slot, not a guessed toolbar width.
-    const occupied = @as(f32, @floatFromInt(run.count)) * (@as(f32, @floatFromInt(run.extent)) + 4) + 32;
-    try std.testing.expect(occupied <= workspace.shipping_tab_strip_width);
+    try std.testing.expectEqual(workspace.tab_count, run.count);
+    try std.testing.expectEqual(@as(u8, 0), run.first);
+    try std.testing.expect(workspace.shipping_terminal_space.?.x >= 224);
 }
 
 test "the switcher filters the engine's tabs by position or title and selects through the seam" {
@@ -2772,6 +2978,44 @@ test "the switcher filters the engine's tabs by position or title and selects th
     try rig.settle(before + 1, "READY");
     try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.selectedTab);
+}
+
+test "painted navigation targets dispatch through the compiled core" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "navigation target", .tabs = 3, .palette = true });
+    const target = rig.app_state.model.paletteRows[1].target;
+    // Painted rows carry the captured provider-qualified catalog target.
+    try std.testing.expect(target.len >= 38);
+    try std.testing.expectEqual(@as(u8, 2), target[0]);
+    try rig.dispatch(.{ .palette_pick = target });
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+}
+
+test "populated navigation rows accept native pointer activation" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.resize(.init(1100, 640));
+    try rig.settle(@intCast(bridge.engine.?.sequence), "READY");
+    try rig.reach(.{ .label = "navigation pointer", .tabs = 3, .palette = true });
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var frame: ?native_sdk.geometry.RectF = null;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .list_item) frame = node.frame;
+    }
+    const row = frame orelse return error.MissingNavigationRow;
+    inline for (.{ .pointer_down, .pointer_up }) |kind| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = kind,
+            .x = row.x + row.width / 2,
+            .y = row.y + row.height / 2,
+        } });
+    }
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
 }
 
 test "the switcher receives the focused split pane's cwd without polling terminal bytes" {
@@ -2806,19 +3050,22 @@ test "the settings surface shows the engine's theme catalog and saves through th
 
     // Opening probes the config file once, through the seam; the catalog
     // rides every snapshot.
-    const before = rig.app_state.model.engineSequence.lo;
     try rig.dispatch(.settings_open);
-    try rig.settle(before + 1, "READY");
+    try rig.settleAppearance();
     try std.testing.expect(engine.config_probe.probed);
+    try std.testing.expect(!engine.intent_refused);
     try std.testing.expectEqual(@as(usize, 6), rig.app_state.model.themes.len);
     try std.testing.expect(rig.app_state.model.configNotice.len > 0);
 
     try rig.dispatch(.{ .settings_pick = 3 });
+    try rig.settleAppearance();
     try std.testing.expect(rig.app_state.model.themes[3].highlighted);
-    const before_save = rig.app_state.model.engineSequence.lo;
     try rig.dispatch(.settings_commit);
-    try std.testing.expect(!rig.app_state.model.settingsOpen);
-    try rig.settle(before_save + 1, "READY");
+    try std.testing.expect(rig.app_state.model.settingsOpen);
+    try rig.settleAppearance();
+    // The harness has no config destination; preview remains cancellable.
+    try std.testing.expect(rig.app_state.model.settingsOpen);
+    try std.testing.expectEqual(.no_destination, bridge.appearance.outcome);
     try std.testing.expectEqualStrings("nord", engine.model.config.theme.slice());
     try std.testing.expect(rig.app_state.model.themes[3].active);
 }
@@ -2931,18 +3178,21 @@ test "shipping snapshot exposes focused terminal history and fenced recovery" {
     const remote = engine.model.phux().?;
     var storage: [4096]u8 = undefined;
     var snapshot = try engine.snapshot(&storage);
-    const signals_at = snapshot.len - 3 - cockpit.engine.tab_commands.context_len - 5;
-    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
+    try rig.dispatch(.{ .snapshot_loaded = snapshot });
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "history") == null);
     remote.host.terminals.items[0].history_loading = true;
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 6, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
+    try rig.dispatch(.{ .snapshot_loaded = snapshot });
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "Loading earlier history") != null);
     remote.host.freezePublished();
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
+    try rig.dispatch(.{ .snapshot_loaded = snapshot });
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "Terminal frozen") != null);
     engine.model.rejectAttachmentContext();
     remote.host.terminals.items[0].phase = .live;
     snapshot = try engine.snapshot(&storage);
-    try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0 }, snapshot[signals_at..][0..5]);
+    try rig.dispatch(.{ .snapshot_loaded = snapshot });
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "Recovering terminal") != null);
 }
 
 test "a bell while the app is deactivated notifies once, on its rising edge" {
@@ -3490,7 +3740,7 @@ fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []
     return false;
 }
 
-test "shipping terminal rows fit between the compiled header and status" {
+test "healthy canvas gives the footer space to the terminal" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -3508,7 +3758,7 @@ test "shipping terminal rows fit between the compiled header and status" {
         if (entry.widget.kind == .status_bar) status_top = entry.frame.y;
     }
     try std.testing.expect(header_bottom > 0);
-    try std.testing.expect(status_top < 640);
+    try std.testing.expectEqual(@as(f32, 640), status_top);
     const content = cockpit.projection.workspaceChrome(bridge.engine.?.model, .init(1100, 640)).content;
     try std.testing.expect(content.y >= header_bottom);
     try std.testing.expect(content.y + content.height <= status_top);

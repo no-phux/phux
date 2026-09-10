@@ -1289,7 +1289,7 @@ pub fn paletteSection(entry: PaletteEntry) PaletteSection {
 
 const PaletteStage = enum { placed, available, sessions, done };
 
-const PaletteIterator = struct {
+pub const PaletteIterator = struct {
     model: *const Model,
     needle: []const u8,
     stage: PaletteStage = .placed,
@@ -1299,7 +1299,7 @@ const PaletteIterator = struct {
     remote_index: usize = 0,
     session_index: usize = 0,
 
-    fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
+    pub fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
         return .{ .model = model, .needle = workspace.palette.needle() };
     }
 
@@ -1371,7 +1371,7 @@ const PaletteIterator = struct {
         return null;
     }
 
-    fn next(iterator: *PaletteIterator) ?PaletteEntry {
+    pub fn next(iterator: *PaletteIterator) ?PaletteEntry {
         while (true) {
             switch (iterator.stage) {
                 .placed => if (iterator.nextPlaced()) |entry| return entry else {
@@ -1461,7 +1461,7 @@ pub fn paletteEntriesWindowIn(
     return written;
 }
 
-fn paletteDestinationMatches(model: *const Model, entry: PaletteEntry, needle: []const u8) bool {
+pub fn paletteDestinationMatches(model: *const Model, entry: PaletteEntry, needle: []const u8) bool {
     return switch (entry) {
         .placed_terminal => |placed| placedDestinationMatches(model, placed, needle),
         .available_terminal => |terminal_ref| terminalDestinationMatches(model, terminal_ref, needle),
@@ -1485,17 +1485,28 @@ fn placedDestinationMatches(
 }
 
 fn terminalDestinationMatches(model: *const Model, terminal_ref: TerminalRef, needle: []const u8) bool {
-    if (support.providerKind(terminal_ref) == .local) {
-        if (containsIgnoreCase("local native", needle)) return true;
-        const pane = model.provider.terminalConst(terminal_ref) orelse return false;
-        if (containsIgnoreCase(pane.title(), needle)) return true;
-        const cwd = pane.pwd();
-        return cwd.len > 0 and containsIgnoreCase(std.fs.path.basename(cwd), needle);
-    }
+    if (support.providerKind(terminal_ref) == .local) return localDestinationMatches(model, terminal_ref, needle);
     if (containsIgnoreCase("phux remote", needle)) return true;
+    if (containsIgnoreCase(terminal_ref.terminal_id.phux.host(), needle)) return true;
+    if (catalogDestinationMatches(model, terminal_ref, needle)) return true;
     const presentation = model.remotePresentation(terminal_ref) orelse return false;
     return containsIgnoreCase(presentation.title, needle) or
         containsIgnoreCase(@tagName(presentation.phase), needle);
+}
+
+fn localDestinationMatches(model: *const Model, ref: TerminalRef, needle: []const u8) bool {
+    if (containsIgnoreCase("local native", needle)) return true;
+    const pane = model.provider.terminalConst(ref) orelse return false;
+    return containsIgnoreCase(pane.title(), needle) or containsIgnoreCase(pane.pwd(), needle);
+}
+
+fn catalogDestinationMatches(model: *const Model, ref: TerminalRef, needle: []const u8) bool {
+    const remote = model.phuxConst() orelse return false;
+    for (remote.catalogTerminals()) |*entry| {
+        if (!entry.terminal_ref.eql(ref)) continue;
+        return containsIgnoreCase(entry.title.slice(), needle) or containsIgnoreCase(entry.cwd.slice(), needle);
+    }
+    return false;
 }
 
 fn sessionDestinationMatches(model: *const Model, session_id: u32, needle: []const u8) bool {
@@ -1530,7 +1541,7 @@ fn paletteTabMatches(model: *const Model, workspace: *const Workspace, index: us
     return containsIgnoreCase(presentation.title, needle);
 }
 
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (needle.len > haystack.len) return false;
     var start: usize = 0;

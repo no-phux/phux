@@ -58,6 +58,7 @@ const protocol = @import("ts_protocol.zig");
 const ts_snapshot = @import("ts_snapshot.zig");
 pub const navigation = @import("ts_navigation.zig");
 const theme_module = @import("../../config/theme.zig");
+pub const appearance = @import("ts_appearance.zig");
 const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
 const session_state = @import("../session_state.zig");
@@ -1078,7 +1079,7 @@ pub const Engine = struct {
     /// Asked once, when the surface opens, exactly as the shipping app asks:
     /// a view is pure and must not touch a disk, and the answer only has to
     /// be true at the moment the person reads the line.
-    fn probeConfig(self: *Engine) bool {
+    pub fn probeConfig(self: *Engine) bool {
         const model = self.model;
         self.config_probe = .{
             .exists = model.configFileExists(model.provider.io),
@@ -2068,21 +2069,11 @@ pub const Engine = struct {
         if (total == 0) return .{};
         const size = workspace.surface_size;
         if (size.width <= 0 or size.height <= 0) return .{ .first = 0, .count = @intCast(total), .extent = 168 };
-        if (index != 0 or self.model.tab_placement == .top) {
+        if (self.model.tab_placement == .top) {
             return stripRun(workspace);
         }
-        const row: f32 = 32;
-        const furniture: f32 = 8 + 40 + 32 + 84;
-        const usable = @max(row, size.height - furniture);
-        var count: usize = @max(1, @as(usize, @intFromFloat(@floor(usable / row))));
-        if (count < total) {
-            const cued = @max(row, usable - 40);
-            count = @max(1, @as(usize, @intFromFloat(@floor(cued / row))));
-        }
-        count = @min(count, total);
-        const selected = @min(workspace.selected_tab, total - 1);
-        const first: usize = if (selected >= count) selected - count + 1 else 0;
-        return .{ .first = @intCast(first), .count = @intCast(count), .extent = 168 };
+        // Every window uses the same scrollable rail; it owns vertical overflow.
+        return .{ .first = 0, .count = @intCast(total), .extent = 168 };
     }
 
     fn stripRun(workspace: *const model_module.Workspace) ts_snapshot.TabRun {

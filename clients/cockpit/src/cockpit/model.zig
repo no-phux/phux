@@ -791,6 +791,8 @@ pub const Model = struct {
     /// stops. Cleared by the next save that lands.
     config_write_refused: bool = false,
     tab_placement: TabPlacement = .top,
+    /// Background topology writes must retain committed placement during preview.
+    appearance_committed_placement: ?TabPlacement = null,
     browser_page: BrowserPage = .github,
     browser_navigation_token: u64 = 0,
     /// The parked WebKit child exists. False through the first useful canvas
@@ -1556,8 +1558,12 @@ pub const Model = struct {
 
     // ------------------------------------------------------ persistence
 
+    fn persistedTabPlacement(model: *const Model) topology.TabPlacement {
+        return model.appearance_committed_placement orelse model.tab_placement;
+    }
+
     pub fn topologySnapshot(model: *const Model) !TopologySnapshot {
-        var snapshot: TopologySnapshot = .{ .tab_placement = model.tab_placement };
+        var snapshot: TopologySnapshot = .{ .tab_placement = model.persistedTabPlacement() };
         // Remote topology has one persisted authority: Phux layout metadata.
         // Older local files are superseded at the first shared publication.
         if (model.shared_workspace.session != 0) return snapshot;
@@ -1611,7 +1617,7 @@ pub const Model = struct {
     /// something else happened to move the shape.
     pub fn topologyFingerprint(model: *const Model) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        std.hash.autoHash(&hasher, model.tab_placement);
+        std.hash.autoHash(&hasher, model.persistedTabPlacement());
         for (0..max_windows) |window_index| {
             const open = model.windowOpen(window_index);
             std.hash.autoHash(&hasher, open);

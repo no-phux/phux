@@ -575,6 +575,13 @@ pub fn sharedCloseAndCatalogAdmission() !void {
     const select = navigationBytes(engine.revision, try navigationIndex(engine, .{ .available_terminal = ref }));
     try testing.expect(engine.applyIntent(&select, &engine_module.NoShells{}));
     try testing.expect(model.locateTerminal(ref) == null);
+    const duplicate = navigationBytes(engine.revision, try navigationIndex(engine, .{ .available_terminal = ref }));
+    try testing.expect(!engine.applyIntent(&duplicate, &engine_module.NoShells{}));
+    try testing.expect(model.shared_workspace.desired_terminal.?.eql(ref));
+    for (engine.creation.pending) |entry| {
+        const pending = entry orelse continue;
+        try testing.expect(pending.may_focus);
+    }
     try stageReply(engine, "tests", "restore-accepted.bin", 1, 6);
     try drain(engine);
     try feed(engine, "local-ready.bin");
@@ -586,6 +593,7 @@ pub fn sharedCloseAndCatalogAdmission() !void {
     try drain(engine);
     try testing.expect(model.locateTerminal(ref) != null);
     try testing.expect(remote.owner(ref) != null);
+    try testing.expect(model.focusedTerminalRef().?.eql(ref));
     try testing.expectEqual(@as(u32, 8), remote.host.operation_ledger.last_id);
 }
 
