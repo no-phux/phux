@@ -189,6 +189,7 @@ phux update
 phux upgrade
 phux wait
 phux watch
+phux whoami
 phux workspace
 phux workspace inspect
 phux workspace restore

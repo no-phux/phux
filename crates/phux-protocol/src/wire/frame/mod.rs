@@ -689,6 +689,7 @@ mod directory;
 mod kind;
 mod payload;
 mod status;
+mod whoami;
 
 pub use command::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
@@ -706,6 +707,12 @@ pub use payload::{
 pub use status::{
     CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
     HistoryTombstoneReason, TombstoneReason,
+};
+pub use whoami::{
+    AUTH_ROUTE_BEARER_QUIC, AUTH_ROUTE_BEARER_WEBTRANSPORT, AUTH_ROUTE_BEARER_WSS,
+    AUTH_ROUTE_LOOPBACK_QUIC, AUTH_ROUTE_LOOPBACK_WEBTRANSPORT, AUTH_ROUTE_LOOPBACK_WS,
+    AUTH_ROUTE_SSH_STDIO, AUTH_ROUTE_UDS, ServingUser, WHOAMI_KEY, WHOAMI_SCHEMA_VERSION,
+    WhoamiRecord,
 };
 
 pub(in crate::wire) use codec::{

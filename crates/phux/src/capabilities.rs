@@ -54,6 +54,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux pair rotate|revoke --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux rec|play --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux logs|doctor|update --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux whoami --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },
         { "invocation": "phux watch --json", "schema_version": null, "kind": "ndjson", "note": "event vocabulary is the compatibility contract" },
         { "invocation": "phux --json failures", "schema_version": 1, "kind": "error" }

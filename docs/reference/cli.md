@@ -37,6 +37,7 @@ ATTACH / SERVE
 INSPECT
   ls         List sessions
   status     Report the running server: pid, uptime, version, clients, logs
+  whoami     Report who this connection is to the server, and whose server it is
   perf       Show the server's performance telemetry, live or as a snapshot
   snapshot   Capture a pane's screen as JSON or a boxed view
   watch      Stream a pane's live events (bell, title, output, lifecycle)
@@ -3010,6 +3011,29 @@ Options:
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux whoami`
+
+```text
+Report who this connection is to the server it reaches.
+
+Prints the principal and credential id (for a paired device), the auth route (the local socket, or a QUIC / WebSocket bearer credential), the peer uid (local socket), the OS user and host the server runs as, and the server's version, one field per line. Read only: a phux server never switches users, so the serving user is also the user every pane runs as. With `--remote HOST` it reports what that dial authenticated as there. Does not start a server.
+
+Usage: phux whoami [OPTIONS]
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)

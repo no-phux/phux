@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-09
+last-reviewed: 2026-09-10
 ---
 
 # The phux agent CLI
@@ -1944,6 +1944,45 @@ unit. A record whose `type` this binary does not know is printed, not
 dropped: the server refused unknown types at append, so an unknown one here
 means a newer server, which is information.
 
+### 4.20 `WhoamiJson` — `phux whoami --json`
+
+`phux whoami [--remote HOST] --json` prints who this connection is to the
+server it reached, as that server reports it through the read-only
+`phux.whoami/v1` key ([L3.md](../spec/L3.md) §3.9, ADR-0106). The document is
+the server's record, passed through unchanged:
+
+```json
+{
+  "schema_version": 1,
+  "principal": "phone",
+  "credential_id": "0123456789abcdef0123456789abcdef",
+  "auth_route": "bearer-quic",
+  "peer_uid": null,
+  "serving_user": { "uid": 501, "name": "me" },
+  "host": "mini",
+  "server_version": "0.30.0"
+}
+```
+
+`principal` and `credential_id` are null on a route with no credential (the
+local socket, or a loopback listener). `credential_id` is the non-secret id
+of §4.18, never a token. `auth_route` is an open vocabulary (`uds`,
+`bearer-quic`, `bearer-wss`, `bearer-webtransport`, `loopback-quic`,
+`loopback-ws`, `loopback-webtransport`, and the reserved `ssh-stdio`). Show an
+unknown value as-is rather than failing. `peer_uid` is the kernel peer uid
+over the local socket and null on every network route. `serving_user` is the
+OS user the server runs as, which is also the user every pane runs as; its
+`name` is null when the uid has no password-database entry. Ignore fields you
+do not know: additive fields keep `schema_version` at 1.
+
+The verb only reads. `--remote` resolves exactly as `phux ls --remote` does, so
+the record describes that dial's credential on that host. Without `--json`
+the same fields print one per line, labelled with these field names. Against
+a server that does not advertise the `whoami` feature, the verb exits `1` with
+`server_too_old` before reading the key. It exits `1` with `transport` when
+the server answers without a well-formed record, and with the shared
+transport codes (§5.3) when it cannot reach the server.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop
@@ -2088,7 +2127,7 @@ timeout. `kill` is a control-plane verb (not strictly an agent read) but shares
 
 Every core server-talking verb above
 (`ls` / `snapshot` / `wait` / `run` / `watch` / `resize` / `spawn` / `launch` /
-`play` / `rec` / `new` / `ask`, plus the spatial edits of §4.12), and every
+`play` / `rec` / `new` / `ask` / `whoami`, plus the spatial edits of §4.12), and every
 `--json`-bearing registry and inspection verb (`tag`, `plugin`,
 `remote list`, `satellite`, `worktree list`, `workspace inspect`,
 `config check`, `logs`, `doctor`, `agent explain --file`, `agent wait`,

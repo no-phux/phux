@@ -392,6 +392,7 @@ ServerFeature = bitset (u32) {
                                      //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
     LIST_DIRECTORY     = 0x00008000, // LIST_DIRECTORY host query (L3.md §4)
     HOST_SESSIONS      = 0x00010000, // GET_STATE host-session inventory (L1.md §9.1)
+    WHOAMI             = 0x00040000, // read-only phux.whoami/v1 Global key (L3.md §3.9; ADR-0106)
 }
 
 EngineFeatureSet = bitset (u32) {

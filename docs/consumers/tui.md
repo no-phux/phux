@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-10
 ---
 
 # The phux reference TUI
@@ -146,7 +146,7 @@ phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT]
                               # pane is gone (ADR-0063)
 phux new [-s NAME] [-c CWD] [--] [COMMAND...]
                               # create a session
-phux ls|new|kill|rename|detach ... --remote [USER@]HOST[:PORT]
+phux ls|new|kill|rename|detach|whoami ... --remote [USER@]HOST[:PORT]
                               # run a session verb against the server on
                               # another machine, over the same QUIC/WSS dial
                               # and resolution `phux attach --remote` uses.
@@ -166,6 +166,11 @@ phux launch INTEGRATION [--print] [--target TARGET [--split DIR] [--ratio R]] [-
                               # alias. --list enumerates; --print is a
                               # server-free dry run of the resolved argv
 phux ls                       # list sessions (alias: list)
+phux whoami [--json]          # who this connection is to the server: principal
+                              # and credential id, auth route, peer uid, the OS
+                              # user and host the server runs as, and its
+                              # version, one field per line (ADR-0106). Read
+                              # only; --remote HOST asks another machine
 phux kill TARGET              # kill session/window/pane by selector
 phux insert-pane TARGET NEW    # insert an already-created pane (no spawn)
 phux move-pane SOURCE TARGET   # relocate a pane beside another

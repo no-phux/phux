@@ -5,3 +5,4 @@ mod agent_events;
 mod get_perf;
 mod list_directory;
 mod metadata_reply;
+mod whoami;

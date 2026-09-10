@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-10
 ---
 
 # Module structure
@@ -108,7 +108,7 @@ src/
                         spawns per-client tasks on a LocalSet (ADR-0014)
     mod.rs, attach.rs, client.rs, commands.rs, directory.rs (the
     LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
-    voice.rs
+    voice.rs, whoami.rs (the read-only phux.whoami/v1 key)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
@@ -410,7 +410,7 @@ src/
     `--phux-hook` shim and its hook_payload reader),
     server.rs, service.rs, supervise.rs, upgrade.rs, doctor.rs, logs.rs,
     config.rs + config/, config_action.rs, enroll.rs, pair.rs, relay.rs,
-    stdio_bridge.rs, worktree.rs, status.rs, completion.rs
+    stdio_bridge.rs, worktree.rs, status.rs, whoami.rs, completion.rs
   refdocs/            — generators for docs/reference/ (cli.rs, config.rs,
                         actions.rs, widgets.rs, hooks.rs, exit_codes.rs,
                         deprecations.rs, files.rs) — see CONVENTIONS.md

@@ -105,12 +105,19 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 # outlives the reap budget would otherwise stay a zombie for the life of the
 # server. Enabling a feature on a crate already in the build adds no new
 # dependency.
+#
+# `user` gates `nix::unistd::{getuid, User}` and `hostname` gates
+# `nix::unistd::gethostname`: the read-only `phux.whoami/v1` key (ADR-0106)
+# reports the serving OS user (uid and login name) and host name. Neither
+# feature pulls in another crate.
 nix = { version = "0.31", default-features = false, features = [
     "signal",
     "term",
     "fs",
     "feature",
     "process",
+    "user",
+    "hostname",
 ] }
 # The agent-state detector's rules are user-editable TOML manifests
 # (ADR-0046 §C): its predicates are DATA compiled at load, not code, so that

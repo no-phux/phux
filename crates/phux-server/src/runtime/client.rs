@@ -68,6 +68,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::ResourceKinds,
         ServerFeature::ListDirectory,
         ServerFeature::HostSessions,
+        ServerFeature::Whoami,
     ])
 }
 
@@ -2603,9 +2604,8 @@ pub(crate) async fn handle_get_metadata(
 ) {
     let nonce_result = is_reserved_session_create_result(scope, key);
     let (value, speaks_l3) = state.with(|s| {
-        let authorized = !nonce_result || s.owns_session_create_result(client_id, key);
         (
-            authorized.then(|| s.metadata().get(scope, key)).flatten(),
+            read_metadata_value(s, client_id, scope, key, nonce_result),
             s.client_speaks_l3(client_id),
         )
     });
@@ -2641,6 +2641,35 @@ pub(crate) async fn handle_get_metadata(
     } else if one_shot {
         state.with_mut(|s| s.consume_session_create_result(key));
     }
+}
+
+/// The value one `GET_METADATA` answers with: the asking connection's own
+/// `phux.whoami/v1` record (never stored), a nonce-bearing create result only
+/// its owner may read, or whatever the store holds.
+fn read_metadata_value(
+    s: &crate::state::ServerState,
+    client_id: ClientId,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+    nonce_result: bool,
+) -> Option<Vec<u8>> {
+    if super::whoami::is_whoami_key(scope, key) {
+        return super::whoami::record_for(s, client_id);
+    }
+    if nonce_result && !s.owns_session_create_result(client_id, key) {
+        return None;
+    }
+    s.metadata().get(scope, key)
+}
+
+/// Keys only the server writes. A client `SET_METADATA` or `DELETE_METADATA`
+/// of one is a logged no-op in any scope: the pane-occupant record is the
+/// server's observation of a pane, and the whoami record is computed per
+/// connection and never stored.
+fn is_server_owned_key(key: &str) -> bool {
+    use phux_protocol::wire::frame::{RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
+
+    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY
 }
 
 #[derive(serde::Deserialize)]
@@ -2814,8 +2843,7 @@ fn reject_set_metadata(
     value: &[u8],
 ) -> bool {
     use phux_protocol::wire::frame::{
-        MAX_AGENT_SESSION_RECORD_BYTES, RESOURCE_AGENT_SESSION_KEY, RESOURCE_PANE_OCCUPANT_KEY,
-        Scope,
+        MAX_AGENT_SESSION_RECORD_BYTES, RESOURCE_AGENT_SESSION_KEY, Scope,
     };
 
     if is_reserved_session_create_result(scope, key) {
@@ -2825,10 +2853,10 @@ fn reject_set_metadata(
         );
         return true;
     }
-    if key == RESOURCE_PANE_OCCUPANT_KEY {
+    if is_server_owned_key(key) {
         warn!(
             ?client_id,
-            request_id, "SET_METADATA: server-owned pane-occupant key; ignoring"
+            request_id, %key, "SET_METADATA: server-owned key; ignoring"
         );
         return true;
     }
@@ -3005,10 +3033,10 @@ pub(crate) fn handle_delete_metadata(
         );
         return;
     }
-    if key == phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY {
+    if is_server_owned_key(key) {
         warn!(
             ?client_id,
-            request_id, "DELETE_METADATA: server-owned pane-occupant key; ignoring"
+            request_id, %key, "DELETE_METADATA: server-owned key; ignoring"
         );
         return;
     }

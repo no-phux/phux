@@ -55,6 +55,7 @@ mod resume;
 mod upgrade;
 mod upload;
 mod voice;
+mod whoami;
 
 pub(crate) use attach::*;
 pub(crate) use client::*;

@@ -947,6 +947,10 @@ pub const LIST_DIRECTORY: u32 = 0x0000_8000;
 /// sessions (`docs/spec/L1.md` §9.1).
 pub const HOST_SESSIONS: u32 = 0x0001_0000;
 
+/// Wire bit advertising the read-only `phux.whoami/v1` Global metadata key
+/// (`docs/spec/L3.md` §3.9, ADR-0106).
+pub const WHOAMI: u32 = 0x0004_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1009,6 +1013,13 @@ pub enum ServerFeature {
     /// so a server may send it unasked; the bit is what lets a client read
     /// an empty list as "no satellites" rather than "an older hub".
     HostSessions = HOST_SESSIONS,
+    /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with
+    /// the identity of the asking connection: its principal, auth route,
+    /// peer uid, and the serving OS user and host (`docs/spec/L3.md` §3.9,
+    /// ADR-0106). An older server holds no such key and answers an absent
+    /// value, which a client cannot tell from "no identity"; the bit is what
+    /// makes the absence meaningful.
+    Whoami = WHOAMI,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1027,7 +1038,8 @@ impl ServerFeatureSet {
         | (ServerFeature::Transcribe as u32)
         | (ServerFeature::ResourceKinds as u32)
         | (ServerFeature::ListDirectory as u32)
-        | (ServerFeature::HostSessions as u32);
+        | (ServerFeature::HostSessions as u32)
+        | (ServerFeature::Whoami as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1706,6 +1718,9 @@ mod tests {
         assert_eq!(HOST_SESSIONS, 0x0001_0000);
         assert!(ServerFeatureSet::from_wire(HOST_SESSIONS).contains(ServerFeature::HostSessions));
         assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::HostSessions));
+        assert_eq!(WHOAMI, 0x0004_0000);
+        assert!(ServerFeatureSet::from_wire(WHOAMI).contains(ServerFeature::Whoami));
+        assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::Whoami));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-10
 ---
 
 # Operations
@@ -682,6 +682,20 @@ a walk stuck in a hung filesystem keeps its blocking-pool thread until the
 call returns. At most 8 listings hold such threads at once, and further
 requests are refused as busy until one finishes, so a hung mount costs a
 bounded number of stuck workers rather than an unbounded leak.
+
+**Identity report.** `phux whoami` reads the L3 `phux.whoami/v1` key
+([L3.md](spec/L3.md) §3.9, ADR-0106) and prints who the asking connection
+is. That is the bearer credential's principal and id, or a socket client's
+kernel peer uid, plus the auth route and the OS user and host the server runs
+as. It reports identity and never changes it. The server does not switch
+users, run privileged, call PAM, or map principals onto other OS users, so
+the serving user it reports is the user every pane runs as. Reaching another
+user means reaching that user's own server: `--remote root@host` names root's
+registry entry, not a privilege change inside someone else's server. Login
+accounting (utmp entries, `loginctl` sessions, PAM limits) comes from the
+service manager that runs the server (`phux service install`), not from phux.
+The record carries no secret; the credential id is the same non-secret id
+`phux pair rotate` takes.
 
 ### Federation trust model (v0.1+, forward-compatible)
 

@@ -136,6 +136,7 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
     match command {
         Command::Attach { remote, .. } => remote.as_deref(),
         Command::Ls { remote, .. }
+        | Command::Whoami { remote, .. }
         | Command::New { remote, .. }
         | Command::Kill { remote, .. }
         | Command::Rename { remote, .. }
@@ -231,6 +232,7 @@ pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod wait;
 pub(crate) mod watch;
+pub(crate) mod whoami;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
 
@@ -508,6 +510,23 @@ pub(crate) enum Command {
     /// machine shape instead of the human text.
     #[command(visible_alias = "list")]
     Ls {
+        #[command(flatten)]
+        json: JsonOpt,
+
+        #[command(flatten)]
+        remote: RemoteOpt,
+    },
+
+    /// Report who this connection is to the server it reaches.
+    ///
+    /// Prints the principal and credential id (for a paired device), the
+    /// auth route (the local socket, or a QUIC / WebSocket bearer
+    /// credential), the peer uid (local socket), the OS user and host the
+    /// server runs as, and the server's version, one field per line. Read
+    /// only: a phux server never switches users, so the serving user is also
+    /// the user every pane runs as. With `--remote HOST` it reports what
+    /// that dial authenticated as there. Does not start a server.
+    Whoami {
         #[command(flatten)]
         json: JsonOpt,
 

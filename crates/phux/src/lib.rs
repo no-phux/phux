@@ -100,6 +100,7 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
         INSPECT\n  \
           ls         List sessions\n  \
           status     Report the running server: pid, uptime, version, clients, logs\n  \
+          whoami     Report who this connection is to the server, and whose server it is\n  \
           perf       Show the server's performance telemetry, live or as a snapshot\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
@@ -881,6 +882,9 @@ fn dispatch(
         ),
         Some(Command::Ls { json, remote }) => {
             commands::ls::run_ls(json.json, remote.with_socket(socket))
+        }
+        Some(Command::Whoami { json, remote }) => {
+            commands::whoami::run_whoami(json.json, remote.with_socket(socket))
         }
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
         Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
