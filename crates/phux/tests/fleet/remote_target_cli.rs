@@ -23,7 +23,19 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// so nothing here can touch the developer's real registry. Returns
 /// `(exit_code, stderr)`.
 fn run(args: &[&str]) -> (i32, String) {
+    let (code, _stdout, stderr) = run_with_config(None, args);
+    (code, stderr)
+}
+
+/// [`run`] with `config` written as the private `config.toml` first, also
+/// returning stdout: `(exit_code, stdout, stderr)`.
+fn run_with_config(config: Option<&str>, args: &[&str]) -> (i32, String, String) {
     let dir = TempDir::new().expect("tempdir");
+    if let Some(config) = config {
+        let config_dir = dir.path().join("config/phux");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(config_dir.join("config.toml"), config).expect("write config");
+    }
     let out = Command::new(PHUX)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -41,8 +53,180 @@ fn run(args: &[&str]) -> (i32, String) {
         .join("\n");
     (
         out.status.code().expect("phux exited via code, not signal"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr,
     )
+}
+
+/// Each session verb that takes `--remote`, in a spelling that would
+/// otherwise run headlessly (so no TTY preflight can intervene).
+const SESSION_VERBS: [&[&str]; 5] = [
+    &["ls"],
+    &["new", "-s", "x", "--json"],
+    &["kill", "x"],
+    &["rename", "a", "b"],
+    &["detach"],
+];
+
+/// The session verbs share attach's usage rules: a malformed target is exit
+/// 2 before any dial, and so is `--socket` in either position.
+#[test]
+fn session_verbs_share_the_remote_usage_rules() {
+    for verb in SESSION_VERBS {
+        let mut malformed = verb.to_vec();
+        malformed.extend(["--remote", "quic://mini:8788"]);
+        let (code, stderr) = run(&malformed);
+        assert_eq!(code, 2, "args={malformed:?} stderr={stderr}");
+        assert!(
+            stderr.contains("phux host add"),
+            "args={malformed:?}: {stderr}"
+        );
+
+        let mut after = verb.to_vec();
+        after.extend(["--remote", "mini", "--socket", "/tmp/x.sock"]);
+        let mut before = vec!["--socket", "/tmp/x.sock"];
+        before.extend(verb.iter().copied());
+        before.extend(["--remote", "mini"]);
+        for args in [after, before] {
+            let (code, stderr) = run(&args);
+            assert_eq!(code, 2, "args={args:?} stderr={stderr}");
+            assert!(
+                stderr.contains("--socket") && stderr.contains("--remote"),
+                "args={args:?}: the refusal must name both flags; got: {stderr}"
+            );
+        }
+    }
+}
+
+/// The server refuses SHUTDOWN from a remote connection, so `kill --server
+/// --remote` is refused up front with the reason, not after a dial.
+#[test]
+fn kill_server_refuses_remote_before_dialing() {
+    let (code, stderr) = run(&["kill", "--server", "--remote", "mini"]);
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("local-socket only"), "got: {stderr}");
+}
+
+/// An unregistered host the ssh rung cannot pair fails exactly as attach's
+/// ladder does, naming both remedies. Under `--json` the ssh rung is skipped
+/// and the refusal is the one-line contract document.
+#[test]
+fn an_unregistered_host_is_refused_with_the_ladder_remedies() {
+    let (code, stderr) = run(&["ls", "--remote", "me@mini"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains("not a registered host")
+            && stderr.contains("--code")
+            && stderr.contains("phux host enroll"),
+        "the refusal must name both remedies; got: {stderr}"
+    );
+
+    let (code, stdout, stderr) = run_with_config(None, &["ls", "--remote", "me@mini", "--json"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stdout.is_empty(),
+        "--json failure leaves stdout empty: {stdout}"
+    );
+    assert_eq!(
+        stderr.lines().count(),
+        1,
+        "one JSON line on stderr: {stderr}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&stderr).expect("stderr is JSON");
+    assert_eq!(doc["error"]["code"], "remote_unresolved");
+    assert!(
+        !stderr.contains("pairing over ssh"),
+        "--json must not attempt the ssh rung: {stderr}"
+    );
+}
+
+/// An `ssh://` entry carries an interactive attach only; the session verbs
+/// refuse it and name the verb that gives the host a dialable endpoint.
+#[test]
+fn an_ssh_entry_is_refused_for_session_verbs() {
+    let config = "[[remote]]\nname = \"mini\"\nendpoint = \"ssh://mini\"\n";
+    let (code, _stdout, stderr) = run_with_config(Some(config), &["ls", "--remote", "mini"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains("ssh://") && stderr.contains("phux host enroll mini"),
+        "got: {stderr}"
+    );
+}
+
+/// Parse the single JSON line a `--json` failure leaves on stderr, asserting
+/// it is the only line and that stdout stayed empty.
+fn sole_json_error(stdout: &str, stderr: &str) -> serde_json::Value {
+    assert!(
+        stdout.is_empty(),
+        "--json failure leaves stdout empty: {stdout}"
+    );
+    assert_eq!(
+        stderr.lines().count(),
+        1,
+        "one JSON line on stderr: {stderr}"
+    );
+    serde_json::from_str(stderr).expect("stderr is one JSON document")
+}
+
+/// A registered host whose name does not resolve is a reachability failure
+/// on the `--json` contract: exactly one JSON line, code `transport`, exit 1,
+/// and a remedy that names the registry entry rather than attach's flags.
+#[test]
+fn an_unresolvable_entry_is_one_json_line_under_json() {
+    let config = "[[remote]]\nname = \"ghost\"\nendpoint = \"quic://ghost.invalid:8788\"\n";
+    let (code, stdout, stderr) =
+        run_with_config(Some(config), &["ls", "--remote", "ghost", "--json"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    let doc = sole_json_error(&stdout, &stderr);
+    assert_eq!(doc["error"]["code"], "transport", "{doc}");
+    assert_eq!(doc["exit_code"], 1, "{doc}");
+    let remedy = doc["remedy"].as_str().unwrap_or_default();
+    assert!(remedy.contains("phux host enroll ghost"), "{remedy}");
+    assert!(
+        !stderr.contains("phux attach") && !stderr.contains("QUIC attach"),
+        "the refusal must not be worded for attach: {stderr}"
+    );
+}
+
+/// A routable entry with no certificate pin cannot be dialed as registered:
+/// one JSON line, code `remote_unresolved`, exit 1. Network-free (an IP
+/// literal never touches DNS and the refusal precedes any dial).
+#[test]
+fn an_unpinned_routable_entry_is_one_json_line_under_json() {
+    let config = "[[remote]]\nname = \"bare\"\nendpoint = \"quic://203.0.113.7:8788\"\n";
+    let (code, stdout, stderr) =
+        run_with_config(Some(config), &["ls", "--remote", "bare", "--json"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    let doc = sole_json_error(&stdout, &stderr);
+    assert_eq!(doc["error"]["code"], "remote_unresolved", "{doc}");
+    assert!(
+        doc["remedy"]
+            .as_str()
+            .is_some_and(|remedy| remedy.contains("phux host enroll bare")),
+        "{doc}"
+    );
+
+    let (code, _stdout, stderr) = run_with_config(Some(config), &["kill", "--remote", "bare", "x"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains("no certificate pin") && !stderr.contains("phux attach"),
+        "the prose refusal names the entry, not attach: {stderr}"
+    );
+}
+
+/// `--remote` appears in each session verb's help.
+#[test]
+fn session_verbs_document_remote() {
+    for verb in ["ls", "new", "kill", "rename", "detach"] {
+        let out = Command::new(PHUX)
+            .args([verb, "--help"])
+            .output()
+            .expect("run phux <verb> --help");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("--remote"),
+            "`phux {verb} --help` must show --remote"
+        );
+    }
 }
 
 /// The TTY refusal is the wrong answer to a usage question. If this ever

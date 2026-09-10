@@ -459,7 +459,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
             None,
             Some(name.to_owned()),
             Some(cwd.to_path_buf()),
-            socket,
+            super::server_target::ServerSpec::local(socket),
             false,
             command,
             Vec::new(),
@@ -497,7 +497,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         Some(command)
     };
     match rt.block_on(super::new::create_session_via_metadata(
-        &socket_path,
+        &super::server_target::ServerTarget::local(&socket_path),
         name,
         command,
         Some(cwd.to_string_lossy().into_owned()),
@@ -769,7 +769,11 @@ fn kill_bound_session(
         return Ok(false);
     }
 
-    if super::kill::run_kill(name, socket.map(Path::to_path_buf)) != ExitCode::SUCCESS {
+    if super::kill::run_kill(
+        name,
+        super::server_target::ServerSpec::local(socket.map(Path::to_path_buf)),
+    ) != ExitCode::SUCCESS
+    {
         return Err(Refusal::workspace(
             format!(
                 "could not kill session '{name}' bound to {} — worktree left in place",

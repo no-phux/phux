@@ -87,6 +87,10 @@ pub(crate) mod codes {
     /// `[[remote]]` / `[[satellites]]` entry could not be read, validated,
     /// or written (phux-i0e8.8.3).
     pub(crate) const REGISTRY: &str = "registry";
+    /// A `--remote` target could not become a dial: malformed, neither
+    /// registered nor pairable, an unusable registry entry, or an `ssh://`
+    /// entry, which carries an interactive attach only.
+    pub(crate) const REMOTE_UNRESOLVED: &str = "remote_unresolved";
     /// A git workspace/worktree operation failed (not a repository, git
     /// itself failed, or its output did not parse).
     pub(crate) const WORKSPACE: &str = "workspace";

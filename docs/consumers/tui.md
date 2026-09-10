@@ -146,6 +146,14 @@ phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT]
                               # pane is gone (ADR-0063)
 phux new [-s NAME] [-c CWD] [--] [COMMAND...]
                               # create a session
+phux ls|new|kill|rename|detach ... --remote [USER@]HOST[:PORT]
+                              # run a session verb against the server on
+                              # another machine, over the same QUIC/WSS dial
+                              # and resolution `phux attach --remote` uses.
+                              # Cannot combine with --socket; `kill --server`
+                              # stays local-only (the server refuses a remote
+                              # SHUTDOWN); an ssh:// registry entry is refused
+                              # (it carries an interactive attach only)
 phux spawn [--satellite NAME | --target TARGET [--split DIR] [--ratio R]] [-c CWD] [--json] [--] [COMMAND...]
                               # explicit placement is local-only; absent target
                               # preserves legacy unplaced behavior

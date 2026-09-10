@@ -1,14 +1,13 @@
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::resource;
-use phux_client::state::Degradation;
+use phux_client::state::{Degradation, StateView};
 use phux_core::session_list::{ResourceJson, SessionJson, SessionListJson};
 
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, partial};
+use crate::commands::partial;
+use crate::commands::server_target::ServerSpec;
 
 /// `phux ls` — list sessions via `GET_STATE`. Does not auto-start a
 /// server. With `json`, emits the stable [`SessionListJson`] contract
@@ -21,26 +20,30 @@ use crate::commands::{cli_runtime, json_err, partial};
 /// stderr for a human, in the payload's `unreachable` list for `--json`.
 /// Making a dead satellite fail the listing would take the panes on this
 /// laptop down with it.
-pub(crate) fn run_ls(json: bool, socket: Option<PathBuf>) -> ExitCode {
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
+///
+/// `server` is the local socket or a `--remote` host; the listing is the
+/// same either way (see `server_target`).
+pub(crate) fn run_ls(json: bool, server: ServerSpec) -> ExitCode {
+    let (rt, target) = match server.prepare("ls", json) {
+        Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    match rt.block_on(phux_client::state::get_state(&socket_path)) {
-        Ok(view) => {
-            let (snapshot, degradation) = view.into_parts();
-            if json {
-                // Not stderr: a `--json` consumer's channel is the document.
-                print_sessions_json(&snapshot, &degradation)
-            } else {
-                print_sessions(&snapshot);
-                partial::warn_partial_view("ls", &degradation);
-                ExitCode::SUCCESS
-            }
-        }
-        Err(err) => json_err::report_no_server(json, &err, &socket_path, "ls"),
+    match rt.block_on(target.get_state()) {
+        Ok(view) => render_listing(json, view),
+        Err(err) => target.report_unreachable(json, &err, "ls"),
     }
+}
+
+/// Print one fetched listing in the requested shape.
+fn render_listing(json: bool, view: StateView) -> ExitCode {
+    let (snapshot, degradation) = view.into_parts();
+    if json {
+        // Not stderr: a `--json` consumer's channel is the document.
+        return print_sessions_json(&snapshot, &degradation);
+    }
+    print_sessions(&snapshot);
+    partial::warn_partial_view("ls", &degradation);
+    ExitCode::SUCCESS
 }
 
 /// The empty listing, in the `phux host ls` mold: say what is missing,

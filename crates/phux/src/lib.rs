@@ -183,7 +183,8 @@ struct Cli {
     /// Attach to a phux server on another machine, ssh-style:
     /// `phux --remote me@mini`. Belongs to the naked `phux` attach alone;
     /// `phux attach --remote` carries its own copy (and the `--code` /
-    /// `--no-enroll` modifiers that go with it).
+    /// `--no-enroll` modifiers that go with it), and `ls`, `new`, `kill`,
+    /// `rename`, and `detach` take their own after the verb.
     #[arg(long, value_name = "[USER@]HOST[:PORT]")]
     remote: Option<String>,
 
@@ -311,7 +312,9 @@ const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
     if cli.command.is_some() && cli.remote.is_some() {
         Some(
             "phux: a root `--remote` belongs to the naked `phux` attach alone; \
-             use `phux attach --remote HOST` to name a session, a `--code`, or `--no-enroll`",
+             place it after the verb instead (`phux ls --remote HOST`; `ls`, `new`, `kill`, \
+             `rename`, and `detach` take it), or use `phux attach --remote HOST` to name a \
+             session, a `--code`, or `--no-enroll`",
         )
     } else {
         None
@@ -324,12 +327,15 @@ const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
 /// Runs ahead of the TTY preflight so a bad target is reported as the usage
 /// error it is, rather than as a missing terminal.
 fn malformed_remote_target(cli: &Cli) -> Option<String> {
-    let raw = match &cli.command {
-        Some(Command::Attach { remote, .. }) => remote.as_deref(),
-        None => cli.remote.as_deref(),
-        _ => None,
-    }?;
-    commands::remote_target::RemoteTarget::parse(raw).err()
+    commands::remote_target::RemoteTarget::parse(invocation_remote(cli)?).err()
+}
+
+/// The `--remote` this invocation carries: the root copy for the naked
+/// attach, otherwise the verb's own (see [`commands::verb_remote`]).
+fn invocation_remote(cli: &Cli) -> Option<&str> {
+    cli.command
+        .as_ref()
+        .map_or(cli.remote.as_deref(), commands::verb_remote)
 }
 
 /// Whether this invocation pairs the local-UDS `--socket` with the network
@@ -341,15 +347,8 @@ fn malformed_remote_target(cli: &Cli) -> Option<String> {
 /// It runs BEFORE the interactive TTY preflight because a contradiction
 /// between two flags is a usage error, and reporting it as "requires a
 /// terminal" would name the wrong problem.
-const fn socket_and_remote_collide(cli: &Cli) -> bool {
-    if cli.socket.is_none() {
-        return false;
-    }
-    match &cli.command {
-        Some(Command::Attach { remote, .. }) => remote.is_some(),
-        None => cli.remote.is_some(),
-        _ => false,
-    }
+fn socket_and_remote_collide(cli: &Cli) -> bool {
+    cli.socket.is_some() && invocation_remote(cli).is_some()
 }
 
 /// Resolve a `--remote` target and attach to it.
@@ -619,7 +618,7 @@ fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
         return Some(ExitCode::from(2));
     }
     if socket_and_remote_collide(cli) {
-        eprintln!("phux: --socket dials a local UDS and cannot combine with --remote; drop one");
+        eprintln!("{}", commands::server_target::SOCKET_REMOTE_CONFLICT);
         return Some(ExitCode::from(2));
     }
     if cli.socket.is_some()
@@ -880,7 +879,9 @@ fn dispatch(
             seed_command.as_deref(),
             resume,
         ),
-        Some(Command::Ls { json }) => commands::ls::run_ls(json.json, socket),
+        Some(Command::Ls { json, remote }) => {
+            commands::ls::run_ls(json.json, remote.with_socket(socket))
+        }
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
         Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
             commands::perf::PerfOptions {
@@ -896,8 +897,17 @@ fn dispatch(
             cwd,
             json,
             env,
+            remote,
             command,
-        }) => commands::new::run_new(name, session, cwd, socket, json.json, command, env),
+        }) => commands::new::run_new(
+            name,
+            session,
+            cwd,
+            remote.with_socket(socket),
+            json.json,
+            command,
+            env,
+        ),
         Some(Command::Spawn {
             satellite,
             target,
@@ -931,13 +941,14 @@ fn dispatch(
             socket,
             &extra,
         ),
-        Some(Command::Kill { target, server }) => match (target, server) {
-            (_, true) => commands::kill::run_kill_server(socket),
-            (Some(target), false) => commands::kill::run_kill(&target, socket),
-            // Unreachable: clap's `kill_what` group is `required(true)`.
-            (None, false) => ExitCode::FAILURE,
-        },
-        Some(Command::Detach { session }) => commands::detach::run_detach(session, socket),
+        Some(Command::Kill {
+            target,
+            server,
+            remote,
+        }) => commands::kill::run(target, server, remote.with_socket(socket)),
+        Some(Command::Detach { session, remote }) => {
+            commands::detach::run_detach(session, remote.with_socket(socket))
+        }
         Some(Command::InsertPane {
             target,
             new_pane,
@@ -976,9 +987,11 @@ fn dispatch(
         }
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Upgrade {}) => commands::upgrade::run_upgrade(socket),
-        Some(Command::Rename { session, new_name }) => {
-            commands::rename::run_rename(&session, &new_name, socket)
-        }
+        Some(Command::Rename {
+            session,
+            new_name,
+            remote,
+        }) => commands::rename::run_rename(&session, &new_name, remote.with_socket(socket)),
         Some(Command::Snapshot {
             session,
             json,

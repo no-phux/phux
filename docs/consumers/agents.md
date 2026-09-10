@@ -127,11 +127,13 @@ phux is one binary; the verbs below are its agent-facing subcommands.
 [`tui.md`](./tui.md) §1 has the full CLI table; this section zooms into the
 agent verbs and their JSON. Exit codes are collected in §5.2.
 
-- **`phux ls [--json] [--socket P]`** — list sessions. Does not auto-start a
-  server (like `tmux ls`): with none running it reports as much and exits
-  non-zero. `--json` emits `SessionListJson` (§4.1), which on a
-  resource-model server additionally names each resource's `kind` and
-  `parent`.
+- **`phux ls [--json] [--socket P | --remote [USER@]HOST[:PORT]]`** — list
+  sessions. Does not auto-start a server (like `tmux ls`): with none running
+  it reports as much and exits non-zero. `--json` emits `SessionListJson`
+  (§4.1), which on a resource-model server additionally names each
+  resource's `kind` and `parent`. `--remote` lists a registered host's
+  sessions over its QUIC/WSS endpoint instead of the local socket
+  ([remote access](../remote-access.md)); failures follow §5.3.
 - **`phux snapshot [--json] [--scrollback[=N]] [--cells] [--tail[=N]]
   [--unwrap] [--socket P] [TARGET]`** — side-effect-free pane read via
   `GET_SCREEN`. `TARGET` is optional (defaults to the focused session).
@@ -686,7 +688,11 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   which happened — the verb reads the server's real geometry back before
   exiting and exits `1` when it is not the requested one. Shape in §4.15.
 - **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json]
-  [-e KEY=VALUE]... [--socket P]`** — create a new session. Without `--json`
+  [-e KEY=VALUE]... [--socket P | --remote [USER@]HOST[:PORT]]`** — create a
+  new session. With `--remote` the session is created on a registered host
+  over its QUIC/WSS endpoint: nothing is auto-spawned there, and an omitted
+  `-c` leaves the far server's default directory rather than sending this
+  machine's cwd. Without `--json`
   it creates and attaches: an explicit `-s NAME` that already exists is an
   error (like tmux's duplicate-session refusal); an omitted name starts from
   `defaults.session-name-template`, redraws a taken `${random-name}` pick a
@@ -2055,7 +2061,15 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   `commands/json_err.rs`; branch on it, never on `message` text. The
   transport family: `no_server` (nothing listening at the socket),
   `server_disconnected` (the server went away mid-command), `transport`
-  (any other transport/protocol failure). The resolution family:
+  (any other transport/protocol failure), and `remote_unresolved` (a verb's
+  `--remote` target could not become a dial: malformed, neither registered
+  nor pairable, an unusable registry entry, or an `ssh://` entry, which
+  carries an interactive attach only; exit `2` for a malformed target, which
+  is a usage error, and exit `1` otherwise). A registered host whose name
+  does not resolve reports `transport` (exit `1`), and so does a failure
+  after a `--remote` dial, which may also be `server_disconnected`; each
+  names the host and endpoint in `message` and the registry entry, not
+  `phux attach`'s flags, in `remedy`. The resolution family:
   `no_such_target` (a miss against a complete view) and `partial_view` (a
   miss against an incomplete fleet — the target may exist on an unreachable
   satellite; retry, per §5.2's exit-3 discussion). Spatial edits add the

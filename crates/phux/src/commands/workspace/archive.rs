@@ -169,7 +169,7 @@ fn restore_one_session(
     };
     let agent_session_preflighted = prepared.is_some();
     let pane_id = rt.block_on(create_session_via_metadata(
-        socket_path,
+        &crate::commands::server_target::ServerTarget::local(socket_path),
         &create.name,
         command,
         cwd,

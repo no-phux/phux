@@ -945,14 +945,14 @@ pub(crate) fn run_attach_rec(
 ///
 /// Six-space continuation indent matches the `phux:` multi-line hint
 /// convention above.
-const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.\n      If the overlay is up and ssh to the host works, suspect a firewall on the SERVER host instead:\n      run `phux doctor` there, which probes its own remote listener and names the blocker.";
+pub(crate) const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.\n      If the overlay is up and ssh to the host works, suspect a firewall on the SERVER host instead:\n      run `phux doctor` there, which probes its own remote listener and names the blocker.";
 
 /// Decide whether a failed attach earns [`OVERLAY_REACHABILITY_HINT`]:
 /// only a reachability failure ([`AttachError::Unreachable`]) on a
 /// non-loopback target. Pin and auth failures ([`AttachError::Connect`])
 /// mean a host answered, so the hint would mislead; loopback never
 /// involves an overlay.
-fn reachability_hint(err: &AttachError, loopback: bool) -> Option<&'static str> {
+pub(crate) fn reachability_hint(err: &AttachError, loopback: bool) -> Option<&'static str> {
     (!loopback && matches!(err, AttachError::Unreachable(_))).then_some(OVERLAY_REACHABILITY_HINT)
 }
 
@@ -975,10 +975,9 @@ fn split_host_port(target: &str) -> Result<(&str, u16), String> {
 }
 
 /// Split and resolve a `--quic` `HOST:PORT` target to its first address,
-/// alongside the default TLS server name for the dial. Prints the failure —
-/// plus [`OVERLAY_REACHABILITY_HINT`] when a DNS name failed to resolve, the
-/// `MagicDNS`-down shape of an overlay outage — and returns the failure exit
-/// code on error.
+/// alongside the default TLS server name for the dial. A failure comes back
+/// as a [`DialRefusal`] for the caller to word: a malformed target, or a name
+/// that did not resolve (the `MagicDNS`-down shape of an overlay outage).
 ///
 /// Resolution happens before the trust decision on purpose: the
 /// loopback-vs-routable choice keys on the **resolved** address.
@@ -986,21 +985,15 @@ fn split_host_port(target: &str) -> Result<(&str, u16), String> {
 fn resolve_quic_target(
     rt: &tokio::runtime::Runtime,
     target: &str,
-) -> Result<(std::net::SocketAddr, String), ExitCode> {
-    let (host, port) = match split_host_port(target) {
-        Ok(parts) => parts,
-        Err(err) => {
-            eprintln!("phux: {err}");
-            return Err(ExitCode::FAILURE);
-        }
-    };
+) -> Result<(std::net::SocketAddr, String), DialRefusal> {
+    let (host, port) = split_host_port(target).map_err(DialRefusal::Malformed)?;
     let bare_host = host.trim_matches(['[', ']']);
     let host_is_ip_literal = bare_host.parse::<std::net::IpAddr>().is_ok();
 
     let resolved = rt
         .block_on(tokio::net::lookup_host((bare_host, port)))
         .map(|mut addrs| addrs.next());
-    let failure = match resolved {
+    let detail = match resolved {
         Ok(Some(addr)) => {
             // The TLS server name defaults to the dialed hostname when one
             // was given (conventional SNI); an IP-literal target keeps the
@@ -1016,15 +1009,16 @@ fn resolve_quic_target(
         Ok(None) => "name resolution returned no addresses".to_owned(),
         Err(err) => format!("name resolution failed: {err}"),
     };
-    eprintln!("phux: QUIC attach to {target} failed: {failure}");
-    // Only a DNS name reaches here (an IP literal resolves without touching
-    // DNS), and a name that fails to resolve is the overlay-down
-    // reachability failure — MagicDNS unreachable when Tailscale is stopped
-    // on this end — so it earns the same hint an unanswered dial does.
-    if !host_is_ip_literal {
-        eprintln!("{OVERLAY_REACHABILITY_HINT}");
-    }
-    Err(ExitCode::FAILURE)
+    // Only a DNS name can fail here in practice (an IP literal resolves
+    // without touching DNS), and a name that fails to resolve is the
+    // overlay-down reachability failure — MagicDNS unreachable when
+    // Tailscale is stopped on this end — so it earns the same hint an
+    // unanswered dial does.
+    Err(DialRefusal::Unresolved {
+        target: target.to_owned(),
+        detail,
+        dns_name: !host_is_ip_literal,
+    })
 }
 
 /// Attach over QUIC (`phux-y8v6`, ADR-0007) to a `phux server --quic`
@@ -1069,43 +1063,11 @@ pub(crate) fn run_attach_quic(
         }
     };
 
-    let (addr, default_server_name) = match resolve_quic_target(&rt, &target) {
-        Ok(resolved) => resolved,
-        Err(code) => return code,
-    };
-
-    let trust = match cert_fingerprint {
-        Some(fingerprint) => CertTrust::Pinned(fingerprint),
-        None if addr.ip().is_loopback() => CertTrust::SkipVerify,
-        None => {
-            eprintln!(
-                "phux: refusing to dial non-loopback QUIC server {target} without --cert-fingerprint."
-            );
-            eprintln!(
-                "      Run `phux pair` on the server host to print its certificate fingerprint,"
-            );
-            eprintln!("      then pass it: phux attach --quic {target} --cert-fingerprint <FP>");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let token = match token {
-        Some(token) => match attach::quic::parse_token_hex(&token) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => {
-                eprintln!("phux: {err}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => None,
-    };
-
-    let dial = Dial::Quic(QuicDial {
-        addr,
-        server_name: server_name.unwrap_or(default_server_name),
-        token,
-        trust,
-    });
+    let DialPlan { dial, loopback } =
+        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name) {
+            Ok(plan) => plan,
+            Err(refusal) => return refusal.report_for_attach(),
+        };
 
     let predict_cfg = predictive_config_for(&dial);
 
@@ -1134,12 +1096,183 @@ pub(crate) fn run_attach_quic(
         Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("phux: QUIC attach to {target} failed: {err}");
-            if let Some(hint) = reachability_hint(&err, addr.ip().is_loopback()) {
+            if let Some(hint) = reachability_hint(&err, loopback) {
                 eprintln!("{hint}");
             }
             ExitCode::FAILURE
         }
     }
+}
+
+/// A remote dial ready to connect, plus whether it stays on this machine.
+///
+/// The loopback bit travels with the dial because the failure hints key on
+/// it: an overlay-reachability hint is noise for a dial that never left the
+/// host. Shared by `phux attach --quic/--ws` and the headless verbs'
+/// `--remote` (see `server_target`), so the two cannot disagree on what a
+/// registered endpoint is allowed to dial.
+pub(crate) struct DialPlan {
+    pub(crate) dial: Dial,
+    pub(crate) loopback: bool,
+}
+
+/// Why a remote dial could not be planned.
+///
+/// Typed rather than printed, so each caller words its own way out: `phux
+/// attach --quic/--ws` names its flags ([`Self::report_for_attach`]), while
+/// the session verbs' `--remote` names the registry entry the endpoint came
+/// from and reports on the `--json` contract (see `server_target`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DialRefusal {
+    /// The endpoint text did not parse: a bad `HOST:PORT` or URL.
+    Malformed(String),
+    /// The host did not resolve. `dns_name` is false for an IP literal,
+    /// which never touches DNS and so never earns the overlay hint.
+    Unresolved {
+        target: String,
+        detail: String,
+        dns_name: bool,
+    },
+    /// A routable QUIC endpoint with no certificate pin.
+    UnpinnedQuic { target: String },
+    /// A routable `wss://` endpoint with no certificate pin.
+    UnpinnedWs { url: String },
+    /// Plaintext `ws://` to a routable address.
+    Plaintext { url: String },
+    /// A routable `wss://` endpoint with no bearer token.
+    NoToken { url: String },
+    /// The bearer token is not well-formed hex.
+    BadToken(String),
+}
+
+impl DialRefusal {
+    /// The lines `phux attach --quic/--ws` prints for this refusal, the same
+    /// wording the planners printed before they returned a typed error.
+    fn attach_lines(&self) -> Vec<String> {
+        match self {
+            Self::Malformed(err) | Self::BadToken(err) => vec![format!("phux: {err}")],
+            Self::Unresolved {
+                target,
+                detail,
+                dns_name,
+            } => {
+                let mut lines = vec![format!("phux: QUIC attach to {target} failed: {detail}")];
+                if *dns_name {
+                    lines.push(OVERLAY_REACHABILITY_HINT.to_owned());
+                }
+                lines
+            }
+            Self::UnpinnedQuic { target } => vec![
+                format!(
+                    "phux: refusing to dial non-loopback QUIC server {target} without --cert-fingerprint."
+                ),
+                "      Run `phux pair` on the server host to print its certificate fingerprint,"
+                    .to_owned(),
+                format!("      then pass it: phux attach --quic {target} --cert-fingerprint <FP>"),
+            ],
+            Self::UnpinnedWs { url } => vec![
+                format!(
+                    "phux: refusing to dial non-loopback WebSocket server {url} without --cert-fingerprint."
+                ),
+                "      Run `phux pair` on the server host, then pass the printed fingerprint."
+                    .to_owned(),
+            ],
+            Self::Plaintext { url } => vec![
+                format!("phux: refusing plaintext WebSocket attach to non-loopback URL {url}."),
+                "      Use wss:// plus `phux pair` credentials for remote devices.".to_owned(),
+            ],
+            Self::NoToken { url } => vec![
+                format!("phux: refusing remote WebSocket attach to {url} without --token."),
+                "      Run `phux pair` on the server host and pass the printed token once."
+                    .to_owned(),
+            ],
+        }
+    }
+
+    /// Print the attach wording and return the failure exit code.
+    pub(crate) fn report_for_attach(&self) -> ExitCode {
+        for line in self.attach_lines() {
+            eprintln!("{line}");
+        }
+        ExitCode::FAILURE
+    }
+}
+
+/// Resolve `target` and build its QUIC dial, or say why it cannot be.
+///
+/// The trust decision keys on the **resolved** address, so a DNS name that
+/// resolves to loopback is dialed like loopback and anything routable needs
+/// a certificate pin.
+pub(crate) fn plan_quic_dial(
+    rt: &tokio::runtime::Runtime,
+    target: &str,
+    token: Option<String>,
+    cert_fingerprint: Option<String>,
+    server_name: Option<String>,
+) -> Result<DialPlan, DialRefusal> {
+    let (addr, default_server_name) = resolve_quic_target(rt, target)?;
+    let loopback = addr.ip().is_loopback();
+    let trust = quic_trust(target, cert_fingerprint, loopback)?;
+    let token = parsed_quic_token(token)?;
+    Ok(DialPlan {
+        dial: Dial::Quic(QuicDial {
+            addr,
+            server_name: server_name.unwrap_or(default_server_name),
+            token,
+            trust,
+        }),
+        loopback,
+    })
+}
+
+/// Pin the certificate when a fingerprint was given, trust loopback's
+/// self-signed dev cert, and refuse an unpinned routable dial.
+fn quic_trust(
+    target: &str,
+    cert_fingerprint: Option<String>,
+    loopback: bool,
+) -> Result<CertTrust, DialRefusal> {
+    if let Some(fingerprint) = cert_fingerprint {
+        return Ok(CertTrust::Pinned(fingerprint));
+    }
+    if loopback {
+        return Ok(CertTrust::SkipVerify);
+    }
+    Err(DialRefusal::UnpinnedQuic {
+        target: target.to_owned(),
+    })
+}
+
+/// Decode a hex bearer token for the QUIC preamble.
+fn parsed_quic_token(token: Option<String>) -> Result<Option<Vec<u8>>, DialRefusal> {
+    token
+        .map(|token| attach::quic::parse_token_hex(&token))
+        .transpose()
+        .map_err(|err| DialRefusal::BadToken(err.to_string()))
+}
+
+/// Validate `url` and its credentials and build the WebSocket dial, or say
+/// why it cannot be.
+pub(crate) fn plan_ws_dial(
+    url: String,
+    token: Option<String>,
+    cert_fingerprint: Option<String>,
+    tls_server_name: Option<String>,
+) -> Result<DialPlan, DialRefusal> {
+    let target =
+        attach::ws::WsTarget::parse(&url).map_err(|err| DialRefusal::Malformed(err.to_string()))?;
+    require_ws_dial_credentials(&target, &url, token.as_deref(), cert_fingerprint.as_deref())?;
+    let token = validated_ws_token(token)?;
+    let trust = cert_fingerprint.map_or(CertTrust::SkipVerify, CertTrust::Pinned);
+    Ok(DialPlan {
+        dial: Dial::Ws(WsDial {
+            url,
+            token,
+            trust,
+            tls_server_name,
+        }),
+        loopback: target.is_loopback(),
+    })
 }
 
 /// Attach over WebSocket to `phux server --listen`.
@@ -1151,36 +1284,11 @@ pub(crate) fn run_attach_ws(
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
-    let target = match attach::ws::WsTarget::parse(&url) {
-        Ok(target) => target,
-        Err(err) => {
-            eprintln!("phux: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if let Err(code) =
-        require_ws_dial_credentials(&target, &url, token.as_deref(), cert_fingerprint.as_deref())
-    {
-        return code;
-    }
-
-    // Captured before `target` is shadowed by the AttachTarget below; the
-    // failure hint needs to know whether the dial left the machine.
-    let loopback = target.is_loopback();
-
-    let token = match validated_ws_token(token) {
-        Ok(token) => token,
-        Err(code) => return code,
-    };
-
-    let trust = cert_fingerprint.map_or(CertTrust::SkipVerify, CertTrust::Pinned);
-    let dial = Dial::Ws(WsDial {
-        url,
-        token,
-        trust,
-        tls_server_name,
-    });
+    let DialPlan { dial, loopback } =
+        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name) {
+            Ok(plan) => plan,
+            Err(refusal) => return refusal.report_for_attach(),
+        };
 
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1225,40 +1333,32 @@ fn require_ws_dial_credentials(
     url: &str,
     token: Option<&str>,
     cert_fingerprint: Option<&str>,
-) -> Result<(), ExitCode> {
-    if !target.secure && !target.is_loopback() {
-        eprintln!("phux: refusing plaintext WebSocket attach to non-loopback URL {url}.");
-        eprintln!("      Use wss:// plus `phux pair` credentials for remote devices.");
-        return Err(ExitCode::FAILURE);
+) -> Result<(), DialRefusal> {
+    if target.is_loopback() {
+        return Ok(());
     }
-    if target.secure && !target.is_loopback() && cert_fingerprint.is_none() {
-        eprintln!(
-            "phux: refusing to dial non-loopback WebSocket server {url} without --cert-fingerprint."
-        );
-        eprintln!("      Run `phux pair` on the server host, then pass the printed fingerprint.");
-        return Err(ExitCode::FAILURE);
+    let url = url.to_owned();
+    if !target.secure {
+        return Err(DialRefusal::Plaintext { url });
     }
-    if target.secure && !target.is_loopback() && token.is_none() {
-        eprintln!("phux: refusing remote WebSocket attach to {url} without --token.");
-        eprintln!("      Run `phux pair` on the server host and pass the printed token once.");
-        return Err(ExitCode::FAILURE);
+    if cert_fingerprint.is_none() {
+        return Err(DialRefusal::UnpinnedWs { url });
+    }
+    if token.is_none() {
+        return Err(DialRefusal::NoToken { url });
     }
     Ok(())
 }
 
 /// Check that a supplied bearer token is well-formed hex before it is dialed
 /// with, and normalize its surrounding whitespace away.
-fn validated_ws_token(token: Option<String>) -> Result<Option<String>, ExitCode> {
+fn validated_ws_token(token: Option<String>) -> Result<Option<String>, DialRefusal> {
     let Some(token) = token else {
         return Ok(None);
     };
-    match attach::quic::parse_token_hex(&token) {
-        Ok(_) => Ok(Some(token.trim().to_owned())),
-        Err(err) => {
-            eprintln!("phux: {err}");
-            Err(ExitCode::FAILURE)
-        }
-    }
+    attach::quic::parse_token_hex(&token)
+        .map(|_| Some(token.trim().to_owned()))
+        .map_err(|err| DialRefusal::BadToken(err.to_string()))
 }
 
 /// The predictive-echo setting for one dial: the config file's explicit value
@@ -1349,6 +1449,54 @@ mod tests {
     use phux_protocol::wire::frame::DetachReason;
 
     use super::*;
+
+    /// The typed refusal renders the exact lines attach printed before the
+    /// planners stopped printing: the flag-naming remedy for attach, and the
+    /// overlay hint only after a DNS name failed to resolve.
+    #[test]
+    fn dial_refusals_keep_attach_wording() {
+        let unpinned = DialRefusal::UnpinnedQuic {
+            target: "mini:8788".to_owned(),
+        }
+        .attach_lines();
+        assert_eq!(
+            unpinned,
+            vec![
+                "phux: refusing to dial non-loopback QUIC server mini:8788 without --cert-fingerprint.",
+                "      Run `phux pair` on the server host to print its certificate fingerprint,",
+                "      then pass it: phux attach --quic mini:8788 --cert-fingerprint <FP>",
+            ]
+        );
+
+        let unresolved = |dns_name| {
+            DialRefusal::Unresolved {
+                target: "mini:8788".to_owned(),
+                detail: "name resolution failed: nope".to_owned(),
+                dns_name,
+            }
+            .attach_lines()
+        };
+        assert_eq!(
+            unresolved(true),
+            vec![
+                "phux: QUIC attach to mini:8788 failed: name resolution failed: nope".to_owned(),
+                OVERLAY_REACHABILITY_HINT.to_owned(),
+            ]
+        );
+        assert_eq!(
+            unresolved(false).len(),
+            1,
+            "an IP literal never earns the hint"
+        );
+
+        assert_eq!(
+            DialRefusal::NoToken {
+                url: "wss://h:1".to_owned()
+            }
+            .attach_lines()[0],
+            "phux: refusing remote WebSocket attach to wss://h:1 without --token."
+        );
+    }
 
     /// The gate is whether the dial actually crosses a network, not whether
     /// the transport could: a loopback QUIC or WebSocket dial has no round

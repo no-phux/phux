@@ -119,7 +119,7 @@ Usage: phux [OPTIONS] [COMMAND]
           - full:     The complete guide and command inventory
 
       --remote <[USER@]HOST[:PORT]>
-          Attach to a phux server on another machine, ssh-style: `phux --remote me@mini`. Belongs to the naked `phux` attach alone; `phux attach --remote` carries its own copy (and the `--code` / `--no-enroll` modifiers that go with it)
+          Attach to a phux server on another machine, ssh-style: `phux --remote me@mini`. Belongs to the naked `phux` attach alone; `phux attach --remote` carries its own copy (and the `--code` / `--no-enroll` modifiers that go with it), and `ls`, `new`, `kill`, `rename`, and `detach` take their own after the verb
 
       --capabilities
           Print machine-readable capabilities with `--json`, then exit
@@ -1114,6 +1114,9 @@ Arguments:
           Session to detach clients from. Omit to detach every attached client on the server
 
 Options:
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
@@ -1394,7 +1397,7 @@ Kill a session, window, pane, or the server itself.
 
 `TARGET` uses the selector grammar (see the top-level help): `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector is resolved client-side against a server-state snapshot to a set of Terminals; the server is then asked to kill each.
 
-`--server` stops the server process instead, ending every session on it. Local socket only.
+`--server` stops the server process instead, ending every session on it. Local socket only: the server accepts that stop on its local socket alone, so `--server` cannot combine with `--remote`.
 
 Usage: phux kill [OPTIONS] <TARGET|--server>
 
@@ -1407,6 +1410,9 @@ Options:
           Stop the running server, ending every session it holds.
 
           The server exits cleanly, so a supervised one stays stopped rather than being restarted. Note that the next `phux attach`/`new` will auto-spawn a fresh server: this stops the current one, it does not disable phux.
+
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
@@ -1519,6 +1525,9 @@ Options:
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
 
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
@@ -1615,6 +1624,9 @@ Options:
 
   -e, --env <KEY=VALUE>
           Environment assignment for the seed process. Repeat for multiple variables. Headless `--json` mode only
+
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2211,6 +2223,9 @@ Arguments:
           New session name
 
 Options:
+      --remote <[USER@]HOST[:PORT]>
+          Run against the phux server on another machine instead of the local socket, ssh-style: `--remote me@mini`. Same target and resolution as `phux attach --remote`: a registered host is dialed directly over QUIC or WSS, and an unregistered one is paired over your ssh trust first and remembered (with `--json` it is refused instead, naming the remedies). PORT defaults to 8788. Cannot combine with `--socket`
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 

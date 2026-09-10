@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-08-22
+last-reviewed: 2026-09-10
 ---
 
 # Remote access over an overlay network
@@ -88,6 +88,39 @@ name, and later attaches need no code.
 
 `--no-enroll` refuses the ssh rung outright: an unregistered host is reported
 with its remedies named rather than paired.
+
+### Managing a remote host's sessions without attaching
+
+The session verbs take the same `--remote` target, placed after the verb, so
+you can create, list, rename, and kill sessions on another machine from a
+local shell:
+
+```sh
+phux new --remote me@mini -s build --json -- make watch
+phux ls --remote me@mini
+phux rename --remote me@mini build ci
+phux kill --remote me@mini ci
+```
+
+`ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
+target through the same ladder as `phux --remote` and dials the same QUIC or
+WSS endpoint, so a host paired once for attach needs nothing more here (and a
+cold host pairs over ssh the first time, exactly as attach would). With
+`--json` a cold host is refused instead of paired, with the remedies in the
+error's `remedy` field: pairing narrates on stderr and ssh may prompt, and a
+machine-readable call must do neither. Three limits are deliberate:
+
+- `--remote` and `--socket` cannot combine: one names a local socket, the
+  other a network dial.
+- `phux kill --server --remote HOST` is refused. The server accepts its stop
+  command on the local socket only, so run `phux kill --server` on that host.
+- An `ssh://` registry entry is refused. It carries an interactive attach
+  over `ssh -t` and nothing else; `phux host enroll HOST` gives it a direct
+  QUIC endpoint the session verbs can dial.
+
+`phux new --remote` without `--json` creates the session and attaches to it,
+like the local form. With no `--cwd`, a remote session starts in the far
+server's default directory: a path on this machine names nothing there.
 
 ### The related way: `phux host enroll`
 

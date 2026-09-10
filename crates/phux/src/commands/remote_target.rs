@@ -280,7 +280,7 @@ pub(crate) struct RemoteAttach<'a> {
 
 /// Resolve a `--remote` target to a registered host and attach to it.
 pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
-    let entry = match resolve(&args) {
+    let entry = match resolve(&args.target, args.code, args.bootstrap) {
         Ok(entry) => entry,
         Err(err) => {
             for line in err.lines() {
@@ -293,25 +293,31 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
 }
 
 /// Walk the ladder: registered, then pasted code, then ssh, then refuse.
-fn resolve(args: &RemoteAttach<'_>) -> Result<RemoteEntry, String> {
-    let target = &args.target;
-
+///
+/// `pub(crate)` because the headless session verbs' `--remote` resolves
+/// through this exact function (see `server_target`), so a target cannot
+/// mean one host to `phux attach` and another to `phux ls`.
+pub(crate) fn resolve(
+    target: &RemoteTarget,
+    code: Option<&str>,
+    bootstrap: Bootstrap,
+) -> Result<RemoteEntry, String> {
     // Rung 1: already registered. A pasted `--code` still wins, because the
     // operator is holding fresher credentials than the ones on disk — that
     // is what re-pairing after a revoke looks like.
-    if args.code.is_none()
+    if code.is_none()
         && let Some(entry) = find_entry(target)
     {
         return Ok(with_port_override(entry, target));
     }
 
     // Rung 2: a connect code carries the endpoint, the pin, and the token.
-    if let Some(code) = args.code {
+    if let Some(code) = code {
         return register_from_code(target, code);
     }
 
     // Rung 3: mint credentials over the operator's existing ssh trust.
-    if args.bootstrap == Bootstrap::Never {
+    if bootstrap == Bootstrap::Never {
         return Err(unregistered_message(target, None));
     }
     register_over_ssh(target)

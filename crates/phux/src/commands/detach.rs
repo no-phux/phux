@@ -1,12 +1,10 @@
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue};
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, command_on, report_no_server};
+use crate::commands::command_on;
+use crate::commands::server_target::ServerSpec;
 
 /// `phux detach [SESSION]` — force-detach clients from *outside* the attach UI.
 ///
@@ -18,18 +16,18 @@ use crate::commands::{cli_runtime, command_on, report_no_server};
 /// `FrameKind::Detach`, which only detaches the sending connection.
 ///
 /// Exit codes: 0 on success (including "nobody was attached"), 1 on no server,
-/// 2 on a server-side refusal.
-pub(crate) fn run_detach(session: Option<String>, socket: Option<PathBuf>) -> ExitCode {
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
+/// 2 on a server-side refusal. `server` is the local socket or a `--remote`
+/// host (see `server_target`).
+pub(crate) fn run_detach(session: Option<String>, server: ServerSpec) -> ExitCode {
+    let (rt, target) = match server.prepare("detach", false) {
+        Ok(prepared) => prepared,
         Err(code) => return code,
     };
 
     rt.block_on(async move {
-        let mut conn = match Connection::connect(&socket_path).await {
+        let mut conn = match target.connect().await {
             Ok(conn) => conn,
-            Err(err) => return report_no_server(&err, &socket_path, "detach"),
+            Err(err) => return target.report_unreachable(false, &err, "detach"),
         };
 
         match command_on(
@@ -80,7 +78,7 @@ pub(crate) fn run_detach(session: Option<String>, socket: Option<PathBuf>) -> Ex
                 eprintln!("phux: connection closed before the detach reply");
                 ExitCode::FAILURE
             }
-            Err(err) => report_no_server(&err, &socket_path, "detach"),
+            Err(err) => target.report_unreachable(false, &err, "detach"),
         }
     })
 }

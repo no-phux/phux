@@ -99,6 +99,51 @@ pub(crate) struct JsonOpt {
     pub(crate) json: bool,
 }
 
+/// The `--remote` target the headless session verbs share (phux-c2td.2),
+/// flattened like [`JsonOpt`] so the help text and the resolution rule
+/// cannot drift per verb. Resolution lives in [`server_target`].
+#[derive(Debug, Args)]
+pub(crate) struct RemoteOpt {
+    /// Run against the phux server on another machine instead of the local
+    /// socket, ssh-style: `--remote me@mini`. Same target and resolution as
+    /// `phux attach --remote`: a registered host is dialed directly over
+    /// QUIC or WSS, and an unregistered one is paired over your ssh trust
+    /// first and remembered (with `--json` it is refused instead, naming the
+    /// remedies). PORT defaults to 8788. Cannot combine with `--socket`.
+    #[arg(long, value_name = "[USER@]HOST[:PORT]")]
+    pub(crate) remote: Option<String>,
+}
+
+impl RemoteOpt {
+    /// Pair this verb's `--remote` with the global `--socket`.
+    pub(crate) fn with_socket(
+        self,
+        socket: Option<std::path::PathBuf>,
+    ) -> server_target::ServerSpec {
+        server_target::ServerSpec {
+            socket,
+            remote: self.remote,
+        }
+    }
+}
+
+/// The verb-scoped `--remote` this command carries, if any.
+///
+/// One accessor for every verb that takes the flag, so the post-parse checks
+/// (a malformed target, the `--socket` collision) cover each of them without
+/// a per-verb list of their own.
+pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
+    match command {
+        Command::Attach { remote, .. } => remote.as_deref(),
+        Command::Ls { remote, .. }
+        | Command::New { remote, .. }
+        | Command::Kill { remote, .. }
+        | Command::Rename { remote, .. }
+        | Command::Detach { remote, .. } => remote.remote.as_deref(),
+        _ => None,
+    }
+}
+
 /// Validates a split ratio as finite and strictly between zero and one.
 fn parse_spawn_ratio(value: &str) -> Result<f32, String> {
     let ratio: f32 = value
@@ -172,6 +217,7 @@ pub(crate) mod run;
 pub(crate) mod satellite;
 pub(crate) mod send_keys;
 pub(crate) mod server;
+pub(crate) mod server_target;
 pub(crate) mod service;
 pub(crate) mod snapshot;
 pub(crate) mod spatial;
@@ -464,6 +510,9 @@ pub(crate) enum Command {
     Ls {
         #[command(flatten)]
         json: JsonOpt,
+
+        #[command(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Report the running server: pid, up since, protocol, clients, logs.
@@ -569,6 +618,9 @@ pub(crate) enum Command {
         )]
         env: Vec<(String, String)>,
 
+        #[command(flatten)]
+        remote: RemoteOpt,
+
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.
         #[arg(last = true)]
@@ -673,7 +725,8 @@ pub(crate) enum Command {
     /// Terminals; the server is then asked to kill each.
     ///
     /// `--server` stops the server process instead, ending every session on
-    /// it. Local socket only.
+    /// it. Local socket only: the server accepts that stop on its local
+    /// socket alone, so `--server` cannot combine with `--remote`.
     #[command(group = clap::ArgGroup::new("kill_what").required(true).args(["target", "server"]))]
     Kill {
         /// What to kill (selector).
@@ -686,6 +739,9 @@ pub(crate) enum Command {
         /// disable phux.
         #[arg(long)]
         server: bool,
+
+        #[command(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Insert an already-created pane into a session layout.
@@ -799,6 +855,9 @@ pub(crate) enum Command {
         /// Session to detach clients from. Omit to detach every attached
         /// client on the server.
         session: Option<String>,
+
+        #[command(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Take the input wheel of a pane.
@@ -901,6 +960,9 @@ pub(crate) enum Command {
 
         /// New session name.
         new_name: String,
+
+        #[command(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Capture a pane's screen as JSON or a boxed text view.
