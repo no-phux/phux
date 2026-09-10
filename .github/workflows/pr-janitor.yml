@@ -1,21 +1,150 @@
-# Retired at the free-runner cutover: PR closure must not cancel pre-cutover
-# queued/running jobs. Keep this manual, read-only marker for workflow history.
+# pr-janitor — reclaim the two shared budgets a closed PR keeps holding.
+#
+# Closing or merging a PR releases nothing on its own. Two resources stay
+# pinned to a pull request that no longer exists:
+#
+#   Concurrency. GitHub leaves every queued/running job for the PR's head SHA
+#   running until it finishes or is superseded. On a merge that is pure waste —
+#   the result is moot the moment the merge lands — and on an abandoned PR it
+#   can idle for the full job timeout. Standard runners are free for this public
+#   repository, so the cost is no longer minutes; it is queue slots. The account
+#   allows 20 concurrent standard jobs and only 5 concurrent macOS jobs, and the
+#   macOS legs are the ones that starve.
+#
+#   Cache storage. Actions cache is capped at 10 GB per repository and evicts
+#   least-recently-used across the whole repository. A cache saved on
+#   `refs/pull/N/merge` is readable only from that pull request: never from
+#   `main`, never from another PR. Once the PR closes the entry can never be
+#   restored by anything, but it keeps occupying the budget until the 7-day
+#   idle eviction — and until then it evicts warm `main` entries that every
+#   lane depends on. Twenty closed PRs had accumulated 5.09 GB of exactly this.
+#
+# The `closed` event carries no run or cache state, so both jobs resolve what
+# they own through the API. Runs are matched by head SHA, not head branch: fork
+# PRs have no branch in this repository, and the SHA identifies exactly the tree
+# the PR last proposed. Push-triggered runs for the merged commit on `main`
+# share neither SHA nor event, so the new main-branch CI is never touched.
+# Caches are matched by the `refs/pull/N/merge` ref, which is unambiguous.
+#
+# This is intentionally a separate workflow rather than jobs bolted onto ci.yml:
+# the `closed` event must fire even for draft or docs-only PRs that never ran
+# ci.yml's `changes` gate, and a workflow that only ever cancels other runs
+# should not share a concurrency group with anything it cancels.
+
 name: pr-janitor
 
 on:
+  pull_request:
+    types: [closed]
   workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to reclaim runs and caches for.
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  # Cancelling runs and deleting caches both require actions:write. Neither job
+  # checks out repository code, so the token's blast radius is the cancel and
+  # cache-delete endpoints and nothing else.
+  actions: write
 
 concurrency:
-  group: mini-v1-pr-janitor
+  # Serialize per PR. Never cancel in progress: a half-finished reclamation
+  # leaves exactly the debris this workflow exists to remove.
+  group: mini-v1-pr-janitor-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: false
 
 jobs:
-  policy:
-    name: report cancellation policy
+  cancel:
+    name: cancel stale runs for the closed PR
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: echo 'Automatic PR-close cancellation is retired; existing runs finish normally.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Resolve the PR head SHA
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ -n "${EVENT_SHA}" ]; then
+            sha="${EVENT_SHA}"
+          else
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha)"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Cancel queued and in-progress runs for this PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cancelled=0
+          for status in queued waiting in_progress pending; do
+            # The head SHA is interpolated rather than passed through jq's
+            # env because gh's gojq build does not expose it; it is a
+            # server-generated 40-char hex string, not user input.
+            ids="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&status=${status}&per_page=100" \
+              --jq ".workflow_runs[] | select(.head_sha == \"${HEAD_SHA}\" and (.id | tostring) != \"${RUN_ID}\") | .id")"
+            for id in ${ids}; do
+              echo "cancelling run ${id} (status=${status})"
+              # A run can complete between listing and cancelling; a 409
+              # there is the desired end state, not a failure.
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" || true
+              cancelled=$((cancelled + 1))
+            done
+          done
+          echo "cancelled ${cancelled} run(s) for ${HEAD_SHA}"
+          echo "Cancelled ${cancelled} run(s) for \`${HEAD_SHA}\`." >> "$GITHUB_STEP_SUMMARY"
+
+  caches:
+    name: delete the closed PR's caches
+    # After `cancel`, so a run that was still alive cannot save a fresh entry
+    # into the scope this job has just emptied. A straggler that beats the
+    # cancel is caught by the next close or by the 7-day idle eviction.
+    needs: cancel
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Delete every cache scoped to this pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          set -euo pipefail
+          ref="refs/pull/${PR_NUMBER}/merge"
+          # One page is enough for a PR under the read-only sccache policy;
+          # --paginate keeps a pre-policy backlog from being left behind.
+          mapfile -t entries < <(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            --jq ".actions_caches[] | select(.ref == \"${ref}\") | \"\(.id)\t\(.size_in_bytes)\"")
+
+          deleted=0
+          bytes=0
+          for entry in "${entries[@]:-}"; do
+            [ -n "${entry}" ] || continue
+            id="${entry%%$'\t'*}"
+            size="${entry##*$'\t'}"
+            # Mutative requests need pacing: GitHub's secondary rate limit
+            # trips on bursts well below the primary hourly allowance. A 404
+            # means something else already removed it, which is the goal.
+            if gh api -X DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" --silent 2>/dev/null; then
+              deleted=$((deleted + 1))
+              bytes=$((bytes + size))
+            fi
+            sleep 1
+          done
+
+          # No backticks in the format string: shellcheck reads them as command
+          # substitution even inside single quotes (SC2016).
+          printf 'deleted %d cache entries, %d MiB, for %s\n' \
+            "${deleted}" "$((bytes / 1048576))" "${ref}"
+          printf 'Deleted **%d** cache entries (**%d MiB**) scoped to %s.\n' \
+            "${deleted}" "$((bytes / 1048576))" "${ref}" >> "$GITHUB_STEP_SUMMARY"
