@@ -266,6 +266,15 @@ pub struct RuntimeFlags {
     /// zero — a resumed server must not become *more* eager to exit than the
     /// one it replaced, and never `--exit-after-idle 0`.
     pub exit_after_idle: Option<Duration>,
+    /// Installed executable the next upgrade pins, as handed down by the
+    /// server that upgraded into this image (`PHUX_UPGRADE_SOURCE_EXE`).
+    ///
+    /// The one environment input decided at startup rather than re-derived:
+    /// `Some` only when this process was started with `--resume`. A cold
+    /// start ignores any inherited value and pins `current_exe` instead,
+    /// because the variable also leaks into every pane of an upgraded server
+    /// and must not steer an unrelated server started from one (phux-m5yj).
+    pub upgrade_source_exe: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -493,6 +502,9 @@ pub struct ServerRuntime {
     /// inherited listener, and rebuilds the session tree instead of binding a
     /// fresh socket and seeding an empty state. Set by `phux server --resume`.
     resume_fd: Option<RawFd>,
+    /// The upgrade handoff inherited through the environment: consumed (and
+    /// scrubbed) by [`Self::resume`], empty on a cold start (phux-m5yj).
+    inherited_upgrade: upgrade::InheritedUpgradeEnv,
     /// Whether this server runs as a federation hub (phux-v45.1, ADR-0007).
     /// Off by default; `phux server --hub` populates this. Only a hub
     /// consumes [`Self::satellites`] — a non-hub server ignores the registry
@@ -532,6 +544,7 @@ impl ServerRuntime {
             #[cfg(feature = "webtransport")]
             wt_addr: None,
             resume_fd: None,
+            inherited_upgrade: upgrade::InheritedUpgradeEnv::none(),
             hub: false,
             satellites: Vec::new(),
             connectors: Vec::new(),
@@ -561,9 +574,24 @@ impl ServerRuntime {
     /// Resume from a graceful upgrade (ADR-0032): read the handoff state blob
     /// from inherited descriptor `fd`, adopt the inherited listener, and
     /// rebuild the session tree rather than starting fresh.
+    ///
+    /// Also consumes the `PHUX_UPGRADE_*` handoff variables and removes them
+    /// from the process environment, so call it before starting threads.
     #[must_use]
-    pub const fn resume(mut self, fd: RawFd) -> Self {
+    pub fn resume(mut self, fd: RawFd) -> Self {
         self.resume_fd = Some(fd);
+        self.inherited_upgrade = upgrade::InheritedUpgradeEnv::take_from_env();
+        self
+    }
+
+    /// A cold start: honor no inherited upgrade handoff, and remove any
+    /// `PHUX_UPGRADE_*` variables from the process environment so hooks and
+    /// every other child of this server cannot inherit them either. The
+    /// counterpart of [`Self::resume`]; call it at the same point, before
+    /// starting threads.
+    #[must_use]
+    pub fn discard_inherited_upgrade(self) -> Self {
+        let _ignored = upgrade::InheritedUpgradeEnv::take_from_env();
         self
     }
 
@@ -696,7 +724,7 @@ impl ServerRuntime {
         let connector_specs = crate::connector::plan_connectors(&self.connectors)?;
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs)?;
 
-        let resume_blob = read_resume_blob(self.resume_fd)?;
+        let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
         let listener = adopt_or_bind_listener(
             &socket_path,
             resume_blob.as_ref().map(|blob| blob.listener_fd),
@@ -909,6 +937,7 @@ impl ServerRuntime {
             hub: self.hub,
             connect: self.connect_override.clone(),
             exit_after_idle: self.cfg.exit_after_idle,
+            upgrade_source_exe: self.inherited_upgrade.source_exe.clone(),
         }
     }
 }
@@ -962,12 +991,15 @@ fn load_connector_consumer_tokens(
 /// inherited descriptor. The previous image's private executable snapshot is
 /// dropped as soon as the blob proves this really is a resume; the session
 /// tree is rebuilt from the blob inside the `LocalSet`.
-fn read_resume_blob(resume_fd: Option<RawFd>) -> Result<Option<StateBlob>, ServerError> {
+fn read_resume_blob(
+    resume_fd: Option<RawFd>,
+    inherited: &upgrade::InheritedUpgradeEnv,
+) -> Result<Option<StateBlob>, ServerError> {
     let Some(fd) = resume_fd else {
         return Ok(None);
     };
     let blob = resume::read_blob_from_fd(fd)?;
-    upgrade::cleanup_executable_snapshot();
+    upgrade::cleanup_executable_snapshot(inherited.snapshot_dir.as_deref());
     Ok(Some(blob))
 }
 

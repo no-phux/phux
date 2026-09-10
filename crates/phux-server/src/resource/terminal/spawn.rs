@@ -710,6 +710,19 @@ pub fn apply_server_socket(cmd: &mut CommandBuilder, socket_path: Option<&std::p
     }
 }
 
+/// Strip the server-private graceful-upgrade handoff (`PHUX_UPGRADE_*`) from
+/// a pane child's environment. [`spawn_pty`] applies it to every pane.
+///
+/// `CommandBuilder::new` snapshots the server's own environment, which holds
+/// these variables whenever the server was itself started from an upgraded
+/// server's pane. Passed on, they made a `phux server` started in the pane
+/// re-exec into the outer server's binary on upgrade (phux-m5yj).
+pub(crate) fn clear_upgrade_handoff_env(cmd: &mut CommandBuilder) {
+    for key in crate::upgrade::HANDOFF_ENV_VARS {
+        cmd.env_remove(key);
+    }
+}
+
 /// Apply a wire-supplied working directory to `cmd` with the uniform
 /// validation and fallback the seed-and-attach create path and the
 /// `SESSION_CREATE_KEY` create-without-attach path share (phux-0v1l).
@@ -807,7 +820,7 @@ pub(crate) async fn recv_or_pending(rx: Option<&mut mpsc::Receiver<PtyEvent>>) -
 /// writer bridge threads. Returns the actor-side channel endpoints and
 /// a [`PtyOwned`] bundle to keep the resources alive.
 pub(crate) fn spawn_pty(
-    cmd: CommandBuilder,
+    mut cmd: CommandBuilder,
     cols: u16,
     rows: u16,
 ) -> Result<SpawnedPty, TerminalActorError> {
@@ -826,6 +839,7 @@ pub(crate) fn spawn_pty(
         })
         .map_err(|e| TerminalActorError::OpenPty(e.to_string()))?;
 
+    clear_upgrade_handoff_env(&mut cmd);
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -1527,6 +1541,41 @@ mod canonical_guard_tests {
     // Real-PTY integration through the actual writer thread
     // (`spawn_pty` -> the production `canonical_refusal` guard).
     // -------------------------------------------------------------------
+
+    /// phux-m5yj: a pane child never inherits the server's `PHUX_UPGRADE_*`
+    /// handoff, even when the builder's environment snapshot carries it --
+    /// the shape of a server started from inside an upgraded server's pane.
+    /// Asserted on a real child, so it proves `spawn_pty` applies the scrub.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pane_children_never_inherit_the_upgrade_handoff_env() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(
+            "printf '[%s|%s|%s]' \"${PHUX_UPGRADE_SOURCE_EXE-unset}\" \
+             \"${PHUX_UPGRADE_SNAPSHOT_DIR-unset}\" \"${PHUX_SOCKET-unset}\"",
+        );
+        for key in crate::upgrade::HANDOFF_ENV_VARS {
+            cmd.env(key, "/leaked/by/an/upgraded/server");
+        }
+        cmd.env("PHUX_SOCKET", "/tmp/kept.sock");
+        let (mut pty_rx, _input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn sh under a real pty");
+
+        let mut received = Vec::new();
+        let deadline = tokio::time::Instant::now() + DELIVERY_DEADLINE;
+        while !received.contains(&b']') {
+            match tokio::time::timeout_at(deadline, pty_rx.recv()).await {
+                Ok(Some(PtyEvent::Bytes { chunk, .. })) => received.extend_from_slice(&chunk),
+                Ok(Some(PtyEvent::Eof) | None) | Err(_) => break,
+            }
+        }
+        let _ = pty.child.kill();
+        let out = String::from_utf8_lossy(&received);
+        assert!(
+            out.contains("[unset|unset|/tmp/kept.sock]"),
+            "a pane child must see PHUX_SOCKET but no PHUX_UPGRADE_* variable; got {out:?}"
+        );
+    }
 
     /// phux-mjmc's first repro: 4097 entirely newline-free bytes. Old code
     /// wrote this straight through (`write_all_resilient` reports success —

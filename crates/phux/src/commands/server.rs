@@ -461,9 +461,12 @@ pub(crate) fn run_server(
     if hub {
         server = server.hub(satellites);
     }
-    if let Some(fd) = resume {
-        server = server.resume(fd);
-    }
+    // Every start either consumes the upgrade handoff (resume) or discards
+    // it (cold start), so no `PHUX_UPGRADE_*` value outlives this point.
+    server = match resume {
+        Some(fd) => server.resume(fd),
+        None => server.discard_inherited_upgrade(),
+    };
     // Live rotation for the canonical server log for as long as this
     // process runs (phux-j1zj): startup-only rotation still lets one very
     // long-lived, chatty server exceed `server.log`'s size threshold

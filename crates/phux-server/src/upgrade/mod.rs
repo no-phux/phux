@@ -16,3 +16,13 @@
 //! [`ServerState`]: crate::state::ServerState
 
 pub mod blob;
+
+/// Installed executable the next upgrade pins, handed to the re-exec'd image.
+pub(crate) const SOURCE_EXE_ENV: &str = "PHUX_UPGRADE_SOURCE_EXE";
+/// The previous image's private executable snapshot, removed on resume.
+pub(crate) const SNAPSHOT_DIR_ENV: &str = "PHUX_UPGRADE_SNAPSHOT_DIR";
+
+/// Every environment variable of the old-image to new-image handoff. They
+/// are server-private (phux-m5yj): a resumed image removes them from its own
+/// environment once consumed, and pane spawns strip them from the child.
+pub(crate) const HANDOFF_ENV_VARS: [&str; 2] = [SOURCE_EXE_ENV, SNAPSHOT_DIR_ENV];

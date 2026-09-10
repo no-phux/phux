@@ -26,8 +26,8 @@ use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::StateBlob;
 
 const PANE_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
-const UPGRADE_SOURCE_EXE: &str = "PHUX_UPGRADE_SOURCE_EXE";
-const UPGRADE_SNAPSHOT_DIR: &str = "PHUX_UPGRADE_SNAPSHOT_DIR";
+const UPGRADE_SOURCE_EXE: &str = crate::upgrade::SOURCE_EXE_ENV;
+const UPGRADE_SNAPSHOT_DIR: &str = crate::upgrade::SNAPSHOT_DIR_ENV;
 
 /// Errors preparing a graceful upgrade. Any of these leaves the running server
 /// untouched (the children are never stranded — see the module docs).
@@ -102,10 +102,10 @@ impl PinnedExecutable {
 }
 
 /// Remove the private executable snapshot after a successful re-exec. Unix
-/// keeps the mapped image alive after unlink, while the installed source path
-/// remains in the environment for the next upgrade.
-pub(super) fn cleanup_executable_snapshot() {
-    let Some(path) = std::env::var_os(UPGRADE_SNAPSHOT_DIR).map(PathBuf::from) else {
+/// keeps the mapped image alive after unlink. `dir` is the snapshot directory
+/// the upgrading image handed down (see [`InheritedUpgradeEnv`]).
+pub(super) fn cleanup_executable_snapshot(dir: Option<&Path>) {
+    let Some(path) = dir else {
         return;
     };
     let is_ours = path
@@ -213,7 +213,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 
     let blob_file = stage_blob_file(&blob)?;
     let blob_fd = blob_file.as_raw_fd();
-    let executable = pin_validated_executable()?;
+    let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
     let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
 
     Ok(UpgradePlan {
@@ -288,12 +288,68 @@ fn stage_blob_file(blob: &StateBlob) -> Result<std::fs::File, UpgradeError> {
 /// Pin and validate the replacement image before any descriptor flag changes.
 /// A broken replacement binary must leave the old process's descriptor policy
 /// untouched.
-fn pin_validated_executable() -> Result<PinnedExecutable, UpgradeError> {
-    let source_exe = std::env::var_os(UPGRADE_SOURCE_EXE)
-        .map_or_else(std::env::current_exe, |path| Ok(PathBuf::from(path)))?;
+fn pin_validated_executable(
+    inherited_source: Option<&Path>,
+) -> Result<PinnedExecutable, UpgradeError> {
+    let source_exe =
+        inherited_source.map_or_else(std::env::current_exe, |path| Ok(path.to_path_buf()))?;
     let executable = PinnedExecutable::open(&source_exe)?;
     validate_binary(&executable.path)?;
     Ok(executable)
+}
+
+/// The graceful-upgrade handoff a resumed image inherits through its
+/// environment from the server that re-exec'd into it ([`UpgradePlan::exec`]).
+///
+/// Regression (phux-m5yj): the `PHUX_UPGRADE_*` variables are consumed only
+/// by a `--resume` start, then removed from the process environment. They
+/// used to be read lazily at upgrade time by any server, and they also leaked
+/// into every pane child. A server cold-started from an upgraded server's
+/// pane therefore pinned the *outer* server's installed binary and re-exec'd
+/// into a different phux on its first upgrade -- one whose protocol refused
+/// every client, so the resumed server never accepted again.
+#[derive(Debug)]
+pub(super) struct InheritedUpgradeEnv {
+    /// Installed executable the next upgrade pins instead of `current_exe`.
+    pub(super) source_exe: Option<PathBuf>,
+    /// The previous image's private executable snapshot directory.
+    pub(super) snapshot_dir: Option<PathBuf>,
+}
+
+impl InheritedUpgradeEnv {
+    /// Nothing inherited: every cold start.
+    pub(super) const fn none() -> Self {
+        Self {
+            source_exe: None,
+            snapshot_dir: None,
+        }
+    }
+
+    /// Read the handoff variables once and remove them from this process's
+    /// environment, so nothing this image later spawns can inherit them.
+    pub(super) fn take_from_env() -> Self {
+        let inherited = Self {
+            source_exe: std::env::var_os(UPGRADE_SOURCE_EXE).map(PathBuf::from),
+            snapshot_dir: std::env::var_os(UPGRADE_SNAPSHOT_DIR).map(PathBuf::from),
+        };
+        for key in crate::upgrade::HANDOFF_ENV_VARS {
+            if std::env::var_os(key).is_some() {
+                // SAFETY: std serializes its own environment access behind a
+                // process-wide lock, so this cannot race a Rust-side read. The
+                // residual hazard is a concurrent libc `getenv` from foreign
+                // code on another thread. Both callers, `ServerRuntime::resume`
+                // and `ServerRuntime::discard_inherited_upgrade`, run from
+                // `phux server` after building the current-thread runtime
+                // (which starts no threads) and before the blocking
+                // pool, signal handlers, or log-rotation task exist. The only
+                // earlier threads are the tracing-appender worker (with
+                // `PHUX_LOG` set), which only writes, and the developer-only
+                // tokio-console server under `tokio_unstable`.
+                unsafe { std::env::remove_var(key) };
+            }
+        }
+        inherited
+    }
 }
 
 /// Everything the re-exec'd image must inherit needs `FD_CLOEXEC` cleared: the
@@ -467,6 +523,7 @@ mod tests {
             connect: None,
             hub,
             exit_after_idle: None,
+            upgrade_source_exe: None,
         }
     }
 
