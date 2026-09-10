@@ -150,6 +150,8 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
+- [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
+- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

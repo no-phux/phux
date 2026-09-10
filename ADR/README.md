@@ -139,6 +139,8 @@ not a summary: the TL;DR lives in the ADR.
 | [0102](./0102-resources-the-server-serves-kinds.md) | Resources: the server serves kinds; Terminal is the first | Accepted (supersedes [0016](./0016-terminal-id-as-wire-primary.md), [0030](./0030-engine-delegated-wire-and-projection-consumers.md)) |
 | [0103](./0103-agent-session-resource-and-producer-fed-streams.md) | Agent session resource and producer-fed streams | Accepted (amends [0040](./0040-agent-identity-metadata.md)) |
 | [0104](./0104-parent-bindings-are-l1-lifecycle.md) | Parent bindings are L1 lifecycle | Accepted (builds on [0102](./0102-resources-the-server-serves-kinds.md)) |
+| [0105](./0105-sessions-can-outlive-their-last-window.md) | Sessions can outlive their last window | Proposed (amends [0063](./0063-ephemeral-server-lifetime.md)) |
+| [0106](./0106-identity-is-the-serving-user.md) | Identity is the serving user; whoami reports it | Proposed (builds on [0003](./0003-server-process-model.md)) |
 
 ## When to write an ADR
 
