@@ -38,6 +38,8 @@ pub const Result = struct {
     /// Zero denotes live admission without a provider execution request.
     request_id: u32,
     connection_epoch: u64,
+    /// Session ATTACH is lifecycle evidence, never a resource request ID.
+    target_session_id: u32 = 0,
     terminal_ref: ?contract.TerminalRef = null,
     placement_request_id: u32 = 0,
     placement_connection_epoch: u64 = 0,

@@ -6,11 +6,13 @@ const layout = @import("layout.zig");
 const contract = @import("provider_contract");
 const shared_mutations = @import("shared_mutations.zig");
 const results = @import("command_results.zig");
+const session_navigation = @import("session_navigation.zig");
 const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
 
 pub const Kind = enum { tab, window, split_right, split_down };
 const Pending = struct {
+    navigation: ?session_navigation.Navigation = null,
     command_id: ?u64 = null,
     operation_request: u32 = 0,
     operation: ?results.Operation = null,
@@ -38,6 +40,7 @@ const Pending = struct {
     attach_only: bool = false,
     existing_member: bool = false,
     focus: ?TerminalRef = null,
+    focus_window: ?usize = null,
     may_focus: bool = true,
 };
 
@@ -74,6 +77,110 @@ pub const Creation = struct {
 
     pub fn requestCorrelated(self: *Creation, model: *Model, kind: Kind, command_id: u64) !void {
         return self.spawn(model, kind, command_id);
+    }
+
+    /// Reserve command/result ownership before selectSession or leaveSession.
+    /// The intentional disconnect commits the handoff and retires older work.
+    pub fn reserveSessionCorrelated(self: *Creation, model: *Model, target_session: u32, terminal: ?TerminalRef, command_id: u64) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const remote = model.phux() orelse return error.NoProvider;
+        try self.requireUniqueCommand(command_id);
+        try self.requireSessionAvailable(target_session);
+        const slot = try self.vacant();
+        const navigation = try session_navigation.Navigation.capture(remote, target_session);
+        var entry = try prepareDestination(model, .tab, 0, false);
+        entry.command_id = command_id;
+        entry.navigation = navigation;
+        entry.session = target_session;
+        entry.terminal = terminal;
+        entry.attach_only = true;
+        slot.* = entry;
+    }
+
+    fn requireSessionAvailable(self: *const Creation, target: u32) !void {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.completion != null) continue;
+            const navigation = entry.navigation orelse continue;
+            if (navigation.target == target) return error.OperationBusy;
+        }
+    }
+
+    fn sessionEntry(self: *Creation, command_id: u64) ?*Pending {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (entry.navigation == null) continue;
+            if (entry.command_id == command_id) return entry;
+        }
+        return null;
+    }
+
+    pub fn cancelSessionReservation(self: *Creation, command_id: u64) bool {
+        const entry = self.sessionEntry(command_id) orelse return false;
+        if (entry.navigation.?.phase != .waiting_old_close) return false;
+        for (&self.pending) |*slot| {
+            if (slot.* == null) continue;
+            if (&slot.*.? != entry) continue;
+            slot.* = null;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn bindSessionConnection(self: *Creation, model: *Model, command_id: u64) bool {
+        const entry = self.sessionEntry(command_id) orelse return false;
+        // A repeated callback cannot rebind or invalidate an already bound epoch.
+        if (entry.navigation.?.phase != .waiting_old_close) return false;
+        const remote = model.phux() orelse {
+            self.failSessionAttempt(model, command_id);
+            return false;
+        };
+        entry.navigation.?.bind(remote) catch {
+            finishFailure(model, entry, .unknown, .context_changed);
+            return false;
+        };
+        entry.epoch = remote.connectionEpoch();
+        return true;
+    }
+
+    /// Accepted restart attempts must retire even when opening fails synchronously
+    /// and therefore no replacement channel callback can ever arrive.
+    pub fn failSessionAttempt(self: *Creation, model: *Model, command_id: u64) void {
+        const entry = self.sessionEntry(command_id) orelse return;
+        const child = retireMutation(model, entry);
+        finishRetirement(model, entry, child, .disconnected);
+    }
+
+    pub fn observeSessionAttachment(self: *Creation, model: *Model) bool {
+        const remote = model.phux() orelse return self.retireSessionContext(model);
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            const navigation = if (entry.navigation) |*value| value else continue;
+            const attached = navigation.observeAttachment(remote) catch |err| {
+                if (err == error.SessionMismatch and entry.operation == null) entry.operation = .refused;
+                finishSessionObservationFailure(model, entry, err);
+                changed = true;
+                continue;
+            };
+            if (!attached) continue;
+            entry.operation = .success;
+            changed = true;
+        }
+        return changed;
+    }
+
+    fn retireSessionContext(self: *Creation, model: *Model) bool {
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null or entry.navigation == null) continue;
+            finishSessionObservationFailure(model, entry, error.NoProvider);
+            changed = true;
+        }
+        return changed;
     }
 
     fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64) !void {
@@ -238,6 +345,7 @@ pub const Creation = struct {
     pub fn observeFocus(self: *Creation, model: anytype) void {
         for (&self.pending) |*slot| {
             if (slot.* == null) continue;
+            if (sessionWaiting(slot.*.?)) continue;
             if (!focusUnchanged(model, slot.*.?)) slot.*.?.may_focus = false;
         }
     }
@@ -275,10 +383,15 @@ pub const Creation = struct {
     }
 
     pub fn disconnect(self: *Creation, model: *Model) void {
+        self.disconnectExcept(model, null);
+    }
+
+    pub fn disconnectExcept(self: *Creation, model: *Model, command_id: ?u64) void {
         model.shared_mutations.completeDisconnected(model);
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
             if (entry.completion != null) continue;
+            if (preserveSessionDisconnect(model, entry, command_id)) continue;
             const child = retireMutation(model, entry);
             finishRetirement(model, entry, child, .disconnected);
             clearLegacy(slot);
@@ -292,10 +405,82 @@ pub const Creation = struct {
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
             if (entry.completion != null) continue;
+            if (sessionWaiting(entry.*)) {
+                changed = self.observeSessionProjection(model, entry) or changed;
+                continue;
+            }
             if (entry.projected_id == null) continue;
             changed = observeProjectedEntry(model, entry) or changed;
         }
         return changed;
+    }
+
+    /// An actual shared apply failure is a terminal placement refusal, not a
+    /// reason to lose already observed operation success or wait for a wake.
+    pub fn projectionFailed(self: *Creation, model: *Model) bool {
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (!awaitingProjection(entry.*)) continue;
+            finishFailure(model, entry, .refused, .projection_refused);
+            clearLegacy(slot);
+            changed = true;
+        }
+        return changed;
+    }
+
+    fn observeSessionProjection(self: *Creation, model: *Model, entry: *Pending) bool {
+        const navigation = &entry.navigation.?;
+        if (navigation.phase != .waiting_projection) return false;
+        if (!navigation.projectionReady(model)) return false;
+        if (entry.terminal == null) {
+            recordCompletion(entry, .not_requested, if (entry.may_focus) .not_requested else .superseded, .completed);
+            return true;
+        }
+        self.continueSessionTerminal(model, entry) catch |err| {
+            finishFailure(model, entry, failurePlacement(err), failureReason(err));
+        };
+        return true;
+    }
+
+    fn continueSessionTerminal(self: *Creation, model: *Model, entry: *Pending) !void {
+        const remote = model.phux().?;
+        const ref = entry.terminal.?;
+        if (remote.terminalSession(ref) != entry.session) return error.StaleTarget;
+        entry.existing_member = sharedMember(model, ref);
+        if (entry.existing_member) {
+            captureMemberDestination(model, entry);
+        } else try self.validateSessionDestination(model, entry.*);
+        // Only intentional topology replacement changes this baseline. Explicit
+        // user selection has already irreversibly revoked may_focus.
+        entry.focus = model.focusedTerminalRef();
+        entry.focus_window = model.active_window;
+        entry.navigation.?.phase = .terminal;
+        if (remote.presentation(ref)) |view| {
+            if (view.phase == .live) {
+                entry.accepted = true;
+                _ = finishPlacement(model, entry);
+                return;
+            }
+        }
+        entry.request = remote.requestAttach(ref) catch return error.AttachUnavailable;
+        entry.attach_request = entry.request;
+    }
+
+    fn validateSessionDestination(self: *Creation, model: *Model, entry: Pending) !void {
+        if (!destinationCurrent(model, entry)) return error.StaleDestination;
+        // This entry already owns a reservation. Counting it again would reject
+        // the last available slot when the target projection fills capacity.
+        if (!hasCapacity(model, self.count() - 1)) return error.TerminalCapacity;
+        const workspace = model.wsAtConst(entry.window) orelse return error.StaleDestination;
+        var reserved: usize = 0;
+        for (self.pending) |slot| {
+            const other = slot orelse continue;
+            if (other.completion != null or other.command_id == entry.command_id) continue;
+            if (other.window == entry.window and other.window_epoch == entry.window_epoch) reserved += 1;
+        }
+        try validateDestinationCapacity(workspace, .tab, reserved, true);
     }
 
     pub fn peekCompletion(self: *const Creation) ?results.Result {
@@ -317,6 +502,34 @@ pub const Creation = struct {
         return false;
     }
 };
+
+fn sessionWaiting(entry: Pending) bool {
+    const navigation = entry.navigation orelse return false;
+    return navigation.phase != .terminal;
+}
+
+fn awaitingProjection(entry: Pending) bool {
+    if (entry.projected_id != null) return true;
+    const navigation = entry.navigation orelse return false;
+    return navigation.phase == .waiting_projection;
+}
+
+fn preserveSessionDisconnect(model: *Model, entry: *Pending, command_id: ?u64) bool {
+    const id = command_id orelse return false;
+    if (entry.command_id != id) return false;
+    const navigation = if (entry.navigation) |*value| value else return false;
+    const remote = model.phux() orelse return false;
+    return navigation.preserveDisconnect(remote);
+}
+
+fn finishSessionObservationFailure(model: *Model, entry: *Pending, err: anyerror) void {
+    const child = retireMutation(model, entry);
+    if (child != null) {
+        finishRetirement(model, entry, child, failureReason(err));
+        return;
+    }
+    finishFailure(model, entry, failurePlacement(err), failureReason(err));
+}
 
 fn clearLegacy(slot: *?Pending) void {
     if (slot.*.?.command_id == null) slot.* = null;
@@ -357,7 +570,8 @@ fn recordCompletion(entry: *Pending, placement: results.Placement, focus: result
     entry.completion = .{
         .command_id = command_id,
         .request_id = entry.operation_request,
-        .connection_epoch = entry.epoch,
+        .connection_epoch = if (entry.navigation != null) 0 else entry.epoch,
+        .target_session_id = if (entry.navigation) |navigation| navigation.target else 0,
         .terminal_ref = entry.terminal,
         .placement_request_id = entry.placement_request,
         .placement_connection_epoch = if (entry.mutation_identity != 0) entry.epoch else 0,
@@ -398,6 +612,7 @@ fn failureReason(err: anyerror) results.Reason {
         error.WorkspaceUnavailable => .workspace_unavailable,
         error.OperationCapacity => .operation_capacity,
         error.StaleTarget => .stale_target,
+        error.SessionMismatch => .identity_mismatch,
         else => operationFailureReason(err),
     };
 }
@@ -470,7 +685,7 @@ fn requireWorkspace(model: *Model) !void {
 fn acceptResult(model: *Model, entry: *Pending, result: support.OperationResult) !void {
     try acceptOperation(entry, result);
     const remote = model.phux() orelse return error.NoProvider;
-    if (!contextCurrent(model, entry.*, remote.connectionEpoch())) return error.StaleContext;
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) return error.StaleContext;
     const ref = entry.terminal.?;
     if (result.kind == .spawn and ref.terminal_id.phux.kind == 1) {
         entry.request = remote.requestAttach(ref) catch return error.AttachUnavailable;
@@ -506,8 +721,9 @@ fn acceptIdentity(entry: *Pending, terminal: ?TerminalRef) !void {
 }
 
 fn finishPlacement(model: *Model, entry: *Pending) bool {
+    if (sessionWaiting(entry.*)) return false;
     const remote = model.phux() orelse return false;
-    if (!contextCurrent(model, entry.*, remote.connectionEpoch())) {
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) {
         const child = retireMutation(model, entry);
         finishRetirement(model, entry, child, .context_changed);
         return true;
@@ -538,6 +754,14 @@ fn finishPublication(model: *Model, entry: *Pending) bool {
     };
 }
 
+fn entryContextCurrent(model: *Model, entry: Pending, epoch: u64) bool {
+    if (entry.navigation) |navigation| {
+        const remote = model.phux() orelse return false;
+        if (!navigation.contextCurrent(remote)) return false;
+    }
+    return contextCurrent(model, entry, epoch);
+}
+
 fn contextCurrent(model: anytype, entry: Pending, epoch: u64) bool {
     if (entry.epoch != epoch) return false;
     if (entry.session == 0) return false;
@@ -559,7 +783,7 @@ fn captureMemberDestination(model: *const Model, entry: *Pending) void {
 }
 
 fn focusUnchanged(model: anytype, entry: Pending) bool {
-    if (model.active_window != entry.window) return false;
+    if (model.active_window != (entry.focus_window orelse entry.window)) return false;
     const current = model.focusedTerminalRef();
     const expected = entry.focus orelse return current == null;
     return if (current) |ref| expected.eql(ref) else false;
@@ -648,10 +872,11 @@ fn awaitProjection(entry: *Pending, id: [16]u8) bool {
 
 fn observeProjectedEntry(model: *Model, entry: *Pending) bool {
     const remote = model.phux() orelse return false;
-    if (!contextCurrent(model, entry.*, remote.connectionEpoch())) {
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) {
         finishFailure(model, entry, .unknown, .context_changed);
         return true;
     }
+    refreshSessionMemberDestination(model, entry);
     if (!destinationCurrent(model, entry.*)) {
         finishFailure(model, entry, .destination_lost, .destination_lost);
         return true;
@@ -665,6 +890,17 @@ fn observeProjectedEntry(model: *Model, entry: *Pending) bool {
         return true;
     }
     return finishProjectedPlacement(model, entry);
+}
+
+fn refreshSessionMemberDestination(model: *Model, entry: *Pending) void {
+    if (entry.navigation == null or !entry.existing_member) return;
+    const ref = entry.terminal orelse return;
+    const location = model.locateTerminal(ref) orelse return;
+    const workspace = model.wsAtConst(location.window) orelse return;
+    const id = workspace.shared_ids[location.tab] orelse return;
+    entry.placement_window = location.window;
+    entry.placement_window_epoch = model.window_epochs[location.window];
+    entry.projected_id = id;
 }
 
 fn winningProjection(snapshot: contract.workspace.Snapshot, entry: Pending) bool {
@@ -810,6 +1046,10 @@ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !voi
     const tree = workspace.selectedTreeConst() orelse return error.InvalidDestination;
     if (tree.focusedTerminal() == null) return error.InvalidDestination;
     if (tree.paneCount() + reserved >= layout.max_panes) return error.PaneCapacity;
+}
+
+test {
+    _ = @import("session_navigation_tests.zig");
 }
 
 const ConfirmationFixture = struct {
