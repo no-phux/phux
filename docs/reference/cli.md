@@ -2275,7 +2275,7 @@ Options:
 ```text
 Run a command in a pane and capture its exit code.
 
-Reports the command's exit code, output, and duration. Brackets the command with sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors the command's — and is 125 when `phux` gives up on `--timeout` — so `phux run … && next` composes like a shell. TARGET is a selector (see the top-level help), resolved client-side to one pane; the command routes to it by id (no attach, no resize).
+Reports the command's exit code, output, and duration. Brackets the command with sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors the command's — and is 125 when `phux` gives up on `--timeout` — so `phux run … && next` composes like a shell. The timeout is one budget for the whole run — connecting, target resolution, input submission, and every screen read — so a server that stops answering still ends the run on time. Input is never started after the timeout, and once started it gets up to 2 more seconds to finish, so the pane is not left holding a half-typed line; the diagnostic says whether nothing, all, or possibly part of the input was delivered. Giving up does not stop the command or retract input already delivered. TARGET is a selector (see the top-level help), resolved client-side to one pane; the command routes to it by id (no attach, no resize).
 
 Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or they are swallowed into the trailing command.
 
@@ -2294,7 +2294,7 @@ Arguments:
 
 Options:
       --timeout <SECS>
-          Give up after this many seconds (exit 125). Default: 600s. Pass 0 to wait indefinitely
+          Give up after this many seconds (exit 125), counted from the start of the command: connecting, resolving TARGET, submitting the command, and every screen read share the one budget; input that has started gets up to 2s more to finish. Default: 600s. Pass 0 to wait indefinitely
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
@@ -2945,7 +2945,7 @@ Options:
 ```text
 Block until a pane meets a condition.
 
-Polls the side-effect-free screen read — the poll floor of the event surface: always works, no shell integration. Exits 0 when the condition is met, and 124 when `--timeout` expires first. TARGET is a selector (see the top-level help); omit it for the most-recently-focused session.
+Polls the side-effect-free screen read — the poll floor of the event surface: always works, no shell integration. Exits 0 when the condition is met, and 124 when `--timeout` expires first. The timeout is one budget for the whole wait — connecting, target resolution, and every screen read — so a server that stops answering still ends the wait on time. The first read always gets at least 2 seconds, so `--timeout 0` checks the condition once. TARGET is a selector (see the top-level help); omit it for the most-recently-focused session.
 
 Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its right edge are joined first, so text that straddles a wrap is found rather than silently never matching.
 
@@ -2982,7 +2982,7 @@ Options:
           Succeed once the matched lines hold still for this many milliseconds (the pane has settled). Default when neither `--until` nor `--regex` is given. With `--tail N`, only those lines have to hold still — a spinner further up does not count
 
       --timeout <SECS>
-          Give up after this many seconds (exit 124). Default: wait forever
+          Give up after this many seconds (exit 124), counted from the start of the command: connecting, resolving TARGET, and every screen read share the one budget. The first read always gets at least 2s, so 0 checks the condition once. Default: wait forever
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object

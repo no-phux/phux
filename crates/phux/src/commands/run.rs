@@ -3,7 +3,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
-use phux_client::run::RunOutcome;
+use phux_client::deadline::Deadline;
+use phux_client::run::{RunOutcome, Submission};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
@@ -55,52 +56,96 @@ pub(crate) fn run_run(
     };
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, "run", json).await {
-            Ok(id) => id,
-            Err(code) => return code,
+        let deadline = Deadline::new(timeout);
+        let pane = match deadline
+            .run(resolve_target_for_input(
+                &socket_path,
+                &selector,
+                "run",
+                json,
+            ))
+            .await
+        {
+            Some(Ok(id)) => id,
+            Some(Err(code)) => return code,
+            None => {
+                eprintln!("phux: run timed out while resolving '{target}'; nothing was sent");
+                return ExitCode::from(RUN_TIMEOUT_EXIT_CODE);
+            }
         };
-        match phux_client::run::run_in(&socket_path, pane, &cmd, &nonce, timeout).await {
-            Ok(RunOutcome::Completed(result)) => {
-                if json {
-                    match serde_json::to_string_pretty(&result) {
-                        Ok(s) => outln!("{s}"),
-                        Err(err) => {
-                            eprintln!("phux: failed to serialize run result: {err}");
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                } else {
-                    print_run_result(&result);
-                }
-                // Mirror the command's exit code (clamped to the 0..=255
-                // process-exit range; negative/large codes saturate to 255).
-                ExitCode::from(u8::try_from(result.exit_code).unwrap_or(255))
-            }
-            Ok(RunOutcome::TimedOut {
-                command,
-                duration_ms,
-                ..
-            }) => {
-                eprintln!("phux: '{command}' did not finish within {duration_ms}ms");
-                // 125, not 124: `run` mirrors the child's code into 0..=255,
-                // and 124 is a code real commands (notably GNU `timeout`)
-                // produce. 125 is the wrapper-failure convention (env/timeout),
-                // so a caller can distinguish "phux gave up" from the child.
-                ExitCode::from(RUN_TIMEOUT_EXIT_CODE)
-            }
-            Err(err @ AttachError::Io(_)) => {
-                json_err::report_no_server(json, &err, &socket_path, "run")
-            }
-            Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot run in '{target}': {msg} (try `phux ls`)");
-                ExitCode::FAILURE
-            }
-            Err(err) => {
-                eprintln!("phux: run failed: {err}");
-                ExitCode::FAILURE
-            }
-        }
+        let result =
+            phux_client::run::run_in_with_deadline(&socket_path, pane, &cmd, &nonce, deadline)
+                .await;
+        report_outcome(result, target, json, &socket_path)
     })
+}
+
+fn report_outcome(
+    outcome: Result<RunOutcome, AttachError>,
+    target: &str,
+    json: bool,
+    socket_path: &std::path::Path,
+) -> ExitCode {
+    match outcome {
+        Ok(RunOutcome::Completed(result)) => {
+            if json {
+                match serde_json::to_string_pretty(&result) {
+                    Ok(s) => outln!("{s}"),
+                    Err(err) => {
+                        eprintln!("phux: failed to serialize run result: {err}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else {
+                print_run_result(&result);
+            }
+            // Mirror the command's exit code (clamped to the 0..=255
+            // process-exit range; negative/large codes saturate to 255).
+            ExitCode::from(u8::try_from(result.exit_code).unwrap_or(255))
+        }
+        Ok(RunOutcome::TimedOut {
+            command,
+            duration_ms,
+            submission,
+            ..
+        }) => {
+            eprintln!("{}", timeout_message(&command, duration_ms, submission));
+            // 125, not 124: `run` mirrors the child's code into 0..=255,
+            // and 124 is a code real commands (notably GNU `timeout`)
+            // produce. 125 is the wrapper-failure convention (env/timeout),
+            // so a caller can distinguish "phux gave up" from the child.
+            ExitCode::from(RUN_TIMEOUT_EXIT_CODE)
+        }
+        Err(err @ AttachError::Io(_)) => json_err::report_no_server(json, &err, socket_path, "run"),
+        Err(AttachError::Refused(msg)) => {
+            eprintln!("phux: cannot run in '{target}': {msg} (try `phux ls`)");
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("phux: run failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The stderr line for a run that gave up, distinct per [`Submission`] so
+/// a caller never mistakes a half-typed line for a command that ran.
+fn timeout_message(command: &str, duration_ms: u64, submission: Submission) -> String {
+    match submission {
+        Submission::Complete => {
+            format!("phux: '{command}' did not finish within {duration_ms}ms")
+        }
+        Submission::NotSent => {
+            format!(
+                "phux: gave up after {duration_ms}ms before sending '{command}'; nothing was sent"
+            )
+        }
+        Submission::Partial => format!(
+            "phux: gave up after {duration_ms}ms while sending '{command}'; input may be \
+             partially delivered, so the pane may hold an unsubmitted line (clear it before \
+             the next run)"
+        ),
+    }
 }
 
 /// Human-readable rendering of a `run` result.
@@ -147,5 +192,69 @@ mod tests {
         // The pid is stable within a process; the time component must still
         // make two nonces differ (defends the stale-sentinel fix).
         assert_ne!(run_nonce(), run_nonce());
+    }
+}
+
+/// phux-69pq.10: `--timeout` bounds the whole run, including a server that
+/// accepts the connection and then never answers.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod deadline_tests {
+    use std::time::Duration;
+
+    use phux_client::run::{SUBMIT_GRACE, Submission};
+
+    use super::{RUN_TIMEOUT_EXIT_CODE, run_run, timeout_message};
+    use crate::commands::stall_peer::{self, BUDGET, BUDGET_SECS, PANE_SELECTOR, Peer};
+
+    fn assert_run_times_out_against(peer: Peer, min: Duration) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let socket = dir.path().join("stalled.sock");
+        stall_peer::serve(peer, &socket);
+        stall_peer::assert_times_out(
+            move || {
+                run_run(
+                    PANE_SELECTOR,
+                    &["true".to_owned()],
+                    Some(BUDGET_SECS),
+                    false,
+                    Some(socket),
+                )
+            },
+            RUN_TIMEOUT_EXIT_CODE,
+            min,
+        );
+    }
+
+    #[test]
+    fn run_gives_up_on_a_server_that_never_answers_hello() {
+        assert_run_times_out_against(Peer::Silent, BUDGET);
+    }
+
+    #[test]
+    fn run_gives_up_on_a_server_that_never_answers_get_screen() {
+        assert_run_times_out_against(Peer::WedgedScreen, BUDGET);
+    }
+
+    #[test]
+    fn run_gives_up_on_a_server_that_swallows_the_enter_after_the_grace() {
+        assert_run_times_out_against(Peer::WedgedEnter, BUDGET + SUBMIT_GRACE);
+    }
+
+    #[test]
+    fn each_way_of_giving_up_says_what_reached_the_pane() {
+        let complete = timeout_message("make", 5, Submission::Complete);
+        let not_sent = timeout_message("make", 5, Submission::NotSent);
+        let partial = timeout_message("make", 5, Submission::Partial);
+        assert!(complete.contains("did not finish"), "{complete}");
+        assert!(not_sent.contains("nothing was sent"), "{not_sent}");
+        assert!(
+            partial.contains("partially delivered") && partial.contains("unsubmitted"),
+            "{partial}"
+        );
+        assert!(
+            !partial.contains("did not finish"),
+            "a half-typed line must not read as a running command"
+        );
     }
 }

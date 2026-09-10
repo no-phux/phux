@@ -197,6 +197,19 @@ pub async fn send(
     keys: &[String],
 ) -> Result<ResourceId, AttachError> {
     let mut conn = Connection::connect(socket).await?;
+    let pane = focused_pane(&mut conn, &target).await?;
+    route_keys(&mut conn, &pane, keys).await?;
+    Ok(pane)
+}
+
+/// Resolve `target`'s focused pane over `conn` without attaching.
+///
+/// The first half of [`send`], split out so `run` can bound it separately
+/// from the input it delivers afterwards on the same connection.
+pub(crate) async fn focused_pane(
+    conn: &mut Connection,
+    target: &AttachTarget,
+) -> Result<ResourceId, AttachError> {
     // Resolve the focused pane without attaching (side-effect-free).
     //
     // GET_STATE on a hub interleaves one uncorrelated ERROR per unreachable
@@ -225,11 +238,9 @@ pub async fn send(
             )));
         }
     };
-    let pane = resolve_focused_pane(&snapshot, &target).ok_or_else(|| {
+    resolve_focused_pane(&snapshot, target).ok_or_else(|| {
         AttachError::Refused("no such session, or it has no focused pane".to_owned())
-    })?;
-    route_keys(&mut conn, &pane, keys).await?;
-    Ok(pane)
+    })
 }
 
 /// Send `keys` to a pre-resolved `pane` via the side-effect-free
@@ -312,7 +323,7 @@ pub async fn paste_to(
 /// Each `ROUTE_INPUT` is acked by a `COMMAND_RESULT` the server emits in
 /// order, so the events land on the pane actor's input mailbox in send
 /// order — no drain race.
-async fn route_keys(
+pub(crate) async fn route_keys(
     conn: &mut Connection,
     pane: &ResourceId,
     keys: &[String],
