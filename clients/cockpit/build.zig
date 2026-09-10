@@ -321,6 +321,14 @@ fn createPhuxModules(
     });
     extension_module.addImport("native_sdk", sdk_module);
     extension_module.addImport("phux_transport", transport_module);
+    // The socket worker drives phux-client-ffi's remote-host tunnel
+    // (remote_tunnel.zig), and its tests are rooted without the host module,
+    // so it carries the header and archive itself.
+    extension_module.addIncludePath(.{ .cwd_relative = ffi.include_dir });
+    extension_module.addObjectFile(.{
+        .cwd_relative = b.pathJoin(&.{ ffi.lib_dir, "libphux_client_ffi.a" }),
+    });
+    extension_module.linkSystemLibrary("c", .{});
 
     const host_module = b.createModule(.{
         .root_source_file = b.path("src/providers/phux/host.zig"),
@@ -336,6 +344,18 @@ fn createPhuxModules(
         .cwd_relative = b.pathJoin(&.{ ffi.lib_dir, "libphux_client_ffi.a" }),
     });
     host_module.linkSystemLibrary("c", .{});
+    // The archive's remote-host tunnel reads the phux CLI's registry through
+    // phux-config, whose clock dependency (chrono, via iana-time-zone) asks
+    // CoreFoundation for the system time zone on macOS. The app graph gets
+    // it through AppKit; the standalone phux test artifacts need it named.
+    if (target.result.os.tag == .macos) {
+        for ([_]*std.Build.Module{ host_module, extension_module }) |module| {
+            if (b.sysroot) |sysroot| module.addFrameworkPath(.{
+                .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+            });
+            module.linkFramework("CoreFoundation", .{});
+        }
+    }
 
     const provider_module = b.createModule(.{
         .root_source_file = b.path("src/providers/phux/provider.zig"),

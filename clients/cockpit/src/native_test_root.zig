@@ -575,4 +575,6 @@ test {
     _ = @import("tests/ts_snapshot_tests.zig");
     _ = @import("tests/scrollback_search_tests.zig");
     _ = @import("tests/agent_session_rows_tests.zig");
+    _ = @import("cockpit/native/remote_hosts.zig");
+    _ = @import("tests/remote_host_tests.zig");
 }

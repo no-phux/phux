@@ -128,6 +128,15 @@ replace newer results. Invalidation withdraws current rows and disables keyboard
 submission; a held painted action retains its original authority for native
 validation. Refresh is always reachable, including an error or empty result.
 
+The switcher also offers Connect to Host, which hands its modal slot to the
+host panel. While the provider dials a registered remote host, the detail
+line of a coordinator row names that host's registry label where a local
+coordinator's reads `Coordinator`, the coordinator's known-host row carries
+the same label, and session rows read `Phux session · host`. Satellite hosts
+keep their own names. The host panel talks to the engine over its
+own `cockpit.remote` request and completion slot, never through catalog
+pages; see [Remote hosts](REMOTE_HOSTS.md).
+
 ## Snapshot and connection state
 
 Snapshot byte 23, formerly reserved, carries `local=0`, `connecting=1`,

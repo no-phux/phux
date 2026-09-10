@@ -121,6 +121,9 @@ fn coordinatorEndpoint(model: *const Model, out: []u8) []const u8 {
     return switch (remote.endpointDescriptor()) {
         .unix => |path| path,
         .tcp => |address| std.fmt.bufPrint(out, "{s}:{d}", .{ address.host, address.port }) catch address.host,
+        // A registered remote host is named by its registry label; the
+        // endpoint URI and credentials stay inside phux-client-ffi.
+        .remote => |host| std.fmt.bufPrint(out, "Registered host {s}", .{host.target}) catch host.target,
     };
 }
 

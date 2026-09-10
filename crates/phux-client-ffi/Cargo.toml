@@ -24,5 +24,23 @@ phux-protocol.workspace = true
 # carries them as JSON lines again, so the same workspace-pinned encoder
 # re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
+# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1). The
+# `[[remote]]` registry is read through the CLI's own schema and loader, and
+# QUIC/WSS establishment (certificate pin, bearer preamble) goes through the
+# shared dialer, so an embedder never carries a second copy of either. All
+# five are workspace members or already-locked crates: phux-dial already
+# depends on quinn, tokio and futures-util at these exact specs, and nothing
+# new enters Cargo.lock.
+phux-config.workspace = true
+phux-dial.workspace = true
+quinn.workspace = true
+tokio.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# The WebSocket lane reads the raw message stream so its two directions can
+# run concurrently while it still sees keepalive pongs; `Message` is not
+# re-exported by phux-dial. Same spec phux-dial locks.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+# A registry fixture file for the resolution and relay tests.
+tempfile.workspace = true

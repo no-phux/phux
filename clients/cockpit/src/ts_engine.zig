@@ -13,6 +13,7 @@ pub const startup = @import("cockpit/startup.zig");
 pub const attachPhuxProvider = @import("cockpit/model.zig").attachPhuxProvider;
 pub const phux_enabled = @import("cockpit/phux_support.zig").phux_enabled;
 pub const command_results = @import("cockpit/native/command_results.zig");
+pub const remote_hosts = @import("cockpit/native/remote_hosts.zig");
 pub const PhuxProvider = @import("cockpit/phux_support.zig").PhuxProvider;
 pub const TerminalRef = @import("provider_contract").TerminalRef;
 pub const RemoteResourceId = @import("provider_contract").RemoteResourceId;

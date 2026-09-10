@@ -127,6 +127,20 @@ fn hostLabel(host: []const u8) []const u8 {
     return if (host.len == 0) "Coordinator" else host;
 }
 
+/// The coordinator's own rows (empty host) name the registered remote host
+/// when the provider dials one; satellite hosts keep their own names.
+fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
+    if (host.len == 0) {
+        if (remoteHost(model)) |name| return name;
+    }
+    return hostLabel(host);
+}
+
+fn sessionDetail(model: *const Model, out: []u8) []const u8 {
+    const host = remoteHost(model) orelse return "Phux session";
+    return std.fmt.bufPrint(out, "Phux session · {s}", .{host}) catch "Phux session";
+}
+
 fn terminalDirectory(model: *const Model, ref: model_module.TerminalRef) []const u8 {
     if (model.provider.terminalConst(ref)) |pane| return pane.pwd();
     const remote = model.phuxConst() orelse return "";
@@ -139,8 +153,8 @@ fn terminalDirectory(model: *const Model, ref: model_module.TerminalRef) []const
 fn rowDetail(model: *const Model, row: *const Row, out: []u8) []const u8 {
     if (row.is_host) return "Known terminal host";
     if (!selectable(model, row)) return "Ownership unavailable";
-    const ref = terminalRef(&row.entry) orelse return "Phux session";
-    const host = if (entryHost(&row.entry)) |value| hostLabel(value) else "Local PTY";
+    const ref = terminalRef(&row.entry) orelse return sessionDetail(model, out);
+    const host = if (entryHost(&row.entry)) |value| coordinatorLabel(model, value) else "Local PTY";
     if (row.entry != .placed_terminal) return locationDetail(host, terminalDirectory(model, ref.*), out);
     var location_buffer: [512]u8 = undefined;
     const location = locationDetail(host, terminalDirectory(model, ref.*), &location_buffer);
@@ -155,10 +169,19 @@ fn locationDetail(host: []const u8, cwd: []const u8, out: []u8) []const u8 {
     return std.fmt.bufPrint(out, "{s} · {s}", .{ host, bounded }) catch "Terminal location";
 }
 
+/// The registered host the Phux catalog belongs to, or null for the local
+/// coordinator. A remote host's rows name it where a local coordinator's
+/// read "Coordinator", so its terminals and sessions read as one group.
+fn remoteHost(model: *const Model) ?[]const u8 {
+    if (comptime !support.phux_enabled) return null;
+    const remote = model.phuxConst() orelse return null;
+    return remote.remoteLabel();
+}
+
 fn encodeEntry(model: *const Model, row: *const Row, out: []u8, start: usize) Error!usize {
     var full: [1024]u8 = undefined;
     var bounded: [max_label_bytes]u8 = undefined;
-    const text = if (row.is_host) hostLabel(entryHost(&row.entry).?) else entryLabel(model, row.entry, &full);
+    const text = if (row.is_host) coordinatorLabel(model, entryHost(&row.entry).?) else entryLabel(model, row.entry, &full);
     const label = displayText(text, &bounded);
     var target_buffer: [targets.max_len]u8 = undefined;
     const bytes = try rowTarget(model, row, &target_buffer);
@@ -248,7 +271,7 @@ fn matches(model: *const Model, entry: *const Entry, index: usize, request: Requ
         .known_hosts => {
             const host = entryHost(entry) orelse return false;
             if (!firstHostOccurrence(model, host, index)) return false;
-            return projection.containsIgnoreCase(hostLabel(host), request.query);
+            return projection.containsIgnoreCase(coordinatorLabel(model, host), request.query);
         },
         .exact_host => {
             const host = entryHost(entry) orelse return false;

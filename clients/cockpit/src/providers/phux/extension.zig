@@ -9,14 +9,33 @@ const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const transport = @import("phux_transport");
 const startup = @import("startup.zig");
+/// phux-client-ffi's remote-host tunnel. The provider reaches it through this
+/// re-export so the file belongs to exactly one build module.
+pub const remote = @import("remote_tunnel.zig");
 const posix = std.posix;
 const max_flush_batch: usize = 16;
+
+test {
+    _ = remote;
+}
 
 /// Endpoint slices are borrowed and must remain alive until `Worker.stop` has
 /// returned.
 pub const Endpoint = union(enum) {
     tcp: struct { host: []const u8, port: u16 },
     unix: []const u8,
+    /// A host in the phux CLI's `[[remote]]` registry, dialed through a
+    /// phux-client-ffi tunnel. Framing above the socket is unchanged.
+    remote: Remote,
+
+    pub const Remote = struct {
+        /// Registry name or `[USER@]HOST[:PORT]`.
+        target: []const u8,
+        /// Absolute phux `config.toml`, or empty for the CLI's own path.
+        config_path: []const u8 = "",
+        /// Provider-owned failure record; outlives every worker.
+        status: ?*remote.Status = null,
+    };
 };
 
 const max_resolved_addresses = 16;
@@ -49,6 +68,9 @@ pub const Worker = struct {
     handle: native_sdk.ChannelHandle,
     endpoint: Endpoint,
     startup_options: startup.Options = .{},
+    /// The far end of a remote endpoint's socket pair. Freed by `stop` after
+    /// the join, so its failure reason stays readable until then.
+    tunnel: ?remote.Tunnel = null,
     thread: ?std.Thread = null,
     outgoing_wake_fd: posix.fd_t = -1,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -98,6 +120,9 @@ pub const Worker = struct {
         if (worker.fd >= 0) _ = std.c.shutdown(worker.fd, std.c.SHUT.RDWR);
         worker.unlockFd();
         if (worker.thread) |thread| thread.join();
+        // After the join: the worker's own end is closed, so the tunnel is
+        // winding down already, and freeing cancels anything still dialing.
+        if (worker.tunnel) |tunnel| tunnel.close();
         worker.bridge.outgoing.disableWake();
         worker.gpa.destroy(worker);
     }
@@ -141,7 +166,8 @@ pub const Worker = struct {
     fn ensureCoordinator(worker: *Worker) !void {
         switch (worker.endpoint) {
             .unix => |path| try startup.ensure(worker.gpa, worker.io, path, &worker.stopping, worker.startup_options),
-            .tcp => {},
+            // A remote coordinator is the remote host's to supervise.
+            .tcp, .remote => {},
         }
     }
 
@@ -153,6 +179,7 @@ pub const Worker = struct {
         };
         defer {
             worker.closeFd(fd);
+            worker.noteRemoteEnd();
             worker.disconnected(.socket_lost);
         }
 
@@ -201,6 +228,24 @@ pub const Worker = struct {
     fn wake(worker: *Worker) void {
         if (worker.stopping.load(.acquire)) return;
         _ = worker.handle.post(&transport.wake_payload);
+    }
+
+    /// Copy a remote tunnel's failure reason into the provider's record
+    /// before the disconnect is posted. The tunnel publishes the reason
+    /// before closing its end, so the EOF that brought us here implies it is
+    /// already readable.
+    fn noteRemoteEnd(worker: *Worker) void {
+        const tunnel = worker.tunnel orelse return;
+        const status = worker.remoteStatus() orelse return;
+        const described = tunnel.describe();
+        if (described.state == .failed) status.recordFailure(described.message.slice());
+    }
+
+    fn remoteStatus(worker: *const Worker) ?*remote.Status {
+        return switch (worker.endpoint) {
+            .remote => |endpoint| endpoint.status,
+            else => null,
+        };
     }
 };
 
@@ -372,7 +417,57 @@ fn connect(worker: *Worker) !posix.fd_t {
     return switch (worker.endpoint) {
         .tcp => |tcp| connectTcp(worker, tcp.host, tcp.port),
         .unix => |path| connectUnix(worker, path),
+        .remote => |endpoint| connectRemote(worker, endpoint),
     };
+}
+
+/// A registered remote host is a Unix-domain socket pair whose far end
+/// belongs to a phux-client-ffi tunnel. Everything after this returns is the
+/// ordinary framed worker: the tunnel relays whole frames, so nothing below
+/// can tell a local coordinator from a remote one.
+fn connectRemote(worker: *Worker, endpoint: Endpoint.Remote) !posix.fd_t {
+    if (worker.stopping.load(.acquire)) return error.Canceled;
+    const tunnel = remote.Tunnel.resolve(endpoint.target, endpoint.config_path) catch |err| {
+        if (endpoint.status) |status| status.recordFailure("that is not a host name Cockpit can look up");
+        return err;
+    };
+    const described = tunnel.describe();
+    if (described.state != .resolved) {
+        if (endpoint.status) |status| status.recordFailure(described.message.slice());
+        tunnel.close();
+        return error.RemoteUnresolved;
+    }
+    // From here `stop` owns the tunnel, whatever happens below.
+    worker.tunnel = tunnel;
+    const pair = try remoteSocketPair();
+    if (!worker.publishFd(pair[0])) {
+        for (pair) |fd| _ = std.c.close(fd);
+        return error.Canceled;
+    }
+    errdefer worker.closeFd(pair[0]);
+    // Ownership of pair[1] transfers to the tunnel on every path.
+    tunnel.start(pair[1]) catch |err| {
+        worker.noteRemoteEnd();
+        return err;
+    };
+    return pair[0];
+}
+
+/// Both ends close-on-exec (a coordinator helper must never inherit a live
+/// remote connection) and SIGPIPE-free: the tunnel writes its end from a
+/// library thread and cannot change this process's signal disposition.
+fn remoteSocketPair() ![2]posix.fd_t {
+    var pair: [2]posix.fd_t = undefined;
+    if (std.c.socketpair(@intCast(posix.AF.UNIX), @intCast(posix.SOCK.STREAM), 0, &pair) != 0)
+        return error.SocketPairFailed;
+    errdefer for (pair) |fd| {
+        _ = std.c.close(fd);
+    };
+    for (pair) |fd| {
+        if (std.c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC)) < 0) return error.SocketPairFailed;
+        try configureSocket(fd);
+    }
+    return pair;
 }
 
 fn connectTcp(worker: *Worker, host: []const u8, port: u16) !posix.fd_t {
@@ -865,4 +960,48 @@ test "stopping during coordinator ensure cancels and reaps helper without postin
     try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
     try fixture.checkArguments();
     try fixture.expectReaped();
+}
+
+fn awaitDisconnect(bridge: *transport.Bridge) !transport.DisconnectReason {
+    const started = monotonicTime().?;
+    while (true) {
+        if (bridge.incoming.takeDisconnect()) |reason| return reason;
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 10 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake);
+    }
+}
+
+test "an unregistered remote host disconnects with the registry's reason and never ensures a coordinator" {
+    var registry = try remote.TestRegistry.init("mini", "ws://127.0.0.1:1");
+    defer registry.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    var status: remote.Status = .{};
+    // A CLI path that cannot run: a remote endpoint must never reach ensure.
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{
+        .remote = .{ .target = "me@studio", .config_path = registry.path, .status = &status },
+    }, .{ .cli_path = "/does-not-exist/phux" });
+    defer worker.stop();
+    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, try awaitDisconnect(&bridge));
+    var reason: [remote.max_text_bytes]u8 = undefined;
+    const text = status.failureInto(&reason);
+    try std.testing.expect(std.mem.indexOf(u8, text, "phux --remote me@studio") != null);
+}
+
+test "a registered host that does not answer records why before the worker reports the loss" {
+    // Port 1 on loopback refuses immediately; the tunnel publishes FAILED and
+    // its reason, then closes its end, and only then does the worker see EOF.
+    var registry = try remote.TestRegistry.init("gone", "ws://127.0.0.1:1");
+    defer registry.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    var status: remote.Status = .{};
+    const worker = try Worker.start(std.testing.io, std.testing.allocator, &bridge, .{}, .{
+        .remote = .{ .target = "gone", .config_path = registry.path, .status = &status },
+    });
+    defer worker.stop();
+    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, try awaitDisconnect(&bridge));
+    var reason: [remote.max_text_bytes]u8 = undefined;
+    const text = status.failureInto(&reason);
+    try std.testing.expect(std.mem.indexOf(u8, text, "did not answer") != null);
 }

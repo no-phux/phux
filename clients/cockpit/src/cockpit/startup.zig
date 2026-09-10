@@ -11,6 +11,7 @@ const model_module = @import("model.zig");
 const session_state = @import("session_state.zig");
 const config_module = @import("../config/config.zig");
 const scene = @import("native/scene.zig");
+const remote_memory = @import("remote_memory.zig");
 
 pub const Config = config_module.Config;
 pub const parseConfig = config_module.parse;
@@ -39,6 +40,8 @@ pub const PhuxEnvironment = struct {
     runtime_dir: ?[]const u8 = null,
     uid: ?[]const u8 = null,
     user: ?[]const u8 = null,
+    /// `PHUX_REMOTE`: a registered remote host, as `phux-remote` in the config.
+    remote: ?[]const u8 = null,
 };
 
 fn nonEmpty(value: ?[]const u8) ?[]const u8 {
@@ -79,7 +82,23 @@ pub fn resolvePhuxConfig(parsed: Config, env: PhuxEnvironment) Config {
         _ = resolved.setPhuxSocket(defaultPhuxSocket(env, &storage), .default);
     }
     if (nonEmpty(env.session)) |session| _ = resolved.setPhuxSession(session, .environment);
+    if (nonEmpty(env.remote)) |remote| _ = resolved.setPhuxRemote(remote, .environment);
     return resolved;
+}
+
+/// A host chosen through Connect to Host survives relaunch. Phux-backed
+/// layout lives in the coordinator's shared workspace, so the one client-side
+/// fact a relaunch needs is WHICH coordinator to reattach to; that is the
+/// remembered line beside the state file. It never overrides an explicit
+/// choice: a `phux-remote` in the config or `PHUX_REMOTE` wins.
+///
+/// Recorded as `.default` provenance: nobody typed it into a setting.
+pub fn restoreRememberedRemote(io: std.Io, state_path: ?[]const u8, config: *Config) void {
+    const path = remote_memory.setPathFor(state_path) orelse return;
+    if (config.phux_remote.slice().len != 0) return;
+    var buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
+    const remembered = remote_memory.load(io, path, &buffer) orelse return;
+    _ = config.setPhuxRemote(remembered, .default);
 }
 
 /// The provider-construction seam. `PhuxProvider.create` duplicates both
@@ -96,17 +115,31 @@ pub fn createPhuxProviderFromConfig(
     const session_name = config.phux_session.slice();
     if (!config_module.validPhuxSession(session_name)) return error.InvalidPhuxSession;
     const session: ?[]const u8 = if (session_name.len == 0) null else session_name;
+    // A registered remote host replaces the local socket; raw TCP is still
+    // never admitted by this composition. The remote endpoint is a registry
+    // label that phux-client-ffi resolves, pins, and authenticates.
+    const remote_target = config.phux_remote.slice();
+    if (remote_target.len != 0) {
+        if (!config_module.validPhuxRemote(remote_target)) return error.InvalidPhuxRemote;
+        return try PhuxProvider.create(gpa, io, .{ .remote = .{ .target = remote_target } }, session, "phux-cockpit");
+    }
     return try PhuxProvider.create(gpa, io, .{ .unix = socket }, session, "phux-cockpit");
 }
 
-/// Read-only construction evidence for settings/tests. This returns only the
-/// local-domain location; no TCP endpoint is admitted by this composition.
+/// Read-only construction evidence for settings/tests: the local-domain
+/// location, or empty when the provider dials a registered remote host.
 pub fn configuredPhuxSocket(provider: *const PhuxProvider) []const u8 {
     if (comptime !phux_enabled) return "";
     return switch (provider.endpoint) {
         .unix => |path| path,
-        else => unreachable,
+        else => "",
     };
+}
+
+/// The registered remote host the provider was built for, or null.
+pub fn configuredPhuxRemote(provider: *const PhuxProvider) ?[]const u8 {
+    if (comptime !phux_enabled) return null;
+    return provider.remoteTarget();
 }
 
 pub fn configuredPhuxSession(provider: *const PhuxProvider) ?[]const u8 {
@@ -548,13 +581,15 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     );
 
     const loaded_config = loadUserConfig(init.io, init);
-    const user_config = resolvePhuxConfig(loaded_config.config, .{
+    var user_config = resolvePhuxConfig(loaded_config.config, .{
         .socket = init.environ_map.get("PHUX_SOCKET"),
         .session = init.environ_map.get("PHUX_SESSION"),
         .runtime_dir = init.environ_map.get("XDG_RUNTIME_DIR"),
         .uid = init.environ_map.get("UID"),
         .user = init.environ_map.get("USER"),
+        .remote = init.environ_map.get("PHUX_REMOTE"),
     });
+    if (phux_enabled) restoreRememberedRemote(init.io, state_path, &user_config);
     reportConfigDiagnostics(&user_config);
     const initialized = try initializeResolvedModel(
         gpa,

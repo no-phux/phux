@@ -5,6 +5,17 @@ import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqu
 import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
 import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import {
+  REMOTE_KIND_STATUS,
+  REMOTE_KIND_CONNECT,
+  REMOTE_KIND_LOCAL,
+  REMOTE_PHASE_LOCAL,
+  REMOTE_PHASE_CONNECTED,
+  REMOTE_PHASE_FAILED,
+  remoteRequest,
+  remoteReply,
+  remoteStatusLine,
+} from "./remote-hosts.ts";
+import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
   type SnapshotTab,
@@ -150,6 +161,24 @@ export interface Model {
   readonly paletteNext: boolean;
   readonly paletteLoading: boolean;
   readonly paletteNotice: Uint8Array;
+  /// Connect to Host (remote-hosts.ts): an app-wide modal like the switcher,
+  /// presented in the main window. `hostQuery` survives a failure so a retry
+  /// is one keystroke; `hostAwaiting` holds the panel open until the engine
+  /// reports the host connected or failed.
+  readonly hostOpen: boolean;
+  readonly mainHostOpen: boolean;
+  readonly hostQuery: Uint8Array;
+  readonly hostAnchor: number;
+  readonly hostFocus: number;
+  readonly hostNotice: Uint8Array;
+  readonly hostBusy: boolean;
+  readonly hostAwaiting: boolean;
+  /// Last engine answer: phase 0 local .. 4 reconnecting, and the host name.
+  readonly hostPhase: number;
+  readonly hostName: Uint8Array;
+  readonly remoteLine: Uint8Array;
+  /// Snapshot connection byte last seen; a change asks for remote status.
+  readonly lastConnection: number;
   readonly canReconnect: boolean;
   readonly connectionStatus: Uint8Array;
   readonly window1Status: Uint8Array;
@@ -240,6 +269,13 @@ export type Msg =
   | { readonly kind: "navigation_loaded"; readonly body: Uint8Array }
   | { readonly kind: "navigation_failed"; readonly error: Uint8Array }
   | { readonly kind: "reconnect" }
+  | { readonly kind: "host_open" }
+  | { readonly kind: "host_close" }
+  | { readonly kind: "host_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "host_submit" }
+  | { readonly kind: "host_local" }
+  | { readonly kind: "remote_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "remote_failed"; readonly error: Uint8Array }
   | { readonly kind: "settings_open" }
   | { readonly kind: "settings_close" }
   | { readonly kind: "settings_move"; readonly delta: number }
@@ -306,6 +342,17 @@ export const viewUnbound = [
   "snapshot_loaded",
   "snapshot_failed",
   "native_command",
+  "hostOpen",
+  "hostAnchor",
+  "hostFocus",
+  "hostBusy",
+  "hostAwaiting",
+  "hostPhase",
+  "hostName",
+  "remoteLine",
+  "lastConnection",
+  "remote_loaded",
+  "remote_failed",
 ] as const;
 
 const ZERO_U64: WireU64 = { hi: 0, lo: 0 };
@@ -512,13 +559,71 @@ function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
       if (model.paletteOpen) return model;
-      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
+      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
         paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
     case "palette_scope": return chooseNavigationScope(model, msg.scope);
     case "palette_edit": return editNavigation(model, msg.edit);
     case "palette_move": return moveNavigation(model, msg.delta);
     default: return browseNavigation(model, msg);
   }
+}
+
+function hostState(model: Model): TextEditState {
+  return {
+    text: model.hostQuery,
+    selection: { anchor: model.hostAnchor, focus: model.hostFocus },
+    composition: null,
+  };
+}
+
+function editHost(model: Model, edit: TextInputEvent): Model {
+  if (!model.hostOpen) return model;
+  const next = applyTextInputEvent(hostState(model), edit, 255);
+  if (next === null) return model;
+  const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 255 ? Math.trunc(next.selection.anchor) : 0;
+  const focus = next.selection.focus >= 0 && next.selection.focus <= 255 ? Math.trunc(next.selection.focus) : 0;
+  return { ...model, hostQuery: next.text, hostAnchor: anchor, hostFocus: focus };
+}
+
+/// The switcher and the host panel are one modal slot: opening Connect to
+/// Host from the switcher replaces it. The previous host stays in the field.
+function openHost(model: Model): Model {
+  const base = model.paletteOpen ? closePalette(model) : model;
+  const length = base.hostQuery.length;
+  const end = length >= 0 && length <= 255 ? Math.trunc(length) : 0;
+  return scopeOverlays({ ...base, hostOpen: true, settingsOpen: false, hostAnchor: end, hostFocus: end,
+    hostNotice: base.remoteLine.length > 0 ? base.remoteLine : asciiBytes("A host registered with phux host add or phux host enroll") });
+}
+
+/// Apply one engine answer. A failure keeps the panel and the typed host;
+/// a connection the panel was waiting for closes it.
+function receiveRemote(model: Model, body: Uint8Array): Model {
+  const reply = remoteReply(body);
+  if (reply === null) {
+    return { ...model, hostBusy: false, hostAwaiting: false, hostNotice: asciiBytes("Connection status unavailable. Try again.") };
+  }
+  const line = remoteStatusLine(reply);
+  const settled = reply.phase === REMOTE_PHASE_CONNECTED || reply.phase === REMOTE_PHASE_FAILED || reply.phase === REMOTE_PHASE_LOCAL;
+  const done = model.hostAwaiting && (reply.phase === REMOTE_PHASE_CONNECTED || reply.phase === REMOTE_PHASE_LOCAL);
+  return scopeOverlays({
+    ...model,
+    hostBusy: false,
+    hostAwaiting: model.hostAwaiting && !settled,
+    hostOpen: model.hostOpen && !done,
+    hostPhase: reply.phase >= 0 && reply.phase <= 4 ? Math.trunc(reply.phase) : 0,
+    hostName: reply.host,
+    remoteLine: line,
+    hostNotice: line.length > 0 ? line : asciiBytes("Using this Mac's Phux coordinator"),
+    connectionStatus: line.length > 0 ? line : model.connectionStatus,
+  });
+}
+
+/// While a remote host is selected the status bar names it; a failure shows
+/// its reason instead of the generic offline label.
+function remoteConnectionStatus(model: Model, local: Uint8Array): Uint8Array {
+  if (model.hostPhase === REMOTE_PHASE_LOCAL || model.hostName.length === 0) return local;
+  if (model.hostPhase === REMOTE_PHASE_FAILED) return model.remoteLine;
+  return joinBytes(model.hostName, asciiBytes(" / "), local);
 }
 
 function connectionLabel(state: number): Uint8Array {
@@ -565,6 +670,7 @@ function scopeOverlays(model: Model): Model {
     ...model,
     mainPaletteOpen: model.paletteOpen && active === 0,
     mainSettingsOpen: model.settingsOpen && active === 0,
+    mainHostOpen: model.hostOpen,
     window1PaletteOpen: model.paletteOpen && active === 1,
     window1SettingsOpen: model.settingsOpen && active === 1,
     window2PaletteOpen: model.paletteOpen && active === 2,
@@ -828,6 +934,7 @@ export function commandMsg(name: string): Msg | null {
   if (name === "window.new") return { kind: "new_window" };
   if (name === "tabs.palette") return { kind: "palette_open" };
   if (name === "settings.open") return { kind: "settings_open" };
+  if (name === "remote.connect") return { kind: "host_open" };
   if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
   if (name === "tab.previous") return { kind: "native_command", command: 1 };
   if (name === "tab.next") return { kind: "native_command", command: 2 };
@@ -911,6 +1018,20 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteNext: false,
       paletteLoading: false,
       paletteNotice: NO_BYTES,
+      hostOpen: false,
+      mainHostOpen: false,
+      hostQuery: new Uint8Array(0),
+      hostAnchor: 0,
+      hostFocus: 0,
+      hostNotice: NO_BYTES,
+      hostBusy: false,
+      hostAwaiting: false,
+      hostPhase: 0,
+      hostName: new Uint8Array(0),
+      remoteLine: new Uint8Array(0),
+      // No byte value: the first snapshot always asks which host is selected,
+      // so a host restored at launch is named from the start.
+      lastConnection: 255,
       canReconnect: false,
       connectionStatus: asciiBytes("Starting Cockpit..."),
       window1Status: asciiBytes("Starting Cockpit..."),
@@ -1110,7 +1231,7 @@ function requestAppearance(model: Model, action: number, argument: number): Appe
 
 function openAppearance(model: Model): AppearanceDecision {
   if (model.settingsOpen) return appearanceDecision(model);
-  const next = scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false, settingsSection: 0,
+  const next = scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
     navigationAfterSettings: false, appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true });
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
@@ -1253,6 +1374,48 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "reconnect":
       return [model, Cmd.host("cockpit.intent", intent(12, model.engineRevision, 0, 255))];
+    case "host_open": {
+      if (model.hostOpen) return model;
+      return [openHost(model), Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ])];
+    }
+    case "host_close":
+      if (!model.hostOpen) return model;
+      return [scopeOverlays({ ...model, hostOpen: false, hostAwaiting: false }), Cmd.host("cockpit.committed", NO_BYTES)];
+    case "host_edit":
+      return editHost(model, msg.edit);
+    case "host_submit": {
+      if (!model.hostOpen || model.hostBusy) return model;
+      if (model.hostQuery.length === 0) {
+        return { ...model, hostNotice: asciiBytes("Enter a registered host, e.g. mini or me@mini") };
+      }
+      return [
+        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: joinBytes(asciiBytes("Connecting to "), model.hostQuery, asciiBytes("...")) },
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_CONNECT, model.hostQuery), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ];
+    }
+    case "host_local": {
+      if (!model.hostOpen || model.hostBusy) return model;
+      return [
+        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: asciiBytes("Returning to this Mac...") },
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_LOCAL, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ];
+    }
+    case "remote_loaded": {
+      const next = receiveRemote(model, msg.body);
+      if (model.hostOpen && !next.hostOpen) return [next, Cmd.host("cockpit.committed", NO_BYTES)];
+      return next;
+    }
+    case "remote_failed":
+      return { ...model, hostBusy: false, hostAwaiting: false, hostNotice: asciiBytes("Connection status unavailable. Try again.") };
     case "window_closed": {
       const window = msg.window;
       if (!(window >= 1 && window <= 4)) return model;
@@ -1282,7 +1445,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "palette_close":
-      return [closePalette(model), Cmd.host("cockpit.committed", NO_BYTES)];
+      return [closePalette({ ...model, hostOpen: false, hostAwaiting: false }), Cmd.host("cockpit.committed", NO_BYTES)];
     case "palette_submit":
     case "palette_pick": {
       const target = navigationTarget(model, msg);
@@ -1399,7 +1562,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         engineSequence: projected.sequence,
         engineRevision: projected.revision,
         canReconnect: projected.connection === 3,
-        connectionStatus: windowStatus(projected.connection, projected.terminalStates[0], refusedMask !== 0),
+        lastConnection: projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255,
+        connectionStatus: remoteConnectionStatus(model, windowStatus(projected.connection, projected.terminalStates[0], refusedMask !== 0)),
         window1Status: windowStatus(projected.connection, projected.terminalStates[1], refusedMask !== 0),
         window2Status: windowStatus(projected.connection, projected.terminalStates[2], refusedMask !== 0),
         window3Status: windowStatus(projected.connection, projected.terminalStates[3], refusedMask !== 0),
@@ -1407,11 +1571,28 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
       };
       const scoped = scopeOverlays(synced);
-      if (!model.paletteOpen) return scoped;
-      return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", scopedNavigationRequest(scoped), {
-        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-      })];
-    }
+      // Remote status is asked for only when the connection moved (or a
+      // Connect to Host is waiting on it), never once per snapshot.
+      const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
+      if (!model.paletteOpen) {
+        if (!askRemote) return scoped;
+        return [scoped, Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        })];
+      }
+      if (!askRemote) {
+        return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", scopedNavigationRequest(scoped), {
+          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+        })];
+      }
+      return [refreshNavigation(scoped), Cmd.batch([
+        Cmd.request("cockpit.navigation", scopedNavigationRequest(scoped), {
+          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
+        }),
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ])];    }
     case "snapshot_failed":
       return engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE"));
     case "engine_event": {

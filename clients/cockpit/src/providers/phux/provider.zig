@@ -30,25 +30,43 @@ pub const max_agent_sessions = host_mod.max_agent_sessions;
 const OwnedEndpoint = union(enum) {
     tcp: struct { host: []u8, port: u16 },
     unix: []u8,
+    remote: struct { target: []u8, config_path: []u8 },
 
     fn init(gpa: std.mem.Allocator, endpoint: Endpoint) !OwnedEndpoint {
         return switch (endpoint) {
             .tcp => |tcp| .{ .tcp = .{ .host = try gpa.dupe(u8, tcp.host), .port = tcp.port } },
             .unix => |path| .{ .unix = try gpa.dupe(u8, path) },
+            .remote => |remote| blk: {
+                const target = try gpa.dupe(u8, remote.target);
+                errdefer gpa.free(target);
+                break :blk .{ .remote = .{ .target = target, .config_path = try gpa.dupe(u8, remote.config_path) } };
+            },
         };
     }
     fn deinit(endpoint: *OwnedEndpoint, gpa: std.mem.Allocator) void {
         switch (endpoint.*) {
             .tcp => |tcp| gpa.free(tcp.host),
             .unix => |path| gpa.free(path),
+            .remote => |remote| {
+                gpa.free(remote.target);
+                gpa.free(remote.config_path);
+            },
         }
     }
     fn borrowed(endpoint: *const OwnedEndpoint) Endpoint {
         return switch (endpoint.*) {
             .tcp => |tcp| .{ .tcp = .{ .host = tcp.host, .port = tcp.port } },
             .unix => |path| .{ .unix = path },
+            .remote => |remote| .{ .remote = .{ .target = remote.target, .config_path = remote.config_path } },
         };
     }
+};
+
+/// A host switch waiting for the next connection generation.
+const Retarget = struct {
+    endpoint: OwnedEndpoint,
+    session: ?[]u8,
+    label: ?[]u8,
 };
 
 pub const PhuxProvider = struct {
@@ -71,6 +89,14 @@ pub const PhuxProvider = struct {
     client_name: []u8,
     attach_viewport: provider.Viewport = .{ .cols = 80, .rows = 24 },
     attach_queued: bool = false,
+    /// Failure record shared with each socket worker of a remote endpoint.
+    remote_status: extension.remote.Status = .{},
+    /// What the catalog and status line call a remote endpoint: the registry
+    /// entry's name when Connect to Host resolved one, else the target.
+    remote_label: ?[]u8 = null,
+    /// Connect to Host, applied by the next `open`/`reconnect` after the old
+    /// worker has stopped; see `requestRetarget`.
+    pending_retarget: ?Retarget = null,
 
     pub fn create(gpa: std.mem.Allocator, io: std.Io, endpoint: Endpoint, session: ?[]const u8, client_name: []const u8) !*PhuxProvider {
         const self = try gpa.create(PhuxProvider);
@@ -87,7 +113,12 @@ pub const PhuxProvider = struct {
         errdefer if (owned_session) |name| gpa.free(name);
         const owned_client_name = try gpa.dupe(u8, client_name);
         errdefer gpa.free(owned_client_name);
-        self.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .host = host, .endpoint = owned_endpoint, .session = owned_session, .client_name = owned_client_name, .context_id = try provider.context.allocate() };
+        const owned_label: ?[]u8 = switch (endpoint) {
+            .remote => |remote| try gpa.dupe(u8, remote.target),
+            else => null,
+        };
+        errdefer if (owned_label) |label| gpa.free(label);
+        self.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .host = host, .endpoint = owned_endpoint, .session = owned_session, .client_name = owned_client_name, .remote_label = owned_label, .context_id = try provider.context.allocate() };
         return self;
     }
 
@@ -97,6 +128,8 @@ pub const PhuxProvider = struct {
         self.bridge.deinit();
         self.gpa.destroy(self.bridge);
         self.endpoint.deinit(self.gpa);
+        self.clearPendingRetarget();
+        if (self.remote_label) |label| self.gpa.free(label);
         if (self.session) |session| self.gpa.free(session);
         self.gpa.free(self.client_name);
         self.gpa.destroy(self);
@@ -104,8 +137,9 @@ pub const PhuxProvider = struct {
 
     pub fn open(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         if (self.worker != null) return error.InvalidState;
+        self.applyPendingRetarget();
         if (self.host.state() == .new) try self.host.start(self.client_name);
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.endpoint.borrowed());
+        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
     }
 
     pub fn stop(self: *PhuxProvider) void {
@@ -145,10 +179,104 @@ pub const PhuxProvider = struct {
         self.worker = null;
         self.bridge.incoming.reset();
         self.bridge.outgoing.reset();
+        self.applyPendingRetarget();
         self.prepareSessionSwitch();
         try self.host.reconnect(self.client_name);
         self.attach_queued = false;
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.endpoint.borrowed());
+        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
+    }
+
+    /// Point the next connection at a different coordinator: a registered
+    /// remote host, or back to the local socket. Nothing changes until the
+    /// next `open`/`reconnect` starts a worker, so moving between hosts rides
+    /// the engine's ordinary restart path (frozen canvases, session handoff,
+    /// close-before-reopen) instead of a second lifecycle.
+    pub fn requestRetarget(self: *PhuxProvider, endpoint: Endpoint, session: ?[]const u8, label: ?[]const u8) !void {
+        var next_endpoint = try OwnedEndpoint.init(self.gpa, endpoint);
+        errdefer next_endpoint.deinit(self.gpa);
+        const next_session = if (session) |name| try self.gpa.dupe(u8, name) else null;
+        errdefer if (next_session) |name| self.gpa.free(name);
+        const next_label = if (label) |text| try self.gpa.dupe(u8, text) else null;
+        self.clearPendingRetarget();
+        self.pending_retarget = .{ .endpoint = next_endpoint, .session = next_session, .label = next_label };
+        // The new host starts with no history, even before it is applied.
+        self.remote_status.reset();
+    }
+
+    fn clearPendingRetarget(self: *PhuxProvider) void {
+        const pending = self.pending_retarget orelse return;
+        var endpoint = pending.endpoint;
+        endpoint.deinit(self.gpa);
+        if (pending.session) |name| self.gpa.free(name);
+        if (pending.label) |text| self.gpa.free(text);
+        self.pending_retarget = null;
+    }
+
+    /// Only with no worker running. Session IDs, replicas and the catalog
+    /// belong to the old coordinator, exactly as for an explicit session
+    /// switch, so they are released before the new host can publish.
+    fn applyPendingRetarget(self: *PhuxProvider) void {
+        const next = self.pending_retarget orelse return;
+        self.pending_retarget = null;
+        self.endpoint.deinit(self.gpa);
+        self.endpoint = next.endpoint;
+        if (self.session) |name| self.gpa.free(name);
+        self.session = next.session;
+        if (self.remote_label) |text| self.gpa.free(text);
+        self.remote_label = next.label;
+        self.session_id = null;
+        if (self.host.state() != .new) self.host.clearSessionReplicas();
+        self.remote_status.reset();
+    }
+
+    fn workerEndpoint(self: *PhuxProvider) Endpoint {
+        var endpoint = self.endpoint.borrowed();
+        if (endpoint == .remote) endpoint.remote.status = &self.remote_status;
+        return endpoint;
+    }
+
+    fn effectiveEndpoint(self: *const PhuxProvider) *const OwnedEndpoint {
+        if (self.pending_retarget) |*pending| return &pending.endpoint;
+        return &self.endpoint;
+    }
+
+    /// The registered host this provider dials or is about to dial; null for
+    /// a local coordinator.
+    pub fn remoteTarget(self: *const PhuxProvider) ?[]const u8 {
+        return switch (self.effectiveEndpoint().*) {
+            .remote => |remote| remote.target,
+            else => null,
+        };
+    }
+
+    /// The name the catalog and status line give that host.
+    pub fn remoteLabel(self: *const PhuxProvider) ?[]const u8 {
+        const target = self.remoteTarget() orelse return null;
+        if (self.pending_retarget) |pending| return pending.label orelse target;
+        return self.remote_label orelse target;
+    }
+
+    /// The last recorded connection failure, copied into `out`.
+    pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
+        return self.remote_status.failureInto(out);
+    }
+
+    /// Whether this host has connected since it was selected, which is what
+    /// separates "connecting" from "reconnecting".
+    pub fn remoteConnectedOnce(self: *const PhuxProvider) bool {
+        return self.remote_status.connectedOnce();
+    }
+
+    pub fn noteRemoteConnected(self: *PhuxProvider) void {
+        self.remote_status.noteConnected();
+    }
+
+    pub const RemoteDescription = extension.remote.Description;
+
+    /// Resolve a host in the phux CLI's registry without dialing: immediate
+    /// feedback for Connect to Host on the UI thread.
+    pub fn describeRemote(target: []const u8) RemoteDescription {
+        return extension.remote.describe(target, "");
     }
 
     /// Explicit session switches release old replica slots before incoming
@@ -592,6 +720,44 @@ test "every declaration in this module is compiled, not merely reachable" {
     // graph with its signatures never checked. Nothing calls PhuxProvider.search.
     // See ref.zig.
     @import("phux_ref").refAllDeclsRecursive(@This());
+}
+
+test "retarget waits for the next connection, then forgets the old coordinator's session" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, "local-session", "retarget");
+    defer self.destroy();
+    try host_mod.test_support.attachHost(self.host);
+    try discoverFixtureSessions(self);
+    try std.testing.expectEqual(@as(usize, 1), self.host.terminals.items.len);
+    try std.testing.expect(self.remoteTarget() == null);
+    self.remote_status.noteConnected();
+
+    try self.requestRetarget(.{ .remote = .{ .target = "me@mini" } }, "work", "mini");
+    // Visible to the status line at once, applied to nothing yet.
+    try std.testing.expectEqualStrings("me@mini", self.remoteTarget().?);
+    try std.testing.expectEqualStrings("mini", self.remoteLabel().?);
+    try std.testing.expectEqualStrings("/unused", self.endpointDescriptor().unix);
+    try std.testing.expect(!self.remoteConnectedOnce());
+
+    self.applyPendingRetarget();
+    try std.testing.expectEqualStrings("me@mini", self.endpointDescriptor().remote.target);
+    try std.testing.expectEqualStrings("work", self.session.?);
+    try std.testing.expect(self.session_id == null);
+    try std.testing.expectEqual(@as(usize, 0), self.host.terminals.items.len);
+    try std.testing.expect(self.workerEndpoint().remote.status == &self.remote_status);
+
+    // Back to the local coordinator: no remote label survives.
+    try self.requestRetarget(.{ .unix = "/local.sock" }, null, null);
+    self.applyPendingRetarget();
+    try std.testing.expect(self.remoteTarget() == null);
+    try std.testing.expect(self.remoteLabel() == null);
+    try std.testing.expect(self.session == null);
+}
+
+test "a provider created for a remote host labels it by its target until resolved" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .remote = .{ .target = "mini" } }, null, "remote");
+    defer self.destroy();
+    try std.testing.expectEqualStrings("mini", self.remoteLabel().?);
+    try std.testing.expectEqualStrings("mini", self.endpointDescriptor().remote.target);
 }
 
 test "provider operations expose owned outcomes and borrowed endpoint incarnation" {

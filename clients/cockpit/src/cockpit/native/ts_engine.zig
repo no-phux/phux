@@ -493,8 +493,14 @@ pub const Engine = struct {
         const remote = model.phux() orelse return error.NoProvider;
         const server = remote.serverId() orelse return error.MissingServerIdentity;
         const session = remote.selectedSessionId() orelse return error.MissingSession;
+        var remote_endpoint: [@import("../attachment_state.zig").max_endpoint_bytes]u8 = undefined;
         const endpoint = switch (remote.endpointDescriptor()) {
             .unix => |path| path,
+            // A registered host is identified by its registry label. The
+            // prefix keeps it disjoint from every absolute socket path, so a
+            // saved placement can never match the wrong coordinator.
+            .remote => |host| std.fmt.bufPrint(&remote_endpoint, "phux-remote:{s}", .{host.target}) catch
+                return error.UnsupportedEndpoint,
             else => return error.UnsupportedEndpoint,
         };
         var hash = std.hash.Wyhash.init(0);

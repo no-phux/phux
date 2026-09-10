@@ -103,6 +103,7 @@
             <text foreground="text_muted">{palettenotice}</text>
             <row gap="8" cross="center">
               <if test="{paletteprevious}"><button size="sm" variant="ghost" on-press="palette_previous">Previous</button></if>
+              <button size="sm" variant="ghost" icon="external-link" on-press="host_open">Connect to Host…</button>
               <spacer grow="1" />
               <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
               <if test="{palettenext}"><button size="sm" variant="ghost" on-press="palette_next">Next</button></if>

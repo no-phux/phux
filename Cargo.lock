@@ -2218,10 +2218,17 @@ name = "phux-client-ffi"
 version = "0.30.0"
 dependencies = [
  "bytes",
+ "futures-util",
  "libghostty-vt",
  "phux-client-core",
+ "phux-config",
+ "phux-dial",
  "phux-protocol",
+ "quinn",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

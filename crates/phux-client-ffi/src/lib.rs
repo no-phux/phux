@@ -10,6 +10,7 @@ mod error;
 mod grid_metadata;
 mod operations;
 mod pointer;
+mod remote;
 mod types;
 mod workspace;
 
@@ -39,6 +40,7 @@ pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,
 };
+pub use remote::*;
 pub use types::*;
 pub use workspace::*;
 

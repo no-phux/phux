@@ -163,6 +163,18 @@ thread before connection. A failed attachment stays a recovery state rather
 than starting replacement local shells. Startup ownership is described in the
 [process model](../../docs/architecture/process-model.md).
 
+**Remote hosts.** Connect to Host (`cmd+shift+O`, or the Connect to Host
+button in the switcher) attaches a host registered with `phux host add` or
+`phux host enroll`, the same registry `phux --remote HOST` uses. Enter its
+registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
+`PHUX_REMOTE=NAME`, selects one at launch. The status bar names the host
+while connecting, connected, reconnecting, or failed, and gives the reason
+when it fails. A failure keeps the entered host so a retry is one keystroke.
+The chosen host is remembered and reattached after relaunch. Use this Mac
+returns to the local coordinator. Cockpit never pairs a host; an
+unregistered one fails with the CLI command that pairs it. See
+[Remote hosts](docs/REMOTE_HOSTS.md).
+
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line
 comment, and there are deliberately no trailing comments because `#` is also how
 every colour begins. An unknown key or a malformed value is a diagnostic, not a
@@ -284,6 +296,7 @@ attribute and reports that fact in its caveat.
 | `cmd+click` | Open the URL under the pointer |
 | `cmd+K` | Clear the screen and scrollback |
 | `cmd+shift+P` | Go to terminal — the summoned switcher (type to filter, arrows or `ctrl+N`/`ctrl+P` to move, `enter` to go, `esc` to dismiss) |
+| `cmd+shift+O` | Connect to Host — attach a host registered with `phux host add` or `phux host enroll` (`enter` to connect, Use this Mac to return) |
 | `cmd+,` | Settings — themes with a live preview and a WCAG contrast readout (arrows or `ctrl+N`/`ctrl+P` to preview, `return` to save, `esc` to cancel) |
 | `cmd+shift+B` | Show the Web surface |
 | `cmd+shift+space` | Enter or leave keyboard selection mode |
@@ -688,6 +701,9 @@ Cockpit** workflow against the existing draft tag.
   session, and terminal identity. Unavailable or mismatched attachments remain
   pending; Cockpit does not invent replacement work. Satellite restoration
   also requires matching route-incarnation evidence.
+- One Phux coordinator at a time: a connected remote host replaces the local
+  coordinator's catalog rather than appearing beside it. See
+  [Remote hosts](docs/REMOTE_HOSTS.md#known-limits).
 - Ephemeral local PTY restoration restores layout and working directories,
   not the former processes or scrollback. Phux-backed work survives in its
   coordinator independently of the app; see

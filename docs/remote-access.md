@@ -122,6 +122,16 @@ machine-readable call must do neither. Three limits are deliberate:
 like the local form. With no `--cwd`, a remote session starts in the far
 server's default directory: a path on this machine names nothing there.
 
+### From Phux Cockpit
+
+Cockpit's Connect to Host (`cmd+shift+O`) reads this same `[[remote]]`
+registry and dials through the same QUIC/WSS stack, so a host that
+`phux --remote NAME` reaches is one Cockpit reaches by NAME. It does only
+rung 1 of the ladder: pairing stays in the terminal, and an unregistered host
+is refused with the command that pairs it. Details, including the
+`phux-remote` setting and relaunch behavior, are in
+[Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md).
+
 ### The related way: `phux host enroll`
 
 `--remote` pairs a host; it deliberately does **not** install anything there.

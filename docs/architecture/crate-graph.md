@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-10
 ---
 
 # Crate dependency graph
@@ -96,7 +96,11 @@ server, the client, and the TUI.
 workspace: it is a stable C ABI over the synchronous session kernel, for
 native embedders that are not written in Rust. It is compile-time excluded
 on wasm. Nothing else in the graph depends on it — it is a leaf, and the
-crate to reach for before hand-rolling a second bridge to the kernel.
+crate to reach for before hand-rolling a second bridge to the kernel. Its
+remote-host tunnel also depends on `phux-config` (to read the CLI's
+`[[remote]]` registry through the same loader) and `phux-dial` (QUIC/WSS
+establishment with the certificate pin and bearer token), so an embedder
+reaches a registered host without a second registry or a second dialer.
 
 ## Browser client crates (standalone wasm workspace)
 

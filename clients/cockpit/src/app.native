@@ -1,4 +1,25 @@
 <import src="windows/components/cockpit-window.native" />
 <use template="cockpit-window" tabs="{visibleTabs}" rail="{railRows}" width="{tabWidth}" more="{hasOverflow}" cue="{overflowLabel}" paletteopen="{mainPaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{connectionStatus}" reconnect="{canReconnect}" commandnotice="{commandNotice}">
   <use template="cockpit-settings" settingsopen="{mainSettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
+  <if test="{mainHostOpen}">
+    <row main="center" cross="start" padding="16">
+      <panel grow="1" max-width="640" padding="16">
+        <column gap="8">
+          <row cross="center" gap="8">
+            <icon name="external-link" width="16" height="16" />
+            <text grow="1">Connect to Host</text>
+            <button size="sm" variant="ghost" icon="x" label="Close Connect to Host" on-press="host_close" />
+          </row>
+          <input text="{hostQuery}" placeholder="Registered host: mini, me@mini, or mini:8788" autofocus="true" on-input="host_edit" on-submit="host_submit" label="Remote host" />
+          <text wrap="true" foreground="text_muted">{hostNotice}</text>
+          <row gap="8" cross="center">
+            <button size="sm" variant="ghost" on-press="host_local">Use this Mac</button>
+            <spacer grow="1" />
+            <button size="sm" variant="ghost" on-press="host_close">Cancel</button>
+            <button size="sm" on-press="host_submit">Connect</button>
+          </row>
+        </column>
+      </panel>
+    </row>
+  </if>
 </use>

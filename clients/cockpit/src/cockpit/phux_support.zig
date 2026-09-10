@@ -81,7 +81,11 @@ const DisabledPhuxProvider = struct {
             return "";
         }
     };
-    pub const Endpoint = union(enum) { tcp: struct { host: []const u8, port: u16 }, unix: []const u8 };
+    pub const Endpoint = union(enum) {
+        tcp: struct { host: []const u8, port: u16 },
+        unix: []const u8,
+        remote: struct { target: []const u8, config_path: []const u8 = "", status: ?*anyopaque = null },
+    };
     const State = enum { new, attached };
     const Anchor = struct { opaque_id: u64 = 0 };
     pub const SessionSummary = struct {

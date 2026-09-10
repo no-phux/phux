@@ -173,6 +173,13 @@ const Bridge = struct {
     appearance_key: u64 = 0,
     appearance_len: usize = 0,
     appearance_buffer: [cockpit.engine.appearance.max_bytes]u8 = undefined,
+    /// Connect to Host (`cockpit.remote`): applied synchronously, answered
+    /// through its own completion slot like navigation.
+    remote_pending: bool = false,
+    remote_key: u64 = 0,
+    remote_ok: bool = false,
+    remote_len: usize = 0,
+    remote_buffer: [cockpit.remote_hosts.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -218,7 +225,9 @@ const Bridge = struct {
     }
 
     fn interactionMode(model: *const core.Model) InteractionMode {
-        return if (model.paletteOpen) .palette else if (model.settingsOpen) .settings else .terminal;
+        // Connect to Host takes text like the switcher; neither may type
+        // into a terminal behind it.
+        return if (model.paletteOpen or model.hostOpen) .palette else if (model.settingsOpen) .settings else .terminal;
     }
 
     /// Host sends are intentionally suppressed by the SDK during replay.
@@ -268,6 +277,10 @@ const Bridge = struct {
             const command_bridge: *Bridge = @ptrCast(@alignCast(context));
             return command_bridge.requestTabCommand(key, payload);
         }
+        if (std.mem.eql(u8, name, cockpit.remote_hosts.request_name)) {
+            const remote_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return remote_bridge.requestRemote(key, payload);
+        }
         if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
             const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
             return navigation_bridge.requestNavigation(key, payload);
@@ -308,6 +321,31 @@ const Bridge = struct {
         };
         self.navigation_ok = true;
         self.navigation_len = bytes.len;
+    }
+
+    fn requestRemote(self: *Bridge, key: u64, payload: []const u8) void {
+        self.remote_pending = true;
+        self.remote_key = key;
+        self.remote_ok = false;
+        const engine = self.engine orelse {
+            self.remote_len = copyInto(&self.remote_buffer, "engine unavailable");
+            return;
+        };
+        const answered = if (engineFx()) |fx|
+            cockpit.remote_hosts.handle(engine, fx, payload, &self.remote_buffer)
+        else
+            cockpit.remote_hosts.handle(engine, &cockpit.NoShells{}, payload, &self.remote_buffer);
+        const bytes = answered catch |err| {
+            self.remote_len = copyInto(&self.remote_buffer, @errorName(err));
+            return;
+        };
+        self.remote_ok = true;
+        self.remote_len = bytes.len;
+        // A connect or return-to-local retargets the provider, and the core
+        // resyncs from the snapshot. A status read moves nothing; announcing
+        // it would buy a snapshot whose arrival asks for status again.
+        const decoded = cockpit.remote_hosts.decode(payload) catch return;
+        if (decoded.kind != .status) self.announce(engine);
     }
 
     fn requestTabCommand(self: *Bridge, key: u64, payload: []const u8) void {
@@ -398,6 +436,7 @@ const Bridge = struct {
         if (self.command_pending and self.command_key == key) self.command_pending = false;
         if (self.result_pending and self.result_key == key) self.result_pending = false;
         if (self.appearance_pending and self.appearance_key == key) self.appearance_pending = false;
+        if (self.remote_pending and self.remote_key == key) self.remote_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
@@ -420,14 +459,22 @@ const Bridge = struct {
     }
 
     fn pollNavigation(self: *Bridge) ?native_sdk.HostCallCompletion {
-        if (!self.navigation_pending) return null;
+        if (!self.navigation_pending) return self.pollRemote();
         self.navigation_pending = false;
         return .{ .key = self.navigation_key, .ok = self.navigation_ok, .bytes = self.navigation_buffer[0..self.navigation_len] };
     }
 
+    /// Last, so every pre-existing completion keeps its delivery order: the
+    /// core's remote-status request is additive to the seam, never ahead of it.
+    fn pollRemote(self: *Bridge) ?native_sdk.HostCallCompletion {
+        if (!self.remote_pending) return null;
+        self.remote_pending = false;
+        return .{ .key = self.remote_key, .ok = self.remote_ok, .bytes = self.remote_buffer[0..self.remote_len] };
+    }
+
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {

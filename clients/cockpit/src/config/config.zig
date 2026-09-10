@@ -32,6 +32,9 @@ pub const max_phux_socket_bytes: usize = @sizeOf(@FieldType(std.posix.sockaddr.u
 /// The Phux protocol's advertised-session admission bound. A configured name
 /// must fit the same envelope as the catalog entry it is expected to match.
 pub const max_phux_session_bytes: usize = 4096;
+/// A `[[remote]]` registry label or `[USER@]HOST[:PORT]`: a host name, not a
+/// document. Well under phux-client-ffi's 1024-byte target bound.
+pub const max_phux_remote_bytes: usize = 255;
 pub const max_diagnostics: usize = 16;
 pub const max_config_bytes: usize = 64 * 1024;
 
@@ -216,6 +219,7 @@ pub const DiagnosticText = Text(max_diagnostic_text_bytes);
 
 pub const PhuxSocket = Text(max_phux_socket_bytes);
 pub const PhuxSession = Text(max_phux_session_bytes);
+pub const PhuxRemote = Text(max_phux_remote_bytes);
 
 /// Where a resolved Phux startup value came from. Settings uses this as
 /// provenance only: a transport location is not an authority or trust claim.
@@ -379,6 +383,11 @@ pub const Config = struct {
     /// the coordinator's current/Last session; it never means create one.
     phux_session: PhuxSession = PhuxSession.init(""),
     phux_session_source: PhuxValueSource = .default,
+    /// `phux-remote` names a host in the phux CLI's own `[[remote]]`
+    /// registry (`phux host add|enroll`). Non-empty dials that host instead
+    /// of the local coordinator; empty is the local coordinator.
+    phux_remote: PhuxRemote = PhuxRemote.init(""),
+    phux_remote_source: PhuxValueSource = .default,
 
     /// A new terminal or split starts in the focused pane's directory, the
     /// way Ghostty does, unless this is turned off.
@@ -498,6 +507,15 @@ pub const Config = struct {
         return true;
     }
 
+    /// Store an already-validated remote host label. Empty is the explicit
+    /// representation of the local coordinator.
+    pub fn setPhuxRemote(config: *Config, value: []const u8, source: PhuxValueSource) bool {
+        if (!validPhuxRemote(value)) return false;
+        config.phux_remote.set(value) catch return false;
+        config.phux_remote_source = if (value.len == 0) .default else source;
+        return true;
+    }
+
     fn note(config: *Config, line: u32, kind: Diagnostic.Kind, text: []const u8) void {
         if (config.diagnostic_count >= max_diagnostics) return;
         var entry: Diagnostic = .{ .line = line, .kind = kind };
@@ -520,6 +538,18 @@ pub fn validPhuxSocket(value: []const u8) bool {
         std.fs.path.isAbsolute(value) and
         std.mem.indexOfScalar(u8, value, 0) == null and
         std.unicode.utf8ValidateSlice(value);
+}
+
+/// Shape only; the registry decides what a label means. Empty is valid (the
+/// local coordinator). Whitespace, control bytes and URIs are refused here,
+/// where a config line number can still be reported: a URI belongs in
+/// `phux host add NAME URI`, and Cockpit connects by NAME.
+pub fn validPhuxRemote(value: []const u8) bool {
+    if (value.len > max_phux_remote_bytes) return false;
+    if (!std.unicode.utf8ValidateSlice(value)) return false;
+    if (std.mem.indexOf(u8, value, "://") != null) return false;
+    for (value) |byte| if (byte <= ' ' or byte == 0x7f) return false;
+    return true;
 }
 
 pub fn validPhuxSession(value: []const u8) bool {
@@ -746,7 +776,20 @@ fn applyPhuxPair(config: *Config, line: u32, key: []const u8, value: []const u8)
         setPhuxSession(config, line, value);
         return true;
     }
+    if (eq(key, "phux-remote")) {
+        setPhuxRemote(config, line, value);
+        return true;
+    }
     return false;
+}
+
+fn setPhuxRemote(config: *Config, line: u32, value: []const u8) void {
+    const detail = phuxDiagnosticText("phux-remote", value);
+    if (value.len > max_phux_remote_bytes) {
+        config.note(line, .too_long, detail);
+        return;
+    }
+    if (!config.setPhuxRemote(value, .config)) config.note(line, .bad_value, detail);
 }
 
 fn phuxDiagnosticText(key: []const u8, value: []const u8) []const u8 {
