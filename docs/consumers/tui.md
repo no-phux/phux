@@ -1540,6 +1540,7 @@ line of config. The shipped prefix-table bindings:
 | `C-a c`     | `new-window`                                             |
 | `C-a n/p`   | `next-window` / `previous-window`                        |
 | `C-a 0`–`9` | `select-window` by index                                |
+| `C-a G`     | `go-to-directory` (directory picker; new window there)   |
 | `C-a w`     | `window-picker` (grouped: sessions, windows nested)      |
 | `C-a s`     | `session-picker` (`C-a a` is a kept alias)               |
 | `C-a A`     | `agent-fleet` (fleet dashboard — §5.6)                   |
@@ -1647,8 +1648,8 @@ foreign layouts are an attach-time snapshot: if a peer rearranged its
 windows since, the jump still switches sessions and the stale window
 index degrades to the session's own remembered focus (logged, no bell).
 
-The **directory picker** (`go-to-directory`, unbound by default and offered
-in the palette under **Window**) browses directories on the host of the
+The **directory picker** (`go-to-directory`, `C-a G`, also offered in the
+palette under **Window**) browses directories on the host of the
 server this client is attached to and opens a new window there. It starts at
 an explicit `path` arg, else at the focused pane's working directory when the
 client knows it, else at the server user's home. The rows are the listing the

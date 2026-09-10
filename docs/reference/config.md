@@ -254,6 +254,11 @@ which-key-delay-ms = 400
 "8" = { action = "select-window", index = 8 }
 "9" = { action = "select-window", index = 9 }
 
+# Directory picker: browse directories on the attached server's host and
+# open a new window in the one you pick. G for "go" (the Go-to-Folder
+# chord's Shift-G); lowercase g is give-input (supervisory control below).
+"G" = "go-to-directory"
+
 # Rename the active window. With an explicit name it renames immediately,
 # e.g. "," = { action = "rename-window", name = "build" }. The bare
 # binding opens an interactive type-a-name prompt pre-filled with the

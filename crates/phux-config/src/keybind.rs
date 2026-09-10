@@ -1172,6 +1172,54 @@ mod tests {
         assert!(diags.is_empty(), "clean config must produce no diagnostics");
     }
 
+    /// The shipped config parsed as a full [`crate::Config`].
+    fn shipped_config() -> crate::Config {
+        crate::parse_str(
+            crate::DEFAULT_CONFIG_TOML,
+            std::path::Path::new("default.toml"),
+        )
+        .expect("default config parses")
+    }
+
+    /// No two shipped bindings share a chord, even when spelled
+    /// differently (`G` and `S-g` parse to the same chord, which TOML's own
+    /// duplicate-key check cannot see). Compares full parsed sequences, with
+    /// prefix-table rows rooted at the prefix chord, and names the colliding
+    /// pair on failure.
+    #[test]
+    fn default_config_binds_no_chord_twice() {
+        let keys = shipped_config().keybindings;
+        let prefix = parse_chord(&keys.prefix).expect("default prefix parses");
+        let rows = keys
+            .global
+            .keys()
+            .map(|text| (Vec::new(), text))
+            .chain(keys.prefix_table.keys().map(|text| (vec![prefix], text)));
+        let mut seen: BTreeMap<Vec<KeyChord>, &String> = BTreeMap::new();
+        for (mut seq, text) in rows {
+            seq.extend(parse_chord_sequence(text).expect("default chord parses").0);
+            if let Some(earlier) = seen.insert(seq, text) {
+                panic!("default bindings `{earlier}` and `{text}` share a chord");
+            }
+        }
+    }
+
+    /// phux-c2td.10: the directory picker has a default chord, `C-a G`
+    /// (lowercase `g` is `give-input`). Pinned because the TUI doc's
+    /// keybinding table (section 5.3) promises it.
+    #[test]
+    fn default_config_binds_shift_g_to_go_to_directory() {
+        let cfg = shipped_config();
+        let action = cfg
+            .keybindings
+            .prefix_table
+            .get("G")
+            .expect("default prefix table binds `G`");
+        let resolved = ResolvedAction::from(action);
+        assert_eq!(resolved.action, "go-to-directory");
+        assert!(resolved.args.is_empty(), "bare picker, no start path");
+    }
+
     /// phux-foz.3: the default prefix table binds `H`/`J`/`K`/`L` to
     /// `resize-pane` left/down/up/right by 5 — the documented tmux-style
     /// resize row in the TUI doc's keybinding table (§5.3). Unlike the
