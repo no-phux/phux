@@ -48,6 +48,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Server process and actor model
 
+- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
 - [0083](./0083-in-place-supervisor-unit-reconcile.md) `service reconcile` patches only the installed unit's restart-policy keys and reloads nothing.
@@ -90,6 +91,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
+- [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
 - [0098](./0098-workload-proof-and-closed-scope-authority.md) Workload clients present mutual Ed25519 proofs and closed, endpoint-owned scopes.
 - [0091](./0091-certificate-names-the-advertised-address.md) The certificate names bind and overlay addresses once, at generation, and is never widened.
 - [0038](./0038-hub-satellite-auth.md) A hub dials a satellite as an ordinary paired consumer, pinned to its certificate fingerprint.
@@ -150,8 +152,6 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
-- [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
-- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

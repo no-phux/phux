@@ -13,7 +13,7 @@ Default sessions keep today's tmux cascade, so the "exit closes everything"
 habit and the ADR-0063 self-exit rule are untouched. Clients render an empty
 state instead of detaching.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-09-10
 
 ## Context

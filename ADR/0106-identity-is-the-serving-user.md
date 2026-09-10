@@ -13,7 +13,7 @@ read-only `phux whoami` reports the principal, auth route, serving user and
 host for the connection. System-login integration (PAM, utmp, loginctl) stays
 with the service manager, not the server.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-09-10
 
 ## Context
