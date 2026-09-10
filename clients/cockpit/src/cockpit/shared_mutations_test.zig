@@ -289,6 +289,25 @@ test "correlated direct disconnect retains unknown and legacy direct leaves no s
     for (queue.pending) |slot| try testing.expect(slot == null);
 }
 
+test "failed local projection preserves matching successful shared edit evidence" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    try queue.requestReorderCorrelated(&model, second_id, 0, 42);
+    model.remote.finish(.confirmed);
+    try testing.expect(queue.pump(&model));
+    try testing.expectEqual(.not_requested, queue.peekCompletion().?.placement);
+    try testing.expect(queue.projectionFailed(&model));
+    try testing.expect(!queue.projectionFailed(&model));
+    const completion = queue.peekCompletion().?;
+    try testing.expectEqual(.success, completion.operation);
+    try testing.expectEqual(.refused, completion.placement);
+    try testing.expectEqual(.projection_refused, completion.reason);
+    try testing.expectEqual(@as(u64, 42), completion.command_id);
+    try testing.expectEqual(@as(u32, 41), completion.request_id);
+    queue.disconnect(&model);
+    try testing.expectEqualDeep(completion, queue.peekCompletion().?);
+}
+
 test "retained direct results backpressure before writes and acknowledgement reopens capacity" {
     var queue: mutations.Coordinator = .{};
     var model: Model = .{};

@@ -1,7 +1,8 @@
 import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
-import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
 import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
@@ -170,11 +171,14 @@ export interface Model {
   readonly engineSequence: WireU64;
   readonly engineRevision: WireU64;
   readonly tabCommands: TabCommandState;
+  readonly commandResults: CommandResults;
   readonly commandNotice: Uint8Array;
   readonly status: Uint8Array;
 }
 
 export type Msg =
+  | { readonly kind: "command_result_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "command_result_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_target"; readonly target: Uint8Array }
   | { readonly kind: "tab_command_completed"; readonly body: Uint8Array }
   | { readonly kind: "tab_command_failed"; readonly error: Uint8Array }
@@ -223,6 +227,9 @@ export const viewUnbound = [
   "select_tab",
   "select_slot",
   "tabCommands",
+  "commandResults",
+  "command_result_loaded",
+  "command_result_failed",
   "tab_command_completed",
   "tab_command_failed",
   "selectedTab",
@@ -835,6 +842,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       engineConnected: false,
       engineSequence: ZERO_U64,
       tabCommands: initialTabCommands(),
+      commandResults: { ...initialCommandResults(), loading: true },
       commandNotice: NO_BYTES,
       engineRevision: ZERO_U64,
       status: asciiBytes("Starting Cockpit..."),
@@ -846,6 +854,9 @@ export function initialModel(): [Model, Cmd<Msg>] {
         key: "cockpit-snapshot",
         ok: "snapshot_loaded",
         err: "snapshot_failed",
+      }),
+      Cmd.request("cockpit.command-results", new Uint8Array([1, 0]), {
+        key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
       }),
     ]),
   ];
@@ -865,16 +876,21 @@ function speculateTabTarget(model: Model, target: Uint8Array): Model {
 }
 
 function tabCommandNotice(outcome: number): Uint8Array {
-  if (outcome === 3) return asciiBytes("Selection refused. Select a current target.");
-  if (outcome === 4) return asciiBytes("Selection queue full. New selection not sent.");
-  if (outcome === 5) return asciiBytes("Selection outcome unknown; queued selections canceled.");
-  if (outcome === 6) return asciiBytes("Selection command IDs exhausted. Restart Cockpit.");
-  if (outcome === 7) return asciiBytes("Selection accepted; attachment or placement pending.");
+  if (outcome === 3) return asciiBytes("Command refused. Refresh the target and try again.");
+  if (outcome === 4) return asciiBytes("Command queue full. New command not sent.");
+  if (outcome === 5) return asciiBytes("Command outcome unknown; queued commands canceled.");
+  if (outcome === 6) return asciiBytes("Command IDs exhausted. Restart Cockpit.");
+  if (outcome === 7) return asciiBytes("Command accepted; outcome pending.");
   return NO_BYTES;
 }
 
 function tabCommandModel(model: Model, decision: TabCommandDecision): Model {
-  return { ...model, tabCommands: decision.state, commandNotice: tabCommandNotice(decision.state.outcome) };
+  const notice = model.commandResults.notice;
+  return { ...model, tabCommands: decision.state, commandNotice: notice.length > 0 ? notice : tabCommandNotice(decision.state.outcome) };
+}
+
+function freshCommandModel(model: Model, decision: TabCommandDecision): Model {
+  return tabCommandModel({ ...model, commandResults: { ...model.commandResults, notice: NO_BYTES } }, decision);
 }
 
 interface TabCommandTransition {
@@ -885,7 +901,7 @@ interface TabCommandTransition {
 function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | null {
   if (msg.kind === "select_target") {
     const decision = enqueueTabCommand(model.tabCommands, msg.target);
-    const next = tabCommandModel(model, decision);
+    const next = freshCommandModel(model, decision);
     return { model: decision.state.outcome === 1 ? speculateTabTarget(next, msg.target) : next, request: decision.request };
   }
   if (msg.kind === "tab_command_completed") {
@@ -895,7 +911,48 @@ function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | nu
   if (msg.kind === "tab_command_failed") {
     return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
   }
-  return null;
+  const operation = operationIntent(model, msg);
+  if (operation.length === 0) return null;
+  const decision = enqueueOperationCommand(model.tabCommands, operation);
+  return { model: freshCommandModel(model, decision), request: decision.request };
+}
+
+function operationIntent(model: Model, msg: Msg): Uint8Array {
+  switch (msg.kind) {
+    case "new_terminal": return intent(2, model.engineRevision, 0, 255);
+    case "new_window": return intent(8, model.engineRevision, 0, 255);
+    case "close_selected_tab": return intent(3, model.engineRevision, model.selectedTab, 0);
+    case "native_command":
+      if (durableNativeCommand(msg.command)) return intent(11, model.engineRevision, msg.command, 255);
+      return NO_BYTES;
+    default: return NO_BYTES;
+  }
+}
+
+function durableNativeCommand(command: number): boolean {
+  return command === 3 || command === 4 || command === 5 || command === 8 || command === 9;
+}
+
+function outcomeNotice(model: Model, decision: ResultDecision): Uint8Array {
+  if (decision.state.notice.length > 0) return decision.state.notice;
+  if (decision.state.deliveryNotice.length > 0) {
+    return model.commandNotice.length > 0 ? model.commandNotice : decision.state.deliveryNotice;
+  }
+  const recent = decision.state.recent;
+  if (recent.length === 0) return tabCommandNotice(model.tabCommands.outcome);
+  const last = recent[recent.length - 1];
+  if (last.source !== 3 && sameU64(last.id, model.tabCommands.lastId)) return NO_BYTES;
+  return tabCommandNotice(model.tabCommands.outcome);
+}
+
+function resultTransition(model: Model, msg: Msg): TabCommandTransition | null {
+  if (msg.kind === "command_result_failed") {
+    const decision = failedCommandResults(model.commandResults);
+    return { model: { ...model, commandResults: decision.state, commandNotice: outcomeNotice(model, decision) }, request: decision.request };
+  }
+  if (msg.kind !== "command_result_loaded") return null;
+  const decision = receiveCommandResult(model.commandResults, msg.body);
+  return { model: { ...model, commandResults: decision.state, commandNotice: outcomeNotice(model, decision) }, request: decision.request };
 }
 
 function legacySlotIntent(revision: WireU64, slot: number): Uint8Array {
@@ -910,6 +967,13 @@ function legacySlotIntent(revision: WireU64, slot: number): Uint8Array {
 }
 
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  const result = resultTransition(model, msg);
+  if (result !== null) {
+    if (result.request.length === 0) return result.model;
+    return [result.model, Cmd.request("cockpit.command-results", result.request, {
+      key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
+    })];
+  }
   const command = tabCommandTransition(model, msg);
   if (command !== null) {
     if (command.request.length === 0) return command.model;
@@ -935,19 +999,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (payload.length === 0) return model;
       return [model, Cmd.host("cockpit.intent", payload)];
     }
-    case "new_terminal":
-      return [model, Cmd.host("cockpit.intent", intent(2, model.engineRevision, 0, 255))];
     case "reconnect":
       return [model, Cmd.host("cockpit.intent", intent(12, model.engineRevision, 0, 255))];
-    case "new_window":
-      return [model, Cmd.host("cockpit.intent", intent(8, model.engineRevision, 0, 0))];
     case "window_closed": {
       const window = msg.window;
       if (!(window >= 1 && window <= 4)) return model;
       return [model, Cmd.host("cockpit.intent", intent(9, model.engineRevision, 0, Math.trunc(window)))];
     }
-    case "close_selected_tab":
-      return [model, Cmd.host("cockpit.intent", intent(3, model.engineRevision, model.selectedTab, 0))];
     case "toggle_tab_placement": {
       const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
       return [
@@ -977,7 +1035,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const target = navigationTarget(model, msg);
       if (target.length === 0) return model;
       const decision = enqueueCatalogCommand(model.tabCommands, target);
-      const next = tabCommandModel(model, decision);
+      const next = freshCommandModel(model, decision);
       if (decision.state.outcome !== 1) return next;
       if (decision.request.length === 0) return [closePalette(next), Cmd.host("cockpit.committed", NO_BYTES)];
       return [closePalette(next), Cmd.batch([
@@ -1134,8 +1192,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       const event = invalidation(msg.bytes);
       if (event === null) return { ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") };
+      const read = requestCommandResults(model.commandResults);
       const next = {
         ...model,
+        commandResults: read.state,
         engineSequence: event.sequence,
         engineConnected: false,
         status: asciiBytes("SYNCING"),
@@ -1144,6 +1204,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         palettePrevious: false,
         paletteNext: false,
       };
+      if (read.request.length > 0) return [next, Cmd.batch([
+        Cmd.request("cockpit.snapshot", NO_BYTES, {
+          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
+        }),
+        Cmd.request("cockpit.command-results", read.request, {
+          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
+        }),
+      ])];
       return [
         next,
         Cmd.request("cockpit.snapshot", new Uint8Array(0), {

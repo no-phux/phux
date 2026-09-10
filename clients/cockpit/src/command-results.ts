@@ -9,6 +9,8 @@ export interface CommandResult {
   readonly operationEpoch: WireU64;
   readonly operationRequest: number;
   readonly mutationTicket: WireU64;
+  readonly mutationOutcome: number;
+  readonly targetSessionId: number;
   readonly attachmentRequest: number;
   readonly attachmentEpoch: WireU64;
   readonly placementRequest: number;
@@ -55,28 +57,79 @@ function validOutcomeTags(bytes: Uint8Array): boolean {
 }
 
 function validResult(bytes: Uint8Array): boolean {
-  if (bytes.length < 68 || bytes[0] !== 1) return false;
+  if (bytes.length < 74 || bytes[0] !== 1) return false;
   if (!validOutcomeTags(bytes)) return false;
-  const length = bytes[66] + bytes[67] * 256;
-  return length <= 273 && bytes.length === 68 + length;
+  if (bytes[66] > 3 || bytes[67] !== 0) return false;
+  const length = bytes[72] + bytes[73] * 256;
+  return length <= 273 && bytes.length === 74 + length;
 }
 
 function readWord(bytes: Uint8Array, offset: number): number {
   return bytes[offset] + bytes[offset + 1] * 256 + bytes[offset + 2] * 65536 + bytes[offset + 3] * 16777216;
 }
 
+// Bounds must be local to assignments into the SDK's CommandResult model.
+// Partial records and scalar helper returns lose their proofs at this boundary.
+function readOutcomes(bytes: Uint8Array, result: CommandResult): CommandResult {
+  const source = bytes[1];
+  const operation = bytes[2];
+  const placement = bytes[3];
+  const focus = bytes[4];
+  return {
+    ...result,
+    source: source >= 0 && source <= 255 ? Math.trunc(source) : 0,
+    operation: operation >= 0 && operation <= 255 ? Math.trunc(operation) : 0,
+    placement: placement >= 0 && placement <= 255 ? Math.trunc(placement) : 0,
+    focus: focus >= 0 && focus <= 255 ? Math.trunc(focus) : 0,
+  };
+}
+
+function readCorrelation(bytes: Uint8Array, id: WireU64): CommandResult {
+  const operationRequest = readWord(bytes, 22);
+  const attachmentRequest = readWord(bytes, 34);
+  const placementRequest = readWord(bytes, 38);
+  return {
+    source: 0, operation: 0, placement: 0, focus: 0,
+    mutationOutcome: 0, targetSessionId: 0, errorDomain: 0, errorCode: 0, reason: 0,
+    mutationTicket: readU64(bytes, 26), terminal: bytes.slice(74),
+    id, operationEpoch: readU64(bytes, 14),
+    operationRequest: operationRequest >= 0 && operationRequest <= 4294967295 ? Math.trunc(operationRequest) : 0,
+    attachmentRequest: attachmentRequest >= 0 && attachmentRequest <= 4294967295 ? Math.trunc(attachmentRequest) : 0,
+    placementRequest: placementRequest >= 0 && placementRequest <= 4294967295 ? Math.trunc(placementRequest) : 0,
+    attachmentEpoch: readU64(bytes, 50), placementEpoch: readU64(bytes, 58),
+  };
+}
+
+function readMutation(bytes: Uint8Array, result: CommandResult): CommandResult {
+  const mutationOutcome = bytes[66];
+  const targetSessionId = readWord(bytes, 68);
+  return {
+    ...result,
+    mutationOutcome: mutationOutcome >= 0 && mutationOutcome <= 255 ? Math.trunc(mutationOutcome) : 0,
+    targetSessionId: targetSessionId >= 0 && targetSessionId <= 4294967295 ? Math.trunc(targetSessionId) : 0,
+  };
+}
+
+function readError(bytes: Uint8Array, result: CommandResult): CommandResult {
+  const errorDomain = readWord(bytes, 42);
+  const errorCode = readWord(bytes, 46);
+  const reason = bytes[5];
+  return {
+    ...result,
+    errorDomain: errorDomain >= 0 && errorDomain <= 4294967295 ? Math.trunc(errorDomain) : 0,
+    errorCode: errorCode >= 0 && errorCode <= 4294967295 ? Math.trunc(errorCode) : 0,
+    reason: reason >= 0 && reason <= 255 ? Math.trunc(reason) : 0,
+  };
+}
+
 function decodeResult(bytes: Uint8Array): CommandResult | null {
   if (!validResult(bytes)) return null;
   const id = readU64(bytes, 6);
   if (id.hi === 0 && id.lo === 0) return null;
-  return {
-    source: bytes[1], id, operationEpoch: readU64(bytes, 14), operationRequest: readWord(bytes, 22),
-    mutationTicket: readU64(bytes, 26), operation: bytes[2], placement: bytes[3],
-    attachmentRequest: readWord(bytes, 34), placementRequest: readWord(bytes, 38),
-    attachmentEpoch: readU64(bytes, 50), placementEpoch: readU64(bytes, 58),
-    errorDomain: readWord(bytes, 42), errorCode: readWord(bytes, 46), reason: bytes[5],
-    focus: bytes[4], terminal: bytes.slice(68),
-  };
+  const correlation = readCorrelation(bytes, id);
+  const outcomes = readOutcomes(bytes, correlation);
+  const mutation = readMutation(bytes, outcomes);
+  return readError(bytes, mutation);
 }
 
 function acknowledge(result: CommandResult): Uint8Array {
@@ -128,5 +181,7 @@ export function receiveCommandResult(state: CommandResults, bytes: Uint8Array): 
 /// A failed read does not establish an operation outcome. The next wake may
 /// repeat this acknowledgement/read; it must never repeat the original action.
 export function failedCommandResults(state: CommandResults): ResultDecision {
-  return { state: { ...state, loading: false, deliveryNotice: asciiBytes("Command result unavailable. Work may still be running.") }, request: EMPTY };
+  const next = { ...state, loading: false, deliveryNotice: asciiBytes("Command result unavailable. Work may still be running.") };
+  if (state.refreshPending) return requestCommandResults(next);
+  return { state: next, request: EMPTY };
 }

@@ -25,6 +25,28 @@ const interaction = @import("../terminal_interaction.zig");
 const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
+
+test "projection refusal publishes newly retained completion independently from refusal flag" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    engine.creation.pending[0] = .{
+        .command_id = 77,
+        .operation = .success,
+        .operation_request = 9,
+        .projected_id = @splat(1),
+        .window = 0,
+        .window_epoch = engine.model.window_epochs[0],
+        .kind = .tab,
+        .origin = null,
+    };
+    try std.testing.expect(!engine.model.shared_workspace.refused);
+    try std.testing.expect(engine.creation.peekCompletion() == null);
+    try std.testing.expect(engine.projectionRefused());
+    try std.testing.expectEqual(@as(u64, 77), engine.creation.peekCompletion().?.command_id);
+    try std.testing.expectEqual(.success, engine.creation.peekCompletion().?.operation);
+    try std.testing.expectEqual(.refused, engine.creation.peekCompletion().?.placement);
+    try std.testing.expect(!engine.projectionRefused());
+}
 const pointer_input = @import("../pointer_input.zig");
 const update_module = @import("../update.zig");
 const provider_contract = @import("provider_contract");
@@ -170,6 +192,7 @@ pub const Engine = struct {
     remote_natural_keys_held: u8 = 0,
     input_suspended: bool = false,
     creation: durable_creation.Creation = .{},
+    session_handoff: ?u64 = null,
     last_workspace_refresh: ?std.Io.Timestamp = null,
     remote_pointer: @import("shipping_pointer.zig").State = .{},
 
@@ -272,19 +295,36 @@ pub const Engine = struct {
         });
         if (!handle.live()) {
             self.model.phux_connection_unavailable = true;
+            self.failSessionHandoff();
             return;
         }
         if (reconnect) {
             remote.reconnect(handle) catch {
                 self.model.phux_connection_unavailable = true;
                 fx.closeChannel(support.phux_channel_key);
+                self.failSessionHandoff();
+                return;
             };
         } else {
             remote.open(handle) catch {
                 self.model.phux_connection_unavailable = true;
                 fx.closeChannel(support.phux_channel_key);
+                self.failSessionHandoff();
+                return;
             };
         }
+        if (self.session_handoff) |command_id| {
+            if (!self.creation.bindSessionConnection(self.model, command_id)) {
+                self.failSessionHandoff();
+                return;
+            }
+            self.session_handoff = null;
+        }
+    }
+
+    fn failSessionHandoff(self: *Engine) void {
+        if (self.session_handoff) |id| self.creation.failSessionAttempt(self.model, id);
+        self.session_handoff = null;
     }
 
     fn openPointerChannel(self: *Engine, fx: anytype, on_event: anytype) void {
@@ -319,7 +359,7 @@ pub const Engine = struct {
         switch (event.kind) {
             .data => changed = self.drainPhux(fx),
             .closed, .rejected => {
-                self.providerDisconnected();
+                self.providerDisconnectedExcept(self.session_handoff);
                 changed = true;
                 remote.stop();
                 if (model.phux_reconnect_after_close) {
@@ -378,6 +418,7 @@ pub const Engine = struct {
     fn applyReadiness(self: *Engine, delta: support.SyncDelta) bool {
         const model = self.model;
         var changed = self.pumpOperations() or delta.metadata_changed;
+        changed = self.creation.observeSessionAttachment(model) or changed;
         model.reconcileRemoteTerminals();
         if (delta.ready_published) {
             changed = model.phux_connection_unavailable or changed;
@@ -395,11 +436,10 @@ pub const Engine = struct {
         const remote = model.phux() orelse return false;
         var changed = false;
         while (remote.takeOperationResult()) |result| {
-            if (model.shared_workspace.completeSubscription(result, remote.workspaceSnapshot().request_id)) {
-                changed = true;
-                continue;
-            }
             _ = self.creation.complete(model, result);
+            // Subscription restoration may share the provider's deduplicated
+            // attach request. Both exact owners must observe its completion.
+            _ = model.shared_workspace.completeSubscription(result, remote.workspaceSnapshot().request_id);
             changed = true;
         }
         return changed;
@@ -408,18 +448,31 @@ pub const Engine = struct {
     fn synchronizeSharedWorkspace(self: *Engine) bool {
         const model = self.model;
         const remote = model.phux() orelse return false;
-        self.sharedContext() catch return self.refuseSharedWorkspace();
+        self.sharedContext() catch return self.projectionRefused();
         var changed = model.shared_mutations.pump(model);
         changed = self.creation.pump(model) or changed;
-        const generation = model.shared_workspace.projection_generation;
-        const applied = model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch()) catch
-            return self.refuseSharedWorkspace();
-        if (generation != model.shared_workspace.projection_generation) self.split_drag = null;
-        changed = model.shared_workspace.selectDesired(model) or changed;
+        changed = (self.projectSharedWorkspace() catch return self.projectionRefused()) or changed;
         self.admitDesiredTerminal();
         if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
         model.shared_workspace.subscribe(model);
-        return applied or changed;
+        return changed;
+    }
+
+    fn projectSharedWorkspace(self: *Engine) !bool {
+        const model = self.model;
+        const remote = model.phux().?;
+        const generation = model.shared_workspace.projection_generation;
+        var changed = try model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch());
+        if (generation != model.shared_workspace.projection_generation) self.split_drag = null;
+        changed = model.shared_workspace.selectDesired(model) or changed;
+        changed = self.creation.observeProjection(model) or changed;
+        // A session continuation can offer its first hint only after the new
+        // session projects. Consume it now; a provider wake is not guaranteed.
+        if (model.shared_workspace.placement_hint != null or model.shared_workspace.desired_terminal != null) {
+            changed = (try model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch())) or changed;
+            changed = self.creation.observeProjection(model) or changed;
+        }
+        return changed;
     }
 
     fn admitDesiredTerminal(self: *Engine) void {
@@ -456,6 +509,12 @@ pub const Engine = struct {
         return changed;
     }
 
+    fn projectionRefused(self: *Engine) bool {
+        var changed = self.creation.projectionFailed(self.model);
+        changed = self.model.shared_mutations.projectionFailed(self.model) or changed;
+        return self.refuseSharedWorkspace() or changed;
+    }
+
     /// The real runtime timer and explicit navigation share a bounded refresh;
     /// UI invalidations cannot turn it into a request/reply spin loop.
     pub fn refreshWorkspace(self: *Engine) void {
@@ -470,10 +529,21 @@ pub const Engine = struct {
     }
 
     fn providerDisconnected(self: *Engine) void {
+        self.providerDisconnectedExcept(null);
+        self.session_handoff = null;
+    }
+
+    fn providerDisconnectedExcept(self: *Engine, handoff: ?u64) void {
         self.cancelSplitDrag();
         self.model.captureRemotePaint();
+        if (self.model.phux()) |remote| {
+            remote.stop();
+            while (remote.takeOperationResult()) |result| {
+                _ = self.creation.completeDisconnected(self.model, result);
+            }
+        }
         self.model.rejectAttachmentContext();
-        self.creation.disconnect(self.model);
+        self.creation.disconnectExcept(self.model, handoff);
         self.model.shared_mutations.disconnect(self.model);
         self.last_workspace_refresh = null;
     }
@@ -669,6 +739,7 @@ pub const Engine = struct {
         return switch (request.target) {
             .tab => |target| self.applyTabTarget(request.id, target),
             .catalog => |target| self.applyCatalogTarget(request.id, target, fx),
+            .operation => |operation| self.applyOperationTarget(request.id, operation, fx),
         };
     }
 
@@ -683,14 +754,14 @@ pub const Engine = struct {
 
     fn applyCatalogTarget(self: *Engine, id: u64, target: tab_commands.catalog.Target, fx: anytype) tab_commands.Receipt {
         const destination = target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
-        const status = self.admitCatalogSelection(destination, fx) orelse return self.tabReceipt(id, .unavailable);
+        const status = self.admitCatalogSelection(id, destination, fx) orelse return self.tabReceipt(id, .unavailable);
         self.revision +%= 1;
         var receipt = self.tabReceipt(id, .none);
         receipt.status = status;
         return receipt;
     }
 
-    fn admitCatalogSelection(self: *Engine, destination: model_module.PaletteDestination, fx: anytype) ?tab_commands.Status {
+    fn admitCatalogSelection(self: *Engine, command_id: u64, destination: model_module.PaletteDestination, fx: anytype) ?tab_commands.Status {
         // Destination is resolved from full identity and its current placement.
         // A rejected stale identity cannot cancel an earlier pending selection.
         switch (destination) {
@@ -699,12 +770,22 @@ pub const Engine = struct {
                 return .applied;
             },
             .available_terminal => |ref| {
-                if (!self.selectAvailableNavigation(ref, fx)) return null;
-                return .accepted_pending;
+                const remote = self.model.phux() orelse return null;
+                if (remote.terminalSession(ref) == remote.selectedSessionId()) {
+                    self.creation.requestAttachCorrelated(self.model, ref, command_id) catch return null;
+                    self.model.shared_workspace.desired_terminal = null;
+                    self.creation.supersedeFocusExceptCommand(command_id);
+                    return .accepted_pending;
+                }
+                const session = remote.terminalSession(ref) orelse return null;
+                return self.admitSessionCommand(command_id, session, ref, fx);
             },
             .session => |session| {
-                if (!self.selectSessionNavigation(session, fx)) return null;
-                return self.sessionSelectionStatus(session);
+                if (self.sessionSelectionStatus(session) == .applied) {
+                    self.supersedeSelection();
+                    return .applied;
+                }
+                return self.admitSessionCommand(command_id, session, null, fx);
             },
         }
     }
@@ -712,12 +793,111 @@ pub const Engine = struct {
     fn sessionSelectionStatus(self: *const Engine, id: u32) tab_commands.Status {
         const remote = self.model.phuxConst() orelse return .accepted_pending;
         if (remote.selectedSessionId() != id) return .accepted_pending;
+        if (remote.session_id != null and remote.session_id != id) return .accepted_pending;
         if (remote.state() != .attached) return .accepted_pending;
         if (self.model.phux_reconnect_after_close) return .accepted_pending;
         if (self.model.shared_workspace.session != id) return .accepted_pending;
         if (self.model.shared_workspace.epoch != remote.connectionEpoch()) return .accepted_pending;
         if (self.model.shared_workspace.refused) return .accepted_pending;
         return .applied;
+    }
+
+    fn admitSessionCommand(self: *Engine, command_id: u64, session: u32, terminal: ?TerminalRef, fx: anytype) ?tab_commands.Status {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPhux")) return null;
+        const remote = self.model.phux() orelse return null;
+        self.creation.reserveSessionCorrelated(self.model, session, terminal, command_id) catch return null;
+        const previous = remote.session_id;
+        _ = remote.selectSession(session) catch {
+            _ = self.creation.cancelSessionReservation(command_id);
+            return null;
+        };
+        self.model.shared_workspace.leaveSession(self.model) catch {
+            remote.session_id = previous;
+            _ = self.creation.cancelSessionReservation(command_id);
+            return null;
+        };
+        self.session_handoff = command_id;
+        self.creation.supersedeFocusExceptCommand(command_id);
+        if (!fx.restartPhux(self)) self.failSessionHandoff();
+        return .accepted_pending;
+    }
+
+    fn applyOperationTarget(self: *Engine, id: u64, operation: protocol.Intent, fx: anytype) tab_commands.Receipt {
+        if (operation.expected_revision != self.revision) return self.tabReceipt(id, .stale_target);
+        const previous = self.model.active_window;
+        if (operation.window != 255) {
+            if (!self.model.windowOpen(operation.window)) return self.tabReceipt(id, .stale_target);
+            self.model.active_window = operation.window;
+        }
+        const status = self.executeOperation(id, operation, fx) orelse {
+            self.model.active_window = previous;
+            return self.tabReceipt(id, .unavailable);
+        };
+        self.revision +%= 1;
+        var receipt = self.tabReceipt(id, .none);
+        receipt.status = status;
+        return receipt;
+    }
+
+    fn executeOperation(self: *Engine, id: u64, operation: protocol.Intent, fx: anytype) ?tab_commands.Status {
+        if (self.model.phux() == null) {
+            if (!self.applyModelIntent(operation, fx)) return null;
+            return .applied;
+        }
+        self.admitDurableOperation(id, operation) catch return null;
+        if (operationSupersedesFocus(operation)) {
+            self.model.shared_workspace.desired_terminal = null;
+            self.creation.supersedeFocusExceptCommand(id);
+        }
+        return .accepted_pending;
+    }
+
+    fn admitDurableOperation(self: *Engine, id: u64, operation: protocol.Intent) !void {
+        switch (operation.kind) {
+            .new_terminal => try self.creation.requestCorrelated(self.model, .tab, id),
+            .new_window => try self.creation.requestCorrelated(self.model, .window, id),
+            .close_tab => {
+                const workspace = self.model.ws();
+                if (operation.argument >= workspace.tab_count) return error.StaleTarget;
+                const shared_id = workspace.shared_ids[operation.argument] orelse return error.StaleTarget;
+                try self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
+            },
+            .native_command => try self.admitDurableNative(id, operation.argument),
+            else => return error.InvalidCommand,
+        }
+    }
+
+    fn admitDurableNative(self: *Engine, id: u64, command: u8) !void {
+        switch (command) {
+            3 => {
+                const ref = self.model.focusedTerminalRef() orelse return error.StaleTarget;
+                try self.model.shared_mutations.requestRemoveCorrelated(self.model, ref, id);
+            },
+            4 => try self.creation.requestCorrelated(self.model, .split_right, id),
+            5 => try self.creation.requestCorrelated(self.model, .split_down, id),
+            8, 9 => try self.reorderCorrelated(id, command == 9),
+            else => return error.InvalidCommand,
+        }
+    }
+
+    fn reorderCorrelated(self: *Engine, command_id: u64, right: bool) !void {
+        const model = self.model;
+        const id = model.ws().shared_ids[model.ws().selected_tab] orelse return error.StaleTarget;
+        const windows = model.phux().?.workspaceSnapshot().windows;
+        for (windows, 0..) |window, index| {
+            if (!std.mem.eql(u8, &window.id, &id)) continue;
+            if ((!right and index == 0) or (right and index + 1 == windows.len)) return error.StaleTarget;
+            const target = if (right) index + 1 else index - 1;
+            try model.shared_mutations.requestReorderCorrelated(model, id, @intCast(target), command_id);
+            return;
+        }
+        return error.StaleTarget;
+    }
+
+    fn operationSupersedesFocus(operation: protocol.Intent) bool {
+        if (operation.kind != .native_command) return true;
+        return operation.argument >= 3 and operation.argument <= 5;
     }
 
     fn tabReceipt(self: *Engine, id: u64, reason: tab_commands.Reason) tab_commands.Receipt {
@@ -818,7 +998,7 @@ pub const Engine = struct {
     pub fn restartNavigationConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
         const model = self.model;
         const remote = model.phux() orelse return false;
-        self.providerDisconnected();
+        self.providerDisconnectedExcept(self.session_handoff);
         remote.stop();
         model.phux_connection_unavailable = false;
         if (fx.phuxChannelLive()) {
@@ -866,7 +1046,7 @@ pub const Engine = struct {
         if (model.phux() != null) {
             if (index >= model.ws().tab_count) return false;
             const id = model.ws().shared_ids[index] orelse return false;
-            model.shared_mutations.requestRemoveWindow(model, id) catch return false;
+            model.shared_mutations.requestRemoveWindowNative(model, id) catch return false;
             self.supersedeSelection();
             return true;
         }
@@ -1017,7 +1197,7 @@ pub const Engine = struct {
             if (!std.mem.eql(u8, &window.id, &id)) continue;
             if ((!right and index == 0) or (right and index + 1 == windows.len)) return false;
             const target = if (right) index + 1 else index - 1;
-            model.shared_mutations.requestReorder(model, id, @intCast(target)) catch return false;
+            model.shared_mutations.requestReorderNative(model, id, @intCast(target)) catch return false;
             return true;
         }
         return false;
@@ -1153,7 +1333,7 @@ pub const Engine = struct {
     fn closeFocusedPane(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
         if (self.model.phux() != null) {
-            self.model.shared_mutations.requestRemove(self.model, ref) catch return false;
+            self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;
             self.supersedeSelection();
             return true;
         }
@@ -1644,7 +1824,7 @@ pub const Engine = struct {
         tree.setFraction(drag.node, drag.original_fraction);
         if (!commit or ratio == drag.original_fraction) return ratio != drag.original_fraction;
         const path = @import("../shared_workspace.zig").splitPath(tree, drag.node) catch return false;
-        self.model.shared_mutations.requestResize(self.model, id, path.bits, path.len, ratio) catch {
+        self.model.shared_mutations.requestResizeNative(self.model, id, path.bits, path.len, ratio) catch {
             self.model.shared_workspace.refused = true;
         };
         return true;

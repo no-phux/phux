@@ -22,6 +22,7 @@ const Pending = struct {
     mutation_request: u32 = 0,
     outcome: Outcome = .refused,
     reason: results.Reason = .mutation_refused,
+    projection_failed: bool = false,
 };
 
 pub const Coordinator = struct {
@@ -70,7 +71,7 @@ pub const Coordinator = struct {
                     .refused => .refused,
                     .unknown_outcome => .unknown,
                 },
-                .placement = .not_requested,
+                .placement = if (entry.projection_failed) .refused else .not_requested,
                 .reason = entry.reason,
             };
         }
@@ -79,6 +80,24 @@ pub const Coordinator = struct {
 
     pub fn ackCompletion(self: *Coordinator, command_id: u64) bool {
         return self.acknowledge(command_id, .ui);
+    }
+
+    /// The engine calls this in the same transaction as a failed real apply,
+    /// before the bridge can consume the matching shared-edit completion.
+    pub fn projectionFailed(self: *Coordinator, model: anytype) bool {
+        const remote = model.phux() orelse return false;
+        const snapshot = remote.workspaceSnapshot();
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.command_id == null or entry.stage != .complete) continue;
+            if (entry.outcome != .confirmed or entry.epoch != remote.connectionEpoch()) continue;
+            if (entry.mutation_request != snapshot.request_id) continue;
+            changed = !entry.projection_failed or changed;
+            entry.projection_failed = true;
+            entry.reason = .projection_refused;
+        }
+        return changed;
     }
 
     pub fn ackNativeCompletion(self: *Coordinator, ticket: u64) bool {

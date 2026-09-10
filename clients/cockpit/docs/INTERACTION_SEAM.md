@@ -121,8 +121,10 @@ not acquire the new connection's authority. Available rows require membership
 in the current provider catalog. Resolution also checks the placed replica's
 epoch before focusing it.
 
-The internal little-endian selection packet is version 1, kind (1 tab, 2
-catalog), command ID u64, then target bytes. Tab packets remain 32 bytes.
+The internal little-endian command packet is version 1, kind (1 tab, 2
+catalog, 3 operation), command ID u64, then target bytes. Kind 3 carries the
+12-byte revision-fenced intent for creation, split, close, or shared reorder.
+Tab packets remain 32 bytes.
 Catalog packets are at most 308 bytes; their target layout is:
 
 | Bytes | Meaning |
@@ -141,17 +143,78 @@ the compatibility positional navigation intent.
 The 27-byte receipt remains version, status, reason, command ID u64, sequence
 u64, revision u64. Status 1 is `applied`, 2 `rejected`, and 3
 `accepted_pending`; both non-rejections have reason zero. Applied means an
-existing presentation was selected synchronously, or the already confirmed
-current session was selected idempotently. Pending means attachment, shared
-admission, or session switching was accepted. It has a distinct core outcome
+existing presentation was selected synchronously, a local scratch command was
+applied, or the already confirmed current session was selected idempotently.
+Pending means durable creation, attachment, shared admission/edit, or session
+switching was accepted. It has a distinct core outcome
 and visible notice, and frees the admission FIFO slot.
 
-Pending continuations remain the existing native paths: a selected-session
-terminal uses `Creation.requestAttach` (or shared admission for a live replica),
-another-session terminal uses session switching plus `desired_terminal`, and a
-session-only target uses session switching. This receipt does not claim eventual
-execution/placement correlation or completion. Phux still owns confirmed shared
-topology; queueing provider work is not an applied presentation result.
+## Eventual outcomes and optional presentation
+
+`Creation.Pending` and `shared_mutations.Pending` reserve completion storage
+before provider effects. Each existing coordinator has 16 slots; an unconsumed
+completion still occupies its slot, but does not count as active work or reserve
+pane capacity. A full owner rejects a new command before dispatch. These are
+process-local receipts about Phux work, not a second durable work store.
+
+The original command ID follows creation, attachment, shared admission, and
+every retirement path. Original execution, follow-up resource attachment, and
+shared mutation retain their separate request IDs and connection epochs. A
+successful spawn remains successful if attachment or placement later fails.
+Matching provider evidence observed before disconnect is recorded before only
+the unresolved remainder becomes unknown. Missing confirmation never means
+rollback, destruction, or permission to retry the original command.
+
+Operation, shared-mutation confirmation, local placement, and optional focus
+are independent result fields. Publishing a selection/placement hint does not
+establish placement. Completion verifies the exact live terminal, winning
+shared topology, adopted projection, and native destination lifetime. A newer
+explicit selection can supersede focus without failing successful work or
+placement. Concurrent singleton hints are offered across projection passes.
+Unknown shared outcomes do not set the shared refusal flag.
+
+Session navigation reserves the same creation entry before leaving the old
+session. Only its explicit unbound handoff survives intentional teardown; the
+replacement epoch is bound once. The entry owns exact provider/host context and
+up to 4096 server-identity bytes (larger identities reject before effects).
+Confirmed attachment and a successful shared projection complete session-only
+selection, including an empty session. A terminal target continues attachment
+or admission in that same entry. Session lifecycle attachment is not a resource
+operation request; no resource request ID is fabricated for it.
+
+`cockpit.command-results` is an independent read/ack bridge slot. A request is
+`[1, 0]` to read, or version 1, source byte, command ID u64 to acknowledge a
+previously decoded result and read the next. Sources are UI creation (1), UI
+shared edit (2), and native shared edit (3). Native shared commands use existing
+coordinator tickets, in a separate namespace from full-u64 UI command IDs.
+Repeated acknowledgements are harmless; cancellation never cancels execution.
+
+An empty reply is `[1, 0]`. A result is a 74-byte little-endian header plus at
+most 273 bytes of full provider-qualified terminal identity:
+
+| Bytes | Meaning |
+|---|---|
+| 0..6 | Version, source, operation, placement, focus, typed reason |
+| 6..14, 14..22 | Command ID and original operation epoch u64 |
+| 22..26, 26..34 | Original request u32 and mutation ticket u64 |
+| 34..42 | Resource attachment and placement request IDs u32 |
+| 42..50 | Provider error domain and code u32 |
+| 50..66 | Attachment and placement epochs u64 |
+| 66, 67 | Optional mutation outcome (0 absent), reserved zero |
+| 68..72, 72..74 | Target session ID u32, terminal byte length u16 |
+
+Operation tags are success (1), refused/not confirmed (2), and unknown (3).
+Placement tags are placed (1), refused (2), destination lost (3), unknown (4),
+and not requested (5). Focus tags are focused (1), superseded (2), and not
+requested (3). Native retains the result until the compiled core decodes and
+acknowledges that exact source and command. Failed reads may be repeated;
+original commands are never automatically replayed.
+
+The core keeps a bounded 16-result recent history and one retained exception
+notice. Successful work stays quiet. Delivery errors have a separate transient
+notice; duplicate receipts cannot erase or roll back an operation exception.
+An invalidation arriving during a read schedules another read, so an empty
+in-flight reply cannot swallow the only completion wake.
 
 ## Acceptance evidence
 
