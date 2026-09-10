@@ -94,11 +94,64 @@ commands. The core cancels unsent selections on an unknown/malformed outcome,
 reports that uncertainty, and never automatically retries. A fresh explicit
 selection receives a new ID. Exhausted command IDs require a new app lifetime.
 
-This route selects an existing presentation synchronously. Durable creation,
-shared close, catalog navigation, and their placement continuations still use
-their existing contracts. Their later command receipts must distinguish
-admission from eventual execution/placement; queueing provider work is not an
-applied presentation result.
+## Provider-qualified catalog selection
+
+Catalog rows carry their own versioned opaque target bytes. Pointer and
+accessibility events capture those bytes from painted markup; keyboard submit
+uses the current highlighted row. The core copies a target into the same FIFO
+as tab selections. Filtering, pagination, metadata, and placement movement
+cannot turn a held target into a different resource. Native resolves current
+placement only after validating the full identity and its context. A retired
+identity or replaced provider/host/connection rejects before adopting focus or
+superseding earlier pending selection.
+
+The catalog target contains the complete provider-qualified `TerminalRef`, or
+the existing Phux session ID. Provider and host instance contexts are
+process-local monotonic u64 allocations, shared across provider constructors;
+exhaustion refuses a new instance rather than reusing a value. Connection epochs
+are checked u64 generations. No pointer, hash, JS number coercion, or display
+index participates in identity. Local terminal IDs retain all 64 bits, remote
+IDs retain their kind, ID, and up to 255 exact host bytes. These contexts are
+presentation authority for this process, never durable work IDs.
+
+Retained rows during reconnect keep the provenance of their old inventory:
+session catalogs retain their publication epoch, and placed terminals retain
+their published owner's epoch. An old row painted after reconnect starts must
+not acquire the new connection's authority. Available rows require membership
+in the current provider catalog. Resolution also checks the placed replica's
+epoch before focusing it.
+
+The internal little-endian selection packet is version 1, kind (1 tab, 2
+catalog), command ID u64, then target bytes. Tab packets remain 32 bytes.
+Catalog packets are at most 308 bytes; their target layout is:
+
+| Bytes | Meaning |
+|---|---|
+| 0, 1 | Target version 2; resource kind 0 local, 1 Phux terminal, 2 session |
+| 2..10 | Provider ID u64 |
+| 10..18, 18..26, 26..34 | Provider instance, host instance, inventory epoch u64 |
+| 34 onward | Local ID u64; or remote kind u32 + ID u32 + host length u8 + host bytes; or session ID u32 |
+
+Local host/epoch fields are zero. Catalog pages retain the revision/query/offset
+read fence and the 4096-byte response bound. A row record is display index u16,
+label length u8, target length u16, opaque target bytes, and bounded UTF-8 label.
+The index is only for page/display bookkeeping. The shipping core does not emit
+the compatibility positional navigation intent.
+
+The 27-byte receipt remains version, status, reason, command ID u64, sequence
+u64, revision u64. Status 1 is `applied`, 2 `rejected`, and 3
+`accepted_pending`; both non-rejections have reason zero. Applied means an
+existing presentation was selected synchronously, or the already confirmed
+current session was selected idempotently. Pending means attachment, shared
+admission, or session switching was accepted. It has a distinct core outcome
+and visible notice, and frees the admission FIFO slot.
+
+Pending continuations remain the existing native paths: a selected-session
+terminal uses `Creation.requestAttach` (or shared admission for a live replica),
+another-session terminal uses session switching plus `desired_terminal`, and a
+session-only target uses session switching. This receipt does not claim eventual
+execution/placement correlation or completion. Phux still owns confirmed shared
+topology; queueing provider work is not an applied presentation result.
 
 ## Acceptance evidence
 
@@ -130,11 +183,21 @@ The shipping extension tests exercise the compiled core and native bridge:
   and refusal without focus mutation.
 - `retired tab targets cannot alias reused IDs after allocation rollover`
   checks tab and window lifetime exhaustion.
+- `navigation held painted catalog target follows metadata filtering and window
+  movement` checks a compiled markup event across replacement pages and native
+  placement movement.
+- `navigation rejected captured identity preserves focus pending selection and
+  receipt slot` checks exact high command-ID bits and independent completion.
+- `navigation catalog receipts distinguish shared admission and current session
+  application` uses the Rust-produced provider fixtures for truthful admission.
+- `navigation retained rows cannot acquire replacement connection authority`
+  checks rows captured during reconnect before reused numeric IDs publish.
 
 The source-side `src/tests/navigation.test.mjs` suite also checks boot/transition
 command order and the exact navigation payload following the commit marker.
 `src/tests/tab-commands.test.mjs` checks FIFO capacity, captured-data ownership,
-exact receipt matching, unknown delivery, and command-ID carry/exhaustion.
+exact receipt matching, unknown delivery, command-ID carry/exhaustion, mixed
+tab/catalog ordering, and observably distinct pending admission.
 
 The first and third tests were observed failing against `81d78dff` before the
 fix. Run `just cockpit-test` for the same-checkout FFI and compiled-core gate.

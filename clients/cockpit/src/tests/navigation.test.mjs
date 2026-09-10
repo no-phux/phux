@@ -1,11 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialModel, update } from '../core.ts';
-import { navigationRequest, navigationPage, navigationIntent, snapshot } from '../protocol.ts';
+import { navigationRequest, navigationPage, snapshot } from '../protocol.ts';
 
 const bytes = text => new TextEncoder().encode(text);
 const text = value => new TextDecoder().decode(value);
 const revision = { hi: 0, lo: 7 };
+function target(index) {
+  const out = new Uint8Array(42);
+  out[0] = 2;
+  new DataView(out.buffer).setBigUint64(34, BigInt(index), true);
+  return out;
+}
 const step = (model, msg) => {
   const result = update(model, msg);
   return Array.isArray(result) ? result : [result, null];
@@ -20,7 +26,8 @@ function page(query = '', offset = 0, indices = [0, 1, 2, 3], total = 10, rev = 
   const head = navigationRequest(rev, offset, bytes(query));
   const rows = indices.map(index => {
     const label = bytes(`Window 2 · Phux · terminal ${index}`);
-    return [index % 256, Math.floor(index / 256), label.length, ...label];
+    const identity = target(index);
+    return [index % 256, Math.floor(index / 256), label.length, identity.length, 0, ...identity, ...label];
   }).flat();
   return new Uint8Array([...head, total % 256, Math.floor(total / 256), indices.length, ...rows]);
 }
@@ -70,14 +77,16 @@ test('new terminal and reconnect use the native adopted window', () => {
   }
 });
 
-test('whole catalog is paged and selection carries unfiltered identity under its revision', () => {
+test('whole catalog is paged and selection echoes the captured opaque target', () => {
   let model = open();
   [model] = step(model, { kind: 'navigation_loaded', body: page('', 0, [257, 400, 600, 700]) });
   assert.equal(model.paletteNext, true);
   assert.equal(model.palettePrevious, false);
-  const [closed, cmd] = step(model, { kind: 'palette_pick', index: 400 });
+  const [closed, cmd] = step(model, { kind: 'palette_pick', target: model.paletteRows[1].target });
   assert.equal(closed.paletteOpen, false);
-  assert.deepEqual(committedCommand(cmd).payload, navigationIntent(revision, 400));
+  assert.equal(committedCommand(cmd).name, 'cockpit.tab-command');
+  assert.equal(committedCommand(cmd).payload[1], 2);
+  assert.deepEqual(committedCommand(cmd).payload.subarray(10), target(400));
   const [loading, request] = step(model, { kind: 'palette_next' });
   assert.equal(loading.paletteRows.length, 0);
   assert.equal(loading.paletteOffset, 4);
@@ -89,7 +98,7 @@ test('whole catalog is paged and selection carries unfiltered identity under its
   [model] = step(model, { kind: 'palette_next' });
   [model] = step(model, { kind: 'navigation_loaded', body: page('', 8, [2000, 3000]) });
   assert.equal(model.paletteNext, false);
-  assert.deepEqual(committedCommand(step(model, { kind: 'palette_pick', index: 3000 })[1]).payload, navigationIntent(revision, 3000));
+  assert.deepEqual(committedCommand(step(model, { kind: 'palette_pick', target: model.paletteRows[1].target })[1]).payload.subarray(10), target(3000));
 });
 
 test('boot and every modality transition deliver committed context before effects', () => {
@@ -105,7 +114,7 @@ test('boot and every modality transition deliver committed context before effect
     [palette, { kind: 'settings_open' }, false, true],
     [palette, { kind: 'palette_close' }, false, false],
     [palette, { kind: 'palette_submit' }, false, false],
-    [palette, { kind: 'palette_pick', index: 0 }, false, false],
+    [palette, { kind: 'palette_pick', target: palette.paletteRows[0].target }, false, false],
     [settings, { kind: 'settings_close' }, false, false],
     [settings, { kind: 'settings_commit' }, false, false],
   ];
@@ -116,7 +125,7 @@ test('boot and every modality transition deliver committed context before effect
     assert.deepEqual(command.op === 'batch' ? command.cmds[0] : command, marker, msg.kind);
   }
   assert.equal(step(settings, { kind: 'settings_open' })[1], null);
-  assert.equal(step(palette, { kind: 'palette_pick', index: 999 })[1], null);
+  assert.equal(step(palette, { kind: 'palette_pick', target: new Uint8Array() })[1], null);
 });
 
 test('stale revision, query, and page replies cannot replace current rows', () => {
@@ -126,7 +135,7 @@ test('stale revision, query, and page replies cannot replace current rows', () =
   }
   [model] = step(model, { kind: 'navigation_loaded', body: page('wanted', 4, [300], 5) });
   assert.equal(model.paletteRows[0].index, 300);
-  assert.equal(step(model, { kind: 'palette_pick', index: 9 })[1], null);
+  assert.equal(step(model, { kind: 'palette_pick', target: new Uint8Array(299) })[1], null);
 });
 
 test('arrow navigation crosses page boundaries in reading order', () => {
@@ -143,15 +152,32 @@ test('arrow navigation crosses page boundaries in reading order', () => {
   assert.equal(model.paletteRows[0].highlighted, false);
 });
 
-test('catalog invalidation immediately withdraws selectable rows', () => {
+test('catalog invalidation fences page reads but cannot retarget a held painted action', () => {
   let model = open();
   [model] = step(model, { kind: 'navigation_loaded', body: page() });
+  const held = model.paletteRows[1].target;
   const event = new Uint8Array(18); event[0] = 1; event[1] = 1; event[2] = 2; event[10] = 8;
   [model] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: event, droppedPending: 0, droppedTotal: 0 });
   assert.equal(model.paletteRows.length, 0);
   const stale = step(model, { kind: 'navigation_loaded', body: page() })[0];
   assert.equal(stale.paletteRows.length, 0);
-  assert.equal(step(model, { kind: 'palette_pick', index: 0 })[1], null);
+  assert.equal(step(model, { kind: 'palette_submit' })[1], null);
+  const [, command] = step(model, { kind: 'palette_pick', target: held });
+  assert.deepEqual(committedCommand(command).payload.subarray(10), target(1));
+});
+
+test('held catalog target survives filtering and replacement rows and owns its bytes', () => {
+  const body = page();
+  let [model] = step(open(), { kind: 'navigation_loaded', body });
+  const held = model.paletteRows[2].target;
+  body.fill(255);
+  [model] = step(model, { kind: 'palette_edit', edit: { kind: 'insert_text', text: bytes('other') } });
+  model = { ...model, paletteQuery: bytes('other'), paletteOffset: 0, paletteLoading: true };
+  [model] = step(model, { kind: 'navigation_loaded', body: page('other', 0, [900], 1) });
+  const [, command] = step(model, { kind: 'palette_pick', target: held });
+  assert.deepEqual(committedCommand(command).payload.subarray(10), target(2));
+  const [, keyboard] = step(model, { kind: 'palette_submit' });
+  assert.deepEqual(committedCommand(keyboard).payload.subarray(10), target(900));
 });
 
 test('an unavailable engine withdraws claims about Phux connectivity', () => {

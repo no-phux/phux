@@ -9,7 +9,7 @@ export interface TabCommandState {
   readonly nextId: WireU64;
   readonly queue: readonly PendingTabCommand[];
   readonly lastId: WireU64;
-  /// idle / pending / applied / rejected / full / unknown / exhausted.
+  /// idle / pending / applied / rejected / full / unknown / exhausted / accepted_pending.
   readonly outcome: number;
 }
 
@@ -32,10 +32,10 @@ function incrementId(id: WireU64): WireU64 {
   return { hi: 0, lo: 0 }; // Exhausted sentinel, never allocated.
 }
 
-function packet(id: WireU64, target: Uint8Array): Uint8Array {
-  const bytes = new Uint8Array(32);
+function packet(id: WireU64, target: Uint8Array, kind: number): Uint8Array {
+  const bytes = new Uint8Array(10 + target.length);
   bytes[0] = 1;
-  bytes[1] = 1;
+  bytes[1] = kind;
   writeU32(bytes, 2, id.lo);
   writeU32(bytes, 6, id.hi);
   for (let i = 0; i < target.length; i += 1) bytes[10 + i] = target[i];
@@ -44,10 +44,19 @@ function packet(id: WireU64, target: Uint8Array): Uint8Array {
 
 export function enqueueTabCommand(state: TabCommandState, target: Uint8Array): TabCommandDecision {
   if (target.length !== 22) return { state: { ...state, outcome: 3 }, request: EMPTY };
+  return enqueueSelection(state, target, 1);
+}
+
+export function enqueueCatalogCommand(state: TabCommandState, target: Uint8Array): TabCommandDecision {
+  if (target.length < 38 || target.length > 298 || target[0] !== 2) return { state: { ...state, outcome: 3 }, request: EMPTY };
+  return enqueueSelection(state, target, 2);
+}
+
+function enqueueSelection(state: TabCommandState, target: Uint8Array, kind: number): TabCommandDecision {
   if (state.queue.length >= 16) return { state: { ...state, outcome: 4 }, request: EMPTY };
   const id = state.nextId;
   if (id.hi === 0 && id.lo === 0) return { state: { ...state, outcome: 6 }, request: EMPTY };
-  const bytes = packet(id, target);
+  const bytes = packet(id, target, kind);
   const queue: readonly PendingTabCommand[] = [...state.queue, { id, bytes }];
   return { state: { ...state, nextId: incrementId(id), queue, outcome: 1 }, request: state.queue.length === 0 ? bytes : EMPTY };
 }
@@ -58,12 +67,16 @@ export function receiveTabReceipt(state: TabCommandState, bytes: Uint8Array): Ta
   const id = readU64(bytes, 3);
   if (!sameU64(id, state.queue[0].id)) return unknownTabCommand(state);
   const queue = state.queue.slice(1);
-  return { state: { ...state, queue, lastId: id, outcome: bytes[1] === 1 ? 2 : 3 }, request: queue.length === 0 ? EMPTY : queue[0].bytes };
+  let outcome = 3;
+  if (bytes[1] === 1) outcome = 2;
+  if (bytes[1] === 3) outcome = 7;
+  return { state: { ...state, queue, lastId: id, outcome }, request: queue.length === 0 ? EMPTY : queue[0].bytes };
 }
 
 function validReceipt(bytes: Uint8Array): boolean {
   if (bytes.length !== 27 || bytes[0] !== 1) return false;
   if (bytes[1] === 1) return bytes[2] === 0;
+  if (bytes[1] === 3) return bytes[2] === 0;
   return bytes[1] === 2 && bytes[2] >= 1 && bytes[2] <= 3;
 }
 

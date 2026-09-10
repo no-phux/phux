@@ -97,7 +97,7 @@
                 height="32"
                 icon="terminal"
                 selected="{row.highlighted}"
-                on-press="palette_pick:{row.index}"
+                on-press="palette_pick:{row.target}"
               >{row.label}</list-item>
             </for>
           </list>

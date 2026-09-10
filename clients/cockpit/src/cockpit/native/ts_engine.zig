@@ -651,7 +651,6 @@ pub const Engine = struct {
 
     fn selectNavigation(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
         const destination = navigation.resolve(self.model, self.revision, intent.expected_revision, intent.index) orelse return false;
-        self.supersedeSelection();
         return switch (destination) {
             .placed_terminal => |placed| self.selectPlacedNavigation(placed, fx),
             .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
@@ -660,20 +659,70 @@ pub const Engine = struct {
     }
 
     pub fn applyTabCommand(self: *Engine, bytes: []const u8) tab_commands.Receipt {
+        return self.applySelectionCommand(bytes, &NoShells{});
+    }
+
+    pub fn applySelectionCommand(self: *Engine, bytes: []const u8, fx: anytype) tab_commands.Receipt {
         defer self.syncRemoteFocus();
         self.sequence +%= 1;
         const request = tab_commands.decode(bytes) orelse return self.tabReceipt(0, .invalid_command);
-        const index = request.target.resolve(self.model) orelse return self.tabReceipt(request.id, .stale_target);
+        return switch (request.target) {
+            .tab => |target| self.applyTabTarget(request.id, target),
+            .catalog => |target| self.applyCatalogTarget(request.id, target, fx),
+        };
+    }
+
+    fn applyTabTarget(self: *Engine, id: u64, target: tab_commands.Target) tab_commands.Receipt {
+        const index = target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
         // Resolve every identity component BEFORE adopting the native window.
-        self.model.active_window = request.target.window;
+        self.model.active_window = target.window;
         _ = self.selectTab(index);
         self.revision +%= 1;
-        return self.tabReceipt(request.id, .none);
+        return self.tabReceipt(id, .none);
+    }
+
+    fn applyCatalogTarget(self: *Engine, id: u64, target: tab_commands.catalog.Target, fx: anytype) tab_commands.Receipt {
+        const destination = target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
+        const status = self.admitCatalogSelection(destination, fx) orelse return self.tabReceipt(id, .unavailable);
+        self.revision +%= 1;
+        var receipt = self.tabReceipt(id, .none);
+        receipt.status = status;
+        return receipt;
+    }
+
+    fn admitCatalogSelection(self: *Engine, destination: model_module.PaletteDestination, fx: anytype) ?tab_commands.Status {
+        // Destination is resolved from full identity and its current placement.
+        // A rejected stale identity cannot cancel an earlier pending selection.
+        switch (destination) {
+            .placed_terminal => |placed| {
+                if (!self.selectPlacedNavigation(placed, fx)) return null;
+                return .applied;
+            },
+            .available_terminal => |ref| {
+                if (!self.selectAvailableNavigation(ref, fx)) return null;
+                return .accepted_pending;
+            },
+            .session => |session| {
+                if (!self.selectSessionNavigation(session, fx)) return null;
+                return self.sessionSelectionStatus(session);
+            },
+        }
+    }
+
+    fn sessionSelectionStatus(self: *const Engine, id: u32) tab_commands.Status {
+        const remote = self.model.phuxConst() orelse return .accepted_pending;
+        if (remote.selectedSessionId() != id) return .accepted_pending;
+        if (remote.state() != .attached) return .accepted_pending;
+        if (self.model.phux_reconnect_after_close) return .accepted_pending;
+        if (self.model.shared_workspace.session != id) return .accepted_pending;
+        if (self.model.shared_workspace.epoch != remote.connectionEpoch()) return .accepted_pending;
+        if (self.model.shared_workspace.refused) return .accepted_pending;
+        return .applied;
     }
 
     fn tabReceipt(self: *Engine, id: u64, reason: tab_commands.Reason) tab_commands.Receipt {
         self.intent_refused = reason != .none;
-        return .{ .id = id, .reason = reason, .sequence = self.sequence, .revision = self.revision };
+        return .{ .id = id, .reason = reason, .status = if (reason == .none) .applied else .rejected, .sequence = self.sequence, .revision = self.revision };
     }
 
     fn selectTab(self: *Engine, index: u8) bool {
@@ -696,6 +745,7 @@ pub const Engine = struct {
         if (!workspace.selectTerminal(placed.terminal_ref)) return false;
         const previous = model.active_window;
         model.active_window = current.window;
+        self.supersedeSelection();
         pointer_input.endHiddenCaptures(model, fx);
         if (previous != current.window) self.showNavigationWindow(fx, current.window);
         return true;
@@ -712,6 +762,7 @@ pub const Engine = struct {
         if (self.selectCatalogSession(ref, fx)) |accepted| return accepted;
         if (self.creation.hasPendingTerminal(ref)) return false;
         self.creation.requestAttach(model, ref) catch return false;
+        self.creation.supersedeFocusExcept(ref);
         model.shared_workspace.desired_terminal = ref;
         return true;
     }
@@ -735,13 +786,16 @@ pub const Engine = struct {
         // acknowledge it without restarting the connection or flashing refusal.
         if (!changed) {
             self.refreshWorkspace();
+            self.supersedeSelection();
             return true;
         }
         self.model.shared_workspace.leaveSession(self.model) catch {
             _ = remote.selectSession(previous) catch {};
             return false;
         };
-        return fx.restartPhux(self);
+        const accepted = fx.restartPhux(self);
+        if (accepted) self.supersedeSelection();
+        return accepted;
     }
 
     fn reconnectNavigation(self: *Engine, fx: anytype) bool {
