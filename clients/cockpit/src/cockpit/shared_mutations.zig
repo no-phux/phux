@@ -267,14 +267,26 @@ pub const Coordinator = struct {
         return true;
     }
 
-    pub fn disconnect(self: *Coordinator, model: anytype) void {
-        _ = model;
+    /// Preserve replies already observed before teardown. This never advances
+    /// refresh into mutation and never submits provider work after stop.
+    pub fn completeDisconnected(self: *Coordinator, model: anytype) void {
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
             if (entry.stage == .complete) continue;
-            entry.outcome = .unknown_outcome;
-            entry.reason = .disconnected;
-            entry.stage = .complete;
+            if (!completeObserved(model, entry)) {
+                entry.outcome = .unknown_outcome;
+                entry.reason = .disconnected;
+                entry.stage = .complete;
+            }
+            if (entry.outcome == .refused) reportRefusal(model);
+            if (!entry.retained) slot.* = null;
+        }
+    }
+
+    pub fn disconnect(self: *Coordinator, model: anytype) void {
+        self.completeDisconnected(model);
+        for (&self.pending) |*slot| {
+            const entry = slot.* orelse continue;
             if (entry.command_id == null) slot.* = null;
         }
     }
@@ -318,6 +330,7 @@ fn validateContext(model: anytype, session: u32, epoch: u64) !void {
 }
 
 fn advance(model: anytype, entry: *Pending) !void {
+    if (completeObserved(model, entry)) return;
     try validateContext(model, entry.mutation.session_id, entry.epoch);
     const remote = model.phux().?;
     const snapshot = remote.workspaceSnapshot();
@@ -337,6 +350,33 @@ fn advance(model: anytype, entry: *Pending) !void {
         },
         .complete => {},
     }
+}
+
+fn completeObserved(model: anytype, entry: *Pending) bool {
+    if (entry.stage != .mutating) return false;
+    const remote = model.phux() orelse return false;
+    if (remote.connectionEpoch() != entry.epoch) return false;
+    const snapshot = remote.workspaceSnapshot();
+    if (snapshot.session_id != entry.mutation.session_id) return false;
+    if (snapshot.request_id != entry.mutation_request) return false;
+    const outcome = observedOutcome(snapshot.status) orelse return false;
+    entry.outcome = outcome;
+    entry.reason = switch (outcome) {
+        .confirmed => .completed,
+        .refused => .mutation_not_confirmed,
+        .unknown_outcome => .mutation_unknown,
+    };
+    entry.stage = .complete;
+    return true;
+}
+
+fn observedOutcome(status: workspace.Status) ?Outcome {
+    return switch (status) {
+        .confirmed => .confirmed,
+        .refused => .refused,
+        .unknown_outcome => .unknown_outcome,
+        .idle, .pending => null,
+    };
 }
 
 fn beginRefresh(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending) !void {

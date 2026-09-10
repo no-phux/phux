@@ -42,6 +42,8 @@ pub const Result = struct {
     placement_request_id: u32 = 0,
     placement_connection_epoch: u64 = 0,
     mutation_ticket: u64 = 0,
+    /// Shared admission evidence may be known even when native placement is not.
+    mutation_outcome: ?Operation = null,
     attach_request_id: u32 = 0,
     attach_connection_epoch: u64 = 0,
     error_domain: u32 = 0,

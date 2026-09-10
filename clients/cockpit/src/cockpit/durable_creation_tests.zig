@@ -909,3 +909,36 @@ test "saturated creation destination lifetime rejects before provider effects" {
     try testing.expectEqual(@as(u32, 0), model.phux().?.host.operation_ledger.last_id);
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
 }
+
+test "creation disconnect preserves already observed shared refusal or confirmation before pump" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    for ([_]bool{ false, true }) |confirmed| {
+        const engine = try start();
+        defer engine.destroy();
+        const model = engine.model;
+        const remote = model.phux().?;
+        try engine.creation.requestCorrelated(model, .tab, result_command);
+        try feed(engine, "spawn-local.bin");
+        try feed(engine, "local-ready.bin");
+        try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+        try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+        try drain(engine);
+        if (confirmed) {
+            try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+            try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+        } else {
+            try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
+            try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
+        }
+        _ = try remote.drainReadiness();
+        engine.creation.disconnect(model);
+        const result = engine.creation.peekCompletion().?;
+        try testing.expectEqual(.success, result.operation);
+        const expected: @import("command_results.zig").Placement = if (confirmed) .unknown else .refused;
+        try testing.expectEqual(expected, result.placement);
+        try testing.expectEqual(confirmed, result.mutation_outcome.? == .success);
+        try testing.expectEqual(@as(u32, 3), result.placement_request_id);
+        try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
+        try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    }
+}

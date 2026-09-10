@@ -18,6 +18,7 @@ const Pending = struct {
     projected_id: ?[16]u8 = null,
     placement_request: u32 = 0,
     mutation_identity: u64 = 0,
+    mutation_outcome: ?results.Operation = null,
     attach_request: u32 = 0,
     error_domain: u32 = 0,
     error_code: u32 = 0,
@@ -222,6 +223,15 @@ pub const Creation = struct {
         }
     }
 
+    /// A newly accepted spawn has a command ID before it has terminal identity.
+    pub fn supersedeFocusExceptCommand(self: *Creation, command_id: u64) void {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.command_id == command_id) continue;
+            entry.may_focus = false;
+        }
+    }
+
     /// Called by the engine's focus synchronization, including local gestures.
     /// Once the user leaves, returning before completion does not revive focus
     /// authority for an earlier command.
@@ -265,11 +275,12 @@ pub const Creation = struct {
     }
 
     pub fn disconnect(self: *Creation, model: *Model) void {
+        model.shared_mutations.completeDisconnected(model);
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
             if (entry.completion != null) continue;
-            retireMutation(model, entry);
-            finishFailure(model, entry, .unknown, .disconnected);
+            const child = retireMutation(model, entry);
+            finishRetirement(model, entry, child, .disconnected);
             clearLegacy(slot);
         }
     }
@@ -311,11 +322,34 @@ fn clearLegacy(slot: *?Pending) void {
     if (slot.*.?.command_id == null) slot.* = null;
 }
 
-fn retireMutation(model: *Model, entry: *Pending) void {
-    const ticket = entry.mutation_ticket orelse return;
-    entry.placement_request = model.shared_mutations.creationRequest(ticket);
+fn retireMutation(model: *Model, entry: *Pending) ?shared_mutations.Completion {
+    const ticket = entry.mutation_ticket orelse return null;
+    const completion = model.shared_mutations.takeCreationCompletion(ticket);
+    if (completion) |value| {
+        captureMutationCompletion(entry, value);
+    } else entry.placement_request = model.shared_mutations.creationRequest(ticket);
     model.shared_mutations.forget(ticket);
     entry.mutation_ticket = null;
+    return completion;
+}
+
+fn captureMutationCompletion(entry: *Pending, completion: shared_mutations.Completion) void {
+    entry.placement_request = completion.request_id;
+    entry.mutation_outcome = switch (completion.outcome) {
+        .confirmed => .success,
+        .refused => .refused,
+        .unknown_outcome => .unknown,
+    };
+}
+
+fn finishRetirement(model: *Model, entry: *Pending, child: ?shared_mutations.Completion, reason: results.Reason) void {
+    if (child) |completion| {
+        if (completion.outcome == .refused) {
+            finishFailure(model, entry, .refused, completion.reason);
+            return;
+        }
+    }
+    finishFailure(model, entry, .unknown, reason);
 }
 
 fn recordCompletion(entry: *Pending, placement: results.Placement, focus: results.Focus, reason: results.Reason) void {
@@ -328,6 +362,7 @@ fn recordCompletion(entry: *Pending, placement: results.Placement, focus: result
         .placement_request_id = entry.placement_request,
         .placement_connection_epoch = if (entry.mutation_identity != 0) entry.epoch else 0,
         .mutation_ticket = entry.mutation_identity,
+        .mutation_outcome = entry.mutation_outcome,
         .attach_request_id = entry.attach_request,
         .attach_connection_epoch = if (entry.attach_request != 0) entry.epoch else 0,
         .error_domain = entry.error_domain,
@@ -473,8 +508,8 @@ fn acceptIdentity(entry: *Pending, terminal: ?TerminalRef) !void {
 fn finishPlacement(model: *Model, entry: *Pending) bool {
     const remote = model.phux() orelse return false;
     if (!contextCurrent(model, entry.*, remote.connectionEpoch())) {
-        retireMutation(model, entry);
-        finishFailure(model, entry, .unknown, .context_changed);
+        const child = retireMutation(model, entry);
+        finishRetirement(model, entry, child, .context_changed);
         return true;
     }
     if (entry.projected_id != null) return false;
@@ -580,7 +615,7 @@ fn finishMutationTracked(model: anytype, entry: *Pending, ticket: u64) bool {
     if (!selectionSlotAvailable(model, entry.*)) return false;
     const completion = model.shared_mutations.takeCreationCompletion(ticket) orelse return false;
     entry.mutation_ticket = null;
-    entry.placement_request = completion.request_id;
+    captureMutationCompletion(entry, completion);
     if (completion.outcome != .confirmed) {
         finishFailure(model, entry, if (completion.outcome == .unknown_outcome) .unknown else .refused, completion.reason);
         return true;
@@ -1057,6 +1092,19 @@ test "superseding older focus preserves newly admitted terminal focus" {
     const newer: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 10 } } };
     creation.pending[1].?.terminal = newer;
     creation.supersedeFocusExcept(newer);
+    try testing.expect(!creation.pending[0].?.may_focus);
+    try testing.expect(creation.pending[1].?.may_focus);
+}
+
+test "command-qualified focus supersession preserves a new spawn without terminal identity" {
+    const testing = @import("std").testing;
+    var creation: Creation = .{};
+    creation.pending[0] = ConfirmationFixture.entry();
+    creation.pending[0].?.command_id = 1;
+    creation.pending[0].?.terminal = null;
+    creation.pending[1] = creation.pending[0];
+    creation.pending[1].?.command_id = 2;
+    creation.supersedeFocusExceptCommand(2);
     try testing.expect(!creation.pending[0].?.may_focus);
     try testing.expect(creation.pending[1].?.may_focus);
 }
