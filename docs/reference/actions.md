@@ -22,7 +22,8 @@ The **Palette** column is the command-palette section the action is offered unde
 |---|---|---|---|
 | `split-pane` | Pane | `direction` = `horizontal` \| `vertical` | Split the focused pane side-by-side (vertical divider) |
 | `kill-pane` | Pane |  | Close the focused pane |
-| `new-window` | Window |  | Open a new window |
+| `new-window` | Window | `cwd?` (working directory on the attached server's host) | Open a new window |
+| `go-to-directory` | Window | `path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory) | Browse directories on the attached server's host and open a new window in one |
 | `kill-window` | Window |  | Close the active window and all its panes |
 | `next-window` | Window |  | Switch to the next window |
 | `previous-window` | Window |  | Switch to the previous window |

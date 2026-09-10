@@ -13,20 +13,21 @@ use super::frame::{
     MAX_INPUT_TERMINAL_REPLY_BYTES, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
     SpawnResource, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
     TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
-    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
-    TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK,
-    TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE,
-    TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
-    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
-    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event, decode_attach_target,
-    decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_bootstrap_stream_profile, decode_command, decode_command_result, decode_env,
-    decode_focus_event, decode_key_event, decode_metadata_scope_key, decode_mouse_event,
-    decode_move_result, decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id,
-    decode_string_list, decode_terminal_id, decode_viewport_info,
+    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_DIRECTORY_LISTING,
+    TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
+    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
+    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
+    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
+    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG,
+    TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT,
+    TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
+    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event,
+    decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
+    decode_bootstrap_stream_profile, decode_command, decode_command_result,
+    decode_directory_listing, decode_env, decode_focus_event, decode_key_event,
+    decode_list_directory, decode_metadata_scope_key, decode_mouse_event, decode_move_result,
+    decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id, decode_string_list,
+    decode_terminal_id, decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::caps::{
@@ -394,6 +395,14 @@ impl<'a> Decoder<'a> {
             TYPE_METADATA_CHANGED => self.decode_metadata_changed(),
             TYPE_METADATA_VALUE => self.decode_metadata_value(),
             TYPE_METADATA_KEYS => self.decode_metadata_keys(),
+            TYPE_LIST_DIRECTORY => {
+                let (request_id, path) = decode_list_directory(self)?;
+                Ok(FrameKind::ListDirectory { request_id, path })
+            }
+            TYPE_DIRECTORY_LISTING => {
+                let (request_id, result) = decode_directory_listing(self)?;
+                Ok(FrameKind::DirectoryListing { request_id, result })
+            }
             TYPE_SPAWN_RESOURCE => self.decode_spawn_terminal(),
             TYPE_RESOURCE_SPAWNED => self.decode_terminal_spawned(),
             TYPE_MOVE_RESOURCE => self.decode_move_terminal(),

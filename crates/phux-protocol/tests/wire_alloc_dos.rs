@@ -122,6 +122,21 @@ fn metadata_keys_huge_count_does_not_over_reserve() {
 }
 
 #[test]
+fn directory_listing_huge_entry_count_does_not_over_reserve() {
+    // DIRECTORY_LISTING (0xD3): the ENTRIES field (id 4) value is a
+    // positional u32 count + (name, flags) pairs. Declare count = u32::MAX
+    // inside a tiny field.
+    let mut entries_value = Vec::new();
+    entries_value.extend_from_slice(&u32::MAX.to_be_bytes());
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
+    tlv_field(&mut fields, 2, b"/"); // path
+    tlv_field(&mut fields, 4, &entries_value); // entries: huge count
+    let frame = framed_tlv(0xD3, &fields);
+    assert_bounded_alloc(&frame, "directory listing entries");
+}
+
+#[test]
 fn spawn_terminal_huge_command_list_does_not_over_reserve() {
     // SPAWN_RESOURCE (0x22): the COMMAND field (id 3) value is a positional u32
     // count + strings. Declare count = u32::MAX inside a tiny field.

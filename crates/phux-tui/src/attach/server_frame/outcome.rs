@@ -116,6 +116,12 @@ pub(in crate::attach) struct FrameOutcome {
         Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     /// Exact terminal-engine response writes to forward on the ordered PTY lane.
     pub(in crate::attach) pty_writes: Vec<(ResourceId, Vec<u8>)>,
+    /// `Some((request_id, result))` ⇒ a `DIRECTORY_LISTING` reply landed
+    /// (`docs/spec/L3.md` §4). The driver opens the `go-to-directory` picker
+    /// when `request_id` is the listing it is waiting on and drops a stale
+    /// one. Set ONLY by the `DirectoryListing` arm.
+    pub(in crate::attach) directory_listing:
+        Option<(u32, phux_protocol::wire::frame::DirectoryListingResult)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
@@ -193,6 +199,7 @@ pub(super) const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::Bell { .. } => "bell",
         FrameKind::MetadataValue { .. } => "metadata_value",
         FrameKind::MetadataChanged { .. } => "metadata_changed",
+        FrameKind::DirectoryListing { .. } => "directory_listing",
         FrameKind::ResourceSpawned { .. } => "terminal_spawned",
         FrameKind::ResourceClosed { .. } => "terminal_closed",
         _ => "other",

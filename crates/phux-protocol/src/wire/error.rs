@@ -137,6 +137,12 @@ pub enum DecodeError {
     #[error("SPAWN_RESOURCE agent facet string exceeds protocol limits")]
     AgentFacetLimitExceeded,
 
+    /// A `DIRECTORY_LISTING` declared more entries than
+    /// [`MAX_DIRECTORY_ENTRIES`](crate::wire::frame::MAX_DIRECTORY_ENTRIES)
+    /// (`docs/spec/L3.md` §4); rejected before allocating for them.
+    #[error("DIRECTORY_LISTING entry count exceeds protocol limits")]
+    DirectoryEntryLimitExceeded,
+
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see
     /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).

@@ -415,6 +415,32 @@ pub mod metadata_keys {
     pub const KEYS: u32 = 2;
 }
 
+/// `LIST_DIRECTORY` body fields (`docs/spec/L3.md` §4).
+pub mod list_directory {
+    /// Correlating `request_id` (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// Requested path (UTF-8). Empty or `~` = the serving user's home.
+    pub const PATH: u32 = 2;
+}
+
+/// `DIRECTORY_LISTING` body fields (`docs/spec/L3.md` §4).
+pub mod directory_listing {
+    /// Correlating `request_id` (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// Resolved absolute path (or the attempted path on a refusal).
+    pub const PATH: u32 = 2;
+    /// Optional lexical parent (absent at the root or on a refusal).
+    pub const PARENT: u32 = 3;
+    /// Child directories: positional `u32` count + (name str, flags `u8`).
+    pub const ENTRIES: u32 = 4;
+    /// Optional truncation flag (`u8`, absent = not truncated).
+    pub const TRUNCATED: u32 = 5;
+    /// Optional `DirectoryErrorCode` (`u8`); present = the listing was refused.
+    pub const ERROR: u32 = 6;
+    /// Optional diagnostic text accompanying `ERROR`.
+    pub const MESSAGE: u32 = 7;
+}
+
 /// `SPAWN_RESOURCE` body fields (`docs/spec/L1.md` §10.1).
 pub mod spawn_terminal {
     /// Correlating `request_id` (`u32`).

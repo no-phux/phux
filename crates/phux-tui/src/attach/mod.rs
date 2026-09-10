@@ -37,6 +37,7 @@ mod agent_rows;
 // renders one lives in `render::overlay::menu`.
 mod context_menu;
 pub mod copy;
+mod directory_picker;
 pub mod driver;
 mod exec_widgets;
 mod fleet;

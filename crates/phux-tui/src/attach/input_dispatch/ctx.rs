@@ -89,6 +89,15 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// `RESOURCE_SPAWNED` reply. Same lifecycle as `pending_splits`,
     /// keyed in the same request-id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
+    /// Did the server advertise
+    /// [`ServerFeature::ListDirectory`](phux_protocol::caps::ServerFeature::ListDirectory)?
+    /// `go-to-directory` bells without sending when unset: an older server
+    /// drops the unknown frame and the picker would never open.
+    pub list_directory_supported: bool,
+    /// The `request_id` of the `LIST_DIRECTORY` the directory picker is
+    /// waiting on. Newest request wins: a reply carrying any other id is
+    /// stale (the user already navigated on) and is dropped.
+    pub pending_directory: &'a mut Option<u32>,
     /// phux-i0e8.2.2: Terminals whose close THIS client requested
     /// (kill-pane / kill-window soft-kill). [`apply_action_effects`]
     /// parks the target ids here at the kill-dispatch seam; the

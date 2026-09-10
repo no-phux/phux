@@ -31,7 +31,8 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
-    DetachReason, ErrorCode, FileUploadAck, InputMode, MAX_APPEND_BYTES,
+    DetachReason, DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
+    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, MAX_APPEND_BYTES,
     MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
     MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
@@ -1227,6 +1228,39 @@ fn arb_metadata_value() -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(any::<u8>(), 0..512)
 }
 
+fn arb_directory_listing_result() -> impl Strategy<Value = DirectoryListingResult> {
+    let entry = (".{0,24}", any::<bool>())
+        .prop_map(|(name, is_symlink)| DirectoryEntry { name, is_symlink });
+    let ok = (
+        ".{0,64}",
+        proptest::option::of(".{0,64}"),
+        proptest::collection::vec(entry, 0..8),
+        any::<bool>(),
+    )
+        .prop_map(|(path, parent, entries, truncated)| {
+            Ok(DirectoryListing {
+                path,
+                parent,
+                entries,
+                truncated,
+            })
+        });
+    let code = prop_oneof![
+        Just(DirectoryErrorCode::NotFound),
+        Just(DirectoryErrorCode::PermissionDenied),
+        Just(DirectoryErrorCode::NotADirectory),
+        Just(DirectoryErrorCode::Other),
+    ];
+    let err = (".{0,64}", code, ".{0,64}").prop_map(|(path, code, message)| {
+        Err(DirectoryListingError {
+            path,
+            code,
+            message,
+        })
+    });
+    prop_oneof![ok, err]
+}
+
 fn arb_layer_set() -> impl Strategy<Value = LayerSet> {
     prop_oneof![
         Just(LayerSet::new()),
@@ -1308,6 +1342,26 @@ proptest! {
         keys in proptest::collection::vec(".{0,32}", 0..8),
     ) {
         assert_round_trip(&FrameKind::MetadataKeys { request_id, keys });
+    }
+
+    /// LIST_DIRECTORY — the host query (L3.md §4). Carries the request_id
+    /// and the requested path verbatim, including the empty home request.
+    #[test]
+    fn roundtrip_list_directory(
+        request_id in any::<u32>(),
+        path in ".{0,64}",
+    ) {
+        assert_round_trip(&FrameKind::ListDirectory { request_id, path });
+    }
+
+    /// DIRECTORY_LISTING — reply to LIST_DIRECTORY (L3.md §4): a listing
+    /// with optional parent, entries, and truncation, or a typed refusal.
+    #[test]
+    fn roundtrip_directory_listing(
+        request_id in any::<u32>(),
+        result in arb_directory_listing_result(),
+    ) {
+        assert_round_trip(&FrameKind::DirectoryListing { request_id, result });
     }
 
     /// HELLO carries the complete protocol-0.7 capability record, including

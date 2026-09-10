@@ -135,6 +135,8 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -269,6 +271,8 @@ async fn dispatch_with_passthrough_popup(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: Some(&cfg.keybindings),
@@ -447,6 +451,8 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -706,6 +712,8 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -911,7 +919,6 @@ async fn dispatch_bar_click(
     let mut zoomed = None;
     let mut sidebar_enabled = false;
     let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let mut reload_request = false;
     let fleet_agent_meta = HashMap::new();
     let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
@@ -934,6 +941,8 @@ async fn dispatch_bar_click(
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            list_directory_supported: true,
+            pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
@@ -953,7 +962,7 @@ async fn dispatch_bar_click(
             bar: Some(position),
             status_bar: with_painter.then_some(&painter),
             drag: &mut drag,
-            mouse_optout: &mut mouse_optout,
+            mouse_optout: &mut HashSet::new(),
             attention_navigation: &mut AttentionNavigation::default(),
             plugin_actions: &[],
             plugin_panes: &[],
@@ -1265,6 +1274,8 @@ async fn dispatch_mouse_two_pane_into(
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            list_directory_supported: true,
+            pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays,
             keybindings: None,
@@ -1848,6 +1859,8 @@ fn run_set_pane(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -2091,6 +2104,8 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,

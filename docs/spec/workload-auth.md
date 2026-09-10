@@ -488,6 +488,7 @@ Terminal, current Group, owning Host, or Global selector according to §6.
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` | default-deny | server-owned keys are non-writable |
 | Other `SET_METADATA`, `DELETE_METADATA` | `BIND` | encoded metadata Scope |
 | `LIST_METADATA` | `INVENTORY` | encoded metadata Scope; server-owned result keys remain excluded |
+| `LIST_DIRECTORY` | `INVENTORY` | Global; the serving host's filesystem is server-global data, so no Terminal, Group, or Host grant reaches it |
 | Other `SUBSCRIBE_METADATA` | `OBSERVE` | encoded metadata Scope |
 | Unknown, wrong-direction, retired, or otherwise unclassified frame | default-deny | none |
 

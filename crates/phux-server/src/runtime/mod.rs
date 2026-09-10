@@ -46,6 +46,7 @@ use crate::upgrade::blob::StateBlob;
 pub mod attach;
 pub mod client;
 pub mod commands;
+mod directory;
 pub mod input_lane;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;

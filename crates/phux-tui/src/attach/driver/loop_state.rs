@@ -329,6 +329,9 @@ pub(super) struct SessionLoop {
     /// name, rather than at its own default? Fixed for the life of the
     /// connection, like the reply bit above.
     spawn_initial_size_supported: bool,
+    /// Does this server answer `LIST_DIRECTORY` (the `go-to-directory`
+    /// picker)? Fixed for the connection.
+    list_directory_supported: bool,
     /// Whether the server advertised `ACKNOWLEDGED_INPUT`, the bit the
     /// ADR-0053 paste journal needs before it may route a batch.
     acknowledged_input_supported: bool,
@@ -388,6 +391,9 @@ pub(super) struct SessionLoop {
     /// same lifecycle as `pending_splits`. The `ResourceSpawned` arm checks
     /// this map first; a hit opens a new window on the spawned pane.
     pending_windows: HashMap<u32, PendingWindow>,
+    /// The `LIST_DIRECTORY` the directory picker is waiting on; a reply with
+    /// any other id is stale and dropped.
+    pending_directory: Option<u32>,
     /// phux-i0e8.2.2: Terminals whose close THIS client requested
     /// (kill-pane / kill-window). The action dispatcher parks ids here at
     /// the kill seam; the `ResourceClosed` arm drains them to suppress the
@@ -583,6 +589,9 @@ impl SessionLoop {
             spawn_initial_size_supported: negotiated
                 .server_features
                 .contains(ServerFeature::SpawnInitialSize),
+            list_directory_supported: negotiated
+                .server_features
+                .contains(ServerFeature::ListDirectory),
             wants_state_sync,
             engine_kernel: SessionKernel::with_history_config(
                 GhosttyAdapter::new(negotiated.limits),
@@ -601,6 +610,7 @@ impl SessionLoop {
             next_request_id: 1,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
+            pending_directory: None,
             expected_closes: HashSet::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
@@ -789,6 +799,37 @@ impl SessionLoop {
             &self.settings.theme,
         );
         self.finish_paint(painted);
+    }
+
+    /// Open the directory picker on the listing the latest `go-to-directory`
+    /// asked for (`docs/spec/L3.md` §4). A reply to an older request is
+    /// stale — the user already navigated on — and is dropped.
+    fn open_directory_picker<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        reply: Option<(u32, phux_protocol::wire::frame::DirectoryListingResult)>,
+    ) {
+        let Some((request_id, result)) = reply else {
+            return;
+        };
+        if self.pending_directory != Some(request_id) {
+            tracing::debug!(request_id, "dropping stale DIRECTORY_LISTING");
+            return;
+        }
+        self.pending_directory = None;
+        let picker = crate::render::overlay::SelectList::new(
+            crate::attach::directory_picker::picker_title(&result),
+            crate::attach::directory_picker::picker_items(&result),
+            &self.settings.theme,
+        );
+        // Only over its own placeholder: if the user cancelled it or opened
+        // something else on top, the reply is dropped.
+        if !self.overlays.replace_pending(request_id, Box::new(picker)) {
+            tracing::debug!(request_id, "dropping DIRECTORY_LISTING: placeholder gone");
+            return;
+        }
+        self.paint_overlay(out, sidebar);
     }
 
     /// Re-run the layered config loader and swap the config-derived state in
@@ -1660,6 +1701,8 @@ impl SessionLoop {
             spawn_initial_size_supported: self.spawn_initial_size_supported,
             pending_splits: &mut self.pending_splits,
             pending_windows: &mut self.pending_windows,
+            list_directory_supported: self.list_directory_supported,
+            pending_directory: &mut self.pending_directory,
             expected_closes: &mut self.expected_closes,
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),
@@ -2018,6 +2061,7 @@ impl SessionLoop {
         self.finish_paint(outcome.status_bar_painted);
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
+        self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
         self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects.as_ref())
             .await?;
         self.settle_frame_view(out, &outcome, sidebar, fleet_dirty, repaint);

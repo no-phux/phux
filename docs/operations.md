@@ -668,6 +668,21 @@ The Unix socket lives in `$XDG_RUNTIME_DIR/phux/` (typically `/run/user/$UID/` o
 - If the parent directory or socket permissions are misconfigured (e.g., accidentally mode `0o777`), the security boundary is breached. **Administrators MUST validate socket permissions in deployment; phux does not re-check at runtime.**
 - The process file descriptor table (`/proc/<pid>/fd/<socket-fd>` on Linux) is not readable by other UIDs, so the socket endpoint cannot be enumerated across user boundaries.
 
+**Directory listing.** The L3 `LIST_DIRECTORY` query ([L3.md](spec/L3.md) §4)
+lets a connected client list the child directories of any path the server's
+OS user can read. It returns names and a symlink flag only, never file
+contents or metadata, and it cannot write. It exposes nothing a client could
+not already learn by spawning a shell as the same user, which every client
+that can reach the socket (or holds a remote pairing token) is already able to
+do with `SPAWN_RESOURCE`. It therefore adds no new trust boundary. It answers
+from the serving host only; a hub does not route it to a satellite. The walk
+is bounded: 1024 returned entries, 16,384 read, a 5 s reply deadline, and a
+4096-byte request path. The deadline bounds the reply, not the worker thread:
+a walk stuck in a hung filesystem keeps its blocking-pool thread until the
+call returns. At most 8 listings hold such threads at once, and further
+requests are refused as busy until one finishes, so a hung mount costs a
+bounded number of stuck workers rather than an unbounded leak.
+
 ### Federation trust model (v0.1+, forward-compatible)
 
 **v0.1 (current):** Remote attach is available for single-server consumers over

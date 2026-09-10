@@ -385,6 +385,7 @@ ServerFeature = bitset (u32) {
     RESOURCE_KINDS     = 0x00004000, // ResourceKind spawns and facets, RESOURCE_CLOSED.reason,
                                      //   APPEND_RESOURCE_OUTPUT, AgentEventsJsonlV1
                                      //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
+    LIST_DIRECTORY     = 0x00008000, // LIST_DIRECTORY host query (L3.md §4)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -448,8 +449,9 @@ optional `features: u32`. A one-byte legacy value therefore decodes with an
 empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
-`GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`, and
-`RESOURCE_KINDS = 0x4000`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
+`GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
+`RESOURCE_KINDS = 0x4000`, and `LIST_DIRECTORY = 0x8000`; unknown feature bits
+are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
 `INPUT_TERMINAL_REPLY`.

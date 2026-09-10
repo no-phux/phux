@@ -106,8 +106,9 @@ src/
                         resource types, ...)
   runtime/            — tokio current-thread executor + accept loops;
                         spawns per-client tasks on a LocalSet (ADR-0014)
-    mod.rs, attach.rs, client.rs, commands.rs, pump.rs, resume.rs,
-    upgrade.rs, upload.rs, voice.rs
+    mod.rs, attach.rs, client.rs, commands.rs, directory.rs (the
+    LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
+    voice.rs
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
@@ -300,6 +301,8 @@ src/
     input_dispatch/, action_registry.rs, actions.rs
                       — the configurable keybinding-to-action pipeline
     fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking
+    directory_picker.rs — rows for the go-to-directory picker over a
+                        LIST_DIRECTORY reply (L3.md §4)
     context_menu.rs, onboarding.rs, plugin_actions.rs, plugin_panes.rs,
     record.rs, terminal_probe.rs, tty_input.rs, copy.rs,
     sidebar_zones.rs, stdout_writer.rs, render_prof.rs

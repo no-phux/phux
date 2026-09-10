@@ -312,6 +312,46 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 ],
             },
         ),
+        // L3 host query: LIST_DIRECTORY and its DIRECTORY_LISTING reply.
+        (
+            "snap_list_directory_home",
+            FrameKind::ListDirectory {
+                request_id: 0x0000_0021,
+                path: String::new(),
+            },
+        ),
+        (
+            "snap_directory_listing_ok",
+            FrameKind::DirectoryListing {
+                request_id: 0x0000_0021,
+                result: Ok(phux_protocol::wire::frame::DirectoryListing {
+                    path: "/home/u".to_owned(),
+                    parent: Some("/home".to_owned()),
+                    entries: vec![
+                        phux_protocol::wire::frame::DirectoryEntry {
+                            name: "src".to_owned(),
+                            is_symlink: false,
+                        },
+                        phux_protocol::wire::frame::DirectoryEntry {
+                            name: "www".to_owned(),
+                            is_symlink: true,
+                        },
+                    ],
+                    truncated: true,
+                }),
+            },
+        ),
+        (
+            "snap_directory_listing_denied",
+            FrameKind::DirectoryListing {
+                request_id: 0x0000_0022,
+                result: Err(phux_protocol::wire::frame::DirectoryListingError {
+                    path: "/root".to_owned(),
+                    code: phux_protocol::wire::frame::DirectoryErrorCode::PermissionDenied,
+                    message: "denied".to_owned(),
+                }),
+            },
+        ),
         // L1 Terminal lifecycle frames.
         (
             // The minimum SPAWN_RESOURCE: request_id, default group, every

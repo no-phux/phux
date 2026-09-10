@@ -37,6 +37,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "split-pane",
     "kill-pane",
     "new-window",
+    "go-to-directory",
     "kill-window",
     "next-window",
     "previous-window",

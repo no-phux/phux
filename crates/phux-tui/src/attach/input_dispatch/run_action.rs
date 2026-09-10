@@ -19,7 +19,7 @@ use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow};
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::HostedPlacement;
 use crate::layout::{LayoutState, SplitDir, Workspace};
-use crate::render::overlay::{PromptOverlay, SelectItem, SelectList};
+use crate::render::overlay::{PendingOverlay, PromptOverlay, SelectItem, SelectList};
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
@@ -93,7 +93,8 @@ pub(super) fn run_action(
         "give-input" => give_input(ctx, focused, e),
         "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
         "set-pane" => set_pane(resolved, ctx, focused, e),
-        "new-window" => new_window(ctx, e),
+        "new-window" => new_window(resolved, ctx, e),
+        "go-to-directory" => go_to_directory(resolved, ctx, focused, panes, e),
         "kill-window" => kill_active_window(ctx, e),
         "next-window" => switch_window(ctx, e, Workspace::next),
         "previous-window" => switch_window(ctx, e, Workspace::prev),
@@ -338,14 +339,22 @@ fn set_pane(
 /// new pane is a bare leaf — the server files it under the
 /// default Group; the TUI groups it into a window itself
 /// (windows are a client convention, ADR-0017).
-fn new_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+///
+/// An optional `cwd` arg starts the window's shell there. The path is
+/// interpreted by the attached server, on its own host — the confirm row of
+/// the `go-to-directory` picker commits exactly this.
+fn new_window(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+) {
     let request_id = take_request_id(ctx);
     let name = ctx.workspace.default_window_name();
     let frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
-        cwd: None,
+        cwd: str_arg(resolved, "cwd"),
         env: None,
         term: None,
         satellite: None,
@@ -358,6 +367,52 @@ fn new_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         resource: None,
     };
     effects.spawn_window = Some((request_id, PendingWindow { name }, frame));
+}
+
+/// Browse directories on the attached server's host (`docs/spec/L3.md` §4).
+///
+/// Sends `LIST_DIRECTORY` for the `path` arg, else the focused pane's
+/// directory, else the server user's home (the empty path); the reply opens
+/// the picker (`crate::attach::directory_picker`). Against a server that
+/// does not advertise the query the action bells and sends nothing.
+fn go_to_directory(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    effects: &mut ActionEffects,
+) {
+    if !ctx.list_directory_supported {
+        tracing::warn!(
+            "go-to-directory: server does not advertise LIST_DIRECTORY; dropping action"
+        );
+        effects.bell = true;
+        return;
+    }
+    let path = str_arg(resolved, "path")
+        .or_else(|| local_pane_cwd(focused, panes))
+        .unwrap_or_default();
+    let request_id = take_request_id(ctx);
+    // Modal from the moment the request leaves: the placeholder swallows
+    // keystrokes and Escape cancels, so nothing typed during a slow listing
+    // reaches the pane and a cancelled listing never opens late.
+    ctx.overlays.push(Box::new(PendingOverlay::listing(
+        &path, request_id, ctx.theme,
+    )));
+    effects.layout_mutated = true;
+    effects.list_directory = Some((request_id, FrameKind::ListDirectory { request_id, path }));
+}
+
+/// The focused pane's working directory, when it lives on the attached
+/// server's own host. A satellite pane's cwd names a path on another
+/// machine, which the attached server would list on the wrong host, so it
+/// falls back to home instead.
+fn local_pane_cwd(
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Option<String> {
+    let focused = focused.filter(|id| id.is_local())?;
+    panes.get(focused)?.cwd.clone()
 }
 
 /// phux-4li.15: soft-kill every pane in the active window, the

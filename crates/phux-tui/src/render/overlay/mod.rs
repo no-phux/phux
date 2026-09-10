@@ -32,6 +32,7 @@ use crate::render::{ChromeBreakpoints, Theme};
 
 pub mod copy_mode;
 pub mod menu;
+pub mod pending;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
@@ -43,6 +44,7 @@ pub mod widgets;
 
 pub use copy_mode::CopyModeOverlay;
 pub use menu::{ContextMenu, MenuRow};
+pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
 pub use settings::SettingsOverlay;
@@ -238,6 +240,13 @@ pub trait RenderOverlay {
     /// the projected state.
     fn refresh_items(&mut self, _key: &str, _items: &[SelectItem]) -> bool {
         false
+    }
+
+    /// The request id this overlay is a placeholder for, if it stands in
+    /// for data still on its way from the server ([`PendingOverlay`]).
+    /// Every other overlay answers `None` (the default).
+    fn pending_request(&self) -> Option<u32> {
+        None
     }
 }
 
@@ -442,6 +451,37 @@ impl OverlayState {
     pub fn push(&mut self, mut overlay: Box<dyn RenderOverlay>) {
         overlay.set_breakpoints(self.breakpoints);
         self.stack.push(overlay);
+    }
+
+    /// The request id the top overlay is a placeholder for, if any.
+    #[must_use]
+    pub fn top_pending_request(&self) -> Option<u32> {
+        self.stack.last()?.pending_request()
+    }
+
+    /// `true` while some stacked placeholder still stands in for
+    /// `request_id`. `false` once it was dismissed, so the caller can
+    /// abandon the request.
+    #[must_use]
+    pub fn awaits(&self, request_id: u32) -> bool {
+        self.stack
+            .iter()
+            .any(|overlay| overlay.pending_request() == Some(request_id))
+    }
+
+    /// Replace the top overlay with `overlay` only when the top is the
+    /// placeholder for `request_id`; returns whether it did.
+    ///
+    /// A reply whose placeholder was dismissed, or is covered by another
+    /// overlay, opens nothing: the user moved on, and a picker appearing
+    /// over whatever they are doing now would steal their next keystroke.
+    pub fn replace_pending(&mut self, request_id: u32, overlay: Box<dyn RenderOverlay>) -> bool {
+        if self.top_pending_request() != Some(request_id) {
+            return false;
+        }
+        self.stack.pop();
+        self.push(overlay);
+        true
     }
 
     /// Dismiss (pop) the top overlay, revealing whatever was beneath it.

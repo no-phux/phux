@@ -11,6 +11,7 @@
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
 //! chord to its remote `SPAWN_RESOURCE` reply.
 
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
@@ -190,13 +191,31 @@ fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace)
     run_with_last(action, workspace, None)
 }
 
+/// Every server feature the dispatcher consults, as a current server
+/// advertises them.
+const ALL_FEATURES: ServerFeatureSet = ServerFeatureSet::with(&[
+    ServerFeature::SpawnInitialSize,
+    ServerFeature::ListDirectory,
+]);
+
 /// [`run`] against a server that did NOT advertise
 /// `ServerFeature::SpawnInitialSize` (phux-a5xj).
 fn run_without_spawn_size_support(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
 ) -> ActionEffects {
-    run_with_last_and_spawn_size(action, workspace, None, false)
+    let features = ServerFeatureSet::with(&[ServerFeature::ListDirectory]);
+    run_with_last_and_features(action, workspace, None, features)
+}
+
+/// [`run`] against a server that did NOT advertise
+/// `ServerFeature::ListDirectory`.
+fn run_without_list_directory_support(
+    action: &phux_config::keybind::ResolvedAction,
+    workspace: &mut Workspace,
+) -> ActionEffects {
+    let features = ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]);
+    run_with_last_and_features(action, workspace, None, features)
 }
 
 fn run_with_last(
@@ -204,14 +223,14 @@ fn run_with_last(
     workspace: &mut Workspace,
     last_focused: Option<ResourceId>,
 ) -> ActionEffects {
-    run_with_last_and_spawn_size(action, workspace, last_focused, true)
+    run_with_last_and_features(action, workspace, last_focused, ALL_FEATURES)
 }
 
-fn run_with_last_and_spawn_size(
+fn run_with_last_and_features(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
     last_focused: Option<ResourceId>,
-    spawn_initial_size_supported: bool,
+    features: ServerFeatureSet,
 ) -> ActionEffects {
     let mut next_request_id = 100;
     let mut pending_splits = HashMap::new();
@@ -242,9 +261,11 @@ fn run_with_last_and_spawn_size(
         cell_px: (1, 1),
         next_request_id: &mut next_request_id,
         input_replay: None,
-        spawn_initial_size_supported,
+        spawn_initial_size_supported: features.contains(ServerFeature::SpawnInitialSize),
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: features.contains(ServerFeature::ListDirectory),
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -439,6 +460,70 @@ fn new_window_spawn_carries_the_full_content_rect() {
     let effects = run(&bare_action("new-window"), &mut workspace);
     let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
     assert_eq!(spawn_initial_size_of(&frame), Some((80, 23)));
+}
+
+/// `new-window { cwd }` (the directory picker's confirm row) starts the new
+/// window's shell in that directory, interpreted on the attached server's
+/// host.
+#[test]
+fn new_window_cwd_arg_rides_the_spawn() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut action = bare_action("new-window");
+    action
+        .args
+        .insert("cwd".to_owned(), toml::Value::String("/srv/app".into()));
+    let effects = run(&action, &mut workspace);
+    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), .. } if cwd == "/srv/app"),
+        "the cwd arg must ride SPAWN_RESOURCE.cwd: {frame:?}"
+    );
+}
+
+/// `go-to-directory` asks the attached server for a listing: the explicit
+/// `path` when given, else the empty home request (no pane cwd is known in
+/// this fixture).
+#[test]
+fn go_to_directory_requests_a_listing() {
+    let mut workspace = Workspace::single(tid(1));
+    let effects = run(&bare_action("go-to-directory"), &mut workspace);
+    let (request_id, frame) = effects
+        .list_directory
+        .expect("go-to-directory sends LIST_DIRECTORY");
+    assert_eq!(
+        frame,
+        FrameKind::ListDirectory {
+            request_id,
+            path: String::new()
+        }
+    );
+
+    let mut action = bare_action("go-to-directory");
+    action
+        .args
+        .insert("path".to_owned(), toml::Value::String("/srv".into()));
+    let effects = run(&action, &mut workspace);
+    let (_request_id, frame) = effects
+        .list_directory
+        .expect("go-to-directory sends LIST_DIRECTORY");
+    assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
+    assert!(!effects.bell);
+    assert!(
+        effects.layout_mutated,
+        "the listing placeholder overlay needs a repaint"
+    );
+}
+
+/// Against a server that never advertised `LIST_DIRECTORY` the action bells
+/// and sends nothing: the older server would drop the unknown frame and the
+/// picker would never open.
+#[test]
+fn go_to_directory_bells_without_server_support() {
+    let mut workspace = Workspace::single(tid(1));
+    let effects =
+        run_without_list_directory_support(&bare_action("go-to-directory"), &mut workspace);
+    assert!(effects.list_directory.is_none());
+    assert!(effects.bell);
 }
 
 /// Against a server that never advertised the capability the field stays
@@ -795,6 +880,8 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -872,6 +959,8 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -984,6 +1073,8 @@ fn run_capturing_with_sessions(
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            list_directory_supported: true,
+            pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
@@ -1160,6 +1251,8 @@ fn run_with_panes(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -1632,6 +1725,8 @@ fn run_attention(
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -2121,6 +2216,8 @@ fn detach_action_requests_detach_effect() {
         spawn_initial_size_supported: true,
         pending_splits: &mut pending_splits,
         pending_windows: &mut pending_windows,
+        list_directory_supported: true,
+        pending_directory: &mut None,
         expected_closes: &mut HashSet::new(),
         overlays: &mut overlays,
         keybindings: None,
@@ -2219,6 +2316,8 @@ fn rename_session_without_name_opens_prompt_prefilled() {
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            list_directory_supported: true,
+            pending_directory: &mut None,
             expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,

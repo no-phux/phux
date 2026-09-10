@@ -333,6 +333,9 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::MetadataChanged { scope, key, value } => {
             handle_metadata_changed(ctx, &scope, &key, value)
         }
+        FrameKind::DirectoryListing { request_id, result } => {
+            Ok(directory_listing_outcome(request_id, result))
+        }
         FrameKind::ResourceSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
         }
@@ -976,6 +979,19 @@ fn handle_detached(reason: Option<DetachReason>, message: &str) -> FrameOutcome 
     FrameOutcome {
         exit: true,
         exit_reason: Some(AttachEnd::Detached { reason }),
+        ..FrameOutcome::default()
+    }
+}
+
+/// A `go-to-directory` reply (`docs/spec/L3.md` §4). The driver owns the
+/// overlay stack and the pending request id, so the handler only hands the
+/// reply up; matching it against the pending request happens there.
+fn directory_listing_outcome(
+    request_id: u32,
+    result: phux_protocol::wire::frame::DirectoryListingResult,
+) -> FrameOutcome {
+    FrameOutcome {
+        directory_listing: Some((request_id, result)),
         ..FrameOutcome::default()
     }
 }

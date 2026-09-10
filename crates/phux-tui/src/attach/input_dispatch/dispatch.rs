@@ -424,12 +424,23 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // rename prompt returning `rename-window { name }`); run
         // it through the same path as a keybinding.
         let outcome = self.ctx.overlays.handle_key(key_event);
+        self.release_abandoned_listing();
         let ran = self.apply_overlay_outcome(outcome).await?;
         // On dismiss, repaint everything: the overlay scribbled
         // over pane cells and we need a coherent base for the
         // next RESOURCE_OUTPUT.
         let dismissed = was_active && !self.ctx.overlays.is_active();
         Ok(ran || dismissed)
+    }
+
+    /// Escape on the `go-to-directory` placeholder cancels its listing:
+    /// once no stacked overlay awaits the pending request, forget it, so the
+    /// late reply is dropped as stale instead of opening a picker.
+    fn release_abandoned_listing(&mut self) {
+        let pending = *self.ctx.pending_directory;
+        if pending.is_some_and(|id| !self.ctx.overlays.awaits(id)) {
+            *self.ctx.pending_directory = None;
+        }
     }
 
     /// Feed one mouse event to the top overlay and run whatever it commits.

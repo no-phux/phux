@@ -66,6 +66,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::GetPerf,
         ServerFeature::Transcribe,
         ServerFeature::ResourceKinds,
+        ServerFeature::ListDirectory,
     ])
 }
 
@@ -2412,6 +2413,15 @@ where
             }
             FrameKind::ListMetadata { request_id, scope } => {
                 handle_list_metadata(&state, client_id, request_id, &scope, &plumbing.out_tx).await;
+            }
+            FrameKind::ListDirectory { request_id, path } => {
+                super::directory::handle_list_directory(
+                    &state,
+                    client_id,
+                    request_id,
+                    path,
+                    &plumbing.out_tx,
+                );
             }
             FrameKind::SubscribeMetadata { scope, key } => {
                 handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);

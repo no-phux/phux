@@ -757,6 +757,49 @@ impl Connection {
         })
     }
 
+    /// Send one `LIST_DIRECTORY` and wait for its `DIRECTORY_LISTING`,
+    /// keeping every frame the peer interleaved ahead of it
+    /// (`docs/spec/L3.md` §4).
+    ///
+    /// The listing comes from the host of the server this connection is
+    /// dialed to, which is what makes a directory picker host-aware: over
+    /// `--remote` it lists the remote machine. `path` is absolute, `~`,
+    /// `~/rest`, or empty for the serving user's home.
+    ///
+    /// The caller MUST check
+    /// [`ServerFeature::ListDirectory`](phux_protocol::caps::ServerFeature::ListDirectory)
+    /// first: an older server drops the unknown frame and this would wait
+    /// until the transport closes. A filesystem refusal is the `Err` arm of
+    /// the inner [`DirectoryListingResult`](phux_protocol::wire::frame::DirectoryListingResult);
+    /// a protocol refusal (a correlated `ERROR`) is an [`Answer`] `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_directory(
+        &mut self,
+        request_id: u32,
+        path: String,
+    ) -> Result<Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>, AttachError>
+    {
+        self.send(&FrameKind::ListDirectory { request_id, path })
+            .await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::DirectoryListing { request_id, result } => {
+                    Some((*request_id, result.clone()))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
     /// Send one `SPAWN_RESOURCE` and wait for its `RESOURCE_SPAWNED`, keeping
     /// every frame the peer interleaved ahead of it.
     ///

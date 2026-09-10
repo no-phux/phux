@@ -1639,6 +1639,28 @@ foreign layouts are an attach-time snapshot: if a peer rearranged its
 windows since, the jump still switches sessions and the stale window
 index degrades to the session's own remembered focus (logged, no bell).
 
+The **directory picker** (`go-to-directory`, unbound by default and offered
+in the palette under **Window**) browses directories on the host of the
+server this client is attached to and opens a new window there. It starts at
+an explicit `path` arg, else at the focused pane's working directory when the
+client knows it, else at the server user's home. The rows are the listing the
+server returns for `LIST_DIRECTORY` ([L3.md](../spec/L3.md) §4): **open new
+window here** first, then `..`, then the child directories (dot-directories
+last, symlinked ones marked `symlink`). Typing filters. Enter on a directory
+descends and the picker reopens there; Enter on `..` goes up; Enter on **open
+new window here** commits `new-window { cwd }`, a new window in the current
+session whose shell starts in that directory, leaving the existing windows and
+their layout untouched. Escape dismisses. While a listing is in flight a
+small "Listing <path>..." note stands in for the picker and swallows
+keystrokes; Escape cancels it, and a reply that arrives afterwards is
+discarded. A refused listing (not found,
+permission denied, not a directory) shows the reason and keeps `..` and `~`
+selectable. Over `phux --remote` the attached server is the remote machine, so
+the picker browses the remote host with no extra configuration. Against a
+server that does not advertise the query the action bells. Attached to a
+federation hub, it lists the hub's own host: a satellite pane's directory is
+not routed, so the picker starts at the hub user's home instead.
+
 ### 5.6 Agent-fleet dashboard
 
 The **agent-fleet dashboard** (`agent-fleet`, `C-a A`) is the one-view

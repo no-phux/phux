@@ -90,6 +90,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         ctx.pending_windows,
     )
     .await?;
+    send_directory_request(effects.list_directory, conn, ctx.pending_directory).await?;
     send_kill_frames(
         effects.kill_frames,
         effects.expected_closes,
@@ -242,6 +243,21 @@ async fn send_parked_spawns(
         conn.send(&frame).await?;
     }
     Ok(())
+}
+
+/// `go-to-directory`: record the listing the picker now waits on, then send
+/// the `LIST_DIRECTORY`. Recording first means the reply can never race
+/// ahead of the id it has to match.
+async fn send_directory_request(
+    request: Option<(u32, FrameKind)>,
+    conn: &mut Connection,
+    pending_directory: &mut Option<u32>,
+) -> Result<(), AttachError> {
+    let Some((request_id, frame)) = request else {
+        return Ok(());
+    };
+    *pending_directory = Some(request_id);
+    conn.send(&frame).await
 }
 
 /// kill-pane / kill-window keystroke sequences; the `RESOURCE_CLOSED`
@@ -462,6 +478,10 @@ pub(super) struct ActionEffects {
     /// `pending_windows` map; the reply opens a new window on the
     /// spawned pane.
     pub(super) spawn_window: Option<(u32, PendingWindow, FrameKind)>,
+    /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
+    /// async caller records its id as the pending listing, then sends it;
+    /// the reply opens the directory picker.
+    pub(super) list_directory: Option<(u32, FrameKind)>,
     /// phux-4li.12: a `kill-pane` action ships a sequence of frames to
     /// the focused Terminal (the "soft-kill via shell-exit" — see
     /// `run_action`). The async caller sends them in order; the

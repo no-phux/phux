@@ -153,9 +153,10 @@ pub const TYPE_FRAME_COMPRESSED: u8 = 0x9A;
 //
 // Contiguous block 0x50..=0x54 for C→S commands; 0xD0 for the single S→C
 // notification. Sits between the L1 hot-path C→S range (0x10..=0x21) and
-// the proto SUBSCRIBE slot (0x40), leaving 0x55..=0x5F open for the L2
-// command allocation that follows. The S→C side uses 0xD0..=0xDF as a
-// matching unallocated block, with `BELL` (0xB0) / `ALERT` (0xB2) and
+// the proto SUBSCRIBE slot (0x40). There is no L2 tier (ADR-0030), so the
+// tail of the block stays L3: `LIST_DIRECTORY` takes 0x55 and 0x56..=0x5F
+// remain open. The S→C side uses 0xD0..=0xDF as a matching block
+// (`DIRECTORY_LISTING` takes 0xD3), with `BELL` (0xB0) / `ALERT` (0xB2) and
 // `ERROR` (0xC1) already on lower discriminants.
 // -----------------------------------------------------------------------------
 
@@ -308,6 +309,19 @@ pub const TYPE_METADATA_VALUE: u8 = 0xD1;
 /// requested scope (values are not included; LIST is by-key-name only).
 /// Allocated by phux-4li.8.
 pub const TYPE_METADATA_KEYS: u8 = 0xD2;
+
+/// Discriminant for `LIST_DIRECTORY` (client to server, `docs/spec/L3.md` §4).
+///
+/// A host query: list the child directories of a path on the serving host.
+/// Allocated from the open `0x55..=0x5F` tail of the L3 C→S block; gated on
+/// [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
+pub const TYPE_LIST_DIRECTORY: u8 = 0x55;
+
+/// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md` §4).
+///
+/// Reply frame for `LIST_DIRECTORY`; correlated by `request_id`. Carries
+/// either the listing or a typed refusal.
+pub const TYPE_DIRECTORY_LISTING: u8 = 0xD3;
 
 // -----------------------------------------------------------------------------
 // L1 Terminal lifecycle frame discriminants — SPEC §7.2 / §10.1 (phux-4li.10).
@@ -671,6 +685,7 @@ pub(crate) const ATTACH_TARGET_CREATE_IF_MISSING: u8 = 3;
 mod codec;
 mod command;
 mod command_codec;
+mod directory;
 mod kind;
 mod payload;
 mod status;
@@ -678,6 +693,10 @@ mod status;
 pub use command::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
     ReportedAgentState, ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
+};
+pub use directory::{
+    DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
+    DirectoryListingResult, MAX_DIRECTORY_ENTRIES,
 };
 pub use kind::FrameKind;
 pub use payload::{
@@ -703,3 +722,4 @@ pub(in crate::wire) use command_codec::{
     decode_agent_event, decode_command, decode_command_result, encode_agent_event, encode_command,
     encode_command_result,
 };
+pub(in crate::wire) use directory::{decode_directory_listing, decode_list_directory};

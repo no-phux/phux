@@ -231,7 +231,14 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "new-window",
         category: Category::Window,
         description: "Open a new window",
-        params: "",
+        params: "`cwd?` (working directory on the attached server's host)",
+        args: &[],
+    },
+    ActionSpec {
+        name: "go-to-directory",
+        category: Category::Window,
+        description: "Browse directories on the attached server's host and open a new window in one",
+        params: "`path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory)",
         args: &[],
     },
     ActionSpec {

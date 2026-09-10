@@ -20,20 +20,22 @@ use crate::wire::field;
 use crate::wire::framing::LENGTH_PREFIX_LEN;
 use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapshot};
 
+use super::directory::{DirectoryListingResult, encode_directory_listing, encode_list_directory};
 use super::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason, ErrorCode,
     HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN, MoveResult, Scope,
     SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL,
     TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE,
     TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED,
-    TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
-    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
-    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
-    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_VIEWPORT_RESIZE, TombstoneReason, ViewportInfo, encode_agent_event, encode_attach_target,
+    TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED,
+    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
+    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
+    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
+    TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE,
+    TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
+    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
+    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
+    TombstoneReason, ViewportInfo, encode_agent_event, encode_attach_target,
     encode_bootstrap_codec, encode_bootstrap_profile, encode_command, encode_command_result,
     encode_env, encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
     encode_paste_event, encode_scope, encode_spawn_result, encode_string_list, encode_terminal_id,
@@ -577,6 +579,28 @@ pub enum FrameKind {
         keys: Vec<String>,
     },
 
+    /// `LIST_DIRECTORY` — client asks the serving server for the child
+    /// directories of `path` on its own host (`docs/spec/L3.md` §4).
+    ///
+    /// Answered by [`FrameKind::DirectoryListing`] correlated by
+    /// `request_id`. Gated on
+    /// [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
+    ListDirectory {
+        /// Correlates this request with its `DIRECTORY_LISTING` reply.
+        request_id: u32,
+        /// Absolute path, `~` / `~/rest`, or empty (the serving user's home).
+        path: String,
+    },
+
+    /// `DIRECTORY_LISTING` — server reply to a prior `LIST_DIRECTORY`
+    /// (`docs/spec/L3.md` §4): the listing, or a typed refusal.
+    DirectoryListing {
+        /// Correlates this reply with a prior `LIST_DIRECTORY.request_id`.
+        request_id: u32,
+        /// The listing, or why it could not be produced.
+        result: DirectoryListingResult,
+    },
+
     // -------------------------------------------------------------------------
     // L1 Terminal lifecycle frames — SPEC §7.2 / §10.1 (phux-4li.10).
     //
@@ -894,6 +918,8 @@ impl FrameKind {
             Self::MetadataChanged { .. } => TYPE_METADATA_CHANGED,
             Self::MetadataValue { .. } => TYPE_METADATA_VALUE,
             Self::MetadataKeys { .. } => TYPE_METADATA_KEYS,
+            Self::ListDirectory { .. } => TYPE_LIST_DIRECTORY,
+            Self::DirectoryListing { .. } => TYPE_DIRECTORY_LISTING,
             Self::SpawnResource { .. } => TYPE_SPAWN_RESOURCE,
             Self::MoveResource { .. } => TYPE_MOVE_RESOURCE,
             Self::ResourceMoved { .. } => TYPE_RESOURCE_MOVED,
@@ -1260,6 +1286,12 @@ impl FrameKind {
             }
             Self::MetadataKeys { request_id, keys } => {
                 Self::encode_metadata_keys(enc, *request_id, keys);
+            }
+            Self::ListDirectory { request_id, path } => {
+                encode_list_directory(enc, *request_id, path);
+            }
+            Self::DirectoryListing { request_id, result } => {
+                encode_directory_listing(enc, *request_id, result);
             }
             Self::SpawnResource {
                 request_id,

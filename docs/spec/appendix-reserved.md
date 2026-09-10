@@ -47,6 +47,12 @@ For implementers extending the protocol:
 - Message IDs `0x41..=0x4F` and `0xB3..=0xBF`: reserved for events
   (phux-y2t allocated `SUBSCRIBE_EVENTS = 0x41` C→S and `EVENT = 0xB3`
   S→C from these ranges; `0x42..=0x4F` and `0xB4..=0xBF` remain open).
+- Message IDs `0x50..=0x5F` and `0xD0..=0xDF`: L3
+  ([L3.md](./L3.md) §1). `0x50..=0x55` C→S and `0xD0..=0xD3` S→C are
+  allocated (the metadata verbs, and the `LIST_DIRECTORY` /
+  `DIRECTORY_LISTING` host query of L3.md §4); `0x56..=0x5F` and
+  `0xD4..=0xDF` remain open. There is no L2 tier, so no L2 range is carved
+  out of this block.
 
 ## 2. Command-tag allocations
 

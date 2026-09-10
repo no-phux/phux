@@ -1022,6 +1022,36 @@ fn duplicate_hello_ok_is_fatal_in_attached_phase() {
     ));
 }
 
+/// A `DIRECTORY_LISTING` reaching the attached dispatcher is handed up to
+/// the driver (which matches it against its pending `go-to-directory`
+/// request), never rejected by the catch-all: that would tear down a healthy
+/// attach over a picker reply.
+#[test]
+fn directory_listing_reply_is_handed_to_the_driver() {
+    let pane = tid(1);
+    let mut workspace = Workspace::single(pane.clone());
+    let mut focused = Some(pane.clone());
+    let mut panes = panes_for(&[&pane]);
+    let result = Ok(phux_protocol::wire::frame::DirectoryListing {
+        path: "/".to_owned(),
+        parent: None,
+        entries: Vec::new(),
+        truncated: false,
+    });
+    let outcome = drive_layout_frame(
+        FrameKind::DirectoryListing {
+            request_id: 9,
+            result: result.clone(),
+        },
+        None,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+    );
+    assert_eq!(outcome.directory_listing, Some((9, result)));
+    assert!(!outcome.exit);
+}
+
 /// A request-correlated reply that reaches the attached dispatcher is inert,
 /// never fatal.
 ///

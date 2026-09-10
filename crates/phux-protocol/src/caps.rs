@@ -940,6 +940,8 @@ pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// snapshot resource facets, the `APPEND_RESOURCE_OUTPUT` command, and the
 /// `AgentEventsJsonlV1` codec.
 pub const RESOURCE_KINDS: u32 = 0x0000_4000;
+/// Wire bit advertising the `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4).
+pub const LIST_DIRECTORY: u32 = 0x0000_8000;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -989,6 +991,11 @@ pub enum ServerFeature {
     /// (an older server spawns a Terminal and ignores the facets); the bit
     /// is what tells a client the kind it asked for is the kind it got.
     ResourceKinds = RESOURCE_KINDS,
+    /// The server answers `LIST_DIRECTORY` with the child directories of a
+    /// path on its own host (`docs/spec/L3.md` §4). A client MUST see this
+    /// bit before sending the frame; an older server drops the unknown
+    /// discriminant and the request would wait forever.
+    ListDirectory = LIST_DIRECTORY,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1005,7 +1012,8 @@ impl ServerFeatureSet {
         | (ServerFeature::ReportAgentState as u32)
         | (ServerFeature::GetPerf as u32)
         | (ServerFeature::Transcribe as u32)
-        | (ServerFeature::ResourceKinds as u32);
+        | (ServerFeature::ResourceKinds as u32)
+        | (ServerFeature::ListDirectory as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1679,6 +1687,8 @@ mod tests {
         assert_eq!(RESOURCE_KINDS, 0x0000_4000);
         assert!(ServerFeatureSet::from_wire(RESOURCE_KINDS).contains(ServerFeature::ResourceKinds));
         assert!(!ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::ResourceKinds));
+        assert_eq!(LIST_DIRECTORY, 0x0000_8000);
+        assert!(ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectory));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);
