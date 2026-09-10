@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{ClientCapabilities, ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, RESOURCE_TAGS_KEY, Scope, StateScope,
@@ -99,6 +99,12 @@ pub struct StateView {
     snapshot: SessionSnapshot,
     /// What that snapshot could not see.
     degradation: Degradation,
+    /// The additive features the answering server advertised in `HELLO_OK`,
+    /// or `None` when the view was not built from a negotiated connection.
+    /// A consumer needs it to read an *absent* field correctly: an empty
+    /// `hosts` list is "no satellites" only when the server advertises
+    /// `ServerFeature::HostSessions`.
+    server_features: Option<ServerFeatureSet>,
 }
 
 impl StateView {
@@ -107,6 +113,31 @@ impl StateView {
         Self {
             snapshot,
             degradation,
+            server_features: None,
+        }
+    }
+
+    /// Record the feature set the answering server negotiated.
+    pub const fn with_server_features(mut self, features: ServerFeatureSet) -> Self {
+        self.server_features = Some(features);
+        self
+    }
+
+    /// The feature set the answering server negotiated, when known.
+    #[must_use]
+    pub const fn server_features(&self) -> Option<ServerFeatureSet> {
+        self.server_features
+    }
+
+    /// Whether the snapshot's host-session inventory is authoritative:
+    /// `true` only when the server advertised `ServerFeature::HostSessions`,
+    /// so an empty `hosts` list means "no satellites" rather than "a server
+    /// that does not report them".
+    #[must_use]
+    pub const fn host_sessions_complete(&self) -> bool {
+        match self.server_features {
+            Some(features) => features.contains(ServerFeature::HostSessions),
+            None => false,
         }
     }
 
@@ -207,7 +238,13 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
     let degradation = Degradation::from_interleaved(&interleaved);
     match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => {
-            Ok(StateView::new(snapshot, degradation))
+            let view = StateView::new(snapshot, degradation);
+            // The features tell a reader what an absent field means (an
+            // empty `hosts` is complete only under HOST_SESSIONS).
+            Ok(match conn.negotiated_bootstrap() {
+                Some(negotiated) => view.with_server_features(negotiated.server_features),
+                None => view,
+            })
         }
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(

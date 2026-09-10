@@ -354,7 +354,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             request_id,
             code,
             message,
-        } => Ok(handle_error_frame(request_id, code, &message)),
+        } => error_frame_outcome(ctx, request_id, code, message),
         // A request-correlated reply that reached the dispatcher instead of
         // its awaiter. Inert, never terminal — the same rule the `ERROR` arm
         // above states for the failure twin of these frames, and the same
@@ -382,12 +382,8 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         // driven concurrently produced `CommandResult { request_id: 4,
         // result: Ok }` on the dispatcher path, and the client tore itself
         // down over a SUCCESS reply it simply had nowhere to put.
-        FrameKind::CommandResult { request_id, .. } => {
-            tracing::debug!(
-                request_id,
-                "dropping CommandResult with no matching pending request"
-            );
-            Ok(FrameOutcome::default())
+        FrameKind::CommandResult { request_id, result } => {
+            command_result_outcome(ctx, request_id, result)
         }
         FrameKind::ResourceMoved { request_id, .. } => {
             tracing::debug!(
@@ -1670,6 +1666,105 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
         notices: vec![Notice::warn(format!("server error ({code:?}): {message}"))],
         ..FrameOutcome::default()
     }
+}
+
+/// The `ERROR` arm: a correlated refusal of a parked satellite-session
+/// attach (phux-c2td.3) decides that window; anything else is the ordinary
+/// error notice.
+fn error_frame_outcome<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: Option<u32>,
+    code: ErrorCode,
+    message: String,
+) -> Result<FrameOutcome, AttachError> {
+    if let Some(pending) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
+        return handle_window_adopt_reply(ctx, &pending, Some(message));
+    }
+    Ok(handle_error_frame(request_id, code, &message))
+}
+
+/// The `COMMAND_RESULT` arm: the reply to a parked satellite-session attach
+/// (phux-c2td.3) decides whether its window opens; any other reply that
+/// reached the dispatcher instead of its awaiter is dropped, inert (see the
+/// arm's comment in [`dispatch_frame`]).
+fn command_result_outcome<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+    result: phux_protocol::wire::frame::CommandResult,
+) -> Result<FrameOutcome, AttachError> {
+    if let Some(pending) = take_pending_adopt(ctx, request_id) {
+        let refusal = match result {
+            phux_protocol::wire::frame::CommandResult::Error { message, .. } => Some(message),
+            _ => None,
+        };
+        return handle_window_adopt_reply(ctx, &pending, refusal);
+    }
+    tracing::debug!(
+        request_id,
+        "dropping CommandResult with no matching pending request"
+    );
+    Ok(FrameOutcome::default())
+}
+
+/// phux-c2td.3: take the parked satellite-session window behind
+/// `request_id`, if that is what the id names. A spawn-parked window (no
+/// `adopt`) stays parked for its `RESOURCE_SPAWNED`.
+fn take_pending_adopt<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+) -> Option<PendingWindow> {
+    if ctx
+        .pending_windows
+        .get(&request_id)
+        .is_none_or(|pending| pending.adopt.is_none())
+    {
+        return None;
+    }
+    ctx.pending_windows.remove(&request_id)
+}
+
+/// phux-c2td.3: apply the reply to a satellite-session window's
+/// `ATTACH_RESOURCE`.
+///
+/// Success opens the window on the adopted pane, makes it active, focuses
+/// the pane, and asks for the layout broadcast and a reflow — the same
+/// follow-up a spawned new window gets. Its slot normally exists already,
+/// seeded by the pane's `BOOTSTRAP_BEGIN`. A refusal opens nothing and saves
+/// nothing: it bells and says which host and session could not be opened,
+/// because a dead window in the shared layout would be the worse outcome.
+fn handle_window_adopt_reply<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    pending: &PendingWindow,
+    refusal: Option<String>,
+) -> Result<FrameOutcome, AttachError> {
+    let Some(pane) = pending.adopt.clone() else {
+        return Ok(FrameOutcome::default());
+    };
+    if let Some(reason) = refusal {
+        tracing::warn!(window = %pending.name, %reason, "satellite session attach refused");
+        let _ = actions::write_bell(ctx.out);
+        return Ok(FrameOutcome {
+            notices: vec![Notice::warn(format!(
+                "could not open satellite session {}: {reason}",
+                pending.name
+            ))],
+            ..FrameOutcome::default()
+        });
+    }
+    ctx.workspace.add_window(pending.name.clone(), pane.clone());
+    if let std::collections::hash_map::Entry::Vacant(slot) = ctx.panes.entry(pane) {
+        slot.insert(PaneSlot::new()?);
+    }
+    *ctx.focused_resource = ctx
+        .workspace
+        .active_window()
+        .and_then(|ls| ls.focus.clone());
+    Ok(FrameOutcome {
+        layout_replaced: true,
+        emit_set_metadata: true,
+        reflow_panes: true,
+        ..FrameOutcome::default()
+    })
 }
 
 /// phux-4li.15: apply a `RESOURCE_SPAWNED` reply for a parked

@@ -49,7 +49,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `focus-pane` | — | `window` (window index), `pane` (DFS leaf ordinal) | Focus a pane by window index and DFS leaf ordinal |
 | `next-attention` | Pane |  | Jump to the next pane waiting for an answer |
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
-| `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window) | Re-attach this client to another session |
+| `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `new-session` | Session | `name?` (bare opens an interactive prompt) | Create a new session and switch to it |
 | `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane (ADR-0033) |
 | `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease (ADR-0033) |

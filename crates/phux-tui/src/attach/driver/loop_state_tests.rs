@@ -154,3 +154,80 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
         }
     }
 }
+
+// ---- phux-c2td.3: held federation notices --------------------------------
+
+fn host_rows() -> Vec<phux_protocol::wire::info::HostInventory> {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::info::HostInventory;
+
+    vec![
+        HostInventory::unreachable(
+            SatelliteHost::new("down"),
+            "satellite down is unreachable: link is down",
+        ),
+        HostInventory::reachable(SatelliteHost::new("edge"), Vec::new()),
+    ]
+}
+
+/// The reply drops only the notices its unreachable rows explain; a link
+/// drop for a satellite it still lists as reachable surfaces.
+#[test]
+fn held_notices_surface_unless_the_inventory_explains_them() {
+    let held = vec![
+        // Explained: the row carries exactly this diagnostic.
+        "satellite down is unreachable: link is down".to_owned(),
+        // Explained: same host, a different reason.
+        "satellite down is unreachable: dial refused".to_owned(),
+        // Not explained: the inventory lists `edge` as reachable.
+        "satellite edge is unreachable: link dropped".to_owned(),
+        // Not explained: a different host whose name merely extends `down`.
+        "satellite downstairs is unreachable: gone".to_owned(),
+    ];
+    assert_eq!(
+        unexplained_unreachable_notices(held, &host_rows()),
+        vec![
+            "satellite edge is unreachable: link dropped".to_owned(),
+            "satellite downstairs is unreachable: gone".to_owned(),
+        ]
+    );
+}
+
+/// An inventory with no unreachable rows explains nothing, and a refusal
+/// (no inventory at all) surfaces everything held.
+#[test]
+fn held_notices_all_surface_when_nothing_explains_them() {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::info::HostInventory;
+
+    let rows = vec![HostInventory::reachable(
+        SatelliteHost::new("down"),
+        Vec::new(),
+    )];
+    let held = vec!["satellite down is unreachable: link is down".to_owned()];
+    assert_eq!(unexplained_unreachable_notices(held.clone(), &rows), held);
+    assert_eq!(unexplained_unreachable_notices(held.clone(), &[]), held);
+}
+
+/// A request is overdue only past the deadline, and never when none is in
+/// flight.
+#[test]
+fn host_inventory_overdue_only_past_the_deadline() {
+    let now = std::time::Instant::now();
+    assert!(!host_inventory_overdue(None, now));
+    assert!(!host_inventory_overdue(Some(now), now));
+    let sent = now.checked_sub(HOST_INVENTORY_DEADLINE + std::time::Duration::from_secs(1));
+    assert!(sent.is_some_and(|sent| host_inventory_overdue(Some(sent), now)));
+}
+
+/// Held notices surface in the same wording the frame handler uses for a
+/// live degradation notice.
+#[test]
+fn federation_notices_use_the_degraded_wording() {
+    let notices = federation_notices(vec!["satellite edge is unreachable: x".to_owned()]);
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].text,
+        "federation degraded: satellite edge is unreachable: x"
+    );
+}

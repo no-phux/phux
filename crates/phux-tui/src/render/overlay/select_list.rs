@@ -273,14 +273,36 @@ impl SelectList {
     /// Replace the full item set in place, keeping the current query and
     /// clamping/snapping the selection so it stays on a selectable row.
     ///
-    /// The selection is positional: it stays at the same visible row index
-    /// where possible, which keeps the cursor stable when a refresh only
-    /// changes row *content* (an agent flipping working -> blocked) and
-    /// degrades gracefully when rows appear or disappear.
+    /// The selection follows the selected row's *action* (name and args),
+    /// not its position: a refresh that inserts a row above the cursor — a
+    /// satellite's header landing in the session picker — must not make
+    /// Enter commit a different target than the one highlighted. Only when
+    /// that action is gone does the selection fall back to the same visible
+    /// row index, snapped onto a selectable row.
     pub fn replace_items(&mut self, items: Vec<SelectItem>) {
+        let kept = self.selected_action();
         self.items = items;
         let indices = self.filtered_indices();
+        if let Some(row) = kept.and_then(|action| self.row_of_action(&indices, &action)) {
+            self.selected = row;
+            return;
+        }
         self.snap_to_selectable(&indices);
+    }
+
+    /// The action of the highlighted row, when it is a selectable item.
+    fn selected_action(&self) -> Option<ResolvedAction> {
+        let indices = self.filtered_indices();
+        let item = &self.items[*indices.get(self.selected)?];
+        (!item.is_header()).then(|| item.action.clone())
+    }
+
+    /// The visible row (an index into `indices`) of the selectable item
+    /// committing `action`, if any.
+    fn row_of_action(&self, indices: &[usize], action: &ResolvedAction) -> Option<usize> {
+        indices
+            .iter()
+            .position(|&idx| !self.items[idx].is_header() && self.items[idx].action == *action)
     }
 
     /// Indices of items to display for the current query.
@@ -1387,6 +1409,68 @@ mod tests {
         assert!(sl.refresh_items("agent-fleet", &fresh));
         assert_eq!(sl.items.len(), 1);
         assert_eq!(sl.items[0].label, "fresh-row");
+    }
+
+    /// phux-c2td.3: a refresh that inserts rows above the cursor (a host
+    /// header landing in the session picker) keeps the highlighted target,
+    /// so Enter still commits what the user saw.
+    #[test]
+    fn replace_items_keeps_the_selection_on_the_same_action() {
+        let mut sl = SelectList::new(
+            "sessions",
+            vec![
+                SelectItem::new("work", action("work")),
+                SelectItem::new("scratch", action("scratch")),
+            ],
+            &Theme::default(),
+        )
+        .with_live_key("session-picker");
+        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
+        assert_eq!(sl.selected, 1, "scratch is highlighted");
+
+        assert!(sl.refresh_items(
+            "session-picker",
+            &[
+                SelectItem::header("This host"),
+                SelectItem::new("work", action("work")),
+                SelectItem::new("scratch", action("scratch")),
+                SelectItem::header("edge"),
+                SelectItem::new("build", action("build")),
+            ],
+        ));
+        let indices = sl.filtered_indices();
+        assert_eq!(
+            sl.items[indices[sl.selected]].label, "scratch",
+            "the selection follows the action, not the row index"
+        );
+        assert_eq!(
+            sl.handle_key(&press(PhysicalKey::Enter, None)),
+            OverlayCommand::Commit(action("scratch"))
+        );
+    }
+
+    /// When the highlighted action is gone after a refresh, the selection
+    /// falls back to the same position, snapped onto a selectable row.
+    #[test]
+    fn replace_items_falls_back_to_position_when_the_action_is_gone() {
+        let mut sl = SelectList::new(
+            "sessions",
+            vec![
+                SelectItem::new("a", action("a")),
+                SelectItem::new("b", action("b")),
+            ],
+            &Theme::default(),
+        )
+        .with_live_key("session-picker");
+        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
+        sl.refresh_items(
+            "session-picker",
+            &[
+                SelectItem::new("c", action("c")),
+                SelectItem::new("d", action("d")),
+            ],
+        );
+        assert_eq!(sl.selected, 1);
     }
 
     #[test]

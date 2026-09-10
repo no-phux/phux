@@ -243,6 +243,145 @@ pub(super) fn session_picker_items(
         .collect()
 }
 
+/// Header for this host's group in the host-grouped session picker.
+pub(super) const LOCAL_HOST_HEADER: &str = "This host";
+
+/// Live-refresh key for the session picker: the driver rebuilds its rows
+/// when a fresh host inventory lands, so a picker opened before the
+/// `GET_STATE` reply fills in its satellites in place instead of showing a
+/// stale fleet.
+pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
+
+/// The complete session-picker row set: the host-grouped sessions plus the
+/// trailing "+ New session" row.
+///
+/// One builder so the initial open and the live refresh that lands with a
+/// fresh host inventory cannot drift apart.
+pub(in crate::attach) fn session_picker_rows(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<phux_protocol::ids::SessionId>,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+    workspace: &Workspace,
+) -> Vec<SelectItem> {
+    let mut items = host_grouped_session_items(sessions, focused, hosts, workspace);
+    items.push(new_session_item());
+    items
+}
+
+/// Build the session picker's rows grouped by host (phux-c2td.3).
+///
+/// With no satellite inventory (`hosts` empty — a non-hub server, or one
+/// that predates `ServerFeature::HostSessions`) this is exactly
+/// [`session_picker_items`]: an ungrouped list, unchanged. With one, this
+/// host's sessions nest under a [`LOCAL_HOST_HEADER`] header and each
+/// satellite follows under its own, its sessions committing
+/// `switch-session { name, host }` — the same key, one host further out.
+///
+/// A satellite the hub could not reach keeps its header, marked
+/// `(unreachable)`, rather than disappearing: a session that exists but is
+/// currently unlistable is exactly the one a user needs told about.
+pub(super) fn host_grouped_session_items(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<phux_protocol::ids::SessionId>,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+    workspace: &Workspace,
+) -> Vec<SelectItem> {
+    let local = session_picker_items(sessions, focused);
+    if hosts.is_empty() {
+        return local;
+    }
+    let mut items = vec![SelectItem::header(LOCAL_HOST_HEADER)];
+    items.extend(local.into_iter().map(SelectItem::indented));
+    for host in hosts {
+        items.extend(satellite_host_items(host, workspace));
+    }
+    items
+}
+
+/// One satellite's header plus its name-sorted session rows.
+fn satellite_host_items(
+    host: &phux_protocol::wire::info::HostInventory,
+    workspace: &Workspace,
+) -> Vec<SelectItem> {
+    if !host.is_reachable() {
+        return vec![SelectItem::header(format!("{} (unreachable)", host.host))];
+    }
+    let mut items = vec![SelectItem::header(host.host.to_string())];
+    let mut sessions: Vec<_> = host.sessions.iter().collect();
+    sessions.sort_by(|a, b| a.name.cmp(&b.name));
+    items.extend(
+        sessions
+            .into_iter()
+            .map(|session| satellite_session_item(host, session, workspace)),
+    );
+    items
+}
+
+/// One satellite session's row. The label is the session's own name (the
+/// header carries the host); the secondary names the host too, so the row
+/// still reads correctly once a typed query hides the headers.
+fn satellite_session_item(
+    host: &phux_protocol::wire::info::HostInventory,
+    session: &phux_protocol::wire::info::HostSessionInfo,
+    workspace: &Workspace,
+) -> SelectItem {
+    let mut details = vec![
+        format!("on {}", host.host),
+        count_label(session.window_count, "window", "windows"),
+        count_label(session.pane_count, "pane", "panes"),
+    ];
+    if session
+        .active_resource
+        .as_ref()
+        .is_some_and(|id| window_holding(workspace, id).is_some())
+    {
+        details.push("open here".to_owned());
+    }
+    if session.attached_client_count != 0 {
+        details.push(format!("{} attached", session.attached_client_count));
+    }
+    let mut args = std::collections::BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
+    args.insert(
+        "host".to_owned(),
+        toml::Value::String(host.host.to_string()),
+    );
+    SelectItem::new(
+        session.name.clone(),
+        phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args,
+        },
+    )
+    .secondary(details.join(", "))
+    .indented()
+}
+
+/// The index of the first window of this client's workspace holding `id` as
+/// a leaf, if any. Behind a satellite session's "open here" marker, and
+/// behind `switch-session { name, host }` choosing to focus an already-open
+/// satellite pane instead of opening a second window onto it.
+pub(super) fn window_holding(
+    workspace: &Workspace,
+    id: &phux_protocol::ResourceId,
+) -> Option<usize> {
+    workspace.windows.iter().position(|window| {
+        window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
+    })
+}
+
+fn count_label(n: u16, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// The trailing "+ New session" row for the session picker. Committing it
 /// runs the bare `new-session` action, which opens the name prompt — so a
 /// new session is always reachable from `<leader> a`, even when this is

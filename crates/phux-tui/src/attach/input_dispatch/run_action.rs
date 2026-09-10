@@ -32,7 +32,10 @@ use super::dispatch::{
     spawn_initial_size,
 };
 use super::effects::{ActionEffects, ReattachTarget};
-use super::pickers::{new_session_item, session_picker_items, switch_window, window_picker_items};
+use super::pickers::{
+    SESSION_PICKER_LIVE_KEY, session_picker_rows, switch_window, window_holding,
+    window_picker_items,
+};
 
 /// Open the single fuzzy discovery surface. `show-help` and
 /// `command-palette` are entry aliases so users never have to choose between
@@ -115,7 +118,7 @@ pub(super) fn run_action(
         "next-attention" => next_attention(ctx, focused, panes, e),
         "return-from-attention" => return_from_attention(ctx, e),
         "focus-pane" => focus_pane(resolved, ctx, e),
-        "switch-session" => switch_session(resolved, e),
+        "switch-session" => switch_session(resolved, ctx, e),
         "new-session" => new_session(resolved, ctx, e),
         "detach" => e.detach = true,
         "plugin-action" => plugin_action(resolved, e),
@@ -366,7 +369,7 @@ fn new_window(
         initial_size: spawn_initial_size(ctx, |content| Some((content.w, content.h))),
         resource: None,
     };
-    effects.spawn_window = Some((request_id, PendingWindow { name }, frame));
+    effects.spawn_window = Some((request_id, PendingWindow { name, adopt: None }, frame));
 }
 
 /// Browse directories on the attached server's host (`docs/spec/L3.md` §4).
@@ -654,11 +657,18 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// row dismisses the picker as a silent no-op; peer rows commit
 /// `switch-session { name }`. A trailing "+ New session" row
 /// keeps creation reachable even when no sessions are cached.
+///
+/// phux-c2td.3: against a federation hub the rows are grouped by
+/// host — this host, then each satellite — and a satellite row
+/// commits `switch-session { name, host }`. The open also asks
+/// the driver for a fresh inventory; the list carries the live
+/// key so that reply refreshes these rows in place.
 fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
-    let mut items = session_picker_items(ctx.sessions, ctx.focused_session);
-    items.push(new_session_item());
-    ctx.overlays
-        .push(Box::new(SelectList::new("sessions", items, ctx.theme)));
+    let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
+    *ctx.host_refresh_request = true;
+    ctx.overlays.push(Box::new(
+        SelectList::new("sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
+    ));
 }
 
 /// phux-foz.7: push the agent-fleet dashboard — every pane of
@@ -828,7 +838,16 @@ fn focus_pane(
 /// to a one-step cross-session PANE pick — after selecting the
 /// window, the driver focuses its DFS leaf ordinal `P`. The
 /// agent-fleet dashboard's foreign pane rows commit this form.
-fn switch_session(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+///
+/// phux-c2td.3: an optional `host = "NAME"` arg names a federation
+/// satellite instead of a session on this server, and takes the
+/// [`open_satellite_session`] path — the session picker's satellite
+/// rows commit that form.
+fn switch_session(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+) {
     let Some(name) = name_arg(resolved) else {
         tracing::warn!(
             args = ?resolved.args,
@@ -837,9 +856,126 @@ fn switch_session(resolved: &phux_config::keybind::ResolvedAction, effects: &mut
         effects.bell = true;
         return;
     };
+    if let Some(host) = str_arg(resolved, "host") {
+        open_satellite_session(ctx, effects, &host, &name);
+        return;
+    }
     let window = usize_arg(resolved, "window");
     let pane = usize_arg(resolved, "pane");
     effects.reattach = Some(ReattachTarget::Existing { name, window, pane });
+}
+
+/// phux-c2td.3: `switch-session { name, host }` — select a session that
+/// lives on a satellite of this hub.
+///
+/// A session on another host cannot be *attached* from here: `ATTACH` is
+/// session-scoped and session ids are not federation-routable (ADR-0016,
+/// L1 §9.1), so the hub has no session of that name to re-attach this
+/// client to. What the hub does relay is resources, so this reuses the
+/// mechanism satellite panes already ride: the session's active pane,
+/// re-tagged `Satellite { host, id }` by the hub's inventory, is opened as
+/// a window of the session this client is attached to and attached through
+/// the relay (`ATTACH_RESOURCE`), exactly as a `spawn --satellite` pane is.
+/// Choosing the same session again focuses that window rather than opening
+/// a second one onto the same pane.
+///
+/// The consequence to know: the opened window holds the satellite's real
+/// Terminal, not a copy of it. Closing the window kills that pane on the
+/// satellite, like any other leaf. A full cross-host attach — the
+/// satellite's whole window layout, its own windows and splits — is
+/// `phux attach --remote HOST SESSION`, a separate connection to that
+/// server.
+///
+/// The window opens only when the attach succeeds. The action parks a
+/// [`PendingWindow`] naming the pane to adopt and sends `ATTACH_RESOURCE`;
+/// the reply either opens, focuses, and broadcasts the window, or — when the
+/// hub or satellite refuses — bells and names the host and session in a
+/// status notice, leaving the shared layout untouched. A second commit while
+/// that attach is in flight sends nothing more.
+///
+/// Bells when the host is unreachable, has no such session, or reported no
+/// active pane for it: there is nothing to open, and the picker's
+/// `(unreachable)` header has already said why.
+fn open_satellite_session(
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+    host: &str,
+    name: &str,
+) {
+    let Some(target) = satellite_session_pane(ctx.hosts, host, name) else {
+        tracing::warn!(
+            host,
+            session = name,
+            "switch-session: no reachable satellite session by that name",
+        );
+        effects.bell = true;
+        return;
+    };
+    if let Some(index) = window_holding(ctx.workspace, &target) {
+        focus_open_satellite_pane(ctx, effects, index, target);
+        return;
+    }
+    if attach_in_flight(ctx.pending_windows, &target) {
+        return;
+    }
+    let request_id = take_request_id(ctx);
+    ctx.pending_windows.insert(
+        request_id,
+        PendingWindow {
+            name: format!("{host}/{name}"),
+            adopt: Some(target.clone()),
+        },
+    );
+    // The pane exists already, so there is no spawn: attach it. Its
+    // bootstrap seeds the slot, and the reply decides whether the window
+    // opens (`server_frame::handler`).
+    effects.command_frames.push(FrameKind::Command {
+        request_id,
+        command: Command::AttachResource {
+            terminal_id: target,
+        },
+    });
+}
+
+/// Focus the window already holding a satellite session's pane.
+fn focus_open_satellite_pane(
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+    index: usize,
+    target: ResourceId,
+) {
+    switch_window(ctx, effects, |workspace| {
+        workspace.select(index);
+    });
+    if let Some(layout) = ctx.workspace.active_window_mut() {
+        layout.focus = Some(target.clone());
+    }
+    effects.layout_mutated = true;
+    effects.set_focus = Some(target);
+}
+
+/// Whether an attach adopting `target` into a window is already parked.
+fn attach_in_flight(pending: &HashMap<u32, PendingWindow>, target: &ResourceId) -> bool {
+    pending
+        .values()
+        .any(|window| window.adopt.as_ref() == Some(target))
+}
+
+/// The hub-routable pane behind a satellite session name, or `None` when
+/// the host is absent, unreachable, or reported no active pane.
+fn satellite_session_pane(
+    hosts: &[phux_protocol::wire::info::HostInventory],
+    host: &str,
+    name: &str,
+) -> Option<ResourceId> {
+    hosts
+        .iter()
+        .find(|inventory| inventory.host.as_str() == host && inventory.is_reachable())?
+        .sessions
+        .iter()
+        .find(|session| session.name == name)?
+        .active_resource
+        .clone()
 }
 
 /// Create a fresh session (or attach to one already named) and
@@ -952,6 +1088,7 @@ fn plugin_pane(
                 request_id,
                 PendingWindow {
                     name: entry.title.clone(),
+                    adopt: None,
                 },
                 frame,
             ));

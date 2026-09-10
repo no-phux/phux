@@ -122,6 +122,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -143,6 +144,8 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -258,6 +261,7 @@ async fn dispatch_with_passthrough_popup(
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -279,6 +283,8 @@ async fn dispatch_with_passthrough_popup(
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -438,6 +444,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -459,6 +466,8 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -699,6 +708,7 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -720,6 +730,8 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -889,7 +901,8 @@ fn painted_windows_bar(
 /// both the select effect and that nothing leaked to a pane.
 #[allow(
     clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+    clippy::too_many_lines,
+    reason = "client-side libghostty Terminal is !Send (ADR-0003 binds us to current-thread); the length is one DispatchCtx fixture literal, as in the other dispatch fixtures in this file"
 )]
 async fn dispatch_bar_click(
     ev: InputEvent,
@@ -928,6 +941,7 @@ async fn dispatch_bar_click(
         // table now, not from the workspace, so a fixture that wants
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
+        let mut host_refresh = false;
         let mut ctx = DispatchCtx {
             layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
@@ -949,6 +963,8 @@ async fn dispatch_bar_click(
             theme: &theme,
             sessions: &[],
             foreign_layouts: &HashMap::new(),
+            hosts: &[],
+            host_refresh_request: &mut host_refresh,
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,
@@ -1261,6 +1277,7 @@ async fn dispatch_mouse_two_pane_into(
         // table now, not from the workspace, so a fixture that wants
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
+        let mut host_refresh = false;
         let mut ctx = DispatchCtx {
             layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
@@ -1282,6 +1299,8 @@ async fn dispatch_mouse_two_pane_into(
             theme: &theme,
             sessions: &[],
             foreign_layouts: &HashMap::new(),
+            hosts: &[],
+            host_refresh_request: &mut host_refresh,
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,
@@ -1846,6 +1865,7 @@ fn run_set_pane(
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -1867,6 +1887,8 @@ fn run_set_pane(
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -2088,6 +2110,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -2112,6 +2135,8 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,

@@ -123,6 +123,19 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// from this list. Empty until the first snapshot lands (the picker then
     /// still offers its new-session row).
     pub sessions: &'a [phux_protocol::wire::info::SessionInfo],
+    /// phux-c2td.3: the federation host inventory from the driver's latest
+    /// `GET_STATE` (`ServerFeature::HostSessions`), one row per satellite
+    /// this server dials. The session picker groups its rows by host from
+    /// this, and `switch-session { name, host }` resolves its target pane
+    /// through it. Empty against a non-hub server, a server with no
+    /// satellites, or one that predates the feature — in which case the
+    /// picker is its ungrouped self.
+    pub hosts: &'a [phux_protocol::wire::info::HostInventory],
+    /// phux-c2td.3: set by an action that wants a fresher host inventory
+    /// (opening the session picker). The driver sends one `GET_STATE` after
+    /// the batch and folds the reply into [`Self::hosts`]; a picker already
+    /// open refreshes its rows in place when it lands.
+    pub host_refresh_request: &'a mut bool,
     /// phux-foz.8: peer sessions' persisted L3 workspaces, fetched by the
     /// driver right after ATTACH (one `GET_METADATA` per peer on the
     /// per-session layout key). The `<leader> w` window picker reads this

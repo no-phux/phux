@@ -24,6 +24,9 @@ pub(super) use ctx::{DispatchCtx, DragGrab};
 pub(super) use dispatch::{dispatch_input_events, predict_now_ms, sync_overlays_to_focused_pane};
 pub use effects::ReattachTarget;
 pub(super) use effects::encode_layout_or_log;
+/// phux-c2td.3: the session picker's rows and its live-refresh key, so the
+/// driver can rebuild an open picker when a fresh host inventory lands.
+pub(super) use pickers::{SESSION_PICKER_LIVE_KEY, session_picker_rows};
 
 /// Canonical names of every action `run_action` handles.
 ///

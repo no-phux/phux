@@ -1633,6 +1633,32 @@ The **session picker** (`session-picker`, `C-a s`, alias `C-a a`) lists the
 server's other sessions; choosing one re-attaches this client to it
 in-process (`switch-session`). A trailing "+ New session" row creates one.
 
+Against a **federation hub** the picker is grouped by host: a `This host`
+header over this server's sessions, then one header per satellite with its
+sessions beneath, each row showing its window and pane counts. A satellite
+the hub could not reach keeps its header, marked `(unreachable)`, instead of
+disappearing — a session you cannot see is exactly the one worth being told
+about. The keys are the same throughout; a satellite row commits
+`switch-session { name, host }`.
+
+**What a satellite row does, and does not, do.** A session on another host
+cannot be attached from here: `ATTACH` is session-scoped and session ids are
+not federation-routable, so the hub has no session of that name to re-attach
+this client to. What it relays is *resources*, so choosing a satellite
+session opens that session's active pane as a window of the session you are
+attached to and attaches it through the hub — the same path a
+`spawn --satellite` pane already rides. The window opens only once that
+attach succeeds; a refused attach rings the bell, names the host and session
+in a status notice, and leaves no window behind. Choosing it again focuses
+that window rather than opening a second one onto the same pane. The window holds
+the satellite's real Terminal, not a copy: closing it kills that pane on the
+satellite, as for any other leaf. For the satellite's own windows and splits,
+attach that server directly with `phux attach --remote HOST SESSION`.
+
+The grouping needs a server that advertises `HOST_SESSIONS`
+(`docs/spec/proto.md` §6.2); against any other server the picker keeps its
+flat, ungrouped list.
+
 The **window picker** (`window-picker`, `C-a w`) is hierarchical: every
 session is a section header with its windows nested beneath it. Choosing a
 window in the **current** session switches to it directly

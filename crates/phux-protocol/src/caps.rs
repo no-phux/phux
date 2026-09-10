@@ -942,6 +942,10 @@ pub const TRANSCRIBE: u32 = 0x0000_2000;
 pub const RESOURCE_KINDS: u32 = 0x0000_4000;
 /// Wire bit advertising the `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4).
 pub const LIST_DIRECTORY: u32 = 0x0000_8000;
+/// Wire bit advertising the `GET_STATE` host-session inventory: the trailing
+/// `SessionSnapshot.hosts` list a federation hub fills with each satellite's
+/// sessions (`docs/spec/L1.md` §9.1).
+pub const HOST_SESSIONS: u32 = 0x0001_0000;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -996,6 +1000,15 @@ pub enum ServerFeature {
     /// bit before sending the frame; an older server drops the unknown
     /// discriminant and the request would wait forever.
     ListDirectory = LIST_DIRECTORY,
+    /// The server's `GET_STATE { scope: SERVER }` snapshot carries the
+    /// trailing host-session inventory (`SessionSnapshot.hosts`): on a
+    /// federation hub, one row per configured satellite with that host's
+    /// sessions under their satellite-local ids, or the reason it could not
+    /// be reached. A non-hub server advertises the bit and sends an empty
+    /// list, which is the complete answer. The list is trailing-additive,
+    /// so a server may send it unasked; the bit is what lets a client read
+    /// an empty list as "no satellites" rather than "an older hub".
+    HostSessions = HOST_SESSIONS,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1013,7 +1026,8 @@ impl ServerFeatureSet {
         | (ServerFeature::GetPerf as u32)
         | (ServerFeature::Transcribe as u32)
         | (ServerFeature::ResourceKinds as u32)
-        | (ServerFeature::ListDirectory as u32);
+        | (ServerFeature::ListDirectory as u32)
+        | (ServerFeature::HostSessions as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1689,6 +1703,9 @@ mod tests {
         assert!(!ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::ResourceKinds));
         assert_eq!(LIST_DIRECTORY, 0x0000_8000);
         assert!(ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectory));
+        assert_eq!(HOST_SESSIONS, 0x0001_0000);
+        assert!(ServerFeatureSet::from_wire(HOST_SESSIONS).contains(ServerFeature::HostSessions));
+        assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::HostSessions));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

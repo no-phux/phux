@@ -3137,16 +3137,25 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 /// list. `cols` / `rows` / `title` / `cwd` are likewise relayed verbatim
 /// from the satellite's snapshot; the hub synthesizes nothing.
 ///
+/// **Host-session inventory (`ServerFeature::HostSessions`).** Sessions do
+/// not merge, but they are not dropped either: each satellite contributes
+/// one [`HostInventory`](phux_protocol::wire::info::HostInventory) row to
+/// `snapshot.hosts`, carrying its sessions under their satellite-local ids
+/// (never renumbered into the hub's space) with window and pane counts and
+/// the session's active pane re-tagged `Satellite { host, id }`. Rows are
+/// sorted by host name. A satellite that is itself a hub has its own
+/// `hosts` ignored, like its Satellite-tagged ids (no chaining).
+///
 /// **Degradation.** A satellite that is unreachable, saturated, or
-/// answers with an error contributes an empty set and NEVER fails the
-/// aggregate. The indication is the spec's observable-teardown shape: one
-/// un-correlated `ERROR` frame (typically `SatelliteUnreachable`), naming
-/// the host, pushed to the requesting consumer before the
-/// `COMMAND_RESULT`.
+/// answers with an error contributes no resources and NEVER fails the
+/// aggregate. It keeps an inventory row marked unreachable, so a consumer
+/// shows it degraded rather than missing, and the requesting consumer also
+/// gets the spec's observable-teardown shape: one un-correlated `ERROR`
+/// frame (typically `SatelliteUnreachable`), naming the host, pushed before
+/// the `COMMAND_RESULT`.
 ///
 /// Every id a satellite reports is retagged by
-/// [`retag_satellite_resource_id`] — the one hook parent ids will use when
-/// `ResourceInfo` gains the field.
+/// [`retag_satellite_resource_id`].
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
     scope: &StateScope,
@@ -3159,7 +3168,7 @@ pub(crate) async fn handle_get_state_federated(
     let relays = state.with(crate::state::ServerState::hub_relays_all);
     if relays.is_empty() {
         // Non-hub server (or hub with an empty table): the local snapshot
-        // is the whole truth.
+        // is the whole truth, and its empty `hosts` says so.
         return local;
     }
     let CommandResult::OkWith(CommandValue::State(mut snapshot)) = local else {
@@ -3175,57 +3184,160 @@ pub(crate) async fn handle_get_state_federated(
             .await;
         (relay.host().clone(), result)
     });
+    let mut hosts = Vec::new();
     for (host, result) in futures_util::future::join_all(queries).await {
-        match result {
-            CommandResult::OkWith(CommandValue::State(sat)) => {
-                for mut pane in sat.resources {
-                    let Some(id) = retag_satellite_resource_id(&host, Some(&pane.id)) else {
-                        warn!(
-                            satellite = %host,
-                            pane = %pane.id,
-                            "satellite listed a Satellite-tagged terminal; dropping (no chaining)"
-                        );
-                        continue;
-                    };
-                    pane.id = id;
-                    // A parent id is a resource id and retags by the same
-                    // rule (ADR-0104): a satellite child is reported under
-                    // its satellite parent, and a Satellite-tagged parent
-                    // (chaining) drops the binding rather than pointing at
-                    // an unrelated hub-local pane.
-                    pane.parent = retag_satellite_resource_id(&host, pane.parent.as_ref());
-                    snapshot.resources.push(pane);
-                }
-            }
-            CommandResult::Error { code, message } => {
-                debug!(
-                    satellite = %host,
-                    ?code,
-                    %message,
-                    "GET_STATE aggregation: satellite contributes nothing"
-                );
-                // Observable degradation, not silence: the same
-                // un-correlated typed ERROR shape the relay uses for
-                // teardown notification (L1 §9.1). Sent before the
-                // COMMAND_RESULT the caller emits on return.
-                let _ = out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code,
-                        message,
-                    }))
-                    .await;
-            }
-            other => {
-                warn!(
-                    satellite = %host,
-                    ?other,
-                    "GET_STATE aggregation: unexpected satellite result shape; skipping"
-                );
-            }
+        hosts.push(fold_satellite_state(&mut snapshot, host, result, out_tx).await);
+    }
+    hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
+    CommandResult::OkWith(CommandValue::State(snapshot.with_hosts(hosts)))
+}
+
+/// Fold one satellite's `GET_STATE` answer into the hub's aggregate: merge
+/// its resources into `snapshot` and return its inventory row. An error
+/// answer becomes an unreachable row plus the un-correlated degradation
+/// `ERROR` pushed ahead of the `COMMAND_RESULT` (L1 §9.1).
+async fn fold_satellite_state(
+    snapshot: &mut phux_protocol::wire::info::SessionSnapshot,
+    host: phux_protocol::ids::SatelliteHost,
+    result: CommandResult,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) -> phux_protocol::wire::info::HostInventory {
+    match result {
+        CommandResult::OkWith(CommandValue::State(sat)) => {
+            let inventory = satellite_host_inventory(&host, &sat);
+            merge_satellite_resources(snapshot, &host, sat.resources);
+            inventory
+        }
+        CommandResult::Error { code, message } => {
+            debug!(
+                satellite = %host,
+                ?code,
+                %message,
+                "GET_STATE aggregation: satellite contributes nothing"
+            );
+            let row = phux_protocol::wire::info::HostInventory::unreachable(host, message.clone());
+            // Observable degradation, not silence: the same un-correlated
+            // typed ERROR shape the relay uses for teardown notification.
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::Error {
+                    request_id: None,
+                    code,
+                    message,
+                }))
+                .await;
+            row
+        }
+        other => {
+            warn!(
+                satellite = %host,
+                ?other,
+                "GET_STATE aggregation: unexpected satellite result shape; skipping"
+            );
+            phux_protocol::wire::info::HostInventory::unreachable(
+                host,
+                "satellite answered GET_STATE with an unexpected result",
+            )
         }
     }
-    CommandResult::OkWith(CommandValue::State(snapshot))
+}
+
+/// Append a satellite's resources to the hub's aggregate, re-tagged into the
+/// hub's id space. A Satellite-tagged id is dropped (no chaining).
+fn merge_satellite_resources(
+    snapshot: &mut phux_protocol::wire::info::SessionSnapshot,
+    host: &phux_protocol::ids::SatelliteHost,
+    resources: Vec<phux_protocol::wire::info::ResourceInfo>,
+) {
+    for mut pane in resources {
+        let Some(id) = retag_satellite_resource_id(host, Some(&pane.id)) else {
+            warn!(
+                satellite = %host,
+                pane = %pane.id,
+                "satellite listed a Satellite-tagged terminal; dropping (no chaining)"
+            );
+            continue;
+        };
+        pane.id = id;
+        // A parent id is a resource id and retags by the same rule
+        // (ADR-0104): a satellite child is reported under its satellite
+        // parent, and a Satellite-tagged parent (chaining) drops the binding
+        // rather than pointing at an unrelated hub-local pane.
+        pane.parent = retag_satellite_resource_id(host, pane.parent.as_ref());
+        snapshot.resources.push(pane);
+    }
+}
+
+/// The inventory row for a satellite that answered: one entry per session it
+/// reported, under its own satellite-local id.
+fn satellite_host_inventory(
+    host: &phux_protocol::ids::SatelliteHost,
+    sat: &phux_protocol::wire::info::SessionSnapshot,
+) -> phux_protocol::wire::info::HostInventory {
+    let sessions = sat
+        .sessions
+        .iter()
+        .map(|session| satellite_host_session(host, sat, session))
+        .collect();
+    phux_protocol::wire::info::HostInventory::reachable(host.clone(), sessions)
+}
+
+/// One satellite session's inventory entry, with its pane count and its
+/// active pane derived from the satellite's own windows and resources.
+fn satellite_host_session(
+    host: &phux_protocol::ids::SatelliteHost,
+    sat: &phux_protocol::wire::info::SessionSnapshot,
+    session: &phux_protocol::wire::info::SessionInfo,
+) -> phux_protocol::wire::info::HostSessionInfo {
+    phux_protocol::wire::info::HostSessionInfo::new(session.id, session.name.clone())
+        .with_created_at_unix_secs(session.created_at_unix_secs)
+        .with_window_count(session.window_count)
+        .with_pane_count(session_pane_count(sat, session.id))
+        .with_attached_client_count(session.attached_client_count)
+        .with_active_resource(session_active_resource(host, sat, session))
+}
+
+/// Terminal-kind resources across a satellite session's windows.
+fn session_pane_count(
+    sat: &phux_protocol::wire::info::SessionSnapshot,
+    session: phux_protocol::SessionId,
+) -> u16 {
+    let panes = sat
+        .resources
+        .iter()
+        .filter(|pane| pane.kind.is_terminal() && window_in_session(sat, pane.window_id, session))
+        .count();
+    u16::try_from(panes).unwrap_or(u16::MAX)
+}
+
+fn window_in_session(
+    sat: &phux_protocol::wire::info::SessionSnapshot,
+    window: phux_protocol::WindowId,
+    session: phux_protocol::SessionId,
+) -> bool {
+    sat.windows
+        .iter()
+        .any(|w| w.id == window && w.session_id == session)
+}
+
+/// A satellite session's remembered focused pane, re-tagged for the hub:
+/// the active window's active resource, falling back to the session's
+/// first window and then to that window's first Terminal.
+fn session_active_resource(
+    host: &phux_protocol::ids::SatelliteHost,
+    sat: &phux_protocol::wire::info::SessionSnapshot,
+    session: &phux_protocol::wire::info::SessionInfo,
+) -> Option<phux_protocol::ids::ResourceId> {
+    let window = session
+        .active_window
+        .and_then(|id| sat.windows.iter().find(|w| w.id == id))
+        .or_else(|| sat.windows.iter().find(|w| w.session_id == session.id))?;
+    let local = window.active_resource.clone().or_else(|| {
+        sat.resources
+            .iter()
+            .find(|pane| pane.kind.is_terminal() && pane.window_id == window.id)
+            .map(|pane| pane.id.clone())
+    });
+    retag_satellite_resource_id(host, local.as_ref())
 }
 
 /// Retag one id a satellite reported into the hub's id space, for
@@ -4976,5 +5088,89 @@ mod get_state_retag_tests {
             None,
             "hub-and-spoke does not chain (L1 §9.1)",
         );
+    }
+}
+
+#[cfg(test)]
+mod host_inventory_tests {
+    use phux_protocol::ids::{ResourceId, ResourceKind, SatelliteHost};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+    use phux_protocol::{SessionId, WindowId};
+
+    use super::satellite_host_inventory;
+
+    /// A satellite snapshot with two sessions: `build` (two windows, three
+    /// terminals, one agent-session child) and `logs` (one window whose
+    /// remembered focus is unset).
+    fn satellite_snapshot() -> SessionSnapshot {
+        let build = SessionId::new(1);
+        let logs = SessionId::new(2);
+        SessionSnapshot::new(build, WindowId::new(10), ResourceId::local(100))
+            .with_sessions(vec![
+                SessionInfo::new(build, "build")
+                    .with_window_count(2)
+                    .with_attached_client_count(1)
+                    .with_active_window(Some(WindowId::new(11))),
+                SessionInfo::new(logs, "logs").with_window_count(1),
+            ])
+            .with_windows(vec![
+                WindowInfo::new(WindowId::new(10), build, "a")
+                    .with_active_resource(Some(ResourceId::local(100))),
+                WindowInfo::new(WindowId::new(11), build, "b")
+                    .with_active_resource(Some(ResourceId::local(102))),
+                WindowInfo::new(WindowId::new(20), logs, "tail"),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(100), WindowId::new(10), 80, 24),
+                ResourceInfo::new(ResourceId::local(101), WindowId::new(10), 80, 24),
+                ResourceInfo::new(ResourceId::local(102), WindowId::new(11), 80, 24),
+                ResourceInfo::resource(ResourceId::local(103), ResourceKind::AgentSession)
+                    .with_parent(Some(ResourceId::local(100))),
+                ResourceInfo::new(ResourceId::local(200), WindowId::new(20), 80, 24),
+            ])
+    }
+
+    /// Sessions keep their satellite-local ids and names; counts come from
+    /// the satellite's own windows; the active pane is re-tagged for the hub.
+    #[test]
+    fn inventory_lists_satellite_sessions_without_renumbering() {
+        let host = SatelliteHost::from("edge");
+        let row = satellite_host_inventory(&host, &satellite_snapshot());
+
+        assert!(row.is_reachable());
+        assert_eq!(row.host, host);
+        let build = &row.sessions[0];
+        assert_eq!(build.id, SessionId::new(1), "satellite-local id, verbatim");
+        assert_eq!(build.name, "build");
+        assert_eq!(build.window_count, 2);
+        assert_eq!(build.pane_count, 3, "agent sessions are not panes");
+        assert_eq!(build.attached_client_count, 1);
+        assert_eq!(
+            build.active_resource,
+            Some(ResourceId::satellite(host.clone(), 102)),
+            "the active window's active pane, re-tagged"
+        );
+        let logs = &row.sessions[1];
+        assert_eq!(logs.pane_count, 1);
+        assert_eq!(
+            logs.active_resource,
+            Some(ResourceId::satellite(host, 200)),
+            "no remembered focus falls back to the first window's first terminal"
+        );
+    }
+
+    /// A satellite that reports a Satellite-tagged active pane (chaining)
+    /// yields no active pane rather than an unroutable id.
+    #[test]
+    fn chained_active_pane_is_dropped() {
+        let session = SessionId::new(1);
+        let chained = ResourceId::satellite(SatelliteHost::from("deeper"), 5);
+        let sat = SessionSnapshot::new(session, WindowId::new(1), chained.clone())
+            .with_sessions(vec![SessionInfo::new(session, "s").with_window_count(1)])
+            .with_windows(vec![
+                WindowInfo::new(WindowId::new(1), session, "w").with_active_resource(Some(chained)),
+            ]);
+        let row = satellite_host_inventory(&SatelliteHost::from("edge"), &sat);
+        assert_eq!(row.sessions[0].active_resource, None);
     }
 }

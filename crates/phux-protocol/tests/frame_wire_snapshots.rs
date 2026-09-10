@@ -12,17 +12,20 @@
 use bytes::BytesMut;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{
-    BootstrapId, ClientId, GroupId, ResourceId, ResourceKind, SessionId, StreamId, WindowId,
+    BootstrapId, ClientId, GroupId, ResourceId, ResourceKind, SatelliteHost, SessionId, StreamId,
+    WindowId,
 };
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, Command, CommandResult, DetachReason, ErrorCode, FrameKind, MoveError,
-    MoveResult, Scope, SpawnError, SpawnResource, SpawnResult, ViewportInfo,
+    AgentEvent, CloseReason, Command, CommandResult, CommandValue, DetachReason, ErrorCode,
+    FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResource, SpawnResult, ViewportInfo,
 };
-use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::info::{
+    AgentFacet, HostInventory, HostSessionInfo, ResourceInfo, SessionInfo, SessionSnapshot,
+};
 
 /// Render `bytes` as an `xxd`-style hex dump: 16 cols per row,
 /// `OFFSET | HEX HEX HEX ... | ASCII`.
@@ -637,6 +640,38 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                                 .with_native_id(Some("session-42".to_owned())),
                         )),
                 ]),
+            },
+        ),
+        // GET_STATE reply from a federation hub carrying the trailing
+        // host-session inventory: no resource facets (a zero-count facet
+        // list anchors the position), one reachable satellite with one
+        // session, one unreachable satellite.
+        (
+            "snap_command_result_state_with_host_inventory",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0014,
+                result: CommandResult::OkWith(CommandValue::State(
+                    SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                        .with_sessions(vec![
+                            SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+                        ])
+                        .with_hosts(vec![
+                            HostInventory::reachable(
+                                SatelliteHost::new("edge"),
+                                vec![
+                                    HostSessionInfo::new(SessionId::new(1), "build")
+                                        .with_window_count(2)
+                                        .with_pane_count(3)
+                                        .with_attached_client_count(1)
+                                        .with_active_resource(Some(ResourceId::satellite(
+                                            SatelliteHost::new("edge"),
+                                            7,
+                                        ))),
+                                ],
+                            ),
+                            HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
+                        ]),
+                )),
             },
         ),
         // BOOTSTRAP_BEGIN for an AgentSession stream: codec tag 3, raw

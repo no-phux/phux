@@ -195,6 +195,66 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     out.flush()
 }
 
+/// phux-c2td.3: rebuild and repaint the session picker in place when a
+/// fresh host inventory lands while it is open, so a picker opened before
+/// the `GET_STATE` reply fills in its satellite groups instead of showing a
+/// stale fleet. A no-op unless a live session picker is on the overlay stack
+/// ([`OverlayState::refresh_items`] returns `false`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the picker projection reads session/host state and the overlay repaint context — main_loop locals threaded by reference, same shape as refresh_fleet_if_open"
+)]
+pub(super) fn refresh_session_picker_if_open<W: crate::attach::RenderSink>(
+    out: &mut W,
+    overlays: &mut OverlayState,
+    workspace: &Workspace,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    engine_kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    zoomed: Option<&ResourceId>,
+    viewport_dims: (u16, u16),
+    status_bar: Option<&mut StatusBarPainter>,
+    sidebar: Option<SidebarReservation>,
+    sidebar_painter: &mut crate::render::chrome::sidebar::SidebarPainter,
+    session_name: &str,
+    theme: &crate::render::Theme,
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused_session: Option<phux_protocol::ids::SessionId>,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+) -> StatusBarPaint {
+    if !overlays.is_active() {
+        return StatusBarPaint::NotPublished;
+    }
+    let items = crate::attach::input_dispatch::session_picker_rows(
+        sessions,
+        focused_session,
+        hosts,
+        workspace,
+    );
+    if overlays.refresh_items(
+        crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY,
+        &items,
+    ) {
+        paint_active_overlay(
+            out,
+            overlays,
+            workspace,
+            panes,
+            engine_kernel,
+            focused_resource,
+            zoomed,
+            viewport_dims,
+            status_bar,
+            sidebar,
+            Some(sidebar_painter),
+            session_name,
+            theme,
+        )
+    } else {
+        StatusBarPaint::NotPublished
+    }
+}
+
 /// phux-jpqd: rebuild and repaint the agent-fleet dashboard in place when it
 /// is the active live overlay. Extracted from `main_loop`'s per-frame fleet
 /// refresh so the foreign-topology intercepts (layout + agent-record GET

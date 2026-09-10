@@ -973,6 +973,56 @@ a Terminal-facet verb accepts — so a consumer that iterates it and calls
 `resources`. A pre-resource-model server omits `resources` altogether, which
 is the presence test to branch on.
 
+**`hosts` (grouping by host; additive, `schema_version` stays 3).** The same
+inventory grouped by the machine serving it: this host first, then each
+federation satellite the server dials
+(`docs/spec/L1.md` §9.1, `ServerFeature::HOST_SESSIONS`):
+
+```json
+{
+  "schema_version": 3,
+  "sessions": [ { "name": "work", "windows": 1, "attached": true, "attached_clients": 1 } ],
+  "terminals": ["@3", "edge/@9"],
+  "hosts": [
+    { "host": null, "local": true, "reachable": true, "unreachable": null,
+      "sessions": [ { "name": "work", "id": 1, "windows": 1, "panes": 2,
+                      "attached": true, "attached_clients": 1, "active_terminal": "@3" } ] },
+    { "host": "edge", "local": false, "reachable": true, "unreachable": null,
+      "sessions": [ { "name": "build", "id": 1, "windows": 2, "panes": 3,
+                      "attached": false, "attached_clients": 0, "active_terminal": "edge/@9" } ] },
+    { "host": "down", "local": false, "reachable": false,
+      "unreachable": "satellite down is unreachable: link is down", "sessions": [] }
+  ],
+  "unreachable": []
+}
+```
+
+**`sessions` is unchanged and still lists this host's sessions only.** A
+satellite session never joins it, because its `id` is satellite-local and
+`phux attach NAME` resolves names on the server it talks to. Read
+`hosts[].sessions` for the fleet-wide view: `host` is `null` for this host
+(`local: true`) and the hub-local satellite name otherwise, `id` is the
+session's id **on its own host** (never comparable across hosts), `panes`
+counts Terminal-kind resources, and `active_terminal` is the session's
+remembered focused pane as a canonical selector — for a satellite session
+that is the `host/@N` handle every Terminal-facet verb accepts through the
+hub, and the one durable way to reach that session's work from here.
+
+A satellite the hub could not reach stays listed with `reachable: false` and
+no sessions, so it degrades visibly rather than vanishing; `unreachable`
+carries the hub's diagnostic, and the top-level `unreachable` array says the
+same thing for the listing as a whole. Branch on `reachable`, not on the
+text. An older `phux` omits `hosts` altogether, which is the presence test.
+
+**`hosts_complete` says whether `hosts` names every satellite.** It is `true`
+only when the server advertises `HOST_SESSIONS`. Against a server that does
+not (an older hub, say), `hosts` carries this host's group alone and
+`hosts_complete` is `false`: the satellites, if any, are unknown here, even
+though their Terminals may still appear in `terminals` (for example
+`"edge/@9"`). Read `hosts` as the fleet only when `hosts_complete` is `true`.
+The key is always emitted; a payload from an older `phux` lacks it, which
+reads as `false`.
+
 ### 4.2 `ScreenState` — `phux snapshot --json` (and `phux wait --json`)
 
 Defined in `crates/phux-core/src/screen.rs` (`SCHEMA_VERSION = 3`). The same

@@ -424,7 +424,10 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
         name: "switch-session",
         description: "Re-attach this client to another session",
         params: "`name`; `window?` (window index to select after the \
-                 switch); `pane?` (DFS leaf ordinal to focus in that window)",
+                 switch); `pane?` (DFS leaf ordinal to focus in that \
+                 window); `host?` (a satellite of this hub: opens that \
+                 session's active pane here through the relay instead of \
+                 re-attaching)",
         reason: "requires a `name` arg supplied by the session picker (or \
                  the fleet's foreign rows), so a bare palette row would \
                  have no target to act on",

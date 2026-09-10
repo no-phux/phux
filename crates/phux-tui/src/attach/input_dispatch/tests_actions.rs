@@ -232,6 +232,26 @@ fn run_with_last_and_features(
     last_focused: Option<ResourceId>,
     features: ServerFeatureSet,
 ) -> ActionEffects {
+    run_with_last_features_and_hosts(action, workspace, last_focused, features, &[])
+}
+
+/// phux-c2td.3: the same runner with a federation host inventory in the
+/// dispatch context, for `switch-session { name, host }`.
+fn run_with_hosts(
+    action: &phux_config::keybind::ResolvedAction,
+    workspace: &mut Workspace,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+) -> ActionEffects {
+    run_with_last_features_and_hosts(action, workspace, None, ALL_FEATURES, hosts)
+}
+
+fn run_with_last_features_and_hosts(
+    action: &phux_config::keybind::ResolvedAction,
+    workspace: &mut Workspace,
+    last_focused: Option<ResourceId>,
+    features: ServerFeatureSet,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+) -> ActionEffects {
     let mut next_request_id = 100;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -251,6 +271,7 @@ fn run_with_last_and_features(
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -272,6 +293,8 @@ fn run_with_last_and_features(
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts,
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -867,6 +890,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -888,6 +912,8 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -946,6 +972,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -967,6 +994,8 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -1029,17 +1058,20 @@ fn run_capturing(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
 ) -> (ActionEffects, OverlayState) {
-    run_capturing_with_sessions(action, workspace, &[], None)
+    let (effects, overlays, _) = run_capturing_with_sessions(action, workspace, &[], None);
+    (effects, overlays)
 }
 
 /// Like [`run_capturing`], but seeds the dispatcher's cached session
-/// graph so `session-picker` tests can drive the picker.
+/// graph so `session-picker` tests can drive the picker. The third element
+/// is the host-inventory refresh request the action raised (phux-c2td.3).
 fn run_capturing_with_sessions(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused_session: Option<phux_protocol::ids::SessionId>,
-) -> (ActionEffects, OverlayState) {
+) -> (ActionEffects, OverlayState, bool) {
+    let mut host_refresh = false;
     let mut next_request_id = 100;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -1081,6 +1113,8 @@ fn run_capturing_with_sessions(
             theme: &theme,
             sessions,
             foreign_layouts: &HashMap::new(),
+            hosts: &[],
+            host_refresh_request: &mut host_refresh,
             foreign_agents: &HashMap::new(),
             focused_session,
             session_name: &mut session_name,
@@ -1106,7 +1140,7 @@ fn run_capturing_with_sessions(
         let focused = ctx.workspace.active_window().and_then(|w| w.focus.clone());
         run_action(action, &mut ctx, focused.as_ref(), &HashMap::new())
     };
-    (effects, overlays)
+    (effects, overlays, host_refresh)
 }
 
 #[test]
@@ -1238,6 +1272,7 @@ fn run_with_panes(
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -1259,6 +1294,8 @@ fn run_with_panes(
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -1713,6 +1750,7 @@ fn run_attention(
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -1733,6 +1771,8 @@ fn run_attention(
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -2077,7 +2117,7 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
 fn session_picker_action_pushes_overlay_with_peer_sessions() {
     let mut workspace = Workspace::single(tid(1));
     let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let (effects, overlays) = run_capturing_with_sessions(
+    let (effects, overlays, _) = run_capturing_with_sessions(
         &bare_action("session-picker"),
         &mut workspace,
         &sessions,
@@ -2097,7 +2137,7 @@ fn session_picker_with_only_current_session_still_opens_for_new() {
     // session" row — it no longer bells into a dead end.
     let mut workspace = Workspace::single(tid(1));
     let sessions = [sinfo(1, "work")];
-    let (effects, overlays) = run_capturing_with_sessions(
+    let (effects, overlays, _) = run_capturing_with_sessions(
         &bare_action("session-picker"),
         &mut workspace,
         &sessions,
@@ -2112,7 +2152,7 @@ fn session_picker_with_no_sessions_still_opens_for_new() {
     // Before the first ATTACHED snapshot lands the cache is empty; the
     // picker still opens with the "+ New session" row.
     let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays) =
+    let (effects, overlays, _) =
         run_capturing_with_sessions(&bare_action("session-picker"), &mut workspace, &[], None);
     assert!(overlays.is_active());
     assert!(!effects.bell);
@@ -2148,6 +2188,238 @@ fn switch_session_missing_name_bells() {
     let effects = run(&bare_action("switch-session"), &mut workspace);
     assert!(effects.reattach.is_none());
     assert!(effects.bell, "a switch-session with no name arg bells");
+}
+
+// ---- phux-c2td.3: host-grouped session picker -------------------------
+
+fn satellite_id(host: &str, id: u32) -> ResourceId {
+    ResourceId::satellite(phux_protocol::ids::SatelliteHost::new(host), id)
+}
+
+/// One reachable satellite carrying two sessions, and one the hub could
+/// not reach.
+fn host_fixture() -> Vec<phux_protocol::wire::info::HostInventory> {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::info::{HostInventory, HostSessionInfo};
+
+    vec![
+        HostInventory::reachable(
+            SatelliteHost::new("edge"),
+            vec![
+                HostSessionInfo::new(phux_protocol::SessionId::new(1), "build")
+                    .with_window_count(2)
+                    .with_pane_count(3)
+                    .with_active_resource(Some(satellite_id("edge", 9))),
+                HostSessionInfo::new(phux_protocol::SessionId::new(2), "logs")
+                    .with_window_count(1)
+                    .with_pane_count(1)
+                    .with_active_resource(Some(satellite_id("edge", 11))),
+            ],
+        ),
+        HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
+    ]
+}
+
+/// The picker groups under a header per host, keeps an unreachable host
+/// visible, and commits `switch-session { name, host }` for a satellite.
+#[test]
+fn session_picker_groups_rows_by_host() {
+    let sessions = [sinfo(1, "work")];
+    let workspace = Workspace::single(tid(1));
+    let items = host_grouped_session_items(
+        &sessions,
+        Some(phux_protocol::ids::SessionId::new(1)),
+        &host_fixture(),
+        &workspace,
+    );
+
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "This host",
+            "work",
+            "edge",
+            "build",
+            "logs",
+            "down (unreachable)"
+        ],
+    );
+    assert!(items[0].is_header() && items[2].is_header() && items[5].is_header());
+    assert!(
+        items[1].indented && items[3].indented,
+        "session rows nest under their host header"
+    );
+    // The local row is untouched; the satellite row carries its host.
+    assert_eq!(items[1].action.action, "switch-session");
+    assert!(!items[1].action.args.contains_key("host"));
+    let build = &items[3];
+    assert_eq!(build.action.action, "switch-session");
+    assert_eq!(
+        build.action.args.get("host"),
+        Some(&toml::Value::String("edge".to_owned()))
+    );
+    assert_eq!(
+        build.action.args.get("name"),
+        Some(&toml::Value::String("build".to_owned()))
+    );
+    assert_eq!(
+        build.secondary.as_deref(),
+        Some("on edge, 2 windows, 3 panes"),
+        "the row names its host, so it still reads under a typed query"
+    );
+    // The unreachable host contributes its header and nothing else.
+    assert!(items[5].is_header());
+}
+
+/// With no inventory (a non-hub server, or one without the feature) the
+/// picker is its ungrouped self.
+#[test]
+fn session_picker_without_hosts_is_ungrouped() {
+    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
+    let workspace = Workspace::single(tid(1));
+    let grouped = host_grouped_session_items(
+        &sessions,
+        Some(phux_protocol::ids::SessionId::new(1)),
+        &[],
+        &workspace,
+    );
+    assert_eq!(
+        grouped.len(),
+        session_picker_items(&sessions, Some(phux_protocol::ids::SessionId::new(1))).len()
+    );
+    assert!(grouped.iter().all(|item| !item.is_header()));
+}
+
+/// A satellite session that is already open here is marked, so choosing it
+/// reads as "go there", not "open it again".
+#[test]
+fn an_open_satellite_session_is_marked_open_here() {
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    let items = host_grouped_session_items(&[], None, &host_fixture(), &workspace);
+    let build = items
+        .iter()
+        .find(|item| item.label == "build")
+        .expect("satellite session row");
+    assert!(
+        build
+            .secondary
+            .as_deref()
+            .is_some_and(|s| s.contains("open here")),
+        "expected an open-here marker: {:?}",
+        build.secondary
+    );
+}
+
+/// Committing a satellite row sends the attach for that session's active
+/// pane through the hub and parks its window — no session re-attach is
+/// requested, and nothing opens until the attach succeeds.
+#[test]
+fn switching_to_a_satellite_session_opens_its_pane_through_the_hub() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("build".to_owned()));
+    args.insert("host".to_owned(), toml::Value::String("edge".to_owned()));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    };
+
+    let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
+
+    assert!(
+        effects.reattach.is_none(),
+        "a satellite session is not a session re-attach"
+    );
+    // Nothing opens, focuses, or saves until the attach succeeds: the
+    // window is parked for the reply (`handler::handle_window_adopt_reply`).
+    assert_eq!(
+        workspace.windows.len(),
+        1,
+        "no window before the attach lands"
+    );
+    assert_eq!(effects.set_focus, None);
+    assert!(!effects.layout_mutated && !effects.set_metadata);
+    // Exactly one ATTACH_RESOURCE for the satellite pane: it already
+    // exists, so there is no spawn to park.
+    assert_eq!(effects.command_frames.len(), 1);
+    let FrameKind::Command { command, .. } = &effects.command_frames[0] else {
+        panic!("expected a command frame");
+    };
+    assert_eq!(
+        command,
+        &phux_protocol::wire::frame::Command::AttachResource {
+            terminal_id: satellite_id("edge", 9),
+        }
+    );
+}
+
+/// Choosing the same satellite session again focuses the window already
+/// holding its pane instead of opening a second one onto it.
+#[test]
+fn switching_to_an_open_satellite_session_focuses_its_window() {
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    workspace.select(0);
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("build".to_owned()));
+    args.insert("host".to_owned(), toml::Value::String("edge".to_owned()));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    };
+
+    let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
+
+    assert_eq!(workspace.windows.len(), 2, "no second window is opened");
+    assert_eq!(workspace.active, 1, "focus moves to the window holding it");
+    assert_eq!(effects.set_focus, Some(satellite_id("edge", 9)));
+    assert!(
+        effects.command_frames.is_empty(),
+        "the pane is already attached here"
+    );
+}
+
+/// An unreachable host, an unknown host, and an unknown session all bell
+/// rather than pretending to switch.
+#[test]
+fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
+    for (host, name) in [
+        ("down", "anything"),
+        ("nosuch", "build"),
+        ("edge", "nosuch"),
+    ] {
+        let mut workspace = Workspace::single(tid(1));
+        let mut args = BTreeMap::new();
+        args.insert("name".to_owned(), toml::Value::String(name.to_owned()));
+        args.insert("host".to_owned(), toml::Value::String(host.to_owned()));
+        let action = phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args,
+        };
+
+        let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
+
+        assert!(effects.bell, "{host}/{name} should bell");
+        assert!(effects.reattach.is_none());
+        assert!(effects.command_frames.is_empty());
+        assert_eq!(workspace.windows.len(), 1, "{host}/{name} opened a window");
+    }
+}
+
+/// Opening the picker asks the driver for a fresh inventory.
+#[test]
+fn opening_the_session_picker_requests_a_host_inventory() {
+    let mut workspace = Workspace::single(tid(1));
+    let (effects, overlays, host_refresh) =
+        run_capturing_with_sessions(&bare_action("session-picker"), &mut workspace, &[], None);
+    assert!(overlays.is_active());
+    assert!(!effects.bell);
+    assert!(
+        host_refresh,
+        "the open raises the host-inventory refresh request"
+    );
 }
 
 #[test]
@@ -2203,6 +2475,7 @@ fn detach_action_requests_detach_effect() {
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
@@ -2224,6 +2497,8 @@ fn detach_action_requests_detach_effect() {
         theme: &theme,
         sessions: &[],
         foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
@@ -2303,6 +2578,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
         // table now, not from the workspace, so a fixture that wants
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
+        let mut host_refresh = false;
         let mut ctx = DispatchCtx {
             layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
@@ -2324,6 +2600,8 @@ fn rename_session_without_name_opens_prompt_prefilled() {
             theme: &theme,
             sessions: &[],
             foreign_layouts: &HashMap::new(),
+            hosts: &[],
+            host_refresh_request: &mut host_refresh,
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,

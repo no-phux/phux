@@ -542,6 +542,12 @@ pub(super) struct PendingSplit {
 pub(super) struct PendingWindow {
     /// Name for the window the spawned pane will seed.
     pub name: String,
+    /// phux-c2td.3: `Some(pane)` when the window adopts a pane that already
+    /// exists — a satellite session's active pane — instead of one being
+    /// spawned. Its reply is the `ATTACH_RESOURCE` `COMMAND_RESULT` (or a
+    /// correlated `ERROR`), not a `RESOURCE_SPAWNED`, and the window opens
+    /// only when that attach succeeds.
+    pub adopt: Option<phux_protocol::ResourceId>,
 }
 
 /// Pure seam for the `ResourceSpawned { Ok }` handler (phux-4li.12).

@@ -67,6 +67,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::Transcribe,
         ServerFeature::ResourceKinds,
         ServerFeature::ListDirectory,
+        ServerFeature::HostSessions,
     ])
 }
 

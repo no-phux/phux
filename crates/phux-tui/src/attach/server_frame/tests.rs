@@ -2635,6 +2635,7 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
         &mut panes,
         &PendingWindow {
             name: "2".to_owned(),
+            adopt: None,
         },
         SpawnResult::Ok(tid(2)),
     )
@@ -2653,6 +2654,117 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
     );
     assert!(panes.contains_key(&tid(2)), "new pane got a slot");
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
+}
+
+/// phux-c2td.3: drive one reply through the dispatcher with a parked
+/// satellite-session window (request 9, adopting `edge/@9`). Returns the
+/// outcome, the workspace, focus, the bytes written, and how many windows
+/// are still parked.
+fn drive_satellite_adopt_reply(
+    frame: FrameKind,
+) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
+    use crate::attach::actions::PendingWindow;
+
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let mut workspace = Workspace::single(tid(1));
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1)]);
+    let mut out: Vec<u8> = Vec::new();
+    let mut zoomed = None;
+    let mut session_name = String::new();
+    let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+    let overlay = Overlay;
+    let mut pending_splits = HashMap::new();
+    let mut pending_windows = HashMap::new();
+    pending_windows.insert(
+        9,
+        PendingWindow {
+            name: "edge/build".to_owned(),
+            adopt: Some(sat),
+        },
+    );
+    let mut expected_closes = HashSet::new();
+    let mut agent_meta = AgentMetaIndex::default();
+    let outcome = handle_server_frame(
+        &mut out,
+        frame,
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+        &mut zoomed,
+        &mut session_name,
+        None,
+        None,
+        None,
+        (80, 24),
+        &mut predict,
+        &overlay,
+        None,
+        &mut pending_splits,
+        &mut pending_windows,
+        &mut expected_closes,
+        &mut agent_meta,
+        false,
+        false,
+    )
+    .expect("adopt reply");
+    (outcome, workspace, focused, out, pending_windows.len())
+}
+
+/// A successful attach opens the satellite session's window, focused, and
+/// asks for the layout broadcast.
+#[test]
+fn satellite_session_attach_success_opens_its_window() {
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let (outcome, workspace, focused, out, parked) =
+        drive_satellite_adopt_reply(FrameKind::CommandResult {
+            request_id: 9,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        });
+    assert_eq!(workspace.windows.len(), 2);
+    assert_eq!(workspace.windows[1].name, "edge/build");
+    assert_eq!(workspace.active, 1);
+    assert_eq!(focused, Some(sat));
+    assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
+    assert!(outcome.notices.is_empty());
+    assert!(!out.contains(&0x07), "success does not bell");
+    assert_eq!(parked, 0, "the parked window is consumed");
+}
+
+/// A refused attach — as a `COMMAND_RESULT` error or a correlated `ERROR` —
+/// opens no window, saves no layout, bells, and names the host and session.
+#[test]
+fn satellite_session_attach_refusal_leaves_no_window() {
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    for frame in [
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite edge is unreachable: link is down".to_owned(),
+            },
+        },
+        FrameKind::Error {
+            request_id: Some(9),
+            code: ErrorCode::TerminalNotFound,
+            message: "no such terminal".to_owned(),
+        },
+    ] {
+        let (outcome, workspace, focused, out, parked) = drive_satellite_adopt_reply(frame);
+        assert_eq!(workspace.windows.len(), 1, "no dead window is left behind");
+        assert_eq!(focused, Some(tid(1)), "focus stays put");
+        assert!(!outcome.emit_set_metadata, "the shared layout is not saved");
+        assert!(!outcome.layout_replaced);
+        assert!(out.contains(&0x07), "a refusal bells");
+        assert_eq!(outcome.notices.len(), 1);
+        assert!(
+            outcome.notices[0].text.contains("edge/build"),
+            "the notice names the host and session: {}",
+            outcome.notices[0].text
+        );
+        assert_eq!(parked, 0, "the parked window is consumed");
+    }
 }
 
 /// Drive a `RESOURCE_SPAWNED { Ok }` reply through the full dispatcher

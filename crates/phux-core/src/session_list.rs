@@ -78,6 +78,52 @@ pub struct ResourceJson {
     pub parent: Option<String>,
 }
 
+/// One host's group in [`SessionListJson::hosts`]: this host first, then
+/// each federation satellite a hub dials.
+///
+/// **Additive** (no [`LS_SCHEMA_VERSION`] bump): `sessions` keeps listing
+/// this host's sessions only, and this array carries the per-host grouping
+/// beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostJson {
+    /// The satellite's hub-local name, or `null` for this host (the server
+    /// `phux ls` talked to). Emitted as `null` rather than omitted.
+    pub host: Option<String>,
+    /// `true` only for this host's group.
+    pub local: bool,
+    /// Whether the hub listed this host. This host is always reachable.
+    pub reachable: bool,
+    /// The hub's diagnostic when `reachable` is `false`; `null` otherwise.
+    /// Branch on `reachable`, not on this text.
+    #[serde(default)]
+    pub unreachable: Option<String>,
+    /// The host's sessions, name-sorted. Empty for an unreachable host.
+    pub sessions: Vec<HostSessionJson>,
+}
+
+/// One session in a [`HostJson`] group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSessionJson {
+    /// Session name on its own host.
+    pub name: String,
+    /// The session id on its own host. A satellite's id is satellite-local
+    /// and never comparable with this host's ids.
+    pub id: u32,
+    /// Number of windows in the session.
+    pub windows: u16,
+    /// Number of Terminal-kind resources across the session's windows.
+    pub panes: u16,
+    /// Whether at least one client is attached (on its own host).
+    pub attached: bool,
+    /// Number of clients attached (on its own host).
+    pub attached_clients: u16,
+    /// Canonical selector (`@N` / `host/@N`) of the session's remembered
+    /// focused pane, when known. For a satellite session this is the handle
+    /// every Terminal-facet verb accepts through the hub.
+    #[serde(default)]
+    pub active_terminal: Option<String>,
+}
+
 /// The `phux ls --json` payload: a versioned list of sessions.
 ///
 /// Sessions are emitted in the same name-sorted order as the human
@@ -113,6 +159,20 @@ pub struct SessionListJson {
     /// empty.
     #[serde(default)]
     pub resources: Vec<ResourceJson>,
+    /// The same inventory grouped by host: this host first, then each
+    /// satellite a federation hub dials, reachable or not — see
+    /// [`HostJson`]. Additive: a payload from an older `phux` lacks the key
+    /// and reads as empty.
+    #[serde(default)]
+    pub hosts: Vec<HostJson>,
+    /// Whether [`Self::hosts`] names every satellite: `true` only when the
+    /// server advertises the host-session inventory (`HOST_SESSIONS`).
+    /// `false` means `hosts` carries this host's group alone and the
+    /// satellites, if any, are unknown — their Terminals may still appear in
+    /// `terminals`. Emitted always; an older `phux` lacks the key, which
+    /// reads as `false`.
+    #[serde(default)]
+    pub hosts_complete: bool,
 }
 
 impl SessionListJson {
@@ -129,7 +189,17 @@ impl SessionListJson {
             terminals: Vec::new(),
             unreachable: Vec::new(),
             resources: Vec::new(),
+            hosts: Vec::new(),
+            hosts_complete: false,
         }
+    }
+
+    /// Record whether [`Self::hosts`] is authoritative — see
+    /// [`Self::hosts_complete`].
+    #[must_use]
+    pub const fn with_hosts_complete(mut self, complete: bool) -> Self {
+        self.hosts_complete = complete;
+        self
     }
 
     /// Add the per-resource kind/parent rows, in snapshot order.
@@ -143,6 +213,13 @@ impl SessionListJson {
     #[must_use]
     pub fn with_terminals(mut self, terminals: Vec<String>) -> Self {
         self.terminals = terminals;
+        self
+    }
+
+    /// Add the per-host grouping — see [`Self::hosts`].
+    #[must_use]
+    pub fn with_hosts(mut self, hosts: Vec<HostJson>) -> Self {
+        self.hosts = hosts;
         self
     }
 
@@ -247,6 +324,114 @@ mod tests {
         );
         assert_eq!(json["resources"][1]["kind"], "agent_session");
         assert_eq!(json["resources"][1]["parent"], "@7");
+    }
+
+    /// The per-host grouping is additive: it rides beside `sessions`, which
+    /// keeps listing this host's sessions only, and the version stays put.
+    #[test]
+    fn hosts_group_by_host_without_a_version_bump() {
+        use super::{HostJson, HostSessionJson};
+
+        let local = HostJson {
+            host: None,
+            local: true,
+            reachable: true,
+            unreachable: None,
+            sessions: vec![HostSessionJson {
+                name: "work".to_owned(),
+                id: 1,
+                windows: 3,
+                panes: 4,
+                attached: true,
+                attached_clients: 2,
+                active_terminal: Some("@3".to_owned()),
+            }],
+        };
+        let satellite = HostJson {
+            host: Some("devbox".to_owned()),
+            local: false,
+            reachable: true,
+            unreachable: None,
+            sessions: vec![HostSessionJson {
+                name: "build".to_owned(),
+                id: 1,
+                windows: 1,
+                panes: 1,
+                attached: false,
+                attached_clients: 0,
+                active_terminal: Some("devbox/@7".to_owned()),
+            }],
+        };
+        let down = HostJson {
+            host: Some("down".to_owned()),
+            local: false,
+            reachable: false,
+            unreachable: Some("satellite down is unreachable: link is down".to_owned()),
+            sessions: Vec::new(),
+        };
+        let list = SessionListJson::new(vec![SessionJson {
+            name: "work".to_owned(),
+            windows: 3,
+            attached: true,
+            attached_clients: 2,
+        }])
+        .with_hosts(vec![local, satellite, down]);
+
+        let json = serde_json::to_value(&list).expect("serialize");
+        assert_eq!(
+            json["schema_version"], 3,
+            "an added key does not move the version"
+        );
+        assert!(
+            json["hosts"][0]["host"].is_null(),
+            "this host is the null-named first group"
+        );
+        assert_eq!(json["hosts"][0]["local"], true);
+        assert_eq!(json["hosts"][0]["sessions"][0]["panes"], 4);
+        assert_eq!(json["hosts"][1]["host"], "devbox");
+        assert_eq!(
+            json["hosts"][1]["sessions"][0]["active_terminal"],
+            "devbox/@7"
+        );
+        assert_eq!(json["hosts"][2]["reachable"], false);
+        assert!(
+            json["hosts"][2]["sessions"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "an unreachable host is listed with no sessions, not dropped"
+        );
+        // `sessions` is unchanged: satellite sessions never join it.
+        assert_eq!(json["sessions"].as_array().map(Vec::len), Some(1));
+
+        let old_shape: SessionListJson = serde_json::from_value(serde_json::json!({
+            "schema_version": 3,
+            "sessions": []
+        }))
+        .expect("a payload without hosts stays deserializable");
+        assert!(old_shape.hosts.is_empty());
+    }
+
+    /// `hosts_complete` is always emitted, and an older payload without it
+    /// reads as `false` — "the satellites are unknown", never "there are
+    /// none".
+    #[test]
+    fn hosts_complete_is_emitted_and_defaults_false() {
+        let incomplete = serde_json::to_value(SessionListJson::new(Vec::new())).expect("serialize");
+        assert_eq!(incomplete["hosts_complete"], false);
+        let complete =
+            serde_json::to_value(SessionListJson::new(Vec::new()).with_hosts_complete(true))
+                .expect("serialize");
+        assert_eq!(complete["hosts_complete"], true);
+        assert_eq!(
+            complete["schema_version"], 3,
+            "an added key does not move the version"
+        );
+        let old: SessionListJson = serde_json::from_value(serde_json::json!({
+            "schema_version": 3,
+            "sessions": []
+        }))
+        .expect("an older payload stays deserializable");
+        assert!(!old.hosts_complete);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
 //! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
 
-use crate::ids::{ClientId, ResourceId, ResourceKind, SessionId, WindowId};
+use crate::ids::{ClientId, ResourceId, ResourceKind, SatelliteHost, SessionId, WindowId};
 
 use super::decode::Decoder;
 use super::encode::Encoder;
@@ -423,6 +423,139 @@ impl ResourceInfo {
     }
 }
 
+/// One session on a federation satellite, as a hub lists it in
+/// [`SessionSnapshot::hosts`].
+///
+/// The hub never renumbers a satellite session into its own id space:
+/// [`Self::id`] is the satellite-local [`SessionId`], meaningful only on
+/// that satellite and never joined against [`SessionSnapshot::sessions`].
+/// [`Self::active_resource`] is the one routable handle, re-tagged
+/// `SATELLITE { host, id }` so every relayed verb reaches it through the hub.
+///
+/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HostSessionInfo {
+    /// The satellite-local session id. Opaque to the hub and to consumers.
+    pub id: SessionId,
+    /// The session's name on the satellite.
+    pub name: String,
+    /// Wall-clock creation time as seconds since the Unix epoch.
+    pub created_at_unix_secs: i64,
+    /// Number of windows in the session.
+    pub window_count: u16,
+    /// Number of Terminal-kind resources across the session's windows.
+    pub pane_count: u16,
+    /// Number of clients attached to the session on the satellite.
+    pub attached_client_count: u16,
+    /// The session's remembered focused pane, re-tagged `SATELLITE`, when
+    /// the satellite reported one.
+    pub active_resource: Option<ResourceId>,
+}
+
+impl HostSessionInfo {
+    /// Construct a `HostSessionInfo` from its id and name; counts default to
+    /// `0`, `created_at_unix_secs` to `0`, `active_resource` to `None`.
+    #[must_use]
+    pub fn new(id: SessionId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            created_at_unix_secs: 0,
+            window_count: 0,
+            pane_count: 0,
+            attached_client_count: 0,
+            active_resource: None,
+        }
+    }
+
+    /// Builder setter for [`Self::created_at_unix_secs`].
+    #[must_use]
+    pub const fn with_created_at_unix_secs(mut self, created_at_unix_secs: i64) -> Self {
+        self.created_at_unix_secs = created_at_unix_secs;
+        self
+    }
+
+    /// Builder setter for [`Self::window_count`].
+    #[must_use]
+    pub const fn with_window_count(mut self, window_count: u16) -> Self {
+        self.window_count = window_count;
+        self
+    }
+
+    /// Builder setter for [`Self::pane_count`].
+    #[must_use]
+    pub const fn with_pane_count(mut self, pane_count: u16) -> Self {
+        self.pane_count = pane_count;
+        self
+    }
+
+    /// Builder setter for [`Self::attached_client_count`].
+    #[must_use]
+    pub const fn with_attached_client_count(mut self, attached_client_count: u16) -> Self {
+        self.attached_client_count = attached_client_count;
+        self
+    }
+
+    /// Builder setter for [`Self::active_resource`].
+    #[must_use]
+    pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
+        self.active_resource = active_resource;
+        self
+    }
+}
+
+/// One federation satellite's row in [`SessionSnapshot::hosts`]: its
+/// sessions, or why the hub could not list them.
+///
+/// A satellite that could not be reached stays in the inventory with
+/// [`Self::unreachable`] set and no sessions, so a consumer can show it as
+/// degraded instead of letting it disappear.
+///
+/// `#[non_exhaustive]`; construct via [`Self::reachable`] or
+/// [`Self::unreachable`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HostInventory {
+    /// The hub-local satellite name, the same token `SATELLITE { host, .. }`
+    /// ids carry.
+    pub host: SatelliteHost,
+    /// `Some(diagnostic)` when the hub could not list this satellite. The
+    /// text is the hub's prose; branch on presence, not on content.
+    pub unreachable: Option<String>,
+    /// The satellite's sessions, in the order it reported them. Empty when
+    /// [`Self::unreachable`] is set.
+    pub sessions: Vec<HostSessionInfo>,
+}
+
+impl HostInventory {
+    /// A satellite that answered, with its sessions.
+    #[must_use]
+    pub const fn reachable(host: SatelliteHost, sessions: Vec<HostSessionInfo>) -> Self {
+        Self {
+            host,
+            unreachable: None,
+            sessions,
+        }
+    }
+
+    /// A satellite the hub could not list, with the hub's diagnostic.
+    #[must_use]
+    pub fn unreachable(host: SatelliteHost, diagnostic: impl Into<String>) -> Self {
+        Self {
+            host,
+            unreachable: Some(diagnostic.into()),
+            sessions: Vec::new(),
+        }
+    }
+
+    /// Whether the hub listed this satellite.
+    #[must_use]
+    pub const fn is_reachable(&self) -> bool {
+        self.unreachable.is_none()
+    }
+}
+
 /// Flat graph of sessions/windows/resources delivered with `ATTACHED`.
 ///
 /// All three lists are joined by id. The triple of `focused_*` fields
@@ -456,6 +589,26 @@ impl ResourceInfo {
 /// `docs/spec/appendix-encoding.md` §2 applied at the one place in the
 /// snapshot where a trailing value is unambiguous: a per-entry suffix would
 /// not be, because the next entry's id tag follows it.
+///
+/// # The trailing host-session inventory
+///
+/// After the facet list an encoder appends a second `u32`-counted list,
+/// [`Self::hosts`], one row per federation satellite
+/// (`ServerFeature::HostSessions`):
+///
+/// ```text
+/// host_row     = host: str || unreachable: optional<str>
+///             || sessions: u32-counted list of host_session
+/// host_session = id: u32 || name: str || created_at_unix_secs: i64
+///             || window_count: u16 || pane_count: u16
+///             || attached_client_count: u16 || active_resource: optional<ResourceId>
+/// ```
+///
+/// It is written only when non-empty, and then the facet list is written
+/// first even when it has no rows (a zero count), so the two trailing lists
+/// stay in a fixed order. A decoder reads each list only while bytes remain,
+/// so a snapshot without hosts is byte-identical to one encoded before the
+/// list existed, and an older decoder stops early and never sees it.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 ///
@@ -495,6 +648,21 @@ pub struct SessionSnapshot {
     pub focused_window: WindowId,
     /// The attaching client's initial focused pane.
     pub focused_resource: ResourceId,
+    /// The host-session inventory: one row per federation satellite, filled
+    /// by a hub's `GET_STATE` and empty everywhere else. Satellite sessions
+    /// never enter [`Self::sessions`]; their ids are satellite-local.
+    ///
+    /// Read it through [`Self::hosts`]; `None` is the empty inventory, and
+    /// [`Self::with_hosts`] and the decoder never store `Some` of an empty
+    /// slice, so two equal inventories compare equal.
+    ///
+    /// An optional boxed slice rather than a `Vec`: it is empty in every
+    /// snapshot but a hub's `GET_STATE` reply, the empty case does not
+    /// allocate and stays `const`-constructible, and the eight bytes it
+    /// saves keep `CommandResult` (which carries this snapshot inline) under
+    /// the large-`Err` size the server's `Result<_, CommandResult>` helpers
+    /// are held to.
+    pub hosts: Option<Box<[HostInventory]>>,
 }
 
 impl SessionSnapshot {
@@ -514,7 +682,22 @@ impl SessionSnapshot {
             focused_session,
             focused_window,
             focused_resource,
+            hosts: None,
         }
+    }
+
+    /// The host-session inventory (see the field docs): one row per
+    /// federation satellite, empty unless a hub filled it.
+    #[must_use]
+    pub fn hosts(&self) -> &[HostInventory] {
+        self.hosts.as_deref().unwrap_or(&[])
+    }
+
+    /// Builder setter for [`Self::hosts`]. An empty list stores `None`.
+    #[must_use]
+    pub fn with_hosts(mut self, hosts: Vec<HostInventory>) -> Self {
+        self.hosts = boxed_hosts(hosts);
+        self
     }
 
     /// Builder setter for [`Self::sessions`].
@@ -746,10 +929,11 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
 }
 
 /// Write the trailing resource-facet list (see [`SessionSnapshot`]), or
-/// nothing when every entry is a plain Terminal.
-fn encode_resource_facets(resources: &[ResourceInfo], enc: &mut Encoder<'_>) {
+/// nothing when every entry is a plain Terminal and no later trailing list
+/// (`more_follow`) needs the facet count as its positional anchor.
+fn encode_resource_facets(resources: &[ResourceInfo], more_follow: bool, enc: &mut Encoder<'_>) {
     let rows = resources.iter().filter(|p| p.has_resource_facets()).count();
-    if rows == 0 {
+    if rows == 0 && !more_follow {
         return;
     }
     encode_list_len(rows, enc);
@@ -827,7 +1011,85 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
-    encode_resource_facets(&snap.resources, enc);
+    encode_resource_facets(&snap.resources, !snap.hosts().is_empty(), enc);
+    encode_host_inventory(snap.hosts(), enc);
+}
+
+/// Store an inventory canonically: `None` when empty, so a snapshot built
+/// with no hosts and one decoded without the trailing list compare equal.
+fn boxed_hosts(hosts: Vec<HostInventory>) -> Option<Box<[HostInventory]>> {
+    (!hosts.is_empty()).then(|| hosts.into_boxed_slice())
+}
+
+/// Write the trailing host-session inventory (see [`SessionSnapshot`]), or
+/// nothing when it is empty.
+fn encode_host_inventory(hosts: &[HostInventory], enc: &mut Encoder<'_>) {
+    if hosts.is_empty() {
+        return;
+    }
+    encode_list_len(hosts.len(), enc);
+    for row in hosts {
+        enc.write_str(row.host.as_str());
+        encode_option_str(row.unreachable.as_deref(), enc);
+        encode_list_len(row.sessions.len(), enc);
+        for session in &row.sessions {
+            encode_host_session(session, enc);
+        }
+    }
+}
+
+fn encode_host_session(session: &HostSessionInfo, enc: &mut Encoder<'_>) {
+    enc.write_u32_be(session.id.get());
+    enc.write_str(&session.name);
+    enc.write_i64_be(session.created_at_unix_secs);
+    enc.write_u16_be(session.window_count);
+    enc.write_u16_be(session.pane_count);
+    enc.write_u16_be(session.attached_client_count);
+    encode_option_terminal_id(session.active_resource.as_ref(), enc);
+}
+
+/// Read the trailing host-session inventory if the enclosing field has bytes
+/// left; an absent list is an empty inventory.
+fn decode_host_inventory(dec: &mut Decoder<'_>) -> Result<Vec<HostInventory>, DecodeError> {
+    if dec.at_body_end() {
+        return Ok(Vec::new());
+    }
+    let rows = decode_list_len(dec)?;
+    let mut hosts = dec.bounded_capacity(rows);
+    for _ in 0..rows {
+        let host = SatelliteHost::new(dec.read_str()?);
+        let unreachable = decode_option_str(dec)?.map(str::to_owned);
+        let count = decode_list_len(dec)?;
+        let mut sessions = dec.bounded_capacity(count);
+        for _ in 0..count {
+            sessions.push(decode_host_session(dec)?);
+        }
+        hosts.push(HostInventory {
+            host,
+            unreachable,
+            sessions,
+        });
+    }
+    Ok(hosts)
+}
+
+fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeError> {
+    let id = SessionId::new(dec.read_u32_be()?);
+    let name = dec.read_str()?.to_owned();
+    let created_at_unix_secs = dec.read_i64_be()?;
+    let window_count = dec.read_u16_be()?;
+    let pane_count = dec.read_u16_be()?;
+    let attached_client_count = dec.read_u16_be()?;
+    let active_resource = decode_option_terminal_id(dec)?;
+    Ok(HostSessionInfo {
+        id,
+        name,
+        created_at_unix_secs,
+        window_count,
+        pane_count,
+        attached_client_count,
+        active_resource,
+    })
 }
 
 pub(super) fn decode_session_snapshot(
@@ -857,6 +1119,7 @@ pub(super) fn decode_session_snapshot(
     let focused_window = WindowId::new(dec.read_u32_be()?);
     let focused_resource = decode_terminal_id(dec)?;
     decode_resource_facets(dec, &mut resources)?;
+    let hosts = boxed_hosts(decode_host_inventory(dec)?);
     Ok(SessionSnapshot {
         sessions,
         windows,
@@ -864,6 +1127,7 @@ pub(super) fn decode_session_snapshot(
         focused_session,
         focused_window,
         focused_resource,
+        hosts,
     })
 }
 

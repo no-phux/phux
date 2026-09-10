@@ -816,6 +816,26 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
             vec!["hub-session"],
             "satellite sessions must not merge into the hub snapshot"
         );
+        // ...but they are listed per host (ServerFeature::HostSessions):
+        // one inventory row per configured satellite, sorted by name. The
+        // live one carries its session under the satellite-local id with
+        // its active pane re-tagged; the dead one stays listed, degraded.
+        let hosts: Vec<&str> = snapshot.hosts().iter().map(|h| h.host.as_str()).collect();
+        assert_eq!(hosts, vec!["down", "sat"], "one sorted row per satellite");
+        let down_row = &snapshot.hosts()[0];
+        assert!(!down_row.is_reachable(), "dead satellite is degraded");
+        assert!(down_row.sessions.is_empty());
+        let sat_row = &snapshot.hosts()[1];
+        assert!(sat_row.is_reachable());
+        assert_eq!(sat_row.sessions.len(), 1);
+        let sat_session = &sat_row.sessions[0];
+        assert_eq!(sat_session.name, "sat-session");
+        assert_eq!((sat_session.window_count, sat_session.pane_count), (1, 1));
+        assert_eq!(
+            sat_session.active_resource,
+            Some(sat_id.clone()),
+            "the satellite session's active pane is routable through the hub"
+        );
 
         drop(sat_shutdown);
         sat_task.await.unwrap().unwrap();

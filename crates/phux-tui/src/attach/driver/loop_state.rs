@@ -69,7 +69,9 @@ use super::entry::{
 use super::main_loop::{
     FRAME_COALESCE_CAP, coalesce_defer_flags, frame_defers_paint, frame_paint_target,
 };
-use super::overlay_paint::{paint_active_overlay, refresh_fleet_if_open};
+use super::overlay_paint::{
+    paint_active_overlay, refresh_fleet_if_open, refresh_session_picker_if_open,
+};
 use super::session_io::{
     send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
     take_terminal_replies,
@@ -91,6 +93,55 @@ use super::viewport::{
 #[cfg(test)]
 #[path = "loop_state_tests.rs"]
 mod tests;
+
+/// phux-c2td.3: how long a host-inventory `GET_STATE` may stay unanswered
+/// before the notices held for it surface anyway. The hub bounds each
+/// satellite query by its relay deadline (30 s); the margin covers the
+/// aggregate's own work and the transport.
+const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
+
+/// phux-c2td.3: of the `SatelliteUnreachable` notices held while a host
+/// inventory was in flight, the ones its reply does not explain.
+///
+/// A notice is explained when the inventory lists its satellite as
+/// unreachable — the row carries that exact diagnostic, or the notice names
+/// the row's host in the hub's `satellite {host} is unreachable: ...` form.
+/// Everything else, such as a link drop for a satellite the inventory still
+/// lists as reachable, is news the user must still see.
+fn unexplained_unreachable_notices(
+    held: Vec<String>,
+    hosts: &[phux_protocol::wire::info::HostInventory],
+) -> Vec<String> {
+    held.into_iter()
+        .filter(|notice| {
+            !hosts
+                .iter()
+                .any(|row| unreachable_row_explains(row, notice))
+        })
+        .collect()
+}
+
+fn unreachable_row_explains(row: &phux_protocol::wire::info::HostInventory, notice: &str) -> bool {
+    let Some(diagnostic) = row.unreachable.as_deref() else {
+        return false;
+    };
+    diagnostic == notice || notice.starts_with(&format!("satellite {} is unreachable", row.host))
+}
+
+/// phux-c2td.3: held `SatelliteUnreachable` diagnostics as status notices,
+/// in the wording the frame handler gives a live one.
+fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
+    messages
+        .into_iter()
+        .map(|message| Notice::warn(format!("federation degraded: {message}")))
+        .collect()
+}
+
+/// phux-c2td.3: whether a host-inventory request sent at `since` has waited
+/// past [`HOST_INVENTORY_DEADLINE`]. `None` (nothing in flight) never is.
+fn host_inventory_overdue(since: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    since.is_some_and(|sent| now.saturating_duration_since(sent) > HOST_INVENTORY_DEADLINE)
+}
 
 /// Window before a parser-pending bare ESC is interpreted as the Escape
 /// key, anchored to when the ESC became pending (see
@@ -170,6 +221,27 @@ struct PeerCaches {
     foreign_layout_subscribed: HashSet<SessionId>,
     /// The per-pane half of the same send-once bookkeeping.
     foreign_agent_subscribed: HashSet<ResourceId>,
+    /// phux-c2td.3: the federation host inventory from the latest
+    /// `GET_STATE` — one row per satellite this server dials, with that
+    /// host's sessions or the reason it could not be listed. The session
+    /// picker groups its rows from this and `switch-session { name, host }`
+    /// resolves through it. Empty against a non-hub server, a hub with no
+    /// satellites, or a server without `ServerFeature::HostSessions`.
+    hosts: Vec<phux_protocol::wire::info::HostInventory>,
+    /// The request id of the in-flight host-inventory `GET_STATE`, if any.
+    hosts_pending: Option<u32>,
+    /// When that request was sent, so a reply that never comes cannot hold
+    /// notices past [`HOST_INVENTORY_DEADLINE`].
+    hosts_pending_since: Option<std::time::Instant>,
+    /// Un-correlated `SatelliteUnreachable` notices that arrived while the
+    /// inventory request was in flight. The aggregate pushes one per
+    /// satellite it could not list, and the reply reports the same fact as
+    /// a degraded row — but a genuine link drop for *another* satellite can
+    /// land in the same window. So they are held, not dropped: the reply
+    /// discards only the ones its unreachable rows explain
+    /// ([`unexplained_unreachable_notices`]) and surfaces the rest; a
+    /// refusal or a missed deadline surfaces all of them.
+    held_unreachable: Vec<String>,
     /// phux-k0cw: peer panes whose agent has asked for a human (an ADR-0035
     /// `Asked` for a Terminal outside this client's pane set). The local
     /// equivalent is `PaneSlot::attention`, which a foreign pane has no slot
@@ -544,6 +616,21 @@ pub(super) struct SessionLoop {
     /// old state and toasts the error. The `phux config reload` CLI
     /// doorbell reaches the same handler via `FrameOutcome::config_reload`.
     reload_request: bool,
+    /// phux-c2td.3: did the server advertise
+    /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
+    /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
+    /// older server would answer without a `hosts` list, and the picker's
+    /// ungrouped shape is the honest rendering of "this client cannot know
+    /// what else is out there".
+    host_sessions_supported: bool,
+    /// phux-c2td.3: set by `apply_action_effects` when an action wants a
+    /// fresher host inventory (opening the session picker). Drained after
+    /// the dispatch batch into one `GET_STATE`.
+    host_refresh_request: bool,
+    /// phux-c2td.3: a fresh host inventory landed, so a session picker that
+    /// is open needs its rows rebuilt. Drained with the repaint, the same
+    /// shape as the fleet dashboard's live refresh.
+    session_picker_dirty: bool,
     /// First-use moment consumed by this loop entry. Session switches receive
     /// `None`, so they never repeat attach guidance.
     onboarding_claim: Option<AttachClaim>,
@@ -592,6 +679,11 @@ impl SessionLoop {
             list_directory_supported: negotiated
                 .server_features
                 .contains(ServerFeature::ListDirectory),
+            host_sessions_supported: negotiated
+                .server_features
+                .contains(ServerFeature::HostSessions),
+            host_refresh_request: false,
+            session_picker_dirty: false,
             wants_state_sync,
             engine_kernel: SessionKernel::with_history_config(
                 GhosttyAdapter::new(negotiated.limits),
@@ -887,7 +979,98 @@ impl SessionLoop {
             &mut self.peers.foreign_layout_pending,
             &mut self.peers.foreign_layout_subscribed,
         )
+        .await?;
+        // phux-c2td.3: the fleet's other half. Rides the same deferred
+        // sweep, so it costs the first paint nothing.
+        self.request_host_inventory(conn).await
+    }
+
+    /// phux-c2td.3: ask this server for its federation host inventory — one
+    /// `GET_STATE`, whose `hosts` list names each satellite's sessions.
+    ///
+    /// Fire-and-forget: the reply drains through
+    /// [`Self::intercept_peer_reply`] into [`PeerCaches::hosts`]. Silent on
+    /// a server without the feature (an older one would answer with no
+    /// inventory, and the picker's ungrouped shape is already the honest
+    /// rendering), and skipped while one is already in flight so a held-down
+    /// picker key cannot queue a burst of snapshots.
+    async fn request_host_inventory(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        if !self.host_sessions_supported || self.peers.hosts_pending.is_some() {
+            return Ok(());
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.peers.hosts_pending = Some(request_id);
+        self.peers.hosts_pending_since = Some(std::time::Instant::now());
+        super::session_io::send_unless_peer_gone(
+            conn,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetState {
+                    scope: phux_protocol::wire::frame::StateScope::Server,
+                },
+            },
+        )
         .await
+    }
+
+    /// Fold a host-inventory reply into the picker's cache. A refusal or an
+    /// unexpected value clears the pending slot and leaves the previous
+    /// inventory in place — a stale grouping beats a fleet that blinks out.
+    ///
+    /// The notices held while the request was in flight are settled here:
+    /// the ones the inventory reports as unreachable rows are dropped as
+    /// already shown, and the rest surface. A non-inventory answer explains
+    /// nothing, so all of them surface.
+    fn fold_host_inventory(
+        &mut self,
+        result: &phux_protocol::wire::frame::CommandResult,
+        repaint: &mut RepaintAccumulator,
+    ) {
+        let held = self.end_host_inventory_request();
+        let explained_by: &[phux_protocol::wire::info::HostInventory] = match result {
+            phux_protocol::wire::frame::CommandResult::OkWith(
+                phux_protocol::wire::frame::CommandValue::State(snapshot),
+            ) => {
+                self.peers.hosts = snapshot.hosts().to_vec();
+                self.session_picker_dirty = true;
+                &self.peers.hosts
+            }
+            _ => &[],
+        };
+        let surfaced = unexplained_unreachable_notices(held, explained_by);
+        self.apply_notices(federation_notices(surfaced), repaint);
+    }
+
+    /// Close the in-flight host-inventory request and hand back the
+    /// notices held for it.
+    fn end_host_inventory_request(&mut self) -> Vec<String> {
+        self.peers.hosts_pending = None;
+        self.peers.hosts_pending_since = None;
+        std::mem::take(&mut self.peers.held_unreachable)
+    }
+
+    /// phux-c2td.3: once a host-inventory request has waited past
+    /// [`HOST_INVENTORY_DEADLINE`], free its slot and put every notice held
+    /// for it on the bar. Called from the status tick, which paints the bar
+    /// right after; with no bar the notice degrades to a tracing line, as
+    /// `apply_notices` does.
+    fn expire_overdue_host_inventory(&mut self) {
+        let now = std::time::Instant::now();
+        if !host_inventory_overdue(self.peers.hosts_pending_since, now) {
+            return;
+        }
+        let held = self.end_host_inventory_request();
+        for notice in federation_notices(held) {
+            if let Some(sb) = self.settings.status_bar.as_mut() {
+                let _ = sb.set_notice(notice, now);
+            } else {
+                tracing::info!(
+                    text = %notice.text,
+                    "status-bar notice dropped: no status bar configured",
+                );
+            }
+        }
     }
 
     /// Hand one inbound frame to the shared server-frame handler.
@@ -1654,6 +1837,12 @@ impl SessionLoop {
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);
         }
+        // phux-c2td.3: an action asked for a fresher host inventory (the
+        // session picker opening). One GET_STATE per batch, whatever the
+        // batch contained.
+        if std::mem::take(&mut self.host_refresh_request) {
+            self.request_host_inventory(conn).await?;
+        }
         // phux-foz.5: a `reload-config` committed in this batch
         // (palette row or bound chord). Runs LAST in the arm so
         // its repaint reflects the new theme/bar.
@@ -1708,6 +1897,8 @@ impl SessionLoop {
             keybindings: self.settings.keybindings.as_ref(),
             theme: &self.settings.theme,
             sessions: &self.peers.sessions,
+            hosts: &self.peers.hosts,
+            host_refresh_request: &mut self.host_refresh_request,
             foreign_layouts: &self.peers.foreign_layouts,
             foreign_agents: &self.peers.foreign_agents,
             focused_session: self.peers.focused_session,
@@ -1951,6 +2142,40 @@ impl SessionLoop {
             {
                 self.peers.foreign_layout_pending.remove(&request_id);
                 self.peers.foreign_agent_pending.remove(&request_id);
+                Ok(None)
+            }
+            // phux-c2td.3: the reply to our own host-inventory GET_STATE.
+            // Picker display data only, same intercept shape as the peer
+            // replies above.
+            FrameKind::CommandResult { request_id, result }
+                if self.peers.hosts_pending == Some(request_id) =>
+            {
+                self.fold_host_inventory(&result, repaint);
+                Ok(None)
+            }
+            // Its refusal shape: keep the inventory we already had, free the
+            // slot so the next open can ask again, and surface every notice
+            // held for it — no reply arrived to explain any of them.
+            FrameKind::Error {
+                request_id: Some(request_id),
+                ..
+            } if self.peers.hosts_pending == Some(request_id) => {
+                let held = self.end_host_inventory_request();
+                self.apply_notices(federation_notices(held), repaint);
+                Ok(None)
+            }
+            // The aggregate's own degradation notices, while our request is
+            // in flight: a hub pushes one un-correlated
+            // `SatelliteUnreachable` per satellite it could not list, ahead
+            // of the reply (L1 §9.1). Held, not dropped (see
+            // `PeerCaches::held_unreachable`): the reply decides which ones
+            // it already reports as unreachable rows.
+            FrameKind::Error {
+                request_id: None,
+                code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
+                message,
+            } if self.peers.hosts_pending.is_some() => {
+                self.peers.held_unreachable.push(message);
                 Ok(None)
             }
             // ADR-0053: the reply to one of the journal's own APPLY_INPUT
@@ -2562,6 +2787,11 @@ impl SessionLoop {
         if drained.fleet_dirty {
             self.refresh_fleet(out, sidebar);
         }
+        // phux-c2td.3: the same in-place refresh for a session picker that
+        // was opened before its host inventory landed.
+        if std::mem::take(&mut self.session_picker_dirty) {
+            self.refresh_session_picker(out, sidebar);
+        }
         // A full repaint force-redraws every pane, so it discharges every
         // paint the pacer was still holding. Settling them afterwards would
         // repaint rows that are already correct.
@@ -2626,6 +2856,33 @@ impl SessionLoop {
                 overlay: &self.overlay,
             },
             &live,
+        );
+        self.finish_paint(painted);
+    }
+
+    /// phux-c2td.3: rebuild and repaint the session picker, if it is open.
+    fn refresh_session_picker<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) {
+        let painted = refresh_session_picker_if_open(
+            out,
+            &mut self.overlays,
+            &self.workspace,
+            &mut self.panes,
+            &self.engine_kernel,
+            self.focused_resource.as_ref(),
+            self.zoomed.as_ref(),
+            self.viewport_dims,
+            self.settings.status_bar.as_mut(),
+            sidebar,
+            &mut self.sidebar_painter,
+            &self.session_name,
+            &self.settings.theme,
+            &self.peers.sessions,
+            self.peers.focused_session,
+            &self.peers.hosts,
         );
         self.finish_paint(painted);
     }
@@ -2850,6 +3107,11 @@ impl SessionLoop {
         if let Some(sb) = self.settings.status_bar.as_mut() {
             let _ = sb.clear_expired_notice(std::time::Instant::now());
         }
+        // phux-c2td.3: a host inventory that never answered must not hold
+        // its notices forever. Past the deadline, free the slot and surface
+        // everything held — nothing arrived to explain any of it. The bar
+        // paint below carries them.
+        self.expire_overdue_host_inventory();
         // phux-5ke.4: an overlay above the bar would get
         // partially overwritten by the bar paint; skip ticks
         // while a modal is up.

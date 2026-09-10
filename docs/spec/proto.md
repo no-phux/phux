@@ -391,6 +391,7 @@ ServerFeature = bitset (u32) {
                                      //   APPEND_RESOURCE_OUTPUT, AgentEventsJsonlV1
                                      //   (L1.md §1.1, §1.2, §4.8, §5.5; §11.2.1)
     LIST_DIRECTORY     = 0x00008000, // LIST_DIRECTORY host query (L3.md §4)
+    HOST_SESSIONS      = 0x00010000, // GET_STATE host-session inventory (L1.md §9.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -455,19 +456,30 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
 `GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
-`RESOURCE_KINDS = 0x4000`, and `LIST_DIRECTORY = 0x8000`; unknown feature bits
-are ignored. A client MUST use the corresponding frame only when its feature is
+`RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`, and
+`HOST_SESSIONS = 0x10000`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
 `INPUT_TERMINAL_REPLY`.
 
-`SPAWN_INITIAL_SIZE = 0x200` is the one bit that gates a field rather than a
+`SPAWN_INITIAL_SIZE = 0x200` gates a field rather than a
 frame, and its unadvertised case is degrading rather than dangerous: a server
 without it skips the unknown field id by length and spawns at its default,
 which is what happened before the field existed. A client SHOULD still
 require the bit, because it is what distinguishes "the pane already has the
 geometry I asked for" from "the pane is at some default and my follow-up
 `RESIZE_TERMINAL` is load-bearing."
+
+`HOST_SESSIONS = 0x10000` gates a value the same way: the trailing
+`SessionSnapshot.hosts` list a hub fills on `GET_STATE`
+([L1.md](./L1.md) §9.1). The list is trailing-additive, so a server MAY send
+it whether or not a client understands it, and a decoder that predates it
+stops at the resource facets and ignores the rest of the field. The bit
+exists for the reading of an *empty* list: with it, empty means "no
+satellites", which is a complete answer; without it, empty is
+indistinguishable from a hub that never had the field. A client that groups
+sessions by host SHOULD require the bit before reporting a fleet as
+satellite-free.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

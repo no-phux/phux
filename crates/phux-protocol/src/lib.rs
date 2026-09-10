@@ -67,6 +67,7 @@ pub use wire::frame::{
     SpawnResource,
 };
 pub use wire::info::AgentFacet;
+pub use wire::info::{HostInventory, HostSessionInfo};
 
 /// Protocol version this crate implements.
 ///
