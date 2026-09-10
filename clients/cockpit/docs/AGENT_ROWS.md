@@ -17,6 +17,10 @@ attached roster and jumps through the existing fenced terminal navigator.
 - A rail row shows provider, reported state, and parent/resource identity.
   Only a current blocked report receives attention. Closing a resource removes
   it on the next published catalog/closed-record update.
+- The parent tab aggregates attention from every split. Default top tabs in
+  every window and the primary side rail show a dot beside the terminal control,
+  with the accessible name `Needs attention: <current tab title>`. The control's
+  captured tab target is unchanged; the dot grants no command authority.
 - Agents is available from every window and from the keyboard-accessible
   workspace switcher. Its one-resource pages expose resource identity, parent,
   producer-native ID, and the catalog/record evidence actually held by the host.
@@ -72,6 +76,8 @@ insets are Geist `spacing.sm` and `spacing.md`; the existing 520-point width
 keeps prose near the register's reading measure. Jump and paging remain outside
 the scroll area, within the minimum 900-by-420 window. Resource/parent/native
 identity and evidence are never silently hidden by single-line ellipsis.
+Their semantic names carry the same values as the rendered text, so native
+accessibility and controlled acceptance can inspect the actual evidence.
 
 The parent index resolves the exact provider-qualified terminal in the existing
 unfiltered navigation catalog at the same engine revision. The native revision

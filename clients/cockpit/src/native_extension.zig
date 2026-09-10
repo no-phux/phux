@@ -1214,7 +1214,7 @@ const PointerHost = struct {
         const engine = bridge.engine;
         const before = if (engine) |current| current.beginPublication() else null;
         if (value == .timer) onTimer(runtime, value.timer.id);
-        routeNativeInput(value);
+        routeNativeInput(runtime, value);
         closeNativeWindow(value);
         try self.inner.event(runtime, modalInputEvent(value));
         syncWindowIds(runtime);
@@ -1332,22 +1332,19 @@ const PointerHost = struct {
     }
 };
 
-fn routeNativeInput(value: native_sdk.Event) void {
+fn routeNativeInput(runtime: *native_sdk.Runtime, value: native_sdk.Event) void {
     if (bridge.replayInteraction()) return;
     const engine = bridge.engine orelse return;
     const fx = engineFx() orelse return;
-    dispatchNativeInput(engine, fx, value);
+    dispatchNativeInput(runtime, engine, fx, value);
 }
 
-fn dispatchNativeInput(engine: *Engine, fx: EngineFx, value: native_sdk.Event) void {
+fn dispatchNativeInput(runtime: *native_sdk.Runtime, engine: *Engine, fx: EngineFx, value: native_sdk.Event) void {
     switch (value) {
         .command => |command| engine.adoptFocusedWindow(command.window_id),
-        // A routed key names the window it was typed in: adopt it before the
-        // key fallback resolves the focused pane, as CockpitHost adopts a
-        // routed event's window. The raw echo is left to the pointer kinds.
-        .canvas_widget_keyboard => |routed| {
-            adoptCanvasWindow(engine, routed.window_id, routed.view_label);
-        },
+        // Ambient keys need their origin before fallback. Captured tab
+        // activations instead adopt only when their queued command validates.
+        .canvas_widget_keyboard => |routed| adoptKeyboardWindow(runtime, engine, routed),
         .canvas_widget_pointer => |routed| {
             // Adopt chrome's origin in the same transition as its command.
             // The earlier raw down must not stale this click's own revision.
@@ -1360,6 +1357,27 @@ fn dispatchNativeInput(engine: *Engine, fx: EngineFx, value: native_sdk.Event) v
         },
         else => {},
     }
+}
+
+fn adoptKeyboardWindow(runtime: *native_sdk.Runtime, engine: *Engine, routed: native_sdk.runtime.CanvasWidgetKeyboardEvent) void {
+    if (!tabActivationKey(runtime, routed)) adoptCanvasWindow(engine, routed.window_id, routed.view_label);
+}
+
+fn tabActivationKey(runtime: *native_sdk.Runtime, routed: native_sdk.runtime.CanvasWidgetKeyboardEvent) bool {
+    const target = routed.target orelse return false;
+    if (routed.keyboard.modifiers.hasNavigationModifier()) return false;
+    if (!canvas.isWidgetActivationKey(routed.keyboard.key)) return false;
+    // Include key-up: SDK activation dispatches down and release separately.
+    // Focus targets omit semantics, so resolve the exact painted widget.
+    return keyboardTargetIsTab(runtime, routed, target);
+}
+
+fn keyboardTargetIsTab(runtime: *native_sdk.Runtime, routed: native_sdk.runtime.CanvasWidgetKeyboardEvent, target: canvas.WidgetFocusTarget) bool {
+    const layout = runtime.canvasWidgetLayout(routed.window_id, routed.view_label) catch return true;
+    if (target.index >= layout.nodes.len) return true;
+    const widget = layout.nodes[target.index].widget;
+    if (widget.id != target.id) return true;
+    return widget.semantics.role == .tab;
 }
 
 fn adoptCanvasWindow(engine: *Engine, window_id: native_sdk.platform.WindowId, label: []const u8) void {
@@ -1379,6 +1397,9 @@ fn routeSurfacePointer(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.G
 
 fn activatedControl(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
     const target = routed.press_target orelse return false;
+    // Tab commands own captured identity and receipt ordering. Their engine
+    // operation adopts only after validation, including queued activations.
+    if (target.role == .tab) return false;
     return routed.pointer.phase == .up and routed.pointer.button == 0 and
         routed.pointer.captured_id == target.id and target.bounds.normalized().containsPoint(routed.pointer.point);
 }
@@ -2167,6 +2188,133 @@ test "compiled core serializes captured window selections across independent pro
     try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
 }
 
+test "routed tab activation waits for receipts before adopting a validated window" {
+    inline for (.{ false, true }) |retire_target| {
+        try expectQueuedTabActivation(.pointer, retire_target);
+    }
+}
+
+test "keyboard tab activation waits for receipts before adopting a validated window" {
+    inline for (.{ TabActivation.space, TabActivation.enter, TabActivation.shift_space, TabActivation.shift_enter }) |activation| {
+        inline for (.{ false, true }) |retire_target| {
+            try expectQueuedTabActivation(activation, retire_target);
+        }
+    }
+}
+
+const TabActivation = enum { pointer, space, enter, shift_space, shift_enter };
+
+fn expectQueuedTabActivation(activation: TabActivation, retire_target: bool) !void {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    const secondary = engine.model.wsAt(1).?;
+    const id = secondary.window_id;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    const layout = try rig.harness.runtime.canvasWidgetLayout(id, "phux-cockpit-canvas-1");
+    var frame: ?native_sdk.geometry.RectF = null;
+    var tab_id: canvas.ObjectId = undefined;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        frame = node.frame;
+        tab_id = node.widget.id;
+    }
+    const tab = frame orelse return error.TestExpectedTab;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const main = firstPaintedTabMessage(mainView(&ui, &rig.app_state.model)).?;
+    try rig.dispatch(main);
+    try std.testing.expect(bridge.command_pending);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    const focused = engine.model.focusedTerminalRef().?;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        id,
+        "phux-cockpit-canvas-1",
+        .{ .id = tab_id, .action = .focus },
+    );
+    try std.testing.expect(bridge.command_pending);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    if (retire_target) secondary.tab_generation += 1;
+    try activateQueuedTab(&rig, activation, id, tab);
+    try std.testing.expectEqual(@as(usize, 2), rig.app_state.model.tabCommands.queue.len);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expect(focused.eql(engine.model.focusedTerminalRef().?));
+    for (0..8) |_| {
+        if (rig.app_state.model.tabCommands.queue.len == 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+    try std.testing.expectEqual(@as(usize, if (retire_target) 0 else 1), engine.model.active_window);
+    try std.testing.expectEqual(@as(i64, if (retire_target) 3 else 2), rig.app_state.model.tabCommands.outcome);
+}
+
+fn activateQueuedTab(rig: *Rig, activation: TabActivation, id: native_sdk.platform.WindowId, tab: native_sdk.geometry.RectF) !void {
+    switch (activation) {
+        .space => try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas-1 space"),
+        .enter => try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas-1 enter"),
+        .shift_space => try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas-1 shift+space"),
+        .shift_enter => try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas-1 shift+enter"),
+        .pointer => inline for (.{ .pointer_down, .pointer_up }) |kind| {
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                .window_id = id,
+                .label = "phux-cockpit-canvas-1",
+                .kind = kind,
+                .x = tab.x + tab.width / 2,
+                .y = tab.y + tab.height / 2,
+            } });
+        },
+    }
+}
+
+test "ambient new terminal shortcut keeps the origin of a keyboard focused tab" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    const id = engine.model.wsAt(1).?.window_id;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.dispatch(.{ .select_tab = 0 });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const layout = try rig.harness.runtime.canvasWidgetLayout(id, "phux-cockpit-canvas-1");
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+            rig.decorated,
+            id,
+            "phux-cockpit-canvas-1",
+            .{ .id = node.widget.id, .action = .focus },
+        );
+        break;
+    } else return error.TestExpectedTab;
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas-1 cmd+t");
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsAt(0).?.tab_count);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsAt(1).?.tab_count);
+}
+
 test "persistence failure and recovery publish without a later command" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -2505,9 +2653,9 @@ test "replayed modality routes fallback keys without live terminal effects" {
     try rig.dispatch(.{ .appearance_loaded = &.{ 1, 0, 2, 0, 255, 0, 0, 0, 0, 0 } });
     try std.testing.expectEqual(core.Msg.palette_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
     _ = onText(.{ .phase = .text_input, .key = "a", .text = "a" });
-    routeNativeInput(.{ .files_dropped = .{ .window_id = 1, .view_label = canvas_label, .paths = &.{"/blocked"} } });
+    routeNativeInput(&rig.harness.runtime, .{ .files_dropped = .{ .window_id = 1, .view_label = canvas_label, .paths = &.{"/blocked"} } });
     const before = engine.model.active_window;
-    routeNativeInput(.{ .gpu_surface_input = .{ .window_id = 1, .label = canvas_label, .kind = .pointer_down, .x = 400, .y = 300 } });
+    routeNativeInput(&rig.harness.runtime, .{ .gpu_surface_input = .{ .window_id = 1, .label = canvas_label, .kind = .pointer_down, .x = 400, .y = 300 } });
     try std.testing.expectEqual(before, engine.model.active_window);
     try rig.dispatch(.palette_close);
     _ = onKey(.{ .phase = .key_down, .key = "Enter" });
@@ -3624,7 +3772,12 @@ fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool)
         inline for (fields) |other| @field(scoped, other) = false;
         @field(scoped, field) = true;
         try std.testing.expect(try compiledViewHasLabel(&scoped, window, "Close agent inspector"));
-        try std.testing.expectEqual(loaded, try compiledViewHasLabel(&scoped, window, "Agent resource identity"));
+        if (loaded) {
+            const row = scoped.paletteRows[0];
+            for ([_][]const u8{ row.resource, row.parent, row.nativeId, row.evidence }) |value| {
+                if (value.len != 0) try std.testing.expect(try compiledViewHasLabel(&scoped, window, value));
+            }
+        }
         for (parity_sizes) |size| {
             for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
                 try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&scoped, size, density, state, window));
@@ -3691,6 +3844,70 @@ test "shipping agent inspection markup handles paging and catalog states in all 
     try rig.dispatch(.palette_retry);
     try rig.settleNavigation();
     try auditInspectorEveryWindow(rig.app_state.model, "agents empty", false);
+}
+
+fn expectParentAttentionChrome(rig: *Rig, label: []const u8, shown: bool) !void {
+    for (parity_sizes) |size| {
+        // This fixture installs provider trees directly. Present the actual
+        // size without assuming the prior fixture run matched last_runs.
+        rig.frame_index += 1;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+            .label = canvas_label,
+            .size = size,
+            .scale_factor = 1,
+            .frame_index = rig.frame_index,
+            .timestamp_ns = rig.frame_index * 16_000_000,
+        } });
+        try rig.settle(@intCast(bridge.engine.?.sequence), "READY");
+        try expectParentAttentionAt(rig.app_state.model, label, shown, size);
+    }
+}
+
+fn expectParentAttentionAt(model: core.Model, label: []const u8, shown: bool, size: native_sdk.geometry.SizeF) !void {
+    var scoped = model;
+    scoped.window1Tabs = model.visibleTabs;
+    scoped.window2Tabs = model.visibleTabs;
+    scoped.window3Tabs = model.visibleTabs;
+    scoped.window4Tabs = model.visibleTabs;
+    for (0..5) |window| {
+        try std.testing.expectEqual(shown, try compiledViewHasLabel(&scoped, window, label));
+        if (shown) {
+            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+                try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&scoped, size, density, "parent attention", window));
+            }
+        }
+    }
+    scoped.tabPlacement = .side;
+    try std.testing.expectEqual(shown, try compiledViewHasLabel(&scoped, 0, label));
+}
+
+test "shipping tab chrome exposes attention for a blocked nonfocused split" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const local = engine.model.focusedTerminalRef().?;
+    const parent = try rig.attachFixture();
+    const tree = engine.model.selectedTree().?;
+    _ = try tree.split(tree.focus, .horizontal, local);
+    try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
+    var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
+    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
+    var label_buffer: [128]u8 = undefined;
+    const label = try std.fmt.bufPrint(&label_buffer, "Needs attention: {s}", .{rig.app_state.model.visibleTabs[0].title});
+    try expectParentAttentionChrome(&rig, label, false);
+    const remote = engine.model.phux().?;
+    const fixture = @TypeOf(remote.*).test_support;
+    try fixture.adoptAgentSessions(remote.host, &.{
+        .{ .id = 9100, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .state = "blocked" },
+    });
+    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
+    try std.testing.expect(rig.app_state.model.visibleTabs[0].attention);
+    try expectParentAttentionChrome(&rig, label, true);
+    try std.testing.expect(try fixture.feedAgentRecords(remote.host, 9100, .closed, ""));
+    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
+    try expectParentAttentionChrome(&rig, label, false);
 }
 
 test "crowded tab strip keeps every tab and overflow cue inside its allocated chrome slot" {
@@ -4408,7 +4625,7 @@ test "Finder drops stay native and enter the focused pane as bracketed paste" {
     pane.session.feed("\x1b[?2004h");
     try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
 
-    routeNativeInput(.{ .files_dropped = .{
+    routeNativeInput(&rig.harness.runtime, .{ .files_dropped = .{
         .view_label = canvas_label,
         .paths = &.{ "/tmp/a b.txt", "/tmp/second" },
     } });

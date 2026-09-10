@@ -98,6 +98,7 @@ export interface RailRow {
   readonly agent: boolean;
   readonly target: Uint8Array;
   readonly parentIndex: number;
+  readonly attentionLabel: Uint8Array;
 }
 
 export interface Tab {
@@ -108,6 +109,7 @@ export interface Tab {
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
+  readonly attentionLabel: Uint8Array;
   /// Live, never persisted: the rows come from the snapshot the engine just
   /// sent, so a session that closed is simply absent from the next one.
   readonly agents: readonly AgentRow[];
@@ -1463,9 +1465,13 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, agents: agentRowsFor(agents, w, index, connection), target: t.target });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target });
   }
   return out;
+}
+
+function attentionLabel(title: Uint8Array, attention: boolean): Uint8Array {
+  return attention ? joinBytes(asciiBytes("Needs attention: "), title, NO_BYTES) : NO_BYTES;
 }
 
 /// The rail: each visible tab, then its agent rows in catalog order. A row
@@ -1477,14 +1483,14 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
   for (let i = 0; i < tabs.length; i += 1) {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
-    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target });
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: NO_BYTES });
       ordinal += 1;
     }
   }
@@ -1685,8 +1691,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
