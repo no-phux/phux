@@ -32,15 +32,20 @@ const Remote = struct {
     refreshes: usize = 0,
     writes: usize = 0,
     sent: ?workspace.Mutation = null,
+    snapshot_reads: usize = 0,
+    change_revision_at_read: ?usize = null,
+    attached: bool = true,
 
     pub fn workspaceSnapshot(self: *Remote) workspace.Snapshot {
+        self.snapshot_reads += 1;
+        if (self.change_revision_at_read == self.snapshot_reads) self.snapshot.revision += 1;
         return self.snapshot;
     }
     pub fn connectionEpoch(self: *Remote) u64 {
         return self.epoch;
     }
-    pub fn state(_: *Remote) enum { attached } {
-        return .attached;
+    pub fn state(self: *Remote) enum { attached, disconnected } {
+        return if (self.attached) .attached else .disconnected;
     }
     pub fn requestWorkspaceRefresh(self: *Remote) !?u32 {
         if (self.snapshot.status == .pending) return null;
@@ -122,7 +127,7 @@ test "queued creation cannot follow a later session or connection epoch" {
         try testing.expectEqual(.unknown_outcome, queue.takeCompletion(ticket).?);
         try testing.expectEqual(@as(usize, 0), model.remote.refreshes);
         try testing.expectEqual(@as(usize, 0), model.remote.writes);
-        try testing.expect(model.shared_workspace.refused);
+        try testing.expect(!model.shared_workspace.refused);
     }
 }
 
@@ -153,7 +158,7 @@ test "mutation refusal and unknown outcomes never retry or erase terminal discov
         try testing.expect(!queue.pump(&model));
         try testing.expectEqual(@as(usize, 1), model.remote.writes);
         try testing.expectEqual(@as(usize, 6), model.remote.snapshot.nodes.len);
-        try testing.expect(model.shared_workspace.refused);
+        try testing.expectEqual(status == .refused, model.shared_workspace.refused);
     }
 }
 
@@ -209,6 +214,211 @@ test "creation queue is bounded and disconnect clears every intent without sendi
     try testing.expectError(error.OperationCapacity, queue.requestCreation(&model, split(), 3));
     queue.disconnect(&model);
     try testing.expect(!queue.pump(&model));
-    try testing.expect(model.shared_workspace.refused);
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expectEqual(@as(usize, 0), model.remote.writes);
+}
+
+test "submitted mutation losing completion is unknown without refusal or retry" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    const ticket = try queue.requestCreation(&model, split(), 3);
+    refreshCreation(&queue, &model);
+    model.remote.snapshot.request_id += 1;
+    model.remote.finish(.confirmed);
+    try testing.expect(queue.pump(&model));
+    try testing.expectEqual(.unknown_outcome, queue.takeCompletion(ticket).?);
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expect(!queue.pump(&model));
+    try testing.expectEqual(@as(usize, 1), model.remote.writes);
+}
+
+test "correlated direct outcomes retain exact identity until acknowledgement" {
+    const command_id: u64 = 0xfedc_ba98_7654_3210;
+    for ([_]workspace.Status{ .confirmed, .refused, .unknown_outcome }) |status| {
+        var queue: mutations.Coordinator = .{};
+        var model: Model = .{};
+        try queue.requestRemoveCorrelated(&model, terminal(2), command_id);
+        try testing.expect(queue.peekCompletion() == null);
+        try testing.expect(!queue.ackCompletion(command_id));
+        model.remote.finish(status);
+        try testing.expect(queue.pump(&model));
+        const completion = queue.peekCompletion().?;
+        try testing.expectEqual(command_id, completion.command_id);
+        try testing.expectEqual(@as(u32, 41), completion.request_id);
+        try testing.expectEqual(@as(u64, 3), completion.connection_epoch);
+        try testing.expect(completion.terminal_ref.?.eql(terminal(2)));
+        const expected: @import("command_results.zig").Operation = switch (status) {
+            .confirmed => .success,
+            .refused => .refused,
+            else => .unknown,
+        };
+        try testing.expectEqual(expected, completion.operation);
+        try testing.expectEqual(.not_requested, completion.placement);
+        try testing.expectEqual(.not_requested, completion.focus);
+        try testing.expectEqual(status == .refused, model.shared_workspace.refused);
+        try testing.expect(!queue.ackCompletion(command_id + 1));
+        try testing.expectEqualDeep(completion, queue.peekCompletion().?);
+        queue.disconnect(&model);
+        try testing.expectEqualDeep(completion, queue.peekCompletion().?);
+        try testing.expect(queue.ackCompletion(command_id));
+        try testing.expect(queue.peekCompletion() == null);
+        try testing.expect(!queue.ackCompletion(command_id));
+        try testing.expectEqual(@as(usize, 1), model.remote.writes);
+    }
+}
+
+test "correlated direct disconnect retains unknown and legacy direct leaves no storage" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    try queue.requestRemoveWindowCorrelated(&model, first_id, 99);
+    queue.disconnect(&model);
+    const completion = queue.peekCompletion().?;
+    try testing.expectEqual(.unknown, completion.operation);
+    try testing.expectEqual(.disconnected, completion.reason);
+    try testing.expectEqual(@as(u32, 41), completion.request_id);
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expect(queue.ackCompletion(99));
+    model.remote.finish(.confirmed);
+    model.shared_workspace.revision = model.remote.snapshot.revision;
+    for (0..20) |_| {
+        try queue.requestRemoveWindow(&model, first_id);
+        model.remote.finish(.confirmed);
+        try testing.expect(queue.pump(&model));
+        model.shared_workspace.revision = model.remote.snapshot.revision;
+    }
+    for (queue.pending) |slot| try testing.expect(slot == null);
+}
+
+test "failed local projection preserves matching successful shared edit evidence" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    try queue.requestReorderCorrelated(&model, second_id, 0, 42);
+    model.remote.finish(.confirmed);
+    try testing.expect(queue.pump(&model));
+    try testing.expectEqual(.not_requested, queue.peekCompletion().?.placement);
+    try testing.expect(queue.projectionFailed(&model));
+    try testing.expect(!queue.projectionFailed(&model));
+    const completion = queue.peekCompletion().?;
+    try testing.expectEqual(.success, completion.operation);
+    try testing.expectEqual(.refused, completion.placement);
+    try testing.expectEqual(.projection_refused, completion.reason);
+    try testing.expectEqual(@as(u64, 42), completion.command_id);
+    try testing.expectEqual(@as(u32, 41), completion.request_id);
+    queue.disconnect(&model);
+    try testing.expectEqualDeep(completion, queue.peekCompletion().?);
+}
+
+test "retained direct results backpressure before writes and acknowledgement reopens capacity" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    for (0..16) |index| {
+        try queue.requestReorderCorrelated(&model, second_id, 0, @intCast(index + 1));
+        model.remote.finish(.confirmed);
+        try testing.expect(queue.pump(&model));
+        model.shared_workspace.revision = model.remote.snapshot.revision;
+    }
+    try testing.expectError(error.OperationCapacity, queue.requestRemoveWindowCorrelated(&model, first_id, 17));
+    try testing.expectError(error.CommandBusy, queue.requestRemoveWindowCorrelated(&model, first_id, 1));
+    try testing.expectEqual(@as(usize, 16), model.remote.writes);
+    try testing.expect(queue.ackCompletion(1));
+    try queue.requestResizeCorrelated(&model, first_id, 1, 1, 0.3, 17);
+    try testing.expectEqual(@as(usize, 17), model.remote.writes);
+    try testing.expectEqual(@as(usize, 0), model.remote.refreshes);
+}
+
+test "correlated direct retention does not enable creation revision rebasing" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    // A revision racing between admission and dispatch remains a refusal. The
+    // direct command is retained for delivery but is not a refreshable creation.
+    model.remote.change_revision_at_read = 4;
+    try queue.requestResizeCorrelated(&model, first_id, 1, 1, 0.3, 1);
+    const completion = queue.peekCompletion().?;
+    try testing.expectEqual(.refused, completion.operation);
+    try testing.expectEqual(@as(u32, 0), completion.request_id);
+    try testing.expectEqual(@as(usize, 0), model.remote.writes);
+}
+
+test "native direct results have a separate acknowledgement namespace" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    try queue.requestRemoveWindowCorrelated(&model, first_id, 2);
+    model.remote.finish(.confirmed);
+    _ = queue.pump(&model);
+    model.shared_workspace.revision = model.remote.snapshot.revision;
+    try queue.requestResizeNative(&model, first_id, 1, 1, 0.3);
+    model.remote.finish(.confirmed);
+    _ = queue.pump(&model);
+    try testing.expect(queue.ackCompletion(2));
+    const result = queue.peekCompletion().?;
+    try testing.expectEqual(.native, result.origin);
+    try testing.expectEqual(@as(u64, 2), result.command_id);
+    try testing.expectEqual(@as(u64, 2), result.mutation_ticket);
+    try testing.expect(!queue.ackCompletion(2));
+    try testing.expect(queue.ackNativeCompletion(2));
+    try testing.expect(queue.peekCompletion() == null);
+    model.shared_workspace.revision = model.remote.snapshot.revision;
+    try queue.requestRemoveNative(&model, terminal(2));
+    model.remote.finish(.confirmed);
+    _ = queue.pump(&model);
+    try testing.expect(queue.ackNativeCompletion(3));
+    model.shared_workspace.revision = model.remote.snapshot.revision;
+    try queue.requestReorderNative(&model, second_id, 0);
+    model.remote.finish(.confirmed);
+    _ = queue.pump(&model);
+    try testing.expect(queue.ackNativeCompletion(4));
+    model.shared_workspace.revision = model.remote.snapshot.revision;
+    try queue.requestRemoveWindowNative(&model, first_id);
+    queue.disconnect(&model);
+    try testing.expectEqual(.unknown, queue.peekCompletion().?.operation);
+    try testing.expect(queue.ackNativeCompletion(5));
+}
+
+test "disconnect preserves exact already observed direct confirmation or refusal before pump" {
+    for ([_]workspace.Status{ .confirmed, .refused }) |status| {
+        var queue: mutations.Coordinator = .{};
+        var model: Model = .{};
+        try queue.requestRemoveCorrelated(&model, terminal(2), 90);
+        model.remote.finish(status);
+        model.remote.attached = false;
+        queue.disconnect(&model);
+        const result = queue.peekCompletion().?;
+        const expected: @import("command_results.zig").Operation = if (status == .confirmed) .success else .refused;
+        try testing.expectEqual(expected, result.operation);
+        try testing.expectEqual(@as(u32, 41), result.request_id);
+        try testing.expectEqual(@as(u64, 3), result.connection_epoch);
+        try testing.expectEqual(@as(usize, 1), model.remote.writes);
+        try testing.expectEqual(@as(usize, 0), model.remote.refreshes);
+    }
+}
+
+test "disconnect cannot adopt a confirmed snapshot from another request session or epoch" {
+    for (0..3) |changed| {
+        var queue: mutations.Coordinator = .{};
+        var model: Model = .{};
+        try queue.requestRemoveCorrelated(&model, terminal(2), 90);
+        model.remote.finish(.confirmed);
+        switch (changed) {
+            0 => model.remote.snapshot.request_id += 1,
+            1 => model.remote.snapshot.session_id += 1,
+            else => model.remote.epoch += 1,
+        }
+        queue.disconnect(&model);
+        try testing.expectEqual(.unknown, queue.peekCompletion().?.operation);
+        try testing.expect(!model.shared_workspace.refused);
+        try testing.expectEqual(@as(usize, 1), model.remote.writes);
+    }
+}
+
+test "completion-only teardown never advances confirmed refresh into a mutation" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    const ticket = try queue.requestCreation(&model, split(), 3);
+    _ = queue.pump(&model);
+    model.remote.finish(.confirmed);
+    model.remote.attached = false;
+    queue.completeDisconnected(&model);
+    try testing.expectEqual(.unknown_outcome, queue.takeCompletion(ticket).?);
+    try testing.expectEqual(@as(usize, 1), model.remote.refreshes);
     try testing.expectEqual(@as(usize, 0), model.remote.writes);
 }

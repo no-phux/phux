@@ -52,6 +52,11 @@ export function enqueueCatalogCommand(state: TabCommandState, target: Uint8Array
   return enqueueSelection(state, target, 2);
 }
 
+export function enqueueOperationCommand(state: TabCommandState, operation: Uint8Array): TabCommandDecision {
+  if (operation.length !== 12 || operation[0] !== 1) return { state: { ...state, outcome: 3 }, request: EMPTY };
+  return enqueueSelection(state, operation, 3);
+}
+
 function enqueueSelection(state: TabCommandState, target: Uint8Array, kind: number): TabCommandDecision {
   if (state.queue.length >= 16) return { state: { ...state, outcome: 4 }, request: EMPTY };
   const id = state.nextId;

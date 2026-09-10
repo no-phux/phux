@@ -174,7 +174,7 @@ pub fn unknownOutcome() !void {
     const remote = engine.model.phux().?;
     _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
-    try testing.expect(engine.model.terminal_limit_refused);
+    try testing.expect(!engine.model.terminal_limit_refused);
     try testing.expect(!command(engine, .new_terminal, 0));
     try testing.expectEqual(local_count, engine.model.provider.activeCount());
     try testing.expect(!remote.bridge.outgoing.hasPending());
@@ -432,7 +432,7 @@ test "session change retires accepted creation without redirecting its queued mu
     try drain(engine);
     try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
     try testing.expect(remote.host.operation_ledger.detaching(refFor(8)));
-    try testing.expect(model.terminal_limit_refused);
+    try testing.expect(!model.terminal_limit_refused);
     try expectCatalogTerminal(engine, 8);
     try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
 }
@@ -645,5 +645,300 @@ pub fn offlineSharedCloseRefuses() !void {
         try drain(engine);
         try testing.expect(remote.owner(ref) != null);
         try testing.expectEqual(native_window, model.locateTerminal(ref).?.window);
+    }
+}
+
+const result_command: u64 = 0xfedc_ba98_7654_3210;
+
+fn confirmCorrelatedSplit(engine: *engine_module.Engine) !void {
+    try workspaceReply(engine, "workspace_rename_metadata.bin", 5, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    try workspaceReply(engine, "workspace_split_metadata.bin", 8, 5);
+    try workspaceReply(engine, "workspace_split_state.bin", 7, 4);
+    const remote = engine.model.phux().?;
+    _ = try remote.drainReadiness();
+    _ = engine.model.shared_mutations.pump(engine.model);
+    _ = engine.creation.pump(engine.model);
+}
+
+test "correlated spawn result waits for exact winning projection and retains until ack" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    const epoch = remote.connectionEpoch();
+    try engine.creation.requestCorrelated(model, .split_right, result_command);
+    try testing.expect(!engine.creation.ackCompletion(result_command));
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try confirmCorrelatedSplit(engine);
+    try testing.expect(engine.creation.peekCompletion() == null);
+    try testing.expectEqual(@as(usize, 1), model.primary.tabs[0].paneCount());
+    // Emitting desired_terminal does not produce a result or manufacture a pane.
+    try testing.expect(model.shared_workspace.desired_terminal.?.eql(refFor(8)));
+    try testing.expect(!engine.creation.observeProjection(model));
+    _ = try model.shared_workspace.apply(model, remote.workspaceSnapshot(), epoch);
+    try testing.expect(engine.creation.observeProjection(model));
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(result_command, result.command_id);
+    try testing.expectEqual(@as(u32, 1), result.request_id);
+    try testing.expectEqual(@as(u32, 3), result.placement_request_id);
+    try testing.expectEqual(epoch, result.connection_epoch);
+    try testing.expect(result.terminal_ref.?.eql(refFor(8)));
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.placed, result.placement);
+    try testing.expectEqual(.focused, result.focus);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    engine.creation.disconnect(model);
+    try testing.expectEqualDeep(result, engine.creation.peekCompletion().?);
+    try testing.expect(!engine.creation.ackCompletion(result_command + 1));
+    try testing.expect(engine.creation.ackCompletion(result_command));
+    try testing.expect(engine.creation.peekCompletion() == null);
+    try testing.expect(!engine.creation.ackCompletion(result_command));
+}
+
+test "superseded correlated focus preserves operation success and placement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const original = model.focusedTerminalRef().?;
+    try engine.creation.requestCorrelated(model, .split_right, result_command);
+    engine.creation.supersedeFocus();
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try confirmCorrelatedSplit(engine);
+    const remote = model.phux().?;
+    _ = try model.shared_workspace.apply(model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    try testing.expect(engine.creation.observeProjection(model));
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.placed, result.placement);
+    try testing.expectEqual(.superseded, result.focus);
+    try testing.expect(model.focusedTerminalRef().?.eql(original));
+}
+
+test "correlated refusal and disconnect preserve independent operation evidence" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    for ([_]enum { refused, pending_disconnect, accepted_disconnect }{ .refused, .pending_disconnect, .accepted_disconnect }) |scenario| {
+        const engine = try start();
+        defer engine.destroy();
+        const model = engine.model;
+        try engine.creation.requestCorrelated(model, .window, result_command);
+        if (scenario == .refused) {
+            try feed(engine, "spawn-refused.bin");
+        } else {
+            if (scenario == .accepted_disconnect) try feed(engine, "spawn-local.bin");
+            engine.creation.disconnect(model);
+        }
+        const result = engine.creation.peekCompletion().?;
+        try testing.expectEqual(result_command, result.command_id);
+        try testing.expectEqual(@as(u32, 1), result.request_id);
+        const expected: @import("command_results.zig").Operation = switch (scenario) {
+            .refused => .refused,
+            .pending_disconnect => .unknown,
+            .accepted_disconnect => .success,
+        };
+        try testing.expectEqual(expected, result.operation);
+        if (scenario != .refused) try testing.expect(!model.shared_workspace.refused);
+        try testing.expectEqual(scenario == .refused, model.terminal_limit_refused);
+        try testing.expectEqual(@as(usize, 0), engine.creation.count());
+        if (scenario != .refused) try testing.expectEqual(.unknown, result.placement);
+        if (scenario == .accepted_disconnect) {
+            try testing.expect(result.terminal_ref.?.eql(refFor(8)));
+            try testing.expect(model.phux().?.terminalKnown(refFor(8)));
+        }
+    }
+}
+
+test "successful satellite spawn survives follow-up attach refusal with original request identity" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    try engine.creation.requestCorrelated(engine.model, .tab, result_command);
+    // Inject the coordinator's typed spawn callback: the fixture's original
+    // request owner is local, so its satellite spawn wire reply is inapplicable.
+    // The resulting satellite attach still runs through the real provider/FFI.
+    const satellite: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(1, 9, "fixture-host") } };
+    try testing.expect(engine.creation.complete(engine.model, .{
+        .request_id = 1,
+        .connection_epoch = engine.model.phux().?.connectionEpoch(),
+        .kind = .spawn,
+        .status = .success,
+        .terminal_ref = satellite,
+    }));
+    try stageReply(engine, "tests", "attach-refused.bin", 1, 2);
+    try drain(engine);
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(@as(u32, 1), result.request_id);
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.refused, result.placement);
+    try testing.expectEqual(.attach_refused, result.reason);
+    try testing.expectEqual(@as(u32, 1), result.terminal_ref.?.terminal_id.phux.kind);
+}
+
+test "correlated destination reuse preserves success without acquiring a new window lifetime" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .window, result_command);
+    const window = model.active_window;
+    try feed(engine, "spawn-local.bin");
+    model.closeWindow(window);
+    _ = model.openWindow(window).?;
+    try feed(engine, "local-ready.bin");
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.destination_lost, result.placement);
+    try testing.expectEqual(.destination_lost, result.reason);
+    try testing.expectEqual(@as(usize, 0), model.wsAt(window).?.tab_count);
+    try testing.expect(model.windowOpen(window));
+    try testing.expect(model.phux().?.terminalKnown(refFor(8)));
+}
+
+test "correlated competing shared topology cannot turn successful execution into refusal" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .tab, result_command);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
+    try drain(engine);
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.refused, result.placement);
+    try testing.expect(result.terminal_ref.?.eql(refFor(8)));
+    try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    try expectCatalogTerminal(engine, 8);
+}
+
+test "completed creation storage backpressures before spawn and duplicate commands reject" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    for (0..16) |index| {
+        try engine.creation.requestCorrelated(model, .tab, @intCast(index + 1));
+        try stageReply(engine, "tests", "spawn-refused.bin", 1, @intCast(index + 1));
+        try drain(engine);
+    }
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    const before = model.phux().?.host.operation_ledger.last_id;
+    try testing.expectError(error.CommandBusy, engine.creation.requestCorrelated(model, .tab, 1));
+    try testing.expectError(error.OperationCapacity, engine.creation.requestCorrelated(model, .tab, 17));
+    try testing.expectEqual(before, model.phux().?.host.operation_ledger.last_id);
+    try testing.expect(engine.creation.ackCompletion(1));
+    try engine.creation.requestCorrelated(model, .tab, 17);
+    try testing.expectEqual(before + 1, model.phux().?.host.operation_ledger.last_id);
+}
+
+test "duplicate pending correlated terminal is busy while legacy terminal requests remain idempotent" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .tab, result_command);
+    try feed(engine, "spawn-local.bin");
+    try testing.expectError(error.OperationBusy, engine.creation.requestAttachCorrelated(model, refFor(8), result_command + 1));
+    try testing.expectError(error.OperationBusy, engine.creation.requestAdmitCorrelated(model, refFor(8), result_command + 1));
+    try engine.creation.requestAttach(model, refFor(8));
+    try testing.expectEqual(@as(u32, 1), model.phux().?.host.operation_ledger.last_id);
+}
+
+test "completion-only disconnect records successful spawn without enqueuing satellite attach" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .tab, result_command);
+    const remote = model.phux().?;
+    const satellite: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(1, 9, "fixture-host") } };
+    try testing.expect(engine.creation.completeDisconnected(model, .{
+        .request_id = 1,
+        .connection_epoch = remote.connectionEpoch(),
+        .kind = .spawn,
+        .status = .success,
+        .terminal_ref = satellite,
+    }));
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.unknown, result.placement);
+    try testing.expectEqual(.disconnected, result.reason);
+    try testing.expectEqual(@as(u32, 0), result.attach_request_id);
+    try testing.expectEqual(@as(u32, 1), remote.host.operation_ledger.last_id);
+    try testing.expect(!model.terminal_limit_refused);
+}
+
+test "disconnect retains dispatched placement request identity and accepted execution" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .split_right, result_command);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try workspaceReply(engine, "workspace_rename_metadata.bin", 5, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    engine.creation.disconnect(model);
+    const result = engine.creation.peekCompletion().?;
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(.unknown, result.placement);
+    try testing.expectEqual(@as(u64, 1), result.mutation_ticket);
+    try testing.expectEqual(@as(u32, 3), result.placement_request_id);
+    try testing.expectEqual(result.connection_epoch, result.placement_connection_epoch);
+    try testing.expectEqual(@as(u32, 3), model.phux().?.host.operation_ledger.last_id);
+}
+
+test "saturated creation destination lifetime rejects before provider effects" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    model.window_epochs[model.active_window] = std.math.maxInt(u64);
+    try testing.expectError(error.StaleDestination, engine.creation.requestCorrelated(model, .tab, result_command));
+    try testing.expectEqual(@as(u32, 0), model.phux().?.host.operation_ledger.last_id);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+}
+
+test "creation disconnect preserves already observed shared refusal or confirmation before pump" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    for ([_]bool{ false, true }) |confirmed| {
+        const engine = try start();
+        defer engine.destroy();
+        const model = engine.model;
+        const remote = model.phux().?;
+        try engine.creation.requestCorrelated(model, .tab, result_command);
+        try feed(engine, "spawn-local.bin");
+        try feed(engine, "local-ready.bin");
+        try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+        try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+        try drain(engine);
+        if (confirmed) {
+            try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+            try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+        } else {
+            try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
+            try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
+        }
+        _ = try remote.drainReadiness();
+        engine.creation.disconnect(model);
+        const result = engine.creation.peekCompletion().?;
+        try testing.expectEqual(.success, result.operation);
+        const expected: @import("command_results.zig").Placement = if (confirmed) .unknown else .refused;
+        try testing.expectEqual(expected, result.placement);
+        try testing.expectEqual(confirmed, result.mutation_outcome.? == .success);
+        try testing.expectEqual(@as(u32, 3), result.placement_request_id);
+        try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
+        try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
     }
 }

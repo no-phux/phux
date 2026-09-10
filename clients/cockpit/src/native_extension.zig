@@ -13,6 +13,7 @@
 //! documents for completions and the one that copies bytes on delivery.
 
 const std = @import("std");
+const result_wire = cockpit.command_results;
 test {
     _ = @import("tests/shipping_pointer_tests.zig");
 }
@@ -162,6 +163,11 @@ const Bridge = struct {
     command_pending: bool = false,
     command_key: u64 = 0,
     command_buffer: [cockpit.engine.tab_commands.receipt_len]u8 = undefined,
+    result_pending: bool = false,
+    result_key: u64 = 0,
+    result_ok: bool = false,
+    result_len: usize = 0,
+    result_buffer: [result_wire.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -245,6 +251,10 @@ const Bridge = struct {
     }
 
     fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
+        if (std.mem.eql(u8, name, result_wire.request_name)) {
+            const result_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return result_bridge.requestResults(key, payload);
+        }
         if (std.mem.eql(u8, name, cockpit.engine.tab_commands.request_name)) {
             const command_bridge: *Bridge = @ptrCast(@alignCast(context));
             return command_bridge.requestTabCommand(key, payload);
@@ -310,8 +320,46 @@ const Bridge = struct {
             engine.applySelectionCommand(payload, fx).encode()
         else
             engine.applyTabCommand(payload).encode();
-        if (engineFx()) |fx| engine.noteTopologyChange(fx, topologyTimer);
+        if (engineFx()) |fx| {
+            self.spawnShells(engine, fx);
+            engine.noteTopologyChange(fx, topologyTimer);
+        }
         self.announce(engine);
+    }
+
+    fn requestResults(self: *Bridge, key: u64, payload: []const u8) void {
+        if (self.result_pending) return;
+        self.result_pending = true;
+        self.result_key = key;
+        self.result_ok = false;
+        const acknowledgement = result_wire.decodeAck(payload) catch {
+            self.result_len = copyInto(&self.result_buffer, "invalid result acknowledgement");
+            return;
+        };
+        const engine = self.engine orelse {
+            self.result_len = copyInto(&self.result_buffer, "engine unavailable");
+            return;
+        };
+        if (acknowledgement) |ack| self.ackResult(engine, ack);
+        self.result_ok = true;
+        if (engine.creation.peekCompletion()) |result| {
+            self.result_len = result_wire.encodeResult(.creation, result, &self.result_buffer).len;
+            return;
+        }
+        if (engine.model.shared_mutations.peekCompletion()) |result| {
+            const source: result_wire.Source = if (result.origin == .native) .native_shared else .shared;
+            self.result_len = result_wire.encodeResult(source, result, &self.result_buffer).len;
+            return;
+        }
+        self.result_len = copyInto(&self.result_buffer, &result_wire.empty);
+    }
+
+    fn ackResult(_: *Bridge, engine: *Engine, ack: result_wire.Ack) void {
+        switch (ack.source) {
+            .creation => _ = engine.creation.ackCompletion(ack.command_id),
+            .shared => _ = engine.model.shared_mutations.ackCompletion(ack.command_id),
+            .native_shared => _ = engine.model.shared_mutations.ackNativeCompletion(ack.command_id),
+        }
     }
 
     fn copyInto(buffer: []u8, text: []const u8) usize {
@@ -324,6 +372,7 @@ const Bridge = struct {
         if (self.pending and self.pending_key == key) self.pending = false;
         if (self.navigation_pending and self.navigation_key == key) self.navigation_pending = false;
         if (self.command_pending and self.command_key == key) self.command_pending = false;
+        if (self.result_pending and self.result_key == key) self.result_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
@@ -331,6 +380,10 @@ const Bridge = struct {
         if (self.command_pending) {
             self.command_pending = false;
             return .{ .key = self.command_key, .ok = true, .bytes = &self.command_buffer };
+        }
+        if (self.result_pending) {
+            self.result_pending = false;
+            return .{ .key = self.result_key, .ok = self.result_ok, .bytes = self.result_buffer[0..self.result_len] };
         }
         if (!self.pending) return self.pollNavigation();
         self.pending = false;
@@ -345,7 +398,7 @@ const Bridge = struct {
 
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -1359,6 +1412,11 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
 
     rig.app_state.effects.executor = .fake;
     try rig.dispatch(.new_terminal);
+    // Fake request effects park rather than invoke the bridge. Deliver the
+    // actual compiled packet while keeping timer/file effects deterministic.
+    const request = rig.app_state.effects.pendingHostAt(0).?;
+    try std.testing.expectEqualStrings(cockpit.engine.tab_commands.request_name, request.name);
+    Bridge.request(&bridge, request.name, request.key, request.payload);
     rig.app_state.effects.executor = executor;
     try rig.settle(1, "READY");
     try std.testing.expect(engine.model.state.pending);
@@ -1436,12 +1494,13 @@ test "navigation held painted catalog target follows metadata filtering and wind
     bridge.announce(engine);
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expect(!engine.model.focusedTerminalRef().?.eql(original));
+    const expected_command = rig.app_state.model.tabCommands.nextId.lo;
     try rig.dispatch(held);
     try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.tabCommands.lastId.lo);
+    try std.testing.expectEqual(expected_command, rig.app_state.model.tabCommands.lastId.lo);
 }
 
 fn catalogCommandBytes(target: []const u8, id: u64, out: []u8) []const u8 {
@@ -1491,6 +1550,51 @@ test "navigation rejected captured identity preserves focus pending selection an
     try std.testing.expect(engine.model.shared_workspace.desired_terminal.?.eql(sentinel));
 }
 
+test "retained outcome survives canceled delivery and is consumed only by exact core acknowledgement" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const command_id: u64 = 0xfedcba9876543210;
+    engine.creation.pending[0] = .{
+        .command_id = command_id,
+        .window = 0,
+        .window_epoch = engine.model.window_epochs[0],
+        .kind = .tab,
+        .origin = null,
+        .completion = .{
+            .command_id = command_id,
+            .connection_epoch = 0xfedcba9876543211,
+            .request_id = 99,
+            .operation = .success,
+            .placement = .destination_lost,
+            .focus = .superseded,
+            .reason = .destination_lost,
+            .terminal_ref = engine.model.focusedTerminalRef(),
+        },
+    };
+    Bridge.request(&bridge, result_wire.request_name, 801, &result_wire.empty);
+    Bridge.cancel(&bridge, 801);
+    try std.testing.expect(engine.creation.peekCompletion() != null);
+    Bridge.request(&bridge, result_wire.request_name, 802, &result_wire.empty);
+    Bridge.request(&bridge, "cockpit.snapshot", 803, "");
+    const result = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 802), result.key);
+    var owned: [result_wire.max_bytes]u8 = undefined;
+    @memcpy(owned[0..result.bytes.len], result.bytes);
+    try std.testing.expect(engine.creation.peekCompletion() != null);
+    try rig.dispatch(.{ .command_result_loaded = owned[0..result.bytes.len] });
+    try std.testing.expect(engine.creation.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    const retained = rig.app_state.model.commandResults.recent[0];
+    try std.testing.expectEqual(@as(i64, 0xfedcba98), retained.id.hi);
+    try std.testing.expectEqual(@as(i64, 0x76543210), retained.id.lo);
+    try std.testing.expectEqual(@as(i64, 1), retained.operation);
+    try std.testing.expectEqual(@as(i64, 3), retained.placement);
+    try std.testing.expectEqual(@as(i64, 2), retained.focus);
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.commandNotice, "succeeded") != null);
+}
+
 test "held painted tab action follows identity after metadata and reorder" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -1512,11 +1616,12 @@ test "held painted tab action follows identity after metadata and reorder" {
     try rig.dispatch(core.commandMsg("tab.move-left").?);
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
+    const expected_command = rig.app_state.model.tabCommands.nextId.lo;
     try rig.dispatch(held);
     try std.testing.expect(first.eql(engine.model.focusedTerminalRef().?));
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.tabCommands.lastId.lo);
+    try std.testing.expectEqual(expected_command, rig.app_state.model.tabCommands.lastId.lo);
 }
 
 test "tab command receipt survives snapshot and navigation requests and rejects reused windows" {
@@ -1596,6 +1701,7 @@ test "compiled core serializes captured window selections across independent pro
     const other = firstPaintedTabMessage(compiledWindow(&ui, &rig.app_state.model, 1)).?;
     const first = try arena.allocator().dupe(u8, main.select_target);
     const second = try arena.allocator().dupe(u8, other.select_target);
+    const first_command = rig.app_state.model.tabCommands.nextId.lo;
     try rig.dispatch(.{ .select_target = first });
     try std.testing.expectEqual(@as(usize, 0), bridge.engine.?.model.active_window);
     try rig.dispatch(.{ .select_target = second });
@@ -1608,7 +1714,7 @@ test "compiled core serializes captured window selections across independent pro
         try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
     }
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
-    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.lastId.lo);
+    try std.testing.expectEqual(first_command + 1, rig.app_state.model.tabCommands.lastId.lo);
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
     try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
 }
@@ -3752,9 +3858,27 @@ test "shipping offline shared topology edits refuse while native placement remai
 }
 
 const NavigationConnectionRecorder = struct {
+    pub fn hostSend(_: *@This(), _: []const u8, _: []const u8) void {}
+    pub fn closeWindow(_: *@This(), _: []const u8) void {}
+    pub fn showWindow(_: *@This(), _: []const u8) void {}
+    pub fn toggleFullscreenWindow(_: *@This(), _: []const u8) void {}
+    pub fn minimizeWindow(_: *@This(), _: []const u8) void {}
+    pub fn quitApp(_: *@This()) void {}
+    pub fn writeClipboard(_: *@This(), _: anytype) void {}
+    pub fn readClipboard(_: *@This(), _: anytype) void {}
+    pub fn ptyWrite(_: *@This(), _: u64, _: []const u8) bool {
+        return false;
+    }
+    pub fn ptyKill(_: *@This(), _: u64) void {}
+    pub fn ptyResize(_: *@This(), _: u64, _: u16, _: u16) void {}
+    pub fn cancel(_: *@This(), _: u64) void {}
     live: bool,
     closed: usize = 0,
     opened: usize = 0,
+
+    pub fn restartPhux(self: *@This(), engine: *Engine) bool {
+        return engine.restartNavigationConnection(self, phuxChannel);
+    }
 
     pub fn showNotification(_: *@This(), _: anytype) void {}
     pub fn phuxChannelLive(self: *@This()) bool {
@@ -3770,6 +3894,73 @@ const NavigationConnectionRecorder = struct {
         return .{};
     }
 };
+
+test "session command retains exact result through old close and immediate replacement failure" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    for ([_]bool{ false, true }) |live| {
+        const engine = try cockpit.catalog_tests.prepareAvailable();
+        defer engine.destroy();
+        const commands = cockpit.engine.tab_commands;
+        const target = commands.catalog.capture(engine.model, .{ .session = 2 }).?;
+        var target_buffer: [commands.catalog.max_len]u8 = undefined;
+        const target_bytes = target.encode(&target_buffer);
+        var packet: [commands.catalog.max_len + 10]u8 = undefined;
+        packet[0] = 1;
+        packet[1] = 2;
+        std.mem.writeInt(u64, packet[2..10], 0xfedcba9876543210, .little);
+        @memcpy(packet[10..][0..target_bytes.len], target_bytes);
+        var effects: NavigationConnectionRecorder = .{ .live = live };
+        const receipt = engine.applySelectionCommand(packet[0 .. 10 + target_bytes.len], &effects);
+        try std.testing.expectEqual(.accepted_pending, receipt.status);
+        if (live) {
+            try std.testing.expect(engine.creation.peekCompletion() == null);
+            try std.testing.expectEqual(@as(usize, 1), engine.creation.count());
+            _ = engine.onPhuxChannel(&effects, .{ .key = cockpit.phux_channel_key, .kind = .closed }, phuxChannel);
+        }
+        try std.testing.expectEqual(@as(usize, 1), effects.opened);
+        const result = engine.creation.peekCompletion().?;
+        try std.testing.expectEqual(receipt.id, result.command_id);
+        try std.testing.expectEqual(@as(u32, 2), result.target_session_id);
+        try std.testing.expectEqual(@as(u32, 0), result.request_id);
+        try std.testing.expectEqual(.unknown, result.operation);
+        try std.testing.expect(engine.session_handoff == null);
+        _ = engine.onPhuxChannel(&effects, .{ .key = cockpit.phux_channel_key, .kind = .closed }, phuxChannel);
+        try std.testing.expectEqual(receipt.id, engine.creation.peekCompletion().?.command_id);
+        try std.testing.expect(engine.creation.ackCompletion(receipt.id));
+    }
+}
+
+test "durable operation admission preserves known execution during transport teardown" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try cockpit.durable_tests.start();
+    defer engine.destroy();
+    const remote = engine.model.phux().?;
+    const intent = cockpit.protocol.encodeIntent(.{
+        .kind = .new_terminal,
+        .argument = 0,
+        .expected_revision = engine.revision,
+        .window = 255,
+    });
+    var packet: [22]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = 3;
+    std.mem.writeInt(u64, packet[2..10], 0xfedcba9876543210, .little);
+    @memcpy(packet[10..22], &intent);
+    const admitted = engine.applyTabCommand(&packet);
+    try std.testing.expectEqual(.accepted_pending, admitted.status);
+    try std.testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try cockpit.PhuxProvider.test_support.stageFixture(remote.bridge, "spawn-local.bin");
+    _ = try remote.drainReadiness(); // Provider has evidence the engine has not consumed.
+    try std.testing.expect(engine.creation.peekCompletion() == null);
+    var effects: NavigationConnectionRecorder = .{ .live = false };
+    _ = engine.onPhuxChannel(&effects, .{ .key = cockpit.phux_channel_key, .kind = .closed }, phuxChannel);
+    const result = engine.creation.peekCompletion().?;
+    try std.testing.expectEqual(admitted.id, result.command_id);
+    try std.testing.expectEqual(.success, result.operation);
+    try std.testing.expectEqual(@as(u32, 1), result.request_id);
+    try std.testing.expectEqual(@as(u32, 8), result.terminal_ref.?.terminal_id.phux.id);
+    try std.testing.expectEqual(.unknown, result.placement);
+}
 
 test "shipping direct reconnect fences attachments and retires pending creation on open failure" {
     try cockpit.durable_tests.directReconnectFences();

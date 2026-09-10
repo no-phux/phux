@@ -5,11 +5,27 @@ const support = @import("phux_support.zig");
 const layout = @import("layout.zig");
 const contract = @import("provider_contract");
 const shared_mutations = @import("shared_mutations.zig");
+const results = @import("command_results.zig");
+const session_navigation = @import("session_navigation.zig");
 const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
 
 pub const Kind = enum { tab, window, split_right, split_down };
 const Pending = struct {
+    navigation: ?session_navigation.Navigation = null,
+    command_id: ?u64 = null,
+    operation_request: u32 = 0,
+    operation: ?results.Operation = null,
+    completion: ?results.Result = null,
+    projected_id: ?[16]u8 = null,
+    placement_request: u32 = 0,
+    mutation_identity: u64 = 0,
+    mutation_outcome: ?results.Operation = null,
+    attach_request: u32 = 0,
+    error_domain: u32 = 0,
+    error_code: u32 = 0,
+    placement_window: ?usize = null,
+    placement_window_epoch: u64 = 0,
     request: u32 = 0,
     epoch: u64 = 0,
     window: usize,
@@ -24,6 +40,7 @@ const Pending = struct {
     attach_only: bool = false,
     existing_member: bool = false,
     focus: ?TerminalRef = null,
+    focus_window: ?usize = null,
     may_focus: bool = true,
 };
 
@@ -32,9 +49,11 @@ pub const Creation = struct {
 
     pub fn count(self: *const Creation) usize {
         var n: usize = 0;
-        for (self.pending) |entry| if (entry != null) {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.completion != null) continue;
             n += 1;
-        };
+        }
         return n;
     }
 
@@ -46,24 +65,142 @@ pub const Creation = struct {
     pub fn hasPendingTerminal(self: *const Creation, ref: TerminalRef) bool {
         for (self.pending) |slot| {
             const entry = slot orelse continue;
+            if (entry.completion != null) continue;
             if (entry.terminal) |terminal| if (terminal.eql(ref)) return true;
         }
         return false;
     }
 
     pub fn request(self: *Creation, model: *Model, kind: Kind) !void {
+        return self.spawn(model, kind, null);
+    }
+
+    pub fn requestCorrelated(self: *Creation, model: *Model, kind: Kind, command_id: u64) !void {
+        return self.spawn(model, kind, command_id);
+    }
+
+    /// Reserve command/result ownership before selectSession or leaveSession.
+    /// The intentional disconnect commits the handoff and retires older work.
+    pub fn reserveSessionCorrelated(self: *Creation, model: *Model, target_session: u32, terminal: ?TerminalRef, command_id: u64) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const remote = model.phux() orelse return error.NoProvider;
+        try self.requireUniqueCommand(command_id);
+        try self.requireSessionAvailable(target_session);
+        const slot = try self.vacant();
+        const navigation = try session_navigation.Navigation.capture(remote, target_session);
+        var entry = try prepareDestination(model, .tab, 0, false);
+        entry.command_id = command_id;
+        entry.navigation = navigation;
+        entry.session = target_session;
+        entry.terminal = terminal;
+        entry.attach_only = true;
+        slot.* = entry;
+    }
+
+    fn requireSessionAvailable(self: *const Creation, target: u32) !void {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.completion != null) continue;
+            const navigation = entry.navigation orelse continue;
+            if (navigation.target == target) return error.OperationBusy;
+        }
+    }
+
+    fn sessionEntry(self: *Creation, command_id: u64) ?*Pending {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (entry.navigation == null) continue;
+            if (entry.command_id == command_id) return entry;
+        }
+        return null;
+    }
+
+    pub fn cancelSessionReservation(self: *Creation, command_id: u64) bool {
+        const entry = self.sessionEntry(command_id) orelse return false;
+        if (entry.navigation.?.phase != .waiting_old_close) return false;
+        for (&self.pending) |*slot| {
+            if (slot.* == null) continue;
+            if (&slot.*.? != entry) continue;
+            slot.* = null;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn bindSessionConnection(self: *Creation, model: *Model, command_id: u64) bool {
+        const entry = self.sessionEntry(command_id) orelse return false;
+        // A repeated callback cannot rebind or invalidate an already bound epoch.
+        if (entry.navigation.?.phase != .waiting_old_close) return false;
+        const remote = model.phux() orelse {
+            self.failSessionAttempt(model, command_id);
+            return false;
+        };
+        entry.navigation.?.bind(remote) catch {
+            finishFailure(model, entry, .unknown, .context_changed);
+            return false;
+        };
+        entry.epoch = remote.connectionEpoch();
+        return true;
+    }
+
+    /// Accepted restart attempts must retire even when opening fails synchronously
+    /// and therefore no replacement channel callback can ever arrive.
+    pub fn failSessionAttempt(self: *Creation, model: *Model, command_id: u64) void {
+        const entry = self.sessionEntry(command_id) orelse return;
+        const child = retireMutation(model, entry);
+        finishRetirement(model, entry, child, .disconnected);
+    }
+
+    pub fn observeSessionAttachment(self: *Creation, model: *Model) bool {
+        const remote = model.phux() orelse return self.retireSessionContext(model);
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            const navigation = if (entry.navigation) |*value| value else continue;
+            const attached = navigation.observeAttachment(remote) catch |err| {
+                if (err == error.SessionMismatch and entry.operation == null) entry.operation = .refused;
+                finishSessionObservationFailure(model, entry, err);
+                changed = true;
+                continue;
+            };
+            if (!attached) continue;
+            entry.operation = .success;
+            changed = true;
+        }
+        return changed;
+    }
+
+    fn retireSessionContext(self: *Creation, model: *Model) bool {
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null or entry.navigation == null) continue;
+            finishSessionObservationFailure(model, entry, error.NoProvider);
+            changed = true;
+        }
+        return changed;
+    }
+
+    fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
         try requireWorkspace(model);
+        try self.requireUniqueCommand(command_id);
         if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
         const slot = try self.vacant();
         const owner = try spawnOwner(model, model.focusedTerminalRef());
         var entry = try prepareDestination(model, kind, self.reservedAtDestination(model, kind), true);
-        errdefer if (kind == .window) model.closeWindow(entry.window);
-        entry.request = try remote.requestSpawn(owner, spawnViewport(remote, owner));
         entry.epoch = remote.connectionEpoch();
+        entry.command_id = command_id;
         slot.* = entry;
+        errdefer slot.* = null;
+        try allocateDestination(model, entry);
+        errdefer retireEmptyDestination(model, entry);
+        slot.*.?.request = try remote.requestSpawn(owner, spawnViewport(remote, owner));
+        slot.*.?.operation_request = slot.*.?.request;
         if (kind == .window) model.active_window = entry.window;
     }
 
@@ -71,6 +208,7 @@ pub const Creation = struct {
         var reserved: usize = 0;
         for (self.pending) |slot| {
             const entry = slot orelse continue;
+            if (entry.completion != null) continue;
             if (entry.window != model.active_window) continue;
             if (entry.window_epoch != model.window_epochs[entry.window]) continue;
             if (sharesCapacity(entry, model.wsConst(), kind)) reserved += 1;
@@ -81,36 +219,73 @@ pub const Creation = struct {
     /// Explicit navigation reuses the creation destination/epoch transaction;
     /// it never places a catalog-only identity before exact stream publication.
     pub fn requestAttach(self: *Creation, model: *Model, ref: TerminalRef) !void {
+        return self.attach(model, ref, null);
+    }
+
+    pub fn requestAttachCorrelated(self: *Creation, model: *Model, ref: TerminalRef, command_id: u64) !void {
+        return self.attach(model, ref, command_id);
+    }
+
+    fn attach(self: *Creation, model: *Model, ref: TerminalRef, command_id: ?u64) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
         try requireWorkspace(model);
-        if (self.hasPendingTerminal(ref)) return;
+        try self.requireUniqueCommand(command_id);
+        if (try self.duplicateTerminal(ref, command_id)) return;
         if (remote.presentation(ref)) |view| {
-            if (view.phase == .live) return self.requestAdmit(model, ref);
+            if (view.phase == .live) return self.admit(model, ref, command_id);
         }
         const slot = try self.vacant();
         var entry = try self.prepareAttachment(model, ref);
-        entry.request = try remote.requestAttach(ref);
         entry.epoch = remote.connectionEpoch();
+        entry.command_id = command_id;
         slot.* = entry;
+        errdefer slot.* = null;
+        slot.*.?.request = try remote.requestAttach(ref);
+        slot.*.?.operation_request = slot.*.?.request;
     }
 
     /// A live catalog terminal needs shared admission, not another subscription.
     pub fn requestAdmit(self: *Creation, model: *Model, ref: TerminalRef) !void {
+        return self.admit(model, ref, null);
+    }
+
+    pub fn requestAdmitCorrelated(self: *Creation, model: *Model, ref: TerminalRef, command_id: u64) !void {
+        return self.admit(model, ref, command_id);
+    }
+
+    fn admit(self: *Creation, model: *Model, ref: TerminalRef, command_id: ?u64) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
         try requireWorkspace(model);
-        if (self.hasPendingTerminal(ref)) return;
+        try self.requireUniqueCommand(command_id);
+        if (try self.duplicateTerminal(ref, command_id)) return;
         const view = remote.presentation(ref) orelse return error.NotReady;
         if (view.phase != .live) return error.NotReady;
         const slot = try self.vacant();
         var entry = try self.prepareAttachment(model, ref);
         entry.epoch = remote.connectionEpoch();
         entry.accepted = true;
+        entry.command_id = command_id;
+        entry.operation = .success;
         slot.* = entry;
         _ = self.pump(model);
+    }
+
+    fn duplicateTerminal(self: *const Creation, ref: TerminalRef, command_id: ?u64) !bool {
+        if (!self.hasPendingTerminal(ref)) return false;
+        if (command_id != null) return error.OperationBusy;
+        return true;
+    }
+
+    fn requireUniqueCommand(self: *const Creation, command_id: ?u64) !void {
+        const id = command_id orelse return;
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.command_id == id) return error.CommandBusy;
+        }
     }
 
     fn prepareAttachment(self: *Creation, model: *Model, ref: TerminalRef) !Pending {
@@ -120,6 +295,7 @@ pub const Creation = struct {
         entry.terminal = ref;
         entry.attach_only = true;
         entry.existing_member = member;
+        if (member) captureMemberDestination(model, &entry);
         return entry;
     }
 
@@ -129,8 +305,9 @@ pub const Creation = struct {
         _ = remote;
         for (&self.pending) |*slot| {
             if (slot.* == null) continue;
+            if (slot.*.?.completion != null) continue;
             if (!finishPlacement(model, &slot.*.?)) continue;
-            slot.* = null;
+            clearLegacy(slot);
             changed = true;
         }
         return changed;
@@ -153,28 +330,52 @@ pub const Creation = struct {
         }
     }
 
+    /// A newly accepted spawn has a command ID before it has terminal identity.
+    pub fn supersedeFocusExceptCommand(self: *Creation, command_id: u64) void {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.command_id == command_id) continue;
+            entry.may_focus = false;
+        }
+    }
+
     /// Called by the engine's focus synchronization, including local gestures.
     /// Once the user leaves, returning before completion does not revive focus
     /// authority for an earlier command.
     pub fn observeFocus(self: *Creation, model: anytype) void {
         for (&self.pending) |*slot| {
             if (slot.* == null) continue;
+            if (sessionWaiting(slot.*.?)) continue;
             if (!focusUnchanged(model, slot.*.?)) slot.*.?.may_focus = false;
         }
     }
 
     pub fn complete(self: *Creation, model: *Model, result: support.OperationResult) bool {
         const slot = self.find(result) orelse return false;
-        acceptResult(model, &slot.*.?, result) catch {
-            refusePlacement(model, slot.*.?);
-            slot.* = null;
+        acceptResult(model, &slot.*.?, result) catch |err| {
+            finishFailure(model, &slot.*.?, failurePlacement(err), failureReason(err));
+            clearLegacy(slot);
         };
+        return true;
+    }
+
+    /// Teardown drains known evidence without starting a follow-up attachment.
+    pub fn completeDisconnected(self: *Creation, model: *Model, result: support.OperationResult) bool {
+        const slot = self.find(result) orelse return false;
+        acceptOperation(&slot.*.?, result) catch |err| {
+            finishFailure(model, &slot.*.?, failurePlacement(err), failureReason(err));
+            clearLegacy(slot);
+            return true;
+        };
+        finishFailure(model, &slot.*.?, .unknown, .disconnected);
+        clearLegacy(slot);
         return true;
     }
 
     fn find(self: *Creation, result: support.OperationResult) ?*?Pending {
         for (&self.pending) |*slot| {
             const entry = slot.* orelse continue;
+            if (entry.completion != null or entry.accepted) continue;
             if (entry.request != result.request_id or entry.epoch != result.connection_epoch) continue;
             return slot;
         }
@@ -182,14 +383,252 @@ pub const Creation = struct {
     }
 
     pub fn disconnect(self: *Creation, model: *Model) void {
+        self.disconnectExcept(model, null);
+    }
+
+    pub fn disconnectExcept(self: *Creation, model: *Model, command_id: ?u64) void {
+        model.shared_mutations.completeDisconnected(model);
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (preserveSessionDisconnect(model, entry, command_id)) continue;
+            const child = retireMutation(model, entry);
+            finishRetirement(model, entry, child, .disconnected);
+            clearLegacy(slot);
+        }
+    }
+
+    /// Call after shared_workspace.apply, including an unchanged projection.
+    /// A selection hint is not evidence of placement or focus.
+    pub fn observeProjection(self: *Creation, model: *Model) bool {
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (sessionWaiting(entry.*)) {
+                changed = self.observeSessionProjection(model, entry) or changed;
+                continue;
+            }
+            if (entry.projected_id == null) continue;
+            changed = observeProjectedEntry(model, entry) or changed;
+        }
+        return changed;
+    }
+
+    /// An actual shared apply failure is a terminal placement refusal, not a
+    /// reason to lose already observed operation success or wait for a wake.
+    pub fn projectionFailed(self: *Creation, model: *Model) bool {
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.completion != null) continue;
+            if (!awaitingProjection(entry.*)) continue;
+            finishFailure(model, entry, .refused, .projection_refused);
+            clearLegacy(slot);
+            changed = true;
+        }
+        return changed;
+    }
+
+    fn observeSessionProjection(self: *Creation, model: *Model, entry: *Pending) bool {
+        const navigation = &entry.navigation.?;
+        if (navigation.phase != .waiting_projection) return false;
+        if (!navigation.projectionReady(model)) return false;
+        if (entry.terminal == null) {
+            recordCompletion(entry, .not_requested, if (entry.may_focus) .not_requested else .superseded, .completed);
+            return true;
+        }
+        self.continueSessionTerminal(model, entry) catch |err| {
+            finishFailure(model, entry, failurePlacement(err), failureReason(err));
+        };
+        return true;
+    }
+
+    fn continueSessionTerminal(self: *Creation, model: *Model, entry: *Pending) !void {
+        const remote = model.phux().?;
+        const ref = entry.terminal.?;
+        if (remote.terminalSession(ref) != entry.session) return error.StaleTarget;
+        entry.existing_member = sharedMember(model, ref);
+        if (entry.existing_member) {
+            captureMemberDestination(model, entry);
+        } else try self.validateSessionDestination(model, entry.*);
+        // Only intentional topology replacement changes this baseline. Explicit
+        // user selection has already irreversibly revoked may_focus.
+        entry.focus = model.focusedTerminalRef();
+        entry.focus_window = model.active_window;
+        entry.navigation.?.phase = .terminal;
+        if (remote.presentation(ref)) |view| {
+            if (view.phase == .live) {
+                entry.accepted = true;
+                _ = finishPlacement(model, entry);
+                return;
+            }
+        }
+        entry.request = remote.requestAttach(ref) catch return error.AttachUnavailable;
+        entry.attach_request = entry.request;
+    }
+
+    fn validateSessionDestination(self: *Creation, model: *Model, entry: Pending) !void {
+        if (!destinationCurrent(model, entry)) return error.StaleDestination;
+        // This entry already owns a reservation. Counting it again would reject
+        // the last available slot when the target projection fills capacity.
+        if (!hasCapacity(model, self.count() - 1)) return error.TerminalCapacity;
+        const workspace = model.wsAtConst(entry.window) orelse return error.StaleDestination;
+        var reserved: usize = 0;
+        for (self.pending) |slot| {
+            const other = slot orelse continue;
+            if (other.completion != null or other.command_id == entry.command_id) continue;
+            if (other.window == entry.window and other.window_epoch == entry.window_epoch) reserved += 1;
+        }
+        try validateDestinationCapacity(workspace, .tab, reserved, true);
+    }
+
+    pub fn peekCompletion(self: *const Creation) ?results.Result {
         for (self.pending) |slot| {
             const entry = slot orelse continue;
-            if (entry.mutation_ticket) |ticket| model.shared_mutations.forget(ticket);
-            refusePlacement(model, entry);
+            if (entry.completion) |completion| return completion;
         }
-        @memset(&self.pending, null);
+        return null;
+    }
+
+    pub fn ackCompletion(self: *Creation, command_id: u64) bool {
+        for (&self.pending) |*slot| {
+            const entry = slot.* orelse continue;
+            const completion = entry.completion orelse continue;
+            if (completion.command_id != command_id) continue;
+            slot.* = null;
+            return true;
+        }
+        return false;
     }
 };
+
+fn sessionWaiting(entry: Pending) bool {
+    const navigation = entry.navigation orelse return false;
+    return navigation.phase != .terminal;
+}
+
+fn awaitingProjection(entry: Pending) bool {
+    if (entry.projected_id != null) return true;
+    const navigation = entry.navigation orelse return false;
+    return navigation.phase == .waiting_projection;
+}
+
+fn preserveSessionDisconnect(model: *Model, entry: *Pending, command_id: ?u64) bool {
+    const id = command_id orelse return false;
+    if (entry.command_id != id) return false;
+    const navigation = if (entry.navigation) |*value| value else return false;
+    const remote = model.phux() orelse return false;
+    return navigation.preserveDisconnect(remote);
+}
+
+fn finishSessionObservationFailure(model: *Model, entry: *Pending, err: anyerror) void {
+    const child = retireMutation(model, entry);
+    if (child != null) {
+        finishRetirement(model, entry, child, failureReason(err));
+        return;
+    }
+    finishFailure(model, entry, failurePlacement(err), failureReason(err));
+}
+
+fn clearLegacy(slot: *?Pending) void {
+    if (slot.*.?.command_id == null) slot.* = null;
+}
+
+fn retireMutation(model: *Model, entry: *Pending) ?shared_mutations.Completion {
+    const ticket = entry.mutation_ticket orelse return null;
+    const completion = model.shared_mutations.takeCreationCompletion(ticket);
+    if (completion) |value| {
+        captureMutationCompletion(entry, value);
+    } else entry.placement_request = model.shared_mutations.creationRequest(ticket);
+    model.shared_mutations.forget(ticket);
+    entry.mutation_ticket = null;
+    return completion;
+}
+
+fn captureMutationCompletion(entry: *Pending, completion: shared_mutations.Completion) void {
+    entry.placement_request = completion.request_id;
+    entry.mutation_outcome = switch (completion.outcome) {
+        .confirmed => .success,
+        .refused => .refused,
+        .unknown_outcome => .unknown,
+    };
+}
+
+fn finishRetirement(model: *Model, entry: *Pending, child: ?shared_mutations.Completion, reason: results.Reason) void {
+    if (child) |completion| {
+        if (completion.outcome == .refused) {
+            finishFailure(model, entry, .refused, completion.reason);
+            return;
+        }
+    }
+    finishFailure(model, entry, .unknown, reason);
+}
+
+fn recordCompletion(entry: *Pending, placement: results.Placement, focus: results.Focus, reason: results.Reason) void {
+    const command_id = entry.command_id orelse return;
+    entry.completion = .{
+        .command_id = command_id,
+        .request_id = entry.operation_request,
+        .connection_epoch = if (entry.navigation != null) 0 else entry.epoch,
+        .target_session_id = if (entry.navigation) |navigation| navigation.target else 0,
+        .terminal_ref = entry.terminal,
+        .placement_request_id = entry.placement_request,
+        .placement_connection_epoch = if (entry.mutation_identity != 0) entry.epoch else 0,
+        .mutation_ticket = entry.mutation_identity,
+        .mutation_outcome = entry.mutation_outcome,
+        .attach_request_id = entry.attach_request,
+        .attach_connection_epoch = if (entry.attach_request != 0) entry.epoch else 0,
+        .error_domain = entry.error_domain,
+        .error_code = entry.error_code,
+        .destination_window = entry.placement_window orelse entry.window,
+        .destination_window_epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch,
+        .shared_window_id = entry.projected_id orelse if (isSplit(entry.kind)) entry.shared_window else null,
+        .operation = entry.operation orelse .unknown,
+        .placement = placement,
+        .focus = focus,
+        .reason = reason,
+    };
+}
+
+fn finishFailure(model: anytype, entry: *Pending, placement: results.Placement, reason: results.Reason) void {
+    // Retiring a provisional native window says nothing about durable execution.
+    if (placement == .unknown) retireEmptyDestination(model, entry.*) else refusePlacement(model, entry.*);
+    recordCompletion(entry, placement, if (entry.may_focus) .not_requested else .superseded, reason);
+}
+
+fn failurePlacement(err: anyerror) results.Placement {
+    return switch (err) {
+        error.StaleContext, error.NoProvider, error.OperationUnknown, error.AttachUnknown => .unknown,
+        error.StaleDestination => .destination_lost,
+        else => .refused,
+    };
+}
+
+fn failureReason(err: anyerror) results.Reason {
+    return switch (err) {
+        error.StaleContext, error.NoProvider => .context_changed,
+        error.StaleDestination => .destination_lost,
+        error.WorkspaceUnavailable => .workspace_unavailable,
+        error.OperationCapacity => .operation_capacity,
+        error.StaleTarget => .stale_target,
+        error.SessionMismatch => .identity_mismatch,
+        else => operationFailureReason(err),
+    };
+}
+
+fn operationFailureReason(err: anyerror) results.Reason {
+    return switch (err) {
+        error.OperationFailed => .operation_refused,
+        error.OperationUnknown => .operation_unknown,
+        error.AttachRefused => .attach_refused,
+        error.AttachUnknown => .attach_unknown,
+        error.AttachUnavailable => .attach_unavailable,
+        error.MissingIdentity => .missing_identity,
+        error.IdentityMismatch => .identity_mismatch,
+        else => .mutation_refused,
+    };
+}
 
 fn retireEmptyDestination(model: anytype, entry: Pending) void {
     if (entry.kind != .window) return;
@@ -201,6 +640,7 @@ fn retireEmptyDestination(model: anytype, entry: Pending) void {
 
 fn prepareDestination(model: *Model, kind: Kind, reserved: usize, requires_capacity: bool) !Pending {
     const window = if (kind == .window) model.freeWindowIndex() orelse return error.WindowCapacity else model.active_window;
+    if (model.window_epochs[window] == @import("std").math.maxInt(u64)) return error.StaleDestination;
     const workspace = model.wsAt(model.active_window) orelse return error.InvalidDestination;
     try validateDestinationCapacity(workspace, kind, reserved, requires_capacity);
     const entry: Pending = .{
@@ -212,9 +652,13 @@ fn prepareDestination(model: *Model, kind: Kind, reserved: usize, requires_capac
         .shared_window = workspace.shared_ids[workspace.selected_tab],
         .focus = if (kind == .window) null else model.focusedTerminalRef(),
     };
-    // Allocate before enqueue: completion needs no fallible window allocation.
-    if (kind == .window) _ = model.openWindow(window) orelse return error.WindowCapacity;
     return entry;
+}
+
+fn allocateDestination(model: *Model, entry: Pending) !void {
+    // Result storage is already reserved; no fallible allocation follows spawn.
+    if (entry.kind != .window) return;
+    _ = model.openWindow(entry.window) orelse return error.WindowCapacity;
 }
 
 fn validateDestinationCapacity(workspace: *const model_module.Workspace, kind: Kind, reserved: usize, requires_capacity: bool) !void {
@@ -239,25 +683,54 @@ fn requireWorkspace(model: *Model) !void {
 }
 
 fn acceptResult(model: *Model, entry: *Pending, result: support.OperationResult) !void {
+    try acceptOperation(entry, result);
     const remote = model.phux() orelse return error.NoProvider;
-    if (!contextCurrent(model, entry.*, remote.connectionEpoch())) return error.StaleContext;
-    if (result.status != .success) return error.OperationFailed;
-    const ref = result.terminal_ref orelse return error.MissingIdentity;
-    entry.terminal = ref;
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) return error.StaleContext;
+    const ref = entry.terminal.?;
     if (result.kind == .spawn and ref.terminal_id.phux.kind == 1) {
-        entry.request = try remote.requestAttach(ref);
+        entry.request = remote.requestAttach(ref) catch return error.AttachUnavailable;
+        entry.attach_request = entry.request;
     } else entry.accepted = true;
 }
 
+fn acceptOperation(entry: *Pending, result: support.OperationResult) !void {
+    entry.error_domain = @intFromEnum(result.error_domain);
+    entry.error_code = result.error_code;
+    const primary = entry.operation == null;
+    if (primary) entry.operation = switch (result.status) {
+        .success => .success,
+        .refused => .refused,
+        .unknown_outcome => .unknown,
+    };
+    try requireOperationSuccess(result, primary);
+    try acceptIdentity(entry, result.terminal_ref);
+}
+
+fn requireOperationSuccess(result: support.OperationResult, primary: bool) !void {
+    switch (result.status) {
+        .success => {},
+        .refused => return if (primary) error.OperationFailed else error.AttachRefused,
+        .unknown_outcome => return if (primary) error.OperationUnknown else error.AttachUnknown,
+    }
+}
+
+fn acceptIdentity(entry: *Pending, terminal: ?TerminalRef) !void {
+    const ref = terminal orelse return error.MissingIdentity;
+    if (entry.terminal) |expected| if (!expected.eql(ref)) return error.IdentityMismatch;
+    entry.terminal = ref;
+}
+
 fn finishPlacement(model: *Model, entry: *Pending) bool {
+    if (sessionWaiting(entry.*)) return false;
     const remote = model.phux() orelse return false;
-    if (!contextCurrent(model, entry.*, remote.connectionEpoch())) {
-        if (entry.mutation_ticket) |ticket| model.shared_mutations.forget(ticket);
-        refusePlacement(model, entry.*);
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) {
+        const child = retireMutation(model, entry);
+        finishRetirement(model, entry, child, .context_changed);
         return true;
     }
+    if (entry.projected_id != null) return false;
     if (!focusUnchanged(model, entry.*)) entry.may_focus = false;
-    if (entry.mutation_ticket) |ticket| return finishMutation(model, entry.*, ticket);
+    if (entry.mutation_ticket) |ticket| return finishMutationTracked(model, entry, ticket);
     return finishPublication(model, entry);
 }
 
@@ -266,15 +739,27 @@ fn finishPublication(model: *Model, entry: *Pending) bool {
     if (!entry.accepted) return false;
     const ref = entry.terminal orelse return false;
     if (!remote.terminalKnown(ref)) {
-        retireEmptyDestination(model, entry.*);
+        finishFailure(model, entry, .refused, .terminal_lost);
         return true;
     }
     const view = remote.presentation(ref) orelse return false;
+    if (publicationFailure(view.phase)) |reason| {
+        finishFailure(model, entry, .refused, reason);
+        return true;
+    }
     if (view.phase != .live) return false;
-    return submitShared(model, entry, ref) catch {
-        refusePlacement(model, entry.*);
+    return submitShared(model, entry, ref) catch |err| {
+        finishFailure(model, entry, failurePlacement(err), failureReason(err));
         return true;
     };
+}
+
+fn entryContextCurrent(model: *Model, entry: Pending, epoch: u64) bool {
+    if (entry.navigation) |navigation| {
+        const remote = model.phux() orelse return false;
+        if (!navigation.contextCurrent(remote)) return false;
+    }
+    return contextCurrent(model, entry, epoch);
 }
 
 fn contextCurrent(model: anytype, entry: Pending, epoch: u64) bool {
@@ -284,12 +769,21 @@ fn contextCurrent(model: anytype, entry: Pending, epoch: u64) bool {
 }
 
 fn destinationCurrent(model: anytype, entry: Pending) bool {
-    if (!model.windowOpen(entry.window)) return false;
-    return model.window_epochs[entry.window] == entry.window_epoch;
+    const window = entry.placement_window orelse entry.window;
+    const epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch;
+    if (!model.windowOpen(window)) return false;
+    if (epoch == @import("std").math.maxInt(u64)) return false;
+    return model.window_epochs[window] == epoch;
+}
+
+fn captureMemberDestination(model: *const Model, entry: *Pending) void {
+    const location = model.locateTerminal(entry.terminal.?) orelse return;
+    entry.placement_window = location.window;
+    entry.placement_window_epoch = model.window_epochs[location.window];
 }
 
 fn focusUnchanged(model: anytype, entry: Pending) bool {
-    if (model.active_window != entry.window) return false;
+    if (model.active_window != (entry.focus_window orelse entry.window)) return false;
     const current = model.focusedTerminalRef();
     const expected = entry.focus orelse return current == null;
     return if (current) |ref| expected.eql(ref) else false;
@@ -303,12 +797,14 @@ fn submitShared(model: *Model, entry: *Pending, ref: TerminalRef) !bool {
     if (entry.attach_only) {
         if (shared_mutations.terminalWindow(snapshot, ref)) |id| {
             entry.existing_member = true;
+            if (entry.placement_window == null) captureMemberDestination(model, entry);
             publishSelection(model, entry.*, ref, id);
-            return true;
+            return awaitProjection(entry, id);
         }
     }
     const mutation = try creationMutation(entry.*, ref, snapshot.revision);
     entry.mutation_ticket = try model.shared_mutations.requestCreation(model, mutation, entry.epoch);
+    entry.mutation_identity = entry.mutation_ticket.?;
     _ = model.shared_mutations.pump(model);
     return false;
 }
@@ -335,27 +831,135 @@ fn sharedMember(model: *Model, ref: TerminalRef) bool {
 }
 
 fn finishMutation(model: anytype, entry: Pending, ticket: u64) bool {
-    const outcome = model.shared_mutations.takeCompletion(ticket) orelse return false;
-    if (outcome != .confirmed or !destinationCurrent(model, entry)) {
-        refusePlacement(model, entry);
+    var tracked = entry;
+    return finishMutationTracked(model, &tracked, ticket);
+}
+
+fn finishMutationTracked(model: anytype, entry: *Pending, ticket: u64) bool {
+    if (!selectionSlotAvailable(model, entry.*)) return false;
+    const completion = model.shared_mutations.takeCreationCompletion(ticket) orelse return false;
+    entry.mutation_ticket = null;
+    captureMutationCompletion(entry, completion);
+    if (completion.outcome != .confirmed) {
+        finishFailure(model, entry, if (completion.outcome == .unknown_outcome) .unknown else .refused, completion.reason);
+        return true;
+    }
+    if (!destinationCurrent(model, entry.*)) {
+        finishFailure(model, entry, .destination_lost, .destination_lost);
         return true;
     }
     const ref = entry.terminal.?;
-    const id = confirmedDestination(model.phux().?.workspaceSnapshot(), entry, ref) orelse {
+    const id = confirmedDestination(model.phux().?.workspaceSnapshot(), entry.*, ref) orelse {
         // SET succeeded but another writer's value won. Keep the process in
         // discovery and reconcile that value instead of manufacturing a pane.
-        refusePlacement(model, entry);
+        finishFailure(model, entry, .refused, .competing_topology);
         return true;
     };
-    publishSelection(model, entry, ref, id);
+    publishSelection(model, entry.*, ref, id);
+    return awaitProjection(entry, id);
+}
+
+fn selectionSlotAvailable(model: anytype, entry: Pending) bool {
+    if (entry.existing_member or isSplit(entry.kind)) return true;
+    return model.shared_workspace.placement_hint == null;
+}
+
+fn awaitProjection(entry: *Pending, id: [16]u8) bool {
+    if (entry.command_id == null) return true;
+    entry.projected_id = id;
+    return false;
+}
+
+fn observeProjectedEntry(model: *Model, entry: *Pending) bool {
+    const remote = model.phux() orelse return false;
+    if (!entryContextCurrent(model, entry.*, remote.connectionEpoch())) {
+        finishFailure(model, entry, .unknown, .context_changed);
+        return true;
+    }
+    refreshSessionMemberDestination(model, entry);
+    if (!destinationCurrent(model, entry.*)) {
+        finishFailure(model, entry, .destination_lost, .destination_lost);
+        return true;
+    }
+    const snapshot = remote.workspaceSnapshot();
+    if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return false;
+    if (model.shared_workspace.epoch != entry.epoch) return false;
+    if (model.shared_workspace.revision != snapshot.revision) return false;
+    if (!winningProjection(snapshot, entry.*)) {
+        finishFailure(model, entry, .refused, .competing_topology);
+        return true;
+    }
+    return finishProjectedPlacement(model, entry);
+}
+
+fn refreshSessionMemberDestination(model: *Model, entry: *Pending) void {
+    if (entry.navigation == null or !entry.existing_member) return;
+    const ref = entry.terminal orelse return;
+    const location = model.locateTerminal(ref) orelse return;
+    const workspace = model.wsAtConst(location.window) orelse return;
+    const id = workspace.shared_ids[location.tab] orelse return;
+    entry.placement_window = location.window;
+    entry.placement_window_epoch = model.window_epochs[location.window];
+    entry.projected_id = id;
+}
+
+fn winningProjection(snapshot: contract.workspace.Snapshot, entry: Pending) bool {
+    const ref = entry.terminal orelse return false;
+    const id = if (entry.existing_member)
+        shared_mutations.terminalWindow(snapshot, ref)
+    else
+        confirmedDestination(snapshot, entry, ref);
+    const actual = id orelse return false;
+    return @import("std").mem.eql(u8, &actual, &entry.projected_id.?);
+}
+
+fn finishProjectedPlacement(model: *Model, entry: *Pending) bool {
+    const ref = entry.terminal.?;
+    const remote = model.phux().?;
+    if (!remote.terminalKnown(ref)) {
+        finishFailure(model, entry, .refused, .terminal_lost);
+        return true;
+    }
+    const view = remote.presentation(ref) orelse return false;
+    if (publicationFailure(view.phase)) |reason| {
+        finishFailure(model, entry, .refused, reason);
+        return true;
+    }
+    if (view.phase != .live) return false;
+    if (!exactProjectedDestination(model, entry.*)) {
+        finishFailure(model, entry, .refused, .projection_refused);
+        return true;
+    }
+    const focus: results.Focus = if (!entry.may_focus) .superseded else projectedFocus(model, ref);
+    recordCompletion(entry, .placed, focus, .completed);
     return true;
+}
+
+fn publicationFailure(phase: contract.Phase) ?results.Reason {
+    return switch (phase) {
+        .tombstoned, .ended => .terminal_lost,
+        .failed => .publication_failed,
+        else => null,
+    };
+}
+
+fn exactProjectedDestination(model: *const Model, entry: Pending) bool {
+    const location = model.locateTerminal(entry.terminal.?) orelse return false;
+    if (location.window != (entry.placement_window orelse entry.window)) return false;
+    const workspace = model.wsAtConst(location.window) orelse return false;
+    const id = workspace.shared_ids[location.tab] orelse return false;
+    return @import("std").mem.eql(u8, &id, &entry.projected_id.?);
+}
+
+fn projectedFocus(model: *const Model, ref: TerminalRef) results.Focus {
+    const focused = model.focusedTerminalRef() orelse return .not_requested;
+    return if (focused.eql(ref)) .focused else .not_requested;
 }
 
 fn confirmedDestination(snapshot: contract.workspace.Snapshot, entry: Pending, ref: TerminalRef) ?[16]u8 {
     const id = shared_mutations.terminalWindow(snapshot, ref) orelse return null;
     if (isSplit(entry.kind)) {
-        const expected = entry.shared_window orelse return null;
-        return if (@import("std").mem.eql(u8, &expected, &id)) id else null;
+        return if (confirmedSplit(snapshot, entry, id, ref)) id else null;
     }
     const window = shared_mutations.findWindow(snapshot, id) orelse return null;
     if (window.root >= snapshot.nodes.len) return null;
@@ -363,6 +967,36 @@ fn confirmedDestination(snapshot: contract.workspace.Snapshot, entry: Pending, r
     // moved this terminal into a group must not move that entire group locally.
     if (snapshot.nodes[window.root].kind != .leaf) return null;
     return id;
+}
+
+fn confirmedSplit(snapshot: contract.workspace.Snapshot, entry: Pending, id: [16]u8, ref: TerminalRef) bool {
+    const expected = entry.shared_window orelse return false;
+    if (!@import("std").mem.eql(u8, &expected, &id)) return false;
+    const origin = entry.origin orelse return false;
+    const window = shared_mutations.findWindow(snapshot, id) orelse return false;
+    return containsSplit(snapshot, window.root, origin, ref, entry.kind, 0);
+}
+
+fn containsSplit(snapshot: contract.workspace.Snapshot, index: u32, origin: TerminalRef, ref: TerminalRef, kind: Kind, depth: usize) bool {
+    if (index >= snapshot.nodes.len or depth > 64) return false;
+    const node = snapshot.nodes[index];
+    if (node.kind == .leaf) return false;
+    if (exactSplit(snapshot, node, origin, ref, kind)) return true;
+    return containsSplit(snapshot, node.first, origin, ref, kind, depth + 1) or
+        containsSplit(snapshot, node.second, origin, ref, kind, depth + 1);
+}
+
+fn exactSplit(snapshot: contract.workspace.Snapshot, node: contract.workspace.Node, origin: TerminalRef, ref: TerminalRef, kind: Kind) bool {
+    const direction: @TypeOf(node.kind) = if (kind == .split_right) .horizontal else .vertical;
+    return node.kind == direction and leafIs(snapshot, node.first, origin) and leafIs(snapshot, node.second, ref);
+}
+
+fn leafIs(snapshot: contract.workspace.Snapshot, index: u32, ref: TerminalRef) bool {
+    if (index >= snapshot.nodes.len) return false;
+    const node = snapshot.nodes[index];
+    if (node.kind != .leaf) return false;
+    const actual = node.terminal_ref orelse return false;
+    return actual.eql(ref);
 }
 
 fn publishSelection(model: anytype, entry: Pending, ref: TerminalRef, id: [16]u8) void {
@@ -414,6 +1048,10 @@ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !voi
     if (tree.paneCount() + reserved >= layout.max_panes) return error.PaneCapacity;
 }
 
+test {
+    _ = @import("session_navigation_tests.zig");
+}
+
 const ConfirmationFixture = struct {
     const ref: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 9 } } };
     const id: [16]u8 = @splat(4);
@@ -425,6 +1063,10 @@ const ConfirmationFixture = struct {
             const result = self.outcome;
             self.outcome = null;
             return result;
+        }
+        pub fn takeCreationCompletion(self: *@This(), ticket: u64) ?shared_mutations.Completion {
+            const outcome = self.takeCompletion(ticket) orelse return null;
+            return .{ .outcome = outcome, .request_id = 1, .reason = .mutation_refused };
         }
     };
     shared_mutations: Queue = .{},
@@ -539,6 +1181,9 @@ test "superseding selection preserves newest creation while both capture the sam
     const nodes = [_]contract.workspace.Node{.{ .kind = .leaf, .terminal_ref = newer }};
     model.snapshot.nodes = &nodes;
     model.shared_mutations.outcome = .confirmed;
+    // The first singleton's hint must reach projection before another replaces it.
+    try testing.expect(!finishMutation(&model, creation.pending[1].?, 2));
+    model.shared_workspace.placement_hint = null;
     try testing.expect(finishMutation(&model, creation.pending[1].?, 2));
     try testing.expect(model.shared_workspace.desired_terminal.?.eql(newer));
 }
@@ -633,6 +1278,52 @@ fn stageCreationConfirmation(bridge: anytype, name: []const u8, old_id: u32, new
     try std.testing.expect(bridge.incoming.stage(bytes));
 }
 
+test "singleton placement hints serialize until the winning projection consumes each hint" {
+    const testing = @import("std").testing;
+    var model: ConfirmationFixture = .{};
+    var first = ConfirmationFixture.entry();
+    first.command_id = 1;
+    first.operation = .success;
+    var second = first;
+    second.command_id = 2;
+    model.shared_mutations.outcome = .confirmed;
+    try testing.expect(!finishMutationTracked(&model, &first, 1));
+    try testing.expect(first.projected_id != null);
+    const hint = model.shared_workspace.placement_hint.?;
+    model.shared_mutations.outcome = .confirmed;
+    try testing.expect(!finishMutationTracked(&model, &second, 2));
+    try testing.expect(second.projected_id == null);
+    try testing.expectEqual(.confirmed, model.shared_mutations.outcome.?);
+    try testing.expectEqualDeep(hint, model.shared_workspace.placement_hint.?);
+    model.shared_workspace.placement_hint = null;
+    try testing.expect(!finishMutationTracked(&model, &second, 2));
+    try testing.expect(second.projected_id != null);
+}
+
+test "winning split requires captured origin adjacency and direction rather than shared membership alone" {
+    const testing = @import("std").testing;
+    const origin = ConfirmationFixture.ref;
+    const created: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 10 } } };
+    var nodes = [_]contract.workspace.Node{
+        .{ .kind = .horizontal, .first = 1, .second = 2 },
+        .{ .kind = .leaf, .terminal_ref = origin },
+        .{ .kind = .leaf, .terminal_ref = created },
+    };
+    var model: ConfirmationFixture = .{};
+    model.snapshot.nodes = &nodes;
+    var entry = ConfirmationFixture.entry();
+    entry.kind = .split_right;
+    entry.origin = origin;
+    entry.shared_window = ConfirmationFixture.id;
+    try testing.expect(confirmedDestination(model.snapshot, entry, created) != null);
+    nodes[0].kind = .vertical;
+    try testing.expect(confirmedDestination(model.snapshot, entry, created) == null);
+    nodes[0].kind = .horizontal;
+    nodes[1].terminal_ref = created;
+    nodes[2].terminal_ref = origin;
+    try testing.expect(confirmedDestination(model.snapshot, entry, created) == null);
+}
+
 test "superseding older focus preserves newly admitted terminal focus" {
     const testing = @import("std").testing;
     var creation: Creation = .{};
@@ -641,6 +1332,19 @@ test "superseding older focus preserves newly admitted terminal focus" {
     const newer: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 10 } } };
     creation.pending[1].?.terminal = newer;
     creation.supersedeFocusExcept(newer);
+    try testing.expect(!creation.pending[0].?.may_focus);
+    try testing.expect(creation.pending[1].?.may_focus);
+}
+
+test "command-qualified focus supersession preserves a new spawn without terminal identity" {
+    const testing = @import("std").testing;
+    var creation: Creation = .{};
+    creation.pending[0] = ConfirmationFixture.entry();
+    creation.pending[0].?.command_id = 1;
+    creation.pending[0].?.terminal = null;
+    creation.pending[1] = creation.pending[0];
+    creation.pending[1].?.command_id = 2;
+    creation.supersedeFocusExceptCommand(2);
     try testing.expect(!creation.pending[0].?.may_focus);
     try testing.expect(creation.pending[1].?.may_focus);
 }

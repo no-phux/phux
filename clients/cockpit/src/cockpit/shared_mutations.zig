@@ -3,9 +3,11 @@
 const std = @import("std");
 const contract = @import("provider_contract");
 const workspace = contract.workspace;
+const results = @import("command_results.zig");
 const TerminalRef = contract.TerminalRef;
 pub const WindowId = workspace.WindowId;
 pub const Outcome = enum { confirmed, refused, unknown_outcome };
+pub const Completion = struct { outcome: Outcome, request_id: u32, reason: results.Reason };
 const Stage = enum { refresh, refreshing, mutation, mutating, complete };
 const Pending = struct {
     ticket: u64,
@@ -14,7 +16,13 @@ const Pending = struct {
     stage: Stage,
     request: u32 = 0,
     retained: bool,
+    refresh_creation: bool,
+    command_id: ?u64 = null,
+    origin: results.Origin = .ui,
+    mutation_request: u32 = 0,
     outcome: Outcome = .refused,
+    reason: results.Reason = .mutation_refused,
+    projection_failed: bool = false,
 };
 
 pub const Coordinator = struct {
@@ -26,17 +34,85 @@ pub const Coordinator = struct {
     pub fn requestCreation(self: *Coordinator, model: anytype, mutation: workspace.Mutation, epoch: u64) !u64 {
         if (mutation.kind != .add and mutation.kind != .split) return error.UnsupportedMutation;
         try validateContext(model, mutation.session_id, epoch);
-        return self.enqueue(mutation, epoch, true, .refresh);
+        return self.enqueue(mutation, epoch, true, .refresh, null, .ui);
     }
 
     pub fn takeCompletion(self: *Coordinator, ticket: u64) ?Outcome {
+        const completion = self.takeCreationCompletion(ticket) orelse return null;
+        return completion.outcome;
+    }
+
+    pub fn takeCreationCompletion(self: *Coordinator, ticket: u64) ?Completion {
         for (&self.pending) |*slot| {
             const entry = slot.* orelse continue;
             if (entry.ticket != ticket or entry.stage != .complete) continue;
+            if (entry.command_id != null) return null;
             slot.* = null;
-            return entry.outcome;
+            return .{ .outcome = entry.outcome, .request_id = entry.mutation_request, .reason = entry.reason };
         }
         return null;
+    }
+
+    pub fn peekCompletion(self: *const Coordinator) ?results.Result {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.stage != .complete) continue;
+            const command_id = entry.command_id orelse continue;
+            return .{
+                .command_id = command_id,
+                .origin = entry.origin,
+                .request_id = entry.mutation_request,
+                .mutation_ticket = entry.ticket,
+                .connection_epoch = entry.epoch,
+                .terminal_ref = entry.mutation.terminal_ref,
+                .shared_window_id = entry.mutation.window_id,
+                .operation = switch (entry.outcome) {
+                    .confirmed => .success,
+                    .refused => .refused,
+                    .unknown_outcome => .unknown,
+                },
+                .placement = if (entry.projection_failed) .refused else .not_requested,
+                .reason = entry.reason,
+            };
+        }
+        return null;
+    }
+
+    pub fn ackCompletion(self: *Coordinator, command_id: u64) bool {
+        return self.acknowledge(command_id, .ui);
+    }
+
+    /// The engine calls this in the same transaction as a failed real apply,
+    /// before the bridge can consume the matching shared-edit completion.
+    pub fn projectionFailed(self: *Coordinator, model: anytype) bool {
+        const remote = model.phux() orelse return false;
+        const snapshot = remote.workspaceSnapshot();
+        var changed = false;
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.command_id == null or entry.stage != .complete) continue;
+            if (entry.outcome != .confirmed or entry.epoch != remote.connectionEpoch()) continue;
+            if (entry.mutation_request != snapshot.request_id) continue;
+            changed = !entry.projection_failed or changed;
+            entry.projection_failed = true;
+            entry.reason = .projection_refused;
+        }
+        return changed;
+    }
+
+    pub fn ackNativeCompletion(self: *Coordinator, ticket: u64) bool {
+        return self.acknowledge(ticket, .native);
+    }
+
+    fn acknowledge(self: *Coordinator, command_id: u64, origin: results.Origin) bool {
+        for (&self.pending) |*slot| {
+            const entry = slot.* orelse continue;
+            if (entry.stage != .complete or entry.command_id != command_id) continue;
+            if (entry.origin != origin) continue;
+            slot.* = null;
+            return true;
+        }
+        return false;
     }
 
     pub fn forget(self: *Coordinator, ticket: u64) void {
@@ -46,37 +122,95 @@ pub const Coordinator = struct {
         }
     }
 
+    /// Capture dispatched write identity before retiring the local waiter.
+    /// Forgetting an intent never cancels or rolls back a provider mutation.
+    pub fn creationRequest(self: *const Coordinator, ticket: u64) u32 {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.ticket == ticket) return entry.mutation_request;
+        }
+        return 0;
+    }
+
     pub fn requestRemove(self: *Coordinator, model: anytype, ref: TerminalRef) !void {
+        return self.removeRequest(model, ref, null, .ui);
+    }
+
+    pub fn requestRemoveCorrelated(self: *Coordinator, model: anytype, ref: TerminalRef, command_id: u64) !void {
+        return self.removeRequest(model, ref, command_id, .ui);
+    }
+
+    pub fn requestRemoveNative(self: *Coordinator, model: anytype, ref: TerminalRef) !void {
+        return self.removeRequest(model, ref, null, .native);
+    }
+
+    fn removeRequest(self: *Coordinator, model: anytype, ref: TerminalRef, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         var mutation = try currentMutation(model);
         const remote = model.phux().?;
         mutation.kind = .remove;
         mutation.window_id = terminalWindow(remote.workspaceSnapshot(), ref) orelse return error.StaleTarget;
         mutation.terminal_ref = ref;
-        try self.requestDirect(model, mutation);
+        try self.requestDirect(model, mutation, command_id, origin);
     }
 
     pub fn requestRemoveWindow(self: *Coordinator, model: anytype, id: WindowId) !void {
+        return self.removeWindowRequest(model, id, null, .ui);
+    }
+
+    pub fn requestRemoveWindowCorrelated(self: *Coordinator, model: anytype, id: WindowId, command_id: u64) !void {
+        return self.removeWindowRequest(model, id, command_id, .ui);
+    }
+
+    pub fn requestRemoveWindowNative(self: *Coordinator, model: anytype, id: WindowId) !void {
+        return self.removeWindowRequest(model, id, null, .native);
+    }
+
+    fn removeWindowRequest(self: *Coordinator, model: anytype, id: WindowId, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         var mutation = try currentMutation(model);
         mutation.kind = .remove_window;
         mutation.window_id = id;
-        try self.requestDirect(model, mutation);
+        try self.requestDirect(model, mutation, command_id, origin);
     }
 
     pub fn requestReorder(self: *Coordinator, model: anytype, id: WindowId, index: usize) !void {
+        return self.reorderRequest(model, id, index, null, .ui);
+    }
+
+    pub fn requestReorderCorrelated(self: *Coordinator, model: anytype, id: WindowId, index: usize, command_id: u64) !void {
+        return self.reorderRequest(model, id, index, command_id, .ui);
+    }
+
+    pub fn requestReorderNative(self: *Coordinator, model: anytype, id: WindowId, index: usize) !void {
+        return self.reorderRequest(model, id, index, null, .native);
+    }
+
+    fn reorderRequest(self: *Coordinator, model: anytype, id: WindowId, index: usize, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         var mutation = try currentMutation(model);
         if (index >= model.phux().?.workspaceSnapshot().windows.len) return error.StaleTarget;
         mutation.kind = .reorder;
         mutation.window_id = id;
         mutation.index = @intCast(index);
-        try self.requestDirect(model, mutation);
+        try self.requestDirect(model, mutation, command_id, origin);
     }
 
     /// The caller captures revision at drag start and discards its preview when
     /// that revision changes. This method never rebases a branch path.
     pub fn requestResize(self: *Coordinator, model: anytype, id: WindowId, path_bits: u64, path_len: u32, ratio: f32) !void {
+        return self.resizeRequest(model, id, path_bits, path_len, ratio, null, .ui);
+    }
+
+    pub fn requestResizeCorrelated(self: *Coordinator, model: anytype, id: WindowId, path_bits: u64, path_len: u32, ratio: f32, command_id: u64) !void {
+        return self.resizeRequest(model, id, path_bits, path_len, ratio, command_id, .ui);
+    }
+
+    pub fn requestResizeNative(self: *Coordinator, model: anytype, id: WindowId, path_bits: u64, path_len: u32, ratio: f32) !void {
+        return self.resizeRequest(model, id, path_bits, path_len, ratio, null, .native);
+    }
+
+    fn resizeRequest(self: *Coordinator, model: anytype, id: WindowId, path_bits: u64, path_len: u32, ratio: f32, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         var mutation = try currentMutation(model);
         mutation.kind = .resize;
@@ -84,32 +218,48 @@ pub const Coordinator = struct {
         mutation.path_bits = path_bits;
         mutation.path_len = path_len;
         mutation.ratio = ratio;
-        try self.requestDirect(model, mutation);
+        try self.requestDirect(model, mutation, command_id, origin);
     }
 
-    fn requestDirect(self: *Coordinator, model: anytype, mutation: workspace.Mutation) !void {
+    /// Native gestures use the coordinator ticket as their command identity in
+    /// a distinct namespace. Legacy wrappers remain unretained.
+    pub fn requestNative(self: *Coordinator, model: anytype, mutation: workspace.Mutation) !void {
+        _ = try currentMutation(model);
+        return self.requestDirect(model, mutation, null, .native);
+    }
+
+    fn requestDirect(self: *Coordinator, model: anytype, mutation: workspace.Mutation, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         if (self.firstPending() != null) return error.WorkspaceBusy;
         const remote = model.phux().?;
         const snapshot = remote.workspaceSnapshot();
         if (snapshot.status == .pending) return error.WorkspaceBusy;
         try validateTarget(snapshot, mutation);
-        const ticket = try self.enqueue(mutation, remote.connectionEpoch(), false, .mutation);
+        const ticket = try self.enqueue(mutation, remote.connectionEpoch(), command_id != null or origin == .native, .mutation, command_id, origin);
         _ = ticket;
         _ = self.pump(model);
     }
 
-    fn enqueue(self: *Coordinator, mutation: workspace.Mutation, epoch: u64, retained: bool, stage: Stage) !u64 {
+    fn enqueue(self: *Coordinator, mutation: workspace.Mutation, epoch: u64, retained: bool, stage: Stage, command_id: ?u64, origin: results.Origin) !u64 {
         // Names borrow caller memory in the provider API. This queue supports
         // unnamed add and identity-only edits; rename needs owned text first.
         if (mutation.name.len != 0) return error.UnsupportedMutation;
+        if (origin == .ui) try self.requireUniqueCommand(command_id);
         for (&self.pending) |*slot| {
             if (slot.* != null) continue;
             self.next_ticket = try std.math.add(u64, self.next_ticket, 1);
-            slot.* = .{ .ticket = self.next_ticket, .epoch = epoch, .mutation = mutation, .retained = retained, .stage = stage };
+            slot.* = .{ .ticket = self.next_ticket, .epoch = epoch, .mutation = mutation, .retained = retained, .stage = stage, .refresh_creation = stage == .refresh, .command_id = if (origin == .native) self.next_ticket else command_id, .origin = origin };
             return self.next_ticket;
         }
         return error.OperationCapacity;
+    }
+
+    fn requireUniqueCommand(self: *const Coordinator, command_id: ?u64) !void {
+        const id = command_id orelse return;
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.origin == .ui and entry.command_id == id) return error.CommandBusy;
+        }
     }
 
     fn firstPending(self: *Coordinator) ?*?Pending {
@@ -126,22 +276,61 @@ pub const Coordinator = struct {
         const slot = self.firstPending() orelse return false;
         const entry = &slot.*.?;
         advance(model, entry) catch |err| {
-            entry.outcome = if (err == error.StaleContext) .unknown_outcome else .refused;
+            entry.outcome = failureOutcome(entry.*, err);
+            entry.reason = failureReason(err);
             entry.stage = .complete;
         };
         if (entry.stage != .complete) return false;
-        if (entry.outcome != .confirmed) reportRefusal(model);
+        if (entry.outcome == .refused) reportRefusal(model);
         if (!entry.retained) slot.* = null;
         return true;
     }
 
-    pub fn disconnect(self: *Coordinator, model: anytype) void {
-        for (self.pending) |entry| {
-            if (entry != null) reportRefusal(model);
+    /// Preserve replies already observed before teardown. This never advances
+    /// refresh into mutation and never submits provider work after stop.
+    pub fn completeDisconnected(self: *Coordinator, model: anytype) void {
+        for (&self.pending) |*slot| {
+            const entry = if (slot.*) |*value| value else continue;
+            if (entry.stage == .complete) continue;
+            if (!completeObserved(model, entry)) {
+                entry.outcome = .unknown_outcome;
+                entry.reason = .disconnected;
+                entry.stage = .complete;
+            }
+            if (entry.outcome == .refused) reportRefusal(model);
+            if (!entry.retained) slot.* = null;
         }
-        @memset(&self.pending, null);
+    }
+
+    pub fn disconnect(self: *Coordinator, model: anytype) void {
+        self.completeDisconnected(model);
+        for (&self.pending) |*slot| {
+            const entry = slot.* orelse continue;
+            if (entry.command_id == null) slot.* = null;
+        }
     }
 };
+
+fn failureOutcome(entry: Pending, err: anyerror) Outcome {
+    if (err == error.StaleContext) return .unknown_outcome;
+    if (err == error.MutationUnknown) return .unknown_outcome;
+    if (err == error.LostCompletion and entry.stage == .mutating) return .unknown_outcome;
+    return .refused;
+}
+
+fn failureReason(err: anyerror) results.Reason {
+    return switch (err) {
+        error.StaleContext => .context_changed,
+        error.MutationUnknown => .mutation_unknown,
+        error.LostCompletion => .lost_completion,
+        error.WorkspaceUnavailable => .workspace_unavailable,
+        error.StaleTarget => .stale_target,
+        // Provider refusal includes a losing confirmation read; this does not
+        // assert that the underlying metadata SET was rejected or rolled back.
+        error.MutationRefused => .mutation_not_confirmed,
+        else => .mutation_refused,
+    };
+}
 
 fn currentMutation(model: anytype) !workspace.Mutation {
     const remote = model.phux() orelse return error.NoProvider;
@@ -160,6 +349,7 @@ fn validateContext(model: anytype, session: u32, epoch: u64) !void {
 }
 
 fn advance(model: anytype, entry: *Pending) !void {
+    if (completeObserved(model, entry)) return;
     try validateContext(model, entry.mutation.session_id, entry.epoch);
     const remote = model.phux().?;
     const snapshot = remote.workspaceSnapshot();
@@ -174,10 +364,38 @@ fn advance(model: anytype, entry: *Pending) !void {
         .mutating => {
             if (!try requestConfirmed(snapshot, entry.request)) return;
             entry.outcome = .confirmed;
+            entry.reason = .completed;
             entry.stage = .complete;
         },
         .complete => {},
     }
+}
+
+fn completeObserved(model: anytype, entry: *Pending) bool {
+    if (entry.stage != .mutating) return false;
+    const remote = model.phux() orelse return false;
+    if (remote.connectionEpoch() != entry.epoch) return false;
+    const snapshot = remote.workspaceSnapshot();
+    if (snapshot.session_id != entry.mutation.session_id) return false;
+    if (snapshot.request_id != entry.mutation_request) return false;
+    const outcome = observedOutcome(snapshot.status) orelse return false;
+    entry.outcome = outcome;
+    entry.reason = switch (outcome) {
+        .confirmed => .completed,
+        .refused => .mutation_not_confirmed,
+        .unknown_outcome => .mutation_unknown,
+    };
+    entry.stage = .complete;
+    return true;
+}
+
+fn observedOutcome(status: workspace.Status) ?Outcome {
+    return switch (status) {
+        .confirmed => .confirmed,
+        .refused => .refused,
+        .unknown_outcome => .unknown_outcome,
+        .idle, .pending => null,
+    };
 }
 
 fn beginRefresh(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending) !void {
@@ -190,9 +408,10 @@ fn beginMutation(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending)
     if (snapshot.status == .pending) return;
     // Revalidate stable creation targets after refresh, but never rebase direct
     // edits (especially paths). Dispatch now, before the next idle refresh.
-    if (entry.retained) entry.mutation.expected_revision = snapshot.revision;
+    if (entry.refresh_creation) entry.mutation.expected_revision = snapshot.revision;
     try validateTarget(snapshot, entry.mutation);
     entry.request = try remote.requestWorkspaceMutation(entry.mutation);
+    entry.mutation_request = entry.request;
     entry.stage = .mutating;
 }
 
@@ -201,7 +420,7 @@ fn requestConfirmed(snapshot: workspace.Snapshot, request: u32) !bool {
     return switch (snapshot.status) {
         .pending => false,
         .confirmed => true,
-        .unknown_outcome => error.StaleContext,
+        .unknown_outcome => error.MutationUnknown,
         .idle, .refused => error.MutationRefused,
     };
 }
@@ -272,4 +491,8 @@ fn contains(snapshot: workspace.Snapshot, index: u32, ref: TerminalRef, depth: u
 fn reportRefusal(model: anytype) void {
     model.shared_workspace.refused = true;
     model.terminal_limit_refused = true;
+}
+
+test {
+    _ = @import("shared_mutations_test.zig");
 }

@@ -69,12 +69,16 @@ test('per-window terminal status survives connected and offline snapshot project
 });
 
 test('new terminal and reconnect use the native adopted window', () => {
-  for (const [kind, tag] of [['new_terminal', 2], ['reconnect', 12]]) {
-    const [, cmd] = step(initialModel()[0], { kind });
-    assert.equal(cmd.op, 'host_bytes');
-    assert.equal(cmd.payload[1], tag);
-    assert.equal(cmd.payload[11], 255);
-  }
+  const [, create] = step(initialModel()[0], { kind: 'new_terminal' });
+  assert.equal(create.op, 'request');
+  assert.equal(create.name, 'cockpit.tab-command');
+  assert.equal(create.payload[1], 3);
+  assert.equal(create.payload[11], 2);
+  assert.equal(create.payload[21], 255);
+  const [, reconnect] = step(initialModel()[0], { kind: 'reconnect' });
+  assert.equal(reconnect.op, 'host_bytes');
+  assert.equal(reconnect.payload[1], 12);
+  assert.equal(reconnect.payload[11], 255);
 });
 
 test('whole catalog is paged and selection echoes the captured opaque target', () => {

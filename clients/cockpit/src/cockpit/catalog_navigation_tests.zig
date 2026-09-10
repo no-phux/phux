@@ -86,11 +86,11 @@ pub fn admission(fx: anytype) !void {
     try testing.expect(model.focusedTerminalRef().?.eql(original));
     try testing.expect(model.locateTerminal(ref) == null);
     try testing.expect(engine.creation.hasPendingTerminal(ref));
-    try testing.expect(model.shared_workspace.desired_terminal.?.eql(ref));
+    try testing.expect(model.shared_workspace.desired_terminal == null);
     const duplicate = engine.applySelectionCommand(available, fx);
     try testing.expectEqual(commands.Reason.unavailable, duplicate.reason);
     try testing.expectEqual(commands.Status.rejected, duplicate.status);
-    try testing.expect(model.shared_workspace.desired_terminal.?.eql(ref));
+    try testing.expect(model.shared_workspace.desired_terminal == null);
     for (engine.creation.pending) |slot| {
         const entry = slot orelse continue;
         try testing.expect(entry.may_focus);
@@ -104,6 +104,13 @@ pub fn admission(fx: anytype) !void {
     try drain(engine);
     try testing.expect(model.focusedTerminalRef().?.eql(ref));
     try testing.expect(model.locateTerminal(ref) != null);
+    const completion = engine.creation.peekCompletion().?;
+    try testing.expectEqual(admitted.id, completion.command_id);
+    try testing.expectEqual(.success, completion.operation);
+    try testing.expectEqual(.placed, completion.placement);
+    try testing.expectEqual(.focused, completion.focus);
+    try testing.expect(!engine.creation.ackCompletion(44));
+    try testing.expect(engine.creation.ackCompletion(admitted.id));
     // A fresh action with the same captured target resolves today's placement,
     // rather than trying to re-attach its old "available" catalog position.
     std.mem.writeInt(u64, buffer[2..10], 3, .little);

@@ -3,6 +3,7 @@
 const std = @import("std");
 const model_module = @import("../model.zig");
 const Model = model_module.Model;
+const protocol = @import("ts_protocol.zig");
 pub const catalog = @import("catalog_targets.zig");
 
 pub const request_name = "cockpit.tab-command";
@@ -59,7 +60,7 @@ pub fn capture(model: *const Model, window: usize, index: usize) ?Target {
     };
 }
 
-pub const Request = struct { id: u64, target: union(enum) { tab: Target, catalog: catalog.Target } };
+pub const Request = struct { id: u64, target: union(enum) { tab: Target, catalog: catalog.Target, operation: protocol.Intent } };
 
 pub fn decode(bytes: []const u8) ?Request {
     if (bytes.len < 10 or bytes[0] != 1) return null;
@@ -68,8 +69,21 @@ pub fn decode(bytes: []const u8) ?Request {
     return switch (bytes[1]) {
         1 => .{ .id = id, .target = .{ .tab = decodeTab(bytes) orelse return null } },
         2 => .{ .id = id, .target = .{ .catalog = catalog.decode(bytes[10..]) orelse return null } },
+        3 => .{ .id = id, .target = .{ .operation = decodeOperation(bytes[10..]) orelse return null } },
         else => null,
     };
+}
+
+fn decodeOperation(bytes: []const u8) ?protocol.Intent {
+    const operation = protocol.decodeIntent(bytes) orelse return null;
+    switch (operation.kind) {
+        .new_terminal, .new_window, .close_tab => return operation,
+        .native_command => switch (operation.argument) {
+            3, 4, 5, 8, 9 => return operation,
+            else => return null,
+        },
+        else => return null,
+    }
 }
 
 fn decodeTab(bytes: []const u8) ?Target {

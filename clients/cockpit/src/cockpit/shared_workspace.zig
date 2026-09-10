@@ -301,7 +301,9 @@ pub const State = struct {
 };
 
 fn operationRefused(snapshot: shared.Snapshot) bool {
-    return snapshot.status == .refused or snapshot.status == .unknown_outcome;
+    // Missing confirmation does not establish that the shared operation failed.
+    // Its retained command result carries uncertainty independently of layout.
+    return snapshot.status == .refused;
 }
 
 /// Native-window placement is client-local. Closing one presentation rehomes
@@ -755,6 +757,33 @@ test "shared deletion picks nearest surviving tab and pane while web remains cli
     try std.testing.expect(model.primary.web_selected);
     model.shared_workspace.refused = true;
     const generation = model.shared_workspace.projection_generation;
+    try std.testing.expect(try model.shared_workspace.apply(model, snapshot, 1));
+    try std.testing.expect(!model.shared_workspace.refused);
+    try std.testing.expectEqual(generation, model.shared_workspace.projection_generation);
+}
+
+test "unknown shared completion remains distinct from refusal after real projection" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const windows = [_]shared.Window{testWindow(1, 0)};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(11) }};
+    var snapshot: shared.Snapshot = .{
+        .session_id = 1,
+        .revision = 1,
+        .state = .authoritative,
+        .windows = &windows,
+        .nodes = &nodes,
+        .status = .unknown_outcome,
+    };
+    _ = try model.shared_workspace.apply(model, snapshot, 1);
+    try std.testing.expect(!model.shared_workspace.refused);
+    try std.testing.expectEqual(@as(usize, 1), model.wsConst().tab_count);
+    snapshot.status = .refused;
+    try std.testing.expect(try model.shared_workspace.apply(model, snapshot, 1));
+    try std.testing.expect(model.shared_workspace.refused);
+    const generation = model.shared_workspace.projection_generation;
+    snapshot.status = .unknown_outcome;
     try std.testing.expect(try model.shared_workspace.apply(model, snapshot, 1));
     try std.testing.expect(!model.shared_workspace.refused);
     try std.testing.expectEqual(generation, model.shared_workspace.projection_generation);
