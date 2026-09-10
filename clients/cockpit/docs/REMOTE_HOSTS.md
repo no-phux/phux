@@ -139,10 +139,11 @@ so a placement never matches the wrong coordinator.
 - The panel is presented in the main window only.
 - Catalog search matches titles, directories and sessions, not the host
   label.
-- A registry entry's pinned `session` is requested by Connect to Host, not
-  when a remembered host is reattached at launch. At launch, the remote
-  server's own last-attach memory decides, as it does for `phux attach`
-  with no session.
+- A registry entry's pinned `session` is requested both by Connect to Host
+  and when a host selected at launch (remembered, `phux-remote` or
+  `PHUX_REMOTE`) is attached. An explicit `phux-session` or `PHUX_SESSION`
+  wins over the pin, as a session named on `phux --remote` does. Only when
+  neither is set does the remote server's own last-attach memory decide.
 
 ## Validation
 

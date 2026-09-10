@@ -256,6 +256,15 @@ pub const PhuxProvider = struct {
         return self.remote_label orelse target;
     }
 
+    /// Name the current remote endpoint by its registry entry, as Connect to
+    /// Host does through `requestRetarget`. Used when a host selected at
+    /// launch has been resolved before the provider's first connection.
+    pub fn setRemoteLabel(self: *PhuxProvider, label: []const u8) !void {
+        const owned = try self.gpa.dupe(u8, label);
+        if (self.remote_label) |previous| self.gpa.free(previous);
+        self.remote_label = owned;
+    }
+
     /// The last recorded connection failure, copied into `out`.
     pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
         return self.remote_status.failureInto(out);

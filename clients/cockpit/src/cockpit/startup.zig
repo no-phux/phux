@@ -121,9 +121,32 @@ pub fn createPhuxProviderFromConfig(
     const remote_target = config.phux_remote.slice();
     if (remote_target.len != 0) {
         if (!config_module.validPhuxRemote(remote_target)) return error.InvalidPhuxRemote;
-        return try PhuxProvider.create(gpa, io, .{ .remote = .{ .target = remote_target } }, session, "phux-cockpit");
+        return try createRemotePhuxProvider(gpa, io, remote_target, session);
     }
     return try PhuxProvider.create(gpa, io, .{ .unix = socket }, session, "phux-cockpit");
+}
+
+/// A host selected at launch (the config, `PHUX_REMOTE`, or the remembered
+/// host) resolves in the registry the way Connect to Host does, so the
+/// entry's pinned `session` and its name apply from the first attach rather
+/// than leaving the remote server's last-attach memory to decide. A session
+/// named explicitly still wins, as a session named on `phux --remote` wins
+/// over the entry's pin. Resolution reads config.toml only; an unregistered
+/// host keeps its typed name and fails on dial with the pairing command.
+fn createRemotePhuxProvider(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    target: []const u8,
+    configured_session: ?[]const u8,
+) !*PhuxProvider {
+    const described = PhuxProvider.describeRemote(target);
+    const resolved = described.state == .resolved;
+    const pinned = described.session.slice();
+    const pinned_session: ?[]const u8 = if (resolved and pinned.len != 0) pinned else null;
+    const provider = try PhuxProvider.create(gpa, io, .{ .remote = .{ .target = target } }, configured_session orelse pinned_session, "phux-cockpit");
+    errdefer provider.destroy();
+    if (resolved) try provider.setRemoteLabel(described.name.slice());
+    return provider;
 }
 
 /// Read-only construction evidence for settings/tests: the local-domain

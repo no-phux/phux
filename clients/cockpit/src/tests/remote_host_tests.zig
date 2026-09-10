@@ -188,6 +188,37 @@ test "Connect to Host resolves before touching the connection, then retargets th
     try testing.expectError(error.InvalidRequest, remote_hosts.handle(engine, &fx, "\x01\x02\x03a b", &out));
 }
 
+test "a host selected at launch honors its registry entry's pinned session and name" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var registry = try IsolatedRegistry.init("[[remote]]\nname = \"mini\"\nendpoint = \"ws://127.0.0.1:1\"\nsession = \"work\"\n");
+    defer registry.deinit();
+
+    // What a remembered `me@mini` restores to: a host and no session. Connect
+    // to Host would attach `work`; relaunch must attach the same session.
+    var remembered = startup.resolvePhuxConfig(config.parse("phux-remote = me@mini\n"), .{ .runtime_dir = "/tmp/rt" });
+    const pinned = (try startup.createPhuxProviderFromConfig(gpa, io, &remembered)).?;
+    defer pinned.destroy();
+    try testing.expectEqualStrings("work", startup.configuredPhuxSession(pinned).?);
+    try testing.expectEqualStrings("mini", pinned.remoteLabel().?);
+    try testing.expectEqualStrings("me@mini", pinned.remoteTarget().?);
+
+    // A session named explicitly still wins over the pin, as on `phux --remote`.
+    var explicit = startup.resolvePhuxConfig(config.parse("phux-remote = mini\n"), .{ .runtime_dir = "/tmp/rt", .session = "mine" });
+    const named = (try startup.createPhuxProviderFromConfig(gpa, io, &explicit)).?;
+    defer named.destroy();
+    try testing.expectEqualStrings("mine", startup.configuredPhuxSession(named).?);
+
+    // An unregistered host keeps its typed name and the server's own choice;
+    // the dial reports the pairing command.
+    var unknown = startup.resolvePhuxConfig(config.parse("phux-remote = studio\n"), .{ .runtime_dir = "/tmp/rt" });
+    const unregistered = (try startup.createPhuxProviderFromConfig(gpa, io, &unknown)).?;
+    defer unregistered.destroy();
+    try testing.expect(startup.configuredPhuxSession(unregistered) == null);
+    try testing.expectEqualStrings("studio", unregistered.remoteLabel().?);
+}
+
 test "only a host chosen through Connect to Host is remembered, never one the environment selected" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const gpa = testing.allocator;
