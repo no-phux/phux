@@ -177,11 +177,15 @@ fn publishTitle(terminal: *Terminal) void {
 }
 
 pub const Host = struct {
+    context_id: u64,
     gpa: std.mem.Allocator,
     client: *c.PhuxClient,
     bridge: *transport.Bridge,
     terminals: std.ArrayListUnmanaged(Terminal) = .empty,
     sessions: std.ArrayListUnmanaged(SessionSummary) = .empty,
+    /// Provenance of the retained session catalog, not the connection currently
+    /// handshaking. Reconnect must never requalify old rows with its new epoch.
+    sessions_generation: u64 = 0,
     search_results: std.ArrayListUnmanaged(SearchResult) = .empty,
     search_owner: ?provider.ReplicaOwner = null,
     notices: std.ArrayListUnmanaged(Notice) = .empty,
@@ -208,7 +212,8 @@ pub const Host = struct {
     pub fn create(gpa: std.mem.Allocator, bridge: *transport.Bridge) !*Host {
         const host = try gpa.create(Host);
         errdefer gpa.destroy(host);
-        host.* = .{ .gpa = gpa, .client = try newClient(), .bridge = bridge };
+        const context_id = try provider.context.allocate();
+        host.* = .{ .gpa = gpa, .client = try newClient(), .bridge = bridge, .context_id = context_id };
         return host;
     }
 
@@ -990,6 +995,7 @@ pub const Host = struct {
         host.clearSessions();
         host.sessions.deinit(host.gpa);
         host.sessions = next;
+        host.sessions_generation = host.client_generation;
     }
 
     fn clearSessions(host: *Host) void {

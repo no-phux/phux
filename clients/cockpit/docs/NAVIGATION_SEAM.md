@@ -1,15 +1,15 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-07
+last-reviewed: 2026-09-10
 ---
 
 # Shipping navigation seam
 
-**TL;DR.** The TypeScript core presents a four-row, revision-fenced native
-catalog. The engine serves `cockpit.navigation` and handles additive intent
-tags 12 and 13 before interpreting a legacy intent's window byte. Snapshot
-byte 23 reports provider connectivity independently of engine readiness.
+**TL;DR.** The TypeScript core presents a four-row native catalog with
+revision-fenced page reads and captured provider-qualified selection targets.
+Selection and its admission receipt use the bounded interaction command FIFO.
+Snapshot byte 23 reports provider connectivity independently of engine readiness.
 
 ## Engine hook contract
 
@@ -23,25 +23,28 @@ pub fn resolve(model: *const Model, current_revision: u64,
 pub fn connection(model: *const Model) Connection;
 ```
 
-Both catalog functions are read-only. The engine must advance its revision
+Both catalog functions are read-only; `resolve` is a compatibility positional
+route. The shipping core activates captured opaque targets through
+[`INTERACTION_SEAM.md`](INTERACTION_SEAM.md#provider-qualified-catalog-selection).
+The engine must advance its page revision
 whenever catalog membership, order, placement, or session identity changes.
 That includes provider catalog replacement and reconnect, even when the visible
 tab topology stays the same. Selection must resolve and activate on the owning
 thread without an intervening catalog mutation.
 
-`ts_protocol.decodeNavigationIntent(payload)` recognizes the existing 12-byte
-intent envelope with two additive tags:
+`ts_protocol.decodeNavigationIntent(payload)` retains the existing 12-byte
+intent envelope with two tags:
 
 | Tag | Meaning | Bytes 10-11 |
 |---|---|---|
 | 12 | Reconnect Phux through the existing connection lifecycle | unused; TS sends 0,255 |
-| 13 | Activate the selected catalog destination | little-endian **u16 index** |
+| 13 | Compatibility positional catalog activation; not emitted by shipping chrome | little-endian **u16 index** |
 
 Bytes 2-9 remain the little-endian expected revision. Decode these tags before
 legacy window adoption: the high byte of a catalog index is **not** a window.
 Existing `IntentKind` and `NativeCommand` discriminants are unchanged.
 
-On tag 13, call `resolve(model, engine.revision, intent.expected_revision,
+The compatibility tag 13 calls `resolve(model, engine.revision, intent.expected_revision,
 intent.index)`. A null result is a refusal. A successful result is the existing
 `PaletteDestination` union:
 
@@ -73,9 +76,11 @@ All multibyte integers are little-endian. The request is:
 | 13 | query bytes |
 
 The response echoes the complete request, then appends `total:u16`, `count:u8`,
-and `count` records of `index:u16, label_length:u8, label_bytes`. The index is
-into the **unfiltered** catalog, not into this page or the filtered results.
-It remains valid across query/page changes at the same engine revision.
+and `count` records with a display index, opaque target, and label. The exact
+bounded record and target layout lives in the
+[interaction seam](INTERACTION_SEAM.md#provider-qualified-catalog-selection).
+The index refers to the unfiltered catalog for display bookkeeping only;
+activation echoes captured target bytes rather than reconstructing identity.
 
 The existing workspace projection supplies enumeration and matching: every
 placed pane in every open window, every unplaced remote ref, then every remote
@@ -88,14 +93,17 @@ Four 32pt rows leave room at the 420pt minimum for the 40pt search field,
 32pt heading and paging controls, notice, token gaps, and panel/outer padding.
 Previous/Next work by pointer; arrow navigation crosses page boundaries. The
 query, offset, and revision are echoed so late responses cannot replace newer
-results. Invalidation immediately withdraws clickable rows. Refresh is always
+results. Invalidation withdraws current rows and disables keyboard submission;
+a held painted action retains its original authority for native validation.
+Refresh is always
 reachable, including an error or empty result.
 
 ## Snapshot and connection state
 
 Snapshot byte 23, formerly reserved, carries `local=0`, `connecting=1`,
-`connected=2`, or `offline=3`. Engine `status=READY` means its snapshot was
-accepted; the visible `connectionStatus` is separately derived from the provider.
+`connected=2`, `offline=3`, or `workspace_unavailable=4`. Engine `status=READY`
+means its snapshot was accepted; the visible `connectionStatus` is separately
+derived from the provider.
 An unavailable engine withdraws the connectivity claim. An offline provider
 exposes Reconnect in main and secondary window chrome.
 
@@ -103,8 +111,9 @@ The toolkit's 4096-byte limit is unchanged. Every tab identity is retained;
 strip titles/CWD are explicitly elided on UTF-8 boundaries to 24/8 bytes.
 The compile-time budget covers all five windows at sixteen tabs each, every
 tab record, all built-in theme names, configuration path, and framing. Full
-inventory navigation uses separate bounded pages (at most 1052 bytes with a
-64-byte query and four 240-byte display labels).
+inventory navigation uses separate bounded pages (at most 2252 bytes:
+`16 + 64 + 4 * (5 + 298 + 240)` for framing, query, four opaque targets and
+display labels).
 
 ## Focused validation
 
@@ -172,7 +181,7 @@ Each named test was observed red with its recorded break and restored green.
 Independent-review fixes add `ts-navigation-placement-recovery` and
 `ts-navigation-refresh-highlight`, also recorded red and restored green.
 
-## Complexity and review evidence
+## Historical complexity and review evidence
 
 Measured with ESLint's `complexity` rule and `@typescript-eslint/parser` against
 the original main revision and this implementation:

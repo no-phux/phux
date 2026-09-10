@@ -57,6 +57,7 @@ pub const PhuxProvider = struct {
     pub const OperationResult = host_mod.OperationResult;
     pub const AgentSession = host_mod.AgentSession;
     pub const AgentState = host_mod.AgentState;
+    context_id: u64,
     gpa: std.mem.Allocator,
     io: std.Io,
     bridge: *transport.Bridge,
@@ -86,7 +87,7 @@ pub const PhuxProvider = struct {
         errdefer if (owned_session) |name| gpa.free(name);
         const owned_client_name = try gpa.dupe(u8, client_name);
         errdefer gpa.free(owned_client_name);
-        self.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .host = host, .endpoint = owned_endpoint, .session = owned_session, .client_name = owned_client_name };
+        self.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .host = host, .endpoint = owned_endpoint, .session = owned_session, .client_name = owned_client_name, .context_id = try provider.context.allocate() };
         return self;
     }
 

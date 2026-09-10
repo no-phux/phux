@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialModel, update } from '../core.ts';
-import { enqueueTabCommand, receiveTabReceipt, initialTabCommands } from '../tab-commands.ts';
+import { enqueueTabCommand, enqueueCatalogCommand, receiveTabReceipt, initialTabCommands } from '../tab-commands.ts';
 import { snapshot } from '../protocol.ts';
 
 const step = (model, msg) => {
@@ -131,4 +131,42 @@ test('target context coexists with agent rows and unknown snapshot extension rec
   assert.equal(model.railRows[1].agent, true);
   assert.equal(model.railRows[1].target.length, 0);
   assert.equal(snapshot(new Uint8Array([...prefix, 2, 79, 0, ...contexts.subarray(0, 79)])), null);
+});
+
+test('catalog admission is distinct from application and shares the tab FIFO', () => {
+  const catalog = new Uint8Array(298);
+  catalog[0] = 2;
+  catalog[297] = 255;
+  let decision = enqueueCatalogCommand(initialTabCommands(), catalog);
+  const first = decision.request;
+  assert.equal(first.length, 308);
+  assert.equal(first[1], 2);
+  assert.deepEqual(first.subarray(10), catalog);
+  catalog.fill(0);
+  decision = enqueueTabCommand(decision.state, target(4));
+  assert.equal(decision.request.length, 0);
+  assert.equal(decision.state.queue[0].bytes[307], 255);
+  const pending = receipt(first);
+  pending[1] = 3;
+  decision = receiveTabReceipt(decision.state, pending);
+  assert.equal(decision.state.outcome, 7);
+  assert.equal(decision.request[1], 1);
+  decision = receiveTabReceipt(decision.state, receipt(decision.request));
+  assert.equal(decision.state.outcome, 2);
+});
+
+test('catalog pending notice is observable and a malformed admission cancels the queue', () => {
+  const catalog = new Uint8Array(38); catalog[0] = 2;
+  let [model, command] = step({ ...initialModel()[0], paletteOpen: true }, { kind: 'palette_pick', target: catalog });
+  const pending = receipt(command.cmds[1].payload); pending[1] = 3;
+  [model] = step(model, { kind: 'tab_command_completed', body: pending });
+  assert.equal(model.tabCommands.outcome, 7);
+  assert.match(new TextDecoder().decode(model.commandNotice), /accepted.*pending/);
+  [model, command] = step({ ...model, paletteOpen: true }, { kind: 'palette_pick', target: catalog });
+  [model] = step(model, { kind: 'select_target', target: target(1) });
+  const malformed = receipt(command.cmds[1].payload); malformed[1] = 3; malformed[2] = 2;
+  [model, command] = step(model, { kind: 'tab_command_completed', body: malformed });
+  assert.equal(model.tabCommands.outcome, 5);
+  assert.equal(model.tabCommands.queue.length, 0);
+  assert.equal(command, null);
 });

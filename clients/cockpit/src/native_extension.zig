@@ -302,10 +302,14 @@ const Bridge = struct {
             self.command_buffer = (cockpit.engine.tab_commands.Receipt{
                 .id = if (parsed) |command| command.id else 0,
                 .reason = .unavailable,
+                .status = .rejected,
             }).encode();
             return;
         };
-        self.command_buffer = engine.applyTabCommand(payload).encode();
+        self.command_buffer = if (engineFx()) |fx|
+            engine.applySelectionCommand(payload, fx).encode()
+        else
+            engine.applyTabCommand(payload).encode();
         if (engineFx()) |fx| engine.noteTopologyChange(fx, topologyTimer);
         self.announce(engine);
     }
@@ -1389,6 +1393,102 @@ fn firstPaintedTabMessage(node: Adapter.Ui.Node) ?core.Msg {
         if (firstPaintedTabMessage(child)) |msg| return msg;
     }
     return null;
+}
+
+fn firstPaintedCatalogMessage(node: Adapter.Ui.Node) ?core.Msg {
+    if (node.on_press) |msg| {
+        if (msg == .palette_pick) return msg;
+    }
+    for (node.nodes) |child| {
+        if (firstPaintedCatalogMessage(child)) |msg| return msg;
+    }
+    return null;
+}
+
+test "navigation held painted catalog target follows metadata filtering and window movement" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const original = engine.model.focusedTerminalRef().?;
+    for (0..4) |_| {
+        try rig.dispatch(.new_terminal);
+        try rig.settle(@intCast(engine.sequence), "READY");
+    }
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    var held = firstPaintedCatalogMessage(mainView(&ui, &rig.app_state.model)).?;
+    held.palette_pick = try arena.allocator().dupe(u8, held.palette_pick);
+    // Replace the visible page; a held event still owns its original identity.
+    try rig.dispatch(.palette_next);
+    try rig.settleNavigation();
+    try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.paletteOffset);
+    _ = shellEvent(.{ .key = engine.model.provider.terminal(original).?.pty_key, .kind = .output, .bytes = "\x1b]2;renamed\x07" });
+    const second = engine.model.openWindow(1).?;
+    engine.model.primary.dropTab(engine.model.primary.tabOfTerminal(original).?);
+    try std.testing.expect(second.admitTab(original));
+    engine.model.active_window = 0;
+    engine.revision += 1;
+    engine.sequence += 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(!engine.model.focusedTerminalRef().?.eql(original));
+    try rig.dispatch(held);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.tabCommands.lastId.lo);
+}
+
+fn catalogCommandBytes(target: []const u8, id: u64, out: []u8) []const u8 {
+    out[0] = 1;
+    out[1] = 2;
+    std.mem.writeInt(u64, out[2..10], id, .little);
+    @memcpy(out[10..][0..target.len], target);
+    return out[0 .. 10 + target.len];
+}
+
+test "navigation rejected captured identity preserves focus pending selection and receipt slot" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const targets = cockpit.engine.navigation.targets;
+    const original = engine.model.focusedTerminalRef().?;
+    const target = targets.capture(engine.model, .{ .available_terminal = original }).?;
+    var target_buffer: [targets.max_len]u8 = undefined;
+    var buffer: [10 + targets.max_len]u8 = undefined;
+    const id: u64 = 0xfedc_ba98_7654_3210;
+    const request = catalogCommandBytes(target.encode(&target_buffer), id, &buffer);
+    var service: Bridge = .{ .engine = engine };
+    const sentinel = original;
+    engine.model.shared_workspace.desired_terminal = sentinel;
+    // Provider lifetime replacement with exactly the same TerminalRef bits.
+    const context = engine.model.provider.context_id;
+    engine.model.provider.context_id = context + 1;
+    const before = engine.revision;
+    Bridge.request(&service, cockpit.engine.tab_commands.request_name, 7001, request);
+    Bridge.request(&service, protocol.snapshot_request, 7002, "");
+    const query = navigationRequestBytes(engine.revision);
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 7003, &query);
+    const result = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u64, 7001), result.key);
+    try std.testing.expectEqual(@as(u8, 2), result.bytes[1]);
+    try std.testing.expectEqual(@as(u8, 2), result.bytes[2]);
+    try std.testing.expectEqual(id, std.mem.readInt(u64, result.bytes[3..11], .little));
+    try std.testing.expectEqual(before, engine.revision);
+    try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal.?.eql(sentinel));
+    try std.testing.expectEqual(@as(u64, 7002), Bridge.poll(&service).?.key);
+    try std.testing.expectEqual(@as(u64, 7003), Bridge.poll(&service).?.key);
+    engine.model.provider.context_id = context;
+    try std.testing.expect(engine.model.provider.destroyTerminal(original));
+    const retired = engine.applyTabCommand(request);
+    try std.testing.expectEqual(.stale_target, retired.reason);
+    try std.testing.expectEqual(.rejected, retired.status);
+    try std.testing.expect(engine.model.shared_workspace.desired_terminal.?.eql(sentinel));
 }
 
 test "held painted tab action follows identity after metadata and reorder" {
@@ -3565,7 +3665,7 @@ test "navigation selects an exact split pane across windows through the shipping
     try rig.dispatch(.palette_open);
     try rig.settleNavigation();
     try std.testing.expectEqual(@as(usize, 3), rig.app_state.model.paletteRows.len);
-    try rig.dispatch(.{ .palette_pick = 0 });
+    try rig.dispatch(.{ .palette_pick = rig.app_state.model.paletteRows[0].target });
     try rig.settle(3, "READY");
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
@@ -3578,6 +3678,36 @@ test "navigation selects an exact split pane across windows through the shipping
 test "navigation activates available remote identity and stable session id including reconnect" {
     var recorder: Recorder = .{};
     try cockpit.durable_tests.navigationSharedAdmission(&recorder);
+}
+
+test "navigation catalog receipts distinguish shared admission and current session application" {
+    var recorder: Recorder = .{};
+    try cockpit.catalog_tests.currentSession(&recorder);
+    try cockpit.catalog_tests.admission(&recorder);
+}
+
+test "navigation retained rows cannot acquire replacement connection authority" {
+    try cockpit.catalog_tests.reconnectProvenance();
+}
+
+test "navigation catalog pending bridge receipt survives other requests" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try cockpit.catalog_tests.prepareAvailable();
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    var buffer: [10 + commands.catalog.max_len]u8 = undefined;
+    const request = cockpit.catalog_tests.availableRequest(engine, &buffer);
+    var service: Bridge = .{ .engine = engine };
+    Bridge.request(&service, commands.request_name, 9001, request);
+    Bridge.request(&service, protocol.snapshot_request, 9002, "");
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 9003, "invalid");
+    const receipt = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u64, 9001), receipt.key);
+    try std.testing.expectEqual(@as(u8, 3), receipt.bytes[1]);
+    try std.testing.expectEqual(@as(u8, 0), receipt.bytes[2]);
+    try std.testing.expectEqual(@as(u64, 0xfedc_ba98_7654_3210), std.mem.readInt(u64, receipt.bytes[3..11], .little));
+    try std.testing.expectEqual(@as(u64, 9002), Bridge.poll(&service).?.key);
+    try std.testing.expectEqual(@as(u64, 9003), Bridge.poll(&service).?.key);
 }
 
 test "navigation snapshots preserve full window inventory within the host payload limit" {
