@@ -1983,6 +1983,10 @@ a server that does not advertise the `whoami` feature, the verb exits `1` with
 the server answers without a well-formed record, and with the shared
 transport codes (§5.3) when it cannot reach the server.
 
+The MCP adapter exposes the same document as the read-only `phux_whoami` tool
+([`mcp.md`](./mcp.md) §3.36), which executes this verb and returns its record
+unchanged. That tool takes `socket` only, not `--remote`.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop

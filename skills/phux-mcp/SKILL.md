@@ -85,7 +85,10 @@ branch on `running` and on `ok` plus each check's `status`, never on whether
 the call succeeded. `phux_doctor` check names repeat — read every
 `server-health` row, because a crash-loop, a legacy supervisor unit, and
 version skew co-occur. A null `pid` on a running server is a peer-credential
-gap, not a stopped server. Relay a `hint`; do not run it.
+gap, not a stopped server. Relay a `hint`; do not run it. `phux_whoami`
+reports who this connection is to that server (principal, credential id, auth
+route, peer uid, serving user, host). It only reads, and a server too old to
+report identity is refused with `server_too_old` rather than guessed.
 
 **Create and act:** `phux_new`, `phux_launch`, `phux_spawn`, `phux_run`,
 `phux_send_keys`, `phux_paste`, `phux_ask`, `phux_signal`, `phux_tag`,

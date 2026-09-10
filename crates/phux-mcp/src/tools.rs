@@ -987,6 +987,7 @@ mod tests {
                 "phux_agent_log",
                 "phux_status",
                 "phux_doctor",
+                "phux_whoami",
             ]
         );
         for tool in arr {

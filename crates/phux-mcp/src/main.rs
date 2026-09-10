@@ -615,7 +615,7 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 38);
+        assert_eq!(tools.len(), 39);
         assert!(tools.iter().any(|t| t["name"] == json!("phux_ls")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_paste")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_new")));
@@ -671,6 +671,7 @@ mod tests {
         // ask whether it is healthy, without shelling out past MCP.
         assert!(tools.iter().any(|t| t["name"] == json!("phux_status")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_doctor")));
+        assert!(tools.iter().any(|t| t["name"] == json!("phux_whoami")));
     }
 
     #[tokio::test]

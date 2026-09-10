@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-14
+last-reviewed: 2026-09-10
 ---
 
 # The phux MCP adapter
@@ -626,7 +626,8 @@ When a step in that sequence fails in a way the tool's own result does not
 explain — a connection that will not open, a pane that never appears, a
 server that answers one call and not the next — `phux_status` and
 `phux_doctor` are the reads that answer why, and neither of them changes
-anything.
+anything. When the question is which credential or user a call ran as,
+`phux_whoami` (§3.36) answers it, also without changing anything.
 
 ---
 
@@ -651,6 +652,33 @@ never a shell; `additionalProperties: false`; canonical CLI JSON back).
 The adapter adds no producer of its own: an MCP host that wants a session
 log of its agent opens the session and emits into it through these tools,
 exactly as the Claude shim does through the CLI.
+
+### 3.36 `phux_whoami`
+
+Reports who this connection is to the server behind one socket, as that
+server sees it. This executes `phux whoami --json` and returns its document
+unchanged, so the tool and the command read the same `phux.whoami/v1` key
+([L3.md](../spec/L3.md) §3.9) through the same code path.
+
+| Param | Type | Required | Meaning |
+|---|---|---|---|
+| `socket` | string | no | Override the UDS path of the server to ask (see §2). |
+
+Result: the `WhoamiJson` record of [`agents.md`](./agents.md) §4.20:
+`{ "schema_version": 1, "principal", "credential_id", "auth_route",
+"peer_uid", "serving_user": { "uid", "name" }, "host", "server_version" }`.
+Fields a newer server adds pass through; ignore the ones you do not know.
+
+The tool is read-only and idempotent: it reads one server-owned key, never
+changes identity, and never starts a server. It takes no `remote` argument.
+`phux whoami --remote HOST` stays a CLI verb, like every other remote dial.
+
+**An older server is refused, not guessed.** Against a server that does not
+advertise the `whoami` feature, the CLI exits `1` before reading the key and
+the tool returns `isError: true` carrying the CLI's `server_too_old` error
+document, including its remedy. Unlike `phux_status` and `phux_doctor`, no
+answer rides out under a non-zero exit here. Every failure, including
+`transport` for a malformed record or an unreachable server, is a tool error.
 
 ## 4. A worked `tools/call` example
 
