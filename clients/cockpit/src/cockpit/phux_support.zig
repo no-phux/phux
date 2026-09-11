@@ -98,6 +98,7 @@ const DisabledPhuxProvider = struct {
     };
     const SyncDelta = struct {
         metadata_changed: bool = false,
+        directory_changed: bool = false,
         ready_published: bool = false,
         generation_changed: bool = false,
         detached: bool = false,

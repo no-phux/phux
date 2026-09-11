@@ -380,7 +380,9 @@ pub const Engine = struct {
         if (delta.detached) return self.failPhux(fx);
         const changed = self.applyReadiness(delta);
         remote_commands.resumeReady(self.model);
-        return self.drainRemoteNotices(fx) or delta.generation_changed or changed;
+        // A settled go-to-directory listing moves nothing in the snapshot,
+        // but the picker reads it on the invalidation this announces.
+        return self.drainRemoteNotices(fx) or delta.generation_changed or delta.directory_changed or changed;
     }
 
     fn drainRemoteNotices(self: *Engine, fx: anytype) bool {
@@ -1345,6 +1347,19 @@ pub const Engine = struct {
             return true;
         }
         return lifecycle.closePane(self.model, fx, ref, true);
+    }
+
+    /// Go to Directory: a new durable tab whose shell starts in `cwd` on the
+    /// connected coordinator's host, placed like New Tab.
+    pub fn openTabAt(self: *Engine, cwd: []const u8) bool {
+        if (self.model.phux() == null) return false;
+        self.supersedeSelection();
+        self.creation.requestIn(self.model, .tab, cwd) catch {
+            self.model.terminal_limit_refused = true;
+            return false;
+        };
+        self.model.terminal_limit_refused = false;
+        return true;
     }
 
     fn createDurable(self: *Engine, kind: durable_creation.Kind) bool {

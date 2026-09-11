@@ -327,8 +327,34 @@ pub const PhuxProvider = struct {
     pub fn requestSpawn(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport) !u32 {
         return self.host.requestSpawn(owner_ref, viewport);
     }
+    /// A spawn whose shell starts in `cwd` on the serving host.
+    pub fn requestSpawnIn(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
+        return self.host.requestSpawnIn(owner_ref, viewport, cwd);
+    }
     pub fn requestAttach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
         return self.host.requestAttach(terminal_ref);
+    }
+
+    pub const DirectoryInfo = host_mod.Host.DirectoryInfo;
+    pub const DirectoryEntry = host_mod.Host.DirectoryEntry;
+
+    /// Go to Directory (docs/spec/L3.md section 4): whether the connected
+    /// server lists directories, one request at a time, and its retained
+    /// answer. Whichever coordinator this provider dials answers, so a
+    /// registered remote host lists its own filesystem.
+    pub fn directorySupported(self: *const PhuxProvider) bool {
+        return self.host.directoryInfo().supported;
+    }
+    pub fn requestDirectory(self: *PhuxProvider, path: []const u8) !u32 {
+        return self.host.requestDirectory(path);
+    }
+    /// Borrowed until the next mutable provider call.
+    pub fn directoryInfo(self: *const PhuxProvider) DirectoryInfo {
+        return self.host.directoryInfo();
+    }
+    /// Borrowed until the next mutable provider call.
+    pub fn directoryEntry(self: *const PhuxProvider, index: usize) ?DirectoryEntry {
+        return self.host.directoryEntry(index);
     }
 
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {

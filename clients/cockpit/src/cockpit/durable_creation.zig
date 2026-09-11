@@ -72,11 +72,19 @@ pub const Creation = struct {
     }
 
     pub fn request(self: *Creation, model: *Model, kind: Kind) !void {
-        return self.spawn(model, kind, null);
+        return self.spawn(model, kind, null, "");
+    }
+
+    /// A new tab or window whose shell starts in `cwd` on the connected
+    /// coordinator's host (Go to Directory). Spawned without an owner: the
+    /// directory came from the serving server's own filesystem, so the
+    /// focused terminal's satellite route must not carry it to another host.
+    pub fn requestIn(self: *Creation, model: *Model, kind: Kind, cwd: []const u8) !void {
+        return self.spawn(model, kind, null, cwd);
     }
 
     pub fn requestCorrelated(self: *Creation, model: *Model, kind: Kind, command_id: u64) !void {
-        return self.spawn(model, kind, command_id);
+        return self.spawn(model, kind, command_id, "");
     }
 
     /// Reserve command/result ownership before selectSession or leaveSession.
@@ -183,7 +191,7 @@ pub const Creation = struct {
         return changed;
     }
 
-    fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64) !void {
+    fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64, cwd: []const u8) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
@@ -191,7 +199,7 @@ pub const Creation = struct {
         try self.requireUniqueCommand(command_id);
         if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
         const slot = try self.vacant();
-        const owner = try spawnOwner(model, model.focusedTerminalRef());
+        const owner = if (cwd.len == 0) try spawnOwner(model, model.focusedTerminalRef()) else null;
         var entry = try prepareDestination(model, kind, self.reservedAtDestination(model, kind), true);
         entry.epoch = remote.connectionEpoch();
         entry.command_id = command_id;
@@ -199,7 +207,7 @@ pub const Creation = struct {
         errdefer slot.* = null;
         try allocateDestination(model, entry);
         errdefer retireEmptyDestination(model, entry);
-        slot.*.?.request = try remote.requestSpawn(owner, spawnViewport(remote, owner));
+        slot.*.?.request = try remote.requestSpawnIn(owner, spawnViewport(remote, owner), cwd);
         slot.*.?.operation_request = slot.*.?.request;
         if (kind == .window) model.active_window = entry.window;
     }

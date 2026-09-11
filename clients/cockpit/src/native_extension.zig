@@ -180,6 +180,13 @@ const Bridge = struct {
     remote_ok: bool = false,
     remote_len: usize = 0,
     remote_buffer: [cockpit.remote_hosts.max_bytes]u8 = undefined,
+    /// Go to Directory (`cockpit.directory`): applied synchronously, answered
+    /// through its own completion slot after every other one.
+    directory_pending: bool = false,
+    directory_key: u64 = 0,
+    directory_ok: bool = false,
+    directory_len: usize = 0,
+    directory_buffer: [cockpit.directory_picker.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -227,7 +234,7 @@ const Bridge = struct {
     fn interactionMode(model: *const core.Model) InteractionMode {
         // Connect to Host takes text like the switcher; neither may type
         // into a terminal behind it.
-        return if (model.paletteOpen or model.hostOpen) .palette else if (model.settingsOpen) .settings else .terminal;
+        return if (model.paletteOpen or model.hostOpen or model.dirOpen) .palette else if (model.settingsOpen) .settings else .terminal;
     }
 
     /// Host sends are intentionally suppressed by the SDK during replay.
@@ -280,6 +287,10 @@ const Bridge = struct {
         if (std.mem.eql(u8, name, cockpit.remote_hosts.request_name)) {
             const remote_bridge: *Bridge = @ptrCast(@alignCast(context));
             return remote_bridge.requestRemote(key, payload);
+        }
+        if (std.mem.eql(u8, name, cockpit.directory_picker.request_name)) {
+            const directory_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return directory_bridge.requestDirectory(key, payload);
         }
         if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
             const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
@@ -346,6 +357,26 @@ const Bridge = struct {
         // it would buy a snapshot whose arrival asks for status again.
         const decoded = cockpit.remote_hosts.decode(payload) catch return;
         if (decoded.kind != .status) self.announce(engine);
+    }
+
+    fn requestDirectory(self: *Bridge, key: u64, payload: []const u8) void {
+        self.directory_pending = true;
+        self.directory_key = key;
+        self.directory_ok = false;
+        const engine = self.engine orelse {
+            self.directory_len = copyInto(&self.directory_buffer, "engine unavailable");
+            return;
+        };
+        const bytes = cockpit.directory_picker.handle(engine, payload, &self.directory_buffer) catch |err| {
+            self.directory_len = copyInto(&self.directory_buffer, @errorName(err));
+            return;
+        };
+        self.directory_ok = true;
+        self.directory_len = bytes.len;
+        // Open Here placed a new tab; listing and paging move nothing the
+        // snapshot shows, and the listing's arrival announces by itself.
+        const decoded = cockpit.directory_picker.decode(payload) catch return;
+        if (decoded.kind == .here) self.announce(engine);
     }
 
     fn requestTabCommand(self: *Bridge, key: u64, payload: []const u8) void {
@@ -437,6 +468,7 @@ const Bridge = struct {
         if (self.result_pending and self.result_key == key) self.result_pending = false;
         if (self.appearance_pending and self.appearance_key == key) self.appearance_pending = false;
         if (self.remote_pending and self.remote_key == key) self.remote_pending = false;
+        if (self.directory_pending and self.directory_key == key) self.directory_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
@@ -467,14 +499,22 @@ const Bridge = struct {
     /// Last, so every pre-existing completion keeps its delivery order: the
     /// core's remote-status request is additive to the seam, never ahead of it.
     fn pollRemote(self: *Bridge) ?native_sdk.HostCallCompletion {
-        if (!self.remote_pending) return null;
+        if (!self.remote_pending) return self.pollDirectory();
         self.remote_pending = false;
         return .{ .key = self.remote_key, .ok = self.remote_ok, .bytes = self.remote_buffer[0..self.remote_len] };
     }
 
+    /// Last of all, so the go-to-directory slot is additive to the seam and
+    /// never reorders an existing completion.
+    fn pollDirectory(self: *Bridge) ?native_sdk.HostCallCompletion {
+        if (!self.directory_pending) return null;
+        self.directory_pending = false;
+        return .{ .key = self.directory_key, .ok = self.directory_ok, .bytes = self.directory_buffer[0..self.directory_len] };
+    }
+
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending or self.directory_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -746,6 +786,7 @@ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("terminal.find");
     if (!control and !alt and !shift and std.mem.eql(u8, key, ",")) return core.commandMsg("settings.open");
     if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "p")) return core.commandMsg("tabs.palette");
+    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "j")) return core.commandMsg("directory.open");
     if (control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("window.fullscreen");
     return null;
 }

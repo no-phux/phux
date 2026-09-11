@@ -291,6 +291,10 @@ pub(crate) struct Client {
     pub selected_profile: Option<phux_protocol::BootstrapProfile>,
     pub attached: bool,
     pub terminal_reply: bool,
+    /// `HELLO_OK` advertised `LIST_DIRECTORY` (`docs/spec/L3.md` section 4).
+    pub list_directory: bool,
+    /// The one retained go-to-directory listing.
+    pub directory: crate::directory::DirectoryState,
     pub detached: bool,
 }
 
@@ -344,6 +348,8 @@ impl Client {
             selected_profile: None,
             attached: false,
             terminal_reply: false,
+            list_directory: false,
+            directory: crate::directory::DirectoryState::default(),
             detached: false,
         }
     }
@@ -457,6 +463,7 @@ impl Client {
         self.reset_gestures();
         self.operations.disconnect();
         self.workspace.disconnect();
+        self.directory.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();

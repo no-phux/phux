@@ -297,6 +297,7 @@ attribute and reports that fact in its caveat.
 | `cmd+K` | Clear the screen and scrollback |
 | `cmd+shift+P` | Go to terminal — the summoned switcher (type to filter, arrows or `ctrl+N`/`ctrl+P` to move, `enter` to go, `esc` to dismiss) |
 | `cmd+shift+O` | Connect to Host — attach a host registered with `phux host add` or `phux host enroll` (`enter` to connect, Use this Mac to return) |
+| `cmd+shift+J` | Go to Directory — browse the connected host's directories and open a new tab in one (type to filter, `enter` to descend or open, `esc` to cancel); see [Go to Directory](docs/DIRECTORY_PICKER.md) |
 | `cmd+,` | Settings — themes with a live preview and a WCAG contrast readout (arrows or `ctrl+N`/`ctrl+P` to preview, `return` to save, `esc` to cancel) |
 | `cmd+shift+B` | Show the Web surface |
 | `cmd+shift+space` | Enter or leave keyboard selection mode |

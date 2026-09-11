@@ -212,7 +212,23 @@ impl Client {
             } if id == SessionId::new(1)));
             self.feed(attached);
             assert_eq!(phux_client_state(self.0), PhuxClientState::Attached);
-            assert_eq!(phux_client_outgoing_count(self.0), 0);
+            // ATTACH_READY starts the shared workspace's automatic read:
+            // exactly one GET_METADATA and one GET_STATE, nothing else.
+            assert_eq!(phux_client_outgoing_count(self.0), 2);
+            for index in 0..2 {
+                let mut bytes = PhuxBytes::default();
+                assert_eq!(
+                    phux_client_outgoing_get(self.0, index, &raw mut bytes),
+                    PhuxClientResult::Ok
+                );
+                let (frame, _) = FrameKind::decode(slice::from_raw_parts(bytes.data, bytes.len))
+                    .expect("FFI emits a canonical frame");
+                assert!(matches!(
+                    frame,
+                    FrameKind::GetMetadata { .. } | FrameKind::Command { .. }
+                ));
+            }
+            assert_eq!(phux_client_outgoing_clear(self.0), PhuxClientResult::Ok);
         }
     }
 
@@ -304,6 +320,113 @@ impl Client {
     }
 }
 
+/// The same handshake, from a server that also answers `LIST_DIRECTORY`.
+fn hello_with_directory() -> FrameKind {
+    let FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_id,
+        selected_profile,
+        bootstrap_limits,
+        ..
+    } = hello()
+    else {
+        unreachable!("hello() builds HELLO_OK");
+    };
+    FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_caps: ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
+            ServerFeature::TerminalReply,
+            ServerFeature::ListDirectory,
+        ])),
+        server_id,
+        selected_profile,
+        bootstrap_limits,
+    }
+}
+
+/// The reply to the first host request (ID 1) after attach: `/work`, with a
+/// hidden directory, a plain one, and a symlink to a directory.
+fn directory_listing() -> FrameKind {
+    use phux_protocol::wire::frame::{DirectoryEntry, DirectoryListing};
+    let entry = |name: &str, is_symlink| DirectoryEntry {
+        name: name.to_owned(),
+        is_symlink,
+    };
+    FrameKind::DirectoryListing {
+        request_id: 1,
+        result: Ok(DirectoryListing {
+            path: "/work".to_owned(),
+            parent: Some("/".to_owned()),
+            entries: vec![
+                entry(".config", false),
+                entry("cockpit", false),
+                entry("phux", true),
+            ],
+            truncated: false,
+        }),
+    }
+}
+
+/// Request `/work` through the C ABI and read the fixture reply back.
+fn verify_directory(hello: &[u8], attached: &[u8], listing: &[u8]) {
+    use phux_client_ffi::{
+        PhuxDirectoryEntry, PhuxDirectoryListingInfo, phux_client_directory_entry_get,
+        phux_client_directory_info, phux_client_list_directory,
+    };
+    let client = Client::new();
+    client.negotiate_and_attach(hello, attached);
+    // SAFETY: live same-thread handle, valid spans, and writable outputs; the
+    // borrowed name is copied before any further mutable call.
+    unsafe {
+        assert_eq!(
+            phux_client_list_directory(client.0, 1, span(b"/work")),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(),
+            FrameKind::ListDirectory { request_id: 1, ref path, host: None } if path == "/work"));
+        client.feed(listing);
+        let mut info = PhuxDirectoryListingInfo {
+            size: size_of::<PhuxDirectoryListingInfo>(),
+            version: ABI_VERSION,
+            supported: false,
+            truncated: false,
+            has_parent: false,
+            request_id: 0,
+            status: 0,
+            error_code: 0,
+            entry_count: 0,
+            path: PhuxBytes::default(),
+            parent: PhuxBytes::default(),
+            message: PhuxBytes::default(),
+        };
+        assert_eq!(
+            phux_client_directory_info(client.0, &raw mut info),
+            PhuxClientResult::Ok
+        );
+        assert!(info.supported && info.has_parent);
+        assert_eq!((info.request_id, info.status, info.entry_count), (1, 2, 3));
+        let mut entry = PhuxDirectoryEntry {
+            size: size_of::<PhuxDirectoryEntry>(),
+            version: ABI_VERSION,
+            flags: 0,
+            name: PhuxBytes::default(),
+        };
+        assert_eq!(
+            phux_client_directory_entry_get(client.0, 2, &raw mut entry),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            slice::from_raw_parts(entry.name.data, entry.name.len),
+            b"phux"
+        );
+        assert_eq!(entry.flags, 1);
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os().nth(1).map_or_else(
         || {
@@ -322,13 +445,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     client.verify_grid(&terminal);
     client.verify_input(&terminal);
+    let hello_directory = encode(&[hello_with_directory()]);
+    let listing = encode(&[directory_listing()]);
+    verify_directory(&hello_directory, &attached, &listing);
     std::fs::create_dir_all(&output)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
+    std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
+    std::fs::write(output.join("directory_listing.bin"), &listing)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize; wrote hello.bin ({} bytes), attached.bin ({} bytes) to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize and directory listing; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), directory_listing.bin ({} bytes) to {}",
         hello.len(),
         attached.len(),
+        hello_directory.len(),
+        listing.len(),
         output.display()
     );
     Ok(())

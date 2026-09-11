@@ -577,4 +577,5 @@ test {
     _ = @import("tests/agent_session_rows_tests.zig");
     _ = @import("cockpit/native/remote_hosts.zig");
     _ = @import("tests/remote_host_tests.zig");
+    _ = @import("tests/directory_picker_tests.zig");
 }

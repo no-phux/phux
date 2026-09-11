@@ -6,6 +6,7 @@
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 mod client;
+mod directory;
 mod error;
 mod grid_metadata;
 mod operations;
@@ -34,6 +35,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
+pub use directory::*;
 pub use grid_metadata::*;
 pub use operations::*;
 pub use pointer::{
@@ -677,6 +679,9 @@ fn dispatch_frame(
     frame: FrameKind,
     notify_attached: &mut bool,
 ) -> Result<(), BridgeError> {
+    let Some(frame) = directory::dispatch(client, frame) else {
+        return Ok(());
+    };
     let Some(frame) = workspace::dispatch(client, frame) else {
         return Ok(());
     };
@@ -931,6 +936,9 @@ fn apply_hello_ok(
     client.terminal_reply = server_caps
         .features
         .contains(phux_protocol::ServerFeature::TerminalReply);
+    client.list_directory = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::ListDirectory);
     client.protocol_ready = true;
     Ok(())
 }

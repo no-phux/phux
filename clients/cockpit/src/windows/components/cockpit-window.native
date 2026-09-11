@@ -146,6 +146,44 @@
   </stack>
 </template>
 
+<!-- Go to Directory, presented by whichever window invoked it. The listing
+     is the connected coordinator's, so a remote host lists its own
+     directories. Rows name listing indices; the engine composes paths. -->
+<template name="cockpit-directory" args="diropen">
+  <stack>
+    <if test="{diropen}">
+      <row main="center" cross="start" padding="16">
+        <panel grow="1" max-width="640" padding="16">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <icon name="folder" width="16" height="16" />
+              <text grow="1">Go to Directory</text>
+              <button size="sm" variant="ghost" icon="x" label="Close Go to Directory" on-press="dir_close" />
+            </row>
+            <text foreground="text_muted" overflow="ellipsis">{dirPath}</text>
+            <input text="{dirQuery}" placeholder="Filter directories" autofocus="true" on-input="dir_edit" on-submit="dir_submit" label="Filter directories" />
+            <list gap="0" label="Directories">
+              <for each="dirRows" key="id" as="row">
+                <list-item height="40" label="{row.label}" selected="{row.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="dir_pick:{row.index}">
+                  <text overflow="ellipsis">{row.label}</text>
+                </list-item>
+              </for>
+            </list>
+            <text foreground="text_muted">{dirNotice}</text>
+            <row gap="8" cross="center">
+              <if test="{dirPrevious}"><button size="sm" variant="ghost" on-press="dir_previous">Previous</button></if>
+              <if test="{dirNext}"><button size="sm" variant="ghost" on-press="dir_next">Next</button></if>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="dir_close">Cancel</button>
+              <button size="sm" on-press="dir_here">Open Here</button>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 <template name="cockpit-settings" args="settingsopen themes configexists confignotice">
   <stack>
     <if test="{settingsopen}">

@@ -72,8 +72,13 @@ pub fn stageFixture(bridge: anytype, name: []const u8) !void {
 }
 
 pub fn attachHost(host: anytype) !void {
+    return attachHostWith(host, "hello.bin");
+}
+
+/// `hello_directory.bin` also advertises LIST_DIRECTORY; `hello.bin` does not.
+pub fn attachHostWith(host: anytype, hello: []const u8) !void {
     try host.start("operations-test");
-    try stageFixture(host.bridge, "hello.bin");
+    try stageFixture(host.bridge, hello);
     _ = try host.drainReadiness();
     try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
     try stageFixture(host.bridge, "attached.bin");

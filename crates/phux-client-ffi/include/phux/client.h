@@ -990,6 +990,85 @@ PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
 PhuxClientResult phux_client_search(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxBytes query_utf8, bool case_sensitive, const PhuxSearchResult **out_results, size_t *out_count);
 PhuxClientResult phux_client_search_results_release(PhuxClient *client);
 
+/* ------------------------------------------------- host directory listing
+ *
+ * LIST_DIRECTORY / DIRECTORY_LISTING (docs/spec/L3.md section 4): the child
+ * directories of one path on the serving server's host, for a go-to-directory
+ * picker. Additive to ABI version 2; no existing declaration changes. The
+ * answer comes from whichever server this client is connected to, local or
+ * a remote host reached through a tunnel.
+ *
+ * Requires an attached client whose HELLO_OK advertised LIST_DIRECTORY
+ * (0x00008000); otherwise PHUX_CLIENT_INVALID_STATE and nothing is queued,
+ * because an older server drops the frame and a reply would never come.
+ * request_id shares the strictly increasing host request space with spawn,
+ * subscribe and workspace refresh/mutation. path is UTF-8 without NUL, at
+ * most 4096 bytes: empty or "~" for the serving user's home, "~/rest", or an
+ * absolute path; the server normalizes it lexically and follows no symlinks.
+ *
+ * The client retains exactly one listing. A new request replaces it, and a
+ * reply answering any request but the latest is dropped silently, so a
+ * picker that was cancelled or moved on never sees a late answer. A
+ * correlated ERROR settles the listing as REFUSED/OTHER. Disconnecting while
+ * PENDING yields UNKNOWN_OUTCOME. The frame itself is read by the embedder's
+ * ordinary phux_client_feed_frame loop; poll info after feeding. */
+typedef enum PhuxDirectoryStatus {
+    PHUX_DIRECTORY_NONE = 0,            /* nothing requested yet */
+    PHUX_DIRECTORY_PENDING = 1,         /* queued or on the wire */
+    PHUX_DIRECTORY_LISTED = 2,          /* entries are valid */
+    PHUX_DIRECTORY_REFUSED = 3,         /* error_code and message say why */
+    PHUX_DIRECTORY_UNKNOWN_OUTCOME = 4  /* connection ended first */
+} PhuxDirectoryStatus;
+
+/* Wire DirectoryErrorCode; an unallocated wire value reads as OTHER. */
+typedef enum PhuxDirectoryError {
+    PHUX_DIRECTORY_NOT_FOUND = 0,
+    PHUX_DIRECTORY_PERMISSION_DENIED = 1,
+    PHUX_DIRECTORY_NOT_A_DIRECTORY = 2,
+    PHUX_DIRECTORY_OTHER = 3
+} PhuxDirectoryError;
+
+/* Entry flag bit 0: a symbolic link resolving to a directory. Other bits are
+ * reserved and must be ignored. */
+#define PHUX_DIRECTORY_ENTRY_SYMLINK 0x1u
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * supported reports the negotiated feature bit. For LISTED, path is the
+ * resolved absolute path, parent its lexical parent (has_parent false at the
+ * root), entry_count at most 1024, sorted by name in ascending byte order,
+ * and truncated set when the server cut the listing short. For REFUSED, path
+ * is the path the server attempted and message is diagnostic text that must
+ * not be parsed. For PENDING, path is the requested path. Spans are borrowed
+ * until the next mutable client call. */
+typedef struct PhuxDirectoryListingInfo {
+    size_t size;
+    uint32_t version;
+    bool supported;
+    bool truncated;
+    bool has_parent;
+    uint32_t request_id;
+    uint32_t status;
+    uint32_t error_code;
+    uint32_t entry_count;
+    PhuxBytes path;
+    PhuxBytes parent;
+    PhuxBytes message;
+} PhuxDirectoryListingInfo;
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * name is one path component, borrowed until the next mutable client call. */
+typedef struct PhuxDirectoryEntry {
+    size_t size;
+    uint32_t version;
+    uint32_t flags;
+    PhuxBytes name;
+} PhuxDirectoryEntry;
+
+PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request_id, PhuxBytes path);
+PhuxClientResult phux_client_directory_info(const PhuxClient *client, PhuxDirectoryListingInfo *out_info);
+/** PHUX_CLIENT_INVALID_ARGUMENT for an index at or past entry_count. */
+PhuxClientResult phux_client_directory_entry_get(const PhuxClient *client, size_t index, PhuxDirectoryEntry *out_entry);
+
 /* ---------------------------------------------------------- remote hosts
  *
  * Reach a remote phux server the way `phux attach --remote HOST` does

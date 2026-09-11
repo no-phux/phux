@@ -469,6 +469,9 @@ rather than a layer with its own internal architecture worth diagramming:
   embedder half of `phux --remote`: it resolves a host in the CLI's
   `[[remote]]` registry and relays frames between an embedder-owned
   Unix-domain socket pair and a QUIC/WSS dial (`phux_remote_tunnel_*`).
+  Its `directory` module carries the `LIST_DIRECTORY` host query for a
+  go-to-directory picker, retaining one correlated listing per client
+  (`phux_client_list_directory`, `phux_client_directory_*`).
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

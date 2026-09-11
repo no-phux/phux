@@ -16,6 +16,23 @@ import {
   remoteStatusLine,
 } from "./remote-hosts.ts";
 import {
+  DIR_KIND_OPEN,
+  DIR_KIND_PAGE,
+  DIR_KIND_DESCEND,
+  DIR_KIND_PARENT,
+  DIR_KIND_HERE,
+  DIR_STATUS_PENDING,
+  DIR_STATUS_LISTED,
+  DIR_HERE,
+  DIR_UP,
+  NO_DIRECTORY_REQUEST,
+  type DirectoryPage,
+  directoryRequest,
+  directoryPage,
+  directoryRowLabel,
+  directoryNotice,
+} from "./directory.ts";
+import {
   ENGINE_CHANNEL_KEY,
   type WireU64,
   type SnapshotTab,
@@ -172,6 +189,32 @@ export interface Model {
   readonly window2HostOpen: boolean;
   readonly window3HostOpen: boolean;
   readonly window4HostOpen: boolean;
+  /// Go to Directory (directory.ts): an app-wide modal in the invoking window
+  /// like Connect to Host. `dirRequest` is the listing the rows came from,
+  /// as four opaque bytes; `dirStarting` accepts the next listing's new ID;
+  /// `dirAwaiting` polls on each invalidation until that listing settles;
+  /// `dirClosing` closes the picker once Open Here is accepted.
+  readonly dirOpen: boolean;
+  readonly mainDirOpen: boolean;
+  readonly window1DirOpen: boolean;
+  readonly window2DirOpen: boolean;
+  readonly window3DirOpen: boolean;
+  readonly window4DirOpen: boolean;
+  readonly dirQuery: Uint8Array;
+  readonly dirAnchor: number;
+  readonly dirFocus: number;
+  readonly dirRequest: Uint8Array;
+  readonly dirStarting: boolean;
+  readonly dirAwaiting: boolean;
+  readonly dirClosing: boolean;
+  readonly dirBusy: boolean;
+  readonly dirRows: readonly DirRow[];
+  readonly dirCursor: number;
+  readonly dirOffset: number;
+  readonly dirPrevious: boolean;
+  readonly dirNext: boolean;
+  readonly dirPath: Uint8Array;
+  readonly dirNotice: Uint8Array;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -279,6 +322,16 @@ export type Msg =
   | { readonly kind: "host_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "host_submit" }
   | { readonly kind: "host_local" }
+  | { readonly kind: "dir_open" }
+  | { readonly kind: "dir_close" }
+  | { readonly kind: "dir_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "dir_submit" }
+  | { readonly kind: "dir_pick"; readonly index: number }
+  | { readonly kind: "dir_here" }
+  | { readonly kind: "dir_previous" }
+  | { readonly kind: "dir_next" }
+  | { readonly kind: "directory_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "directory_failed"; readonly error: Uint8Array }
   | { readonly kind: "remote_loaded"; readonly body: Uint8Array }
   | { readonly kind: "remote_failed"; readonly error: Uint8Array }
   | { readonly kind: "settings_open" }
@@ -358,6 +411,19 @@ export const viewUnbound = [
   "lastConnection",
   "remote_loaded",
   "remote_failed",
+  "dirOpen",
+  "dirAnchor",
+  "dirFocus",
+  "dirRequest",
+  "dirStarting",
+  "dirAwaiting",
+  "dirClosing",
+  "dirBusy",
+  "dirCursor",
+  "dirOffset",
+  "dir_open",
+  "directory_loaded",
+  "directory_failed",
 ] as const;
 
 const ZERO_U64: WireU64 = { hi: 0, lo: 0 };
@@ -573,6 +639,223 @@ function changeNavigation(model: Model, msg: Msg): Model {
   }
 }
 
+/// One drawn row of Go to Directory: a listing index (or a synthetic role,
+/// directory.ts DIR_HERE / DIR_UP) and what it says. A pick echoes only the
+/// index; the engine composes the path from the listing it names.
+export interface DirRow {
+  readonly id: number;
+  readonly index: number;
+  readonly label: Uint8Array;
+  readonly highlighted: boolean;
+}
+
+const NO_DIR_ROWS: readonly DirRow[] = [];
+
+/// What one Go to Directory message leaves: the model, the request to send
+/// (empty for none), and whether the modal slot changed hands. `update`
+/// builds the effects inline, as the compiled subset requires.
+interface DirectoryDecision {
+  readonly model: Model;
+  readonly request: Uint8Array;
+  readonly committed: boolean;
+}
+
+function directoryDecision(model: Model, request: Uint8Array, committed: boolean): DirectoryDecision {
+  return { model, request, committed };
+}
+
+function unchangedDirectory(model: Model): DirectoryDecision {
+  return directoryDecision(model, NO_BYTES, false);
+}
+
+function directoryState(model: Model): TextEditState {
+  return {
+    text: model.dirQuery,
+    selection: { anchor: model.dirAnchor, focus: model.dirFocus },
+    composition: null,
+  };
+}
+
+function pageDirectory(model: Model, offset: number): DirectoryDecision {
+  const at = offset >= 0 && offset <= 65535 ? Math.trunc(offset) : 0;
+  const next = { ...model, dirOffset: at };
+  return directoryDecision(next, directoryRequest(DIR_KIND_PAGE, next.dirRequest, at, 0, next.dirQuery), false);
+}
+
+/// Go to Directory takes the one modal slot: the switcher, Connect to Host
+/// and Settings give way to it as they do to each other.
+function openDirectory(model: Model): DirectoryDecision {
+  if (model.dirOpen) return unchangedDirectory(model);
+  const base = model.paletteOpen ? closePalette(model) : model;
+  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false,
+    dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
+    dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
+    dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing...") });
+  return directoryDecision(next, directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), true);
+}
+
+function closeDirectory(model: Model): DirectoryDecision {
+  return directoryDecision(scopeOverlays({ ...model, dirOpen: false, dirQuery: NO_BYTES, dirRows: NO_DIR_ROWS,
+    dirBusy: false, dirAwaiting: false, dirStarting: false, dirClosing: false }), NO_BYTES, true);
+}
+
+/// Another modal opening while the picker is up takes its slot.
+function displaceDirectory(model: Model, msg: Msg): Model {
+  if (!model.dirOpen) return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open") return model;
+  return closeDirectory(model).model;
+}
+
+/// The connection under an open picker moved, so its rows named a listing on
+/// the old connection. Withdraw them; once connected again, list afresh.
+function relistDirectory(model: Model, connected: boolean): Model {
+  return { ...model, dirRows: NO_DIR_ROWS, dirPrevious: false, dirNext: false, dirAwaiting: false, dirClosing: false,
+    dirStarting: connected, dirBusy: connected, dirRequest: NO_DIRECTORY_REQUEST, dirQuery: NO_BYTES, dirAnchor: 0,
+    dirFocus: 0, dirOffset: 0, dirCursor: 0,
+    dirNotice: connected ? asciiBytes("Reconnected. Listing again...") : asciiBytes("Waiting for the connection...") };
+}
+
+function directoryRows(page: DirectoryPage): readonly DirRow[] {
+  const rows: DirRow[] = [];
+  for (const row of page.rows) {
+    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
+    rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false });
+  }
+  return rows.length === 0 ? NO_DIR_ROWS : rows;
+}
+
+function highlightDirectory(model: Model, next: number): Model {
+  if (next < 0 || next >= model.dirRows.length) return model;
+  const cursor = next >= 0 && next <= 3 ? Math.trunc(next) : 0;
+  const rows: DirRow[] = [];
+  for (let i = 0; i < model.dirRows.length; i += 1) {
+    const row = model.dirRows[i];
+    rows.push({ ...row, highlighted: i === cursor });
+  }
+  return { ...model, dirCursor: cursor, dirRows: rows };
+}
+
+function showDirectory(model: Model, page: DirectoryPage): Model {
+  const total = page.total >= 0 && page.total <= 65535 ? Math.trunc(page.total) : 0;
+  const rows = directoryRows(page);
+  const shown: Model = { ...model, dirRequest: page.request, dirStarting: false, dirBusy: false,
+    dirAwaiting: page.status === DIR_STATUS_PENDING, dirRows: rows, dirCursor: 0,
+    dirPath: page.path.length > 0 ? page.path : model.dirPath,
+    dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total, dirNotice: directoryNotice(page) };
+  return highlightDirectory(shown, Math.min(model.dirCursor, rows.length - 1));
+}
+
+/// A reply counts only while the picker is open, for the listing it shows
+/// (or the one it has just started), and for the page it last asked for. A
+/// reply that arrives after Escape, or for a directory already left, is
+/// therefore dropped.
+function receiveDirectory(model: Model, body: Uint8Array): DirectoryDecision {
+  if (!model.dirOpen) return unchangedDirectory(model);
+  const page = directoryPage(body);
+  if (page === null) {
+    return unchangedDirectory({ ...model, dirBusy: false, dirClosing: false,
+      dirNotice: asciiBytes("Directory listing unavailable. Try again.") });
+  }
+  if (!model.dirStarting && !sameBytes(page.request, model.dirRequest)) return unchangedDirectory(model);
+  if (model.dirClosing) return closeDirectory(model);
+  if (page.offset !== model.dirOffset || !sameBytes(page.query, model.dirQuery)) {
+    return unchangedDirectory({ ...model, dirRequest: page.request, dirStarting: false });
+  }
+  return unchangedDirectory(showDirectory(model, page));
+}
+
+/// Open Here refused keeps the picker for another try. A refused descend or
+/// parent named a listing the engine has moved past, so show the current one.
+function failedDirectory(model: Model): DirectoryDecision {
+  if (!model.dirOpen) return unchangedDirectory(model);
+  if (model.dirClosing) {
+    return unchangedDirectory({ ...model, dirBusy: false, dirClosing: false,
+      dirNotice: asciiBytes("Could not open a new tab there. Try again.") });
+  }
+  if (!model.dirStarting) {
+    return unchangedDirectory({ ...model, dirBusy: false, dirNotice: asciiBytes("Directory listing unavailable. Try again.") });
+  }
+  return directoryDecision({ ...model, dirBusy: false, dirNotice: asciiBytes("That listing changed. Showing the current one.") },
+    directoryRequest(DIR_KIND_PAGE, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), false);
+}
+
+function moveDirectory(model: Model, delta: number): DirectoryDecision {
+  if (model.dirBusy || model.dirStarting) return unchangedDirectory(model);
+  const next = model.dirCursor + (delta >= 0 ? 1 : -1);
+  if (next < 0 && model.dirPrevious) {
+    const previous = pageDirectory(model, model.dirOffset - 4);
+    return directoryDecision({ ...previous.model, dirCursor: 3 }, previous.request, false);
+  }
+  if (next >= model.dirRows.length && model.dirNext) {
+    const following = pageDirectory(model, model.dirOffset + 4);
+    return directoryDecision({ ...following.model, dirCursor: 0 }, following.request, false);
+  }
+  return unchangedDirectory(highlightDirectory(model, next));
+}
+
+function editDirectory(model: Model, edit: TextInputEvent): DirectoryDecision {
+  const next = applyTextInputEvent(directoryState(model), edit, 64);
+  if (next === null) return unchangedDirectory(model);
+  const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
+  const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
+  return pageDirectory({ ...model, dirQuery: next.text, dirAnchor: anchor, dirFocus: focus, dirCursor: 0 }, 0);
+}
+
+/// Descend or go up: a new listing under a new request ID, which the next
+/// reply names and the core adopts.
+function startDirectoryListing(model: Model, kind: number, index: number): DirectoryDecision {
+  return directoryDecision({ ...model, dirStarting: true, dirBusy: true, dirAwaiting: false, dirQuery: NO_BYTES,
+    dirAnchor: 0, dirFocus: 0, dirOffset: 0, dirCursor: 0, dirRows: NO_DIR_ROWS, dirPrevious: false, dirNext: false,
+    dirNotice: asciiBytes("Listing...") }, directoryRequest(kind, model.dirRequest, 0, index, NO_BYTES), false);
+}
+
+function activateDirectory(model: Model, index: number): DirectoryDecision {
+  if (model.dirBusy || model.dirStarting) return unchangedDirectory(model);
+  const row = index >= 0 && index <= 65535 ? Math.trunc(index) : 0;
+  if (row === DIR_UP) return startDirectoryListing(model, DIR_KIND_PARENT, 0);
+  if (row === DIR_HERE) {
+    return directoryDecision({ ...model, dirBusy: true, dirClosing: true, dirNotice: asciiBytes("Opening a new tab...") },
+      directoryRequest(DIR_KIND_HERE, model.dirRequest, model.dirOffset, DIR_HERE, model.dirQuery), false);
+  }
+  return startDirectoryListing(model, DIR_KIND_DESCEND, row);
+}
+
+function submitDirectory(model: Model): DirectoryDecision {
+  if (model.dirCursor < 0 || model.dirCursor >= model.dirRows.length) return unchangedDirectory(model);
+  return activateDirectory(model, model.dirRows[model.dirCursor].index);
+}
+
+function browseDirectory(model: Model, forward: boolean): DirectoryDecision {
+  if (model.dirBusy) return unchangedDirectory(model);
+  if (forward) return model.dirNext ? pageDirectory(model, model.dirOffset + 4) : unchangedDirectory(model);
+  return model.dirPrevious ? pageDirectory(model, model.dirOffset - 4) : unchangedDirectory(model);
+}
+
+/// Every message the open picker answers. Escape (palette_close) and the
+/// arrows (palette_move) reach it through the shared overlay keys.
+function openDirectoryTransition(model: Model, msg: Msg): DirectoryDecision | null {
+  switch (msg.kind) {
+    case "dir_close":
+    case "palette_close": return closeDirectory(model);
+    case "palette_move": return moveDirectory(model, msg.delta);
+    case "dir_edit": return editDirectory(model, msg.edit);
+    case "dir_submit": return submitDirectory(model);
+    case "dir_pick": return activateDirectory(model, msg.index);
+    case "dir_here": return activateDirectory(model, DIR_HERE);
+    case "dir_previous": return browseDirectory(model, false);
+    case "dir_next": return browseDirectory(model, true);
+    default: return null;
+  }
+}
+
+function directoryTransition(model: Model, msg: Msg): DirectoryDecision | null {
+  if (msg.kind === "dir_open") return openDirectory(model);
+  if (msg.kind === "directory_loaded") return receiveDirectory(model, msg.body);
+  if (msg.kind === "directory_failed") return failedDirectory(model);
+  if (!model.dirOpen) return null;
+  return openDirectoryTransition(model, msg);
+}
+
 function hostState(model: Model): TextEditState {
   return {
     text: model.hostQuery,
@@ -680,6 +963,11 @@ function scopeOverlays(model: Model): Model {
     window2HostOpen: model.hostOpen && active === 2,
     window3HostOpen: model.hostOpen && active === 3,
     window4HostOpen: model.hostOpen && active === 4,
+    mainDirOpen: model.dirOpen && active === 0,
+    window1DirOpen: model.dirOpen && active === 1,
+    window2DirOpen: model.dirOpen && active === 2,
+    window3DirOpen: model.dirOpen && active === 3,
+    window4DirOpen: model.dirOpen && active === 4,
     window1PaletteOpen: model.paletteOpen && active === 1,
     window1SettingsOpen: model.settingsOpen && active === 1,
     window2PaletteOpen: model.paletteOpen && active === 2,
@@ -944,6 +1232,7 @@ export function commandMsg(name: string): Msg | null {
   if (name === "tabs.palette") return { kind: "palette_open" };
   if (name === "settings.open") return { kind: "settings_open" };
   if (name === "remote.connect") return { kind: "host_open" };
+  if (name === "directory.open") return { kind: "dir_open" };
   if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
   if (name === "tab.previous") return { kind: "native_command", command: 1 };
   if (name === "tab.next") return { kind: "native_command", command: 2 };
@@ -1033,6 +1322,27 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window2HostOpen: false,
       window3HostOpen: false,
       window4HostOpen: false,
+      dirOpen: false,
+      mainDirOpen: false,
+      window1DirOpen: false,
+      window2DirOpen: false,
+      window3DirOpen: false,
+      window4DirOpen: false,
+      dirQuery: new Uint8Array(0),
+      dirAnchor: 0,
+      dirFocus: 0,
+      dirRequest: NO_DIRECTORY_REQUEST,
+      dirStarting: false,
+      dirAwaiting: false,
+      dirClosing: false,
+      dirBusy: false,
+      dirRows: NO_DIR_ROWS,
+      dirCursor: 0,
+      dirOffset: 0,
+      dirPrevious: false,
+      dirNext: false,
+      dirPath: new Uint8Array(0),
+      dirNotice: new Uint8Array(0),
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,
@@ -1335,7 +1645,22 @@ function updateOpenAppearance(model: Model, msg: Msg): AppearanceDecision | null
   return model.appearanceBusy ? appearanceDecision(model) : edited;
 }
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  // Go to Directory first: while it is open it owns Escape and the arrows.
+  const directory = directoryTransition(incoming, msg);
+  if (directory !== null) {
+    const decided = directory.model;
+    if (directory.request.length > 0 && directory.committed) return [decided, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+    ])];
+    if (directory.request.length > 0) {
+      return [decided, Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" })];
+    }
+    if (directory.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
+    return decided;
+  }
+  const model = displaceDirectory(incoming, msg);
   const result = resultTransition(model, msg);
   if (result !== null) {
     if (result.request.length === 0) return result.model;
@@ -1583,12 +1908,24 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         window4Status: windowStatus(projected.connection, projected.terminalStates[4], refusedMask !== 0),
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
       };
-      const scoped = scopeOverlays(synced);
+      // An open Go to Directory names a listing on the connection that just
+      // moved: withdraw its rows, and list again once connected.
+      const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
+      const directoryRelists = directoryMoved && projected.connection === 2;
+      const scoped = directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced);
       // Remote status is asked for only when the connection moved (or a
       // Connect to Host is waiting on it), never once per snapshot.
       const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
       if (!model.paletteOpen) {
         if (!askRemote) return scoped;
+        if (directoryRelists) return [scoped, Cmd.batch([
+          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+          }),
+          Cmd.request("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), {
+            key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed",
+          }),
+        ])];
         return [scoped, Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
           key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
         })];
@@ -1626,6 +1963,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         palettePrevious: false,
         paletteNext: false,
       };
+      // A listing Go to Directory waits on settles in the provider drain
+      // that announced this invalidation; ask for its page with the snapshot.
+      const pollDirectory = model.dirOpen && model.dirAwaiting;
+      const directoryPoll = directoryRequest(DIR_KIND_PAGE, model.dirRequest, model.dirOffset, 0, model.dirQuery);
+      if (read.request.length > 0 && pollDirectory) return [next, Cmd.batch([
+        Cmd.request("cockpit.snapshot", NO_BYTES, {
+          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
+        }),
+        Cmd.request("cockpit.command-results", read.request, {
+          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
+        }),
+        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+      ])];
       if (read.request.length > 0) return [next, Cmd.batch([
         Cmd.request("cockpit.snapshot", NO_BYTES, {
           key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
@@ -1633,6 +1983,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("cockpit.command-results", read.request, {
           key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
         }),
+      ])];
+      if (pollDirectory) return [next, Cmd.batch([
+        Cmd.request("cockpit.snapshot", NO_BYTES, {
+          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
+        }),
+        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
       ])];
       return [
         next,

@@ -51,6 +51,9 @@ pub const State = enum { new, hello_queued, negotiated, attached, detached, fail
 pub const SyncDelta = struct {
     workspace_changed: bool = false,
     metadata_changed: bool = false,
+    /// A go-to-directory listing settled (listed, refused or unknown) in
+    /// this drain; the picker reads it on the next snapshot invalidation.
+    directory_changed: bool = false,
     ready_published: bool = false,
     generation_changed: bool = false,
     detached: bool = false,
@@ -337,6 +340,71 @@ pub const Host = struct {
     /// Owners retain their exact terminal identity, including satellite host;
     /// satellite routing is explicit and matches that owner's host.
     pub fn requestSpawn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport) !u32 {
+        return host.requestSpawnIn(owner_ref, viewport, &.{});
+    }
+
+    /// Go to Directory's listing, retained by the client: at most one
+    /// request, and a reply to a superseded request never surfaces.
+    pub const DirectoryStatus = enum(u32) { none = 0, pending = 1, listed = 2, refused = 3, unknown_outcome = 4, _ };
+    pub const DirectoryInfo = struct {
+        supported: bool = false,
+        status: DirectoryStatus = .none,
+        request_id: u32 = 0,
+        error_code: u32 = 0,
+        truncated: bool = false,
+        entry_count: usize = 0,
+        path: []const u8 = "",
+        parent: ?[]const u8 = null,
+        message: []const u8 = "",
+    };
+    pub const DirectoryEntry = struct { name: []const u8, symlink: bool };
+
+    /// `path` must not borrow client storage: this is a mutable client call.
+    pub fn requestDirectory(host: *Host, path: []const u8) !u32 {
+        try host.requireAttached();
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_list_directory(host.client, request_id, bytes(path)));
+        host.operation_ledger.last_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// Borrowed until the next mutable host call.
+    pub fn directoryInfo(host: *const Host) DirectoryInfo {
+        var raw = std.mem.zeroes(c.PhuxDirectoryListingInfo);
+        raw.size = @sizeOf(c.PhuxDirectoryListingInfo);
+        raw.version = c.PHUX_CLIENT_ABI_VERSION;
+        if (c.phux_client_directory_info(host.client, &raw) != c.PHUX_CLIENT_OK) return .{};
+        return .{
+            .supported = raw.supported,
+            .status = @enumFromInt(raw.status),
+            .request_id = raw.request_id,
+            .error_code = raw.error_code,
+            .truncated = raw.truncated,
+            .entry_count = raw.entry_count,
+            .path = effectSlice(raw.path) catch "",
+            .parent = if (raw.has_parent) effectSlice(raw.parent) catch null else null,
+            .message = effectSlice(raw.message) catch "",
+        };
+    }
+
+    /// Borrowed until the next mutable host call.
+    pub fn directoryEntry(host: *const Host, index: usize) ?DirectoryEntry {
+        var raw = std.mem.zeroes(c.PhuxDirectoryEntry);
+        raw.size = @sizeOf(c.PhuxDirectoryEntry);
+        raw.version = c.PHUX_CLIENT_ABI_VERSION;
+        if (c.phux_client_directory_entry_get(host.client, index, &raw) != c.PHUX_CLIENT_OK) return null;
+        const name = effectSlice(raw.name) catch return null;
+        return .{ .name = name, .symlink = raw.flags & c.PHUX_DIRECTORY_ENTRY_SYMLINK != 0 };
+    }
+
+    fn directoryStatusRaw(host: *const Host) DirectoryStatus {
+        return host.directoryInfo().status;
+    }
+
+    /// `cwd` empty inherits the server's default; otherwise the shell starts
+    /// there. Copied by the queue call.
+    pub fn requestSpawnIn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
         const request_id = try host.preflightOperation();
         try host.reserveTerminalSlot(null);
         const owner_id = try host.spawnOwner(owner_ref);
@@ -350,7 +418,7 @@ pub const Host = struct {
             .satellite = bytes(satellite),
             .argv = null,
             .argc = 0,
-            .cwd = bytes(&.{}),
+            .cwd = bytes(cwd),
             .cols = viewport.cols,
             .rows = viewport.rows,
         };
@@ -547,10 +615,12 @@ pub const Host = struct {
         if (host.disconnected) return error.InvalidState;
         errdefer host.disconnect();
         var delta: SyncDelta = .{};
+        const directory_before = host.directoryStatusRaw();
         while (host.bridge.incoming.take()) |frame| {
             defer host.bridge.incoming.release(frame);
             try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
         }
+        delta.directory_changed = host.directoryStatusRaw() != directory_before;
         host.captureWorkspace();
         delta.removed_count += try host.prepareAttachAdmission();
         // Catalog first, effects second, in one drain: the catalog is the

@@ -2,4 +2,5 @@
 <use template="cockpit-window" tabs="{window2Tabs}" rail="{window2RailRows}" width="{window2TabWidth}" more="{window2HasOverflow}" cue="{window2OverflowLabel}" paletteopen="{window2PaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{window2Status}" reconnect="{canReconnect}" commandnotice="{commandNotice}">
   <use template="cockpit-settings" settingsopen="{window2SettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{window2HostOpen}" />
+  <use template="cockpit-directory" diropen="{window2DirOpen}" />
 </use>
