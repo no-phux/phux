@@ -12,6 +12,7 @@ import {
   REMOTE_PHASE_LOCAL,
   REMOTE_PHASE_CONNECTED,
   REMOTE_PHASE_FAILED,
+  REMOTE_PHASE_REFUSED,
   remoteRequest,
   remoteReply,
   remoteStatusLine,
@@ -331,6 +332,7 @@ export type Msg =
   | { readonly kind: "host_submit" }
   | { readonly kind: "host_local" }
   | { readonly kind: "host_disconnect" }
+  | { readonly kind: "host_disconnect_all" }
   | { readonly kind: "dir_open" }
   | { readonly kind: "dir_close" }
   | { readonly kind: "dir_edit"; readonly edit: TextInputEvent }
@@ -901,6 +903,11 @@ function receiveRemote(model: Model, body: Uint8Array): Model {
   const reply = remoteReply(body);
   if (reply === null) {
     return { ...model, hostBusy: false, hostAwaiting: false, hostNotice: asciiBytes("Connection status unavailable. Try again.") };
+  }
+  // Refused: nothing changed. Say why in the panel; the connection status
+  // stays what it was.
+  if (reply.phase === REMOTE_PHASE_REFUSED) {
+    return { ...model, hostBusy: false, hostAwaiting: false, hostNotice: reply.reason.length > 0 ? reply.reason : asciiBytes("Nothing changed.") };
   }
   const line = remoteStatusLine(reply);
   const settled = reply.phase === REMOTE_PHASE_CONNECTED || reply.phase === REMOTE_PHASE_FAILED || reply.phase === REMOTE_PHASE_LOCAL;
@@ -1763,8 +1770,21 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "host_disconnect": {
       if (!model.hostOpen || model.hostBusy) return model;
+      // The host named in the field, and no other.
+      if (model.hostQuery.length === 0) {
+        return { ...model, hostNotice: asciiBytes("Enter the host to disconnect, or choose Disconnect All") };
+      }
       return [
-        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: asciiBytes("Disconnecting the remote host...") },
+        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: joinBytes(asciiBytes("Disconnecting "), model.hostQuery, asciiBytes("...")) },
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_DISCONNECT, model.hostQuery), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ];
+    }
+    case "host_disconnect_all": {
+      if (!model.hostOpen || model.hostBusy) return model;
+      return [
+        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: asciiBytes("Disconnecting every remote host...") },
         Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_DISCONNECT, NO_BYTES), {
           key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
         }),

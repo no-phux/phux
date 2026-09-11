@@ -18,8 +18,8 @@ Mac and registered hosts), each on its own connection, listed as host groups
 minted it, so two servers' terminal 7 are two terminals. Picking a session in
 another coordinator's group shows it beside the others without disconnecting
 anything; a coordinator that fails shows why in its group. Disconnect removes
-the hosts. The last host is remembered and reattached beside this Mac on the
-next launch.
+the host named in the panel, and Disconnect All every host. The last host is
+remembered and reattached beside this Mac on the next launch.
 
 ## Endpoint model
 
@@ -96,16 +96,20 @@ snapshot and navigation. All lengths are one byte.
 | Offset | Request |
 |---|---|
 | 0 | version 1 |
-| 1 | kind: 1 status, 2 connect, 3 use this Mac |
-| 2 | target length (non-zero only for connect) |
+| 1 | kind: 1 status, 2 connect, 3 use this Mac, 4 disconnect |
+| 2 | target length: required for connect; for disconnect, empty means every host |
 | 3 | target UTF-8, a `phux-remote` value |
 
 | Offset | Reply |
 |---|---|
 | 0 | version 1 |
-| 1 | phase: 0 local, 1 connecting, 2 connected, 3 failed, 4 reconnecting |
+| 1 | phase: 0 local, 1 connecting, 2 connected, 3 failed, 4 reconnecting, 5 refused |
 | 2 | host length, then the host (the registry entry's name) |
-| then | reason length, then the reason (failed only) |
+| then | reason length, then the reason (failed and refused only) |
+
+Refused means the request changed nothing: a Disconnect naming a host
+Cockpit does not hold, or a Connect with no room for another coordinator.
+The panel shows the reason and keeps the connection status as it was.
 
 Host and reason are each elided at 240 bytes on a UTF-8 boundary. The core
 asks for status when it opens the panel, when a Connect is waiting, and
@@ -133,8 +137,8 @@ records it (`src/cockpit/remote_memory.zig`). A host selected by
 `phux-remote` or `PHUX_REMOTE` is never written, so removing the setting
 ends it. The file is written the first time a status poll sees the chosen
 host connected, so a host that never connected is not remembered.
-Disconnect removes the file; Use this Mac leaves it, because the host stays
-listed. A torn or foreign file is treated as absent. At launch a
+Disconnect All removes the file, and Disconnect removes it when it names the
+host removed; Use this Mac leaves it, because the host stays listed. A torn or foreign file is treated as absent. At launch a
 remembered host is reattached beside this Mac, as the standby coordinator
 (below), and this Mac is active. A configured or environment host is active,
 with this Mac beside it. Saved placements carry the endpoint
@@ -228,7 +232,12 @@ forgets its queued edits; one already sent may still land on that server.
 | a session in a peer's group | unchanged | that peer shows it, beside the others |
 | Connect to Host | the host | the coordinator it left joins the list; a listed host trades places |
 | Use this Mac | this Mac | the host joins the list, others unchanged |
-| Disconnect | this Mac | none: every host's group and tabs go |
+| Disconnect (a named host) | this Mac if that host was active, else unchanged | that host's group and tabs go; the others stay |
+| Disconnect All | this Mac | none: every host's group and tabs go |
+
+Disconnect takes the host typed in the panel, by its target or its registry
+name. Removing the active host hands it over to this Mac, whose standby slot
+is freed rather than listed twice.
 
 Connect to Host and Use this Mac retarget two providers through
 `requestRetarget` and restart them through the path Reconnect uses; no other
@@ -251,10 +260,14 @@ projected reads "workspace unavailable" on its session rows.
 
 ## Known limits
 
-- At most four coordinators: the active one and three peers. Connecting to a
-  fifth is refused with a reason.
-- Disconnect removes every registered host, not one of several. Only the
-  most recently connected host is remembered for relaunch.
+- At most four coordinators: the active one and three peers. The bound is
+  the runtime's fixed table of eight effect channels (`max_effect_channels`
+  in the pinned Native SDK), which also holds the core's engine channel and
+  the active coordinator's. Each peer holds one channel, and a restart or a
+  Disconnect followed by a Connect briefly holds a second while the old
+  one's close is delivered. Connecting to a fifth is refused with that
+  reason, and nothing changes.
+- Only the most recently connected host is remembered for relaunch.
 - New Window and the available-terminal inventory belong to the active
   coordinator, whichever pane is focused. A peer's edit receipt is applied
   once the edit is queued on that peer; its confirmation or refusal shows in

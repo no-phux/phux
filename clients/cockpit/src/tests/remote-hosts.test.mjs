@@ -160,22 +160,41 @@ test('Use this Mac returns to the local coordinator and closes the panel', () =>
   assert.equal(model.hostName.length, 0);
 });
 
-test('Disconnect removes the remote host; Use this Mac only makes this Mac active', () => {
+test('Disconnect removes the host named in the panel, Disconnect All every host; a refusal changes nothing', () => {
+  // An empty field names no host: nothing is sent, and the panel says so.
   let [model, cmd] = step(opened(), { kind: 'host_disconnect' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 4, 0]));
+  assert.equal(cmd, null);
+  assert.match(text(model.hostNotice), /Disconnect All/);
+  [model, cmd] = step({ ...opened(), hostQuery: bytes('mini') }, { kind: 'host_disconnect' });
+  assertRemoteRequest(cmd, new Uint8Array([1, 4, 4, ...bytes('mini')]));
   assert.equal(model.hostBusy, true);
   assert.equal(step(model, { kind: 'host_disconnect' })[1], null, 'one request in flight');
+  // Refused: the panel stays and says why; the connection status is untouched.
+  const status = model.connectionStatus;
+  const phase = model.hostPhase;
+  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(5, 'mini', 'Cockpit is not connected to that host') });
+  assert.equal(cmd, null);
+  assert.equal(model.hostOpen, true);
+  assert.equal(model.hostBusy, false);
+  assert.equal(text(model.hostNotice), 'Cockpit is not connected to that host');
+  assert.deepEqual(model.connectionStatus, status);
+  assert.equal(model.hostPhase, phase);
+  // Disconnect All names no host.
+  [model, cmd] = step(model, { kind: 'host_disconnect_all' });
+  assertRemoteRequest(cmd, new Uint8Array([1, 4, 0]));
   [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
   assert.equal(model.hostOpen, false);
   assert.equal(cmd.name, 'cockpit.committed');
   const panel = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
   assert.match(panel, /on-press="host_disconnect">Disconnect<\/button>/);
+  assert.match(panel, /on-press="host_disconnect_all">Disconnect All<\/button>/);
 });
 
 test('the codec refuses what it cannot frame or read', () => {
   assert.deepEqual(remoteRequest(2, new Uint8Array(300)), new Uint8Array([1, 2, 0]));
   assert.equal(remoteReply(new Uint8Array([2, 1, 0, 0])), null, 'version');
-  assert.equal(remoteReply(new Uint8Array([1, 5, 0, 0])), null, 'phase');
+  assert.equal(remoteReply(new Uint8Array([1, 6, 0, 0])), null, 'phase');
+  assert.equal(remoteReply(new Uint8Array([1, 5, 0, 0])).phase, 5, 'refused');
   assert.equal(remoteReply(new Uint8Array([1, 1, 4, 0])), null, 'host overruns');
   assert.equal(remoteReply(new Uint8Array([1, 1, 0, 0, 9])), null, 'trailing bytes');
   const parsed = remoteReply(reply(3, 'mini', 'why'));

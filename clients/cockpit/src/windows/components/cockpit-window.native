@@ -136,6 +136,7 @@
             <row gap="8" cross="center">
               <button size="sm" variant="ghost" on-press="host_local">Use this Mac</button>
               <button size="sm" variant="ghost" on-press="host_disconnect">Disconnect</button>
+              <button size="sm" variant="ghost" on-press="host_disconnect_all">Disconnect All</button>
               <spacer grow="1" />
               <button size="sm" variant="ghost" on-press="host_close">Cancel</button>
               <button size="sm" on-press="host_submit">Connect</button>

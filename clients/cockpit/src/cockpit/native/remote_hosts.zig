@@ -4,10 +4,11 @@
 //! answer (docs/REMOTE_HOSTS.md has the table):
 //!
 //!   request  version=1, kind:u8, target_len:u8, target UTF-8
-//!            kind 1 status, 2 connect to target, 3 return to this Mac
+//!            kind 1 status, 2 connect to target, 3 return to this Mac,
+//!            4 disconnect target (every host when target is empty)
 //!   reply    version=1, phase:u8, host_len:u8, host, reason_len:u8, reason
 //!            phase 0 local, 1 connecting, 2 connected, 3 failed,
-//!            4 reconnecting
+//!            4 reconnecting, 5 refused (nothing changed; reason says why)
 //!
 //! Connecting never builds a second provider or a second lifecycle. The
 //! host is resolved in the phux CLI's own registry first (files only, no
@@ -32,11 +33,15 @@ pub const version: u8 = 1;
 pub const max_text_bytes: usize = 240;
 pub const max_bytes: usize = 4 + 2 * max_text_bytes;
 
-/// 4 removes the remote host entirely: its switcher group goes, and it is no
-/// longer reattached at launch. 3 (Use this Mac) only makes this Mac active
-/// and keeps the remote host listed beside it.
+/// 4 removes a remote host entirely: its switcher group and tabs go, and it
+/// is no longer reattached at launch. With a target it removes that host
+/// alone; with none, every host. 3 (Use this Mac) only makes this Mac active
+/// and keeps the remote hosts listed beside it.
 pub const Kind = enum(u8) { status = 1, connect = 2, local = 3, disconnect = 4 };
-pub const Phase = enum(u8) { local = 0, connecting = 1, connected = 2, failed = 3, reconnecting = 4 };
+/// `refused`: the request changed nothing (a host Cockpit does not hold, or
+/// no room for another coordinator); the reason says why, and the
+/// connection status stays whatever it was.
+pub const Phase = enum(u8) { local = 0, connecting = 1, connected = 2, failed = 3, reconnecting = 4, refused = 5 };
 pub const Error = error{ InvalidRequest, BufferTooSmall };
 
 pub const Request = struct { kind: Kind, target: []const u8 = "" };
@@ -54,7 +59,8 @@ pub fn decode(bytes: []const u8) Error!Request {
     const target = bytes[3..];
     switch (kind) {
         .connect => if (target.len == 0 or !config_module.validPhuxRemote(target)) return error.InvalidRequest,
-        .status, .local, .disconnect => if (target.len != 0) return error.InvalidRequest,
+        .disconnect => if (target.len != 0 and !config_module.validPhuxRemote(target)) return error.InvalidRequest,
+        .status, .local => if (target.len != 0) return error.InvalidRequest,
     }
     return .{ .kind = kind, .target = target };
 }
@@ -91,7 +97,7 @@ pub fn handle(engine: anytype, fx: anytype, payload: []const u8, out: []u8) Erro
         .status => status(engine.model, &scratch),
         .connect => connect(engine, fx, request.target, &scratch),
         .local => returnLocal(engine, fx),
-        .disconnect => disconnect(engine, fx),
+        .disconnect => disconnect(engine, fx, request.target, &scratch),
     };
     return encode(reply, out);
 }
@@ -135,10 +141,10 @@ fn connect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) 
     // The host becomes active and the coordinator it leaves stays listed
     // beside it: this Mac, or a host connected before. A host already listed
     // trades places with the active one; nothing else moves.
-    engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch |err| return .{
-        .phase = .failed,
-        .host = target,
-        .reason = if (err == error.PeerCapacity) "Cockpit already holds four coordinators. Disconnect first." else "out of memory",
+    engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch |err| return switch (err) {
+        // Nothing changed: the connections held stay as they are.
+        error.PeerCapacity => .{ .phase = .refused, .host = target, .reason = capacity_reason },
+        else => .{ .phase = .failed, .host = target, .reason = "out of memory" },
     };
     choose(target);
     return .{ .phase = .connecting, .host = copy(&scratch.host, described.name.slice()) };
@@ -160,11 +166,21 @@ fn returnLocal(engine: anytype, fx: anytype) Reply {
     return .{ .phase = .local };
 }
 
+/// The refusal for a fifth coordinator (docs/REMOTE_HOSTS.md, Known limits).
+pub const capacity_reason = "Cockpit holds at most four coordinators: this Mac and three hosts. Disconnect a host first.";
+const unknown_host_reason = "Cockpit is not connected to that host";
+
+/// Disconnect `target` alone, or every remote host when it is empty.
+fn disconnect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
+    if (comptime !support.phux_enabled) return .{ .phase = .local };
+    if (target.len == 0) return disconnectAll(engine, fx);
+    return disconnectHost(engine, fx, target, scratch);
+}
+
 /// Remove the remote hosts: this Mac becomes active if it was not, every
 /// peer goes (their groups and tabs leave), and no host is reattached at
 /// launch.
-fn disconnect(engine: anytype, fx: anytype) Reply {
-    if (comptime !support.phux_enabled) return .{ .phase = .local };
+fn disconnectAll(engine: anytype, fx: anytype) Reply {
     const model = engine.model;
     const remote = model.phux() orelse return .{ .phase = .local };
     if (remote.remoteTarget() != null) {
@@ -178,6 +194,73 @@ fn disconnect(engine: anytype, fx: anytype) Reply {
     choose(null);
     remember(model, null);
     return .{ .phase = .local };
+}
+
+/// Remove one registered host, named by its target or its registry name,
+/// and nothing else: every other coordinator keeps its connection, its tabs
+/// and its slot. A listed host's slot goes. The active host hands over to
+/// this Mac, whose standby slot is freed rather than listing it twice. A
+/// host Cockpit does not hold is refused and nothing changes.
+fn disconnectHost(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
+    const model = engine.model;
+    const active = model.phux() orelse return .{ .phase = .local };
+    var removed_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
+    const slot = hostSlot(model, target);
+    const holder = if (slot) |index| model.phux_peers[index].? else if (namesHost(active, target)) active else return .{
+        .phase = .refused,
+        .host = copy(&scratch.host, target),
+        .reason = unknown_host_reason,
+    };
+    // Copied before the provider it borrows from is retargeted or destroyed.
+    const removed = copyTarget(holder.remoteTarget().?, &removed_buffer);
+    if (slot) |index| {
+        engine.dropPeer(fx, index);
+    } else if (!handOverToThisMac(engine, fx)) {
+        return .{ .phase = .failed, .host = copy(&scratch.host, target), .reason = "out of memory" };
+    }
+    forgetHost(model, removed);
+    return status(model, scratch);
+}
+
+/// Whether `provider` dials the registered host `target` names, by target
+/// or by registry name.
+fn namesHost(provider: anytype, target: []const u8) bool {
+    const host = provider.remoteTarget() orelse return false;
+    if (std.mem.eql(u8, host, target)) return true;
+    const label = provider.remoteLabel() orelse return false;
+    return std.mem.eql(u8, label, target);
+}
+
+/// The peer slot holding the host `target` names.
+fn hostSlot(model: *Model, target: []const u8) ?usize {
+    for (model.phux_peers, 0..) |value, slot| {
+        const peer = value orelse continue;
+        if (namesHost(peer, target)) return slot;
+    }
+    return null;
+}
+
+/// The active host goes: this Mac becomes active on its configured socket
+/// and session, and its own standby slot, if it has one, is dropped first.
+fn handOverToThisMac(engine: anytype, fx: anytype) bool {
+    const model = engine.model;
+    const active = model.phux().?;
+    const socket = model.config.phux_socket.slice();
+    const session = model.config.phux_session.slice();
+    const next = active.prepareRetarget(.{ .unix = socket }, if (session.len == 0) null else session, null) catch return false;
+    for (model.phux_peers, 0..) |value, slot| {
+        const peer = value orelse continue;
+        if (peer.remoteTarget() == null) engine.dropPeer(fx, slot);
+    }
+    active.commitRetarget(next);
+    restart(engine, fx);
+    return true;
+}
+
+fn copyTarget(target: []const u8, out: *[config_module.max_phux_remote_bytes]u8) []const u8 {
+    const len = @min(target.len, out.len);
+    @memcpy(out[0..len], target[0..len]);
+    return out[0..len];
 }
 
 /// The live effects restart through the engine's Reconnect path. Test fakes
@@ -217,6 +300,16 @@ fn choose(target: ?[]const u8) void {
     chosen_len = value.len;
 }
 
+/// A host removed by name is no longer chosen, and no longer reattached at
+/// launch if it is the one remembered.
+fn forgetHost(model: *Model, target: []const u8) void {
+    if (chosen_len != 0 and std.mem.eql(u8, chosen_buffer[0..chosen_len], target)) chosen_len = 0;
+    const path = remote_memory.path() orelse return;
+    var buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
+    const remembered = remote_memory.load(model.provider.io, path, &buffer) orelse return;
+    if (std.mem.eql(u8, remembered, target)) remember(model, null);
+}
+
 fn rememberIfChosen(model: *Model, target: ?[]const u8) void {
     const value = target orelse return;
     if (chosen_len == 0 or !std.mem.eql(u8, chosen_buffer[0..chosen_len], value)) return;
@@ -241,14 +334,17 @@ fn remember(model: *Model, target: ?[]const u8) void {
     remembered_known = true;
 }
 
-test "requests are exact: a connect names a host, status and local carry none" {
+test "requests are exact: a connect names a host, a disconnect may, status and local carry none" {
     try std.testing.expectEqualDeep(Request{ .kind = .connect, .target = "me@mini" }, try decode("\x01\x02\x07me@mini"));
     try std.testing.expectEqual(Kind.status, (try decode("\x01\x01\x00")).kind);
     try std.testing.expectEqual(Kind.local, (try decode("\x01\x03\x00")).kind);
+    try std.testing.expectEqualDeep(Request{ .kind = .disconnect, .target = "mini" }, try decode("\x01\x04\x04mini"));
+    try std.testing.expectEqualDeep(Request{ .kind = .disconnect }, try decode("\x01\x04\x00"));
     for ([_][]const u8{
-        "",                "\x02\x01\x00",           "\x01\x09\x00",
-        "\x01\x02\x00",    "\x01\x02\x05mini",       "\x01\x01\x04mini",
-        "\x01\x02\x03a b", "\x01\x02\x0aquic://x:1",
+        "",                 "\x02\x01\x00",           "\x01\x09\x00",
+        "\x01\x02\x00",     "\x01\x02\x05mini",       "\x01\x01\x04mini",
+        "\x01\x02\x03a b",  "\x01\x02\x0aquic://x:1", "\x01\x04\x03a b",
+        "\x01\x03\x04mini",
     }) |bytes| try std.testing.expectError(error.InvalidRequest, decode(bytes));
 }
 

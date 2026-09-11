@@ -461,6 +461,75 @@ test "relaunch reattaches a remembered host beside this Mac; a configured host k
     try testing.expect((try startup.createPhuxPeerFromConfig(gpa, io, &none)) == null);
 }
 
+test "Disconnect names one host: a listed host leaves alone, and the active host hands over to this Mac" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry);
+    defer registry.deinit();
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const local = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/side-by-side-unused" }, null, "side-by-side");
+    engine.model.phux_provider = local;
+    const fx = ts_engine.NoShells{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+    const peers = &engine.model.phux_peers;
+
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
+    // studio is active; this Mac stands by in slot 0 and mini in slot 1.
+    try testing.expectEqualStrings("studio", local.remoteTarget().?);
+    try testing.expect(peers[0].?.remoteTarget() == null);
+    const mini = peers[1].?;
+    try testing.expectEqualStrings("me@mini", mini.remoteTarget().?);
+
+    // A host Cockpit does not hold is refused, and nothing moves.
+    const refused = try remote_hosts.handle(engine, &fx, "\x01\x04\x06nosuch", &out);
+    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), refused[1]);
+    try testing.expect(peers[0] != null and peers[1] == mini);
+    try testing.expectEqualStrings("studio", local.remoteTarget().?);
+
+    // The active studio goes: this Mac is active again, its standby slot is
+    // freed rather than listing it twice, and mini keeps its slot and its
+    // connection.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x06studio", &out);
+    try testing.expect(local.remoteTarget() == null);
+    try testing.expect(peers[0] == null);
+    try testing.expect(peers[1] == mini);
+    try testing.expectEqualStrings("me@mini", mini.remoteTarget().?);
+    try testing.expect(mini.pending_retarget == null);
+
+    // mini, named by its registry name: only its slot goes.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
+    for (peers) |slot| try testing.expect(slot == null);
+    try testing.expect(local.remoteTarget() == null);
+}
+
+test "a fifth coordinator is refused with the reason, and nothing changes" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry ++ "[[remote]]\nname = \"lab\"\nendpoint = \"ws://127.0.0.1:3\"\n[[remote]]\nname = \"rack\"\nendpoint = \"ws://127.0.0.1:4\"\n");
+    defer registry.deinit();
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const local = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/side-by-side-unused" }, null, "side-by-side");
+    engine.model.phux_provider = local;
+    const fx = ts_engine.NoShells{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x03lab", &out);
+    // lab active; this Mac, mini and studio fill the three peer slots.
+    for (engine.model.phux_peers) |slot| try testing.expect(slot != null);
+    const before = engine.model.phux_peers;
+    const reply = try remote_hosts.handle(engine, &fx, "\x01\x02\x04rack", &out);
+    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), reply[1]);
+    try testing.expect(std.mem.indexOf(u8, reply, "at most four coordinators") != null);
+    try testing.expectEqualStrings("lab", local.remoteTarget().?);
+    try testing.expectEqualSlices(?*support.PhuxProvider, &before, &engine.model.phux_peers);
+}
+
 /// Channel keys closed and opened, and restarts counted; a channel it opens
 /// is never live, and one it is asked about is live when `live` says so.
 const ChannelLog = struct {

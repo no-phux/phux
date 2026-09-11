@@ -10,8 +10,9 @@ import { asciiBytes } from "@native-sdk/core";
 export const REMOTE_KIND_STATUS = 1;
 export const REMOTE_KIND_CONNECT = 2;
 export const REMOTE_KIND_LOCAL = 3;
-/// Remove the remote host entirely: its group leaves the switcher and it is
-/// no longer reattached at launch. "Use this Mac" only makes this Mac active.
+/// Remove a remote host entirely: its group leaves the switcher and it is
+/// no longer reattached at launch. With a target, that host alone; with
+/// none, every host. "Use this Mac" only makes this Mac active.
 export const REMOTE_KIND_DISCONNECT = 4;
 
 export const REMOTE_PHASE_LOCAL = 0;
@@ -19,6 +20,9 @@ export const REMOTE_PHASE_CONNECTING = 1;
 export const REMOTE_PHASE_CONNECTED = 2;
 export const REMOTE_PHASE_FAILED = 3;
 export const REMOTE_PHASE_RECONNECTING = 4;
+/// The request changed nothing; the reason says why. The connection status
+/// is not this reply's.
+export const REMOTE_PHASE_REFUSED = 5;
 
 export interface RemoteReply {
   readonly phase: number;
@@ -43,7 +47,7 @@ export function remoteRequest(kind: number, target: Uint8Array): Uint8Array {
 export function remoteReply(bytes: Uint8Array): RemoteReply | null {
   if (bytes.length < 4 || bytes[0] !== 1) return null;
   const phase = bytes[1];
-  if (!(phase >= REMOTE_PHASE_LOCAL && phase <= REMOTE_PHASE_RECONNECTING)) return null;
+  if (!(phase >= REMOTE_PHASE_LOCAL && phase <= REMOTE_PHASE_REFUSED)) return null;
   const reasonAt = 3 + bytes[2];
   if (reasonAt >= bytes.length) return null;
   const reasonEnd = reasonAt + 1 + bytes[reasonAt];
