@@ -14,7 +14,7 @@ window's real size, and only once its own list still carries that session.
 
 Status: Accepted
 Date: 2026-09-11
-Superseded in part by [ADR-0111](./0111-how-a-front-restore-is-judged.md): decision 5's drop of a front record whose first connection fails.
+Superseded in part by [ADR-0111](./0111-how-a-front-restore-is-judged.md): the server-hash key of decisions 1, 3 and 5, and decision 5's drop of a front record whose first connection fails.
 
 ## Context
 

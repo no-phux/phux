@@ -1,7 +1,7 @@
 //! A showing peer's session across relaunch (ADR-0110).
 //!
 //! The `.remote` file keeps, beside each remembered host, the one session
-//! its coordinator was showing, the server incarnation it belongs to, the
+//! its coordinator was showing, by id and creation time, the
 //! shared window of its selected tab, and whether that tab was the selected
 //! tab of the front window (`remote_memory.Shown`). Nothing else about the
 //! layout is kept: the coordinator's shared workspace owns its windows,
@@ -114,19 +114,30 @@ pub fn takeHint(model: *Model, coordinator: support.ProviderId, session: u32) ?[
 }
 
 /// Whether the slot's record may still be applied: it names the peer held
-/// in that slot, the peer's list is of the server incarnation the record
-/// was kept for, and it still carries that session, not as an empty session
-/// (which has no tab to display; the server's EMPTY flag says so, as it does
-/// for a pick in the switcher).
+/// in that slot, and the peer's list still carries that session, the same
+/// session and not only the same id, and not as an empty session (which has
+/// no tab to display; the server's EMPTY flag says so, as it does for a pick
+/// in the switcher).
 fn current(model: *const Model, slot: usize, restore: model_module.PeerRestore) bool {
     const peer = model.phuxPeerAtConst(slot) orelse return false;
     if (peer.providerId() != restore.coordinator) return false;
-    const server = peer.serverId() orelse return false;
-    if (remote_memory.serverHash(server) != restore.shown.server) return false;
     for (peer.standbyCatalog()) |entry| {
-        if (entry.id == restore.shown.session) return !entry.empty;
+        if (entry.id != restore.shown.session) continue;
+        return !entry.empty and sameSession(peer, restore.shown, entry.created_at_unix_secs);
     }
     return false;
+}
+
+/// A listed session with the record's id is the record's session when it
+/// was created at the same second. A graceful upgrade keeps both the id and
+/// the creation time; a cold restart that reissues the id creates the
+/// session anew, so only one created in that same second would be taken for
+/// it. A record kept before creation times were is judged as it was then:
+/// only the server incarnation it names matches.
+fn sameSession(peer: anytype, shown: Shown, created: i64) bool {
+    if (shown.created) |value| return value == created;
+    const server = peer.serverId() orelse return false;
+    return remote_memory.serverHash(server) == shown.server;
 }
 
 fn drop(model: *Model, slot: usize) bool {
@@ -220,24 +231,37 @@ fn unsettled(model: *const Model, id: support.ProviderId) bool {
 fn liveRecord(model: *const Model, id: support.ProviderId) ?Shown {
     const showing = showingSession(model, id) orelse return null;
     const tab = selectedTab(model, id) orelse return null;
+    // Named by its creation time when the list gives it, so the record
+    // survives a graceful upgrade; else by the server incarnation, which
+    // still restores it under the same server.
+    if (showing.created) |created| return .{ .session = showing.session, .created = created, .window = tab.window, .front = tab.front };
     return .{ .session = showing.session, .server = remote_memory.serverHash(showing.server), .window = tab.window, .front = tab.front };
 }
 
-const Showing = struct { session: u32, server: []const u8 };
+const Showing = struct { session: u32, server: []const u8, created: ?i64 };
 
 /// The session coordinator `id` is attached to and displaying: the active
 /// coordinator's own, or a showing peer's projected one.
 fn showingSession(model: *const Model, id: support.ProviderId) ?Showing {
     if (model.phuxConst()) |active| if (active.providerId() == id) {
         if (active.state() != .attached) return null;
-        return .{ .session = active.selectedSessionId() orelse return null, .server = active.serverId() orelse return null };
+        const session = active.selectedSessionId() orelse return null;
+        return .{ .session = session, .server = active.serverId() orelse return null, .created = createdAt(active, session) };
     };
     const slot = model.peerSlot(id) orelse return null;
     const peer = model.phuxPeerAtConst(slot) orelse return null;
     if (!peer.showing() or peer.state() != .attached) return null;
     const session = model.peer_workspaces[slot].session;
     if (session == 0) return null;
-    return .{ .session = session, .server = peer.serverId() orelse return null };
+    return .{ .session = session, .server = peer.serverId() orelse return null, .created = createdAt(peer, session) };
+}
+
+/// `session`'s creation time in the coordinator's own session list.
+fn createdAt(provider: anytype, session: u32) ?i64 {
+    for (provider.sessionCatalog()) |entry| {
+        if (entry.id == session) return entry.created_at_unix_secs;
+    }
+    return null;
 }
 
 const Tab = struct { window: ?[16]u8, front: bool };

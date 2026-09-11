@@ -60,6 +60,26 @@ fn workspaceReply(provider: *support.PhuxProvider, name: []const u8, request: u3
     try testing.expect(provider.bridge.incoming.stage(bytes));
 }
 
+/// `session`'s creation time in a session list.
+fn createdOf(catalog: anytype, session: u32) ?i64 {
+    for (catalog) |entry| if (entry.id == session) return entry.created_at_unix_secs;
+    return null;
+}
+
+/// The creation time `standby_state.bin` lists for `session`, read through a
+/// listing provider of its own so no launch under test is touched.
+fn listedCreated(session: u32) !i64 {
+    const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "probe" } }, null, "relaunch");
+    defer peer.destroy();
+    peer.standBy();
+    try peer.host.start("relaunch");
+    try fixture.stageFixture(peer.bridge, "hello.bin");
+    _ = try peer.drainReadiness();
+    try fixture.stageFixture(peer.bridge, "standby_state.bin");
+    _ = try peer.drainReadiness();
+    return createdOf(peer.standbyCatalog(), session) orelse error.NotListed;
+}
+
 const Front = struct { authority: ?contract.ProviderId, window: ?[16]u8 };
 
 /// The selected tab of the front window: which coordinator's, and its
@@ -163,6 +183,18 @@ const Launch = struct {
     /// HELLO_OK on the peer's connection: it asks GET_STATE and lists nothing yet.
     fn hello(self: *Launch, fx: *PeerFx, slot: usize) !void {
         try fixture.stageFixture(self.engine.model.phux_peers[slot].?.bridge, "hello.bin");
+        self.wake(fx, slot);
+    }
+
+    /// HELLO_OK from the same host's server after a graceful upgrade: every
+    /// fixture names server `cockpit-fixture`; this one names another id of
+    /// the same length, so the frame is otherwise unchanged.
+    fn helloUpgraded(self: *Launch, fx: *PeerFx, slot: usize) !void {
+        const bytes = try fixture.readFixture("hello.bin");
+        defer testing.allocator.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, "cockpit-fixture").?;
+        @memcpy(bytes[at..][0.."cockpit-upgrade".len], "cockpit-upgrade");
+        try testing.expect(self.engine.model.phux_peers[slot].?.bridge.incoming.stage(bytes));
         self.wake(fx, slot);
     }
 
@@ -336,6 +368,67 @@ test "a stale restored record is dropped quietly, and nothing is sent to another
     try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
 }
 
+test "a graceful upgrade keeps the relaunch restore: another server id, the same session id and creation time" {
+    // phux-c2td.32: the record named the server's HELLO_OK.server_id, which
+    // an upgrade changes, so the restore was lost although the session lived.
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const created = try listedCreated(1);
+    var launch = try Launch.start();
+    defer launch.engine.destroy();
+    const model = launch.engine.model;
+    var fx: PeerFx = .{};
+    launch.measure();
+    try launch.helloUpgraded(&fx, 0);
+    // mini's server is not the one This Mac's fixture names any more.
+    try testing.expect(!std.mem.eql(u8, launch.here.serverId().?, launch.mini.serverId().?));
+    launch.remember(0, .{ .session = 1, .created = created, .front = true });
+    _ = countFrames(launch.mini);
+    try launch.list(&fx, 0);
+    try testing.expectEqual(@as(usize, 1), fx.restarts[0]);
+    try testing.expectEqual(@as(usize, 1), fx.total());
+    try testing.expect(launch.mini.showing());
+    try testing.expectEqual(@as(?u32, 1), launch.mini.session_id);
+    try testing.expect(!model.peer_restore[0].?.pending);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.studio).attach);
+}
+
+test "a cold restart that reissues the id drops the record, and so does an old record of another server" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const created = try listedCreated(1);
+    var launch = try Launch.start();
+    defer launch.engine.destroy();
+    const model = launch.engine.model;
+    var fx: PeerFx = .{};
+    launch.measure();
+    try launch.hello(&fx, 0);
+    try launch.hello(&fx, 1);
+    // mini lists a session 1 created a second after the one on screen at
+    // the quit: a cold restart gave the id to a new session.
+    launch.remember(0, .{ .session = 1, .created = created + 1, .front = true });
+    // studio's record was written before creation times were kept: read
+    // from the file as it was, it names an earlier server.
+    var file: [remote_memory.max_list_file_bytes]u8 = undefined;
+    const bytes = try std.fmt.bufPrint(&file, "phux-cockpit-remote v3\ntarget=studio\nshown=2,{x:0>16},-,0\n", .{remote_memory.serverHash("an earlier server")});
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.parseAll(bytes, &hosts));
+    try testing.expect(hosts.shown[0].?.created == null);
+    launch.remember(1, hosts.shown[0].?);
+    _ = countFrames(launch.mini);
+    _ = countFrames(launch.studio);
+
+    try launch.list(&fx, 0);
+    try launch.list(&fx, 1);
+    try testing.expectEqual(@as(usize, 0), fx.total());
+    try testing.expect(model.peer_restore[0] == null);
+    try testing.expect(model.peer_restore[1] == null);
+    try testing.expect(!launch.mini.showing());
+    try testing.expect(!launch.studio.showing());
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.mini).attach);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.studio).attach);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
+}
+
 test "a restored record that names another coordinator than its slot's peer is dropped, and shows nothing there" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var launch = try Launch.start();
@@ -427,7 +520,9 @@ test "what is kept is the session on screen, its tab, and whether that tab is in
     try testing.expect(peer_restore.capture(model, &hosts));
     const kept = hosts.shown[0].?;
     try testing.expectEqual(@as(u32, 1), kept.session);
-    try testing.expectEqual(remote_memory.serverHash(mini.serverId().?), kept.server);
+    // Named by its creation time in mini's own list, not by mini's server.
+    try testing.expect(kept.created != null);
+    try testing.expectEqual(createdOf(mini.sessionCatalog(), 1), kept.created);
     try testing.expectEqualSlices(u8, &mini_window[0].id, &kept.window.?);
     try testing.expect(kept.front);
     // studio is not held, so it shows nothing.

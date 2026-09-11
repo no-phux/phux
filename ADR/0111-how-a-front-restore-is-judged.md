@@ -6,10 +6,11 @@ last-reviewed: 2026-09-11
 
 # 0111 — How a front restore is judged
 
-**TL;DR.** Amends ADR-0110. A front record whose host's connection fails
-once before it is shown waits for the backoff redial, a lister, and is
-judged when that connection lists; a second failure drops it. This Mac's
-first projection at launch leaves a restored peer's selected tab in front.
+**TL;DR.** Amends ADR-0110. A record names its session by id and creation
+time, so a graceful server upgrade keeps it. A front record whose host's
+connection fails once before it is shown waits for the backoff redial, a
+lister; a second failure drops it. This Mac's first projection at launch
+leaves a restored peer's selected tab in front.
 
 Status: Accepted
 Date: 2026-09-11
@@ -19,7 +20,12 @@ Date: 2026-09-11
 [ADR-0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)
 re-shows at launch the one remembered host whose tab was the front
 window's selected tab, once its own list still carries the session and the
-front window has a measured size. Two cases were left open.
+front window has a measured size. Three cases were left open.
+
+A record named its session by id and a hash of `HELLO_OK.server_id`
+(decisions 1 and 3). Every server exec changes that id, a graceful upgrade
+included, so an upgrade dropped the record although the session, its id
+and its creation time all survived it (the upgrade blob carries them).
 
 A host whose first connection failed dropped its record (ADR-0110 decision
 5), so a host that was merely slow to accept its first dial came back
@@ -52,6 +58,14 @@ metadata writes go only to the coordinator that minted the ref.
    of This Mac's terminals, takes the tab. The peer is then hidden and
    returns to listing as any hidden peer does: its tabs leave, and only
    its own connection restarts, as a lister that sends no ATTACH.
+3. **The key.** A record keeps the session's creation time from the
+   session list, `shown=<session>,@<unix seconds>,<window>,<front>`, in
+   place of the server hash. It applies only on the coordinator its
+   target line names, and only when that coordinator's list carries the
+   same session id with the same creation time. A line written before
+   this carries the server hash in that field; it still reads, is judged
+   by the hash as before, and so is dropped by any restart. Capture writes
+   the hash only when the list does not give the creation time.
 
 ## Why
 
@@ -68,6 +82,11 @@ and a later projection takes it only with a choice behind it. Rule A is
 kept by the existing `settlePeers`, which returns any peer whose tabs are
 not on screen to listing.
 
+A graceful upgrade keeps every session with its id and creation time; a
+cold restart reissues ids from 1 to sessions created anew. The pair tells
+the two apart with no wire change, from a field the session list already
+carries.
+
 ## Tradeoffs
 
 - A host that fails twice stays listing for that launch, even if it comes
@@ -75,6 +94,12 @@ not on screen to listing.
 - A restore after a failure appears a second or more after launch.
 - Between the failure and the redial the record stays front in the
   `.remote` file, so a quit then keeps it for the next launch.
+- Creation times are whole seconds. A cold restart that gives the id to a
+  session created in the same second as the remembered one would show that
+  session instead. Rules A and B still hold then: it is displayed, on its
+  own coordinator.
+- A build that reads only server-hash lines treats a file with the new line
+  as malformed and forgets its hosts: one Connect to Host after a downgrade.
 
 ## Alternatives
 
@@ -88,3 +113,7 @@ case, where the backoff redial already exists and already only lists.
 **Make This Mac's projection yield the selection to a restored peer.** A
 special case in the shared workspace for a state that already resolves
 correctly without one.
+
+**Key on the ADR-0109 instance token.** It survives exactly an upgrade,
+but neither HELLO_OK nor the session list carries it; a client reads it
+only from a bound spawn, so this would need wire surface.

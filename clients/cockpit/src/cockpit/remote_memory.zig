@@ -15,6 +15,9 @@
 //! distinct `target=` lines, oldest first. v3 is v2 where at least one
 //! `target=` line is followed by one `shown=` record; it is written only when
 //! a record exists, so a file without one stays readable by v2 releases.
+//! A record names its session by id and creation time (`@` and Unix
+//! seconds); one written before creation times were kept carries the
+//! server's hash in that field instead, still reads, and is judged by it.
 //! A file naming more than one front record keeps the first and reads the
 //! others as not front. The file is written only when its bytes change, and
 //! then atomically (a temporary file, synced, replaces it), so a torn write
@@ -35,32 +38,48 @@ const shown_key = "shown=";
 /// This Mac plus three hosts is Cockpit's coordinator bound.
 pub const max_hosts: usize = 3;
 pub const max_file_bytes = header.len + key.len + config_module.max_phux_remote_bytes + 1;
-/// `shown=` session `,` server hash `,` window id or `-` `,` front, newline.
-const max_shown_line_bytes = shown_key.len + 10 + 1 + 16 + 1 + 32 + 1 + 1 + 1;
+/// `shown=` session `,` `@` creation time (at most 20 bytes, as i64's
+/// minimum) or a 16-digit server hash `,` window id or `-` `,` front, newline.
+const max_shown_line_bytes = shown_key.len + 10 + 1 + 21 + 1 + 32 + 1 + 1 + 1;
 pub const max_list_file_bytes = shown_header.len + max_hosts * (key.len + config_module.max_phux_remote_bytes + 1 + max_shown_line_bytes);
 
 /// What a remembered host's coordinator was showing (ADR-0110): the session,
-/// the server incarnation it belongs to, the shared window of its selected
-/// tab, and whether that tab was the selected tab of the front window.
-/// Keyed by the `target=` line it follows, so by that host's coordinator id;
-/// a session id is never read without it.
+/// by id and creation time, the shared window of its selected tab, and
+/// whether that tab was the selected tab of the front window. Keyed by the
+/// `target=` line it follows, so by that host's coordinator id; a session
+/// id is never read without it.
 pub const Shown = struct {
     session: u32,
-    /// `serverHash` of the server's HELLO_OK.server_id.
-    server: u64,
+    /// The session's creation time from the session list, in Unix seconds.
+    /// With the id it names the session across a graceful server upgrade,
+    /// which keeps both, while a cold restart that reissues the id creates
+    /// the session anew. Null in a record written before creation times were
+    /// kept, which names the server incarnation instead (`server`).
+    created: ?i64 = null,
+    /// Only for a record without `created`: `serverHash` of the
+    /// HELLO_OK.server_id it was kept under.
+    server: u64 = 0,
     window: ?[16]u8 = null,
     front: bool = false,
 
     pub fn eql(a: Shown, b: Shown) bool {
         if (a.session != b.session or a.server != b.server or a.front != b.front) return false;
+        if (!sameCreated(a.created, b.created)) return false;
         const left = a.window orelse return b.window == null;
         const right = b.window orelse return false;
         return std.mem.eql(u8, &left, &right);
     }
+
+    fn sameCreated(a: ?i64, b: ?i64) bool {
+        const left = a orelse return b == null;
+        const right = b orelse return false;
+        return left == right;
+    }
 };
 
-/// The server incarnation a record belongs to. HELLO_OK.server_id changes on
-/// every server exec, so a record of an earlier server never matches.
+/// The server incarnation a record without a creation time belongs to.
+/// HELLO_OK.server_id changes on every server exec, an upgrade included, so
+/// such a record of an earlier server never matches.
 pub fn serverHash(server_id: []const u8) u64 {
     return std.hash.Wyhash.hash(0x7068_7578, server_id);
 }
@@ -172,9 +191,16 @@ fn parseShown(text: []const u8) ?Shown {
     if (session_text.len == 0 or session_text.len > 10 or session_text[0] == '0') return null;
     for (session_text) |byte| if (!std.ascii.isDigit(byte)) return null;
     const session = std.fmt.parseUnsigned(u32, session_text, 10) catch return null;
-    if (server_text.len != 16) return null;
-    for (server_text) |byte| if (!std.ascii.isHex(byte)) return null;
-    const server = std.fmt.parseUnsigned(u64, server_text, 16) catch return null;
+    var created: ?i64 = null;
+    var server: u64 = 0;
+    if (std.mem.startsWith(u8, server_text, "@")) {
+        created = parseCreated(server_text[1..]) orelse return null;
+    } else {
+        // Written before creation times were kept: the server's hash.
+        if (server_text.len != 16) return null;
+        for (server_text) |byte| if (!std.ascii.isHex(byte)) return null;
+        server = std.fmt.parseUnsigned(u64, server_text, 16) catch return null;
+    }
     var window: ?[16]u8 = null;
     if (!std.mem.eql(u8, window_text, "-")) {
         if (window_text.len != 32) return null;
@@ -183,7 +209,17 @@ fn parseShown(text: []const u8) ?Shown {
         window = id;
     }
     const front = if (std.mem.eql(u8, front_text, "1")) true else if (std.mem.eql(u8, front_text, "0")) false else return null;
-    return .{ .session = session, .server = server, .window = window, .front = front };
+    return .{ .session = session, .created = created, .server = server, .window = window, .front = front };
+}
+
+/// A creation time exactly as `encodeShown` writes it: decimal, an optional
+/// leading `-`, no leading zero and no `-0`.
+fn parseCreated(text: []const u8) ?i64 {
+    const digits = if (std.mem.startsWith(u8, text, "-")) text[1..] else text;
+    if (digits.len == 0 or digits.len > 19) return null;
+    if (digits[0] == '0' and (digits.len > 1 or digits.len != text.len)) return null;
+    for (digits) |byte| if (!std.ascii.isDigit(byte)) return null;
+    return std.fmt.parseInt(i64, text, 10) catch null;
 }
 
 fn reject(out: *Hosts) bool {
@@ -214,7 +250,11 @@ fn encodeShown(value: Shown, out: *[max_shown_line_bytes]u8) ?[]const u8 {
         window_text = std.fmt.bytesToHex(id, .lower);
         break :blk &window_text;
     } else "-";
-    return std.fmt.bufPrint(out, shown_key ++ "{d},{x:0>16},{s},{d}\n", .{ value.session, value.server, window, @intFromBool(value.front) }) catch null;
+    const front = @intFromBool(value.front);
+    if (value.created) |created| {
+        return std.fmt.bufPrint(out, shown_key ++ "{d},@{d},{s},{d}\n", .{ value.session, created, window, front }) catch null;
+    }
+    return std.fmt.bufPrint(out, shown_key ++ "{d},{x:0>16},{s},{d}\n", .{ value.session, value.server, window, front }) catch null;
 }
 
 fn append(out: []u8, at: usize, text: []const u8) ?usize {

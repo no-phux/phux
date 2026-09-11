@@ -168,6 +168,44 @@ test "a file naming two front records keeps every host and only the first front"
     try testing.expectEqual(@as(u32, 2), parsed.shown[1].?.session);
 }
 
+test "a record names its session by id and creation time, and a record kept with a server hash still reads" {
+    // phux-c2td.32: a server hash dropped the record on a graceful upgrade,
+    // which changes HELLO_OK.server_id but keeps sessions and their times.
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("mini"));
+    const shown: remote_memory.Shown = .{ .session = 7, .created = 1_757_000_000, .window = @splat(0xcd), .front = true };
+    try testing.expect(hosts.setShown(0, shown));
+    var out: [remote_memory.max_list_file_bytes]u8 = undefined;
+    const encoded = remote_memory.encodeAll(&hosts, &out).?;
+    try testing.expectEqualStrings("phux-cockpit-remote v3\ntarget=mini\nshown=7,@1757000000," ++ "cd" ** 16 ++ ",1\n", encoded);
+    var parsed: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.parseAll(encoded, &parsed));
+    try testing.expect(parsed.shown[0].?.eql(shown));
+    // The same id created at another second is another session.
+    try testing.expect(!shown.eql(.{ .session = 7, .created = 1_757_000_001, .window = @splat(0xcd), .front = true }));
+    // Every creation time an i64 holds round-trips, a clock before 1970 included.
+    for ([_]i64{ 0, -5, std.math.maxInt(i64), std.math.minInt(i64) }) |created| {
+        const value: remote_memory.Shown = .{ .session = 1, .created = created };
+        try testing.expect(hosts.setShown(0, value));
+        try testing.expect(remote_memory.parseAll(remote_memory.encodeAll(&hosts, &out).?, &parsed));
+        try testing.expect(parsed.shown[0].?.eql(value));
+    }
+
+    // A line written before creation times were kept still reads as it did.
+    try testing.expect(remote_memory.parseAll("phux-cockpit-remote v3\ntarget=mini\nshown=7,0123456789abcdef,-,1\n", &parsed));
+    try testing.expect(parsed.shown[0].?.created == null);
+    try testing.expectEqual(@as(u64, 0x0123_4567_89ab_cdef), parsed.shown[0].?.server);
+    try testing.expect(parsed.shown[0].?.front);
+
+    // A malformed creation time forgets every host, as any malformed record does.
+    for ([_][]const u8{ "@", "@-", "@01", "@-0", "@+1", "@1x", "@ 1", "@99999999999999999999" }) |field| {
+        var file: [128]u8 = undefined;
+        const bytes = try std.fmt.bufPrint(&file, "phux-cockpit-remote v3\ntarget=mini\nshown=7,{s},-,1\n", .{field});
+        try testing.expect(!remote_memory.parseAll(bytes, &parsed));
+        try testing.expectEqual(@as(usize, 0), parsed.count);
+    }
+}
+
 test "the remembered hosts file is written only when its bytes change" {
     const io = testing.io;
     const gpa = testing.allocator;
