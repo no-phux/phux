@@ -86,6 +86,35 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
+## Phux Cockpit (native macOS)
+
+Cockpit is versioned and released independently (`cockpit-vX.Y.Z` tags on a
+separate cadence from the CLI above). Install it with its own curl installer:
+
+```sh
+curl -fsSL https://phux.sh/install-cockpit | sh
+```
+
+That URL serves `scripts/install-cockpit.sh` from this repository byte for
+byte, the same way `/install` serves the CLI installer — read it before you
+pipe it anywhere. With no `--version`, it installs the latest `cockpit-vX.Y.Z`
+release; pin one with `sh -s -- --version cockpit-vX.Y.Z`. It verifies the
+release `SHA256SUMS` before unpacking, places **Phux Cockpit.app** in
+`/Applications` (`~/Applications` when `/Applications` is not writable),
+clears the quarantine attribute, and restores the previous install if
+placement fails.
+
+The Homebrew cask installs the same app from the same release assets:
+
+```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
+brew install --cask no-phux/tap/phux-cockpit
+```
+
+Cockpit requires Apple silicon macOS 11 or later. Intel Macs have no release
+artifact; the curl installer and the cask both refuse there.
+
 ## Release tarball
 
 Release tags include target-specific tarballs and checksum sidecars. Pick a

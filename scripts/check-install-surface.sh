@@ -120,7 +120,37 @@ require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/p
 require_fixed scripts/install.sh 'echo "next: phux"'
 require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
 require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
+# The repo publishes several release streams and only bare vX.Y.Z tags carry
+# the CLI tarballs. The redirect fast path must stay core-only, with a
+# filtered list as the fallback for when another stream ships newer.
+require_fixed scripts/install.sh 'v[0-9]*)'
+require_fixed scripts/install.sh 'releases?per_page=30'
+require_fixed scripts/install.sh 'no core phux release found in recent GitHub releases'
 require_fixed scripts/test-install.sh 'installer transaction tests passed'
+
+# --- The Cockpit installer ---------------------------------------------------
+#
+# scripts/install-cockpit.sh is the same POSIX-sh, verify-before-install
+# discipline as scripts/install.sh, pointed at the cockpit-vX.Y.Z stream.
+# It is served at /install-cockpit (+.sh), so every guard below has a twin in
+# the CLI block above. macOS-only: refusing anywhere else is the install, not
+# a fallback.
+require_regex scripts/install-cockpit.sh '^#!/bin/sh$'
+forbid_fixed scripts/install-cockpit.sh '#!/usr/bin/env bash'
+forbid_regex scripts/install-cockpit.sh '^[[:space:]]*[^#[:space:]].*pipefail'
+forbid_regex scripts/install-cockpit.sh '^[[:space:]]*[^#[:space:]].*%q'
+require_fixed scripts/install-cockpit.sh 'shell_quote()'
+require_fixed scripts/install-cockpit.sh 'phux-cockpit-${semver}-macos-arm64.zip'
+require_fixed scripts/install-cockpit.sh 'no-phux/phux/releases/download/${version}'
+require_fixed scripts/install-cockpit.sh 'cockpit-vX.Y.Z'
+require_fixed scripts/install-cockpit.sh 'Phux Cockpit is macOS-only'
+require_fixed scripts/install-cockpit.sh 'Phux Cockpit ships arm64 only'
+require_fixed scripts/install-cockpit.sh 'com.apple.quarantine'
+require_fixed scripts/install-cockpit.sh 'rollback_publish'
+require_fixed scripts/install-cockpit.sh '.phux-cockpit-install.lock'
+require_fixed scripts/install-cockpit.sh 'open -a "Phux Cockpit"'
+require_fixed scripts/test-install.sh 'cockpit installer transaction tests passed'
+forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
 
 # --- The installer is POSIX sh, and phux.sh serves it -------------------------
 #
@@ -148,21 +178,38 @@ forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install.sh"'
 # path filter is what makes an installer change redeploy the site at all. Miss
 # the second and phux.sh keeps serving the old script with nothing to show for
 # it in any diff.
-require_fixed docs/site/scripts/sync-docs.ts 'const INSTALLER_SRC'
+require_fixed docs/site/scripts/sync-docs.ts 'scripts/install.sh'
 require_fixed docs/site/scripts/sync-docs.ts '"public/install", "public/install.sh"'
+require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-cockpit.sh'
+require_fixed docs/site/scripts/sync-docs.ts '"public/install-cockpit", "public/install-cockpit.sh"'
 require_fixed docs/site/scripts/sync-docs.ts 'must start with #!/bin/sh'
 require_fixed .github/workflows/site-deploy.yml '- "scripts/install.sh"'
+require_fixed .github/workflows/site-deploy.yml '- "scripts/install-cockpit.sh"'
+# Both release streams move a landing badge now, so both must redeploy it.
+require_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'cockpit-v')"
 # The route itself is unprovable before a deploy, so the deploy asserts it.
-require_fixed .github/workflows/site-deploy.yml 'Verify the installer is served'
+require_fixed .github/workflows/site-deploy.yml 'Verify the installers are served'
 require_fixed .github/workflows/site-deploy.yml 'if [ "$shebang" != '"'"'#!/bin/sh'"'"' ]; then'
 # A committed copy is a second source of truth waiting to go stale.
 require_fixed docs/site/.gitignore 'public/install'
 require_fixed docs/site/.gitignore 'public/install.sh'
+require_fixed docs/site/.gitignore 'public/install-cockpit'
+require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
+require_fixed docs/site/public/_headers '/install-cockpit'
 
 require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
+require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
+require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed docs/INSTALL.md '## Phux Cockpit (native macOS)'
+require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed docs/site/DEPLOY.md '/install-cockpit'
 require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed docs/RELEASING.md 'Curl installer contract'
+# The cockpit tag shape and ZIP name are consumed by the installer and the
+# site badge; RELEASING must say so where the release is cut.
+require_fixed docs/RELEASING.md 'phux-cockpit-<semver>-macos-arm64.zip'
+require_fixed docs/RELEASING.md 'scripts/install-cockpit.sh'
 
 # --- The repository is no-phux/phux -------------------------------------------
 #
@@ -171,11 +218,13 @@ require_fixed docs/RELEASING.md 'Curl installer contract'
 # decision to revoke. An installed phux resolves its own updates through these
 # constants, so a dropped redirect would strand every existing install.
 forbid_fixed scripts/install.sh 'phall1/phux'
+forbid_fixed scripts/install-cockpit.sh 'phall1/phux'
 forbid_fixed docs/INSTALL.md 'phall1/phux'
 forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
 require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${version}'
+require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
 require_fixed justfile "release-preflight TAG:"
@@ -360,6 +409,12 @@ require_fixed .github/workflows/release.yml 'echo "${sha}  ${stage}.tar.gz" > "$
 require_fixed crates/phux/src/commands/update/release.rs 'format!("phux-{tag}-{target}")'
 require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{tag}/{archive}'
 require_fixed crates/phux/src/commands/update/release.rs 'format!("{archive_url}.sha256")'
+# `phux update` resolves "latest" the same way the installer does, and the
+# same multi-stream defect applied: the redirect follows whichever stream
+# shipped newest. The tag must come from the filtered releases list unless the
+# redirect already names a core tag.
+require_fixed crates/phux/src/commands/update/release.rs 'latest_core_tag_from_list'
+require_fixed crates/phux/src/commands/update/release.rs 'releases?per_page=30'
 # The verification must precede the unpack; these two are the load-bearing
 # functions and their order is asserted by the unit tests next to them.
 require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn verify_archive'

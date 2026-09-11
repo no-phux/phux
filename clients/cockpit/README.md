@@ -279,7 +279,21 @@ saying so.
 
 ## Install
 
-Install with Homebrew:
+Install with the curl installer:
+
+```sh
+curl -fsSL https://phux.sh/install-cockpit | sh
+```
+
+It resolves the latest `cockpit-vX.Y.Z` release (pin one with
+`sh -s -- --version cockpit-vX.Y.Z`), verifies the release `SHA256SUMS`
+before unpacking, places **Phux Cockpit** in `/Applications`
+(`~/Applications` when `/Applications` is not writable), and clears the
+quarantine attribute. That URL serves `scripts/install-cockpit.sh` from the
+phux repository byte for byte — read it before you pipe it anywhere, the way
+you should with any installer.
+
+Or with Homebrew:
 
 ```sh
 brew trust --tap no-phux/tap # Homebrew 6+
@@ -287,9 +301,9 @@ brew tap no-phux/tap
 brew install --cask no-phux/tap/phux-cockpit
 ```
 
-The cask places **Phux Cockpit** in Applications. Releases without configured
-Developer ID credentials are ad-hoc signed; the cask clears the quarantine
-attribute and reports that fact in its caveat.
+The cask installs the same app from the same release assets into Applications.
+Releases without configured Developer ID credentials are ad-hoc signed; both
+install paths clear the quarantine attribute and report that fact.
 
 ## Keybindings
 

@@ -38,6 +38,8 @@ set -euo pipefail
 url=$2
 out=$4
 case "$url" in
+  *cockpit*.zip) cp "$INSTALL_FIXTURE/cockpit.zip" "$out" ;;
+  *cockpit*SHA256SUMS) cp "$INSTALL_FIXTURE/cockpit.SHA256SUMS" "$out" ;;
   *.sha256) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz.sha256" "$out" ;;
   *) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz" "$out" ;;
 esac
@@ -152,3 +154,93 @@ fi
 }
 
 echo "installer transaction tests passed"
+
+# --- Cockpit installer -------------------------------------------------------
+#
+# Same discipline as above: the script is served at /install-cockpit and piped
+# to `sh`, so it runs under dash here. macOS-only tools it needs (ditto for
+# bundle placement, xattr for quarantine) are faked; unzip is real on both
+# macOS and the Linux CI runners.
+COCKPIT_VERSION=cockpit-v9.8.7
+COCKPIT_SEMVER=9.8.7
+COCKPIT_ZIP="phux-cockpit-${COCKPIT_SEMVER}-macos-arm64.zip"
+mkdir -p "$FIXTURE/Phux Cockpit.app/Contents/MacOS"
+printf 'cockpit plist\n' > "$FIXTURE/Phux Cockpit.app/Contents/Info.plist"
+printf 'cockpit binary\n' > "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+chmod 755 "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+(cd "$FIXTURE" && zip -qr "$TMP/$COCKPIT_ZIP" "Phux Cockpit.app" >/dev/null)
+mv "$TMP/$COCKPIT_ZIP" "$FIXTURE/cockpit.zip"
+(
+  cd "$FIXTURE"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum cockpit.zip | sed "s/cockpit.zip\$/$COCKPIT_ZIP/" > cockpit.SHA256SUMS
+  else
+    shasum -a 256 cockpit.zip | sed "s/cockpit.zip\$/$COCKPIT_ZIP/" > cockpit.SHA256SUMS
+  fi
+  # A dmg line for an asset that is never downloaded: verification must filter
+  # to the zip, not demand the whole file.
+  echo "0000000000000000000000000000000000000000000000000000000000000000  phux-cockpit-${COCKPIT_SEMVER}-macos-arm64.dmg" >> cockpit.SHA256SUMS
+)
+
+cat > "$FAKE_BIN/ditto" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${FAIL_DITTO:-0} == 1 && ! -e ${FAIL_MARKER:-/nonexistent-marker} ]]; then
+  : > "$FAIL_MARKER"
+  exit 1
+fi
+cp -Rf "$1" "$2"
+EOF
+chmod 755 "$FAKE_BIN/ditto"
+
+cat > "$FAKE_BIN/xattr" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "${XATTR_MARKER:-/dev/null}"
+EOF
+chmod 755 "$FAKE_BIN/xattr"
+
+run_cockpit_install() {
+  local apps_dir=$1
+  local extra=${2:-}
+  PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" XATTR_MARKER="$TMP/xattr-cleared" \
+    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
+      --os darwin --arch arm64 --applications-dir "$apps_dir" $extra
+}
+
+COCKPIT_APPS="$TMP/cockpit-apps"
+output="$(run_cockpit_install "$COCKPIT_APPS")"
+grep -Fq "installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" <<<"$output"
+grep -Fq 'next: open -a "Phux Cockpit"' <<<"$output"
+cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$COCKPIT_APPS/Phux Cockpit.app/Contents/Info.plist"
+cmp "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit" "$COCKPIT_APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+[[ -e $TMP/xattr-cleared ]] || {
+  echo "cockpit installer did not clear the quarantine attribute" >&2
+  exit 1
+}
+
+# A bare semver normalizes to the release tag.
+output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
+  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_SEMVER" \
+    --os darwin --arch arm64 --applications-dir "$TMP/unused" --dry-run)"
+grep -Fq "tag: $COCKPIT_VERSION" <<<"$output"
+grep -Fq "zip_url: https://github.com/no-phux/phux/releases/download/${COCKPIT_VERSION}/${COCKPIT_ZIP}" <<<"$output"
+
+# A failed placement restores the previous install and leaves no lock behind.
+COCKPIT_ROLLBACK="$TMP/cockpit-rollback"
+mkdir -p "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents"
+printf 'old plist\n' > "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents/Info.plist"
+if PATH="$FAKE_BIN:/usr/bin:/bin" XATTR_MARKER="$TMP/xattr-unused" \
+  FAIL_DITTO=1 FAIL_MARKER="$TMP/ditto-failed" \
+  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
+    --os darwin --arch arm64 --applications-dir "$COCKPIT_ROLLBACK" >"$TMP/cockpit-rollback.out" 2>"$TMP/cockpit-rollback.err"; then
+  echo "cockpit installer unexpectedly succeeded after forced placement failure" >&2
+  exit 1
+fi
+grep -Fxq 'old plist' "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents/Info.plist"
+if find "$COCKPIT_ROLLBACK" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
+  echo "cockpit installer left transaction artifacts after rollback" >&2
+  exit 1
+fi
+
+echo "cockpit installer transaction tests passed"

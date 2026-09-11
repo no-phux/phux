@@ -520,6 +520,11 @@ The job refuses unexpected assets on a draft and refuses any partial or
 unexpected asset set on an already-published release, so a replay cannot
 silently replace a public release with different bytes.
 
+The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
+asset name are a consumed contract: `scripts/install-cockpit.sh` and the
+site's Cockpit version badge resolve them directly. Rename either and both
+break; `scripts/check-install-surface.sh` pins the three halves together.
+
 ## One-time Cockpit import cutover
 
 The imported branch contains a real two-parent merge whose second parent is

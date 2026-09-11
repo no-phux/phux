@@ -110,7 +110,8 @@ hero; the narrative sections run top to bottom below it.
    wire anything can drive. A full-width install band sits above everything
    else in the hero with both copy-paste paths side by side — the `phux` CLI
    (macOS / Linux) and the Cockpit cask (native macOS) — each with its latest
-   release badge. The wasm island sits below it as immediate proof —
+   release badge. Both lead with the checksum-verified curl installer;
+   Homebrew is the documented alternative. The wasm island sits below it as immediate proof —
    launch-gated (poster of a real session + click to go live; the
    Worker's session cap means auto-connect would burn capacity).
 2. **The passthrough is the proof** — the rendered stream is the *actual* bytes a

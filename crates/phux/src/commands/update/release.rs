@@ -206,47 +206,39 @@ impl Downloader {
 impl ReleaseSource for NetworkReleaseSource {
     fn latest_tag(&self) -> Result<String, UpdateError> {
         let downloader = Downloader::detect()?;
-        let tag = match downloader {
+        if matches!(downloader, Downloader::Curl) {
             // A HEAD that follows redirects and prints only the final URL.
-            // The last path segment of `…/releases/tag/vX.Y.Z` is the tag.
-            Downloader::Curl => {
-                let out = run(
-                    "curl",
-                    &[
-                        "-fsSLI",
-                        "-o",
-                        "/dev/null",
-                        "-w",
-                        "%{url_effective}",
-                        LATEST_REDIRECT,
-                    ],
-                )?;
-                out.rsplit('/').next().unwrap_or_default().trim().to_owned()
+            // The last path segment of `…/releases/tag/vX.Y.Z` is the tag —
+            // but only when it names the core stream. The redirect follows
+            // whichever stream shipped most recently, so a newer Cockpit (or
+            // integration) release lands here as a tag this updater must not
+            // touch; that falls through to the filtered list below.
+            let out = run(
+                "curl",
+                &[
+                    "-fsSLI",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{url_effective}",
+                    LATEST_REDIRECT,
+                ],
+            )?;
+            let tag = out.rsplit('/').next().unwrap_or_default().trim().to_owned();
+            if tag.starts_with('v') && Version::parse(&tag).is_some() {
+                return Ok(tag);
             }
-            // wget cannot print the effective URL, so the API is the fallback.
-            Downloader::Wget => {
-                let body = run(
-                    "wget",
-                    &[
-                        "-q",
-                        "-O",
-                        "-",
-                        &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-                    ],
-                )?;
-                tag_from_release_json(&body).ok_or_else(|| {
-                    UpdateError::Fetch(
-                        "the GitHub releases API answered without a tag_name".to_owned(),
-                    )
-                })?
-            }
-        };
-        if tag.is_empty() {
-            return Err(UpdateError::Fetch(
-                "could not resolve the latest release tag".to_owned(),
-            ));
         }
-        Ok(tag)
+        // wget cannot print the effective URL, and the redirect may name
+        // another stream anyway: list and take the newest core tag.
+        let list_url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
+        let body = match downloader {
+            Downloader::Curl => run("curl", &["-fsSL", &list_url])?,
+            Downloader::Wget => run("wget", &["-q", "-O", "-", &list_url])?,
+        };
+        latest_core_tag_from_list(&body).ok_or_else(|| {
+            UpdateError::Fetch("the GitHub releases list named no core phux release".to_owned())
+        })
     }
 
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
@@ -281,19 +273,39 @@ fn run(program: &str, args: &[&str]) -> Result<String, UpdateError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Pull `tag_name` out of a GitHub release document without deserializing
-/// the rest of it (the document is large and none of the rest is used).
-fn tag_from_release_json(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    value
-        .get("tag_name")?
-        .as_str()
-        .map(std::borrow::ToOwned::to_owned)
+/// Name the newest core release in a GitHub releases list document.
+///
+/// The repository publishes several streams (`vX.Y.Z` for the CLI,
+/// `cockpit-vX.Y.Z`, integration packages) and only bare `vX.Y.Z` tags carry
+/// the tarballs this updater installs. GitHub returns newest-first, so the
+/// first entry that is neither draft nor prerelease and parses as a core tag
+/// is the current release. Drafts and prereleases are skipped rather than
+/// trusted: a draft has no assets and a prerelease is not what `update`
+/// without `--version` should install.
+fn latest_core_tag_from_list(body: &str) -> Option<String> {
+    let releases: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
+    releases.into_iter().find_map(|release| {
+        if release.get("draft").and_then(serde_json::Value::as_bool) == Some(true) {
+            return None;
+        }
+        if release
+            .get("prerelease")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return None;
+        }
+        let tag = release.get("tag_name")?.as_str()?;
+        if !tag.starts_with('v') || Version::parse(tag).is_none() {
+            return None;
+        }
+        Some(tag.to_owned())
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Artifact, Version, tag_from_release_json, validate_tag};
+    use super::{Artifact, Version, latest_core_tag_from_list, validate_tag};
 
     #[test]
     fn versions_parse_with_and_without_the_v_prefix_and_order_correctly() {
@@ -365,13 +377,29 @@ mod tests {
         );
     }
 
+    /// The list mixes every release stream; only a published core tag wins,
+    /// even when another stream shipped newer.
     #[test]
-    fn release_json_yields_its_tag() {
-        assert_eq!(
-            tag_from_release_json(r#"{"tag_name":"v0.13.0","name":"v0.13.0"}"#).as_deref(),
-            Some("v0.13.0")
-        );
-        assert!(tag_from_release_json("not json").is_none());
-        assert!(tag_from_release_json(r#"{"name":"x"}"#).is_none());
+    fn release_list_names_the_newest_core_release() {
+        let body = r#"[
+            {"tag_name":"cockpit-v0.20.0","draft":false,"prerelease":false},
+            {"tag_name":"v0.31.0","draft":false,"prerelease":false},
+            {"tag_name":"v0.30.0","draft":false,"prerelease":false}
+        ]"#;
+        assert_eq!(latest_core_tag_from_list(body).as_deref(), Some("v0.31.0"));
+    }
+
+    #[test]
+    fn release_list_skips_drafts_prereleases_and_other_streams() {
+        let body = r#"[
+            {"tag_name":"v0.32.0","draft":true,"prerelease":false},
+            {"tag_name":"v0.33.0-rc.1","draft":false,"prerelease":true},
+            {"tag_name":"opencode-plugin-v0.2.2","draft":false,"prerelease":false},
+            {"tag_name":"v0.31.0","draft":false,"prerelease":false}
+        ]"#;
+        assert_eq!(latest_core_tag_from_list(body).as_deref(), Some("v0.31.0"));
+        assert!(latest_core_tag_from_list("not json").is_none());
+        assert!(latest_core_tag_from_list(r#"[{"name":"x"}]"#).is_none());
+        assert!(latest_core_tag_from_list("[]").is_none());
     }
 }

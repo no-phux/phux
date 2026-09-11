@@ -14,10 +14,12 @@ on:
     paths:
       - "docs/**"
       - "ADR/**"
-      # The site serves scripts/install.sh verbatim at /install, so an installer
+      # The site serves scripts/install.sh verbatim at /install and
+      # scripts/install-cockpit.sh at /install-cockpit, so an installer
       # change has to redeploy the site or phux.sh keeps handing out the old
-      # script. sync-docs.ts copies it in; this is what triggers that copy.
+      # script. sync-docs.ts copies them in; this is what triggers that copy.
       - "scripts/install.sh"
+      - "scripts/install-cockpit.sh"
       - ".github/workflows/site-deploy.yml"
   # A new phux release stamps the site's version badge (scripts/fetch-release.ts).
   release:
@@ -36,9 +38,10 @@ permissions:
 
 jobs:
   pages:
-    # Release events only matter for core phux tags (vX.Y.Z) — component
-    # releases (cockpit-v*, opencode-plugin-v*, …) don't move the badge.
-    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
+    # Release events matter for the core phux tags (vX.Y.Z) and the Cockpit
+    # tags (cockpit-vX.Y.Z) — both move a version badge on the landing.
+    # Other component releases (opencode-plugin-v*, …) badge nothing.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v') || startsWith(github.event.release.tag_name, 'cockpit-v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -78,15 +81,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The curl installer is the one asset whose ROUTE cannot be proven before
+      # The curl installers are the assets whose ROUTES cannot be proven before
       # a deploy: `wrangler.jsonc` sets html_handling, and an extensionless
       # asset is an unusual shape for it to resolve. Everything else about the
-      # script is gated in `just ci` (scripts/check-install-surface.sh), so this
+      # scripts is gated in `just ci` (scripts/check-install-surface.sh), so this
       # step only answers "does the URL people are told to pipe to sh actually
       # return the script". Failing here is loud and costs nobody an install;
       # finding out from a stranger's broken terminal is the alternative.
       # The commit SHA busts any edge cache left over from the previous deploy.
-      - name: Verify the installer is served
+      - name: Verify the installers are served
         run: |
           set -euo pipefail
           for path in install install.sh; do
@@ -107,3 +110,18 @@ jobs:
             fi
           done
           echo "installer verified at /install and /install.sh"
+          for path in install-cockpit install-cockpit.sh; do
+            url="https://phux.sh/${path}?deployed=${GITHUB_SHA}"
+            served="$(curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors "$url")"
+            shebang="${served%%$'\n'*}"
+            if [ "$shebang" != '#!/bin/sh' ]; then
+              echo "https://phux.sh/${path} did not return a POSIX sh script" >&2
+              echo "first line was: ${shebang}" >&2
+              exit 1
+            fi
+            if ! grep -Fq 'phux-cockpit-' <<<"$served"; then
+              echo "https://phux.sh/${path} is missing its Cockpit asset name" >&2
+              exit 1
+            fi
+          done
+          echo "cockpit installer verified at /install-cockpit and /install-cockpit.sh"

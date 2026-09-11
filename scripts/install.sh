@@ -87,22 +87,36 @@ while [ "$#" -gt 0 ]; do
 done
 
 resolve_latest_version() {
-  latest=""
+  # This repository publishes several release streams (core `vX.Y.Z`,
+  # `cockpit-vX.Y.Z`, integration packages). Only bare `vX.Y.Z` tags carry
+  # the phux CLI tarballs. The "latest release" redirect stays the fast path
+  # while it points at a core tag; once another stream ships newer, fall back
+  # to listing and filtering, or the install dies on a tag it cannot use.
   if command -v curl >/dev/null 2>&1; then
     latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
       https://github.com/no-phux/phux/releases/latest)" \
       || die "could not resolve latest GitHub release"
-    latest="${latest_url##*/}"
+    case "${latest_url##*/}" in
+      v[0-9]*)
+        printf '%s\n' "${latest_url##*/}"
+        return 0
+        ;;
+    esac
+  fi
+  list_url="https://api.github.com/repos/no-phux/phux/releases?per_page=30"
+  if command -v curl >/dev/null 2>&1; then
+    list="$(curl -fsSL "$list_url")" \
+      || die "could not list GitHub releases"
   elif command -v wget >/dev/null 2>&1; then
-    latest_json="$(wget -qO- https://api.github.com/repos/no-phux/phux/releases/latest)" \
-      || die "could not resolve latest GitHub release"
-    latest="$(printf '%s\n' "$latest_json" \
-      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-      | head -n 1)"
+    list="$(wget -qO- "$list_url")" \
+      || die "could not list GitHub releases"
   else
     die "curl or wget is required to resolve the latest release"
   fi
-  [ -n "$latest" ] || die "latest GitHub release did not include a tag"
+  latest="$(printf '%s\n' "$list" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(v[0-9][^"]*\)".*/\1/p' \
+    | head -n 1)"
+  [ -n "$latest" ] || die "no core phux release found in recent GitHub releases"
   printf '%s\n' "$latest"
 }
 

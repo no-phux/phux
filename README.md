@@ -100,7 +100,9 @@ native host validation runs in the required CI gate.
 [Phux Cockpit](./clients/cockpit/README.md) is the independently versioned
 native macOS client. It keeps its own Zig build and `cockpit-vX.Y.Z` release
 cadence while compiling the stable `phux-client-ffi` C ABI from this same
-checkout. Use `just cockpit-build`, `just cockpit-test`, or `just cockpit-dev`.
+checkout. Install it with `curl -fsSL https://phux.sh/install-cockpit | sh`
+(or the Homebrew cask); use `just cockpit-build`, `just cockpit-test`, or
+`just cockpit-dev` to hack on it.
 
 ```sh
 phux --skill=quick          # installed CLI operating guide

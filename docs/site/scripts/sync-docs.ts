@@ -61,12 +61,21 @@ const PHUX_ROOT = resolve(DOCS_DIR, "..");
 const OUT_DIR = join(ROOT, "src/content/docs/_synced");
 const MANIFEST_PATH = join(ROOT, "public/docs-manifest.json");
 
-// The curl installer is published from this same repo, the same way the docs
-// are: `scripts/install.sh` is the only copy, and the site serves its bytes
-// verbatim. Both filenames get the identical script rather than one redirecting
-// to the other, so `curl https://phux.sh/install` needs no -L to follow.
-const INSTALLER_SRC = join(PHUX_ROOT, "scripts/install.sh");
-const INSTALLER_DESTS = ["public/install", "public/install.sh"] as const;
+// The curl installers are published from this same repo, the same way the docs
+// are: each `scripts/install*.sh` is the only copy, and the site serves its
+// bytes verbatim. Both filenames get the identical script rather than one
+// redirecting to the other, so `curl https://phux.sh/install` needs no -L to
+// follow.
+const INSTALLERS: { src: string; dests: readonly [string, string] }[] = [
+  {
+    src: join(PHUX_ROOT, "scripts/install.sh"),
+    dests: ["public/install", "public/install.sh"],
+  },
+  {
+    src: join(PHUX_ROOT, "scripts/install-cockpit.sh"),
+    dests: ["public/install-cockpit", "public/install-cockpit.sh"],
+  },
+];
 
 function sourceRevision(): string {
   const revision =
@@ -81,27 +90,28 @@ const GH_BLOB = `https://github.com/no-phux/phux/blob/${SOURCE_REVISION}`;
 const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
 
 /**
- * Publish `scripts/install.sh` at /install and /install.sh.
+ * Publish the installer scripts at /install(+.sh) and /install-cockpit(+.sh).
  *
- * Nothing here is committed — both destinations are gitignored and rewritten on
+ * Nothing here is committed — every destination is gitignored and rewritten on
  * every build — so the bytes a stranger pipes to `sh` cannot drift from the
- * script `scripts/test-install.sh` exercises. The shebang assertion is the
- * cheap half of that contract: the served script is consumed by `sh`, and a
+ * scripts `scripts/test-install.sh` exercises. The shebang assertion is the
+ * cheap half of that contract: a served script is consumed by `sh`, and a
  * bash shebang means somebody reintroduced bashisms that dash will reject on a
  * user's machine rather than in CI.
  */
 async function syncInstaller(): Promise<void> {
-  const script = await readFile(INSTALLER_SRC, "utf8");
-  if (!script.startsWith("#!/bin/sh\n")) {
-    throw new Error(
-      "scripts/install.sh must start with #!/bin/sh: it is served at " +
-        "https://phux.sh/install and piped straight to sh",
-    );
+  for (const { src, dests } of INSTALLERS) {
+    const script = await readFile(src, "utf8");
+    if (!script.startsWith("#!/bin/sh\n")) {
+      throw new Error(
+        `${src} must start with #!/bin/sh: it is served at https://phux.sh and piped straight to sh`,
+      );
+    }
+    for (const dest of dests) {
+      await writeFile(join(ROOT, dest), script, { mode: 0o755 });
+    }
   }
-  for (const dest of INSTALLER_DESTS) {
-    await writeFile(join(ROOT, dest), script, { mode: 0o755 });
-  }
-  console.log("sync-docs: published the installer at /install and /install.sh");
+  console.log("sync-docs: published the installers at /install and /install-cockpit (+.sh)");
 }
 
 /** Nav groups, in sidebar render order. */
