@@ -211,6 +211,19 @@ pub const Engine = struct {
     peer_channel_generation: [model_module.max_phux_peers]u64 = @splat(0),
     /// The occupancy whose close a restart waits for (Model.phux_peer_reopen).
     peer_reopen_generation: [model_module.max_phux_peers]u64 = @splat(0),
+    /// A failed listing peer's next automatic redial wait; 0 is the first.
+    peer_retry_delay_ms: [model_module.max_phux_peers]u64 = @splat(0),
+    /// The channel generation a slot's retry timer was armed for; a timer
+    /// that fires for any other generation, or none, is stale.
+    peer_retry_generation: [model_module.max_phux_peers]?u64 = @splat(null),
+
+    /// Automatic redial of a failed listing peer: 1 s, then twice the last
+    /// wait, at most 60 s, until it lists again.
+    pub const peer_retry_initial_ms: u64 = 1000;
+    pub const peer_retry_max_ms: u64 = 60_000;
+    /// One retry timer per peer slot, from this key (timer keys are their
+    /// own namespace; topology persistence uses 200).
+    pub const peer_retry_timer_key: u64 = 210;
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -1186,6 +1199,60 @@ pub const Engine = struct {
     fn peerOpenFailed(self: *Engine, fx: anytype, slot: usize) void {
         self.model.peer_failed[slot] = true;
         self.retirePeerChannel(fx, slot);
+        self.schedulePeerRetry(fx, slot);
+    }
+
+    /// Arm the slot's automatic redial: a listing peer that failed is dialed
+    /// again after 1 s, then after twice the last wait, at most 60 s, until
+    /// it lists (`resetPeerRetry`). A showing peer is not: its tabs keep
+    /// their frozen frames, picking its row retries it, and once its tabs
+    /// leave the screen it goes back to listing (`settlePeers`).
+    fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "schedulePeerRetry")) return;
+        const peer = self.model.phuxPeerAt(slot) orelse return;
+        if (peer.showing()) return;
+        const delay = if (self.peer_retry_delay_ms[slot] == 0) peer_retry_initial_ms else self.peer_retry_delay_ms[slot];
+        self.peer_retry_delay_ms[slot] = @min(delay * 2, peer_retry_max_ms);
+        self.peer_retry_generation[slot] = self.peer_channel_generation[slot];
+        fx.schedulePeerRetry(peer_retry_timer_key + slot, delay);
+    }
+
+    /// The slot listed, or now holds another coordinator: the next failure
+    /// waits 1 s again, and a timer already armed is stale.
+    fn resetPeerRetry(self: *Engine, slot: usize) void {
+        self.peer_retry_delay_ms[slot] = 0;
+        self.peer_retry_generation[slot] = null;
+    }
+
+    /// A peer's retry timer fired. Only a peer still failed, still listing,
+    /// on the channel generation the timer was armed for, is dialed again,
+    /// and as a lister: its connection asks GET_STATE and never attaches, so
+    /// it holds no viewport. If it listed, was picked, went away or began
+    /// showing meanwhile, the timer is stale and does nothing.
+    pub fn onPeerRetryTimer(self: *Engine, fx: anytype, key: u64) bool {
+        if (comptime !support.phux_enabled) return false;
+        const slot = peerRetrySlot(key) orelse return false;
+        if (!self.peerRetryDue(slot)) return false;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPeer")) return false;
+        self.model.peer_failed[slot] = false;
+        _ = fx.restartPeer(self, slot);
+        return self.commitProviderChange(true);
+    }
+
+    fn peerRetrySlot(key: u64) ?usize {
+        if (key < peer_retry_timer_key or key >= peer_retry_timer_key + model_module.max_phux_peers) return null;
+        return @intCast(key - peer_retry_timer_key);
+    }
+
+    /// Consumes the slot's armed timer; true when it may redial now.
+    fn peerRetryDue(self: *Engine, slot: usize) bool {
+        const armed = self.peer_retry_generation[slot] orelse return false;
+        self.peer_retry_generation[slot] = null;
+        if (armed != self.peer_channel_generation[slot]) return false;
+        const peer = self.model.phuxPeerAt(slot) orelse return false;
+        return self.model.peer_failed[slot] and !peer.showing();
     }
 
     /// Peer `slot`'s current channel key.
@@ -1215,7 +1282,7 @@ pub const Engine = struct {
         if (channel.generation != self.peer_channel_generation[slot]) return self.peerStaleEvent(fx, channel, event.kind, on_event);
         return switch (event.kind) {
             .data => self.drainPeer(fx, slot),
-            .closed, .rejected => self.peerClosed(slot),
+            .closed, .rejected => self.peerClosed(fx, slot),
         };
     }
 
@@ -1235,7 +1302,10 @@ pub const Engine = struct {
     fn drainPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot).?;
         const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
-        if (delta.sessions_listed or delta.ready_published) self.model.peer_failed[slot] = false;
+        if (delta.sessions_listed or delta.ready_published) {
+            self.model.peer_failed[slot] = false;
+            self.resetPeerRetry(slot);
+        }
         if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
         // Nothing presents a listing peer's terminals, so nothing rings for
         // them; its list settling is what moves.
@@ -1281,13 +1351,14 @@ pub const Engine = struct {
     /// The slot's current channel closed, or its open was refused, without
     /// Cockpit asking: the peer failed, and its group says why. A close
     /// Cockpit asked for names an older generation and never reaches here.
-    fn peerClosed(self: *Engine, slot: usize) bool {
+    fn peerClosed(self: *Engine, fx: anytype, slot: usize) bool {
         const model = self.model;
         model.phuxPeerAt(slot).?.stop();
         self.peer_edits.forget(slot);
         // That occupancy is gone; the next one opens under a fresh key.
         self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
         model.peer_failed[slot] = true;
+        self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
     }
 
@@ -1299,6 +1370,7 @@ pub const Engine = struct {
         self.peer_edits.forget(slot);
         self.model.peer_failed[slot] = true;
         self.retirePeerChannel(fx, slot);
+        self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
     }
 
@@ -1473,6 +1545,7 @@ pub const Engine = struct {
         model.phux_peers[slot] = null;
         model.phux_peer_reopen[slot] = false;
         model.peer_failed[slot] = false;
+        self.resetPeerRetry(slot);
         peer.stop();
         // Its close event may arrive after another peer takes the slot; the
         // new generation's key tells the two apart.
@@ -1542,6 +1615,7 @@ pub const Engine = struct {
             model.phux_peers[slot] = peer;
         }
         model.peer_failed[slot] = false;
+        self.resetPeerRetry(slot);
         self.restartCoordinators(fx, slot);
     }
 

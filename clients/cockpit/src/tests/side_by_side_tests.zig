@@ -650,3 +650,118 @@ test "a restart reopens a peer on its own close, under the next key, and never b
     try testing.expectEqual(engine.peerChannelKey(0), fx.opened[0]);
     try testing.expect(fx.opened[0] != first_key);
 }
+
+/// Retry timers asked for, by key and wait; restarts counted, never real.
+const RetryLog = struct {
+    keys: [16]u64 = @splat(0),
+    delays: [16]u64 = @splat(0),
+    count: usize = 0,
+    restarts: usize = 0,
+
+    pub fn schedulePeerRetry(self: *@This(), key: u64, delay_ms: u64) void {
+        if (self.count < self.keys.len) {
+            self.keys[self.count] = key;
+            self.delays[self.count] = delay_ms;
+        }
+        self.count += 1;
+    }
+    pub fn restartPeer(self: *@This(), _: *ts_engine.Engine, _: usize) bool {
+        self.restarts += 1;
+        return true;
+    }
+    pub fn closeChannel(_: *const @This(), _: u64) void {}
+    pub fn openChannel(_: *const @This(), _: anytype) native_sdk.ChannelHandle {
+        return .{};
+    }
+    pub fn showNotification(_: *const @This(), _: anytype) void {}
+};
+
+test "a failed listing peer is redialed as a lister after 1 s, twice as long after each failure to 60 s, and from 1 s once it lists" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    var fx: RetryLog = .{};
+
+    // mini's connection closes: its group says so, and a redial is armed.
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expect(model.peer_failed[0]);
+    try testing.expectEqual(@as(usize, 1), fx.count);
+    try testing.expectEqual(@as(u64, 1000), fx.delays[0]);
+    try testing.expectEqual(@as(usize, 0), fx.restarts);
+
+    // It fires: mini is dialed again, still standing by, so its new
+    // connection asks GET_STATE and never ATTACH.
+    try testing.expect(engine.onPeerRetryTimer(&fx, fx.keys[0]));
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+    try testing.expect(!model.peer_failed[0]);
+    try testing.expect(pair.peer.standby);
+    pair.peer.stop();
+    try pair.peer.host.reconnect("side-by-side");
+    try fixture.stageFixture(pair.peer.bridge, "hello.bin");
+    _ = try pair.peer.drainReadiness();
+    const redial = countFrames(pair.peer);
+    try testing.expectEqual(@as(usize, 0), redial.attach);
+    try testing.expectEqual(@as(usize, 1), redial.command);
+    // The same timer firing again redials nothing more.
+    try testing.expect(!engine.onPeerRetryTimer(&fx, fx.keys[0]));
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+
+    // Each further failure waits twice as long, never more than 60 s.
+    const waits = [_]u64{ 2000, 4000, 8000, 16000, 32000, 60000, 60000 };
+    for (waits, 1..) |wait, index| {
+        try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+        try testing.expectEqual(wait, fx.delays[index]);
+        try testing.expect(engine.onPeerRetryTimer(&fx, fx.keys[index]));
+    }
+    try testing.expectEqual(@as(usize, 1 + waits.len), fx.restarts);
+
+    // Once it lists again, the next failure waits 1 s.
+    pair.peer.stop();
+    try pair.peer.host.reconnect("side-by-side");
+    try fixture.stageFixture(pair.peer.bridge, "hello.bin");
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
+    try fixture.stageFixture(pair.peer.bridge, "standby_state.bin");
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
+    try testing.expect(!model.peer_failed[0]);
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expectEqual(@as(u64, 1000), fx.delays[fx.count - 1]);
+}
+
+test "a showing peer is not redialed automatically, and a timer from before a pick or a drop does nothing" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    var fx: RetryLog = .{};
+    const key = ts_engine.Engine.peer_retry_timer_key;
+
+    // Showing a session, it keeps its frozen tabs: no redial is armed, and
+    // a timer for its slot does nothing.
+    try pair.peer.show(2);
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expect(model.peer_failed[0]);
+    try testing.expectEqual(@as(usize, 0), fx.count);
+    try testing.expect(!engine.onPeerRetryTimer(&fx, key));
+    try testing.expectEqual(@as(usize, 0), fx.restarts);
+
+    // Listing, it is armed; picking its row first makes that timer stale.
+    pair.peer.standBy();
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expectEqual(@as(usize, 1), fx.count);
+    try testing.expect(engine.retryPeer(pair.peer.providerId(), &fx));
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+    try testing.expect(!engine.onPeerRetryTimer(&fx, fx.keys[0]));
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+
+    // Armed again, then dropped: its timer does nothing. Nor does a key
+    // past the last slot.
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expectEqual(@as(usize, 2), fx.count);
+    engine.dropPeer(&fx, 0);
+    try testing.expect(!engine.onPeerRetryTimer(&fx, fx.keys[1]));
+    try testing.expect(!engine.onPeerRetryTimer(&fx, key + model_module.max_phux_peers));
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+}

@@ -126,6 +126,11 @@ const EngineFx = struct {
     pub fn restartPeer(self: EngineFx, engine: *Engine, slot: usize) bool {
         return engine.restartPeerConnection(self, slot, peerChannel);
     }
+    /// Arm a failed peer's automatic redial (Engine.schedulePeerRetry). A
+    /// key already armed is replaced, so a slot holds one timer.
+    pub fn schedulePeerRetry(self: EngineFx, key: u64, delay_ms: u64) void {
+        self.effects.startTimer(.{ .key = key, .interval_ms = delay_ms, .mode = .one_shot, .on_fire = peerRetryTimer });
+    }
 };
 
 fn engineFx() ?EngineFx {
@@ -730,6 +735,18 @@ fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
             const changed = engine.onPeerChannel(fx, event, peerChannel);
             if (engine.settlePeers(fx) or changed) bridge.announce(engine);
             engine.noteTopologyChange(fx, topologyTimer);
+        }
+    }
+    return .engine_wake;
+}
+
+/// A failed peer's backoff elapsed (Engine.onPeerRetryTimer). A rejected
+/// timer arms nothing; the peer's row still retries it when picked.
+fn peerRetryTimer(event: native_sdk.EffectTimer) core.Msg {
+    if (event.outcome != .fired) return .engine_wake;
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| {
+            if (engine.onPeerRetryTimer(fx, event.key)) bridge.announce(engine);
         }
     }
     return .engine_wake;

@@ -253,7 +253,18 @@ the host, reading "Unavailable" with the recorded reason (a remote host's
 dial or connection failure), else "the connection was lost". Picking that
 row dials that peer again (`Engine.retryPeer`); the row then reads
 "Connecting…" and is not selectable until the peer fails again or lists. A
-showing peer's tabs keep their last frames, frozen, while it is down. If its
+showing peer's tabs keep their last frames, frozen, while it is down.
+
+A listing peer that fails is also dialed again automatically
+(`Engine.onPeerRetryTimer`, one timer per slot): 1 s after it fails, then
+after twice the last wait each time it fails again, at most 60 s. Once it
+lists, the next failure waits 1 s again. The redial is a lister's, so its
+connection asks GET_STATE and never attaches. A timer that fires after the
+peer listed, was picked, was removed, or began showing does nothing. A peer
+that fails while showing a session is not redialed automatically: its tabs
+are on screen with their frozen frames, and picking its row retries it.
+Once its tabs leave the screen it returns to listing, and the backoff
+applies from then on. If its
 server ends the shown session instead, its tabs leave and it goes back to
 listing on a fresh connection. A showing peer whose workspace cannot be
 projected reads "workspace unavailable" on its session rows.
@@ -276,8 +287,9 @@ projected reads "workspace unavailable" on its session rows.
   tab in the background while another coordinator's tab is selected is not
   possible: choosing that other tab returns the peer to listing.
 - A showing peer's placements are not saved as attachment evidence; they
-  are projected again from its workspace when it reconnects. A failed peer
-  is not restarted automatically: picking its group's row retries it.
+  are projected again from its workspace when it reconnects. A peer that
+  fails while showing a session is redialed only by picking its row, or
+  once its tabs leave the screen and it lists again.
 - Showing a peer session is refused while the active coordinator has a
   retarget pending, since the two briefly share a coordinator id.
 - Placements saved for a remote active host before coordinator ids existed
