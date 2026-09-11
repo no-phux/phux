@@ -110,7 +110,9 @@ its captured identity, so a replacement page that reuses its index cannot
 retarget it.
 
 The existing workspace projection supplies enumeration and matching: every
-placed pane in every open window, every unplaced remote ref, then every remote
+placed pane in every open window, every unplaced remote ref of the focused
+pane's coordinator (the active coordinator's, unless a showing peer's pane is
+focused; then that peer's, of the session it shows), then every remote
 session. Display labels are the terminal title or session name. Window, tab,
 host and directory are carried in the metadata detail, and availability in the
 row kind and selectable flag.

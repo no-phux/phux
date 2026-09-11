@@ -726,13 +726,17 @@ fn sessionCommandWith(engine: *ts_engine.Engine, fx: *PeerFx, kind: u8, name: []
 
 /// The sessions scope of the switcher, as the core pages it.
 fn sessionsPage(engine: *ts_engine.Engine, out: []u8) ![]const u8 {
+    return scopePage(engine, .sessions, out);
+}
+
+fn scopePage(engine: *ts_engine.Engine, scope: navigation.Scope, out: []u8) ![]const u8 {
     var request: [15]u8 = undefined;
     request[0] = 1;
     request[1] = 4;
     std.mem.writeInt(u64, request[2..10], engine.revision, .little);
     std.mem.writeInt(u16, request[10..12], 0, .little);
     request[12] = 0;
-    request[13] = @intFromEnum(navigation.Scope.sessions);
+    request[13] = @intFromEnum(scope);
     request[14] = 0;
     return engine.navigationSnapshot(&request, out);
 }
@@ -961,6 +965,120 @@ test "New Tab in the active coordinator's empty session opens there, and on no p
     try testing.expectEqual(@as(usize, 0), countFrames(mini).total);
     try testing.expectEqual(@as(usize, 1), engine.creation.count());
     try testing.expectEqual(@as(usize, 0), fx.restarts);
+}
+
+// ------------------------------ New Window and the inventory follow the focus
+
+test "New Window with a peer's pane focused opens its tab on that peer, in the new window" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+    const windows = model.openWindowCount();
+
+    // A SPAWN on mini alone, and a native window opened for its tab.
+    try testing.expect(intent(engine, .new_window, 0));
+    try testing.expectEqual(@as(usize, 1), countFrames(pair.mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(windows + 1, model.openWindowCount());
+    const opened = model.active_window;
+    try testing.expect(opened != 0);
+
+    // mini spawns terminal 8 and places it; it lands in that window, as
+    // mini's tab, focused, and This Mac hears nothing.
+    try feedMini(&pair, &fx, "spawn-local.bin");
+    try feedMini(&pair, &fx, "local-ready.bin");
+    try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
+    try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
+    drainMini(&pair, &fx);
+    try miniWorkspaceReply(&pair, "workspace_add_metadata.bin", 14, 5);
+    try miniWorkspaceReply(&pair, "workspace_add_state.bin", 13, 4);
+    drainMini(&pair, &fx);
+    const mini8 = try refOn(pair.mini, 8);
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(opened, model.locateTerminal(mini8).?.window);
+    try testing.expectEqual(pair.mini.providerId(), tabOwner(model, mini8).?);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expect(!engine.settlePeers(&fx));
+    try testing.expectEqual(windows + 1, model.openWindowCount());
+}
+
+test "a peer's New Window that never lands leaves no empty window behind" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+    const windows = model.openWindowCount();
+    try testing.expect(intent(engine, .new_window, 0));
+    try testing.expectEqual(windows + 1, model.openWindowCount());
+    // mini's connection closes before the tab is placed: the spawn is
+    // forgotten, and settling closes the window it would have landed in.
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
+    _ = engine.settlePeers(&fx);
+    try testing.expectEqual(windows, model.openWindowCount());
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
+test "the available inventory follows the focused pane's coordinator, and a peer's terminal is placed on that peer" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try showMini(&pair);
+    // This Mac's own tab is on screen too, beside mini's.
+    model.shared_workspace.authority = pair.here.providerId();
+    _ = try model.shared_workspace.apply(model, pair.here.workspaceSnapshot(), pair.here.connectionEpoch());
+    var fx: PeerFx = .{};
+    // mini's registry now holds terminal 8 in its shown session, in no tab.
+    _ = try pair.mini.requestWorkspaceRefresh();
+    try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
+    try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
+    drainMini(&pair, &fx);
+    const mini7 = try refOn(pair.mini, 7);
+    const mini8 = try refOn(pair.mini, 8);
+    try testing.expect(model.locateTerminal(mini8) == null);
+
+    // With mini's pane focused, the switcher offers mini's terminal 8; with
+    // This Mac's, it does not.
+    var page_out: [navigation.max_bytes]u8 = undefined;
+    try testing.expect(model.selectTerminal(mini7));
+    try testing.expect(std.mem.indexOf(u8, try scopePage(engine, .all, &page_out), "unplaced terminal") != null);
+    try testing.expect(model.selectTerminal(try refOn(pair.here, 7)));
+    try testing.expect(std.mem.indexOf(u8, try scopePage(engine, .all, &page_out), "unplaced terminal") == null);
+    try testing.expect(model.selectTerminal(mini7));
+    _ = countFrames(pair.mini);
+    _ = countFrames(pair.here);
+
+    // Picking it attaches and places it on mini alone.
+    const tab_commands = @import("../cockpit/native/tab_commands.zig");
+    const target = targets.capture(model, .{ .available_terminal = mini8 }).?;
+    var target_bytes: [targets.max_len]u8 = undefined;
+    const encoded = target.encode(&target_bytes);
+    var command: [targets.max_len + 10]u8 = undefined;
+    command[0] = 1;
+    command[1] = 2;
+    std.mem.writeInt(u64, command[2..10], 7, .little);
+    @memcpy(command[10..][0..encoded.len], encoded);
+    const receipt = engine.applySelectionCommand(command[0 .. 10 + encoded.len], &ts_engine.NoShells{});
+    try testing.expectEqual(tab_commands.Status.accepted_pending, receipt.status);
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expect(countFrames(pair.mini).total >= 1);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    // A second pick of the same terminal is refused while it is pending.
+    std.mem.writeInt(u64, command[2..10], 8, .little);
+    try testing.expectEqual(tab_commands.Status.rejected, engine.applySelectionCommand(command[0 .. 10 + encoded.len], &ts_engine.NoShells{}).status);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
 }
 
 test "an edit of a peer that cannot take one is refused and reaches no coordinator" {

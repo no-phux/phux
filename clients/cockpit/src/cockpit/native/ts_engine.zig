@@ -902,11 +902,13 @@ pub const Engine = struct {
         return if (accepted) .accepted_pending else null;
     }
 
-    /// The available inventory is the active coordinator's: a terminal of
-    /// its current session attaches here; another session's switches first.
+    /// The available inventory follows the focused pane's coordinator. The
+    /// active coordinator's terminal of its current session attaches here;
+    /// another session's switches first. A showing peer's terminal is placed
+    /// as a new tab on that peer (`peer_edits.adopt`), never elsewhere.
     fn admitAvailableTerminal(self: *Engine, command_id: u64, ref: TerminalRef, fx: anytype) ?tab_commands.Status {
         const remote = self.model.phux() orelse return null;
-        if (ref.provider_id != remote.providerId()) return null;
+        if (ref.provider_id != remote.providerId()) return self.adoptOnPeer(ref);
         if (remote.terminalSession(ref) == remote.selectedSessionId()) {
             self.creation.requestAttachCorrelated(self.model, ref, command_id) catch return null;
             self.model.shared_workspace.desired_terminal = null;
@@ -915,6 +917,15 @@ pub const Engine = struct {
         }
         const session = remote.terminalSession(ref) orelse return null;
         return self.admitSessionCommand(command_id, session, ref, fx);
+    }
+
+    /// A refused adoption changes nothing; a queued one supersedes every
+    /// other pending focus, as a peer's New Tab does.
+    fn adoptOnPeer(self: *Engine, ref: TerminalRef) ?tab_commands.Status {
+        const created = self.peer_edits.adopt(self.model, ref) catch return null;
+        self.supersedeSelection();
+        created.may_focus = true;
+        return .accepted_pending;
     }
 
     fn admitSession(self: *Engine, command_id: u64, session: u32, fx: anytype) ?tab_commands.Status {
@@ -987,6 +998,7 @@ pub const Engine = struct {
         const sent = switch (operation.kind) {
             .close_tab => self.peerCloseTab(operation.argument),
             .new_terminal => self.peerCreate(.tab),
+            .new_window => self.peerCreate(.window),
             .native_command => self.peerNativeCommand(operation.argument),
             else => null,
         } orelse return null;
@@ -1518,7 +1530,8 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return false;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
-        var changed = false;
+        // A peer's New Window whose tab never landed leaves no empty window.
+        var changed = self.peer_edits.retireOrphans(self.model);
         for (0..model_module.max_phux_peers) |slot| {
             if (self.emptyTabHolds(slot)) continue;
             if (!self.peerHidden(slot)) continue;
@@ -1888,7 +1901,8 @@ pub const Engine = struct {
     /// it, selected. Refusals put everything back and stay visible.
     fn newWindow(self: *Engine) bool {
         const model = self.model;
-        if (model.phux() != null) return self.createDurable(.window);
+        // With a peer's pane focused, New Window opens its tab on that peer.
+        if (model.phux() != null) return self.peerCreate(.window) orelse self.createDurable(.window);
         if (!model.canAddPane()) return false;
         const index = model.freeWindowIndex() orelse {
             model.window_limit_refused = true;

@@ -1329,6 +1329,18 @@ pub fn peerHostLabel(model: *const Model, coordinator: support.ProviderId) []con
     return peer.remoteLabel() orelse "This Mac";
 }
 
+/// The showing peer whose pane is focused, whose unplaced terminals are the
+/// available inventory; null when the focused pane is the active
+/// coordinator's, a local one, or none.
+fn inventoryPeer(model: *const Model) ?*const support.PhuxProvider {
+    if (comptime !support.phux_enabled) return null;
+    const ref = model.focusedTerminalRef() orelse return null;
+    if (support.providerKind(ref) != .phux or model.activeOwnsRef(ref)) return null;
+    const peer = model.phuxForRefConst(ref) orelse return null;
+    if (!peer.showing() or peer.state() != .attached) return null;
+    return peer;
+}
+
 /// A peer with nothing to list that is not simply connected with no
 /// sessions: failed, or still connecting. Its group shows one row saying so.
 fn peerDegraded(model: *const Model, slot: usize) bool {
@@ -1399,13 +1411,31 @@ pub const PaletteIterator = struct {
         return null;
     }
 
+    /// The available inventory follows the focused pane's coordinator: a
+    /// showing peer's own unplaced terminals of the session it shows while
+    /// one of its panes is focused, else the active coordinator's.
     fn nextAvailable(iterator: *PaletteIterator) ?PaletteEntry {
+        if (inventoryPeer(iterator.model)) |peer| return iterator.nextPeerAvailable(peer);
         const refs = iterator.model.remoteTerminalRefs();
         while (iterator.remote_index < refs.len) {
             const terminal_ref = refs[iterator.remote_index];
             iterator.remote_index += 1;
             if (iterator.model.locateTerminal(terminal_ref) != null) continue;
             const entry: PaletteEntry = .{ .available_terminal = terminal_ref };
+            if (iterator.accepts(entry)) return entry;
+        }
+        return null;
+    }
+
+    fn nextPeerAvailable(iterator: *PaletteIterator, peer: *const support.PhuxProvider) ?PaletteEntry {
+        const terminals = peer.catalogTerminals();
+        const session = peer.selectedSessionId() orelse return null;
+        while (iterator.remote_index < terminals.len) {
+            const terminal = terminals[iterator.remote_index];
+            iterator.remote_index += 1;
+            if (terminal.session_id != session) continue;
+            if (iterator.model.locateTerminal(terminal.terminal_ref) != null) continue;
+            const entry: PaletteEntry = .{ .available_terminal = terminal.terminal_ref };
             if (iterator.accepts(entry)) return entry;
         }
         return null;

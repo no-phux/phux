@@ -35,7 +35,17 @@ const Mutation = contract.workspace.Mutation;
 const WindowId = shared_mutations.WindowId;
 const max_peers = model_module.max_phux_peers;
 
-pub const Kind = enum { tab, split_right, split_down };
+/// `window` is New Window with one of the peer's panes focused: a new tab on
+/// that peer, placed in a native window opened for it.
+pub const Kind = enum { tab, window, split_right, split_down };
+
+fn isSplit(kind: Kind) bool {
+    return kind == .split_right or kind == .split_down;
+}
+
+/// A native window opened for a New Window whose tab never landed there; it
+/// is closed if it is still empty (`retireOrphans`).
+const Provisional = struct { window: usize, epoch: u64 };
 
 /// Which terminal owns a spawn: the focused one (New Tab, a split), none (a
 /// directory on the coordinator's own host), or an exact one (a satellite
@@ -76,19 +86,90 @@ const Creation = struct {
     /// Cleared by any later explicit selection: a slow placement must not
     /// take focus from wherever the user went meanwhile.
     may_focus: bool = true,
+    /// New Window's native window, opened for this tab, and its epoch.
+    window: ?usize = null,
+    window_epoch: u64 = 0,
 };
 
 pub const Edits = struct {
     mutations: [max_peers]shared_mutations.Coordinator = @splat(.{}),
     creations: [max_peers][max_creations]?Creation = @splat(@splat(null)),
+    orphans: [max_peers * max_creations]?Provisional = @splat(null),
 
     /// The slot's connection ended or it now holds another coordinator:
     /// nothing queued for it may continue. A mutation already sent may still
     /// land on that server; forgetting it never rolls one back.
     pub fn forget(self: *Edits, slot: usize) void {
         if (slot >= max_peers) return;
+        for (self.creations[slot]) |held| if (held) |entry| self.orphan(entry);
         self.mutations[slot] = .{};
         self.creations[slot] = @splat(null);
+    }
+
+    fn orphan(self: *Edits, entry: Creation) void {
+        const window = entry.window orelse return;
+        for (&self.orphans) |*held| {
+            if (held.* != null) continue;
+            held.* = .{ .window = window, .epoch = entry.window_epoch };
+            return;
+        }
+    }
+
+    /// Close every window a peer's New Window opened for a tab that never
+    /// landed there, while it is still that window and still empty. True
+    /// when one closed.
+    pub fn retireOrphans(self: *Edits, model: *Model) bool {
+        var closed = false;
+        for (&self.orphans) |*held| {
+            const value = held.* orelse continue;
+            held.* = null;
+            if (value.window >= model_module.max_windows or model.window_epochs[value.window] != value.epoch) continue;
+            if (!model.windowOpen(value.window)) continue;
+            const workspace = model.wsAt(value.window) orelse continue;
+            if (workspace.tab_count != 0) continue;
+            model.closeWindow(value.window);
+            closed = true;
+        }
+        return closed;
+    }
+
+    /// One of the peer's own terminals that no tab shows (the available
+    /// inventory follows the focused pane's coordinator): place it as a new
+    /// tab on that peer. Attached first unless its replica is already live.
+    /// Only a terminal of the session the peer shows; never another
+    /// coordinator's.
+    pub fn adopt(self: *Edits, model: *Model, ref: TerminalRef) !*Creation {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const slot = try slotOf(model, ref.provider_id);
+        const peer_view = try view(model, slot);
+        const peer = peer_view.peer;
+        const state = peer_view.shared_workspace;
+        const snapshot = peer.workspaceSnapshot();
+        if (snapshot.session_id != state.session) return error.StaleContext;
+        if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return error.WorkspaceUnavailable;
+        if (peer.terminalSession(ref) != state.session) return error.StaleTarget;
+        if (model.locateTerminal(ref) != null) return error.AlreadyPlaced;
+        if (self.holdsTerminal(slot, ref)) return error.AlreadyPending;
+        if (!model.canAddPane()) return error.TerminalCapacity;
+        const free = self.vacant(slot) orelse return error.OperationCapacity;
+        var entry: Creation = .{ .coordinator = ref.provider_id, .epoch = peer.connectionEpoch(), .session = state.session, .kind = .tab, .request = 0, .terminal = ref };
+        const live = if (peer.presentation(ref)) |current| current.phase == .live else false;
+        if (live) {
+            entry.stage = .publishing;
+        } else {
+            entry.request = try peer.requestAttach(ref);
+            entry.stage = .attaching;
+        }
+        free.* = entry;
+        return &free.*.?;
+    }
+
+    fn holdsTerminal(self: *const Edits, slot: usize, ref: TerminalRef) bool {
+        for (self.creations[slot]) |held| {
+            const entry = held orelse continue;
+            if (entry.terminal) |terminal| if (terminal.eql(ref)) return true;
+        }
+        return false;
     }
 
     pub fn pendingCreations(self: *const Edits, slot: usize) usize {
@@ -154,10 +235,22 @@ pub const Edits = struct {
         if (!model.canAddPane()) return error.TerminalCapacity;
         const free = self.vacant(slot) orelse return error.OperationCapacity;
         var entry: Creation = .{ .coordinator = coordinator, .epoch = peer.connectionEpoch(), .session = state.session, .kind = kind, .request = 0 };
-        if (kind != .tab) try self.prepareSplit(model, slot, snapshot, &entry);
+        if (isSplit(kind)) try self.prepareSplit(model, slot, snapshot, &entry);
         const owner = try spawnOwner(model, coordinator, kind, owner_choice);
         const viewport = if (owner) |ref| peer.lastViewport(ref) orelse peer.attach_viewport else peer.attach_viewport;
-        entry.request = try peer.requestSpawnIn(owner, viewport, cwd);
+        // New Window: the native window its tab will land in, opened now as
+        // the active coordinator's New Window opens one.
+        if (kind == .window) {
+            const index = model.freeWindowIndex() orelse return error.WindowCapacity;
+            _ = model.openWindow(index) orelse return error.WindowCapacity;
+            entry.window = index;
+            entry.window_epoch = model.window_epochs[index];
+        }
+        entry.request = peer.requestSpawnIn(owner, viewport, cwd) catch |err| {
+            if (entry.window) |index| model.closeWindow(index);
+            return err;
+        };
+        if (entry.window) |index| model.active_window = index;
         free.* = entry;
         return &free.*.?;
     }
@@ -182,7 +275,7 @@ pub const Edits = struct {
         var count: usize = 0;
         for (self.creations[slot]) |value| {
             const entry = value orelse continue;
-            if (entry.kind != .tab) count += 1;
+            if (isSplit(entry.kind)) count += 1;
         }
         return count;
     }
@@ -197,6 +290,7 @@ pub const Edits = struct {
             if (entry.stage != .spawning and entry.stage != .attaching) continue;
             if (entry.request != result.request_id or entry.epoch != result.connection_epoch) continue;
             accept(model, slot, entry, result) catch {
+                self.orphan(entry.*);
                 held.* = null;
             };
             return true;
@@ -214,21 +308,23 @@ pub const Edits = struct {
         for (&self.creations[slot]) |*held| {
             const entry = if (held.*) |*value| value else continue;
             if (entry.epoch != peer_view.peer.connectionEpoch() or entry.session != peer_view.shared_workspace.session) {
+                self.orphan(entry.*);
                 held.* = null;
                 changed = true;
                 continue;
             }
-            changed = self.advance(&peer_view, slot, held) or changed;
+            changed = self.advance(model, &peer_view, slot, held) or changed;
         }
         return changed;
     }
 
-    fn advance(self: *Edits, peer_view: *PeerView, slot: usize, held: *?Creation) bool {
+    fn advance(self: *Edits, model: *const Model, peer_view: *PeerView, slot: usize, held: *?Creation) bool {
         const entry = &held.*.?;
         switch (entry.stage) {
             .spawning, .attaching => return false,
             .publishing => {
                 const outcome = self.place(peer_view, slot, entry) catch {
+                    self.orphan(entry.*);
                     held.* = null;
                     return true;
                 };
@@ -236,7 +332,10 @@ pub const Edits = struct {
             },
             .placing => {
                 const completion = self.mutations[slot].takeCreationCompletion(entry.ticket) orelse return false;
-                if (completion.outcome == .confirmed and entry.may_focus) peer_view.shared_workspace.desired_terminal = entry.terminal;
+                if (completion.outcome == .confirmed) {
+                    placeInWindow(model, peer_view, entry.*);
+                    if (entry.may_focus) peer_view.shared_workspace.desired_terminal = entry.terminal;
+                } else self.orphan(entry.*);
                 held.* = null;
                 return true;
             },
@@ -282,9 +381,21 @@ fn accept(model: *Model, slot: usize, entry: *Creation, result: support.Operatio
     entry.stage = .publishing;
 }
 
+/// A confirmed New Window: its new shared window goes to the native window
+/// opened for it, when that is still the window opened (the projection
+/// consumes the hint as it does for the active coordinator's New Window).
+fn placeInWindow(model: *const Model, peer_view: *PeerView, entry: Creation) void {
+    const index = entry.window orelse return;
+    if (index >= model_module.max_windows or model.window_epochs[index] != entry.window_epoch) return;
+    if (!model.windowOpen(index)) return;
+    const ref = entry.terminal orelse return;
+    const id = shared_mutations.terminalWindow(peer_view.peer.workspaceSnapshot(), ref) orelse return;
+    peer_view.shared_workspace.placement_hint = .{ .shared_id = id, .window = index, .window_epoch = entry.window_epoch };
+}
+
 fn placement(entry: Creation, ref: TerminalRef, revision: u64) !Mutation {
     var mutation: Mutation = .{ .expected_revision = revision, .session_id = entry.session, .kind = .add, .terminal_ref = ref };
-    if (entry.kind == .tab) return mutation;
+    if (!isSplit(entry.kind)) return mutation;
     mutation.kind = .split;
     mutation.window_id = entry.window_id orelse return error.StaleDestination;
     mutation.terminal_ref = entry.origin orelse return error.StaleDestination;
@@ -301,7 +412,7 @@ fn spawnOwner(model: *Model, coordinator: support.ProviderId, kind: Kind, choice
         .terminal => |ref| ref,
         .focused => model.focusedTerminalRef(),
     };
-    const ref = candidate orelse return if (kind == .tab) null else error.InvalidDestination;
+    const ref = candidate orelse return if (!isSplit(kind)) null else error.InvalidDestination;
     if (support.providerKind(ref) != .phux or ref.provider_id != coordinator) return error.ForeignCoordinator;
     _ = model.terminalOwner(ref) orelse return error.NotReady;
     return ref;

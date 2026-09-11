@@ -237,7 +237,13 @@ layout-only removal the active coordinator's tabs send to theirs; its
 terminals keep running there), splits, reordering within its own order, and
 a divider drag. New Tab with one of its panes focused opens on it, and so
 does Open a new tab here on a directory listing made through it (see
-[Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)). Each
+[Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)). New
+Window with one of its panes focused opens a native window and places a new
+tab of that peer in it; if the tab never lands, the empty window closes. The
+switcher's available terminals follow the focused pane's coordinator too:
+with a showing peer's pane focused they are that peer's terminals of the
+session it shows that no tab holds, and picking one attaches and places it
+as a new tab on that peer (`peer_edits.adopt`). Each
 peer has its own edit queue, with the checks the active coordinator's queue
 makes: connection, session, revision, target, and one edit at a time. A new
 tab or split spawns on the peer first and is placed once its terminal
@@ -401,10 +407,11 @@ projected reads "workspace unavailable" on its session rows.
   Phux coordinator across relaunch (for the active coordinator as for a
   peer): which native window each of its tabs was in and which tab was
   selected come from its shared workspace when it is shown again.
-- New Window and the available-terminal inventory belong to the active
-  coordinator, whichever pane is focused. A peer's edit receipt is applied
-  once the edit is queued on that peer; its confirmation or refusal shows in
-  the peer's own projection and switcher rows, not as a command result.
+- A peer's edit receipt is applied once the edit is queued on that peer; its
+  confirmation or refusal shows in the peer's own projection and switcher
+  rows, not as a command result. The available terminals a peer offers are
+  those of the session it shows; another of its sessions' terminals are
+  reached by showing that session.
 - A peer is shown only while one of its tabs is on screen. Keeping a peer's
   tab in the background while another coordinator's tab is selected is not
   possible: choosing that other tab returns the peer to listing.
