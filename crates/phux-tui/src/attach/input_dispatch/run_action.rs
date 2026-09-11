@@ -193,7 +193,7 @@ fn split_pane(
         host,
         adopt: None,
     };
-    let frame = FrameKind::SpawnResource {
+    let mut frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
@@ -206,7 +206,25 @@ fn split_pane(
         initial_size: predicted_split_size(ctx, &pending),
         resource: None,
     };
+    bind_satellite_spawn(&mut frame);
     effects.spawn_terminal = Some((request_id, pending, frame));
+}
+
+/// phux-c2td.25: ask a satellite spawn to bind its pane to the satellite's
+/// instance token (ADR-0109), so a pane the spawn strands can later be
+/// killed conditionally. A hub or satellite without `CONDITIONAL_KILL`
+/// skips the field by length and answers unbound; a local spawn is left
+/// byte-identical.
+fn bind_satellite_spawn(frame: &mut FrameKind) {
+    if matches!(
+        frame,
+        FrameKind::SpawnResource {
+            satellite: Some(_),
+            ..
+        }
+    ) {
+        phux_client::conditional_kill::request_binding(frame);
+    }
 }
 
 /// The host a split of `focused` spawns on (phux-c2td.18).
@@ -398,7 +416,7 @@ fn new_window(
 ) {
     let request_id = take_request_id(ctx);
     let name = ctx.workspace.default_window_name();
-    let frame = FrameKind::SpawnResource {
+    let mut frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
@@ -414,6 +432,7 @@ fn new_window(
         initial_size: spawn_initial_size(ctx, |content| Some((content.w, content.h))),
         resource: None,
     };
+    bind_satellite_spawn(&mut frame);
     effects.spawn_window = Some((request_id, PendingWindow { name, adopt: None }, frame));
 }
 

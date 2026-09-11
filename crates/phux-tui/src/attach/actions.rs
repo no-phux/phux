@@ -40,7 +40,9 @@
 
 use std::io::{self, Write};
 
+use phux_client::conditional_kill::BoundResource;
 use phux_protocol::ResourceId;
+use phux_protocol::ids::ServerInstance;
 use thiserror::Error;
 
 use super::paint::{SidebarReservation, content_rect};
@@ -537,7 +539,36 @@ pub(super) struct PendingSplit {
     /// phux-c2td.18: `Some(pane)` once a satellite spawn has answered and the
     /// split waits on that pane's `ATTACH_RESOURCE` reply; the split applies
     /// only when the attach succeeds. `None` while the spawn is in flight.
-    pub adopt: Option<ResourceId>,
+    pub adopt: Option<SpawnedPane>,
+}
+
+/// A pane this client spawned on a satellite, with the instance token the
+/// spawn reply bound it to (phux-c2td.25, ADR-0109). `instance` is `None`
+/// when the reply was unbound (a hub or satellite without
+/// `CONDITIONAL_KILL`), so the pane can never be killed conditionally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SpawnedPane {
+    /// The pane, as the spawn reply named it (satellite-tagged).
+    pub id: ResourceId,
+    /// The satellite's instance token the spawn was bound to, if any.
+    pub instance: Option<ServerInstance>,
+}
+
+impl SpawnedPane {
+    /// A pane whose spawn reply carried no instance token.
+    #[cfg(test)]
+    pub(super) const fn unbound(id: ResourceId) -> Self {
+        Self { id, instance: None }
+    }
+
+    /// The pane as a conditional kill names it, when its spawn was bound.
+    pub(super) fn bound(&self) -> Option<BoundResource> {
+        let instance = self.instance?;
+        Some(BoundResource {
+            id: self.id.clone(),
+            instance,
+        })
+    }
 }
 
 /// Which host a parked split's pane is spawned on (phux-c2td.18).
@@ -569,14 +600,14 @@ impl ParkedAdopt {
     pub(super) fn pane(&self) -> Option<&ResourceId> {
         match self {
             Self::Window(window) => window.adopt.as_ref().map(Adopt::pane),
-            Self::Split(split) => split.adopt.as_ref(),
+            Self::Split(split) => split.adopt.as_ref().map(|spawned| &spawned.id),
         }
     }
 
     /// The pane this client spawned for this window or split, if it did: a
     /// split always spawns its pane, a window only when it did not adopt an
     /// existing satellite session's (phux-c2td.20).
-    pub(super) const fn spawned_pane(&self) -> Option<&ResourceId> {
+    pub(super) const fn spawned_pane(&self) -> Option<&SpawnedPane> {
         match self {
             Self::Window(window) => window.spawned_pane(),
             Self::Split(split) => split.adopt.as_ref(),
@@ -588,7 +619,7 @@ impl PendingWindow {
     /// The satellite pane this client spawned for this window, once the
     /// spawn answered; `None` for a satellite session's existing pane and
     /// while a spawn is in flight.
-    pub(super) const fn spawned_pane(&self) -> Option<&ResourceId> {
+    pub(super) const fn spawned_pane(&self) -> Option<&SpawnedPane> {
         match &self.adopt {
             Some(Adopt::Spawned(pane)) => Some(pane),
             _ => None,
@@ -625,14 +656,14 @@ pub(super) enum Adopt {
     /// A pane this client just spawned on a satellite for this window.
     /// Nothing else references it, so a refused attach kills it
     /// (phux-c2td.20).
-    Spawned(ResourceId),
+    Spawned(SpawnedPane),
 }
 
 impl Adopt {
     /// The pane, whichever way it came.
     pub(super) const fn pane(&self) -> &ResourceId {
         match self {
-            Self::Existing(pane) | Self::Spawned(pane) => pane,
+            Self::Existing(pane) | Self::Spawned(SpawnedPane { id: pane, .. }) => pane,
         }
     }
 }

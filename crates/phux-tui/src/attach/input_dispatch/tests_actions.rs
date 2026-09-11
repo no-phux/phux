@@ -696,6 +696,31 @@ fn new_window_with_a_host_spawns_on_that_satellite() {
             if cwd == "/home/e/src" && *host == edge()),
         "{frame:?}"
     );
+    assert!(asks_binding(&frame), "{frame:?}");
+}
+
+/// phux-c2td.25: whether a spawn asks for the instance binding (ADR-0109).
+fn asks_binding(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::SpawnResource {
+            resource: Some(resource),
+            ..
+        } if resource.bind_instance
+    )
+}
+
+/// A local `new-window` asks for no binding: the frame is what it always
+/// was.
+#[test]
+fn a_local_new_window_asks_no_binding() {
+    let mut workspace = Workspace::single(tid(1));
+    let effects = run(&bare_action("new-window"), &mut workspace);
+    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { resource: None, .. }),
+        "{frame:?}"
+    );
 }
 
 /// `split-pane` with `direction = vertical`.
@@ -732,6 +757,7 @@ fn split_pane_on_a_satellite_pane_spawns_on_that_satellite_at_its_cwd() {
         pending.adopt, None,
         "nothing to attach until the spawn answers"
     );
+    assert!(asks_binding(&frame), "{frame:?}");
 }
 
 /// A local pane's split is what it always was: no host, no cwd, even when
@@ -763,6 +789,7 @@ fn split_pane_on_a_local_pane_is_unchanged() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::Attached);
+    assert!(!asks_binding(&frame), "{frame:?}");
 }
 
 /// A hub without host-aware spawns keeps today's split on itself, with no
@@ -789,6 +816,7 @@ fn split_pane_on_a_satellite_pane_stays_on_an_older_hub() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::AttachedInsteadOf(edge()));
+    assert!(!asks_binding(&frame), "a split kept on the hub is local");
 }
 
 /// Against a server that never advertised `LIST_DIRECTORY` the action bells

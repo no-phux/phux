@@ -101,6 +101,13 @@ pub(in crate::attach) struct FrameOutcome {
     /// each a best-effort `KILL_RESOURCE` through the hub, the host-qualified
     /// kill `phux kill host/@id` uses, and logs a failed kill at debug.
     pub(in crate::attach) kill_orphans: Vec<ResourceId>,
+    /// phux-c2td.25: satellite panes this client spawned bound to their
+    /// satellite's instance token whose attach was refused because that
+    /// satellite was unreachable. No kill can reach them now; the driver
+    /// remembers them, when the hub advertises `CONDITIONAL_KILL`, and
+    /// retries each once through `KILL_RESOURCE_IF` after the satellite
+    /// answers again.
+    pub(in crate::attach) unreachable_strays: Vec<phux_client::conditional_kill::BoundResource>,
     /// phux-4li.12: `true` ⇒ the server-side frame mutated layout in
     /// a way the *local* client originated (split landed, kill folded);
     /// the driver should broadcast the new envelope via

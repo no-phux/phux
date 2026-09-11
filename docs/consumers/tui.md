@@ -1752,24 +1752,49 @@ session asks for after its first paint (and the session picker asks for
 each time it opens) listing it as reachable, or a new window or split
 spawning on it. The kill is tried once; a kill that fails is not retried.
 
-**An unreachable satellite still needs a manual kill.** When the refusal
-says the satellite is unreachable, no kill is sent, then or later: a kill
-could not reach the pane, a kill to a silent satellite would freeze typing
-for up to 30 seconds, and an unreachable satellite cannot be told from one
-that is restarting, whose new panes may reuse the old pane's id. The pane
-keeps running there, where `phux ls` lists it and `phux kill devbox/@7`
-removes it. The same goes for a pane remembered after a switch whenever
-anything shows its satellite unreachable before the kill goes out (an
-unreachable host inventory row, a refusal, or a `federation degraded`
-notice), when the satellite does not answer within 60 seconds of the
-switch, when more than 32 panes are waiting (the oldest are dropped), and
-when the client's connection ends first.
+**With a hub that advertises `CONDITIONAL_KILL`, a pane stranded by an
+unreachable satellite is cleaned up once it answers again.** The TUI asks
+every satellite spawn to bind its pane to the satellite's instance token
+([ADR-0109](../../ADR/0109-late-kills-are-conditional-on-instance-and-attachment.md)).
+When the attach of such a pane is refused because the satellite is
+unreachable, nothing is sent then, since a kill to a silent satellite would
+freeze typing for up to 30 seconds. The pane is remembered instead, and on
+the first reply from that satellite (the same two signals as after a switch:
+a host inventory listing it as reachable, or a new window or split spawning
+on it) the TUI sends one conditional kill (`KILL_RESOURCE_IF`,
+[L1.md](../spec/L1.md) §5.2.1). The satellite refuses it, and the pane keeps
+running, if anyone else attached or used the pane in the meantime, if the
+pane has a child resource, or if the satellite restarted, which changes its
+token. A pane stranded by a session switch whose spawn was bound is killed
+the same conditional way. A refused or failed conditional kill is not
+retried and is never followed by an ordinary kill. Because the satellite
+makes the call, a sign that it was unreachable does not forget such a pane;
+it is forgotten when the satellite has not answered within 10 minutes, when
+more than 32 panes are waiting (the oldest are dropped), or when the
+client's connection ends first. Until then, and for any pane it refused,
+`phux ls` lists the pane and `phux kill devbox/@7` removes it.
 
-Before a kill sent after a switch, the TUI checks again that none of its own
-windows holds the pane and none of its opens is waiting on it. That check
-sees only this client: someone attaching the pane from the satellite, from
-an agent, or from another client in those few seconds is invisible to it,
-which is why the window is kept this short.
+**Without that bit, an unreachable satellite still needs a manual kill.**
+When the refusal says the satellite is unreachable, no kill is sent, then
+or later: a kill could not reach the pane, a kill to a silent satellite
+would freeze typing for up to 30 seconds, and an unreachable satellite
+cannot be told from one that is restarting, whose new panes may reuse the
+old pane's id. The pane keeps running there, where `phux ls` lists it and
+`phux kill devbox/@7` removes it. The same goes for a pane remembered after
+a switch whose kill would be an ordinary one (any pane, without the bit, or
+one whose spawn was not bound) whenever anything shows its satellite
+unreachable before the kill goes out (an unreachable host inventory row, a
+refusal, or a `federation degraded` notice), when the satellite does not
+answer within 60 seconds of the switch, when more than 32 panes are waiting
+(the oldest are dropped), and when the client's connection ends first.
+
+Before a kill sent after a switch or a recovery, the TUI checks again that
+none of its own windows holds the pane and none of its opens is waiting on
+it. That check sees only this client: someone attaching the pane from the
+satellite, from an agent, or from another client in those few seconds is
+invisible to it, which is why an ordinary kill's window is kept this short.
+A conditional kill closes that gap, because the satellite refuses it if any
+connection but the one that spawned the pane attached or used it.
 
 The kill goes only to a pane this client spawned that no window holds and no
 other open is waiting on: opening a satellite session from the session picker

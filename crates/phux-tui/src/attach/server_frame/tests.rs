@@ -2708,7 +2708,9 @@ fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
     assert_eq!(window.name, "2");
     assert_eq!(
         window.adopt,
-        Some(crate::attach::actions::Adopt::Spawned(sat)),
+        Some(crate::attach::actions::Adopt::Spawned(
+            crate::attach::actions::SpawnedPane::unbound(sat)
+        )),
         "a window spawned here is this client's to clean up"
     );
 }
@@ -2720,7 +2722,9 @@ fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
     let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
     let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
         "2",
-        crate::attach::actions::Adopt::Spawned(sat.clone()),
+        crate::attach::actions::Adopt::Spawned(crate::attach::actions::SpawnedPane::unbound(
+            sat.clone(),
+        )),
         FrameKind::CommandResult {
             request_id: 9,
             result: phux_protocol::wire::frame::CommandResult::Ok,
@@ -2780,7 +2784,9 @@ fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
     ] {
         let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
             "2",
-            crate::attach::actions::Adopt::Spawned(sat.clone()),
+            crate::attach::actions::Adopt::Spawned(crate::attach::actions::SpawnedPane::unbound(
+                sat.clone(),
+            )),
             frame,
         );
         assert_eq!(workspace.windows.len(), 1, "no blank window is left behind");
@@ -2809,7 +2815,7 @@ fn a_refused_attach_never_kills_a_pane_a_window_holds() {
         workspace,
         Vec::new(),
         "2",
-        crate::attach::actions::Adopt::Spawned(sat),
+        crate::attach::actions::Adopt::Spawned(crate::attach::actions::SpawnedPane::unbound(sat)),
         reachable_refusal(),
     );
     assert!(out.contains(&0x07), "the refusal still bells");
@@ -2832,7 +2838,7 @@ fn a_refused_attach_never_kills_a_pane_another_open_waits_on() {
         Workspace::single(tid(1)),
         vec![(10, picker_open)],
         "2",
-        Adopt::Spawned(sat),
+        Adopt::Spawned(crate::attach::actions::SpawnedPane::unbound(sat)),
         reachable_refusal(),
     );
     assert!(out.contains(&0x07), "the refusal still bells");
@@ -2852,6 +2858,156 @@ fn reachable_refusal() -> FrameKind {
             message: "no such terminal".to_owned(),
         },
     }
+}
+
+/// The instance token the phux-c2td.25 tests' satellite binds spawns to.
+fn edge_token() -> phux_protocol::ids::ServerInstance {
+    phux_protocol::ids::ServerInstance::new([3; 16])
+}
+
+/// phux-c2td.25: a bound spawn reply parks the window with the satellite's
+/// instance token, so a pane it strands can later be killed conditionally.
+#[test]
+fn a_bound_satellite_window_spawn_keeps_its_instance_token() {
+    use super::handle_window_spawned;
+    use crate::attach::actions::{Adopt, ParkedAdopt, PendingWindow, SpawnedPane};
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let mut workspace = Workspace::single(tid(1));
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1)]);
+    let mut out: Vec<u8> = Vec::new();
+    let outcome = handle_window_spawned(
+        &mut out,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &PendingWindow {
+            name: "2".to_owned(),
+            adopt: None,
+        },
+        SpawnResult::OkBound {
+            id: sat.clone(),
+            instance: edge_token(),
+        },
+    )
+    .expect("handle_window_spawned");
+    let [ParkedAdopt::Window(window)] = outcome.adopt_spawned.as_slice() else {
+        panic!("expected one parked window: {:?}", outcome.adopt_spawned);
+    };
+    assert_eq!(
+        window.adopt,
+        Some(Adopt::Spawned(SpawnedPane {
+            id: sat,
+            instance: Some(edge_token()),
+        }))
+    );
+}
+
+/// The same for a satellite split; a local pane answered bound (never asked
+/// for, but tolerated) still splits in place.
+#[test]
+fn a_bound_satellite_split_spawn_keeps_its_instance_token() {
+    use crate::attach::actions::{ParkedAdopt, SpawnedPane, SplitHost};
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let edge = phux_protocol::ids::SatelliteHost::new("edge");
+    let reply = drive_split_reply(
+        parked_split(SplitHost::Satellite(edge), None),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::OkBound {
+                id: edge_pane(),
+                instance: edge_token(),
+            },
+        },
+    );
+    let [ParkedAdopt::Split(split)] = reply.outcome.adopt_spawned.as_slice() else {
+        panic!(
+            "expected one parked split: {:?}",
+            reply.outcome.adopt_spawned
+        );
+    };
+    assert_eq!(
+        split.adopt,
+        Some(SpawnedPane {
+            id: edge_pane(),
+            instance: Some(edge_token()),
+        })
+    );
+
+    let reply = drive_split_reply(
+        parked_split(SplitHost::Attached, None),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::OkBound {
+                id: tid(2),
+                instance: edge_token(),
+            },
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1), tid(2)]);
+}
+
+/// phux-c2td.25: a refusal saying the satellite is unreachable strands the
+/// pane for a later conditional retry only when its spawn was bound and
+/// nothing here references it; it sends no immediate kill either way. A
+/// refusal from a satellite that answered kills at once, as before, and
+/// strands nothing.
+#[test]
+fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
+    use crate::attach::actions::{Adopt, SpawnedPane};
+    use phux_client::conditional_kill::BoundResource;
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let bound = SpawnedPane {
+        id: sat.clone(),
+        instance: Some(edge_token()),
+    };
+    let unreachable = FrameKind::CommandResult {
+        request_id: 9,
+        result: CommandResult::Error {
+            code: ErrorCode::SatelliteUnreachable,
+            message: "satellite edge is unreachable: link is down".to_owned(),
+        },
+    };
+
+    let (outcome, ..) = drive_adopt_reply("2", Adopt::Spawned(bound.clone()), unreachable.clone());
+    assert_eq!(
+        outcome.unreachable_strays,
+        vec![BoundResource {
+            id: sat.clone(),
+            instance: edge_token(),
+        }]
+    );
+    assert!(
+        outcome.kill_orphans.is_empty(),
+        "no kill could reach it now"
+    );
+
+    let (outcome, ..) = drive_adopt_reply(
+        "2",
+        Adopt::Spawned(SpawnedPane::unbound(sat.clone())),
+        unreachable.clone(),
+    );
+    assert!(outcome.unreachable_strays.is_empty(), "unbound: nothing");
+
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("edge".to_owned(), sat.clone());
+    let (outcome, ..) = drive_adopt_reply_in(
+        workspace,
+        Vec::new(),
+        "2",
+        Adopt::Spawned(bound.clone()),
+        unreachable,
+    );
+    assert!(outcome.unreachable_strays.is_empty(), "a held pane is kept");
+
+    let (outcome, ..) = drive_adopt_reply("2", Adopt::Spawned(bound), reachable_refusal());
+    assert_eq!(outcome.kill_orphans, vec![sat]);
+    assert!(outcome.unreachable_strays.is_empty());
 }
 
 /// phux-c2td.3: drive one reply through the dispatcher with a parked
@@ -3091,7 +3247,7 @@ fn parked_split(
         dir: SplitDir::Horizontal,
         zoom_on_spawn: false,
         host,
-        adopt,
+        adopt: adopt.map(crate::attach::actions::SpawnedPane::unbound),
     }
 }
 
@@ -3195,7 +3351,10 @@ fn a_split_spawned_on_a_satellite_waits_for_its_attach() {
             reply.outcome.adopt_spawned
         );
     };
-    assert_eq!(split.adopt, Some(edge_pane()));
+    assert_eq!(
+        split.adopt,
+        Some(crate::attach::actions::SpawnedPane::unbound(edge_pane()))
+    );
     assert_eq!(split.host, SplitHost::Satellite(edge));
     assert_eq!(split.focused_at_request, tid(1));
 }

@@ -174,7 +174,7 @@ fn spawned_satellite_panes(parked: &[ParkedAdopt]) -> Vec<ResourceId> {
 fn parked_spawned_panes(
     windows: &HashMap<u32, PendingWindow>,
     splits: &HashMap<u32, PendingSplit>,
-) -> Vec<ResourceId> {
+) -> Vec<crate::attach::actions::SpawnedPane> {
     let windows = windows.values().filter_map(PendingWindow::spawned_pane);
     let splits = splits.values().filter_map(|split| split.adopt.as_ref());
     windows.chain(splits).cloned().collect()
@@ -526,6 +526,12 @@ pub(super) struct SessionLoop {
     /// phux-c2td.20: kills in flight for satellite panes this client spawned
     /// whose attach was refused; their replies are consumed and logged.
     orphan_kills: super::orphans::OrphanKills,
+    /// phux-c2td.25: did the server advertise
+    /// [`ServerFeature::ConditionalKill`](phux_protocol::caps::ServerFeature::ConditionalKill)?
+    /// Set, a bound stray satellite pane is retried through
+    /// `KILL_RESOURCE_IF`, including one an unreachable satellite stranded.
+    /// Stamped onto every orphan record this entry holds.
+    conditional_kill_supported: bool,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
@@ -731,6 +737,11 @@ impl SessionLoop {
         overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
+        let conditional_kill_supported = negotiated
+            .server_features
+            .contains(ServerFeature::ConditionalKill);
+        let mut orphan_kills = super::orphans::OrphanKills::default();
+        orphan_kills.set_conditional_kill(conditional_kill_supported);
         Ok(Self {
             acknowledged_input_supported: negotiated
                 .server_features
@@ -768,7 +779,8 @@ impl SessionLoop {
             next_request_id: 1,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
-            orphan_kills: super::orphans::OrphanKills::default(),
+            orphan_kills,
+            conditional_kill_supported,
             pending_directory: None,
             expected_closes: HashSet::new(),
             agent_meta: AgentMetaIndex::default(),
@@ -2531,10 +2543,11 @@ impl SessionLoop {
     }
 
     /// phux-c2td.20 / phux-c2td.23: act on the orphans one frame left. Kill
-    /// the ones a kill can reach now, and the strays on each satellite that
-    /// just minted a pane for this client: its spawn answered, so it is
-    /// reachable. `answered` is those fresh panes; one reusing a stray's id
-    /// also shows its satellite restarted
+    /// the ones a kill can reach now, remember the bound ones an unreachable
+    /// satellite stranded (phux-c2td.25), and kill the strays on each
+    /// satellite that just minted a pane for this client: its spawn
+    /// answered, so it is reachable. `answered` is those fresh panes; one
+    /// reusing a stray's id also shows its satellite restarted
     /// ([`super::orphans::OrphanKills::forget_reissued`]).
     async fn settle_orphans(
         &mut self,
@@ -2544,6 +2557,10 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         self.kill_orphaned_spawns(conn, std::mem::take(&mut outcome.kill_orphans))
             .await?;
+        self.orphan_kills.record_unreachable(
+            std::mem::take(&mut outcome.unreachable_strays),
+            std::time::Instant::now(),
+        );
         self.orphan_kills.forget_reissued(answered);
         let hosts: Vec<SatelliteHost> = answered
             .iter()
@@ -2572,10 +2589,10 @@ impl SessionLoop {
     }
 
     /// phux-c2td.23: the kill of each stray on `hosts`, which were known to
-    /// answer at `answered_at`; its one attempt. Sent through the same
-    /// non-blocking write as any orphan kill; a stray one of this client's
-    /// windows or parked opens now references is dropped instead
-    /// ([`Self::unreferenced_strays`]).
+    /// answer at `answered_at`; its one attempt, conditional when the stray
+    /// was bound (phux-c2td.25). Sent through the same non-blocking write as
+    /// any orphan kill; a stray one of this client's windows or parked opens
+    /// now references is dropped instead ([`Self::unreferenced_strays`]).
     async fn retry_stray_kills(
         &mut self,
         conn: &mut Connection,
@@ -2588,10 +2605,10 @@ impl SessionLoop {
         let due = self
             .orphan_kills
             .take_answered(hosts, answered_at, std::time::Instant::now());
-        let panes = self.unreferenced_strays(due);
+        let strays = self.unreferenced_strays(due);
         for frame in self
             .orphan_kills
-            .kill_frames(panes, &mut self.next_request_id)
+            .stray_kill_frames(strays, &mut self.next_request_id)
         {
             send_unless_peer_gone(conn, &frame).await?;
         }
@@ -2600,11 +2617,17 @@ impl SessionLoop {
 
     /// The strays nothing in this client references now. One the user has
     /// since adopted (a window holds it, or an open waits on it) is no
-    /// longer a stray, and is forgotten rather than killed.
-    fn unreferenced_strays(&self, panes: Vec<ResourceId>) -> Vec<ResourceId> {
-        panes
+    /// longer a stray, and is forgotten rather than killed. The check stays
+    /// ahead of a conditional kill too: the satellite exempts the spawning
+    /// connection's own attaches, and through a hub that is this client.
+    fn unreferenced_strays(
+        &self,
+        strays: Vec<super::orphans::Stray>,
+    ) -> Vec<super::orphans::Stray> {
+        strays
             .into_iter()
-            .filter(|pane| {
+            .filter(|stray| {
+                let pane = stray.pane();
                 let adopted = crate::attach::server_frame::pane_is_referenced(
                     &self.workspace,
                     &self.pending_windows,
@@ -2621,7 +2644,10 @@ impl SessionLoop {
 
     /// phux-c2td.23: take over the orphan record an earlier entry on this
     /// connection handed out at a session switch.
-    pub(super) fn set_orphan_kills(&mut self, kills: super::orphans::OrphanKills) {
+    /// It is stamped with this entry's `CONDITIONAL_KILL` bit: the first
+    /// entry's record is created before any features are known.
+    pub(super) fn set_orphan_kills(&mut self, mut kills: super::orphans::OrphanKills) {
+        kills.set_conditional_kill(self.conditional_kill_supported);
         self.orphan_kills = kills;
     }
 

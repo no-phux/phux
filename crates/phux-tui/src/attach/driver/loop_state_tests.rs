@@ -165,26 +165,43 @@ fn spawned_edge_pane() -> ResourceId {
 /// A bootstrapped loop over a socket pair, with a window parked on the
 /// attach of the satellite pane it just spawned (request 900).
 async fn loop_with_spawned_window() -> (SessionLoop, Connection, Connection, Vec<u8>) {
-    let (mut state, client, server, out) = bootstrapped_loop().await;
+    Box::pin(loop_with_window_on(ServerFeatureSet::new(), None)).await
+}
+
+/// [`loop_with_spawned_window`] on a hub advertising `features`, the pane's
+/// spawn bound to `instance` when that is `Some`.
+async fn loop_with_window_on(
+    features: ServerFeatureSet,
+    instance: Option<phux_protocol::ids::ServerInstance>,
+) -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (mut state, client, server, out) = Box::pin(bootstrapped_loop_with(features)).await;
     state.pending_windows.insert(
         900,
         PendingWindow {
             name: "2".to_owned(),
-            adopt: Some(crate::attach::actions::Adopt::Spawned(spawned_edge_pane())),
+            adopt: Some(crate::attach::actions::Adopt::Spawned(
+                crate::attach::actions::SpawnedPane {
+                    id: spawned_edge_pane(),
+                    instance,
+                },
+            )),
         },
     );
     (state, client, server, out)
 }
 
-/// A bootstrapped loop over a socket pair, with nothing parked.
-async fn bootstrapped_loop() -> (SessionLoop, Connection, Connection, Vec<u8>) {
+/// A bootstrapped loop over a socket pair on a server advertising
+/// `features`, with nothing parked.
+async fn bootstrapped_loop_with(
+    features: ServerFeatureSet,
+) -> (SessionLoop, Connection, Connection, Vec<u8>) {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
     let mut client = Connection::from_stream(a);
     let server = Connection::from_stream(b);
     let negotiated = NegotiatedBootstrap {
         profile: BootstrapProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
-        server_features: ServerFeatureSet::new(),
+        server_features: features,
     };
     let mut state = SessionLoop::new(
         negotiated,
@@ -207,6 +224,22 @@ async fn bootstrapped_loop() -> (SessionLoop, Connection, Connection, Vec<u8>) {
 /// Every `KILL_RESOURCE` the client sent before a FIFO barrier, with its
 /// request id.
 async fn kills_sent(client: &mut Connection, server: &mut Connection) -> Vec<(u32, ResourceId)> {
+    kill_commands_sent(client, server)
+        .await
+        .into_iter()
+        .filter_map(|(request_id, command)| match command {
+            Command::KillResource { terminal_id } => Some((request_id, terminal_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every kill the client sent before a FIFO barrier, `KILL_RESOURCE` and
+/// `KILL_RESOURCE_IF` alike, with its request id.
+async fn kill_commands_sent(
+    client: &mut Connection,
+    server: &mut Connection,
+) -> Vec<(u32, Command)> {
     client
         .send(&FrameKind::GetMetadata {
             request_id: u32::MAX,
@@ -225,8 +258,9 @@ async fn kills_sent(client: &mut Connection, server: &mut Connection) -> Vec<(u3
                 } => break,
                 FrameKind::Command {
                     request_id,
-                    command: Command::KillResource { terminal_id },
-                } => kills.push((request_id, terminal_id)),
+                    command:
+                        command @ (Command::KillResource { .. } | Command::KillResourceIf { .. }),
+                } => kills.push((request_id, command)),
                 _ => {}
             }
         }
@@ -390,10 +424,20 @@ async fn killed_panes(client: &mut Connection, server: &mut Connection) -> Vec<R
 /// waiting on the attach of `edge/@9`, the pane it spawned: that pane is a
 /// stray carried into this loop.
 async fn loop_with_switch_stray() -> (SessionLoop, Connection, Connection) {
-    let (mut state, _client, _server, _out) = Box::pin(loop_with_spawned_window()).await;
+    Box::pin(loop_with_switch_stray_on(ServerFeatureSet::new, None)).await
+}
+
+/// [`loop_with_switch_stray`] on a hub advertising `features`, the stray's
+/// spawn bound to `instance` when that is `Some`.
+async fn loop_with_switch_stray_on(
+    features: fn() -> ServerFeatureSet,
+    instance: Option<phux_protocol::ids::ServerInstance>,
+) -> (SessionLoop, Connection, Connection) {
+    let (mut state, _client, _server, _out) =
+        Box::pin(loop_with_window_on(features(), instance)).await;
     let carried = state.orphans_for_switch();
     drop(state);
-    let (mut next, client, server, _out) = Box::pin(bootstrapped_loop()).await;
+    let (mut next, client, server, _out) = Box::pin(bootstrapped_loop_with(features())).await;
     next.set_orphan_kills(carried);
     (next, client, server)
 }
@@ -539,6 +583,205 @@ async fn a_spawn_on_the_host_kills_its_strays_unless_it_restarted() {
         Vec::new(),
         "forgotten, not waiting"
     );
+}
+
+// ---- phux-c2td.25: conditional retries of stray satellite panes ----------
+
+/// The instance token `edge` bound its spawns to.
+fn edge_token() -> phux_protocol::ids::ServerInstance {
+    phux_protocol::ids::ServerInstance::new([5; 16])
+}
+
+/// A hub that evaluates conditional kills.
+fn conditional_kill() -> ServerFeatureSet {
+    ServerFeatureSet::with(&[phux_protocol::caps::ServerFeature::ConditionalKill])
+}
+
+/// The conditional kill of `edge/@9` under [`edge_token`].
+fn conditional_edge_kill() -> Command {
+    Command::KillResourceIf {
+        terminal_id: spawned_edge_pane(),
+        precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
+            edge_token(),
+        ),
+    }
+}
+
+/// The unconditional kill of `edge/@9`.
+fn plain_edge_kill() -> Command {
+    Command::KillResource {
+        terminal_id: spawned_edge_pane(),
+    }
+}
+
+/// The kills sent before a FIFO barrier, without their request ids.
+async fn kill_commands(client: &mut Connection, server: &mut Connection) -> Vec<Command> {
+    kill_commands_sent(client, server)
+        .await
+        .into_iter()
+        .map(|(_, command)| command)
+        .collect()
+}
+
+/// A bound spawn stranded by an unreachable satellite is recorded, sends
+/// nothing while the satellite is down, and is retried once with
+/// `KILL_RESOURCE_IF` carrying its instance token once an inventory lists
+/// the satellite reachable. The satellite's `PRECONDITION_FAILED` is
+/// consumed and forgets the stray: no second attempt, and no unconditional
+/// fallback.
+#[tokio::test(flavor = "current_thread")]
+async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    let (mut state, mut client, mut server, mut out) =
+        Box::pin(loop_with_window_on(conditional_kill(), Some(edge_token()))).await;
+    Box::pin(refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::SatelliteUnreachable,
+    ))
+    .await;
+    assert_eq!(
+        kill_commands(&mut client, &mut server).await,
+        Vec::new(),
+        "no kill while the satellite is unreachable"
+    );
+
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    let sent = kill_commands_sent(&mut client, &mut server).await;
+    assert_eq!(
+        sent.iter()
+            .map(|(_, command)| command.clone())
+            .collect::<Vec<_>>(),
+        vec![conditional_edge_kill()]
+    );
+    let refused = FrameKind::CommandResult {
+        request_id: sent[0].0,
+        result: CommandResult::Error {
+            code: ErrorCode::PreconditionFailed,
+            message: "resource was attached by another connection".to_owned(),
+        },
+    };
+    assert_eq!(state.orphan_kills.observe(refused), None, "consumed");
+
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    Box::pin(answer_edge_spawn(&mut state, &mut client, 12)).await;
+    assert_eq!(
+        kill_commands(&mut client, &mut server).await,
+        Vec::new(),
+        "forgotten after its one retry"
+    );
+}
+
+/// Without `CONDITIONAL_KILL` a bound spawn's unreachable refusal records
+/// nothing, as before: neither a reachable inventory nor a spawn on the
+/// satellite sends any kill, conditional or not.
+#[tokio::test(flavor = "current_thread")]
+async fn without_the_bit_an_unreachable_refusal_sends_no_kill_at_all() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, mut server, mut out) = Box::pin(loop_with_window_on(
+        ServerFeatureSet::new(),
+        Some(edge_token()),
+    ))
+    .await;
+    Box::pin(refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::SatelliteUnreachable,
+    ))
+    .await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    Box::pin(answer_edge_spawn(&mut state, &mut client, 12)).await;
+    assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
+}
+
+/// A bound stray under the conditional kill outlives signs that its
+/// satellite is unreachable (an unreachable inventory row, an uncorrelated
+/// notice): the satellite judges the kill when it answers again.
+#[tokio::test(flavor = "current_thread")]
+async fn a_bound_stray_outlives_unreachable_signals() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, mut server, mut out) =
+        Box::pin(loop_with_window_on(conditional_kill(), Some(edge_token()))).await;
+    Box::pin(refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::SatelliteUnreachable,
+    ))
+    .await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(false)]).await;
+    let notice = FrameKind::Error {
+        request_id: None,
+        code: ErrorCode::SatelliteUnreachable,
+        message: "satellite edge is unreachable: link is down".to_owned(),
+    };
+    assert!(state.orphan_kills.observe(notice).is_some());
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        kill_commands(&mut client, &mut server).await,
+        vec![conditional_edge_kill()]
+    );
+}
+
+/// A session-switch stray whose spawn was bound is retried with the
+/// conditional kill on a hub with the bit, and with today's unconditional
+/// kill on one without it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_bound_switch_stray_uses_the_conditional_kill_when_supported() {
+    let cases: [(fn() -> ServerFeatureSet, Command); 2] = [
+        (conditional_kill, conditional_edge_kill()),
+        (ServerFeatureSet::new, plain_edge_kill()),
+    ];
+    for (features, expected) in cases {
+        let (mut state, mut client, mut server) =
+            Box::pin(loop_with_switch_stray_on(features, Some(edge_token()))).await;
+        answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+        assert_eq!(
+            kill_commands(&mut client, &mut server).await,
+            vec![expected]
+        );
+    }
+}
+
+/// An unbound switch stray keeps today's behavior on a hub with the bit:
+/// an unconditional kill on the next reachable reply, and forgotten by an
+/// unreachable inventory row first.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unbound_switch_stray_is_unchanged_under_the_bit() {
+    let (mut state, mut client, mut server) =
+        Box::pin(loop_with_switch_stray_on(conditional_kill, None)).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        kill_commands(&mut client, &mut server).await,
+        vec![plain_edge_kill()]
+    );
+
+    let (mut state, mut client, mut server) =
+        Box::pin(loop_with_switch_stray_on(conditional_kill, None)).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(false)]).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
+}
+
+/// A bound stray this client has since adopted is not killed, even
+/// conditionally: the satellite exempts this client's own attaches.
+#[tokio::test(flavor = "current_thread")]
+async fn an_adopted_bound_stray_is_not_killed_conditionally() {
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray_on(
+        conditional_kill,
+        Some(edge_token()),
+    ))
+    .await;
+    state
+        .workspace
+        .add_window("edge".to_owned(), spawned_edge_pane());
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
 }
 
 // ---- phux-c2td.3: held federation notices --------------------------------

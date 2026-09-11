@@ -13,8 +13,8 @@ use phux_protocol::wire::frame::{
 };
 
 use crate::attach::actions::{
-    self, Adopt, ParkedAdopt, PendingSplit, PendingWindow, SplitHost, apply_spawned_ok,
-    apply_terminal_closed,
+    self, Adopt, ParkedAdopt, PendingSplit, PendingWindow, SpawnedPane, SplitHost,
+    apply_spawned_ok, apply_terminal_closed,
 };
 use crate::attach::outcome::{AttachEnd, AttachError, describe_exit};
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, content_rect, paint_focused_pane};
@@ -26,6 +26,7 @@ use crate::layout::{self, LayoutState, Rect, Workspace};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use phux_client::agent_meta::RESOURCE_AGENT_KEY;
+use phux_client::conditional_kill::BoundResource;
 use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
 };
@@ -1271,19 +1272,26 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
         );
         return Ok(FrameOutcome::default());
     };
+    let instance = result.instance();
     match result {
         // phux-c2td.18: a split spawned on a satellite through the hub
         // streams to no one until it is attached, and that attach can be
         // refused. Hand the split back to be parked on the attach: it
         // applies only when the attach succeeds, as a satellite window does.
-        SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
-            adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
-                adopt: Some(new_id),
-                ..pending
-            })],
-            ..FrameOutcome::default()
-        }),
-        SpawnResult::Ok(new_id) => {
+        // phux-c2td.25: the satellite's instance token rides along.
+        SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } if !new_id.is_local() => {
+            Ok(FrameOutcome {
+                adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
+                    adopt: Some(SpawnedPane {
+                        id: new_id,
+                        instance,
+                    }),
+                    ..pending
+                })],
+                ..FrameOutcome::default()
+            })
+        }
+        SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } => {
             let mut outcome = apply_split_spawned(ctx, new_id, &pending)?;
             outcome.notices.extend(split_fallback_notice(&pending.host));
             Ok(outcome)
@@ -1991,6 +1999,9 @@ fn adopt_refused<W: crate::attach::RenderSink>(
         kill_orphans: orphaned_pane(ctx, parked, refusal.code)
             .into_iter()
             .collect(),
+        unreachable_strays: stranded_bound_pane(ctx, parked, refusal.code)
+            .into_iter()
+            .collect(),
         ..FrameOutcome::default()
     }
 }
@@ -2008,16 +2019,35 @@ fn orphaned_pane<W: crate::attach::RenderSink>(
     if !kill_can_reach(code) {
         return None;
     }
-    unreferenced(ctx, parked.spawned_pane()?)
+    unreferenced(ctx, &parked.spawned_pane()?.id)
+}
+
+/// phux-c2td.25: the pane a refusal saying its satellite is unreachable
+/// leaves running, when this client spawned it bound to that satellite's
+/// instance token and nothing else here references it. The driver may
+/// retry it later, only through the conditional kill (ADR-0109), which the
+/// satellite refuses if the pane was used or the satellite restarted. An
+/// unbound pane is never returned: nothing could make its retry safe.
+fn stranded_bound_pane<W: crate::attach::RenderSink>(
+    ctx: &FrameCtx<'_, W>,
+    parked: &ParkedAdopt,
+    code: ErrorCode,
+) -> Option<BoundResource> {
+    if kill_can_reach(code) {
+        return None;
+    }
+    let bound = parked.spawned_pane()?.bound()?;
+    unreferenced(ctx, &bound.id).map(|_| bound)
 }
 
 /// Whether a kill for the pane behind a refusal with `code` could reach it.
 /// `SATELLITE_UNREACHABLE` says it could not: the kill would meet the same
 /// silence, and the hub waits on each relayed command, up to its 30 s relay
 /// deadline, before it reads this client's next frame, so the kill would
-/// hold every keystroke behind it. It is not retried later either
-/// (phux-c2td.23): an unreachable satellite cannot be told from one that is
-/// restarting, whose next panes may reuse this pane's id.
+/// hold every keystroke behind it. An unconditional kill is not retried
+/// later either (phux-c2td.23): an unreachable satellite cannot be told
+/// from one that is restarting, whose next panes may reuse this pane's id.
+/// Only a bound pane is retried, conditionally ([`stranded_bound_pane`]).
 const fn kill_can_reach(code: ErrorCode) -> bool {
     !matches!(code, ErrorCode::SatelliteUnreachable)
 }
@@ -2049,7 +2079,7 @@ pub(in crate::attach) fn pane_is_referenced(
         .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
     let adopting_split = pending_splits
         .values()
-        .any(|split| split.adopt.as_ref() == Some(pane));
+        .any(|split| split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane));
     window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 
@@ -2095,20 +2125,27 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
     pending: &PendingWindow,
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
+    let instance = result.instance();
     match result {
         // A pane spawned on a satellite through the hub streams to no one
         // until it is attached (the relay drops automatic spawn output no
         // proxy observes), and that attach can be refused. Hand the window
         // back to be parked on the attach, the satellite-session open path:
-        // it opens only when the attach succeeds.
-        SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
-            adopt_spawned: vec![ParkedAdopt::Window(PendingWindow {
-                name: pending.name.clone(),
-                adopt: Some(Adopt::Spawned(new_id)),
-            })],
-            ..FrameOutcome::default()
-        }),
-        SpawnResult::Ok(new_id) => {
+        // it opens only when the attach succeeds. phux-c2td.25: the
+        // satellite's instance token rides along.
+        SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } if !new_id.is_local() => {
+            Ok(FrameOutcome {
+                adopt_spawned: vec![ParkedAdopt::Window(PendingWindow {
+                    name: pending.name.clone(),
+                    adopt: Some(Adopt::Spawned(SpawnedPane {
+                        id: new_id,
+                        instance,
+                    })),
+                })],
+                ..FrameOutcome::default()
+            })
+        }
+        SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } => {
             workspace.add_window(pending.name.clone(), new_id.clone());
             if let std::collections::hash_map::Entry::Vacant(v) = panes.entry(new_id) {
                 v.insert(PaneSlot::new()?);
