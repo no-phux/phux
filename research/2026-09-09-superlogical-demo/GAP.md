@@ -101,7 +101,7 @@ after the epic's work landed, with the commits that delivered each surface.
 | F14 principal to user map | out of scope | n/a | n/a | ADR-0106 |
 | F15 remote `session new` from CLI | HAVE (`--remote` on `ls`, `new`, `kill`, `rename`, `detach`) | n/a | n/a | c3cf97cc |
 | F16/F17 empty session, first tab | HAVE (`phux new --empty`) | HAVE (Empty session state) | HAVE (Empty session panel with New Tab) | 64586db6, aff34049 |
-| F18 reconnect restores remote | HAVE | HAVE | HAVE (remembered hosts restore; the front peer's session is re-shown) | 10c88e0e, 980282f8, 0a87a6eb |
+| F18 reconnect restores remote | HAVE | HAVE | HAVE (remembered hosts restore; the front peer's session is re-shown, across a graceful upgrade) | 10c88e0e, 980282f8, 0a87a6eb, 6d3a4293, 18a9ef0b |
 | F19 kill remote by ID | HAVE (`phux kill --remote`) | n/a | n/a | c3cf97cc |
 | F20 live propagation | HAVE | HAVE | HAVE | unchanged |
 | F21 local directory picker | HAVE | HAVE (`go-to-directory`, `C-a G`) | HAVE (Cmd+Shift+J) | b37c4d9f, abe9e9a9, 15b6d549 |
@@ -124,6 +124,8 @@ the service manager.
   one else having attached or used the pane.
 - ADR-0110: at launch, a showing peer is re-shown only if its tab was in
   front, and only after a real frame has measured the window.
+- ADR-0111: a front restore survives one failed connection, and is judged by
+  the session's id and creation time so a graceful upgrade keeps it.
 
 ### Safety work beyond the demo
 
@@ -137,9 +139,7 @@ the service manager.
 ### Still open under the epic
 
 - `phux-c2td.17`: live Cockpit acceptance against a real enrolled remote host.
-- `phux-c2td.32`: relaunch restore beyond the front host, surviving a server
-  restart, and the untested ordering race.
 
-Outside the epic, `phux-q0i3` tracks a regression it introduced: Cockpit built
-without the Phux FFI no longer compiles, and CI never builds that
-configuration.
+The epic briefly broke the Cockpit build without the Phux FFI, which CI did
+not build. That regression (`phux-q0i3`) is fixed in 0b3832d3, and cockpit-ci
+now builds and tests that configuration.
