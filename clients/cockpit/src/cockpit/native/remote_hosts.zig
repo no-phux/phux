@@ -34,7 +34,9 @@ pub const max_text_bytes: usize = 240;
 pub const max_bytes: usize = 4 + 2 * max_text_bytes;
 
 /// 4 removes a remote host entirely: its switcher group and tabs go, and it
-/// is no longer reattached at launch. With a target it removes that host
+/// is no longer reattached at launch as a remembered host (a host named by
+/// `phux-remote` or `PHUX_REMOTE` is still active next launch while the
+/// setting stands). With a target it removes that host
 /// alone; with none, every host. 3 (Use this Mac) only makes this Mac active
 /// and keeps the remote hosts listed beside it.
 pub const Kind = enum(u8) { status = 1, connect = 2, local = 3, disconnect = 4 };

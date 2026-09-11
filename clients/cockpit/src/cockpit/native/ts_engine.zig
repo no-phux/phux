@@ -1003,9 +1003,12 @@ pub const Engine = struct {
         return true;
     }
 
+    /// A refused edit changes nothing, the active coordinator's pending
+    /// focus included; a queued one supersedes every other pending focus.
     fn createOnPeer(self: *Engine, coordinator: support.ProviderId, kind: peer_edits.Kind, cwd: []const u8, owner: peer_edits.Owner) bool {
+        const created = self.peer_edits.create(self.model, coordinator, kind, cwd, owner) catch return false;
         self.supersedeSelection();
-        self.peer_edits.create(self.model, coordinator, kind, cwd, owner) catch return false;
+        created.may_focus = true;
         return true;
     }
 

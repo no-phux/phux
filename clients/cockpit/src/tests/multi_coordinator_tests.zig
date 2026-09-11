@@ -703,8 +703,12 @@ test "an edit of a peer that cannot take one is refused and reaches no coordinat
     tree.nodes[tree.focus].terminal = try refOn(pair.mini, 7);
     _ = countFrames(pair.here);
     _ = countFrames(pair.mini);
+    // A refused peer edit leaves the active coordinator's pending focus alone.
+    const pending = try refOn(pair.here, 7);
+    engine.model.shared_workspace.desired_terminal = pending;
     try testing.expect(!intent(engine, .new_terminal, 0));
     try testing.expect(!intent(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    try testing.expect(engine.model.shared_workspace.desired_terminal.?.eql(pending));
     // No SPAWN or request reached mini (its focus event is input, not an
     // edit), and nothing at all reached This Mac.
     const refused = countFrames(pair.mini);

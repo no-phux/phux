@@ -169,7 +169,9 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
         const target = hosts.get(index);
         if (coordinatorHeld(model, PhuxProvider.coordinatorId(.{ .remote = .{ .target = target } }))) continue;
         const slot = freePeerSlot(model) orelse return;
-        const peer = try createRemotePhuxProvider(gpa, io, target, null);
+        // One host that cannot be built never costs the launch; it stays
+        // remembered for the next one.
+        const peer = createRemotePhuxProvider(gpa, io, target, null) catch continue;
         // Lists sessions only; never attaches, so it sizes nobody's panes.
         peer.standBy();
         model.phux_peers[slot] = peer;

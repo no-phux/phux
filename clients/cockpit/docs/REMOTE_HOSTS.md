@@ -143,11 +143,15 @@ remembered. Disconnect removes the host it names from the file, and
 Disconnect All removes the file; Use this Mac leaves it, because the hosts
 stay listed. A torn or foreign file is treated as absent.
 
-At launch every remembered host is reattached beside the coordinators held,
-each LISTING in its own slot (`startup.attachRememberedPeers`); none attaches
-until one of its sessions is shown. With no host configured this Mac is
-active; a configured or environment host is active with this Mac beside it,
-and is not held a second time if it is also remembered.
+At launch the remembered hosts are reattached beside the coordinators held,
+each LISTING in its own slot (`startup.attachRememberedPeers`), as many as
+there are free slots; none attaches until one of its sessions is shown. With
+no host configured this Mac is active; a configured or environment host is
+active with this Mac beside it (so two remembered hosts fit), and is not held
+a second time if it is also remembered. A host that cannot be set up is
+skipped, not the launch, and stays remembered. Disconnect forgets only what
+Connect to Host remembered: a host named by `phux-remote` or `PHUX_REMOTE`
+is active again on the next launch while the setting stands.
 
 A Phux-backed launch keeps no client-side layout for any coordinator: the
 state file is not read, and saved attachment evidence is discarded when the
@@ -291,8 +295,20 @@ projected reads "workspace unavailable" on its session rows.
   in the pinned Native SDK), which also holds the core's engine channel and
   the active coordinator's. Each peer holds one channel, and a restart or a
   Disconnect followed by a Connect briefly holds a second while the old
-  one's close is delivered. Connecting to a fifth is refused with that
-  reason, and nothing changes.
+  one's close is delivered; so does an automatic redial of a peer whose
+  failed channel's close has not been delivered yet. If the table is ever
+  full, the runtime refuses the open with a `.rejected` event: that peer is
+  marked failed and redialed on its backoff, and no other coordinator is
+  touched. Connecting to a fifth is refused with that reason, and nothing
+  changes.
+- A new tab or split that a peer has spawned but not yet placed is dropped
+  from Cockpit's queue if the peer stops showing, restarts or fails first
+  (for instance, choosing another coordinator's tab within the spawn's round
+  trip). Its terminal keeps running on that host, unplaced. Keeping the peer
+  attached until the placement lands would hold a viewport for a peer that
+  is not displaying, so Cockpit does not.
+- A peer that lists and then fails again, repeatedly, is redialed 1 s after
+  each failure: listing resets its backoff.
 - Relaunch restores which hosts are held, not what was on screen: each
   remembered host comes back listing, and none of its sessions is shown
   again until one is picked. Cockpit keeps no client-side placement for a

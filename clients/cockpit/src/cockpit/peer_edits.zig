@@ -140,7 +140,9 @@ pub const Edits = struct {
 
     /// Spawn a terminal on the peer and place it as a new tab or a split of
     /// the focused pane. `cwd` empty: the serving host's default directory.
-    pub fn create(self: *Edits, model: *Model, coordinator: support.ProviderId, kind: Kind, cwd: []const u8, owner_choice: Owner) !void {
+    /// Returns the queued creation so the caller can supersede every other
+    /// pending focus without losing this one's.
+    pub fn create(self: *Edits, model: *Model, coordinator: support.ProviderId, kind: Kind, cwd: []const u8, owner_choice: Owner) !*Creation {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const slot = try slotOf(model, coordinator);
         const peer_view = try view(model, slot);
@@ -157,6 +159,7 @@ pub const Edits = struct {
         const viewport = if (owner) |ref| peer.lastViewport(ref) orelse peer.attach_viewport else peer.attach_viewport;
         entry.request = try peer.requestSpawnIn(owner, viewport, cwd);
         free.* = entry;
+        return &free.*.?;
     }
 
     fn vacant(self: *Edits, slot: usize) ?*?Creation {
