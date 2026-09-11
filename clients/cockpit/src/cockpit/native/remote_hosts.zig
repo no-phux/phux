@@ -324,6 +324,9 @@ fn handOverToThisMac(engine: anytype, fx: anytype) bool {
         if (peer.remoteTarget() == null) engine.dropPeer(fx, slot);
     }
     active.commitRetarget(next);
+    // The active coordinator changed: no front record waiting for its list
+    // is shown over it (ADR-0110).
+    @import("peer_restore.zig").cancelFront(model);
     restart(engine, fx);
     return true;
 }
@@ -408,6 +411,15 @@ fn rememberIfChosen(model: *Model, target: ?[]const u8) void {
     if (chosen_len == 0 or !std.mem.eql(u8, chosen_buffer[0..chosen_len], value)) return;
     const hosts = rememberedHosts(model) orelse return;
     if (hosts.add(value)) saveRemembered(model);
+}
+
+/// Keep each remembered host's record of what it shows (ADR-0110) in the
+/// same file as the hosts, so Disconnect removes both together. Written
+/// only when a record changed.
+pub fn rememberShown(model: *Model) void {
+    if (comptime !support.phux_enabled) return;
+    const hosts = rememberedHosts(model) orelse return;
+    if (@import("peer_restore.zig").capture(model, hosts)) saveRemembered(model);
 }
 
 /// Tests share this module's process state; each starts from nothing.

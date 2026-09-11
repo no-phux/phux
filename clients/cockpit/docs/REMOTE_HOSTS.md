@@ -20,7 +20,8 @@ another coordinator's group shows it beside the others without disconnecting
 anything; a coordinator that fails shows why in its group. Disconnect removes
 the host named in the panel, and Disconnect All every host. The hosts
 connected through Connect to Host are remembered and come back beside this
-Mac on the next launch, listing until one of their sessions is shown.
+Mac on the next launch, listing, except that the one whose session was in
+front is shown again.
 
 ## Endpoint model
 
@@ -134,7 +135,8 @@ itself once the host it was waiting for connects.
 ## Persistence and relaunch
 
 Phux-backed layout lives in each coordinator's shared workspace, so the
-client only needs to remember which coordinators to reattach to. When a host
+client only needs to remember which coordinators to reattach to, and which
+session each was showing (below). When a host
 chosen through Connect to Host first connects, it joins the hosts
 `<state file>.remote` records (`src/cockpit/remote_memory.zig`): up to three,
 oldest first, one `target=` line each. A file an earlier release wrote, with
@@ -165,6 +167,31 @@ anything; that host's workspace projects its terminals again under its own
 coordinator id. Within a run, saved placements carry the endpoint
 `phux-remote:<target>`, which is disjoint from every absolute socket path,
 so a placement never matches the wrong coordinator.
+
+One fact about what was on screen survives a relaunch
+([ADR-0110](../../../ADR/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md),
+`src/cockpit/native/peer_restore.zig`). Beside each remembered host the file
+keeps the session that host's coordinator was showing, a hash of its
+server's `HELLO_OK.server_id`, the shared window of its selected tab, and
+whether that tab was the selected tab of the front window: one `shown=`
+line after its `target=` line, in a v3 file (a file without one is still
+written as v2). It is rewritten whenever that changes. At launch every host
+still lists first. When a host's first list arrives, a record not marked
+front attaches nothing and is kept only to select that tab should the
+session be picked. The front record shows its session through the ordinary
+pick path once the list still carries it (the same server incarnation, and
+not as an empty session) and a frame has measured the front window, so the
+ATTACH carries that window's grid rather than 80 by 24. Its first projection
+selects the remembered tab, or its first tab when that one is gone. A record
+whose session is gone, whose server re-executed, whose coordinator is not
+the slot's peer, or whose host's first connection fails is dropped quietly
+and never applied to another coordinator, and a choice the user makes before
+the list arrives cancels the front one, as do Connect to Host, Use this Mac
+and Disconnect. At most one record is front: a remembered host's tab in front
+now outranks a loaded front record not shown yet, and a file naming two keeps
+the first. The file is rewritten only when its bytes change, through a
+temporary file that replaces it whole. Disconnect removes a host's record
+with its line, and Disconnect All removes the file.
 
 ## Several coordinators
 
@@ -412,16 +439,19 @@ projected reads "workspace unavailable" on its session rows.
   connection shows a session instead of listing (that attach would count as
   another connection's), or when the peer is removed first. Cockpit never
   kills one unconditionally.
-- Relaunch restores which hosts are held, not what was on screen: each
-  remembered host comes back listing, and none of its sessions is shown
-  again until one is picked. Cockpit keeps no client-side placement for a
-  Phux coordinator across relaunch (for the active coordinator as for a
-  peer): which native window each of its tabs was in and which tab was
-  selected come from its shared workspace when it is shown again. Showing a
-  peer's session again at launch would need a client-layout persistence
-  design (which coordinators' sessions to re-show, and how a re-shown peer
-  meets the rule that only a displayed peer attaches); that is an open
-  design decision, and no ADR records one yet.
+- Relaunch shows again only the remembered host whose tab was the front
+  window's selected tab
+  ([ADR-0110](../../../ADR/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)).
+  A host that was showing a session in another window, or behind another
+  coordinator's tab, comes back listing, and so does every host when the
+  front tab was this Mac's. Only the session and which of its tabs was
+  selected are kept; which native window each of its tabs was in comes
+  from its shared workspace. A server that re-executed since, an upgrade
+  included, drops the record even when the session survived. A host whose
+  first dial fails does not come back on screen on that launch, and one
+  held only through `phux-remote` or `PHUX_REMOTE` is not remembered, so
+  nothing of it is kept. The front host appears once it lists and the
+  window has had its first frame, shortly after launch.
 - Rename Session renames the session on screen. The switcher's rows carry
   opaque captured targets and have no per-row action, so a session that is
   not on screen, a listing peer's included, is renamed by showing it first.

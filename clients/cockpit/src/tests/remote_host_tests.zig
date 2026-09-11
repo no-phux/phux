@@ -102,6 +102,100 @@ test "remembered hosts are a short exact list, and the one-host file still reads
     try testing.expect(remote_memory.encodeAll(&remote_memory.Hosts{}, &out) == null);
 }
 
+test "a remembered host's record rides on the line after its target, and a malformed record forgets every host" {
+    // ADR-0110: what a host showed is kept beside that host, never apart.
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(hosts.add("studio"));
+    const front: remote_memory.Shown = .{ .session = 42, .server = 0x0123_4567_89ab_cdef, .window = @splat(0xab), .front = true };
+    const behind: remote_memory.Shown = .{ .session = 3, .server = 0x10 };
+    try testing.expect(hosts.setShown(0, front));
+    try testing.expect(!hosts.setShown(0, front));
+    var out: [remote_memory.max_list_file_bytes]u8 = undefined;
+    const encoded = remote_memory.encodeAll(&hosts, &out).?;
+    try testing.expectEqualStrings("phux-cockpit-remote v3\ntarget=me@mini\nshown=42,0123456789abcdef," ++ "ab" ** 16 ++ ",1\ntarget=studio\n", encoded);
+    var parsed: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.parseAll(encoded, &parsed));
+    try testing.expectEqual(@as(usize, 2), parsed.count);
+    try testing.expect(parsed.shown[0].?.eql(front));
+    try testing.expect(parsed.shown[1] == null);
+
+    // Without a record the file stays the v2 list earlier releases read.
+    try testing.expect(hosts.setShown(0, null));
+    try testing.expectEqualStrings("phux-cockpit-remote v2\ntarget=me@mini\ntarget=studio\n", remote_memory.encodeAll(&hosts, &out).?);
+
+    // Removing a host removes its record; the other keeps its own.
+    try testing.expect(hosts.setShown(0, front));
+    try testing.expect(hosts.setShown(1, behind));
+    try testing.expect(hosts.remove("me@mini"));
+    try testing.expectEqual(@as(usize, 1), hosts.count);
+    try testing.expectEqualStrings("studio", hosts.get(0));
+    try testing.expect(hosts.shown[0].?.eql(behind));
+    try testing.expect(hosts.shown[1] == null);
+    try testing.expectEqualStrings("phux-cockpit-remote v3\ntarget=studio\nshown=3,0000000000000010,-,0\n", remote_memory.encodeAll(&hosts, &out).?);
+
+    for ([_][]const u8{
+        // v3 is written only with a record; a record only in v3.
+        "phux-cockpit-remote v3\ntarget=mini\n",
+        "phux-cockpit-remote v2\ntarget=mini\nshown=1,0000000000000001,-,1\n",
+        // Only directly after its host, and at most one per host.
+        "phux-cockpit-remote v3\nshown=1,0000000000000001,-,1\ntarget=mini\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,-,1\nshown=2,0000000000000001,-,0\n",
+        // Exact fields.
+        "phux-cockpit-remote v3\ntarget=mini\nshown=0,0000000000000001,-,1\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=01,0000000000000001,-,1\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,001,-,1\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000_00000000001,-,1\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,abc,1\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,-,2\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,-,1,x\n",
+        "phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,-,1",
+    }) |bytes| {
+        try testing.expect(!remote_memory.parseAll(bytes, &parsed));
+        try testing.expectEqual(@as(usize, 0), parsed.count);
+    }
+}
+
+test "a file naming two front records keeps every host and only the first front" {
+    // Review of phux-c2td.30: rejecting such a file forgot every host.
+    var parsed: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.parseAll("phux-cockpit-remote v3\ntarget=mini\nshown=1,0000000000000001,-,1\ntarget=studio\nshown=2,0000000000000001,-,1\n", &parsed));
+    try testing.expectEqual(@as(usize, 2), parsed.count);
+    try testing.expectEqualStrings("mini", parsed.get(0));
+    try testing.expectEqualStrings("studio", parsed.get(1));
+    try testing.expect(parsed.shown[0].?.front);
+    try testing.expect(!parsed.shown[1].?.front);
+    try testing.expectEqual(@as(u32, 2), parsed.shown[1].?.session);
+}
+
+test "the remembered hosts file is written only when its bytes change" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "anchor", .data = "" });
+    const anchor = try tmp.dir.realPathFileAlloc(io, "anchor", gpa);
+    defer gpa.free(anchor);
+    const file = try std.fs.path.join(gpa, &.{ std.fs.path.dirname(anchor).?, "workspace.state.remote" });
+    defer gpa.free(file);
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(remote_memory.save(io, file, &hosts));
+    // Unchanged: nothing is written.
+    try testing.expect(!remote_memory.save(io, file, &hosts));
+    try testing.expect(hosts.setShown(0, .{ .session = 2, .server = 3, .front = true }));
+    try testing.expect(remote_memory.save(io, file, &hosts));
+    try testing.expect(!remote_memory.save(io, file, &hosts));
+    var loaded: remote_memory.Hosts = .{};
+    remote_memory.loadAll(io, file, &loaded);
+    try testing.expectEqual(@as(usize, 1), loaded.count);
+    try testing.expect(loaded.shown[0].?.eql(hosts.shown[0].?));
+    // Nothing to remember: the file goes, once.
+    const empty: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.save(io, file, &empty));
+    try testing.expect(!remote_memory.save(io, file, &empty));
+}
+
 test "a remembered host restores at launch unless the config names one, and returning local forgets it" {
     const io = testing.io;
     const gpa = testing.allocator;

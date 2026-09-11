@@ -227,6 +227,7 @@ pub const Engine = struct {
     rename_flights: @import("session_commands.zig").Flights = .{},
 
     const empty_session = @import("empty_session.zig");
+    const peer_restore = @import("peer_restore.zig");
 
     /// Automatic redial of a failed listing peer: 1 s, then twice the last
     /// wait, at most 60 s, until it has stayed listed `peer_retry_stable_ms`.
@@ -709,6 +710,9 @@ pub const Engine = struct {
         // After every native mutation: a peer none of whose tabs is on
         // screen any more goes back to listing.
         _ = self.settlePeers(fx);
+        // Which session each remembered host shows, for the next launch
+        // (ADR-0110); the file is written only when that changed.
+        @import("remote_hosts.zig").rememberShown(self.model);
         const state = &self.model.state;
         const fingerprint = self.model.topologyFingerprint();
         if (fingerprint == state.fingerprint) return;
@@ -1156,6 +1160,9 @@ pub const Engine = struct {
         // A picked empty session's state gives way too, unless its first tab
         // is already opening.
         empty_session.dismiss(self.model);
+        // So does a front record still waiting for its host's list: the user
+        // chose what to show (ADR-0110).
+        peer_restore.cancelFront(self.model);
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -1397,6 +1404,9 @@ pub const Engine = struct {
         // Listing again: its strays (spawns whose placement was never sent)
         // are killed there, each only if still unattached since its spawn.
         if (delta.sessions_listed) _ = self.peer_edits.sendStrays(self.model, slot);
+        // A remembered host's list judges what it showed at the last quit
+        // (ADR-0110): only a front record is shown, and only now.
+        if (delta.sessions_listed and peer_restore.onListed(self, fx, slot)) return self.commitProviderChange(true);
         return self.commitProviderChange(delta.sessions_listed or delta.detached or delta.sessions_renamed);
     }
 
@@ -1443,6 +1453,7 @@ pub const Engine = struct {
         model.phuxPeerAt(slot).?.stop();
         self.peer_edits.forget(slot);
         empty_session.forgetPeer(model, model.phuxPeerAt(slot).?.providerId(), false);
+        peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
         self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
         model.peer_failed[slot] = true;
@@ -1457,6 +1468,7 @@ pub const Engine = struct {
         peer.stop();
         self.peer_edits.forget(slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
+        peer_restore.failed(self.model, slot);
         self.model.peer_failed[slot] = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
@@ -1505,14 +1517,17 @@ pub const Engine = struct {
         };
         // Showing a session means seeing it: its first projection takes the
         // selection, so it is not taken back to listing as hidden.
-        if (first and state.session != 0) revealAuthority(model, peer.providerId());
+        // A remembered tab (ADR-0110) is selected when it still exists.
+        if (first and state.session != 0) revealAuthority(model, peer.providerId(), peer_restore.takeHint(model, peer.providerId(), state.session));
         if (generation != state.projection_generation) self.split_drag = null;
         return projected;
     }
 
-    /// Select the first tab coordinator `id` projected, in the first window
+    /// Select the tab coordinator `id` projected for shared window
+    /// `preferred` when there is one, else its first tab in the first window
     /// holding one, and make that window active.
-    fn revealAuthority(model: *Model, id: support.ProviderId) void {
+    fn revealAuthority(model: *Model, id: support.ProviderId, preferred: ?[16]u8) void {
+        if (preferred) |wanted| if (revealSharedWindow(model, id, wanted)) return;
         for (0..model_module.max_windows) |index| {
             if (!model.windowOpen(index)) continue;
             const workspace = model.wsAt(index) orelse continue;
@@ -1525,6 +1540,26 @@ pub const Engine = struct {
                 return;
             }
         }
+    }
+
+    /// Select coordinator `id`'s tab of shared window `wanted`; false when
+    /// no open window holds it (the window was closed or moved meanwhile).
+    fn revealSharedWindow(model: *Model, id: support.ProviderId, wanted: [16]u8) bool {
+        for (0..model_module.max_windows) |index| {
+            if (!model.windowOpen(index)) continue;
+            const workspace = model.wsAt(index) orelse continue;
+            for (0..workspace.tab_count) |tab| {
+                const tree = workspace.treeConst(tab) orelse continue;
+                if (shared_workspace.tabAuthority(tree) != id) continue;
+                const shared_id = workspace.shared_ids[tab] orelse continue;
+                if (!std.mem.eql(u8, &shared_id, &wanted)) continue;
+                workspace.selected_tab = tab;
+                workspace.web_selected = false;
+                model.active_window = index;
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Keep each showing peer on screen or let it go. A peer is shown only
@@ -1645,6 +1680,7 @@ pub const Engine = struct {
         self.stopShowingPeer(slot);
         empty_session.forgetPeer(model, peer.providerId(), true);
         self.peer_edits.dropStrays(slot);
+        model.peer_restore[slot] = null;
         model.phux_peers[slot] = null;
         model.phux_peer_reopen[slot] = false;
         model.peer_failed[slot] = false;
@@ -1687,6 +1723,8 @@ pub const Engine = struct {
         // Already the active coordinator: a plain retarget, no second copy.
         if (support.PhuxProvider.coordinatorId(endpoint) == active.effectiveProviderId()) {
             try active.requestRetarget(endpoint, session, label);
+            // The user chose which coordinator to show (ADR-0110).
+            peer_restore.cancelFront(model);
             const Fx = navigationFxType(@TypeOf(fx));
             if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
             return;
@@ -1722,6 +1760,10 @@ pub const Engine = struct {
         // The slot now names another coordinator: strays of the one it
         // held are not this one's to kill.
         self.peer_edits.dropStrays(slot);
+        // Nor is its restore state; and the user chose which coordinator to
+        // show, so no front record waiting for its list is shown (ADR-0110).
+        model.peer_restore[slot] = null;
+        peer_restore.cancelFront(model);
         self.restartCoordinators(fx, slot);
     }
 
@@ -2836,7 +2878,11 @@ pub const Engine = struct {
         if (self.input_suspended == suspended) return;
         self.input_suspended = suspended;
         if (suspended) {
+            // Suspending input chooses nothing to show: a front record still
+            // waiting for its host's list survives it (ADR-0110).
+            const kept = self.model.peer_restore;
             self.supersedeSelection();
+            self.model.peer_restore = kept;
             self.remote_pointer.cancelAll(self.model);
             self.cancelSplitDrag();
             self.last_click_count = 0;
@@ -2876,12 +2922,16 @@ pub const Engine = struct {
         const index = windowIndexForCanvas(frame.label) orelse return;
         const workspace = model.wsAt(index) orelse return;
         workspace.surface_size = frame.size;
+        workspace.surface_measured = true;
         workspace.window_id = frame.window_id;
         if (frame.scale_factor > 0) workspace.surface_scale_factor = frame.scale_factor;
         const proposals = projection.proposedViewportsIn(model, workspace, frame.size);
         for (proposals.slice()) |proposal| {
             interaction.resize(model, fx, proposal.terminal, .{ .cols = proposal.cols, .rows = proposal.rows });
         }
+        // A front record that waited for a measured window shows now, at
+        // that window's real size (ADR-0110).
+        _ = self.commitProviderChange(peer_restore.onFrame(self, fx));
     }
 
     /// Paint the main window's grids beneath the markup chrome: the shipping

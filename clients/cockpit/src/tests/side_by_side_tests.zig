@@ -688,6 +688,82 @@ test "relaunch reattaches every remembered host beside the coordinators held, ea
     try testing.expect(second.model.phux_peers[2] == null);
 }
 
+/// A launch as initializeModel composes it: this Mac active, the first
+/// remembered host beside it, then every other remembered host.
+fn launchRemembered(gpa: std.mem.Allocator, io: std.Io, state_path: []const u8) !*ts_engine.Engine {
+    var remembered = startup.resolvePhuxConfig(config.parse(""), .{ .runtime_dir = "/tmp/rt" });
+    startup.restoreRememberedRemote(io, state_path, &remembered);
+    const engine = try ts_engine.Engine.create(gpa, io);
+    errdefer engine.destroy();
+    const model = engine.model;
+    model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &remembered)).?;
+    model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
+    try startup.attachRememberedPeers(gpa, io, model);
+    return engine;
+}
+
+test "relaunch hands each remembered host its own record, and a removed host's record is gone" {
+    // ADR-0110: a record comes back only with its host, keyed by that host's
+    // coordinator id, and every host still lists: nothing attaches here.
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry);
+    defer registry.deinit();
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const config_file = try registry.tmp.dir.realPathFileAlloc(io, "phux/config.toml", gpa);
+    defer gpa.free(config_file);
+    const state_path = try std.fs.path.join(gpa, &.{ std.fs.path.dirname(config_file).?, "workspace.state" });
+    defer gpa.free(state_path);
+    const memory = remote_memory.setPathFor(state_path).?;
+    defer _ = remote_memory.setPathFor(null);
+    const mini_id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = "me@mini" } });
+    const studio_id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = "studio" } });
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(hosts.add("studio"));
+    try testing.expect(hosts.setShown(0, .{ .session = 1, .server = 7, .front = true }));
+    try testing.expect(hosts.setShown(1, .{ .session = 2, .server = 7 }));
+    remote_memory.storeAll(io, memory, &hosts);
+
+    {
+        const engine = try launchRemembered(gpa, io, state_path);
+        defer engine.destroy();
+        const model = engine.model;
+        // mini stands beside this Mac first (createPhuxPeerFromConfig), and
+        // still receives its own record; studio joins with its own.
+        try testing.expectEqual(mini_id, model.phux_peers[0].?.providerId());
+        try testing.expectEqual(studio_id, model.phux_peers[1].?.providerId());
+        const mini_record = model.peer_restore[0].?;
+        try testing.expectEqual(mini_id, mini_record.coordinator);
+        try testing.expect(mini_record.pending);
+        try testing.expectEqual(@as(u32, 1), mini_record.shown.session);
+        const studio_record = model.peer_restore[1].?;
+        try testing.expectEqual(studio_id, studio_record.coordinator);
+        try testing.expect(!studio_record.pending);
+        for (model.phux_peers[0..2]) |slot| try testing.expect(slot.?.standby);
+    }
+
+    // Disconnect forgets mini (remote_hosts.forgetHost removes it from the
+    // same list), and its record goes with it.
+    try testing.expect(hosts.remove("me@mini"));
+    remote_memory.storeAll(io, memory, &hosts);
+    {
+        const engine = try launchRemembered(gpa, io, state_path);
+        defer engine.destroy();
+        const model = engine.model;
+        try testing.expectEqual(studio_id, model.phux_peers[0].?.providerId());
+        for (model.phux_peers) |value| if (value) |peer| try testing.expect(peer.providerId() != mini_id);
+        var records: usize = 0;
+        for (model.peer_restore) |value| {
+            const record = value orelse continue;
+            records += 1;
+            try testing.expect(record.coordinator != mini_id);
+            try testing.expect(!record.pending);
+        }
+        try testing.expectEqual(@as(usize, 1), records);
+    }
+}
+
 test "a placement saved under .phux for a remote host before coordinator ids is dropped at launch, and that host's workspace projects it again" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const gpa = testing.allocator;

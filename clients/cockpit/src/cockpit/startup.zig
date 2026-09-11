@@ -169,7 +169,14 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
     remote_memory.loadAll(io, path, &hosts);
     for (0..hosts.count) |index| {
         const target = hosts.get(index);
-        if (coordinatorHeld(model, PhuxProvider.coordinatorId(.{ .remote = .{ .target = target } }))) continue;
+        const id = PhuxProvider.coordinatorId(.{ .remote = .{ .target = target } });
+        // The first remembered host may already stand beside this Mac
+        // (createPhuxPeerFromConfig); its record is still its own.
+        if (heldPeerSlot(model, id)) |slot| {
+            noteRestore(model, slot, hosts.shown[index]);
+            continue;
+        }
+        if (coordinatorHeld(model, id)) continue;
         const slot = freePeerSlot(model) orelse return;
         // One host that cannot be built never costs the launch; it stays
         // remembered for the next one.
@@ -177,7 +184,26 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
         // Lists sessions only; never attaches, so it sizes nobody's panes.
         peer.standBy();
         model.phux_peers[slot] = peer;
+        noteRestore(model, slot, hosts.shown[index]);
     }
+}
+
+/// What the host in `slot` was showing at the last quit (ADR-0110), keyed by
+/// that peer's own coordinator id. Only a front record is to be shown, and
+/// only once its list judges it (native/peer_restore.zig); the peer stays
+/// listing until then.
+fn noteRestore(model: *model_module.Model, slot: usize, shown: ?remote_memory.Shown) void {
+    const value = shown orelse return;
+    const peer = model.phux_peers[slot] orelse return;
+    model.peer_restore[slot] = .{ .coordinator = peer.providerId(), .shown = value, .pending = value.front };
+}
+
+fn heldPeerSlot(model: *const model_module.Model, id: anytype) ?usize {
+    for (model.phux_peers, 0..) |value, slot| {
+        const peer = value orelse continue;
+        if (peer.effectiveProviderId() == id) return slot;
+    }
+    return null;
 }
 
 fn coordinatorHeld(model: *const model_module.Model, id: anytype) bool {

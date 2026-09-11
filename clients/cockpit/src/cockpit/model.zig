@@ -505,6 +505,9 @@ pub const Workspace = struct {
     /// geometric derivation (pane rects, hit tests, the PTY sizing pump) reads
     /// them.
     surface_size: geometry.SizeF = geometry.SizeF.init(1100, 640),
+    /// A frame has measured `surface_size`; until then it is the default
+    /// above, never a size to attach a session with (ADR-0110).
+    surface_measured: bool = false,
     surface_scale_factor: f32 = 1,
     /// The platform window id this workspace is currently rendered into,
     /// learned from its own frame events. Zero until the first frame.
@@ -722,6 +725,17 @@ pub const EmptyPick = struct {
 /// Coordinators beside the active one: this Mac's plus registered hosts.
 pub const max_phux_peers: usize = 3;
 
+/// What a peer's remembered host showed at the last quit (ADR-0110), keyed
+/// by that peer's own coordinator id (native/peer_restore.zig).
+pub const PeerRestore = struct {
+    coordinator: support.ProviderId,
+    shown: @import("remote_memory.zig").Shown,
+    /// A front record not shown yet: it waits for the host's first list,
+    /// then (`listed`) for the front window's first measured frame.
+    pending: bool,
+    listed: bool = false,
+};
+
 /// Replace the bounded remote inventory with the provider's latest complete
 /// publication. The inventory ceiling is independent of every workspace's tab
 /// ceiling: terminals remain discoverable after presentation fills up.
@@ -778,6 +792,9 @@ pub const Model = struct {
     peer_workspaces: [max_phux_peers]@import("shared_workspace.zig").State = [_]@import("shared_workspace.zig").State{.{}} ** max_phux_peers,
     /// A peer's empty session picked in the switcher (EmptyPick).
     empty_pick: ?EmptyPick = null,
+    /// What each peer's remembered host was showing at the last quit
+    /// (ADR-0110, native/peer_restore.zig), until its list judges it.
+    peer_restore: [max_phux_peers]?PeerRestore = @splat(null),
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
