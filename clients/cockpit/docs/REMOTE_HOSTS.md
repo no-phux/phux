@@ -361,8 +361,10 @@ showing peer's tabs keep their last frames, frozen, while it is down.
 
 A listing peer that fails is also dialed again automatically
 (`Engine.onPeerRetryTimer`, one timer per slot): 1 s after it fails, then
-after twice the last wait each time it fails again, at most 60 s. Once it
-lists, the next failure waits 1 s again. The redial is a lister's, so its
+after twice the last wait each time it fails again, at most 60 s. Listing
+does not reset the wait by itself: only a peer that stayed listed for 30 s
+(`Engine.peer_retry_stable_ms`) before failing waits 1 s again, so a host
+that lists and then fails at once keeps backing off. The redial is a lister's, so its
 connection asks GET_STATE and never attaches. A timer that fires after the
 peer listed, was picked, was removed, or began showing does nothing. A peer
 that fails while showing a session is not redialed automatically: its tabs
@@ -393,8 +395,6 @@ projected reads "workspace unavailable" on its session rows.
   trip). Its terminal keeps running on that host, unplaced. Keeping the peer
   attached until the placement lands would hold a viewport for a peer that
   is not displaying, so Cockpit does not.
-- A peer that lists and then fails again, repeatedly, is redialed 1 s after
-  each failure: listing resets its backoff.
 - Relaunch restores which hosts are held, not what was on screen: each
   remembered host comes back listing, and none of its sessions is shown
   again until one is picked. Cockpit keeps no client-side placement for a

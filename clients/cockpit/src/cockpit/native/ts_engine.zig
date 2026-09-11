@@ -216,6 +216,10 @@ pub const Engine = struct {
     /// The channel generation a slot's retry timer was armed for; a timer
     /// that fires for any other generation, or none, is stale.
     peer_retry_generation: [model_module.max_phux_peers]?u64 = @splat(null),
+    /// When each peer began listing on its current connection; null while it
+    /// is not listing. A failure after it stayed listed `peer_retry_stable_ms`
+    /// starts its backoff over; an earlier one keeps it growing.
+    peer_listed_since: [model_module.max_phux_peers]?std.Io.Timestamp = @splat(null),
     /// The last Rename Session sent, and to which coordinator's connection
     /// (session_commands.zig). Its outcome is read from that coordinator only.
     rename_flight: ?@import("session_commands.zig").Flight = null,
@@ -223,9 +227,13 @@ pub const Engine = struct {
     const empty_session = @import("empty_session.zig");
 
     /// Automatic redial of a failed listing peer: 1 s, then twice the last
-    /// wait, at most 60 s, until it lists again.
+    /// wait, at most 60 s, until it has stayed listed `peer_retry_stable_ms`.
     pub const peer_retry_initial_ms: u64 = 1000;
     pub const peer_retry_max_ms: u64 = 60_000;
+    /// Hysteresis: how long a peer must stay listed before its next failure
+    /// waits 1 s again. A host that lists and then fails at once keeps
+    /// backing off instead of being redialed every second.
+    pub const peer_retry_stable_ms: i64 = 30_000;
     /// One retry timer per peer slot, from this key (timer keys are their
     /// own namespace; topology persistence uses 200).
     pub const peer_retry_timer_key: u64 = 210;
@@ -1242,11 +1250,16 @@ pub const Engine = struct {
     }
 
     /// Arm the slot's automatic redial: a listing peer that failed is dialed
-    /// again after 1 s, then after twice the last wait, at most 60 s, until
-    /// it lists (`resetPeerRetry`). A showing peer is not: its tabs keep
-    /// their frozen frames, picking its row retries it, and once its tabs
-    /// leave the screen it goes back to listing (`settlePeers`).
+    /// again after 1 s, then after twice the last wait, at most 60 s. Only a
+    /// peer that stayed listed `peer_retry_stable_ms` before this failure
+    /// starts over at 1 s; one that lists and fails again keeps backing off.
+    /// A showing peer is not redialed: its tabs keep their frozen frames,
+    /// picking its row retries it, and once its tabs leave the screen it goes
+    /// back to listing (`settlePeers`).
     fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        // This connection's listing, if any, ends with this failure.
+        if (self.peerListedStably(slot)) self.peer_retry_delay_ms[slot] = 0;
+        self.peer_listed_since[slot] = null;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "schedulePeerRetry")) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
@@ -1257,11 +1270,26 @@ pub const Engine = struct {
         fx.schedulePeerRetry(peer_retry_timer_key + slot, delay);
     }
 
-    /// The slot listed, or now holds another coordinator: the next failure
+    /// The slot now holds another coordinator (or none): the next failure
     /// waits 1 s again, and a timer already armed is stale.
     fn resetPeerRetry(self: *Engine, slot: usize) void {
         self.peer_retry_delay_ms[slot] = 0;
         self.peer_retry_generation[slot] = null;
+        self.peer_listed_since[slot] = null;
+    }
+
+    /// The slot listed on this connection: a timer already armed is stale.
+    /// The backoff itself is not reset here; the next failure decides, by how
+    /// long the peer stayed listed (`peerListedStably`).
+    fn notePeerListed(self: *Engine, slot: usize) void {
+        self.peer_retry_generation[slot] = null;
+        if (self.peer_listed_since[slot] == null) self.peer_listed_since[slot] = std.Io.Clock.awake.now(self.model.provider.io);
+    }
+
+    fn peerListedStably(self: *const Engine, slot: usize) bool {
+        const since = self.peer_listed_since[slot] orelse return false;
+        const now = std.Io.Clock.awake.now(self.model.provider.io);
+        return since.durationTo(now).toMilliseconds() >= peer_retry_stable_ms;
     }
 
     /// A peer's retry timer fired. Only a peer still failed, still listing,
@@ -1343,7 +1371,7 @@ pub const Engine = struct {
         const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
         if (delta.sessions_listed or delta.ready_published) {
             self.model.peer_failed[slot] = false;
-            self.resetPeerRetry(slot);
+            self.notePeerListed(slot);
         }
         if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
         // Nothing presents a listing peer's terminals, so nothing rings for

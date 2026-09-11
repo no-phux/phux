@@ -869,7 +869,7 @@ const RetryLog = struct {
     pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
 
-test "a failed listing peer is redialed as a lister after 1 s, twice as long after each failure to 60 s, and from 1 s once it lists" {
+test "a failed listing peer is redialed as a lister after 1 s, twice as long after each failure to 60 s, and from 1 s only once it stayed listed" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(false);
     defer pair.engine.destroy();
@@ -910,7 +910,8 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
     }
     try testing.expectEqual(@as(usize, 1 + waits.len), fx.restarts);
 
-    // Once it lists again, the next failure waits 1 s.
+    // Listing again does not start it over: a host that lists and then
+    // fails at once keeps backing off instead of being redialed every second.
     pair.peer.stop();
     try pair.peer.host.reconnect("side-by-side");
     try fixture.stageFixture(pair.peer.bridge, "hello.bin");
@@ -918,6 +919,22 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
     try fixture.stageFixture(pair.peer.bridge, "standby_state.bin");
     _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
     try testing.expect(!model.peer_failed[0]);
+    try testing.expect(engine.peer_listed_since[0] != null);
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expectEqual(@as(u64, 60_000), fx.delays[fx.count - 1]);
+    try testing.expect(engine.peer_listed_since[0] == null);
+
+    // One that stayed listed for the stable window before failing starts
+    // over at 1 s.
+    try testing.expect(engine.onPeerRetryTimer(&fx, fx.keys[fx.count - 1]));
+    pair.peer.stop();
+    try pair.peer.host.reconnect("side-by-side");
+    try fixture.stageFixture(pair.peer.bridge, "hello.bin");
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
+    try fixture.stageFixture(pair.peer.bridge, "standby_state.bin");
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
+    const listed = engine.peer_listed_since[0].?;
+    engine.peer_listed_since[0] = listed.subDuration(std.Io.Duration.fromMilliseconds(ts_engine.Engine.peer_retry_stable_ms));
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
     try testing.expectEqual(@as(u64, 1000), fx.delays[fx.count - 1]);
 }
