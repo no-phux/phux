@@ -9,6 +9,60 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.31.0](https://github.com/no-phux/phux/compare/v0.30.0...v0.31.0) (2026-09-11)
+
+
+### Features
+
+* **client:** request directory listings from a named satellite ([0ef3232](https://github.com/no-phux/phux/commit/0ef3232761ed84bceffac146ff84e3376fe35137))
+* **cli:** opt-in generated adjective-noun session names ([9d7956e](https://github.com/no-phux/phux/commit/9d7956e092cd9bd7c6c264822f859dc618b81306))
+* **cli:** phux whoami reports the serving identity (ADR-0106) ([f630b03](https://github.com/no-phux/phux/commit/f630b03bf7e79f4da433fa0544c960ebf4d60d0f))
+* **cli:** target remote hosts from headless session verbs ([c3cf97c](https://github.com/no-phux/phux/commit/c3cf97cc14f0e8536c430af56d1bb11f2285e1fe))
+* **cockpit:** add scoped workspace navigation and reversible appearance ([1664505](https://github.com/no-phux/phux/commit/1664505f5721d2968d875041b6b3ddab46ecad48))
+* **cockpit:** connect to registered remote hosts over QUIC/WSS ([10c88e0](https://github.com/no-phux/phux/commit/10c88e0e5f83d3ef1a04a63bfaaeab935bdca98d))
+* **cockpit:** follow other clients' renames live and rename from the switcher ([0945f1e](https://github.com/no-phux/phux/commit/0945f1eeff13d69cec6332b8875b289393356539))
+* **cockpit:** hold several coordinators with coordinator-qualified terminal identity ([be90392](https://github.com/no-phux/phux/commit/be903928624b46293238050e23a88ec4f3b3567e))
+* **cockpit:** hold this Mac and a remote host side by side in one switcher ([bba83a5](https://github.com/no-phux/phux/commit/bba83a5975870241a5fadcb92e66aec53a7dcbe9))
+* **cockpit:** keep the relaunch restore across a graceful server upgrade ([18a9ef0](https://github.com/no-phux/phux/commit/18a9ef0b6db23756bb73f36b161e61a5cdcf1a4d))
+* **cockpit:** kill a peer's unplaced spawn conditionally once it lists again ([758ea78](https://github.com/no-phux/phux/commit/758ea78b127f9a72e0f93ab01f36d1627b14b8c6))
+* **cockpit:** list the focused satellite's directories in the picker ([d7e7e7e](https://github.com/no-phux/phux/commit/d7e7e7eb0ec421f68fa45f96825f9db27ac1c1a1))
+* **cockpit:** open a go-to-directory picker over LIST_DIRECTORY ([15b6d54](https://github.com/no-phux/phux/commit/15b6d549c591908608cb7b0485910c89057bd6d9))
+* **cockpit:** re-show the front peer's session after relaunch ([0a87a6e](https://github.com/no-phux/phux/commit/0a87a6eb6b74af8a253d3a6421fdade908eed871))
+* **cockpit:** rename a session on its owning coordinator ([b354fae](https://github.com/no-phux/phux/commit/b354fae5f6c271a7d801a27096fcd43fe83a21da))
+* **cockpit:** retry a failed front restore once and cover the relaunch race ([6d3a429](https://github.com/no-phux/phux/commit/6d3a4293a92e9a92fa8aa28aca11b461e2be6c12))
+* **cockpit:** show keep-empty sessions as an Empty session with New Tab ([aff3404](https://github.com/no-phux/phux/commit/aff3404923f3b2d5915d52605bc10a210a6f9505))
+* **mcp:** expose phux whoami as a read-only tool ([712259a](https://github.com/no-phux/phux/commit/712259a3e24f71f02818f32d6fd548c043a52c3e))
+* **protocol:** list directories on the serving host for a go-to-directory picker ([b37c4d9](https://github.com/no-phux/phux/commit/b37c4d9f49e2bea5d83b1c4936e63ead8b472870))
+* **server:** conditional kill bound to instance and attachment ([0b34777](https://github.com/no-phux/phux/commit/0b347779174a569eff6d1efb253470aa29d21d40))
+* **server:** relay directory listings to satellites for a host-aware picker ([f3521b6](https://github.com/no-phux/phux/commit/f3521b6e6e592d47cdf0cd42893806ebfaf91d76))
+* **server:** report ssh-bridged connections as ssh-stdio in whoami ([79b5478](https://github.com/no-phux/phux/commit/79b54785ecc0c69b756b3456be5b6c364c4cfd4f))
+* **server:** sessions can outlive their last window (ADR-0105) ([64586db](https://github.com/no-phux/phux/commit/64586db67c66b1d3db1e580046b1066a0534164c))
+* **server:** surface satellite sessions for a host-grouped selector ([921080f](https://github.com/no-phux/phux/commit/921080fceb463f16f2de4eab8dbf5384749e26ef))
+* **tui:** bind go-to-directory to &lt;leader&gt; G by default ([abe9e9a](https://github.com/no-phux/phux/commit/abe9e9a99672ba99fc32970662c9b0e772fd2bcc))
+* **tui:** split a satellite pane on its own satellite ([327cc43](https://github.com/no-phux/phux/commit/327cc43a7b134f6e0183f09e112288358a40b262))
+
+
+### Bug Fixes
+
+* **cockpit:** compile the build without the phux ffi and cover it in ci ([0b3832d](https://github.com/no-phux/phux/commit/0b3832d313c85f26f9745c34e598b248551cb5a9))
+* **server:** keep PHUX_UPGRADE_* server-private so a graceful upgrade resumes accepting ([e2723ad](https://github.com/no-phux/phux/commit/e2723adb63aeaded0d767a043d063e2e2772d499))
+* **tui:** kill a satellite pane a session switch strands mid-open ([92f193a](https://github.com/no-phux/phux/commit/92f193a26a1b695e0addbd45cfede98c437ed716))
+* **tui:** kill a spawned satellite pane whose attach is refused ([a90f5c8](https://github.com/no-phux/phux/commit/a90f5c8a1db9a3d622c2659514ac93a4431bd61a))
+* **tui:** retry unreachable-satellite strays through the conditional kill ([1e6aeaf](https://github.com/no-phux/phux/commit/1e6aeaf11bad2dbdc69b07a45bef8b87a1ac00c0))
+
+
+### Documentation
+
+* **adr:** accept ADR-0105 and ADR-0106 ([c6aa5d7](https://github.com/no-phux/phux/commit/c6aa5d7938077275f690279d3daa6243c822dbf2))
+* **adr:** propose keep-empty sessions and serving-user identity ([8013110](https://github.com/no-phux/phux/commit/801311087371a7cd266920d25a0be7e8d97709f7))
+* **coordinator:** specify bounded durable endpoint ([5168910](https://github.com/no-phux/phux/commit/5168910b4506acc0af0b0b560f37f7ef573dbb9a))
+* docs/consumers/tui.md describes splitting a satellite pane. ([327cc43](https://github.com/no-phux/phux/commit/327cc43a7b134f6e0183f09e112288358a40b262))
+* reconcile consumer freeze and tracked browser engine ([bea7a42](https://github.com/no-phux/phux/commit/bea7a42926f727d061f4d3c7da62d46c9f106e6d))
+* **research:** close out the gap map's open list ([c98183f](https://github.com/no-phux/phux/commit/c98183f332810e06a0e29481f8c7c3d74dca01cb))
+* **research:** reconstruct Superlogical terminal demo and UX ([97cceb5](https://github.com/no-phux/phux/commit/97cceb51e9041b285f4b8158873a858e6a7de5c1))
+* **research:** record the gap map's status after epic phux-c2td ([d271357](https://github.com/no-phux/phux/commit/d271357a55e7d79fa620c4ce48beec2dfc0f1352))
+* **research:** update the gap map now that Cockpit's gaps are closed ([683531e](https://github.com/no-phux/phux/commit/683531e86cd6c5cf448792c6f3b780a87ddd19cd))
+
 ## [0.30.0](https://github.com/no-phux/phux/compare/v0.29.0...v0.30.0) (2026-09-10)
 
 

@@ -3,6 +3,45 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/no-phux/phux/compare/cockpit-v0.20.0...cockpit-v0.21.0) (2026-09-11)
+
+
+### Features
+
+* **cockpit:** add scoped workspace navigation and reversible appearance ([1664505](https://github.com/no-phux/phux/commit/1664505f5721d2968d875041b6b3ddab46ecad48))
+* **cockpit:** connect to registered remote hosts over QUIC/WSS ([10c88e0](https://github.com/no-phux/phux/commit/10c88e0e5f83d3ef1a04a63bfaaeab935bdca98d))
+* **cockpit:** disconnect one remote host and keep the others ([26bf1da](https://github.com/no-phux/phux/commit/26bf1dae8ce8622b005844d5f012c56691094638))
+* **cockpit:** follow other clients' renames live and rename from the switcher ([0945f1e](https://github.com/no-phux/phux/commit/0945f1eeff13d69cec6332b8875b289393356539))
+* **cockpit:** hold several coordinators with coordinator-qualified terminal identity ([be90392](https://github.com/no-phux/phux/commit/be903928624b46293238050e23a88ec4f3b3567e))
+* **cockpit:** hold this Mac and a remote host side by side in one switcher ([bba83a5](https://github.com/no-phux/phux/commit/bba83a5975870241a5fadcb92e66aec53a7dcbe9))
+* **cockpit:** keep the relaunch restore across a graceful server upgrade ([18a9ef0](https://github.com/no-phux/phux/commit/18a9ef0b6db23756bb73f36b161e61a5cdcf1a4d))
+* **cockpit:** kill a peer's unplaced spawn conditionally once it lists again ([758ea78](https://github.com/no-phux/phux/commit/758ea78b127f9a72e0f93ab01f36d1627b14b8c6))
+* **cockpit:** list the focused satellite's directories in the picker ([d7e7e7e](https://github.com/no-phux/phux/commit/d7e7e7eb0ec421f68fa45f96825f9db27ac1c1a1))
+* **cockpit:** open a go-to-directory picker over LIST_DIRECTORY ([15b6d54](https://github.com/no-phux/phux/commit/15b6d549c591908608cb7b0485910c89057bd6d9))
+* **cockpit:** re-show the front peer's session after relaunch ([0a87a6e](https://github.com/no-phux/phux/commit/0a87a6eb6b74af8a253d3a6421fdade908eed871))
+* **cockpit:** redial a failed listing peer with bounded backoff ([4d4515f](https://github.com/no-phux/phux/commit/4d4515f44dd92bc230254d95329876d6b1156685))
+* **cockpit:** remember every connected host and restore each as a listing peer ([339c123](https://github.com/no-phux/phux/commit/339c123b6b51164cabdd1744d978a189dd30eba4))
+* **cockpit:** rename a session on its owning coordinator ([b354fae](https://github.com/no-phux/phux/commit/b354fae5f6c271a7d801a27096fcd43fe83a21da))
+* **cockpit:** retry a failed front restore once and cover the relaunch race ([6d3a429](https://github.com/no-phux/phux/commit/6d3a4293a92e9a92fa8aa28aca11b461e2be6c12))
+* **cockpit:** route New Window and available terminals to the focused coordinator ([739fb16](https://github.com/no-phux/phux/commit/739fb16775e5513fa16c1eb0a18c45791f30cc14))
+* **cockpit:** route peer tab edits to the owning coordinator ([f28367b](https://github.com/no-phux/phux/commit/f28367b4f2c22086278703aef85c02d27e5b92ab))
+* **cockpit:** show keep-empty sessions as an Empty session with New Tab ([aff3404](https://github.com/no-phux/phux/commit/aff3404923f3b2d5915d52605bc10a210a6f9505))
+
+
+### Bug Fixes
+
+* **cockpit:** compile the build without the phux ffi and cover it in ci ([0b3832d](https://github.com/no-phux/phux/commit/0b3832d313c85f26f9745c34e598b248551cb5a9))
+* **cockpit:** honor a registry entry's pinned session when reattaching at launch ([980282f](https://github.com/no-phux/phux/commit/980282f8dfee3629da8e6fc17cc12ec0c98945a7))
+* **cockpit:** keep backing off a peer that lists and fails again ([a9186b5](https://github.com/no-phux/phux/commit/a9186b5b085eed6b1cbb4f627ad3caa1a583ff46))
+* **cockpit:** leave the active focus alone when a peer edit is refused ([1d6750e](https://github.com/no-phux/phux/commit/1d6750e68a1ccc736d6b336e5896048a6d502006))
+* **cockpit:** open Connect to Host in the window that invoked it ([057cf9f](https://github.com/no-phux/phux/commit/057cf9f6478bb45768a91e02757ced5a1508f771))
+* **cockpit:** refresh empty-session labels and hold one rename per coordinator ([8f04088](https://github.com/no-phux/phux/commit/8f0408886b1ddacbf039c851aaaf1b9f7def08e8))
+
+
+### Documentation
+
+* **cockpit:** record what remains of the multi-coordinator limits ([8d53275](https://github.com/no-phux/phux/commit/8d5327556e9c7d6cca0db3ad22c4d58333e0d51a))
+
 ## [0.20.0](https://github.com/no-phux/phux/compare/cockpit-v0.19.0...cockpit-v0.20.0) (2026-09-10)
 
 
