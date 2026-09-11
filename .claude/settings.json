@@ -14,5 +14,50 @@
   },
   "enabledPlugins": {
     "ponytail@ponytail": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bd:*)",
+      "Bash(tools/flywheel/guard.sh:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(just:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "mcp__blackbird__blackbird_agent_register",
+      "mcp__blackbird__blackbird_reservation_acquire",
+      "mcp__blackbird__blackbird_reservation_release",
+      "mcp__blackbird__blackbird_reservation_renew",
+      "mcp__blackbird__blackbird_agents_list",
+      "Write",
+      "Edit",
+      "NotebookEdit"
+    ],
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git tag:*)",
+      "Bash(gh release:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git -C:*)",
+      "Bash(gh auth token:*)",
+      "Bash(gh api:*)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(**/.env)"
+    ]
   }
 }
