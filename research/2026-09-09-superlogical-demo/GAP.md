@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: scratch
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # phux gap map against the Superlogical demo
@@ -13,7 +13,10 @@ has no remote endpoint at all; no surface merges local and remote sessions
 into one host-grouped selector; sessions cannot exist with zero tabs; and
 there is no directory listing on the wire, so no directory picker. Identity
 and login semantics (F06, F07, F12 to F14) are absent and partly conflict
-with ADR-0003. Each gap is filed as a child of beads epic `phux-c2td`.
+with ADR-0003. Each gap is filed as a child of beads epic `phux-c2td`. The
+[status after the epic](#status-after-epic-phux-c2td) section records what
+landed: every feature now has a surface except F06, F07 and F14 (out of scope
+by ADR-0106), F11 and F24 (unchanged), and two Cockpit gaps (F09, F16).
 
 Feature IDs refer to the [reconstructed spec](SPEC.md). Status: **HAVE**,
 **PART** (partial), **MISS** (missing). Citations are paths on `main`.
@@ -75,3 +78,63 @@ not one context those verbs share. Order of leverage:
 
 Not recommended: copying the demo's Cmd+Shift+G binding into Cockpit, which
 already uses it for find-previous.
+
+## Status after epic phux-c2td
+
+The map above is the starting point (`main` at 1358c0b6). This is the state
+after the epic's work landed, with the commits that delivered each surface.
+
+| ID | CLI / server | TUI | Cockpit | Landed in |
+|---|---|---|---|---|
+| F01 persistence | HAVE | HAVE | HAVE, remote hosts included | 10c88e0e, 980282f8 |
+| F02 palette + Add Host | HAVE (`phux host add`) | PART (no host action) | HAVE (Connect to Host, Cmd+Shift+O) | 10c88e0e, 057cf9f6 |
+| F03 hostname connect | HAVE | HAVE | HAVE (QUIC/WSS remote tunnel) | 10c88e0e |
+| F04 remote splits | HAVE | HAVE, satellite splits too | HAVE | 327cc43a, 10c88e0e |
+| F05 one connection | HAVE | HAVE | HAVE (one tunnel per coordinator) | 10c88e0e |
+| F06/F07 system login | out of scope | out of scope | out of scope | ADR-0106 |
+| F08 host grouping, generated names | HAVE (grouped `ls`, `${random-name}`) | HAVE (grouped picker) | HAVE (grouped by coordinator) | 9d7956e0, 921080fc, be903928 |
+| F09 rename from palette | HAVE | HAVE | MISS (`phux-c2td.28`) | |
+| F10 one local+remote selector | HAVE (hub lists satellite sessions) | HAVE (satellite session opens its active pane) | HAVE (up to four coordinators side by side, edits routed to the owner) | 921080fc, bba83a59, be903928, 1c692aa7 |
+| F11 CLI inside shells | PART | PART | PART | unchanged |
+| F12/F13 whoami, effective user | HAVE (`phux whoami [--remote]`, `ssh-stdio` route) | n/a | n/a (MCP `phux_whoami`) | f630b03b, 79b54785, 712259a3 |
+| F14 principal to user map | out of scope | n/a | n/a | ADR-0106 |
+| F15 remote `session new` from CLI | HAVE (`--remote` on `ls`, `new`, `kill`, `rename`, `detach`) | n/a | n/a | c3cf97cc |
+| F16/F17 empty session, first tab | HAVE (`phux new --empty`) | HAVE (Empty session state) | MISS (`phux-c2td.29`) | 64586db6 |
+| F18 reconnect restores remote | HAVE | HAVE | HAVE (remembered hosts restore) | 10c88e0e, 980282f8 |
+| F19 kill remote by ID | HAVE (`phux kill --remote`) | n/a | n/a | c3cf97cc |
+| F20 live propagation | HAVE | HAVE | HAVE | unchanged |
+| F21 local directory picker | HAVE | HAVE (`go-to-directory`, `C-a G`) | HAVE (Cmd+Shift+J) | b37c4d9f, abe9e9a9, 15b6d549 |
+| F22 remote directory picker | HAVE (through `--remote`; satellites via the hub) | HAVE | HAVE | f3521b6e, 0ef32327, d7e7e7eb |
+| F23 picker opens a new tab | HAVE | HAVE | HAVE | b37c4d9f, 15b6d549 |
+| F24 Mosh-like input | PART (SSP residual `phux-205m`) | HAVE (opt-in predictive echo) | MISS | unchanged |
+
+F06, F07 and F14 are out of scope by decision rather than left undone:
+ADR-0106 keeps one server per OS user, so the effective user is chosen by
+reaching that user's own server (`root@host`), and login semantics stay with
+the service manager.
+
+### Decisions recorded
+
+- ADR-0105: a session can be marked keep-empty and outlive its last window.
+- ADR-0106: identity is the serving user; `phux whoami` reports it.
+- ADR-0107: satellite sessions are listed, never adopted into the hub's ids.
+- ADR-0108: a hub relays host queries to satellites per request.
+- ADR-0109: late kills are conditional on the satellite's instance and on no
+  one else having attached or used the pane.
+
+### Safety work beyond the demo
+
+- e2723adb: the server keeps its `PHUX_UPGRADE_*` handoff private, so a pane
+  of an upgraded server no longer makes later servers re-exec into the wrong
+  binary.
+- a90f5c8a, 92f193a2, 0b347779, 1e6aeaf1: a satellite pane whose attach is
+  refused is cleaned up, ending in a kill the satellite itself refuses if the
+  pane was used or the satellite restarted.
+
+### Still open under the epic
+
+- `phux-c2td.17`: live Cockpit acceptance against a real enrolled remote host.
+- `phux-c2td.27`: the remaining multi-coordinator limits (relaunch layout of
+  a showing peer, spawns left unplaced when a peer drops, New Window on
+  peers, flapping backoff, the four-coordinator cap).
+- `phux-c2td.28` (F09) and `phux-c2td.29` (F16) in Cockpit.
