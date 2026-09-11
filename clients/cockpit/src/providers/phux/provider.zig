@@ -457,6 +457,14 @@ pub const PhuxProvider = struct {
     pub fn requestDirectory(self: *PhuxProvider, path: []const u8) !u32 {
         return self.host.requestDirectory(path);
     }
+    /// A satellite of the attached hub lists `path` (docs/spec/L3.md
+    /// section 4.1); refused unless `directoryHostSupported`.
+    pub fn requestDirectoryOn(self: *PhuxProvider, path: []const u8, satellite: []const u8) !u32 {
+        return self.host.requestDirectoryOn(path, satellite);
+    }
+    pub fn directoryHostSupported(self: *const PhuxProvider) bool {
+        return self.host.directoryHostSupported();
+    }
     /// Borrowed until the next mutable provider call.
     pub fn directoryInfo(self: *const PhuxProvider) DirectoryInfo {
         return self.host.directoryInfo();

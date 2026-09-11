@@ -13,12 +13,15 @@
 //!            truncated), error:u8, total:u16, offset:u16, path_len:u8,
 //!            path, query_len:u8, query, count:u8, rows (index:u16,
 //!            flags:u8 bit 0 symlink, name_len:u8, name), message_len:u8,
-//!            message
+//!            message, scope:u8 (Scope), host_len:u8, host
 //!
 //! The listing itself is the connected server's (LIST_DIRECTORY,
 //! docs/spec/L3.md section 4), retained by the one Phux provider's client, so
 //! it names directories on whichever host Cockpit is attached to: this Mac's
-//! coordinator or a registered remote host. Paths never cross to TypeScript
+//! coordinator or a registered remote host. Opened over a satellite pane of a
+//! hub that advertises LIST_DIRECTORY_HOST, it names that satellite instead
+//! (section 4.1) and keeps naming it until the picker is opened again; a hub
+//! without the bit lists itself, and the reply's scope says so. Paths never cross to TypeScript
 //! as authority: the core names a row by its index in the listing and the
 //! request ID that produced it, and the engine composes the path. Filtering
 //! and paging happen here so a reply stays inside the toolkit's 4096-byte
@@ -48,7 +51,7 @@ pub const here_index: u16 = 0xffff;
 pub const up_index: u16 = 0xfffe;
 
 pub const max_bytes: usize = 12 + 1 + max_text_bytes + 1 + max_query_bytes + 1 +
-    page_size * (4 + max_name_bytes) + 1 + max_text_bytes;
+    page_size * (4 + max_name_bytes) + 1 + max_text_bytes + 2 + max_name_bytes;
 
 comptime {
     std.debug.assert(max_bytes <= 4096);
@@ -92,29 +95,88 @@ pub fn handle(engine: anytype, payload: []const u8, out: []u8) Error![]const u8 
     if (!remote.directorySupported())
         return encodeNotice(.unsupported, "This coordinator cannot list directories. Update phux on that host.", request, out);
     switch (request.kind) {
-        .open => try open(engine.model, remote),
+        .open => try open(engine, remote),
         .page => {},
-        .descend => try descend(remote, request),
-        .parent => try parent(remote, request),
+        .descend => try descend(engine, remote, request),
+        .parent => try parent(engine, remote, request),
         .here => try openHere(engine, remote, request),
     }
-    return encodePage(remote, request, out);
+    return encodePage(remote, &engine.directory_origin, request, out);
 }
 
-/// Start where the focused terminal is, when it is a terminal on this very
-/// server; otherwise the serving user's home. A local PTY's directory is on
-/// this Mac and a satellite's on another host, so neither names a path the
-/// connected server could list.
-fn open(model: *Model, remote: anytype) Error!void {
+/// Whose directories the retained listing names (reply trailer `scope`).
+pub const Scope = enum(u8) {
+    /// The connected coordinator's own host.
+    coordinator = 0,
+    /// A satellite of the connected hub, named by the pane the picker was
+    /// opened over, relayed by the hub (LIST_DIRECTORY.host, L3 4.1).
+    satellite = 1,
+    /// The coordinator's own host, listed in place of the focused
+    /// satellite's because the hub does not advertise LIST_DIRECTORY_HOST
+    /// (it would ignore the field and list itself). Said, never implied.
+    coordinator_instead = 2,
+};
+
+/// The host a listing reads, fixed when the picker opens and kept for every
+/// descend, parent and Open Here that follows, as the TUI keeps `host` on
+/// every row. `terminal` is the satellite pane it was opened over; it owns
+/// its host storage, so the host never borrows client or catalog memory.
+pub const Origin = struct {
+    scope: Scope = .coordinator,
+    terminal: ?support.TerminalRef = null,
+
+    /// The satellite LIST_DIRECTORY names, or empty for the serving host.
+    pub fn listedHost(origin: *const Origin) []const u8 {
+        if (origin.scope != .satellite) return "";
+        return origin.namedHost();
+    }
+
+    /// The satellite the picker was opened over, whether or not it is the
+    /// one being listed.
+    pub fn namedHost(origin: *const Origin) []const u8 {
+        const ref = if (origin.terminal) |*value| value else return "";
+        return ref.terminal_id.phux.host();
+    }
+};
+
+/// The focused pane decides the host. A satellite-tagged Phux pane lists its
+/// satellite when the hub can relay the request, and otherwise the
+/// coordinator, labeled as such. Anything else lists the coordinator.
+pub fn originFor(model: *const Model, remote: anytype) Origin {
+    const ref = model.focusedTerminalRef() orelse return .{};
+    if (support.providerKind(ref) != .phux) return .{};
+    if (ref.terminal_id.phux.host().len == 0) return .{};
+    const scope: Scope = if (remote.directoryHostSupported()) .satellite else .coordinator_instead;
+    return .{ .scope = scope, .terminal = ref };
+}
+
+/// Start where the focused terminal is, when the listed host is the one it
+/// runs on; otherwise that host's serving user's home. A local PTY's
+/// directory is on this Mac, and a satellite's is not on its hub.
+fn open(engine: anytype, remote: anytype) Error!void {
+    engine.directory_origin = originFor(engine.model, remote);
     var buffer: [max_path_bytes]u8 = undefined;
-    const start = startDirectory(model, remote, &buffer);
-    _ = remote.requestDirectory(start) catch return error.Refused;
+    const start = startDirectory(engine.model, remote, &engine.directory_origin, &buffer);
+    _ = remote.requestDirectoryOn(start, engine.directory_origin.listedHost()) catch return error.Refused;
 }
 
-fn startDirectory(model: *const Model, remote: anytype, out: *[max_path_bytes]u8) []const u8 {
-    const ref = model.focusedTerminalRef() orelse return "";
-    if (support.providerKind(ref) != .phux) return "";
-    if (ref.terminal_id.phux.host().len != 0) return "";
+/// The terminal whose directory the listing starts in, if it runs on the
+/// listed host.
+fn startTerminal(model: *const Model, origin: *const Origin) ?support.TerminalRef {
+    switch (origin.scope) {
+        .satellite => return origin.terminal,
+        .coordinator_instead => return null,
+        .coordinator => {
+            const ref = model.focusedTerminalRef() orelse return null;
+            if (support.providerKind(ref) != .phux) return null;
+            if (ref.terminal_id.phux.host().len != 0) return null;
+            return ref;
+        },
+    }
+}
+
+fn startDirectory(model: *const Model, remote: anytype, origin: *const Origin, out: *[max_path_bytes]u8) []const u8 {
+    const ref = startTerminal(model, origin) orelse return "";
     for (remote.catalogTerminals()) |*entry| {
         if (!entry.terminal_ref.eql(ref)) continue;
         const cwd = entry.cwd.slice();
@@ -134,21 +196,27 @@ fn currentInfo(remote: anytype, expected: u32) Error!@TypeOf(remote.directoryInf
     return info;
 }
 
-fn descend(remote: anytype, request: Request) Error!void {
+fn descend(engine: anytype, remote: anytype, request: Request) Error!void {
     const info = try currentInfo(remote, request.request_id);
     if (info.status != .listed) return error.StaleListing;
     var buffer: [max_path_bytes]u8 = undefined;
     const path = try entryPath(remote, info.path, request.index, &buffer);
-    _ = remote.requestDirectory(path) catch return error.Refused;
+    _ = remote.requestDirectoryOn(path, engine.directory_origin.listedHost()) catch return error.Refused;
 }
 
-fn parent(remote: anytype, request: Request) Error!void {
+fn parent(engine: anytype, remote: anytype, request: Request) Error!void {
     const info = try currentInfo(remote, request.request_id);
     const up = parentOf(info) orelse return error.InvalidRequest;
     var buffer: [max_path_bytes]u8 = undefined;
-    _ = remote.requestDirectory(copyPath(up, &buffer) orelse return error.Refused) catch return error.Refused;
+    const path = copyPath(up, &buffer) orelse return error.Refused;
+    _ = remote.requestDirectoryOn(path, engine.directory_origin.listedHost()) catch return error.Refused;
 }
 
+/// A satellite listing's tab opens on that satellite: the pane the picker
+/// was opened over owns the spawn, so the provider routes it through the
+/// hub's satellite relay (SPAWN_RESOURCE.satellite). A coordinator listing's
+/// tab has no owner, so no focused satellite route can carry its directory
+/// to another host.
 fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
     const info = try currentInfo(remote, request.request_id);
     if (info.status != .listed) return error.StaleListing;
@@ -157,7 +225,8 @@ fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
         copyPath(info.path, &buffer) orelse return error.Refused
     else
         try entryPath(remote, info.path, request.index, &buffer);
-    if (!engine.openTabAt(path)) return error.Refused;
+    const owner = if (engine.directory_origin.scope == .satellite) engine.directory_origin.terminal else null;
+    if (!engine.openTabAt(path, owner)) return error.Refused;
 }
 
 /// Listed: the server's lexical parent. Refused: the attempted path's, so a
@@ -228,7 +297,7 @@ fn wireStatus(status: anytype) Status {
     };
 }
 
-fn encodePage(remote: anytype, request: Request, out: []u8) Error![]const u8 {
+fn encodePage(remote: anytype, origin: *const Origin, request: Request, out: []u8) Error![]const u8 {
     const info = remote.directoryInfo();
     const page = collect(remote, info, request.query, request.offset);
     var writer: Writer = .{ .out = out };
@@ -242,6 +311,8 @@ fn encodePage(remote: anytype, request: Request, out: []u8) Error![]const u8 {
         try writer.text(row.name, max_name_bytes);
     }
     try writer.text(info.message, max_text_bytes);
+    try writer.byte(@intFromEnum(origin.scope));
+    try writer.text(origin.namedHost(), max_name_bytes);
     return out[0..writer.at];
 }
 
@@ -252,6 +323,8 @@ fn encodeNotice(status: Status, message: []const u8, request: Request, out: []u8
     try writer.text(request.query, max_query_bytes);
     try writer.byte(0);
     try writer.text(message, max_text_bytes);
+    try writer.byte(@intFromEnum(Scope.coordinator));
+    try writer.text("", max_name_bytes);
     return out[0..writer.at];
 }
 

@@ -158,7 +158,7 @@
           <column gap="8">
             <row cross="center" gap="8">
               <icon name="folder" width="16" height="16" />
-              <text grow="1">Go to Directory</text>
+              <text grow="1" overflow="ellipsis">{dirTitle}</text>
               <button size="sm" variant="ghost" icon="x" label="Close Go to Directory" on-press="dir_close" />
             </row>
             <text foreground="text_muted" overflow="ellipsis">{dirPath}</text>

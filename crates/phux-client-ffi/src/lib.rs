@@ -944,6 +944,9 @@ fn apply_hello_ok(
     client.list_directory = server_caps
         .features
         .contains(phux_protocol::ServerFeature::ListDirectory);
+    client.list_directory_host = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::ListDirectoryHost);
     client.protocol_ready = true;
     Ok(())
 }

@@ -72,19 +72,21 @@ pub const Creation = struct {
     }
 
     pub fn request(self: *Creation, model: *Model, kind: Kind) !void {
-        return self.spawn(model, kind, null, "");
+        return self.spawn(model, kind, null, "", .focused);
     }
 
-    /// A new tab or window whose shell starts in `cwd` on the connected
-    /// coordinator's host (Go to Directory). Spawned without an owner: the
-    /// directory came from the serving server's own filesystem, so the
-    /// focused terminal's satellite route must not carry it to another host.
-    pub fn requestIn(self: *Creation, model: *Model, kind: Kind, cwd: []const u8) !void {
-        return self.spawn(model, kind, null, cwd);
+    /// A new tab or window whose shell starts in `cwd` (Go to Directory) on
+    /// the host the directory was listed on. `owner` null: the connected
+    /// coordinator's own host, spawned without an owner, so the focused
+    /// terminal's satellite route cannot carry the directory to another
+    /// host. `owner` a satellite pane: that satellite, routed through the
+    /// hub's relay exactly as a split of that pane would be.
+    pub fn requestIn(self: *Creation, model: *Model, kind: Kind, cwd: []const u8, owner: ?TerminalRef) !void {
+        return self.spawn(model, kind, null, cwd, if (owner) |ref| .{ .terminal = ref } else .none);
     }
 
     pub fn requestCorrelated(self: *Creation, model: *Model, kind: Kind, command_id: u64) !void {
-        return self.spawn(model, kind, command_id, "");
+        return self.spawn(model, kind, command_id, "", .focused);
     }
 
     /// Reserve command/result ownership before selectSession or leaveSession.
@@ -191,7 +193,12 @@ pub const Creation = struct {
         return changed;
     }
 
-    fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64, cwd: []const u8) !void {
+    /// Which terminal owns a spawn: the focused one (New Tab, a split), none
+    /// (a coordinator-host directory), or an exact one (a satellite
+    /// directory, owned by the pane it was listed for).
+    const OwnerChoice = union(enum) { focused, none, terminal: TerminalRef };
+
+    fn spawn(self: *Creation, model: *Model, kind: Kind, command_id: ?u64, cwd: []const u8, choice: OwnerChoice) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const remote = model.phux() orelse return error.NoProvider;
         if (remote.state() != .attached) return error.NotReady;
@@ -199,7 +206,11 @@ pub const Creation = struct {
         try self.requireUniqueCommand(command_id);
         if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
         const slot = try self.vacant();
-        const owner = if (cwd.len == 0) try spawnOwner(model, model.focusedTerminalRef()) else null;
+        const owner = switch (choice) {
+            .focused => try spawnOwner(model, model.focusedTerminalRef()),
+            .none => null,
+            .terminal => |ref| try spawnOwner(model, ref),
+        };
         var entry = try prepareDestination(model, kind, self.reservedAtDestination(model, kind), true);
         entry.epoch = remote.connectionEpoch();
         entry.command_id = command_id;

@@ -363,12 +363,35 @@ pub const Host = struct {
 
     /// `path` must not borrow client storage: this is a mutable client call.
     pub fn requestDirectory(host: *Host, path: []const u8) !u32 {
+        return host.requestDirectoryOn(path, "");
+    }
+
+    /// The listing on `satellite`, a satellite of the attached hub, or on
+    /// the serving host when empty. The client refuses a satellite unless
+    /// HELLO_OK advertised LIST_DIRECTORY_HOST, since an older hub would
+    /// list itself; nothing is queued then. Neither span may borrow client
+    /// storage.
+    pub fn requestDirectoryOn(host: *Host, path: []const u8, satellite: []const u8) !u32 {
         try host.requireAttached();
         const request_id = try host.operation_ledger.nextRequestId();
-        try resultError(c.phux_client_list_directory(host.client, request_id, bytes(path)));
+        const request: c.PhuxDirectoryRequest = .{
+            .size = @sizeOf(c.PhuxDirectoryRequest),
+            .version = c.PHUX_CLIENT_ABI_VERSION,
+            .request_id = request_id,
+            .path = bytes(path),
+            .host = bytes(satellite),
+        };
+        try resultError(c.phux_client_list_directory_on(host.client, &request));
         host.operation_ledger.last_id = request_id;
         host.stageOutgoing() catch host.disconnect();
         return request_id;
+    }
+
+    /// Whether the connected hub lists a named satellite's directories.
+    pub fn directoryHostSupported(host: *const Host) bool {
+        var supported = false;
+        if (c.phux_client_directory_host_supported(host.client, &supported) != c.PHUX_CLIENT_OK) return false;
+        return supported;
     }
 
     /// Borrowed until the next mutable host call.

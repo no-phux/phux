@@ -1065,6 +1065,37 @@ typedef struct PhuxDirectoryEntry {
 } PhuxDirectoryEntry;
 
 PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request_id, PhuxBytes path);
+
+/* A satellite's directories (docs/spec/L3.md section 4.1). Additive to ABI
+ * version 2. Attached to a federation hub, a satellite pane's directories
+ * live on the satellite; LIST_DIRECTORY.host names it and the hub relays the
+ * request. An older hub skips the field and lists ITSELF, so a nonempty host
+ * requires HELLO_OK to have advertised LIST_DIRECTORY_HOST (0x00080000) as
+ * well as LIST_DIRECTORY. Without it: PHUX_CLIENT_INVALID_STATE, nothing
+ * queued, no request ID consumed, and the retained listing unchanged. An
+ * embedder that still wants a listing then asks for the serving host's own
+ * with an empty host, and says whose directories it shows.
+ *
+ * Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * request_id and path are exactly as for phux_client_list_directory. host is
+ * the satellite name as a satellite-tagged PhuxResourceId carries it: UTF-8
+ * without NUL, at most 255 bytes; empty is the serving host, and the frame is
+ * then byte-identical to phux_client_list_directory's. A relayed refusal
+ * (unknown or unreachable satellite, a satellite without LIST_DIRECTORY, the
+ * relay deadline) arrives as an ordinary REFUSED/OTHER listing whose message
+ * names the host. */
+typedef struct PhuxDirectoryRequest {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    PhuxBytes path;
+    PhuxBytes host;
+} PhuxDirectoryRequest;
+
+PhuxClientResult phux_client_list_directory_on(PhuxClient *client, const PhuxDirectoryRequest *request);
+/** *out_supported: HELLO_OK advertised both LIST_DIRECTORY and
+ * LIST_DIRECTORY_HOST, so a nonempty PhuxDirectoryRequest.host is accepted. */
+PhuxClientResult phux_client_directory_host_supported(const PhuxClient *client, bool *out_supported);
 PhuxClientResult phux_client_directory_info(const PhuxClient *client, PhuxDirectoryListingInfo *out_info);
 /** PHUX_CLIENT_INVALID_ARGUMENT for an index at or past entry_count. */
 PhuxClientResult phux_client_directory_entry_get(const PhuxClient *client, size_t index, PhuxDirectoryEntry *out_entry);

@@ -196,6 +196,8 @@ pub const Engine = struct {
     session_handoff: ?u64 = null,
     last_workspace_refresh: ?std.Io.Timestamp = null,
     remote_pointer: @import("shipping_pointer.zig").State = .{},
+    /// Go to Directory's listed host, fixed when the picker opens.
+    directory_origin: @import("directory_picker.zig").Origin = .{},
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -1518,10 +1520,13 @@ pub const Engine = struct {
 
     /// Go to Directory: a new durable tab whose shell starts in `cwd` on the
     /// connected coordinator's host, placed like New Tab.
-    pub fn openTabAt(self: *Engine, cwd: []const u8) bool {
+    /// Go to Directory's Open Here. `owner` is the satellite pane a
+    /// satellite listing was made for, so the tab opens on that satellite;
+    /// null opens on the coordinator's own host.
+    pub fn openTabAt(self: *Engine, cwd: []const u8, owner: ?support.TerminalRef) bool {
         if (self.model.phux() == null) return false;
         self.supersedeSelection();
-        self.creation.requestIn(self.model, .tab, cwd) catch {
+        self.creation.requestIn(self.model, .tab, cwd, owner) catch {
             self.model.terminal_limit_refused = true;
             return false;
         };

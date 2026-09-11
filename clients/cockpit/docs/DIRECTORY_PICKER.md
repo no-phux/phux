@@ -18,9 +18,31 @@ The layout is unchanged: the new tab is placed like New Tab.
 ## Using it
 
 The picker opens in the window that invoked it. It starts in the focused
-terminal's directory when that terminal lives on the connected server, and
-otherwise in the serving user's home. A local PTY's directory is on this Mac,
-and a satellite's is on another host, so neither can be listed there.
+terminal's directory when that terminal lives on the host being listed, and
+otherwise in that host's serving user's home. A local PTY's directory is on
+this Mac, so the coordinator never lists it.
+
+### Satellite panes
+
+Opened over a satellite pane (a terminal the coordinator relays from one of
+its satellites), the picker lists that satellite, the way the TUI does
+(docs/spec/L3.md section 4.1, ADR-0108). It needs the hub to advertise
+`LIST_DIRECTORY_HOST` (0x00080000):
+
+| Hub | Request | Heading | Open Here |
+|---|---|---|---|
+| advertises the bit | `LIST_DIRECTORY` with `host` = the satellite, starting at the pane's catalog directory, else the satellite's home | Go to Directory on `<satellite>` | on the satellite: the pane owns the spawn, relayed as `SPAWN_RESOURCE.satellite` |
+| does not | no `host`; the coordinator's own home | Go to Directory on the coordinator, not `<satellite>` | on the coordinator, without an owner |
+
+An older hub ignores `host` and lists itself, so phux-client-ffi refuses a
+host without the bit (`phux_client_list_directory_on` returns
+`INVALID_STATE` and queues nothing). The engine never sends one in that case,
+and says whose directories it shows instead. The host is fixed when the
+picker opens: descending, going up and Open Here all stay on it until the
+picker is opened again. An Open Here whose pane is no longer attached is
+refused, never opened ownerless on the coordinator. A relayed refusal
+(unknown or unreachable satellite, the relay deadline) is an ordinary
+refused listing, and its message names the host.
 
 | Row or key | Effect |
 |---|---|
@@ -39,9 +61,11 @@ children, or stops reading early, says so under the list. A refused listing
 offers `..`. A coordinator that does not advertise `LIST_DIRECTORY` is named
 as such immediately, because an older server would drop the query.
 
-The new tab is spawned without an owner terminal. The directory came from
-the serving server's own filesystem, and the focused terminal's satellite
-route must not carry it to another host.
+A coordinator listing's tab is spawned without an owner terminal. The
+directory came from the serving server's own filesystem, and the focused
+terminal's satellite route must not carry it to another host. A satellite
+listing's tab is owned by the pane it was listed for, so it opens on that
+satellite.
 
 ## Layers
 
@@ -99,6 +123,8 @@ Every reply is the page that the action leaves behind:
 | query | length u8, then the echoed query |
 | rows | count u8, then per row: index u16, flags u8 (bit 0 symlink), name length u8, name |
 | message | length u8, then the server's text, elided at 240 bytes |
+| scope | u8: 0 the coordinator, 1 a satellite, 2 the coordinator in place of a satellite |
+| host | length u8, then the satellite the picker was opened over (empty for scope 0) |
 
 Row index 0xffff is "Open a new tab here" and 0xfffe is `..`; the core
 supplies their labels. The core accepts a reply only while the picker is

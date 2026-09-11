@@ -47,6 +47,8 @@ const Reply = struct {
     total: u16,
     count: u8,
     first: ?u16,
+    scope: picker.Scope,
+    host: []const u8,
     bytes: []const u8,
 };
 
@@ -54,14 +56,38 @@ fn parse(bytes: []const u8) Reply {
     const path_end = 13 + @as(usize, bytes[12]);
     const query_end = path_end + 1 + @as(usize, bytes[path_end]);
     const count = bytes[query_end];
+    var at = query_end + 1;
+    for (0..count) |_| at += 4 + @as(usize, bytes[at + 3]);
+    const scope_at = at + 1 + @as(usize, bytes[at]);
+    const host_len: usize = bytes[scope_at + 1];
+    std.debug.assert(scope_at + 2 + host_len == bytes.len);
     return .{
         .status = @enumFromInt(bytes[1]),
         .request_id = std.mem.readInt(u32, bytes[2..6], .little),
         .total = std.mem.readInt(u16, bytes[8..10], .little),
         .count = count,
         .first = if (count == 0) null else std.mem.readInt(u16, bytes[query_end + 1 ..][0..2], .little),
+        .scope = @enumFromInt(bytes[scope_at]),
+        .host = bytes[scope_at + 2 ..][0..host_len],
         .bytes = bytes,
     };
+}
+
+/// Put a satellite pane (`fixture-host`, id 9) in the focused leaf of the
+/// active tab. The provider never learned it: the picker reads the host off
+/// the model's own identity. Returns the ref it replaced, to put back.
+fn focusSatellite(engine: *ts_engine.Engine) !?support.TerminalRef {
+    const satellite: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(1, 9, "fixture-host") } };
+    const tree = engine.model.selectedTree() orelse return error.TestUnexpectedResult;
+    const replaced = tree.nodes[tree.focus].terminal;
+    tree.nodes[tree.focus].terminal = satellite;
+    try testing.expect(engine.model.focusedTerminalRef().?.eql(satellite));
+    return replaced;
+}
+
+fn restoreFocus(engine: *ts_engine.Engine, replaced: ?support.TerminalRef) void {
+    const tree = engine.model.selectedTree() orelse return;
+    tree.nodes[tree.focus].terminal = replaced;
 }
 
 /// An engine attached to a Phux provider the way durable creation's tests
@@ -177,6 +203,66 @@ test "Open Here spawns one new tab whose shell starts in the listed directory" {
     _ = try rig.send(.here, 1, 0, 1, "");
     try testing.expectEqual(@as(usize, 2), rig.engine.creation.count());
     try testing.expect(rig.outgoingContains("/work/cockpit"));
+}
+
+test "a satellite pane lists its own satellite, and keeps listing it as the picker moves" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start("hello_directory_host.bin");
+    defer rig.engine.destroy();
+    const replaced = try focusSatellite(rig.engine);
+    defer restoreFocus(rig.engine, replaced);
+
+    const opened = try rig.send(.open, 0, 0, 0, "");
+    try testing.expectEqual(picker.Status.pending, opened.status);
+    try testing.expectEqual(picker.Scope.satellite, opened.scope);
+    try testing.expectEqualStrings("fixture-host", opened.host);
+    // LIST_DIRECTORY carries the satellite's name, and it starts in that
+    // satellite's home: the pane has no catalog directory here.
+    try testing.expect(rig.outgoingContains("fixture-host"));
+    try testing.expectEqualStrings("", rig.provider.directoryInfo().path);
+
+    _ = try rig.deliverListing();
+    const listed = try rig.send(.page, 1, 0, 0, "");
+    try testing.expectEqual(picker.Status.listed, listed.status);
+    try testing.expectEqual(picker.Scope.satellite, listed.scope);
+    // Descend and parent stay on the satellite.
+    _ = try rig.send(.descend, 1, 0, 1, "");
+    try testing.expectEqualStrings("/work/cockpit", rig.provider.directoryInfo().path);
+    try testing.expect(rig.outgoingContains("fixture-host"));
+}
+
+test "a hub without LIST_DIRECTORY_HOST lists itself for a satellite pane, and says so" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start("hello_directory.bin");
+    defer rig.engine.destroy();
+    const replaced = try focusSatellite(rig.engine);
+    defer restoreFocus(rig.engine, replaced);
+
+    const opened = try rig.send(.open, 0, 0, 0, "");
+    try testing.expectEqual(picker.Status.pending, opened.status);
+    try testing.expectEqual(picker.Scope.coordinator_instead, opened.scope);
+    try testing.expectEqualStrings("fixture-host", opened.host);
+    // The request names no host: the hub would ignore it and list itself.
+    try testing.expect(!rig.outgoingContains("fixture-host"));
+    try testing.expectEqual(@as(u32, 1), rig.provider.directoryInfo().request_id);
+}
+
+test "Open Here on a satellite listing is owned by that pane, never opened ownerless on the coordinator" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start("hello_directory_host.bin");
+    defer rig.engine.destroy();
+    const replaced = try focusSatellite(rig.engine);
+    defer restoreFocus(rig.engine, replaced);
+    _ = try rig.send(.open, 0, 0, 0, "");
+    _ = try rig.deliverListing();
+    _ = rig.outgoingContains("");
+
+    // The pane is not attached here, so its owner is not ready: the tab is
+    // refused rather than spawned without an owner on the coordinator.
+    try testing.expectEqual(picker.Scope.satellite, rig.engine.directory_origin.scope);
+    try testing.expectError(error.Refused, rig.send(.here, 1, 0, picker.here_index, ""));
+    try testing.expectEqual(@as(usize, 0), rig.engine.creation.count());
+    try testing.expect(!rig.outgoingContains("/work"));
 }
 
 test "a server without LIST_DIRECTORY is named, not waited on" {

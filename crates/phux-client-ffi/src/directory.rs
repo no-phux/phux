@@ -25,6 +25,7 @@ use crate::client::Client;
 use crate::error::{BridgeError, bytes_in, check_struct};
 use crate::types::{PhuxBytes, bytes_out};
 use crate::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
+use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{DirectoryErrorCode, DirectoryListingResult, FrameKind};
 use std::mem;
 
@@ -162,8 +163,68 @@ fn request_path(bytes: &[u8]) -> Result<&str, BridgeError> {
     std::str::from_utf8(bytes).map_err(|_| BridgeError::invalid("directory path is not UTF-8"))
 }
 
+/// A satellite name's bound: the host storage of a satellite-tagged terminal
+/// identity in every embedder this ABI serves.
+pub const MAX_DIRECTORY_HOST_BYTES: usize = 255;
+
+fn request_host(bytes: &[u8]) -> Result<Option<SatelliteHost>, BridgeError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_DIRECTORY_HOST_BYTES {
+        return Err(BridgeError::invalid("directory host exceeds 255 bytes"));
+    }
+    if bytes.contains(&0) {
+        return Err(BridgeError::invalid("directory host contains NUL"));
+    }
+    let host = std::str::from_utf8(bytes)
+        .map_err(|_| BridgeError::invalid("directory host is not UTF-8"))?;
+    Ok(Some(SatelliteHost::new(host)))
+}
+
+/// Queue one `LIST_DIRECTORY`, replacing any previous listing. `host` names a
+/// satellite of the attached hub (`docs/spec/L3.md` section 4.1), and needs
+/// `LIST_DIRECTORY_HOST`: an older server skips the field and lists itself,
+/// so without the bit the request is refused before anything is queued
+/// rather than answered by the wrong host.
+fn list_directory(
+    client: &mut Client,
+    request_id: u32,
+    path: &str,
+    host: Option<SatelliteHost>,
+) -> Result<(), BridgeError> {
+    client.ensure_attached()?;
+    if !client.list_directory {
+        return Err(BridgeError::state(
+            "server does not advertise LIST_DIRECTORY",
+        ));
+    }
+    if host.is_some() && !client.list_directory_host {
+        return Err(BridgeError::state(
+            "server does not advertise LIST_DIRECTORY_HOST; it would list itself",
+        ));
+    }
+    client.operations.check_request_id(request_id)?;
+    if client.outgoing.len() >= crate::operations::MAX_OPERATIONS {
+        return Err(BridgeError::state(
+            "outgoing queue is full; drain outgoing frames before listing a directory",
+        ));
+    }
+    // Without a host the frame is byte-identical for servers that predate
+    // LIST_DIRECTORY_HOST.
+    client.queue_frame(&FrameKind::ListDirectory {
+        request_id,
+        path: path.to_owned(),
+        host,
+    })?;
+    client.operations.consume_request_id(request_id);
+    client.directory.begin(request_id, path.as_bytes());
+    Ok(())
+}
+
 /// Queue `LIST_DIRECTORY` for `path` (empty or `~` for the serving user's
-/// home, `~/rest`, or absolute), replacing any previous listing.
+/// home, `~/rest`, or absolute) on the serving host, replacing any previous
+/// listing.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread; a nonempty
@@ -177,27 +238,66 @@ pub unsafe extern "C" fn phux_client_list_directory(
     with_client_mut(client, |client| {
         // SAFETY: forwards the caller's readable-span contract.
         let path = request_path(unsafe { bytes_in(path.data, path.len) }?)?;
-        client.ensure_attached()?;
-        if !client.list_directory {
-            return Err(BridgeError::state(
-                "server does not advertise LIST_DIRECTORY",
-            ));
-        }
-        client.operations.check_request_id(request_id)?;
-        if client.outgoing.len() >= crate::operations::MAX_OPERATIONS {
-            return Err(BridgeError::state(
-                "outgoing queue is full; drain outgoing frames before listing a directory",
-            ));
-        }
-        // The serving host's own directories: no satellite `host` field, so
-        // the frame is byte-identical for servers without LIST_DIRECTORY_HOST.
-        client.queue_frame(&FrameKind::ListDirectory {
-            request_id,
-            path: path.to_owned(),
-            host: None,
-        })?;
-        client.operations.consume_request_id(request_id);
-        client.directory.begin(request_id, path.as_bytes());
+        list_directory(client, request_id, path, None)
+    })
+}
+
+/// One `LIST_DIRECTORY` request, with an optional satellite host.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PhuxDirectoryRequest {
+    pub size: usize,
+    pub version: u32,
+    pub request_id: u32,
+    pub path: PhuxBytes,
+    /// Empty: the serving host, exactly `phux_client_list_directory`.
+    pub host: PhuxBytes,
+}
+
+/// Queue `LIST_DIRECTORY` for `request.path` on `request.host`: a satellite
+/// of the attached hub, or the serving host when empty. A nonempty host
+/// needs `LIST_DIRECTORY_HOST`; see `list_directory`.
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread; `request`
+/// is initialized with `size`/`version` and its nonempty spans are readable
+/// for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_list_directory_on(
+    client: *mut PhuxClient,
+    request: *const PhuxDirectoryRequest,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        // SAFETY: caller supplies the readable request when non-null.
+        let request =
+            unsafe { request.as_ref() }.ok_or_else(|| BridgeError::invalid("request is null"))?;
+        check_struct(
+            request.size,
+            mem::size_of::<PhuxDirectoryRequest>(),
+            request.version,
+        )?;
+        // SAFETY: forwards the caller's readable-span contract.
+        let path = request_path(unsafe { bytes_in(request.path.data, request.path.len) }?)?;
+        // SAFETY: as above.
+        let host = request_host(unsafe { bytes_in(request.host.data, request.host.len) }?)?;
+        list_directory(client, request.request_id, path, host)
+    })
+}
+
+/// Whether `HELLO_OK` advertised `LIST_DIRECTORY_HOST`, so a nonempty
+/// `PhuxDirectoryRequest.host` is listed by that satellite.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_directory_host_supported(
+    client: *const PhuxClient,
+    out: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        // SAFETY: caller supplies the writable output when non-null.
+        let out = unsafe { out.as_mut() }.ok_or_else(|| BridgeError::invalid("output is null"))?;
+        *out = client.list_directory && client.list_directory_host;
         Ok(())
     })
 }
@@ -555,6 +655,174 @@ mod tests {
         unsafe { (*client).inner.attached = false };
         assert_eq!(list(client, 8, "/"), PhuxClientResult::InvalidState);
         unsafe { crate::phux_client_free(client) };
+    }
+
+    fn list_on(
+        client: *mut PhuxClient,
+        request_id: u32,
+        path: &str,
+        host: &[u8],
+    ) -> PhuxClientResult {
+        let request = PhuxDirectoryRequest {
+            size: mem::size_of::<PhuxDirectoryRequest>(),
+            version: ABI_VERSION,
+            request_id,
+            path: PhuxBytes {
+                data: path.as_ptr(),
+                len: path.len(),
+            },
+            host: PhuxBytes {
+                data: host.as_ptr(),
+                len: host.len(),
+            },
+        };
+        unsafe { phux_client_list_directory_on(client, &raw const request) }
+    }
+
+    fn host_supported(client: *mut PhuxClient) -> bool {
+        let mut out = false;
+        assert_eq!(
+            unsafe { phux_client_directory_host_supported(client, &raw mut out) },
+            PhuxClientResult::Ok
+        );
+        out
+    }
+
+    fn only_queued(client: *mut PhuxClient) -> FrameKind {
+        let queued = unsafe { &(*client).inner.outgoing };
+        assert_eq!(queued.len(), 1);
+        FrameKind::decode(&queued[0])
+            .expect("queued frame decodes")
+            .0
+    }
+
+    #[test]
+    fn a_satellite_host_is_carried_when_the_hub_advertises_it() {
+        let client = client(true);
+        unsafe { (*client).inner.list_directory_host = true };
+        assert!(host_supported(client));
+        assert_eq!(
+            list_on(client, 2, "~/src", b"build-host"),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            only_queued(client),
+            FrameKind::ListDirectory {
+                request_id: 2,
+                path: "~/src".to_owned(),
+                host: Some(SatelliteHost::new("build-host")),
+            }
+        );
+        let pending = info(client);
+        assert_eq!((pending.status, pending.request_id), (STATUS_PENDING, 2));
+        // The satellite's reply is read back like any other listing.
+        let reply = listed(2, "/home/b/src", &[("phux", false)], false);
+        assert_eq!(feed(client, &reply), PhuxClientResult::Ok);
+        assert_eq!(info(client).status, STATUS_LISTED);
+        assert_eq!(entry(client, 0), Ok(("phux".to_owned(), 0)));
+        unsafe { crate::phux_client_free(client) };
+    }
+
+    #[test]
+    fn a_satellite_host_without_the_bit_is_refused_and_sends_nothing() {
+        let client = client(true);
+        assert!(!host_supported(client));
+        assert_eq!(
+            list_on(client, 1, "/", b"build-host"),
+            PhuxClientResult::InvalidState
+        );
+        assert_eq!(unsafe { (*client).inner.outgoing.len() }, 0);
+        assert_eq!(info(client).status, STATUS_NONE);
+        // The refusal consumed no request ID, and an empty host is still the
+        // serving host's own listing, byte-identical to the older call.
+        assert_eq!(list_on(client, 1, "/", b""), PhuxClientResult::Ok);
+        assert_eq!(
+            only_queued(client),
+            FrameKind::ListDirectory {
+                request_id: 1,
+                path: "/".to_owned(),
+                host: None,
+            }
+        );
+        unsafe { crate::phux_client_free(client) };
+    }
+
+    #[test]
+    fn a_malformed_host_or_request_is_refused_before_anything_is_queued() {
+        let client = client(true);
+        unsafe { (*client).inner.list_directory_host = true };
+        for host in [
+            b"a\0b".as_slice(),
+            &[0xff],
+            "h".repeat(MAX_DIRECTORY_HOST_BYTES + 1).as_bytes(),
+        ] {
+            assert_eq!(
+                list_on(client, 1, "/", host),
+                PhuxClientResult::InvalidArgument
+            );
+        }
+        assert_eq!(
+            unsafe { phux_client_list_directory_on(client, std::ptr::null()) },
+            PhuxClientResult::InvalidArgument
+        );
+        let stale = PhuxDirectoryRequest {
+            size: mem::size_of::<PhuxDirectoryRequest>(),
+            version: ABI_VERSION + 1,
+            request_id: 1,
+            path: PhuxBytes::default(),
+            host: PhuxBytes::default(),
+        };
+        assert_eq!(
+            unsafe { phux_client_list_directory_on(client, &raw const stale) },
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(unsafe { (*client).inner.outgoing.len() }, 0);
+        let longest = "h".repeat(MAX_DIRECTORY_HOST_BYTES);
+        assert_eq!(
+            list_on(client, 1, "/", longest.as_bytes()),
+            PhuxClientResult::Ok
+        );
+        unsafe { crate::phux_client_free(client) };
+    }
+
+    #[test]
+    fn hello_ok_gates_the_host_on_its_own_bit() {
+        use phux_protocol::ServerFeature::{ListDirectory, ListDirectoryHost};
+        use phux_protocol::caps::ServerCapabilities;
+        for (features, expected) in [
+            (
+                phux_protocol::ServerFeatureSet::with(&[ListDirectory]),
+                false,
+            ),
+            (
+                phux_protocol::ServerFeatureSet::with(&[ListDirectory, ListDirectoryHost]),
+                true,
+            ),
+            // The host bit alone cannot list anything.
+            (
+                phux_protocol::ServerFeatureSet::with(&[ListDirectoryHost]),
+                false,
+            ),
+        ] {
+            let client = client(false);
+            unsafe {
+                (*client).inner.protocol_ready = false;
+                (*client).inner.hello_queued = true;
+            }
+            let hello = FrameKind::HelloOk {
+                protocol_major: crate::PROTOCOL_VERSION.major,
+                protocol_minor: crate::PROTOCOL_VERSION.minor,
+                protocol_patch: crate::PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new().with_features(features),
+                server_id: b"server".to_vec(),
+                selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
+                    .expect("limits"),
+            };
+            assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
+            assert_eq!(host_supported(client), expected);
+            unsafe { crate::phux_client_free(client) };
+        }
     }
 
     #[test]

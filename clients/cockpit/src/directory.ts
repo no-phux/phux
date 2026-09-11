@@ -29,6 +29,14 @@ export const DIR_STATUS_UNAVAILABLE = 5;
 export const DIR_HERE = 65535;
 export const DIR_UP = 65534;
 
+/// Whose directories a page names (the reply trailer's scope byte).
+export const DIR_SCOPE_COORDINATOR = 0;
+/// A satellite of the connected hub, relayed by it (L3 section 4.1).
+export const DIR_SCOPE_SATELLITE = 1;
+/// The coordinator's own host, in place of the focused satellite's, because
+/// that hub cannot list a satellite.
+export const DIR_SCOPE_INSTEAD = 2;
+
 export interface DirectoryRow {
   readonly index: number;
   readonly symlink: boolean;
@@ -45,6 +53,8 @@ export interface DirectoryPage {
   readonly query: Uint8Array;
   readonly rows: readonly DirectoryRow[];
   readonly message: Uint8Array;
+  readonly scope: number;
+  readonly host: Uint8Array;
 }
 
 export const NO_DIRECTORY_REQUEST = new Uint8Array(4);
@@ -95,7 +105,9 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
   const listed = readRows(bytes, queryEnd + 1, bytes[queryEnd]);
   if (listed === null || listed.end >= bytes.length) return null;
   const messageEnd = listed.end + 1 + bytes[listed.end];
-  if (messageEnd !== bytes.length) return null;
+  if (messageEnd + 2 > bytes.length || bytes[messageEnd] > DIR_SCOPE_INSTEAD) return null;
+  const hostEnd = messageEnd + 2 + bytes[messageEnd + 1];
+  if (hostEnd !== bytes.length) return null;
   return {
     status: bytes[1],
     request: bytes.slice(2, 6),
@@ -106,6 +118,8 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
     query: bytes.subarray(pathEnd + 1, queryEnd),
     rows: listed.rows,
     message: bytes.subarray(listed.end + 1, messageEnd),
+    scope: bytes[messageEnd],
+    host: bytes.subarray(messageEnd + 2, hostEnd),
   };
 }
 
@@ -133,6 +147,16 @@ export function directoryRowLabel(row: DirectoryRow): Uint8Array {
   if (row.index === DIR_HERE) return asciiBytes("Open a new tab here");
   if (row.index === DIR_UP) return asciiBytes("..");
   return join(row.name, asciiBytes("/"), row.symlink ? asciiBytes("  (link)") : new Uint8Array(0));
+}
+
+/// The picker's heading names the host whenever it is not simply the
+/// connected coordinator's: a satellite by name, and a hub that cannot list
+/// the focused satellite by saying whose directories are shown instead.
+export function directoryTitle(page: DirectoryPage): Uint8Array {
+  if (page.host.length === 0) return asciiBytes("Go to Directory");
+  if (page.scope === DIR_SCOPE_SATELLITE) return join(asciiBytes("Go to Directory on "), page.host, new Uint8Array(0));
+  if (page.scope === DIR_SCOPE_INSTEAD) return join(asciiBytes("Go to Directory on the coordinator, not "), page.host, new Uint8Array(0));
+  return asciiBytes("Go to Directory");
 }
 
 /// The notice under the list for one settled or waiting page.

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initialModel, update, commandMsg } from '../core.ts';
-import { directoryRequest, directoryPage, directoryRowLabel, DIR_HERE, DIR_UP } from '../directory.ts';
+import { directoryRequest, directoryPage, directoryRowLabel, directoryTitle, DIR_HERE, DIR_UP } from '../directory.ts';
 
 const bytes = value => new TextEncoder().encode(value);
 const text = value => new TextDecoder().decode(value);
@@ -14,16 +14,17 @@ const u32 = n => [n % 256, Math.floor(n / 256) % 256, Math.floor(n / 65536) % 25
 const u16 = n => [n % 256, Math.floor(n / 256)];
 
 /// A `cockpit.directory` reply as the engine encodes it.
-function reply({ status = 2, request = 1, truncated = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '' } = {}) {
+function reply({ status = 2, request = 1, truncated = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '' } = {}) {
   const p = bytes(path);
   const q = bytes(query);
   const m = bytes(message);
+  const h = bytes(host);
   const out = [1, status, ...u32(request), truncated ? 1 : 0, 0, ...u16(total), ...u16(offset), p.length, ...p, q.length, ...q, rows.length];
   for (const [index, name, symlink] of rows) {
     const n = bytes(name);
     out.push(...u16(index), symlink ? 1 : 0, n.length, ...n);
   }
-  out.push(m.length, ...m);
+  out.push(m.length, ...m, scope, h.length, ...h);
   return new Uint8Array(out);
 }
 function request(kind, id, offset, index, query = '') {
@@ -64,6 +65,31 @@ function listed() {
   [model] = step(model, { kind: 'directory_loaded', body: LISTED });
   return model;
 }
+
+test('a satellite listing names its host in the heading, and a hub that cannot list it says whose directories show', () => {
+  let [model] = opened();
+  assert.equal(text(model.dirTitle), 'Go to Directory');
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '', scope: 1, host: 'build-host' }) });
+  assert.equal(text(model.dirTitle), 'Go to Directory on build-host');
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ total: 1, rows: [[DIR_HERE, '']], scope: 1, host: 'build-host' }) });
+  assert.equal(text(model.dirTitle), 'Go to Directory on build-host');
+
+  [model] = opened();
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '', scope: 2, host: 'build-host' }) });
+  assert.equal(text(model.dirTitle), 'Go to Directory on the coordinator, not build-host');
+  // The coordinator's own listing keeps the plain heading.
+  [model] = opened();
+  [model] = step(model, { kind: 'directory_loaded', body: LISTED });
+  assert.equal(text(model.dirTitle), 'Go to Directory');
+
+  const page = directoryPage(reply({ scope: 1, host: 'build-host' }));
+  assert.equal(page.scope, 1);
+  assert.equal(text(page.host), 'build-host');
+  assert.equal(text(directoryTitle(page)), 'Go to Directory on build-host');
+  assert.equal(directoryPage(reply({ scope: 3 })), null, 'an unknown scope is refused');
+  const bare = reply();
+  assert.equal(directoryPage(bare.subarray(0, bare.length - 2)), null, 'the scope trailer is required');
+});
 
 test('Go to Directory is a menu command with its own chord, not cmd+shift+G', () => {
   assert.deepEqual(commandMsg('directory.open'), { kind: 'dir_open' });

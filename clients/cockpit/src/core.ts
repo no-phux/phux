@@ -32,6 +32,7 @@ import {
   directoryPage,
   directoryRowLabel,
   directoryNotice,
+  directoryTitle,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -216,6 +217,8 @@ export interface Model {
   readonly dirNext: boolean;
   readonly dirPath: Uint8Array;
   readonly dirNotice: Uint8Array;
+  /// The picker's heading: names the satellite a listing comes from.
+  readonly dirTitle: Uint8Array;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -692,7 +695,8 @@ function openDirectory(model: Model): DirectoryDecision {
   const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false,
     dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
     dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
-    dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing...") });
+    dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing..."),
+    dirTitle: asciiBytes("Go to Directory") });
   return directoryDecision(next, directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), true);
 }
 
@@ -742,7 +746,7 @@ function showDirectory(model: Model, page: DirectoryPage): Model {
   const rows = directoryRows(page);
   const shown: Model = { ...model, dirRequest: page.request, dirStarting: false, dirBusy: false,
     dirAwaiting: page.status === DIR_STATUS_PENDING, dirRows: rows, dirCursor: 0,
-    dirPath: page.path.length > 0 ? page.path : model.dirPath,
+    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page),
     dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total, dirNotice: directoryNotice(page) };
   return highlightDirectory(shown, Math.min(model.dirCursor, rows.length - 1));
 }
@@ -1345,6 +1349,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       dirNext: false,
       dirPath: new Uint8Array(0),
       dirNotice: new Uint8Array(0),
+      dirTitle: asciiBytes("Go to Directory"),
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,

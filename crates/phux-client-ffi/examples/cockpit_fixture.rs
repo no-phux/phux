@@ -320,6 +320,72 @@ impl Client {
     }
 }
 
+/// The same handshake, from a federation hub that also lists its satellites'
+/// directories (`LIST_DIRECTORY_HOST`).
+fn hello_with_directory_host() -> FrameKind {
+    let FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_id,
+        selected_profile,
+        bootstrap_limits,
+        ..
+    } = hello()
+    else {
+        unreachable!("hello() builds HELLO_OK");
+    };
+    FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_caps: ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
+            ServerFeature::TerminalReply,
+            ServerFeature::ListDirectory,
+            ServerFeature::ListDirectoryHost,
+        ])),
+        server_id,
+        selected_profile,
+        bootstrap_limits,
+    }
+}
+
+/// A satellite listing through the C ABI: the host rides on the frame, and
+/// the reply reads back as an ordinary listing.
+fn verify_directory_host(hello: &[u8], attached: &[u8], listing: &[u8]) {
+    use phux_client_ffi::{
+        PhuxDirectoryRequest, phux_client_directory_host_supported, phux_client_list_directory_on,
+    };
+    use phux_protocol::ids::SatelliteHost;
+    let client = Client::new();
+    client.negotiate_and_attach(hello, attached);
+    // SAFETY: live same-thread handle, valid spans, and writable outputs.
+    unsafe {
+        let mut supported = false;
+        assert_eq!(
+            phux_client_directory_host_supported(client.0, &raw mut supported),
+            PhuxClientResult::Ok
+        );
+        assert!(supported);
+        let request = PhuxDirectoryRequest {
+            size: size_of::<PhuxDirectoryRequest>(),
+            version: ABI_VERSION,
+            request_id: 1,
+            path: span(b"/work"),
+            host: span(b"fixture-host"),
+        };
+        assert_eq!(
+            phux_client_list_directory_on(client.0, &raw const request),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(),
+            FrameKind::ListDirectory { request_id: 1, ref path, host: Some(ref host) }
+            if path == "/work" && *host == SatelliteHost::new("fixture-host")));
+        client.feed(listing);
+        assert_eq!(phux_client_outgoing_count(client.0), 0);
+    }
+}
+
 /// The same handshake, from a server that also answers `LIST_DIRECTORY`.
 fn hello_with_directory() -> FrameKind {
     let FrameKind::HelloOk {
@@ -497,19 +563,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let hello_directory = encode(&[hello_with_directory()]);
     let listing = encode(&[directory_listing()]);
     verify_directory(&hello_directory, &attached, &listing);
+    let hello_directory_host = encode(&[hello_with_directory_host()]);
+    verify_directory_host(&hello_directory_host, &attached, &listing);
     let standby = encode(&[standby_state()]);
     verify_standby(&hello, &standby);
     std::fs::create_dir_all(&output)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
     std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
+    std::fs::write(
+        output.join("hello_directory_host.bin"),
+        &hello_directory_host,
+    )?;
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing and standby session query; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes) to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite) and standby session query; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes) to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),
+        hello_directory_host.len(),
         listing.len(),
         standby.len(),
         output.display()

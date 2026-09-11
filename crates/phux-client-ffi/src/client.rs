@@ -293,6 +293,9 @@ pub(crate) struct Client {
     pub terminal_reply: bool,
     /// `HELLO_OK` advertised `LIST_DIRECTORY` (`docs/spec/L3.md` section 4).
     pub list_directory: bool,
+    /// `HELLO_OK` advertised `LIST_DIRECTORY_HOST` (`docs/spec/L3.md` section
+    /// 4.1): a hub lists a named satellite instead of itself.
+    pub list_directory_host: bool,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
@@ -351,6 +354,7 @@ impl Client {
             attached: false,
             terminal_reply: false,
             list_directory: false,
+            list_directory_host: false,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             detached: false,
