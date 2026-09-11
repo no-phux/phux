@@ -509,6 +509,102 @@ test "Disconnect names one host: a listed host leaves alone, and the active host
     try testing.expect(local.remoteTarget() == null);
 }
 
+test "Disconnect matches an exact target before a registry name, the active host included, and refuses an ambiguous name" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(mini_registry);
+    defer registry.deinit();
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const local = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/side-by-side-unused" }, null, "side-by-side");
+    engine.model.phux_provider = local;
+    const fx = ts_engine.NoShells{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+    const peers = &engine.model.phux_peers;
+
+    // me@mini, then mini: the one registry entry held twice. mini is active,
+    // me@mini listed in slot 1 (this Mac in slot 0); both are named "mini".
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
+    try testing.expectEqualStrings("mini", local.remoteTarget().?);
+    const me = peers[1].?;
+    try testing.expectEqualStrings("me@mini", me.remoteTarget().?);
+    try testing.expectEqualStrings("mini", me.remoteLabel().?);
+    // "mini" is the active host's exact target: it goes, me@mini stays.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
+    try testing.expect(local.remoteTarget() == null);
+    try testing.expect(peers[1] == me);
+    try testing.expect(peers[0] == null);
+
+    // you@mini joins: now "mini" names you@mini (active) and me@mini, and is
+    // the exact target of neither. It is refused, naming both; nothing moves.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x08you@mini", &out);
+    try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
+    const before = peers.*;
+    const refused = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
+    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), refused[1]);
+    try testing.expect(std.mem.indexOf(u8, refused, "me@mini") != null);
+    try testing.expect(std.mem.indexOf(u8, refused, "you@mini") != null);
+    try testing.expect(std.mem.indexOf(u8, refused, "exact target") != null);
+    try testing.expectEqualSlices(?*support.PhuxProvider, &before, peers);
+    try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
+    // The exact target removes only that one.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x07me@mini", &out);
+    try testing.expect(peers[1] == null);
+    try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
+}
+
+test "Disconnect of a remembered host Cockpit does not hold forgets it and says it was not connected" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry);
+    defer registry.deinit();
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const config_file = try registry.tmp.dir.realPathFileAlloc(io, "phux/config.toml", gpa);
+    defer gpa.free(config_file);
+    const state_path = try std.fs.path.join(gpa, &.{ std.fs.path.dirname(config_file).?, "workspace.state" });
+    defer gpa.free(state_path);
+    const memory = remote_memory.setPathFor(state_path).?;
+    defer _ = remote_memory.setPathFor(null);
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(hosts.add("studio"));
+    remote_memory.storeAll(io, memory, &hosts);
+
+    const engine = try ts_engine.Engine.create(gpa, io);
+    defer engine.destroy();
+    engine.model.phux_provider = try support.PhuxProvider.create(gpa, io, .{ .unix = "/side-by-side-unused" }, null, "side-by-side");
+    const fx = ts_engine.NoShells{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+    // By exact target.
+    const by_target = try remote_hosts.handle(engine, &fx, "\x01\x04\x06studio", &out);
+    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), by_target[1]);
+    try testing.expect(std.mem.indexOf(u8, by_target, "no longer reattached") != null);
+    remote_memory.loadAll(io, memory, &hosts);
+    try testing.expectEqual(@as(usize, 1), hosts.count);
+    try testing.expectEqualStrings("me@mini", hosts.get(0));
+    // By its registry name, which names that one remembered host.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
+    remote_memory.loadAll(io, memory, &hosts);
+    try testing.expectEqual(@as(usize, 0), hosts.count);
+    // Neither held nor remembered: plainly refused.
+    const unknown = try remote_hosts.handle(engine, &fx, "\x01\x04\x06nosuch", &out);
+    try testing.expect(std.mem.indexOf(u8, unknown, "not connected to that host") != null);
+}
+
+test "a remembered first host that cannot be set up is skipped, not the launch" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(mini_registry);
+    defer registry.deinit();
+    var remembered = startup.resolvePhuxConfig(config.parse(""), .{ .runtime_dir = "/tmp/rt" });
+    try testing.expect(remembered.setPhuxRemote("me@mini", .default));
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    try testing.expect((try startup.createPhuxPeerFromConfig(failing.allocator(), testing.io, &remembered)) == null);
+}
+
 test "a fifth coordinator is refused with the reason, and nothing changes" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var registry = try IsolatedRegistry.init(two_host_registry ++ "[[remote]]\nname = \"lab\"\nendpoint = \"ws://127.0.0.1:3\"\n[[remote]]\nname = \"rack\"\nendpoint = \"ws://127.0.0.1:4\"\n");

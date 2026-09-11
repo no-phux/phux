@@ -108,8 +108,10 @@ snapshot and navigation. All lengths are one byte.
 | 2 | host length, then the host (the registry entry's name) |
 | then | reason length, then the reason (failed and refused only) |
 
-Refused means the request changed nothing: a Disconnect naming a host
-Cockpit does not hold, or a Connect with no room for another coordinator.
+Refused means the request changed no connection: a Disconnect naming a
+host Cockpit does not hold (a remembered one is still forgotten, and the
+reason says so), a name matching more than one held host, or a Connect with
+no room for another coordinator.
 The panel shows the reason and keeps the connection status as it was.
 
 Host and reason are each elided at 240 bytes on a UTF-8 boundary. The core
@@ -254,9 +256,16 @@ forgets its queued edits; one already sent may still land on that server.
 | Disconnect (a named host) | this Mac if that host was active, else unchanged | that host's group and tabs go; the others stay |
 | Disconnect All | this Mac | none: every host's group and tabs go |
 
-Disconnect takes the host typed in the panel, by its target or its registry
-name. Removing the active host hands it over to this Mac, whose standby slot
-is freed rather than listed twice.
+Disconnect takes the host typed in the panel. An exact target is matched
+first, across the active host and every peer; only when no target matches
+is a registry name tried. The same registry entry can be held twice under
+two typed targets (`mini` and `me@mini` both name `mini`), so a name that
+matches more than one held host is refused with every target it matched,
+and nothing is removed. Removing the active host hands it over to this
+Mac, whose standby slot is freed rather than listed twice. A host Cockpit
+does not hold but still remembers (one that found no free slot at launch)
+is forgotten, by target or by its registry name when that names one
+remembered host, and the panel says it was not connected.
 
 Connect to Host and Use this Mac retarget two providers through
 `requestRetarget` and restart them through the path Reconnect uses; no other
@@ -292,8 +301,9 @@ projected reads "workspace unavailable" on its session rows.
 
 - At most four coordinators: the active one and three peers. The bound is
   the runtime's fixed table of eight effect channels (`max_effect_channels`
-  in the pinned Native SDK), which also holds the core's engine channel and
-  the active coordinator's. Each peer holds one channel, and a restart or a
+  in the pinned Native SDK), which also holds the core's engine channel, the
+  active coordinator's (102) and the pointer channel (103). With three peers
+  the steady state is six of eight. Each peer holds one channel, and a restart or a
   Disconnect followed by a Connect briefly holds a second while the old
   one's close is delivered; so does an automatic redial of a peer whose
   failed channel's close has not been delivered yet. If the table is ever

@@ -171,6 +171,7 @@ fn returnLocal(engine: anytype, fx: anytype) Reply {
 /// The refusal for a fifth coordinator (docs/REMOTE_HOSTS.md, Known limits).
 pub const capacity_reason = "Cockpit holds at most four coordinators: this Mac and three hosts. Disconnect a host first.";
 const unknown_host_reason = "Cockpit is not connected to that host";
+const forgotten_unheld_reason = "Not connected, so nothing was disconnected; it is no longer reattached at launch";
 
 /// Disconnect `target` alone, or every remote host when it is empty.
 fn disconnect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
@@ -198,48 +199,116 @@ fn disconnectAll(engine: anytype, fx: anytype) Reply {
     return .{ .phase = .local };
 }
 
-/// Remove one registered host, named by its target or its registry name,
-/// and nothing else: every other coordinator keeps its connection, its tabs
-/// and its slot. A listed host's slot goes. The active host hands over to
-/// this Mac, whose standby slot is freed rather than listing it twice. A
-/// host Cockpit does not hold is refused and nothing changes.
+/// Remove one registered host and nothing else: every other coordinator
+/// keeps its connection, its tabs and its slot. A listed host's slot goes.
+/// The active host hands over to this Mac, whose standby slot is freed
+/// rather than listing it twice. `target` names a host by its exact target
+/// first, across the active host and every peer, and only then by registry
+/// name (`heldHost`): the same registry entry can be held twice under two
+/// typed targets (`mini` and `me@mini`), so a name matching more than one
+/// is refused rather than guessed. A host Cockpit does not hold but still
+/// remembers is forgotten (`forgetUnheld`); anything else is refused and
+/// nothing changes.
 fn disconnectHost(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
     const model = engine.model;
     const active = model.phux() orelse return .{ .phase = .local };
-    var removed_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
-    const slot = hostSlot(model, target);
-    const holder = if (slot) |index| model.phux_peers[index].? else if (namesHost(active, target)) active else return .{
-        .phase = .refused,
-        .host = copy(&scratch.host, target),
-        .reason = unknown_host_reason,
+    const held = heldHost(model, target);
+    const holder = switch (held) {
+        .none => return forgetUnheld(model, target, scratch),
+        .ambiguous => return .{ .phase = .refused, .host = copy(&scratch.host, target), .reason = ambiguousReason(model, target, scratch) },
+        .active => active,
+        .peer => |slot| model.phux_peers[slot].?,
     };
+    var removed_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
     // Copied before the provider it borrows from is retargeted or destroyed.
     const removed = copyTarget(holder.remoteTarget().?, &removed_buffer);
-    if (slot) |index| {
-        engine.dropPeer(fx, index);
-    } else if (!handOverToThisMac(engine, fx)) {
-        return .{ .phase = .failed, .host = copy(&scratch.host, target), .reason = "out of memory" };
+    switch (held) {
+        .peer => |slot| engine.dropPeer(fx, slot),
+        else => if (!handOverToThisMac(engine, fx))
+            return .{ .phase = .failed, .host = copy(&scratch.host, target), .reason = "out of memory" },
     }
     forgetHost(model, removed);
     return status(model, scratch);
 }
 
-/// Whether `provider` dials the registered host `target` names, by target
-/// or by registry name.
-fn namesHost(provider: anytype, target: []const u8) bool {
-    const host = provider.remoteTarget() orelse return false;
-    if (std.mem.eql(u8, host, target)) return true;
-    const label = provider.remoteLabel() orelse return false;
-    return std.mem.eql(u8, label, target);
+const Held = union(enum) { none, ambiguous, active, peer: usize };
+const Match = enum { target, name };
+
+/// Which held coordinator `target` names: an exact target first, across the
+/// active host and every peer; only when no target matches, a registry
+/// name, which must name exactly one.
+fn heldHost(model: *Model, target: []const u8) Held {
+    const exact = matchHeld(model, target, .target);
+    if (exact != .none) return exact;
+    return matchHeld(model, target, .name);
 }
 
-/// The peer slot holding the host `target` names.
-fn hostSlot(model: *Model, target: []const u8) ?usize {
+fn matchHeld(model: *Model, target: []const u8, by: Match) Held {
+    var found: Held = .none;
+    if (matches(model.phux().?, target, by)) found = .active;
     for (model.phux_peers, 0..) |value, slot| {
         const peer = value orelse continue;
-        if (namesHost(peer, target)) return slot;
+        if (!matches(peer, target, by)) continue;
+        if (found != .none) return .ambiguous;
+        found = .{ .peer = slot };
     }
-    return null;
+    return found;
+}
+
+fn matches(provider: anytype, target: []const u8, by: Match) bool {
+    const value = switch (by) {
+        .target => provider.remoteTarget(),
+        .name => provider.remoteLabel(),
+    } orelse return false;
+    return std.mem.eql(u8, value, target);
+}
+
+/// "mini matches me@mini and you@mini; type the exact target".
+fn ambiguousReason(model: *Model, target: []const u8, scratch: *Scratch) []const u8 {
+    var writer: std.Io.Writer = .fixed(&scratch.reason);
+    writer.print("{s} matches ", .{target}) catch {};
+    var count: usize = 0;
+    const active = model.phux().?;
+    const candidates = [_]?*support.PhuxProvider{active} ++ model.phux_peers;
+    for (candidates) |value| {
+        const provider = value orelse continue;
+        if (!matches(provider, target, .name)) continue;
+        if (count != 0) writer.writeAll(" and ") catch {};
+        writer.writeAll(provider.remoteTarget().?) catch {};
+        count += 1;
+    }
+    writer.writeAll("; type the exact target") catch {};
+    return writer.buffered();
+}
+
+/// A host Cockpit does not hold, named by a remembered target or, if one
+/// alone, by its registry name: it is forgotten, so it is not reattached at
+/// launch. No connection changes, so the reply is `refused` with the reason.
+fn forgetUnheld(model: *Model, target: []const u8, scratch: *Scratch) Reply {
+    const unknown: Reply = .{ .phase = .refused, .host = copy(&scratch.host, target), .reason = unknown_host_reason };
+    const hosts = rememberedHosts(model) orelse return unknown;
+    const index = rememberedIndex(hosts, target) orelse return unknown;
+    var removed_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
+    const removed = copyTarget(hosts.get(index), &removed_buffer);
+    _ = hosts.remove(removed);
+    saveRemembered(model);
+    return .{ .phase = .refused, .host = copy(&scratch.host, removed), .reason = forgotten_unheld_reason };
+}
+
+/// A remembered target equal to `target`, else the one remembered target
+/// whose registry name is `target`.
+fn rememberedIndex(hosts: *const remote_memory.Hosts, target: []const u8) ?usize {
+    for (0..hosts.count) |index| {
+        if (std.mem.eql(u8, hosts.get(index), target)) return index;
+    }
+    var found: ?usize = null;
+    for (0..hosts.count) |index| {
+        const described = support.PhuxProvider.describeRemote(hosts.get(index));
+        if (described.state != .resolved or !std.mem.eql(u8, described.name.slice(), target)) continue;
+        if (found != null) return null;
+        found = index;
+    }
+    return found;
 }
 
 /// The active host goes: this Mac becomes active on its configured socket

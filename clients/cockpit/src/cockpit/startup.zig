@@ -143,7 +143,9 @@ pub fn createPhuxPeerFromConfig(
     if (remote_target.len == 0) return null;
     if (!config_module.validPhuxRemote(remote_target)) return error.InvalidPhuxRemote;
     const peer = if (config.phux_remote_source == .default)
-        try createRemotePhuxProvider(gpa, io, remote_target, null)
+        // A remembered host that cannot be set up is skipped, never the
+        // launch (as in attachRememberedPeers); it stays remembered.
+        createRemotePhuxProvider(gpa, io, remote_target, null) catch return null
     else blk: {
         const socket = config.phux_socket.slice();
         if (!config_module.validPhuxSocket(socket)) return error.InvalidPhuxSocket;
