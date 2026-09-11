@@ -118,8 +118,9 @@ const EngineFx = struct {
     pub fn restartPhux(self: EngineFx, engine: *Engine) bool {
         return engine.restartNavigationConnection(self, phuxChannel);
     }
-    pub fn peerChannelLive(self: EngineFx, slot: usize) bool {
-        const handle = self.effects.channelHandle(cockpit.phux_peer_channel_key + slot) orelse return false;
+    /// A peer slot's channel by its current key (Engine.peerChannelKey).
+    pub fn peerChannelLive(self: EngineFx, key: u64) bool {
+        const handle = self.effects.channelHandle(key) orelse return false;
         return handle.live();
     }
     pub fn restartPeer(self: EngineFx, engine: *Engine, slot: usize) bool {

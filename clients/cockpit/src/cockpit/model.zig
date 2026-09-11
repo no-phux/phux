@@ -736,7 +736,8 @@ pub const Model = struct {
     /// provider that minted it (`phuxForRef`), never to another server that
     /// happens to use the same numeric id.
     phux_peers: [max_phux_peers]?*PhuxProvider = @splat(null),
-    /// A peer's channel is closing for a restart; reopen on its close event.
+    /// A peer's channel is closing for a restart; reopen on its close event
+    /// (the occupancy's generation is Engine.peer_reopen_generation).
     phux_peer_reopen: [max_phux_peers]bool = @splat(false),
     /// A peer's connection failed or was lost, and it has not listed since.
     /// Its group then shows why, instead of disappearing.

@@ -299,6 +299,42 @@ pub fn peerSlotForKey(key: u64, slots: usize) ?usize {
     if (key < phux_peer_channel_key or key >= phux_peer_channel_key + slots) return null;
     return @intCast(key - phux_peer_channel_key);
 }
+
+/// A peer slot's channel takes a new key each time Cockpit closes it (a
+/// restart, a failure, a Disconnect). An event its closed occupancy still
+/// delivers, even after the slot went to another peer, is then told apart
+/// from the current channel's: EffectChannelEvent carries only its key, so
+/// the key carries the generation. Generation 0 is the slot's first
+/// channel, `phuxPeerChannelKey(slot)`; later ones sit far above every other
+/// key Cockpit uses.
+pub const peer_channel_generation_base: u64 = 0x5045_4552_0000_0000;
+/// Slots each generation's keys leave room for.
+pub const peer_channel_slot_stride: u64 = 16;
+/// Generations wrap below this, back to 1, so a key never overflows.
+pub const peer_channel_generations: u64 = 1 << 40;
+
+pub const PeerChannel = struct { slot: usize, generation: u64 };
+
+/// Peer `slot`'s channel key in `generation`.
+pub fn phuxPeerChannelKeyAt(slot: usize, generation: u64) u64 {
+    if (generation == 0) return phuxPeerChannelKey(slot);
+    return peer_channel_generation_base + generation * peer_channel_slot_stride + slot;
+}
+
+pub fn nextPeerChannelGeneration(generation: u64) u64 {
+    return if (generation + 1 >= peer_channel_generations) 1 else generation + 1;
+}
+
+/// The peer slot and generation a channel key names, if any.
+pub fn peerChannelForKey(key: u64, slots: usize) ?PeerChannel {
+    if (peerSlotForKey(key, slots)) |slot| return .{ .slot = slot, .generation = 0 };
+    if (key < peer_channel_generation_base + peer_channel_slot_stride) return null;
+    const offset = key - peer_channel_generation_base;
+    const slot: usize = @intCast(offset % peer_channel_slot_stride);
+    const generation = offset / peer_channel_slot_stride;
+    if (slot >= slots or generation >= peer_channel_generations) return null;
+    return .{ .slot = slot, .generation = generation };
+}
 pub const max_remote_terminals: usize = provider_contract.workspace.max_terminals;
 
 pub const ProviderKind = enum { local, phux };

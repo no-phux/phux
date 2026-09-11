@@ -460,3 +460,124 @@ test "relaunch reattaches a remembered host beside this Mac; a configured host k
     var none = startup.resolvePhuxConfig(config.parse(""), .{ .runtime_dir = "/tmp/rt" });
     try testing.expect((try startup.createPhuxPeerFromConfig(gpa, io, &none)) == null);
 }
+
+/// Channel keys closed and opened, and restarts counted; a channel it opens
+/// is never live, and one it is asked about is live when `live` says so.
+const ChannelLog = struct {
+    closed: [8]u64 = @splat(0),
+    closes: usize = 0,
+    opened: [8]u64 = @splat(0),
+    opens: usize = 0,
+    live: bool = false,
+    restarts: usize = 0,
+
+    pub fn restartPhux(_: *@This(), _: *ts_engine.Engine) bool {
+        return true;
+    }
+    pub fn restartPeer(self: *@This(), _: *ts_engine.Engine, _: usize) bool {
+        self.restarts += 1;
+        return true;
+    }
+    pub fn peerChannelLive(self: *const @This(), _: u64) bool {
+        return self.live;
+    }
+    pub fn closeChannel(self: *@This(), key: u64) void {
+        if (self.closes < self.closed.len) self.closed[self.closes] = key;
+        self.closes += 1;
+    }
+    pub fn openChannel(self: *@This(), options: anytype) native_sdk.ChannelHandle {
+        if (self.opens < self.opened.len) self.opened[self.opens] = options.key;
+        self.opens += 1;
+        return .{};
+    }
+    pub fn showNotification(_: *const @This(), _: anytype) void {}
+};
+
+test "a peer channel key carries its slot and generation, and never names another slot" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const slots = model_module.max_phux_peers;
+    for (0..slots) |slot| {
+        const first = support.peerChannelForKey(support.phuxPeerChannelKey(slot), slots).?;
+        try testing.expectEqual(slot, first.slot);
+        try testing.expectEqual(@as(u64, 0), first.generation);
+        var generation: u64 = 0;
+        for (0..4) |_| {
+            generation = support.nextPeerChannelGeneration(generation);
+            const key = support.phuxPeerChannelKeyAt(slot, generation);
+            try testing.expect(key != support.phuxPeerChannelKey(slot));
+            const decoded = support.peerChannelForKey(key, slots).?;
+            try testing.expectEqual(slot, decoded.slot);
+            try testing.expectEqual(generation, decoded.generation);
+        }
+    }
+    try testing.expectEqual(@as(u64, 1), support.nextPeerChannelGeneration(support.peer_channel_generations - 1));
+    try testing.expect(support.peerChannelForKey(support.phux_channel_key, slots) == null);
+    try testing.expect(support.peerChannelForKey(support.phuxPeerChannelKeyAt(slots, 1), slots) == null);
+}
+
+test "a close from before Disconnect and a new Connect reused the slot is ignored; the new peer's own close is not" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry);
+    defer registry.deinit();
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const local = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/side-by-side-unused" }, null, "side-by-side");
+    engine.model.phux_provider = local;
+    var fx: ChannelLog = .{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+
+    // Connect to mini: this Mac stands by in slot 0, on its first channel.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
+    const first_key = engine.peerChannelKey(0);
+    try testing.expectEqual(support.phuxPeerChannelKey(0), first_key);
+    // Disconnect closes that channel; its close event is still on its way.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x00", &out);
+    try testing.expect(engine.model.phux_peers[0] == null);
+    try testing.expectEqual(first_key, fx.closed[fx.closes - 1]);
+    // Connect to studio: this Mac takes slot 0 again, under a new key.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
+    const again = engine.model.phux_peers[0].?;
+    try testing.expect(engine.peerChannelKey(0) != first_key);
+
+    // The old channel's close and a late post arrive now: neither is the new
+    // peer's, so neither stops it or marks it failed.
+    try testing.expect(!engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .closed }, null));
+    try testing.expect(!engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .data }, null));
+    try testing.expect(!engine.model.peer_failed[0]);
+    try testing.expect(engine.model.phux_peers[0] == again);
+    try testing.expectEqual(@as(usize, 0), fx.opens);
+    // The new channel's own close is the new peer's: it failed, and says so.
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expect(engine.model.peer_failed[0]);
+}
+
+test "a restart reopens a peer on its own close, under the next key, and never before" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    var fx: ChannelLog = .{ .live = true };
+    const first_key = engine.peerChannelKey(0);
+
+    // The live channel is closed first; nothing opens yet.
+    try testing.expect(engine.restartPeerConnection(&fx, 0, null));
+    try testing.expectEqual(@as(usize, 1), fx.closes);
+    try testing.expectEqual(first_key, fx.closed[0]);
+    try testing.expectEqual(@as(usize, 0), fx.opens);
+    try testing.expect(engine.model.phux_peer_reopen[0]);
+    // A second restart while that close is pending opens nothing more.
+    try testing.expect(engine.restartPeerConnection(&fx, 0, null));
+    try testing.expectEqual(@as(usize, 1), fx.closes);
+    try testing.expectEqual(@as(usize, 0), fx.opens);
+    // A late post of the closed channel is ignored.
+    try testing.expect(!engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .data }, null));
+    try testing.expectEqual(@as(usize, 0), fx.opens);
+    // Its close opens the next channel, under the next key.
+    _ = engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .closed }, null);
+    try testing.expect(!engine.model.phux_peer_reopen[0]);
+    try testing.expectEqual(@as(usize, 1), fx.opens);
+    try testing.expectEqual(engine.peerChannelKey(0), fx.opened[0]);
+    try testing.expect(fx.opened[0] != first_key);
+}

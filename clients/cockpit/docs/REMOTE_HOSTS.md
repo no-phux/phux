@@ -146,8 +146,13 @@ so a placement never matches the wrong coordinator.
 The model holds the active Phux provider (`Model.phux_provider`) and up to
 three more (`Model.phux_peers`): this Mac's coordinator while a remote host
 is active, and registered hosts. Each peer runs its own socket worker on its
-own channel (`phuxPeerChannelKey(slot)`: 104, 105, 106), so any one restarts
-or fails alone.
+own channel, so any one restarts or fails alone. A slot's first channel is
+`phuxPeerChannelKey(slot)` (104, 105, 106). Every close Cockpit asks for (a
+restart, a failure, a Disconnect) moves the slot to its next generation, and
+the next channel opens under a key carrying slot and generation
+(`phuxPeerChannelKeyAt`). An event from a closed occupancy is recognized by
+its key and ignored, even when the slot has since gone to another peer; only
+the close a restart waits for acts, by opening the next channel.
 
 ### Identity
 
@@ -260,10 +265,6 @@ projected reads "workspace unavailable" on its session rows.
 - A showing peer's placements are not saved as attachment evidence; they
   are projected again from its workspace when it reconnects. A failed peer
   is not restarted automatically: picking its group's row retries it.
-- A channel close event carries only its slot's key. One that arrives after
-  Disconnect and a new Connect reused the slot is taken for the new peer's:
-  it stops that peer's connection and marks it failed. Picking its row
-  redials it.
 - Showing a peer session is refused while the active coordinator has a
   retarget pending, since the two briefly share a coordinator id.
 - Placements saved for a remote active host before coordinator ids existed

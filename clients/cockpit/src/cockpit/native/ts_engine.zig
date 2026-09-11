@@ -205,6 +205,12 @@ pub const Engine = struct {
     directory_origin: @import("directory_picker.zig").Origin = .{},
     /// Edits of a showing peer's tabs, queued to that coordinator alone.
     peer_edits: peer_edits.Edits = .{},
+    /// Each peer slot's channel occupancy. Its key carries this generation
+    /// (support.phuxPeerChannelKeyAt), and every close Cockpit asks for moves
+    /// it on, so a late event of a closed occupancy is recognized as stale.
+    peer_channel_generation: [model_module.max_phux_peers]u64 = @splat(0),
+    /// The occupancy whose close a restart waits for (Model.phux_peer_reopen).
+    peer_reopen_generation: [model_module.max_phux_peers]u64 = @splat(0),
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -629,7 +635,7 @@ pub const Engine = struct {
         for (self.model.phux_peers, 0..) |value, slot| {
             if (value) |peer| peer.stop();
             self.model.phux_peer_reopen[slot] = false;
-            fx.closeChannel(support.phuxPeerChannelKey(slot));
+            self.retirePeerChannel(fx, slot);
         }
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();
@@ -1164,7 +1170,7 @@ pub const Engine = struct {
     pub fn openPeerChannel(self: *Engine, fx: anytype, slot: usize, on_event: anytype) void {
         if (comptime !support.phux_enabled) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
-        const key = support.phuxPeerChannelKey(slot);
+        const key = self.peerChannelKey(slot);
         const handle = fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
         if (!handle.live()) {
             self.model.peer_failed[slot] = true;
@@ -1179,22 +1185,51 @@ pub const Engine = struct {
 
     fn peerOpenFailed(self: *Engine, fx: anytype, slot: usize) void {
         self.model.peer_failed[slot] = true;
-        fx.closeChannel(support.phuxPeerChannelKey(slot));
+        self.retirePeerChannel(fx, slot);
+    }
+
+    /// Peer `slot`'s current channel key.
+    pub fn peerChannelKey(self: *const Engine, slot: usize) u64 {
+        return support.phuxPeerChannelKeyAt(slot, self.peer_channel_generation[slot]);
+    }
+
+    /// Close the slot's current channel and move its key to the next
+    /// generation, so anything that occupancy still delivers is stale.
+    fn retirePeerChannel(self: *Engine, fx: anytype, slot: usize) void {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
+        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
     }
 
     /// Drain one peer's wake. A listing peer can only move the switcher's
     /// host groups; a showing peer also projects its workspace and rings
-    /// its bells. Either way it is one ordered invalidation.
+    /// its bells. Either way it is one ordered invalidation. An event of a
+    /// channel the slot has since closed is not this peer's (`peerStaleEvent`).
     pub fn onPeerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         // A showing peer's focused pane may have just become live.
         defer self.syncRemoteFocus();
-        const slot = support.peerSlotForKey(event.key, model_module.max_phux_peers) orelse return false;
+        const channel = support.peerChannelForKey(event.key, model_module.max_phux_peers) orelse return false;
+        const slot = channel.slot;
         if (self.model.phuxPeerAt(slot) == null) return false;
+        if (channel.generation != self.peer_channel_generation[slot]) return self.peerStaleEvent(fx, channel, event.kind, on_event);
         return switch (event.kind) {
             .data => self.drainPeer(fx, slot),
-            .closed, .rejected => self.peerClosed(fx, slot, on_event),
+            .closed, .rejected => self.peerClosed(slot),
         };
+    }
+
+    /// An event of a channel occupancy the slot has since closed, including
+    /// one from before a Disconnect and a new Connect reused the slot. Only
+    /// the close a restart waits for does anything: it opens the slot's next
+    /// channel. Anything else is ignored, so it can stop no other connection.
+    fn peerStaleEvent(self: *Engine, fx: anytype, channel: support.PeerChannel, kind: native_sdk.EffectChannelEventKind, on_event: anytype) bool {
+        const slot = channel.slot;
+        if (kind != .closed or !self.model.phux_peer_reopen[slot]) return false;
+        if (self.peer_reopen_generation[slot] != channel.generation) return false;
+        self.model.phux_peer_reopen[slot] = false;
+        self.openPeerChannel(fx, slot, on_event);
+        return self.commitProviderChange(true);
     }
 
     fn drainPeer(self: *Engine, fx: anytype, slot: usize) bool {
@@ -1243,19 +1278,16 @@ pub const Engine = struct {
         return delta.sessions_listed or delta.ready_published or delta.metadata_changed or delta.directory_changed;
     }
 
-    /// Reopen a peer restarting on purpose; otherwise its group says it failed.
-    /// A close event carries only its slot's channel key: one that arrives
-    /// after Disconnect and a new Connect reused the slot is taken for the new
-    /// peer's, so it stops that connection too and marks it failed. Picking
-    /// its row redials it.
-    fn peerClosed(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
+    /// The slot's current channel closed, or its open was refused, without
+    /// Cockpit asking: the peer failed, and its group says why. A close
+    /// Cockpit asked for names an older generation and never reaches here.
+    fn peerClosed(self: *Engine, slot: usize) bool {
         const model = self.model;
         model.phuxPeerAt(slot).?.stop();
         self.peer_edits.forget(slot);
-        if (model.phux_peer_reopen[slot]) {
-            model.phux_peer_reopen[slot] = false;
-            self.openPeerChannel(fx, slot, on_event);
-        } else model.peer_failed[slot] = true;
+        // That occupancy is gone; the next one opens under a fresh key.
+        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
+        model.peer_failed[slot] = true;
         return self.commitProviderChange(true);
     }
 
@@ -1266,7 +1298,7 @@ pub const Engine = struct {
         peer.stop();
         self.peer_edits.forget(slot);
         self.model.peer_failed[slot] = true;
-        fx.closeChannel(support.phuxPeerChannelKey(slot));
+        self.retirePeerChannel(fx, slot);
         return self.commitProviderChange(true);
     }
 
@@ -1408,7 +1440,10 @@ pub const Engine = struct {
     }
 
     /// Restart one peer as Reconnect restarts the active provider: a live
-    /// channel publishes its close first, then reopens on that event.
+    /// channel publishes its close first, and the slot's next channel opens
+    /// on that event (`peerStaleEvent`), under the next generation's key.
+    /// Waiting keeps each slot to one occupancy of the runtime's small
+    /// channel table.
     pub fn restartPeerConnection(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         const peer = self.model.phuxPeerAt(slot) orelse return false;
@@ -1416,11 +1451,13 @@ pub const Engine = struct {
         // The next connection is a new epoch: nothing queued for this one
         // may reach it.
         self.peer_edits.forget(slot);
-        if (fx.peerChannelLive(slot)) {
+        // A reopen already waits for its close; that close opens it.
+        if (self.model.phux_peer_reopen[slot]) return true;
+        if (fx.peerChannelLive(self.peerChannelKey(slot))) {
             self.model.phux_peer_reopen[slot] = true;
-            fx.closeChannel(support.phuxPeerChannelKey(slot));
+            self.peer_reopen_generation[slot] = self.peer_channel_generation[slot];
+            self.retirePeerChannel(fx, slot);
         } else {
-            self.model.phux_peer_reopen[slot] = false;
             self.openPeerChannel(fx, slot, on_event);
         }
         return true;
@@ -1437,8 +1474,9 @@ pub const Engine = struct {
         model.phux_peer_reopen[slot] = false;
         model.peer_failed[slot] = false;
         peer.stop();
-        const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(support.phuxPeerChannelKey(slot));
+        // Its close event may arrive after another peer takes the slot; the
+        // new generation's key tells the two apart.
+        self.retirePeerChannel(fx, slot);
         peer.destroy();
         self.revision +%= 1;
     }
