@@ -578,12 +578,20 @@ impl ParkedAdopt {
     /// existing satellite session's (phux-c2td.20).
     pub(super) const fn spawned_pane(&self) -> Option<&ResourceId> {
         match self {
-            Self::Window(PendingWindow {
-                adopt: Some(Adopt::Spawned(pane)),
-                ..
-            }) => Some(pane),
-            Self::Window(_) => None,
+            Self::Window(window) => window.spawned_pane(),
             Self::Split(split) => split.adopt.as_ref(),
+        }
+    }
+}
+
+impl PendingWindow {
+    /// The satellite pane this client spawned for this window, once the
+    /// spawn answered; `None` for a satellite session's existing pane and
+    /// while a spawn is in flight.
+    pub(super) const fn spawned_pane(&self) -> Option<&ResourceId> {
+        match &self.adopt {
+            Some(Adopt::Spawned(pane)) => Some(pane),
+            _ => None,
         }
     }
 }

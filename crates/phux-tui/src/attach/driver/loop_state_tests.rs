@@ -165,6 +165,19 @@ fn spawned_edge_pane() -> ResourceId {
 /// A bootstrapped loop over a socket pair, with a window parked on the
 /// attach of the satellite pane it just spawned (request 900).
 async fn loop_with_spawned_window() -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (mut state, client, server, out) = bootstrapped_loop().await;
+    state.pending_windows.insert(
+        900,
+        PendingWindow {
+            name: "2".to_owned(),
+            adopt: Some(crate::attach::actions::Adopt::Spawned(spawned_edge_pane())),
+        },
+    );
+    (state, client, server, out)
+}
+
+/// A bootstrapped loop over a socket pair, with nothing parked.
+async fn bootstrapped_loop() -> (SessionLoop, Connection, Connection, Vec<u8>) {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
     let mut client = Connection::from_stream(a);
     let server = Connection::from_stream(b);
@@ -188,13 +201,6 @@ async fn loop_with_spawned_window() -> (SessionLoop, Connection, Connection, Vec
         .bootstrap(&mut client, &mut out, initial_attached(), None)
         .await
         .unwrap();
-    state.pending_windows.insert(
-        900,
-        PendingWindow {
-            name: "2".to_owned(),
-            adopt: Some(crate::attach::actions::Adopt::Spawned(spawned_edge_pane())),
-        },
-    );
     (state, client, server, out)
 }
 
@@ -286,7 +292,7 @@ async fn a_refused_spawned_attach_sends_one_kill_for_its_pane() {
         code: ErrorCode::SatelliteUnreachable,
         message: "satellite edge link is down".to_owned(),
     };
-    assert_eq!(state.orphan_kills.settle(refused_kill), None);
+    assert_eq!(state.orphan_kills.observe(refused_kill), None);
 }
 
 /// A refusal saying the satellite is unreachable sends no kill: none could
@@ -332,6 +338,207 @@ async fn a_successful_spawned_attach_sends_no_kill() {
 
     assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
     assert_eq!(state.workspace.windows.len(), 2, "the window opened");
+}
+
+// ---- phux-c2td.23: retried kills for stray satellite panes ---------------
+
+fn edge_row(reachable: bool) -> phux_protocol::wire::info::HostInventory {
+    use phux_protocol::wire::info::HostInventory;
+    if reachable {
+        HostInventory::reachable(SatelliteHost::new("edge"), Vec::new())
+    } else {
+        HostInventory::unreachable(SatelliteHost::new("edge"), "link is down")
+    }
+}
+
+/// Answer a host-inventory `GET_STATE` asked just now with `rows`.
+async fn answer_inventory(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    rows: Vec<phux_protocol::wire::info::HostInventory>,
+) {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    state.peers.hosts_pending = Some(777);
+    state.peers.hosts_pending_since = Some(std::time::Instant::now());
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_hosts(rows);
+    let passed = state
+        .intercept_peer_reply(
+            client,
+            FrameKind::CommandResult {
+                request_id: 777,
+                result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none(), "the inventory reply is consumed");
+}
+
+/// The panes of every `KILL_RESOURCE` sent before a FIFO barrier.
+async fn killed_panes(client: &mut Connection, server: &mut Connection) -> Vec<ResourceId> {
+    kills_sent(client, server)
+        .await
+        .into_iter()
+        .map(|(_, pane)| pane)
+        .collect()
+}
+
+/// The next loop entry after a session switch that dropped a window still
+/// waiting on the attach of `edge/@9`, the pane it spawned: that pane is a
+/// stray carried into this loop.
+async fn loop_with_switch_stray() -> (SessionLoop, Connection, Connection) {
+    let (mut state, _client, _server, _out) = Box::pin(loop_with_spawned_window()).await;
+    let carried = state.orphans_for_switch();
+    drop(state);
+    let (mut next, client, server, _out) = Box::pin(bootstrapped_loop()).await;
+    next.set_orphan_kills(carried);
+    (next, client, server)
+}
+
+/// A refusal saying the satellite is unreachable records nothing: neither
+/// a reachable inventory nor a spawn on that satellite later kills the pane,
+/// since the satellite may have restarted and reused its id.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreachable_refusal_records_nothing() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, mut server, mut out) = Box::pin(loop_with_spawned_window()).await;
+    Box::pin(refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::SatelliteUnreachable,
+    ))
+    .await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    Box::pin(answer_edge_spawn(&mut state, &mut client, 12)).await;
+    assert_eq!(killed_panes(&mut client, &mut server).await, Vec::new());
+}
+
+/// A pane stranded by a session switch is killed, once, on the first reply
+/// saying its satellite is reachable.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_stray_is_killed_on_the_next_reachable_reply() {
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        killed_panes(&mut client, &mut server).await,
+        vec![spawned_edge_pane()]
+    );
+
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        killed_panes(&mut client, &mut server).await,
+        Vec::new(),
+        "the kill is sent once"
+    );
+}
+
+/// A switch stray whose satellite answers only after
+/// [`super::super::orphans::STRAY_TTL`] is forgotten, not killed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_stray_is_not_killed_after_its_ttl() {
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+    state
+        .orphan_kills
+        .age_strays(super::super::orphans::STRAY_TTL + Duration::from_secs(1));
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(killed_panes(&mut client, &mut server).await, Vec::new());
+}
+
+/// An inventory that lists the stray's satellite as unreachable forgets it:
+/// a later reachable one kills nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreachable_inventory_row_drops_switch_strays() {
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(false)]).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(killed_panes(&mut client, &mut server).await, Vec::new());
+}
+
+/// A stray this client has since adopted, in a window or in an open
+/// waiting on its attach, is not killed when its satellite answers.
+#[tokio::test(flavor = "current_thread")]
+async fn an_adopted_stray_is_not_killed_on_retry() {
+    use crate::attach::actions::Adopt;
+
+    for adopted_by_window in [true, false] {
+        let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+        if adopted_by_window {
+            state
+                .workspace
+                .add_window("edge".to_owned(), spawned_edge_pane());
+        } else {
+            state.pending_windows.insert(
+                901,
+                PendingWindow {
+                    name: "edge/build".to_owned(),
+                    adopt: Some(Adopt::Existing(spawned_edge_pane())),
+                },
+            );
+        }
+        answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+        assert_eq!(
+            killed_panes(&mut client, &mut server).await,
+            Vec::new(),
+            "adopted by a window: {adopted_by_window}"
+        );
+    }
+}
+
+/// Feed a satellite `new-window` spawn (request 901) its reply: `edge`
+/// minted `edge/@{id}`.
+async fn answer_edge_spawn(state: &mut SessionLoop, client: &mut Connection, id: u32) {
+    use phux_protocol::wire::frame::SpawnResult;
+
+    state.pending_windows.insert(
+        901,
+        PendingWindow {
+            name: "3".to_owned(),
+            adopt: None,
+        },
+    );
+    let mut out = Vec::new();
+    state
+        .apply_server_frame(
+            client,
+            &mut out,
+            None,
+            FrameKind::ResourceSpawned {
+                request_id: 901,
+                result: SpawnResult::Ok(ResourceId::satellite(SatelliteHost::new("edge"), id)),
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+}
+
+/// A satellite answering a relayed spawn is reachable, so its switch strays
+/// are killed then too; one whose id that satellite has minted again (it
+/// restarted) is forgotten instead.
+#[tokio::test(flavor = "current_thread")]
+async fn a_spawn_on_the_host_kills_its_strays_unless_it_restarted() {
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+    Box::pin(answer_edge_spawn(&mut state, &mut client, 12)).await;
+    assert_eq!(
+        killed_panes(&mut client, &mut server).await,
+        vec![spawned_edge_pane()]
+    );
+
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
+    Box::pin(answer_edge_spawn(&mut state, &mut client, 5)).await;
+    assert_eq!(killed_panes(&mut client, &mut server).await, Vec::new());
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        killed_panes(&mut client, &mut server).await,
+        Vec::new(),
+        "forgotten, not waiting"
+    );
 }
 
 // ---- phux-c2td.3: held federation notices --------------------------------

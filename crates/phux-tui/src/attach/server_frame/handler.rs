@@ -2015,7 +2015,9 @@ fn orphaned_pane<W: crate::attach::RenderSink>(
 /// `SATELLITE_UNREACHABLE` says it could not: the kill would meet the same
 /// silence, and the hub waits on each relayed command, up to its 30 s relay
 /// deadline, before it reads this client's next frame, so the kill would
-/// hold every keystroke behind it.
+/// hold every keystroke behind it. It is not retried later either
+/// (phux-c2td.23): an unreachable satellite cannot be told from one that is
+/// restarting, whose next panes may reuse this pane's id.
 const fn kill_can_reach(code: ErrorCode) -> bool {
     !matches!(code, ErrorCode::SatelliteUnreachable)
 }
@@ -2027,23 +2029,28 @@ fn unreferenced<W: crate::attach::RenderSink>(
     ctx: &FrameCtx<'_, W>,
     pane: &ResourceId,
 ) -> Option<ResourceId> {
-    (!pane_is_referenced(ctx, pane)).then(|| pane.clone())
+    let referenced =
+        pane_is_referenced(ctx.workspace, ctx.pending_windows, ctx.pending_splits, pane);
+    (!referenced).then(|| pane.clone())
 }
 
-/// Whether a window holds `pane` or a parked window or split adopts it.
-fn pane_is_referenced<W: crate::attach::RenderSink>(
-    ctx: &FrameCtx<'_, W>,
+/// Whether a window holds `pane` or a parked window or split adopts it. The
+/// driver asks the same before it retries a stray's kill (phux-c2td.23).
+/// It sees this client alone: another client or agent that attached the
+/// pane on the satellite is invisible here.
+pub(in crate::attach) fn pane_is_referenced(
+    workspace: &Workspace,
+    pending_windows: &HashMap<u32, PendingWindow>,
+    pending_splits: &HashMap<u32, PendingSplit>,
     pane: &ResourceId,
 ) -> bool {
-    let adopting_window = ctx
-        .pending_windows
+    let adopting_window = pending_windows
         .values()
         .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
-    let adopting_split = ctx
-        .pending_splits
+    let adopting_split = pending_splits
         .values()
         .any(|split| split.adopt.as_ref() == Some(pane));
-    window_holding_pane(ctx.workspace, pane).is_some() || adopting_window || adopting_split
+    window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 
 /// phux-c2td.3: open a satellite pane's window once its attach succeeded.

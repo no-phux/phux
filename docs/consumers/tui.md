@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # The phux reference TUI
@@ -1742,14 +1742,34 @@ sends, so no shell is left running on the satellite with nothing pointing at
 it. A split dropped because the pane it was split from closed kills its new
 pane the same way. A kill that fails is logged at debug level only.
 
-Two cases still leave the pane running, where `phux ls` lists it and
-`phux kill devbox/@7` removes it. When the refusal says the satellite is
-unreachable, no kill is sent: it could not reach the pane, and the hub waits
-on each relayed command before reading the client's next input, so a kill to
-a silent satellite would freeze typing for up to 30 seconds. And switching
-sessions while a satellite window or split is still opening drops what the
-client was waiting for without a kill, because a kill sent on the way out
-would hold up the switch the same way.
+**Switching sessions while a satellite window or split is still opening**
+drops what the client was waiting for. No kill is sent on the way out: the
+hub waits on each relayed command before reading the client's next input,
+so it would hold up the switch. Instead the TUI remembers the spawned pane
+and kills it shortly after the switch, if its satellite stayed reachable:
+on the first reply from that satellite, either the host inventory the new
+session asks for after its first paint (and the session picker asks for
+each time it opens) listing it as reachable, or a new window or split
+spawning on it. The kill is tried once; a kill that fails is not retried.
+
+**An unreachable satellite still needs a manual kill.** When the refusal
+says the satellite is unreachable, no kill is sent, then or later: a kill
+could not reach the pane, a kill to a silent satellite would freeze typing
+for up to 30 seconds, and an unreachable satellite cannot be told from one
+that is restarting, whose new panes may reuse the old pane's id. The pane
+keeps running there, where `phux ls` lists it and `phux kill devbox/@7`
+removes it. The same goes for a pane remembered after a switch whenever
+anything shows its satellite unreachable before the kill goes out (an
+unreachable host inventory row, a refusal, or a `federation degraded`
+notice), when the satellite does not answer within 60 seconds of the
+switch, when more than 32 panes are waiting (the oldest are dropped), and
+when the client's connection ends first.
+
+Before a kill sent after a switch, the TUI checks again that none of its own
+windows holds the pane and none of its opens is waiting on it. That check
+sees only this client: someone attaching the pane from the satellite, from
+an agent, or from another client in those few seconds is invisible to it,
+which is why the window is kept this short.
 
 The kill goes only to a pane this client spawned that no window holds and no
 other open is waiting on: opening a satellite session from the session picker

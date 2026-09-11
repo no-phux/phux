@@ -24,7 +24,7 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{ClientId, ResourceId, SessionId};
+use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -135,6 +135,66 @@ fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
         .into_iter()
         .map(|message| Notice::warn(format!("federation degraded: {message}")))
         .collect()
+}
+
+/// phux-c2td.23: what one host inventory said about each satellite.
+#[derive(Debug, Default)]
+struct HostAnswers {
+    /// Satellites the inventory reached.
+    reachable: Vec<SatelliteHost>,
+    /// Satellites it could not list.
+    unreachable: Vec<SatelliteHost>,
+}
+
+/// phux-c2td.23: sort an inventory's rows into [`HostAnswers`].
+fn host_answers(rows: &[phux_protocol::wire::info::HostInventory]) -> HostAnswers {
+    let (reachable, unreachable): (Vec<_>, Vec<_>) =
+        rows.iter().partition(|row| row.is_reachable());
+    let names = |rows: Vec<&phux_protocol::wire::info::HostInventory>| {
+        rows.into_iter().map(|row| row.host.clone()).collect()
+    };
+    HostAnswers {
+        reachable: names(reachable),
+        unreachable: names(unreachable),
+    }
+}
+
+/// phux-c2td.23: the satellite panes a frame's parked windows and splits
+/// were just spawned as. Each proves its satellite answered a relayed spawn.
+fn spawned_satellite_panes(parked: &[ParkedAdopt]) -> Vec<ResourceId> {
+    parked
+        .iter()
+        .filter_map(ParkedAdopt::pane)
+        .cloned()
+        .collect()
+}
+
+/// phux-c2td.23: the panes this client spawned for windows and splits still
+/// waiting on their attach.
+fn parked_spawned_panes(
+    windows: &HashMap<u32, PendingWindow>,
+    splits: &HashMap<u32, PendingSplit>,
+) -> Vec<ResourceId> {
+    let windows = windows.values().filter_map(PendingWindow::spawned_pane);
+    let splits = splits.values().filter_map(|split| split.adopt.as_ref());
+    windows.chain(splits).cloned().collect()
+}
+
+/// phux-c2td.23: the request ids of windows and splits whose spawn has not
+/// answered yet.
+fn unanswered_spawns(
+    windows: &HashMap<u32, PendingWindow>,
+    splits: &HashMap<u32, PendingSplit>,
+) -> HashSet<u32> {
+    let windows = windows
+        .iter()
+        .filter(|(_, window)| window.adopt.is_none())
+        .map(|(id, _)| *id);
+    let splits = splits
+        .iter()
+        .filter(|(_, split)| split.adopt.is_none())
+        .map(|(id, _)| *id);
+    windows.chain(splits).collect()
 }
 
 /// phux-c2td.3: whether a host-inventory request sent at `since` has waited
@@ -1067,11 +1127,15 @@ impl SessionLoop {
     /// the ones the inventory reports as unreachable rows are dropped as
     /// already shown, and the rest surface. A non-inventory answer explains
     /// nothing, so all of them surface.
+    ///
+    /// Returns which satellites the inventory reached and which it could
+    /// not (neither, for a non-inventory answer), for the stray kills
+    /// (phux-c2td.23).
     fn fold_host_inventory(
         &mut self,
         result: &phux_protocol::wire::frame::CommandResult,
         repaint: &mut RepaintAccumulator,
-    ) {
+    ) -> HostAnswers {
         let held = self.end_host_inventory_request();
         let explained_by: &[phux_protocol::wire::info::HostInventory] = match result {
             phux_protocol::wire::frame::CommandResult::OkWith(
@@ -1083,8 +1147,10 @@ impl SessionLoop {
             }
             _ => &[],
         };
+        let answers = host_answers(explained_by);
         let surfaced = unexplained_unreachable_notices(held, explained_by);
         self.apply_notices(federation_notices(surfaced), repaint);
+        answers
     }
 
     /// Close the in-flight host-inventory request and hand back the
@@ -1858,6 +1924,7 @@ impl SessionLoop {
             return Ok(Step::Exit(LoopExit::SwitchTo {
                 target,
                 sidebar_enabled: self.sidebar_enabled,
+                orphan_kills: self.orphans_for_switch(),
             }));
         }
         // Window changes still repaint to show the newly active window, but
@@ -2069,7 +2136,7 @@ impl SessionLoop {
             .observe_reply(now, batch.iter().filter_map(frame_paint_target));
         let paint_now = self.pacer.admit(now, is_reply);
         for (frame_idx, frame) in batch.into_iter().enumerate() {
-            let Some(frame) = self.orphan_kills.settle(frame) else {
+            let Some(frame) = self.orphan_kills.observe(frame) else {
                 continue;
             };
             let Some(frame) = self.intercept_peer_reply(conn, frame, &mut repaint).await? else {
@@ -2206,7 +2273,11 @@ impl SessionLoop {
             FrameKind::CommandResult { request_id, result }
                 if self.peers.hosts_pending == Some(request_id) =>
             {
-                self.fold_host_inventory(&result, repaint);
+                // phux-c2td.23: a satellite this inventory could not list
+                // forgets its strays; one it reached gets their kills.
+                let asked_at = self.peers.hosts_pending_since;
+                let answers = self.fold_host_inventory(&result, repaint);
+                self.retry_after_inventory(conn, &answers, asked_at).await?;
                 Ok(None)
             }
             // Its refusal shape: keep the inventory we already had, free the
@@ -2337,10 +2408,10 @@ impl SessionLoop {
         }
         self.attach_discovered_panes(conn, &outcome.attach_panes)
             .await?;
+        let answered = spawned_satellite_panes(&outcome.adopt_spawned);
         self.attach_spawned_panes(conn, std::mem::take(&mut outcome.adopt_spawned))
             .await?;
-        self.kill_orphaned_spawns(conn, std::mem::take(&mut outcome.kill_orphans))
-            .await?;
+        self.settle_orphans(conn, &mut outcome, &answered).await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(&mut outcome, repaint);
         self.finish_paint(outcome.status_bar_painted);
@@ -2457,6 +2528,116 @@ impl SessionLoop {
             send_unless_peer_gone(conn, &frame).await?;
         }
         Ok(())
+    }
+
+    /// phux-c2td.20 / phux-c2td.23: act on the orphans one frame left. Kill
+    /// the ones a kill can reach now, and the strays on each satellite that
+    /// just minted a pane for this client: its spawn answered, so it is
+    /// reachable. `answered` is those fresh panes; one reusing a stray's id
+    /// also shows its satellite restarted
+    /// ([`super::orphans::OrphanKills::forget_reissued`]).
+    async fn settle_orphans(
+        &mut self,
+        conn: &mut Connection,
+        outcome: &mut FrameOutcome,
+        answered: &[ResourceId],
+    ) -> Result<(), AttachError> {
+        self.kill_orphaned_spawns(conn, std::mem::take(&mut outcome.kill_orphans))
+            .await?;
+        self.orphan_kills.forget_reissued(answered);
+        let hosts: Vec<SatelliteHost> = answered
+            .iter()
+            .filter_map(ResourceId::host)
+            .cloned()
+            .collect();
+        self.retry_stray_kills(conn, &hosts, std::time::Instant::now())
+            .await
+    }
+
+    /// phux-c2td.23: a host inventory asked at `asked_at` could not list
+    /// `answers.unreachable`, whose strays are forgotten, and reached
+    /// `answers.reachable`, whose strays recorded before it asked are killed.
+    async fn retry_after_inventory(
+        &mut self,
+        conn: &mut Connection,
+        answers: &HostAnswers,
+        asked_at: Option<std::time::Instant>,
+    ) -> Result<(), AttachError> {
+        self.orphan_kills.forget_hosts(&answers.unreachable);
+        let Some(asked_at) = asked_at else {
+            return Ok(());
+        };
+        self.retry_stray_kills(conn, &answers.reachable, asked_at)
+            .await
+    }
+
+    /// phux-c2td.23: the kill of each stray on `hosts`, which were known to
+    /// answer at `answered_at`; its one attempt. Sent through the same
+    /// non-blocking write as any orphan kill; a stray one of this client's
+    /// windows or parked opens now references is dropped instead
+    /// ([`Self::unreferenced_strays`]).
+    async fn retry_stray_kills(
+        &mut self,
+        conn: &mut Connection,
+        hosts: &[SatelliteHost],
+        answered_at: std::time::Instant,
+    ) -> Result<(), AttachError> {
+        if hosts.is_empty() {
+            return Ok(());
+        }
+        let due = self
+            .orphan_kills
+            .take_answered(hosts, answered_at, std::time::Instant::now());
+        let panes = self.unreferenced_strays(due);
+        for frame in self
+            .orphan_kills
+            .kill_frames(panes, &mut self.next_request_id)
+        {
+            send_unless_peer_gone(conn, &frame).await?;
+        }
+        Ok(())
+    }
+
+    /// The strays nothing in this client references now. One the user has
+    /// since adopted (a window holds it, or an open waits on it) is no
+    /// longer a stray, and is forgotten rather than killed.
+    fn unreferenced_strays(&self, panes: Vec<ResourceId>) -> Vec<ResourceId> {
+        panes
+            .into_iter()
+            .filter(|pane| {
+                let adopted = crate::attach::server_frame::pane_is_referenced(
+                    &self.workspace,
+                    &self.pending_windows,
+                    &self.pending_splits,
+                    pane,
+                );
+                if adopted {
+                    tracing::debug!(?pane, "a stray satellite pane was adopted; not killing it");
+                }
+                !adopted
+            })
+            .collect()
+    }
+
+    /// phux-c2td.23: take over the orphan record an earlier entry on this
+    /// connection handed out at a session switch.
+    pub(super) fn set_orphan_kills(&mut self, kills: super::orphans::OrphanKills) {
+        self.orphan_kills = kills;
+    }
+
+    /// phux-c2td.23: hand the orphan record to the next loop entry. The
+    /// switch drops every window and split still opening, and sends no kill
+    /// on the way out (the hub would hold the re-attach behind it), so their
+    /// spawned panes, and the satellite panes still-unanswered spawns turn
+    /// out to be, are remembered as strays instead.
+    fn orphans_for_switch(&mut self) -> super::orphans::OrphanKills {
+        let mut kills = std::mem::take(&mut self.orphan_kills);
+        kills.park_for_switch(
+            parked_spawned_panes(&self.pending_windows, &self.pending_splits),
+            unanswered_spawns(&self.pending_windows, &self.pending_splits),
+            std::time::Instant::now(),
+        );
+        kills
     }
 
     /// Park a spawned satellite pane's window or split under `request_id`,

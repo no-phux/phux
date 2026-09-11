@@ -300,11 +300,14 @@ async fn switch_session<W: crate::attach::RenderSink>(
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    orphan_kills: &mut super::orphans::OrphanKills,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
     tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    let attached = reattach_on_same_connection(conn, target, pending_window, pending_pane).await?;
+    let attached =
+        reattach_on_same_connection(conn, target, pending_window, pending_pane, orphan_kills)
+            .await?;
     let _ = write_terminal_clear(out);
     Ok(attached)
 }
@@ -428,6 +431,10 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // entry only (same `take` pattern as the onboarding hint above): a
     // session switch re-enters `main_loop` but is not a reconnect.
     let mut initial_notice = initial_notice;
+    // phux-c2td.23: the stray satellite panes this client still owes a kill,
+    // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
+    // record lives as long as this connection, not one session's loop.
+    let mut orphan_kills = super::orphans::OrphanKills::default();
     loop {
         let claim = onboarding_claim.take();
         let exit = match main_loop(
@@ -443,6 +450,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             pending_pane.take(),
             carried_sidebar_enabled,
             input_replay.clone(),
+            std::mem::take(&mut orphan_kills),
         )
         .await
         {
@@ -480,17 +488,20 @@ async fn attach_session<W: crate::attach::RenderSink>(
             LoopExit::SwitchTo {
                 target,
                 sidebar_enabled,
+                orphan_kills: carried_orphans,
             } => {
                 // The sidebar is the human's chrome, not the session's. Carry
                 // the toggle into the next entry so the strip does not blink
                 // shut on every space switch.
                 carried_sidebar_enabled = Some(sidebar_enabled);
+                orphan_kills = carried_orphans;
                 attached = switch_session(
                     &mut conn,
                     out,
                     target,
                     &mut pending_window,
                     &mut pending_pane,
+                    &mut orphan_kills,
                 )
                 .await?;
             }
@@ -520,8 +531,9 @@ async fn reattach_on_same_connection(
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    orphan_kills: &mut super::orphans::OrphanKills,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
-    detach_and_drain(conn).await?;
+    detach_and_drain(conn, orphan_kills).await?;
     let attach_target = match target {
         ReattachTarget::Existing { name, window, pane } => {
             *pending_window = window;
@@ -567,16 +579,28 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 /// worth applying. A server-initiated disconnect during the drain is a
 /// genuine error (the switch can't complete), surfaced as
 /// `AttachError::Disconnected`.
-async fn detach_and_drain(conn: &mut Connection) -> Result<(), AttachError> {
+///
+/// phux-c2td.23: the one exception is `orphan_kills`, which outlives the
+/// session. It sees each drained frame, so the reply to an orphan kill still
+/// settles and a satellite pane answering a spawn the old loop parked is
+/// remembered as a stray to kill later.
+async fn detach_and_drain(
+    conn: &mut Connection,
+    orphan_kills: &mut super::orphans::OrphanKills,
+) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
         match conn.recv().await? {
             // Any reason ends the drain: we asked for this detach, and the
             // next ATTACH rebuilds every session-scoped thing the reason
             // could have qualified.
-            FrameKind::Detached { .. } => return Ok(()),
+            FrameKind::Detached { .. } => {
+                orphan_kills.finish_switch_drain();
+                return Ok(());
+            }
             other => {
                 tracing::trace!(kind = ?other, "draining frame during session switch");
+                orphan_kills.observe_switch_drain(other, std::time::Instant::now());
             }
         }
     }
@@ -633,6 +657,10 @@ pub(super) enum LoopExit {
         /// the next entry re-seeds the strip from `[sidebar] enabled` and
         /// silently reverts a `toggle-sidebar` the user made.
         sidebar_enabled: bool,
+        /// phux-c2td.23: the stray satellite panes this client still owes a
+        /// kill, including the ones the switch itself strands. Connection
+        /// state, not session state, so it rides into the next entry.
+        orphan_kills: super::orphans::OrphanKills,
     },
 }
 
