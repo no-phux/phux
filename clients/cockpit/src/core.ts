@@ -18,6 +18,16 @@ import {
   remoteStatusLine,
 } from "./remote-hosts.ts";
 import {
+  SESSION_KIND_DESCRIBE,
+  SESSION_KIND_RENAME,
+  SESSION_KIND_STATUS,
+  SESSION_PHASE_READY,
+  SESSION_PHASE_PENDING,
+  SESSION_PHASE_RENAMED,
+  sessionRequest,
+  sessionReply,
+} from "./session.ts";
+import {
   DIR_KIND_OPEN,
   DIR_KIND_PAGE,
   DIR_KIND_DESCEND,
@@ -224,6 +234,23 @@ export interface Model {
   /// Open Here can open a tab in this listing, on the coordinator it came
   /// through (the active one, or a peer showing a session).
   readonly dirOpenHere: boolean;
+  /// Rename Session (session.ts): an app-wide modal in the invoking window.
+  /// The engine names the session on screen and the coordinator that owns
+  /// it; `renameAwaiting` asks for the outcome on each snapshot until the
+  /// rename settles there.
+  readonly renameOpen: boolean;
+  readonly mainRenameOpen: boolean;
+  readonly window1RenameOpen: boolean;
+  readonly window2RenameOpen: boolean;
+  readonly window3RenameOpen: boolean;
+  readonly window4RenameOpen: boolean;
+  readonly renameQuery: Uint8Array;
+  readonly renameAnchor: number;
+  readonly renameFocus: number;
+  readonly renameTitle: Uint8Array;
+  readonly renameNotice: Uint8Array;
+  readonly renameBusy: boolean;
+  readonly renameAwaiting: boolean;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -343,6 +370,12 @@ export type Msg =
   | { readonly kind: "dir_next" }
   | { readonly kind: "directory_loaded"; readonly body: Uint8Array }
   | { readonly kind: "directory_failed"; readonly error: Uint8Array }
+  | { readonly kind: "rename_open" }
+  | { readonly kind: "rename_close" }
+  | { readonly kind: "rename_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "rename_submit" }
+  | { readonly kind: "session_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "session_failed"; readonly error: Uint8Array }
   | { readonly kind: "remote_loaded"; readonly body: Uint8Array }
   | { readonly kind: "remote_failed"; readonly error: Uint8Array }
   | { readonly kind: "settings_open" }
@@ -435,6 +468,14 @@ export const viewUnbound = [
   "dir_open",
   "directory_loaded",
   "directory_failed",
+  "renameOpen",
+  "renameAnchor",
+  "renameFocus",
+  "renameBusy",
+  "renameAwaiting",
+  "rename_open",
+  "session_loaded",
+  "session_failed",
 ] as const;
 
 const ZERO_U64: WireU64 = { hi: 0, lo: 0 };
@@ -714,8 +755,120 @@ function closeDirectory(model: Model): DirectoryDecision {
 /// Another modal opening while the picker is up takes its slot.
 function displaceDirectory(model: Model, msg: Msg): Model {
   if (!model.dirOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "rename_open") return model;
   return closeDirectory(model).model;
+}
+
+/// What one Rename Session message leaves, as for Go to Directory: the
+/// model, the request to send (empty for none), and whether the modal slot
+/// changed hands.
+interface RenameDecision {
+  readonly model: Model;
+  readonly request: Uint8Array;
+  readonly committed: boolean;
+}
+
+function renameDecision(model: Model, request: Uint8Array, committed: boolean): RenameDecision {
+  return { model, request, committed };
+}
+
+function renameState(model: Model): TextEditState {
+  return {
+    text: model.renameQuery,
+    selection: { anchor: model.renameAnchor, focus: model.renameFocus },
+    composition: null,
+  };
+}
+
+/// Rename Session takes the one modal slot. It asks the engine which session
+/// is on screen before offering a name; Settings, which has a preview to roll
+/// back, keeps the slot until it closes.
+function openRename(model: Model): RenameDecision {
+  if (model.renameOpen || model.settingsOpen) return renameDecision(model, NO_BYTES, false);
+  const base = model.paletteOpen ? closePalette(model) : model;
+  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false,
+    renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
+    renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session on screen...") });
+  return renameDecision(next, sessionRequest(SESSION_KIND_DESCRIBE, NO_BYTES), true);
+}
+
+function closeRename(model: Model): RenameDecision {
+  return renameDecision(scopeOverlays({ ...model, renameOpen: false, renameBusy: false, renameAwaiting: false }), NO_BYTES, true);
+}
+
+/// Another modal opening while Rename Session is up takes its slot.
+function displaceRename(model: Model, msg: Msg): Model {
+  if (!model.renameOpen) return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open") return model;
+  return closeRename(model).model;
+}
+
+function editRename(model: Model, edit: TextInputEvent): Model {
+  const next = applyTextInputEvent(renameState(model), edit, 255);
+  if (next === null) return model;
+  const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 255 ? Math.trunc(next.selection.anchor) : 0;
+  const focus = next.selection.focus >= 0 && next.selection.focus <= 255 ? Math.trunc(next.selection.focus) : 0;
+  return { ...model, renameQuery: next.text, renameAnchor: anchor, renameFocus: focus };
+}
+
+function submitRename(model: Model): RenameDecision {
+  if (model.renameBusy) return renameDecision(model, NO_BYTES, false);
+  if (model.renameQuery.length === 0) {
+    return renameDecision({ ...model, renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
+  }
+  return renameDecision({ ...model, renameBusy: true, renameNotice: asciiBytes("Renaming...") },
+    sessionRequest(SESSION_KIND_RENAME, model.renameQuery), false);
+}
+
+function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
+  if (name.length === 0) return asciiBytes("Rename Session");
+  return joinBytes(joinBytes(asciiBytes("Rename "), name, asciiBytes(" on ")), host, NO_BYTES);
+}
+
+/// Apply one engine answer. The first names the session and seeds the field
+/// with its name; a refusal keeps the panel and says why; a rename the
+/// coordinator applied closes it.
+function receiveSession(model: Model, body: Uint8Array): RenameDecision {
+  if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+  const reply = sessionReply(body);
+  if (reply === null) {
+    return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
+      renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
+  }
+  if (reply.phase === SESSION_PHASE_RENAMED) return closeRename(model);
+  if (reply.phase === SESSION_PHASE_PENDING) {
+    return renameDecision({ ...model, renameBusy: true, renameAwaiting: true, renameNotice: asciiBytes("Renaming...") }, NO_BYTES, false);
+  }
+  if (reply.phase === SESSION_PHASE_READY) {
+    const seeded = model.renameQuery.length === 0 ? reply.name : model.renameQuery;
+    const length = seeded.length;
+    const end = length >= 0 && length <= 255 ? Math.trunc(length) : 0;
+    return renameDecision({ ...model, renameBusy: false, renameAwaiting: false, renameQuery: seeded,
+      renameAnchor: 0, renameFocus: end, renameTitle: renameHeading(reply.name, reply.host),
+      renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
+  }
+  return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
+    renameNotice: reply.reason.length > 0 ? reply.reason : asciiBytes("Nothing was renamed.") }, NO_BYTES, false);
+}
+
+function renameTransition(model: Model, msg: Msg): RenameDecision | null {
+  if (msg.kind === "rename_open") return openRename(model);
+  if (msg.kind === "session_loaded") return receiveSession(model, msg.body);
+  if (msg.kind === "session_failed") {
+    if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+    return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
+      renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
+  }
+  if (!model.renameOpen) return null;
+  switch (msg.kind) {
+    case "rename_close":
+    case "palette_close": return closeRename(model);
+    case "rename_edit": return renameDecision(editRename(model, msg.edit), NO_BYTES, false);
+    case "rename_submit": return submitRename(model);
+    // The arrows mean nothing to a single field.
+    case "palette_move": return renameDecision(model, NO_BYTES, false);
+    default: return null;
+  }
 }
 
 /// The connection under an open picker moved, so its rows named a listing on
@@ -982,6 +1135,11 @@ function scopeOverlays(model: Model): Model {
     window2HostOpen: model.hostOpen && active === 2,
     window3HostOpen: model.hostOpen && active === 3,
     window4HostOpen: model.hostOpen && active === 4,
+    mainRenameOpen: model.renameOpen && active === 0,
+    window1RenameOpen: model.renameOpen && active === 1,
+    window2RenameOpen: model.renameOpen && active === 2,
+    window3RenameOpen: model.renameOpen && active === 3,
+    window4RenameOpen: model.renameOpen && active === 4,
     mainDirOpen: model.dirOpen && active === 0,
     window1DirOpen: model.dirOpen && active === 1,
     window2DirOpen: model.dirOpen && active === 2,
@@ -1252,6 +1410,7 @@ export function commandMsg(name: string): Msg | null {
   if (name === "settings.open") return { kind: "settings_open" };
   if (name === "remote.connect") return { kind: "host_open" };
   if (name === "directory.open") return { kind: "dir_open" };
+  if (name === "session.rename") return { kind: "rename_open" };
   if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
   if (name === "tab.previous") return { kind: "native_command", command: 1 };
   if (name === "tab.next") return { kind: "native_command", command: 2 };
@@ -1364,6 +1523,19 @@ export function initialModel(): [Model, Cmd<Msg>] {
       dirNotice: new Uint8Array(0),
       dirTitle: asciiBytes("Go to Directory"),
       dirOpenHere: true,
+      renameOpen: false,
+      mainRenameOpen: false,
+      window1RenameOpen: false,
+      window2RenameOpen: false,
+      window3RenameOpen: false,
+      window4RenameOpen: false,
+      renameQuery: new Uint8Array(0),
+      renameAnchor: 0,
+      renameFocus: 0,
+      renameTitle: asciiBytes("Rename Session"),
+      renameNotice: new Uint8Array(0),
+      renameBusy: false,
+      renameAwaiting: false,
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,
@@ -1681,7 +1853,22 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     if (directory.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
     return decided;
   }
-  const model = displaceDirectory(incoming, msg);
+  const undirected = displaceDirectory(incoming, msg);
+  // Rename Session next: while it is open it owns Escape and its field.
+  const rename = renameTransition(undirected, msg);
+  if (rename !== null) {
+    const decided = rename.model;
+    if (rename.request.length > 0 && rename.committed) return [decided, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" }),
+    ])];
+    if (rename.request.length > 0) {
+      return [decided, Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" })];
+    }
+    if (rename.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
+    return decided;
+  }
+  const model = displaceRename(undirected, msg);
   const result = resultTransition(model, msg);
   if (result !== null) {
     if (result.request.length === 0) return result.model;
@@ -1960,6 +2147,18 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // Connect to Host is waiting on it), never once per snapshot.
       const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
       if (!model.paletteOpen) {
+        // A rename waits on its coordinator: each snapshot asks how it went.
+        if (model.renameAwaiting && askRemote) return [scoped, Cmd.batch([
+          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+          }),
+          Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
+            key: "cockpit-session", ok: "session_loaded", err: "session_failed",
+          }),
+        ])];
+        if (model.renameAwaiting) return [scoped, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
+          key: "cockpit-session", ok: "session_loaded", err: "session_failed",
+        })];
         if (!askRemote) return scoped;
         if (directoryRelists) return [scoped, Cmd.batch([
           Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {

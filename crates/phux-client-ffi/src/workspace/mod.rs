@@ -83,7 +83,10 @@ impl Default for SharedWorkspace {
 }
 
 impl SharedWorkspace {
-    fn reserve_internal(&mut self) -> Result<u32, BridgeError> {
+    /// The next bridge-internal request ID. Shared by every bridge-owned
+    /// request (workspace reads, a rename's confirmation read), so none of
+    /// them can collide with each other or with the host's request space.
+    pub(crate) fn reserve_internal(&mut self) -> Result<u32, BridgeError> {
         let id = self.next_internal;
         self.next_internal = id
             .checked_add(1)
@@ -379,6 +382,30 @@ fn publish_catalog(client: &mut Client, catalog: Catalog) -> Result<(), BridgeEr
     client.sessions.clone_from(&catalog.sessions);
     ws.catalog = catalog;
     Ok(())
+}
+
+/// Give every session `matches` selects the name `new_name`, in the list
+/// `phux_client_session_get` reads and in the workspace catalog it mirrors,
+/// so the next workspace read does not see a stale name as a change. True
+/// when any entry changed. Used for a rename the server applied
+/// (`crate::session_rename`); `new_name` is already validated.
+pub(crate) fn rename_sessions(
+    client: &mut Client,
+    matches: impl Fn(&crate::client::SessionSummary) -> bool,
+    new_name: &[u8],
+) -> bool {
+    let mut changed = false;
+    for session in client
+        .sessions
+        .iter_mut()
+        .chain(client.workspace.catalog.sessions.iter_mut())
+    {
+        if matches(session) && session.name != new_name {
+            session.name = new_name.to_vec();
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The session summaries a `GET_STATE` snapshot carries, validated and

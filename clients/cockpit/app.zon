@@ -47,6 +47,7 @@
             .{ .label = "Go to Terminal…", .command = "tabs.palette", .key = "p", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Connect to Host…", .command = "remote.connect", .key = "o", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Go to Directory…", .command = "directory.open", .key = "j", .modifiers = .{ "primary", "shift" } },
+            .{ .label = "Rename Session…", .command = "session.rename" },
             .{ .separator = true },
             .{ .label = "Previous Tab", .command = "tab.previous", .key = "[", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Next Tab", .command = "tab.next", .key = "]", .modifiers = .{ "primary", "shift" } },

@@ -35,6 +35,10 @@ Use a private target directory per worktree for concurrent builds.
   are named `fixture`. The focused terminal is local terminal 7, 80 columns by
   24 rows, stream 7, bootstrap 1, base sequence 0, chunk sequence 0. There is no
   history cursor.
+- `session_renamed.bin`: one `METADATA_CHANGED` of `phux.session.name/v1`
+  (Global) with the applied value `fixture\0renamed`: the server's broadcast of
+  a rename of the attached session. The generator checks that an attached
+  client reads it into its session list.
 - The VT chunk clears/homes the screen, writes `COCKPIT FIXTURE` at row 0,
   column 0, enables bracketed paste (`CSI ? 2004 h`), focus reporting
   (`CSI ? 1004 h`), and Kitty keyboard disambiguation (`CSI > 1 u`).

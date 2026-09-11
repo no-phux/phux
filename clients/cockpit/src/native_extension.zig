@@ -200,6 +200,13 @@ const Bridge = struct {
     directory_ok: bool = false,
     directory_len: usize = 0,
     directory_buffer: [cockpit.directory_picker.max_bytes]u8 = undefined,
+    /// Rename Session (`cockpit.session`): applied synchronously, answered
+    /// through its own completion slot after every other one.
+    session_pending: bool = false,
+    session_key: u64 = 0,
+    session_ok: bool = false,
+    session_len: usize = 0,
+    session_buffer: [cockpit.session_commands.max_bytes]u8 = undefined,
     /// Kept for tests: the post outcomes the runtime handed back.
     posts_accepted: usize = 0,
     posts_unroutable: usize = 0,
@@ -245,9 +252,9 @@ const Bridge = struct {
     }
 
     fn interactionMode(model: *const core.Model) InteractionMode {
-        // Connect to Host takes text like the switcher; neither may type
-        // into a terminal behind it.
-        return if (model.paletteOpen or model.hostOpen or model.dirOpen) .palette else if (model.settingsOpen) .settings else .terminal;
+        // Connect to Host and Rename Session take text like the switcher;
+        // none may type into a terminal behind it.
+        return if (model.paletteOpen or model.hostOpen or model.dirOpen or model.renameOpen) .palette else if (model.settingsOpen) .settings else .terminal;
     }
 
     /// Host sends are intentionally suppressed by the SDK during replay.
@@ -304,6 +311,10 @@ const Bridge = struct {
         if (std.mem.eql(u8, name, cockpit.directory_picker.request_name)) {
             const directory_bridge: *Bridge = @ptrCast(@alignCast(context));
             return directory_bridge.requestDirectory(key, payload);
+        }
+        if (std.mem.eql(u8, name, cockpit.session_commands.request_name)) {
+            const session_bridge: *Bridge = @ptrCast(@alignCast(context));
+            return session_bridge.requestSession(key, payload);
         }
         if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
             const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
@@ -390,6 +401,25 @@ const Bridge = struct {
         // snapshot shows, and the listing's arrival announces by itself.
         const decoded = cockpit.directory_picker.decode(payload) catch return;
         if (decoded.kind == .here) self.announce(engine);
+    }
+
+    /// A rename is sent on the owning coordinator's connection; its outcome
+    /// arrives on that connection's drain, which announces, and the core then
+    /// asks for status. Describing or reading status moves nothing.
+    fn requestSession(self: *Bridge, key: u64, payload: []const u8) void {
+        self.session_pending = true;
+        self.session_key = key;
+        self.session_ok = false;
+        const engine = self.engine orelse {
+            self.session_len = copyInto(&self.session_buffer, "engine unavailable");
+            return;
+        };
+        const bytes = cockpit.session_commands.handle(engine, payload, &self.session_buffer) catch |err| {
+            self.session_len = copyInto(&self.session_buffer, @errorName(err));
+            return;
+        };
+        self.session_ok = true;
+        self.session_len = bytes.len;
     }
 
     fn requestTabCommand(self: *Bridge, key: u64, payload: []const u8) void {
@@ -482,6 +512,7 @@ const Bridge = struct {
         if (self.appearance_pending and self.appearance_key == key) self.appearance_pending = false;
         if (self.remote_pending and self.remote_key == key) self.remote_pending = false;
         if (self.directory_pending and self.directory_key == key) self.directory_pending = false;
+        if (self.session_pending and self.session_key == key) self.session_pending = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
@@ -520,14 +551,21 @@ const Bridge = struct {
     /// Last of all, so the go-to-directory slot is additive to the seam and
     /// never reorders an existing completion.
     fn pollDirectory(self: *Bridge) ?native_sdk.HostCallCompletion {
-        if (!self.directory_pending) return null;
+        if (!self.directory_pending) return self.pollSession();
         self.directory_pending = false;
         return .{ .key = self.directory_key, .ok = self.directory_ok, .bytes = self.directory_buffer[0..self.directory_len] };
     }
 
+    /// After every other slot, so Rename Session is additive to the seam.
+    fn pollSession(self: *Bridge) ?native_sdk.HostCallCompletion {
+        if (!self.session_pending) return null;
+        self.session_pending = false;
+        return .{ .key = self.session_key, .ok = self.session_ok, .bytes = self.session_buffer[0..self.session_len] };
+    }
+
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending or self.directory_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending or self.directory_pending or self.session_pending;
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {

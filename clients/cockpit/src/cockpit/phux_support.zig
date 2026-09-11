@@ -100,6 +100,7 @@ const DisabledPhuxProvider = struct {
         metadata_changed: bool = false,
         directory_changed: bool = false,
         sessions_listed: bool = false,
+        sessions_renamed: bool = false,
         ready_published: bool = false,
         generation_changed: bool = false,
         detached: bool = false,
@@ -150,6 +151,19 @@ const DisabledPhuxProvider = struct {
     }
     pub fn requestDetach(_: *DisabledPhuxProvider, _: TerminalRef) error{Disabled}!u32 {
         return error.Disabled;
+    }
+    pub const RenameInfo = struct {
+        status: enum(u32) { none = 0, pending = 1, renamed = 2, refused = 3, unknown_outcome = 4, _ } = .none,
+        request_id: u32 = 0,
+        session_id: u32 = 0,
+        sessions_revision: u64 = 0,
+        message: []const u8 = "",
+    };
+    pub fn requestRename(_: *DisabledPhuxProvider, _: []const u8, _: []const u8) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn renameInfo(_: *const DisabledPhuxProvider) @This().RenameInfo {
+        return .{};
     }
     pub fn catalogRefs(_: *const DisabledPhuxProvider, _: []TerminalRef) usize {
         return 0;
@@ -268,6 +282,7 @@ else
     DisabledPhuxProvider;
 pub const SessionSummary = PhuxProvider.SessionSummary;
 pub const OperationResult = PhuxProvider.OperationResult;
+pub const RenameInfo = if (phux_enabled) @import("phux_provider").RenameInfo else DisabledPhuxProvider.RenameInfo;
 pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else DisabledPhuxProvider.SyncDelta;
 /// The endpoint a Phux provider dials, in either build.
 pub const PhuxEndpoint = if (phux_enabled) @import("phux_provider").Endpoint else DisabledPhuxProvider.Endpoint;

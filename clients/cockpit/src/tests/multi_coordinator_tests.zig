@@ -690,6 +690,141 @@ test "Open Here on a peer's listing opens the tab on that peer" {
     try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
 }
 
+// ------------------------------------------------ Rename Session (session_commands)
+
+const session_commands = @import("../cockpit/native/session_commands.zig");
+
+const SessionAnswer = struct {
+    phase: session_commands.Phase,
+    name: []const u8,
+    host: []const u8,
+    reason: []const u8,
+};
+
+/// One `cockpit.session` request through the handler the bridge calls.
+fn sessionCommand(engine: *ts_engine.Engine, kind: u8, name: []const u8, out: *[session_commands.max_bytes]u8) !SessionAnswer {
+    var request: [3 + 255]u8 = undefined;
+    request[0] = session_commands.version;
+    request[1] = kind;
+    request[2] = @intCast(name.len);
+    @memcpy(request[3..][0..name.len], name);
+    const reply = try session_commands.handle(engine, request[0 .. 3 + name.len], out);
+    const host_at = 3 + @as(usize, reply[2]);
+    const reason_at = host_at + 1 + @as(usize, reply[host_at]);
+    return .{
+        .phase = @enumFromInt(reply[1]),
+        .name = reply[3..host_at],
+        .host = reply[host_at + 1 .. reason_at],
+        .reason = reply[reason_at + 1 ..],
+    };
+}
+
+/// The sessions scope of the switcher, as the core pages it.
+fn sessionsPage(engine: *ts_engine.Engine, out: []u8) ![]const u8 {
+    var request: [15]u8 = undefined;
+    request[0] = 1;
+    request[1] = 4;
+    std.mem.writeInt(u64, request[2..10], engine.revision, .little);
+    std.mem.writeInt(u16, request[10..12], 0, .little);
+    request[12] = 0;
+    request[13] = @intFromEnum(navigation.Scope.sessions);
+    request[14] = 0;
+    return engine.navigationSnapshot(&request, out);
+}
+
+test "Rename Session writes to the coordinator that owns the session on screen, and to no other" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    try pair.projectBoth();
+    const engine = pair.engine;
+    const model = engine.model;
+    var fx: PeerFx = .{};
+    var out: [session_commands.max_bytes]u8 = undefined;
+
+    // mini's tab is on screen: the rename names mini's session, on mini.
+    const described = try sessionCommand(engine, 1, "", &out);
+    try testing.expectEqual(session_commands.Phase.ready, described.phase);
+    try testing.expectEqualStrings("fixture", described.name);
+    try testing.expectEqualStrings("mini", described.host);
+    const sent = try sessionCommand(engine, 2, "renamed", &out);
+    try testing.expectEqual(session_commands.Phase.pending, sent.phase);
+    try testing.expect(contains(pair.mini, "fixture\x00renamed").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // mini's server applies it: mini's switcher row follows METADATA_CHANGED
+    // and the rename settles; This Mac's session keeps its name.
+    try feedMini(&pair, &fx, "session_renamed.bin");
+    try testing.expectEqualStrings("renamed", pair.mini.sessionCatalog()[0].name);
+    try testing.expectEqualStrings("fixture", pair.here.sessionCatalog()[0].name);
+    try testing.expectEqual(session_commands.Phase.renamed, (try sessionCommand(engine, 3, "", &out)).phase);
+    var page_out: [navigation.max_bytes]u8 = undefined;
+    const page = try sessionsPage(engine, &page_out);
+    try testing.expect(std.mem.indexOf(u8, page, "renamed") != null);
+    try testing.expect(std.mem.indexOf(u8, page, "fixture") != null);
+    _ = countFrames(pair.mini);
+
+    // This Mac's tab: the rename is This Mac's, and mini hears nothing.
+    try testing.expect(model.selectTerminal(try refOn(pair.here, 7)));
+    const here_session = try sessionCommand(engine, 1, "", &out);
+    try testing.expectEqualStrings("fixture", here_session.name);
+    try testing.expectEqualStrings("This Mac", here_session.host);
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommand(engine, 2, "renamed", &out)).phase);
+    try testing.expect(contains(pair.here, "fixture\x00renamed").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+
+    // The header (the active coordinator's session name) follows This Mac's
+    // METADATA_CHANGED.
+    var before_out: [@import("../cockpit/native/ts_snapshot.zig").max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&before_out), "renamed") == null);
+    try fixture.stageFixture(pair.here.bridge, "session_renamed.bin");
+    _ = engine.onPhuxChannel(&fx, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try testing.expectEqualStrings("renamed", pair.here.sessionCatalog()[0].name);
+    var after_out: [@import("../cockpit/native/ts_snapshot.zig").max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&after_out), "renamed") != null);
+    try testing.expectEqual(session_commands.Phase.renamed, (try sessionCommand(engine, 3, "", &out)).phase);
+}
+
+test "a refused rename says why and writes nothing; a pane of a coordinator no longer held names nothing" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    try pair.projectBoth();
+    const engine = pair.engine;
+    const model = engine.model;
+    var out: [session_commands.max_bytes]u8 = undefined;
+    try testing.expect(model.selectTerminal(try refOn(pair.here, 7)));
+    // This Mac also holds `deploy`.
+    try pair.here.host.sessions.append(testing.allocator, .{
+        .id = 2,
+        .name = try testing.allocator.dupe(u8, "deploy"),
+        .created_at_unix_secs = 0,
+        .window_count = 1,
+        .attached_client_count = 0,
+        .focused = false,
+    });
+
+    const duplicate = try sessionCommand(engine, 2, "deploy", &out);
+    try testing.expectEqual(session_commands.Phase.refused, duplicate.phase);
+    try testing.expectEqualStrings("\"deploy\" already exists on This Mac.", duplicate.reason);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    // A control character is refused before anything is sent.
+    try testing.expectEqual(session_commands.Phase.refused, (try sessionCommand(engine, 2, "a\tb", &out)).phase);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // A focused pane minted by a coordinator Cockpit no longer holds: the
+    // rename is refused, never sent to This Mac or to mini instead.
+    const tree = model.selectedTree().?;
+    const replaced = tree.nodes[tree.focus].terminal;
+    defer tree.nodes[tree.focus].terminal = replaced;
+    tree.nodes[tree.focus].terminal = .{ .provider_id = contract.phuxCoordinatorId("studio"), .terminal_id = (try refOn(pair.here, 7)).terminal_id };
+    try testing.expectEqual(session_commands.Phase.unavailable, (try sessionCommand(engine, 1, "", &out)).phase);
+    try testing.expectEqual(session_commands.Phase.unavailable, (try sessionCommand(engine, 2, "gone", &out)).phase);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+}
+
 test "an edit of a peer that cannot take one is refused and reaches no coordinator" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);

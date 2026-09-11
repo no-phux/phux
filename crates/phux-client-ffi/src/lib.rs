@@ -13,6 +13,7 @@ mod operations;
 mod pointer;
 mod remote;
 mod session_query;
+mod session_rename;
 mod types;
 mod workspace;
 
@@ -45,6 +46,7 @@ pub use pointer::{
 };
 pub use remote::*;
 pub use session_query::*;
+pub use session_rename::*;
 pub use types::*;
 pub use workspace::*;
 
@@ -685,6 +687,9 @@ fn dispatch_frame(
         return Ok(());
     };
     let Some(frame) = session_query::dispatch(client, frame)? else {
+        return Ok(());
+    };
+    let Some(frame) = session_rename::dispatch(client, frame)? else {
         return Ok(());
     };
     let Some(frame) = workspace::dispatch(client, frame) else {

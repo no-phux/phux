@@ -300,6 +300,8 @@ pub(crate) struct Client {
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
     pub session_query: crate::session_query::SessionQuery,
+    /// The latest session rename and the rename key's subscription.
+    pub session_rename: crate::session_rename::SessionRename,
     pub detached: bool,
 }
 
@@ -357,6 +359,7 @@ impl Client {
             list_directory_host: false,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
+            session_rename: crate::session_rename::SessionRename::default(),
             detached: false,
         }
     }
@@ -472,6 +475,7 @@ impl Client {
         self.workspace.disconnect();
         self.directory.disconnect();
         self.session_query.disconnect();
+        self.session_rename.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();

@@ -56,6 +56,9 @@ pub const SyncDelta = struct {
     directory_changed: bool = false,
     /// A standby's session query settled with a different list than before.
     sessions_listed: bool = false,
+    /// A session rename moved the session list, or this client's own rename
+    /// settled (renamed, refused or unknown). Never a sign of listing.
+    sessions_renamed: bool = false,
     ready_published: bool = false,
     generation_changed: bool = false,
     detached: bool = false,
@@ -209,6 +212,10 @@ pub const Host = struct {
     /// streams declare. Never a replica: see agent_sessions.zig.
     agents: agent_sessions.Registry = .{},
     attached_session_id: ?u32 = null,
+    /// The rename state last read from this connection's client: its
+    /// session-list revision and status. A new client starts from zero.
+    rename_revision_seen: u64 = 0,
+    rename_status_seen: RenameStatus = .none,
     /// The coordinator this host is connected to (contract.phuxCoordinatorId).
     /// Every ref it mints carries it, and every ref it is handed must carry
     /// it: another coordinator's terminal 7 is not this one's, so a ref that
@@ -633,6 +640,8 @@ pub const Host = struct {
         host.client = replacement;
         host.workspace_store.deinit(host.gpa);
         host.client_generation = next_generation;
+        host.rename_revision_seen = 0;
+        host.rename_status_seen = .none;
         host.operation_ledger.last_id = 0;
         host.disconnected = false;
         host.attach_barrier_seen = false;
@@ -681,6 +690,7 @@ pub const Host = struct {
         delta.directory_changed = host.directoryStatusRaw() != directory_before;
         if (query_before == session_query_pending and host.sessionQueryStatus() == session_query_ok)
             delta.sessions_listed = try host.adoptListedSessions();
+        delta.sessions_renamed = try host.adoptRenamedSessions();
         host.captureWorkspace();
         delta.removed_count += try host.prepareAttachAdmission();
         // Catalog first, effects second, in one drain: the catalog is the
@@ -1157,6 +1167,65 @@ pub const Host = struct {
         var status: u32 = 0;
         if (c.phux_client_session_query_status(host.client, &request_id, &status) != c.PHUX_CLIENT_OK) return 0;
         return status;
+    }
+
+    /// Rename the session named `current` on this connection's server
+    /// (`phux.session.name/v1`). The client judges it against its own list
+    /// first, so a refusal may already be settled when this returns; read
+    /// `renameInfo`. Nothing here attaches or sizes anything: a listing
+    /// connection may rename as well as an attached one.
+    pub fn requestRename(host: *Host, current: []const u8, new_name: []const u8) !u32 {
+        if (host.disconnected) return error.InvalidState;
+        const now = host.state();
+        if (now != .negotiated and now != .attached) return error.InvalidState;
+        try outboundSize(current.len);
+        try outboundSize(new_name.len);
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_rename_session(host.client, request_id, bytes(current), bytes(new_name)));
+        host.operation_ledger.last_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    pub const RenameStatus = enum(u32) { none = 0, pending = 1, renamed = 2, refused = 3, unknown_outcome = 4, _ };
+    /// `message` borrows the client until the next mutable host call.
+    pub const RenameInfo = struct {
+        status: RenameStatus = .none,
+        request_id: u32 = 0,
+        session_id: u32 = 0,
+        sessions_revision: u64 = 0,
+        message: []const u8 = "",
+    };
+    comptime {
+        std.debug.assert(c.PHUX_SESSION_RENAME_PENDING == @intFromEnum(RenameStatus.pending));
+        std.debug.assert(c.PHUX_SESSION_RENAME_UNKNOWN_OUTCOME == @intFromEnum(RenameStatus.unknown_outcome));
+    }
+
+    pub fn renameInfo(host: *const Host) RenameInfo {
+        var raw = std.mem.zeroes(c.PhuxSessionRenameInfo);
+        raw.size = @sizeOf(c.PhuxSessionRenameInfo);
+        raw.version = c.PHUX_CLIENT_ABI_VERSION;
+        if (c.phux_client_session_rename_info(host.client, &raw) != c.PHUX_CLIENT_OK) return .{};
+        return .{
+            .status = @enumFromInt(raw.status),
+            .request_id = raw.request_id,
+            .session_id = raw.session_id,
+            .sessions_revision = raw.sessions_revision,
+            .message = effectSlice(raw.message) catch "",
+        };
+    }
+
+    /// A rename the server broadcast moved the client's list in place: read
+    /// it again. True when the list moved or this client's rename settled,
+    /// so the chrome and the rename panel hear about it.
+    fn adoptRenamedSessions(host: *Host) !bool {
+        const info = host.renameInfo();
+        const settled = host.rename_status_seen == .pending and info.status != .pending;
+        host.rename_status_seen = info.status;
+        if (info.sessions_revision == host.rename_revision_seen) return settled;
+        host.rename_revision_seen = info.sessions_revision;
+        try host.refreshSessions();
+        return true;
     }
 
     /// Adopt a settled query's list as this connection's. True when it

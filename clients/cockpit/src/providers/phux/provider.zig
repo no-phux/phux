@@ -22,6 +22,7 @@ pub const Anchor = host_mod.Anchor;
 pub const SearchResult = host_mod.SearchResult;
 pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
+pub const RenameInfo = host_mod.Host.RenameInfo;
 pub const Error = host_mod.Error;
 pub const OperationResult = host_mod.OperationResult;
 pub const ColorPolicy = host_mod.ColorPolicy;
@@ -514,6 +515,16 @@ pub const PhuxProvider = struct {
     /// Borrowed until the next mutable provider call.
     pub fn directoryEntry(self: *const PhuxProvider, index: usize) ?DirectoryEntry {
         return self.host.directoryEntry(index);
+    }
+
+    /// Rename a session of this coordinator, on this coordinator's connection
+    /// alone (host.requestRename). Refused without a live connection.
+    pub fn requestRename(self: *PhuxProvider, current: []const u8, new_name: []const u8) !u32 {
+        return self.host.requestRename(current, new_name);
+    }
+
+    pub fn renameInfo(self: *const PhuxProvider) RenameInfo {
+        return self.host.renameInfo();
     }
 
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {

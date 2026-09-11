@@ -542,6 +542,39 @@ fn verify_standby(hello: &[u8], state: &[u8]) {
     }
 }
 
+/// The server's broadcast of an applied rename (`phux.session.name/v1`):
+/// the attached fixture session `fixture` is now `renamed`.
+fn session_renamed() -> FrameKind {
+    use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope};
+    FrameKind::MetadataChanged {
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+        value: Some(b"fixture\0renamed".to_vec()),
+    }
+}
+
+/// An attached client reads the broadcast into its session list in place.
+fn verify_session_renamed(hello: &[u8], attached: &[u8], renamed: &[u8]) {
+    use phux_client_ffi::{PhuxSessionInfo, phux_client_session_count, phux_client_session_get};
+    let client = Client::new();
+    client.negotiate_and_attach(hello, attached);
+    client.feed(renamed);
+    let mut session = PhuxSessionInfo::default();
+    // SAFETY: live same-thread handle; the name borrows the client until the
+    // next mutable call, and none happens before it is read.
+    unsafe {
+        assert_eq!(phux_client_session_count(client.0), 1);
+        assert_eq!(
+            phux_client_session_get(client.0, 0, &raw mut session),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            slice::from_raw_parts(session.name.data, session.name.len),
+            b"renamed"
+        );
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os().nth(1).map_or_else(
         || {
@@ -567,7 +600,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_directory_host(&hello_directory_host, &attached, &listing);
     let standby = encode(&[standby_state()]);
     verify_standby(&hello, &standby);
+    let renamed = encode(&[session_renamed()]);
+    verify_session_renamed(&hello, &attached, &renamed);
     std::fs::create_dir_all(&output)?;
+    std::fs::write(output.join("session_renamed.bin"), &renamed)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
     std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
@@ -578,13 +614,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite) and standby session query; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes) to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query and session rename; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes) to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),
         hello_directory_host.len(),
         listing.len(),
         standby.len(),
+        renamed.len(),
         output.display()
     );
     Ok(())

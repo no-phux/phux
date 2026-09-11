@@ -1127,6 +1127,55 @@ PhuxClientResult phux_client_query_sessions(PhuxClient *client, uint32_t request
 /** Writes the latest query's request ID (0 before any) and status. */
 PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint32_t *out_request_id, uint32_t *out_status);
 
+/* ------------------------------------------------------- session rename
+ *
+ * Rename a session on the connected server (phux.session.name/v1,
+ * docs/spec/L3.md section 3.1). Additive to ABI version 2; no existing
+ * declaration changes. Works on a negotiated client whether or not it has
+ * attached: a rename writes metadata and never attaches or sizes anything.
+ *
+ * The call judges the request against the latest session list first. An
+ * unknown current name, or a new name another session already holds, settles
+ * REFUSED with a reason and queues nothing; a rename to the same name
+ * settles RENAMED and queues nothing. Otherwise it queues, in order, a
+ * SUBSCRIBE_METADATA of the key (once per client), the SET_METADATA
+ * (current\0new, correlated by request_id), and a bridge-internal GET_STATE
+ * as an ordering barrier, and settles PENDING. The server's METADATA_CHANGED
+ * settles it RENAMED; the barrier's answer settles it either way even without
+ * one; a correlated ERROR settles it REFUSED with the server's message.
+ * Disconnecting while PENDING yields UNKNOWN_OUTCOME.
+ *
+ * Every METADATA_CHANGED of the key renames the session list in place,
+ * whoever asked, and bumps sessions_revision: reread phux_client_session_get
+ * when it moves. request_id shares the strictly increasing host request
+ * space and is consumed by every accepted call, a refused one included. Both
+ * names are UTF-8 without NUL, 1..4096 bytes (INVALID_ARGUMENT otherwise).
+ * One rename may be PENDING (INVALID_STATE otherwise). */
+typedef enum PhuxSessionRenameStatus {
+    PHUX_SESSION_RENAME_NONE = 0,
+    PHUX_SESSION_RENAME_PENDING = 1,
+    PHUX_SESSION_RENAME_RENAMED = 2,
+    PHUX_SESSION_RENAME_REFUSED = 3,
+    PHUX_SESSION_RENAME_UNKNOWN_OUTCOME = 4
+} PhuxSessionRenameStatus;
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * session_id is the renamed session's (0 when refused as unknown); message
+ * says why a rename was refused or unknown and must not be parsed. Spans are
+ * borrowed until the next mutable client call. */
+typedef struct PhuxSessionRenameInfo {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t status;
+    uint32_t session_id;
+    uint64_t sessions_revision;
+    PhuxBytes message;
+} PhuxSessionRenameInfo;
+
+PhuxClientResult phux_client_rename_session(PhuxClient *client, uint32_t request_id, PhuxBytes current, PhuxBytes new_name);
+PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxSessionRenameInfo *out_info);
+
 /* ---------------------------------------------------------- remote hosts
  *
  * Reach a remote phux server the way `phux attach --remote HOST` does

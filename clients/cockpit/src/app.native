@@ -3,4 +3,5 @@
   <use template="cockpit-settings" settingsopen="{mainSettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{mainHostOpen}" />
   <use template="cockpit-directory" diropen="{mainDirOpen}" />
+  <use template="cockpit-rename" renameopen="{mainRenameOpen}" />
 </use>

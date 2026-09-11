@@ -273,6 +273,52 @@ coordinator moves. A peer that trades places first takes its tabs out of the
 windows and stands by, because its identity is about to change. The switcher
 lists this Mac's group first, then registered hosts.
 
+### Renaming a session
+
+Window > Rename Session… renames the session on screen: the session whose
+tab holds the focused pane, on the coordinator that minted that pane's ref
+(`Engine.renameTarget`). With no Phux pane focused it is the active
+coordinator's attached session. A pane whose coordinator Cockpit no longer
+holds names nothing, and the rename is refused rather than sent to another
+coordinator; a listing peer's sessions are never on screen, so a rename never
+reaches one. The write is `phux.session.name/v1` (`current\0new`,
+[L3.md](../../../docs/spec/L3.md) section 3.1) on that coordinator's own
+connection, through `phux_client_rename_session`. It writes metadata only:
+nothing attaches and no viewport changes.
+
+The name is judged first against that coordinator's list as Cockpit shows
+it, then by phux-client-ffi against the client's own list, which subscribes to
+the key and confirms the write with a `GET_STATE` barrier. A name another
+session holds, a control character, or a second rename while one is pending
+is refused with a reason, and nothing is sent. The server's
+`METADATA_CHANGED` renames the session in that coordinator's list in place,
+so the switcher's row and, for the active coordinator, the header follow it.
+Renames other clients make reach the list once this client has renamed a
+session on that connection (it subscribes then); until then the next
+workspace refresh carries them.
+
+The panel talks to the engine over its own request and completion slot:
+
+| Offset | Request `cockpit.session` |
+|---|---|
+| 0 | version 1 |
+| 1 | kind: 1 describe the session on screen, 2 rename it, 3 the last rename's outcome |
+| 2 | name length: required for rename, 1 to 255; empty otherwise |
+| 3 | new name, UTF-8 |
+
+| Offset | Reply |
+|---|---|
+| 0 | version 1 |
+| 1 | phase: 0 ready, 1 pending, 2 renamed, 3 refused, 4 unavailable |
+| 2 | name length, then the session's current name |
+| then | host length, then the host ("This Mac" or the registered host's label) |
+| then | reason length, then the reason (refused and unavailable) |
+
+A pending rename is settled by that coordinator's drain, which announces;
+the core then asks for the outcome with each snapshot until it is renamed
+(the panel closes) or refused (the panel keeps the typed name and says why).
+A rename whose connection ended first reads as refused, outcome unknown.
+
 ### A failed coordinator
 
 A peer whose connection fails or closes, or whose channel cannot open, is

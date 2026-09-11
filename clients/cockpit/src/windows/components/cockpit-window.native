@@ -148,6 +148,33 @@
   </stack>
 </template>
 
+<!-- Rename Session, presented by whichever window invoked it. The engine
+     names the session on screen and the coordinator that owns it; the new
+     name is written there and nowhere else. -->
+<template name="cockpit-rename" args="renameopen">
+  <stack>
+    <if test="{renameopen}">
+      <row main="center" cross="start" padding="16">
+        <panel grow="1" max-width="640" padding="16">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <text grow="1" overflow="ellipsis">{renameTitle}</text>
+              <button size="sm" variant="ghost" icon="x" label="Close Rename Session" on-press="rename_close" />
+            </row>
+            <input text="{renameQuery}" placeholder="New session name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New session name" />
+            <text wrap="true" foreground="text_muted">{renameNotice}</text>
+            <row gap="8" cross="center">
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="rename_close">Cancel</button>
+              <button size="sm" on-press="rename_submit">Rename</button>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 <!-- Go to Directory, presented by whichever window invoked it. The listing
      is the connected coordinator's, so a remote host lists its own
      directories. Rows name listing indices; the engine composes paths. -->

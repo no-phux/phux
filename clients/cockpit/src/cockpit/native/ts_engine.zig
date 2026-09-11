@@ -216,6 +216,9 @@ pub const Engine = struct {
     /// The channel generation a slot's retry timer was armed for; a timer
     /// that fires for any other generation, or none, is stale.
     peer_retry_generation: [model_module.max_phux_peers]?u64 = @splat(null),
+    /// The last Rename Session sent, and to which coordinator's connection
+    /// (session_commands.zig). Its outcome is read from that coordinator only.
+    rename_flight: ?@import("session_commands.zig").Flight = null,
 
     /// Automatic redial of a failed listing peer: 1 s, then twice the last
     /// wait, at most 60 s, until it lists again.
@@ -410,7 +413,35 @@ pub const Engine = struct {
         remote_commands.resumeReady(self.model);
         // A settled go-to-directory listing moves nothing in the snapshot,
         // but the picker reads it on the invalidation this announces.
-        return self.drainRemoteNotices(fx) or delta.generation_changed or delta.directory_changed or changed;
+        // A rename moves the header and the switcher, and settles the panel.
+        return self.drainRemoteNotices(fx) or delta.generation_changed or delta.directory_changed or delta.sessions_renamed or changed;
+    }
+
+    /// Rename Session's session (session_commands.zig): the one whose tab
+    /// holds the focused pane, on the coordinator that minted that pane's ref;
+    /// with no Phux pane focused, the active coordinator's attached session.
+    pub const RenameTarget = struct { provider: *support.PhuxProvider, session: u32, name: []const u8 };
+
+    pub fn renameTarget(self: *Engine) ?RenameTarget {
+        if (comptime !support.phux_enabled) return null;
+        const owner = self.renameOwner() orelse return null;
+        if (owner.state() != .attached) return null;
+        const session = owner.selectedSessionId() orelse return null;
+        for (owner.sessionCatalog()) |entry| {
+            if (entry.id == session and entry.name.len != 0) return .{ .provider = owner, .session = session, .name = entry.name };
+        }
+        return null;
+    }
+
+    /// Routed by the id the focused ref carries, never by a name: a pane
+    /// whose coordinator is no longer held has no owner here, and a listing
+    /// peer's terminals cannot be on screen.
+    fn renameOwner(self: *Engine) ?*support.PhuxProvider {
+        const model = self.model;
+        const ref = model.focusedTerminalRef() orelse return model.phux();
+        if (support.providerKind(ref) != .phux) return model.phux();
+        const owner = model.phuxForRef(ref) orelse return null;
+        return if (owner.showing()) owner else null;
     }
 
     fn drainRemoteNotices(self: *Engine, fx: anytype) bool {
@@ -1313,7 +1344,7 @@ pub const Engine = struct {
         // Nothing presents a listing peer's terminals, so nothing rings for
         // them; its list settling is what moves.
         while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
-        return self.commitProviderChange(delta.sessions_listed or delta.detached);
+        return self.commitProviderChange(delta.sessions_listed or delta.detached or delta.sessions_renamed);
     }
 
     fn drainShowingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
@@ -1348,7 +1379,7 @@ pub const Engine = struct {
     /// A settled Go to Directory listing moves too: the picker may be
     /// listing through this peer.
     fn peerPublicationMoved(delta: support.SyncDelta) bool {
-        return delta.sessions_listed or delta.ready_published or delta.metadata_changed or delta.directory_changed;
+        return delta.sessions_listed or delta.sessions_renamed or delta.ready_published or delta.metadata_changed or delta.directory_changed;
     }
 
     /// The slot's current channel closed, or its open was refused, without

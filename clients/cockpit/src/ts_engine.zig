@@ -15,6 +15,7 @@ pub const phux_enabled = @import("cockpit/phux_support.zig").phux_enabled;
 pub const command_results = @import("cockpit/native/command_results.zig");
 pub const remote_hosts = @import("cockpit/native/remote_hosts.zig");
 pub const directory_picker = @import("cockpit/native/directory_picker.zig");
+pub const session_commands = @import("cockpit/native/session_commands.zig");
 pub const phux_peer_channel_key = @import("cockpit/phux_support.zig").phux_peer_channel_key;
 pub const PhuxProvider = @import("cockpit/phux_support.zig").PhuxProvider;
 pub const TerminalRef = @import("provider_contract").TerminalRef;
