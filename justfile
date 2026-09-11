@@ -135,6 +135,14 @@ cockpit-test: cockpit-ffi cockpit-build-contracts
     ./scripts/lib/measure_test.sh
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
+# The same tests with the default app graph, which has no Phux provider
+# (DisabledPhuxProvider). cockpit-ci runs it too (phux-q0i3).
+[group('cockpit')]
+[doc('Cockpit tests with the app graph built without the Phux provider.')]
+[working-directory('clients/cockpit')]
+cockpit-test-no-phux: cockpit-ffi
+    ./scripts/zig-build.sh test -Dplatform=null -Dphux-client-ffi-profile=ffi-dev --summary all
+
 # Split out of cockpit-test only because it is the one step that runs from the
 # repository root; the rest share [working-directory('clients/cockpit')].
 [group('cockpit')]

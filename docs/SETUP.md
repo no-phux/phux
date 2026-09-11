@@ -284,6 +284,7 @@ Use the native Rust/Zig/macOS setup above, Node 24, and Python 3. From the root:
 brew install python
 bash scripts/doctor.sh cockpit
 just cockpit-test
+just cockpit-test-no-phux  # the default app graph, without the Phux provider
 just cockpit-build
 just cockpit-dev
 ```

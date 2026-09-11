@@ -118,6 +118,15 @@ jobs:
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
 
+      # The default app graph has no Phux provider (DisabledPhuxProvider).
+      # Only this step compiles it: provider calls it lacked once failed that
+      # build for days while every step above stayed green (phux-q0i3). It
+      # reuses the step above's cached compilation of everything but the app
+      # graph, and packages nothing.
+      - name: Test the app graph without the Phux provider
+        working-directory: clients/cockpit
+        run: ./scripts/zig-build.sh test -Dplatform=null --summary all
+
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.
       - name: Build the production macOS app

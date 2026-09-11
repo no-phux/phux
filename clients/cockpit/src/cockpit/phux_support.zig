@@ -65,7 +65,23 @@ const DisabledAgentSession = struct {
     }
 };
 
+/// The connection host the disabled provider names: only the identity field
+/// session navigation compares, never a connection.
+const DisabledHost = struct {
+    context_id: u64 = 0,
+};
+const disabled_host: DisabledHost = .{};
+
+/// The build with no Phux in it. `create` always refuses, so no value of this
+/// type is ever held and `Model.phux()` is null; every member below exists
+/// only so provider-generic code compiles, and each one refuses or reports
+/// nothing. Callers whose return type itself differs gate on `phux_enabled`
+/// instead. Fields mirror the ones generic code reads off a provider.
 const DisabledPhuxProvider = struct {
+    context_id: u64 = 0,
+    host: *const DisabledHost = &disabled_host,
+    session_id: ?u32 = null,
+
     pub const AgentState = DisabledAgentState;
     pub const AgentSession = DisabledAgentSession;
     pub const OperationResult = struct {
@@ -202,6 +218,9 @@ const DisabledPhuxProvider = struct {
         return 0;
     }
     pub fn serverId(_: *const DisabledPhuxProvider) ?[]const u8 {
+        return null;
+    }
+    pub fn remoteLabel(_: *const DisabledPhuxProvider) ?[]const u8 {
         return null;
     }
     pub fn endpointDescriptor(_: *const DisabledPhuxProvider) Endpoint {
