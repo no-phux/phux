@@ -18,7 +18,7 @@ use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, Layer, LayerSet,
-    ServerFeatureSet,
+    ServerFeature, ServerFeatureSet,
 };
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MoveResult, Scope, SpawnResult,
@@ -558,6 +558,13 @@ impl Connection {
         self.negotiated_bootstrap
     }
 
+    /// Whether this connection's `HELLO_OK` advertised `feature`; `false` on
+    /// the unnegotiated test seam, which proved nothing.
+    fn advertises(&self, feature: ServerFeature) -> bool {
+        self.negotiated_bootstrap
+            .is_some_and(|negotiated| negotiated.server_features.contains(feature))
+    }
+
     /// `HELLO_OK.server_id` — this connection's server-incarnation identity
     /// (ADR-0053 point 5), or `None` on the unnegotiated test seam.
     #[must_use]
@@ -766,27 +773,46 @@ impl Connection {
     /// `--remote` it lists the remote machine. `path` is absolute, `~`,
     /// `~/rest`, or empty for the serving user's home.
     ///
+    /// `host` names a satellite in the serving hub's registry, and the hub
+    /// relays the listing to that satellite (`docs/spec/L3.md` §4.1,
+    /// ADR-0108); `None` lists the serving host and sends the same bytes as
+    /// before the field existed. A named host requires
+    /// [`ServerFeature::ListDirectoryHost`] in this connection's `HELLO_OK`:
+    /// an older server skips the field and lists itself, so without the bit
+    /// this refuses before sending rather than return the wrong host's
+    /// directory under the requested host's name.
+    ///
     /// The caller MUST check
-    /// [`ServerFeature::ListDirectory`](phux_protocol::caps::ServerFeature::ListDirectory)
-    /// first: an older server drops the unknown frame and this would wait
+    /// [`ServerFeature::ListDirectory`] first: an older server drops the unknown frame and this would wait
     /// until the transport closes. A filesystem refusal is the `Err` arm of
     /// the inner [`DirectoryListingResult`](phux_protocol::wire::frame::DirectoryListingResult);
     /// a protocol refusal (a correlated `ERROR`) is an [`Answer`] `Err`.
     ///
     /// # Errors
     ///
-    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`AttachError::Protocol`] when `host` is set and the server did not
+    /// advertise [`ServerFeature::ListDirectoryHost`] (nothing is sent);
+    /// otherwise transport and decode failures from [`Self::send`] /
     /// [`Self::recv`].
     pub async fn request_directory(
         &mut self,
         request_id: u32,
         path: String,
+        host: Option<phux_protocol::SatelliteHost>,
     ) -> Result<Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>, AttachError>
     {
+        if let Some(host) = &host
+            && !self.advertises(ServerFeature::ListDirectoryHost)
+        {
+            return Err(AttachError::Protocol(format!(
+                "cannot list directories on satellite `{host}`: the server did not \
+                 advertise LIST_DIRECTORY_HOST, so it would list itself instead",
+            )));
+        }
         self.send(&FrameKind::ListDirectory {
             request_id,
             path,
-            host: None,
+            host,
         })
         .await?;
         let mut interleaved = Vec::new();
@@ -1686,7 +1712,7 @@ mod tests {
 
     use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
-    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+    use phux_protocol::ids::{BootstrapId, ResourceId, SatelliteHost, StreamId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
     use tokio::net::UnixStream;
 
@@ -2078,6 +2104,126 @@ mod tests {
             ));
         });
     }
+
+    // --- LIST_DIRECTORY host routing (phux-c2td.19, L3.md §4.1) -----------
+
+    /// Mark `client` as if its `HELLO_OK` had advertised exactly `features`.
+    fn negotiated(client: &mut Connection, features: &[ServerFeature]) {
+        client.negotiated_bootstrap = Some(NegotiatedBootstrap {
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features: ServerFeatureSet::with(features),
+        });
+    }
+
+    fn listing(request_id: u32, path: &str) -> FrameKind {
+        FrameKind::DirectoryListing {
+            request_id,
+            result: Ok(phux_protocol::wire::frame::DirectoryListing {
+                path: path.to_owned(),
+                parent: None,
+                entries: Vec::new(),
+                truncated: false,
+            }),
+        }
+    }
+
+    /// One `LIST_DIRECTORY` round trip against a server that advertised
+    /// `features`: the frame the server received, and the client's reply.
+    fn directory_against(
+        features: &[ServerFeature],
+        host: Option<&str>,
+    ) -> (
+        FrameKind,
+        Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>,
+    ) {
+        block_on(async {
+            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            negotiated(&mut client, features);
+            let mut server = Connection::from_stream(server_stream);
+            let received = tokio::task::spawn_local(async move {
+                let frame = server.recv().await.expect("LIST_DIRECTORY");
+                server.send(&listing(7, "/srv")).await.expect("listing");
+                frame
+            });
+            let reply = tokio::time::timeout(
+                WEDGE_TIMEOUT,
+                client.request_directory(7, "/srv".to_owned(), host.map(SatelliteHost::from)),
+            )
+            .await
+            .expect("the listing must resolve; a timeout here is the wedge itself")
+            .expect("directory reply");
+            (received.await.expect("server task"), reply)
+        })
+    }
+
+    #[test]
+    fn directory_without_host_sends_the_unchanged_frame() {
+        // No host is the pre-ADR-0108 request, so it needs no new bit.
+        let (sent, reply) = directory_against(&[ServerFeature::ListDirectory], None);
+        assert_eq!(
+            sent,
+            FrameKind::ListDirectory {
+                request_id: 7,
+                path: "/srv".to_owned(),
+                host: None,
+            }
+        );
+        assert!(matches!(reply.result(), Ok(Ok(listing)) if listing.path == "/srv"));
+    }
+
+    #[test]
+    fn directory_with_host_carries_it_when_advertised() {
+        let (sent, reply) = directory_against(
+            &[
+                ServerFeature::ListDirectory,
+                ServerFeature::ListDirectoryHost,
+            ],
+            Some("build-box"),
+        );
+        assert_eq!(
+            sent,
+            FrameKind::ListDirectory {
+                request_id: 7,
+                path: "/srv".to_owned(),
+                host: Some(SatelliteHost::new("build-box")),
+            }
+        );
+        assert!(matches!(reply.result(), Ok(Ok(_))));
+    }
+
+    #[test]
+    fn directory_with_host_is_refused_without_the_bit_and_sends_nothing() {
+        // An older server skips `host` and lists itself; the reply would then
+        // be presented as build-box's directory. Refuse before sending. The
+        // unnegotiated seam proved no bit at all, so it refuses too.
+        for features in [Some(&[ServerFeature::ListDirectory][..]), None] {
+            block_on(async {
+                let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+                let mut client = Connection::from_stream(client_stream);
+                if let Some(features) = features {
+                    negotiated(&mut client, features);
+                }
+                let mut server = Connection::from_stream(server_stream);
+                let refused = client
+                    .request_directory(7, "/srv".to_owned(), Some(SatelliteHost::new("build-box")))
+                    .await;
+                assert!(
+                    matches!(&refused, Err(AttachError::Protocol(message))
+                        if message.contains("build-box")
+                            && message.contains("LIST_DIRECTORY_HOST")),
+                    "got {refused:?}"
+                );
+                drop(client);
+                assert!(
+                    matches!(server.recv().await, Err(AttachError::Disconnected)),
+                    "no frame may reach the server"
+                );
+            });
+        }
+    }
+
     #[test]
     fn hello_ok_profile_must_have_been_offered() {
         let offered = ClientCapabilities::new().with_bootstrap(
