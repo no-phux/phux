@@ -192,7 +192,7 @@ fn disconnectAll(engine: anytype, fx: anytype) Reply {
     }
     for (0..model.phux_peers.len) |slot| engine.dropPeer(fx, slot);
     choose(null);
-    remember(model, null);
+    forgetEveryHost(model);
     return .{ .phase = .local };
 }
 
@@ -278,10 +278,10 @@ fn copy(out: *[max_text_bytes]u8, text: []const u8) []const u8 {
     return navigation.displayText(text, out);
 }
 
-/// Last value written, so a status poll does not rewrite an unchanged file.
-var remembered_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
-var remembered_len: usize = 0;
-var remembered_known = false;
+/// The hosts reattached at launch, read from the file once and kept here,
+/// so a status poll does not rewrite an unchanged file.
+var remembered: remote_memory.Hosts = .{};
+var remembered_loaded = false;
 
 /// The host the user picked in Connect to Host this run. Only that host is
 /// ever remembered: one selected by `PHUX_REMOTE` or `phux-remote` is the
@@ -300,38 +300,50 @@ fn choose(target: ?[]const u8) void {
     chosen_len = value.len;
 }
 
-/// A host removed by name is no longer chosen, and no longer reattached at
-/// launch if it is the one remembered.
-fn forgetHost(model: *Model, target: []const u8) void {
-    if (chosen_len != 0 and std.mem.eql(u8, chosen_buffer[0..chosen_len], target)) chosen_len = 0;
-    const path = remote_memory.path() orelse return;
-    var buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
-    const remembered = remote_memory.load(model.provider.io, path, &buffer) orelse return;
-    if (std.mem.eql(u8, remembered, target)) remember(model, null);
+/// The remembered hosts, read from the file on first use.
+fn rememberedHosts(model: *Model) ?*remote_memory.Hosts {
+    const path = remote_memory.path() orelse return null;
+    if (!remembered_loaded) {
+        remote_memory.loadAll(model.provider.io, path, &remembered);
+        remembered_loaded = true;
+    }
+    return &remembered;
 }
 
+fn saveRemembered(model: *Model) void {
+    const path = remote_memory.path() orelse return;
+    remote_memory.storeAll(model.provider.io, path, &remembered);
+}
+
+/// A host removed by name is no longer chosen, and no longer reattached at
+/// launch. The other remembered hosts stay.
+fn forgetHost(model: *Model, target: []const u8) void {
+    if (chosen_len != 0 and std.mem.eql(u8, chosen_buffer[0..chosen_len], target)) chosen_len = 0;
+    const hosts = rememberedHosts(model) orelse return;
+    if (hosts.remove(target)) saveRemembered(model);
+}
+
+/// Disconnect All: no host is reattached at launch.
+fn forgetEveryHost(model: *Model) void {
+    const hosts = rememberedHosts(model) orelse return;
+    hosts.* = .{};
+    saveRemembered(model);
+}
+
+/// The chosen host, once seen connected, joins the hosts reattached at
+/// launch; the ones remembered before stay.
 fn rememberIfChosen(model: *Model, target: ?[]const u8) void {
     const value = target orelse return;
     if (chosen_len == 0 or !std.mem.eql(u8, chosen_buffer[0..chosen_len], value)) return;
-    remember(model, value);
+    const hosts = rememberedHosts(model) orelse return;
+    if (hosts.add(value)) saveRemembered(model);
 }
 
 /// Tests share this module's process state; each starts from nothing.
 pub fn forgetForTests() void {
     chosen_len = 0;
-    remembered_len = 0;
-    remembered_known = false;
-}
-
-fn remember(model: *Model, target: ?[]const u8) void {
-    const path = remote_memory.path() orelse return;
-    const value = target orelse "";
-    if (value.len > remembered_buffer.len) return;
-    if (remembered_known and std.mem.eql(u8, remembered_buffer[0..remembered_len], value)) return;
-    remote_memory.store(model.provider.io, path, target);
-    @memcpy(remembered_buffer[0..value.len], value);
-    remembered_len = value.len;
-    remembered_known = true;
+    remembered = .{};
+    remembered_loaded = false;
 }
 
 test "requests are exact: a connect names a host, a disconnect may, status and local carry none" {

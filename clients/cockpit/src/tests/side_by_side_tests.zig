@@ -16,6 +16,10 @@ const projection = @import("../cockpit/native/workspace_projection.zig");
 const remote_hosts = @import("../cockpit/native/remote_hosts.zig");
 const startup = @import("../cockpit/startup.zig");
 const config = @import("../config/config.zig");
+const remote_memory = @import("../cockpit/remote_memory.zig");
+const attachments = @import("../cockpit/attachment_state.zig");
+const grid = @import("../terminal/grid.zig");
+const contract = @import("provider_contract");
 
 const testing = std.testing;
 const targets = navigation.targets;
@@ -528,6 +532,99 @@ test "a fifth coordinator is refused with the reason, and nothing changes" {
     try testing.expect(std.mem.indexOf(u8, reply, "at most four coordinators") != null);
     try testing.expectEqualStrings("lab", local.remoteTarget().?);
     try testing.expectEqualSlices(?*support.PhuxProvider, &before, &engine.model.phux_peers);
+}
+
+test "relaunch reattaches every remembered host beside the coordinators held, each listing and never attached" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var registry = try IsolatedRegistry.init(two_host_registry);
+    defer registry.deinit();
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const config_file = try registry.tmp.dir.realPathFileAlloc(io, "phux/config.toml", gpa);
+    defer gpa.free(config_file);
+    const state_path = try std.fs.path.join(gpa, &.{ std.fs.path.dirname(config_file).?, "workspace.state" });
+    defer gpa.free(state_path);
+    const memory = remote_memory.setPathFor(state_path).?;
+    defer _ = remote_memory.setPathFor(null);
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(hosts.add("studio"));
+    remote_memory.storeAll(io, memory, &hosts);
+
+    // No host configured: this Mac is active and both hosts stand beside it.
+    var remembered = startup.resolvePhuxConfig(config.parse(""), .{ .runtime_dir = "/tmp/rt" });
+    startup.restoreRememberedRemote(io, state_path, &remembered);
+    const engine = try ts_engine.Engine.create(gpa, io);
+    defer engine.destroy();
+    const model = engine.model;
+    model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &remembered)).?;
+    model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
+    try startup.attachRememberedPeers(gpa, io, model);
+    try testing.expect(model.phux_provider.?.remoteTarget() == null);
+    try testing.expectEqualStrings("me@mini", model.phux_peers[0].?.remoteTarget().?);
+    try testing.expectEqualStrings("studio", model.phux_peers[1].?.remoteTarget().?);
+    try testing.expectEqualStrings("studio", model.phux_peers[1].?.remoteLabel().?);
+    try testing.expect(model.phux_peers[2] == null);
+    for (model.phux_peers[0..2]) |slot| try testing.expect(slot.?.standby);
+    // Listing only: after HELLO_OK the restored studio asks GET_STATE, never
+    // ATTACH, so it holds no viewport on anyone's session.
+    const studio = model.phux_peers[1].?;
+    try studio.host.start("side-by-side");
+    try fixture.stageFixture(studio.bridge, "hello.bin");
+    _ = try studio.drainReadiness();
+    const frames = countFrames(studio);
+    try testing.expectEqual(@as(usize, 0), frames.attach);
+    try testing.expectEqual(@as(usize, 1), frames.command);
+
+    // A configured host is active: this Mac and the other remembered host
+    // stand beside it, and the configured one is not held twice.
+    var configured = startup.resolvePhuxConfig(config.parse("phux-remote = studio\n"), .{ .runtime_dir = "/tmp/rt" });
+    startup.restoreRememberedRemote(io, state_path, &configured);
+    const second = try ts_engine.Engine.create(gpa, io);
+    defer second.destroy();
+    second.model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &configured)).?;
+    second.model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &configured);
+    try startup.attachRememberedPeers(gpa, io, second.model);
+    try testing.expectEqualStrings("studio", second.model.phux_provider.?.remoteTarget().?);
+    try testing.expect(second.model.phux_peers[0].?.remoteTarget() == null);
+    try testing.expectEqualStrings("me@mini", second.model.phux_peers[1].?.remoteTarget().?);
+    try testing.expect(second.model.phux_peers[1].?.standby);
+    try testing.expect(second.model.phux_peers[2] == null);
+}
+
+test "a placement saved under .phux for a remote host before coordinator ids is dropped at launch, and that host's workspace projects it again" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const session = try grid.Session.create(gpa, io, 80, 24);
+    const model = try std.heap.page_allocator.create(model_module.Model);
+    model.* = try model_module.initialModelWithIo(gpa, io, session);
+    // What an earlier release saved for mini's terminal 7: the old `.phux`
+    // id beside mini's `phux-remote:mini` endpoint, placed in a tab.
+    const old: support.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, 7, "") } };
+    _ = try model.saved_attachments.append(.{ .terminal_ref = old, .context = try attachments.Context.init("phux-remote:mini", "server-a", 1) });
+    model.pending_attachments[0] = true;
+    try testing.expect(model.primary.admitTab(old));
+    const mini = try support.PhuxProvider.create(gpa, io, .{ .remote = .{ .target = "mini" } }, null, "old-placement");
+    model_module.attachPhuxProvider(model, mini);
+    const engine = try ts_engine.Engine.createFromInitialized(.{ .model = model, .provenance = .restored });
+    defer engine.destroy();
+
+    // A Phux-backed launch keeps no saved evidence: the old placement is
+    // gone, and nothing can match it or route it.
+    try testing.expectEqual(@as(u8, 0), model.saved_attachments.count);
+    try testing.expect(model.locateTerminal(old) == null);
+    try testing.expect(!model.containsTerminal(old));
+    try testing.expect(model.phuxForRef(old) == null);
+    // mini's own workspace projects its terminal 7 under mini's id.
+    try fixture.attachHost(mini.host);
+    model.shared_workspace.authority = mini.providerId();
+    _ = try model.shared_workspace.apply(model, mini.workspaceSnapshot(), mini.connectionEpoch());
+    const projected = model.focusedTerminalRef().?;
+    try testing.expectEqual(contract.phuxCoordinatorId("mini"), projected.provider_id);
+    try testing.expectEqual(@as(u32, 7), projected.terminal_id.phux.id);
+    try testing.expect(!projected.eql(old));
+    try testing.expect(model.phuxForRef(projected) == mini);
 }
 
 /// Channel keys closed and opened, and restarts counted; a channel it opens

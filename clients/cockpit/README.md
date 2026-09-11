@@ -177,8 +177,10 @@ beside the others, in the same windows, without disconnecting anything.
 Every terminal carries the coordinator that minted it, so input always
 reaches the right machine. A coordinator that fails says why in its group.
 Use this Mac makes this Mac active and keeps the hosts listed; Disconnect
-removes the host named in the panel, and Disconnect All every host. The last host is remembered and reattached beside this Mac
-after relaunch. Cockpit never pairs a host; an unregistered one fails with
+removes the host named in the panel, and Disconnect All every host. The
+connected hosts are remembered and come back beside this Mac after relaunch,
+listing until one of their sessions is picked. Cockpit never pairs a host;
+an unregistered one fails with
 the CLI command that pairs it. See [Remote hosts](docs/REMOTE_HOSTS.md).
 
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line

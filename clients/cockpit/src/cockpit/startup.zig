@@ -155,6 +155,41 @@ pub fn createPhuxPeerFromConfig(
     return peer;
 }
 
+/// Every remembered host not already held joins beside the coordinators at
+/// launch, listing, in the next free peer slot (docs/REMOTE_HOSTS.md,
+/// "Persistence and relaunch"). None is attached until one of its sessions is
+/// shown. A host already held (the active one, or the first remembered host
+/// `createPhuxPeerFromConfig` placed) is never held twice.
+pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_module.Model) !void {
+    if (comptime !phux_enabled) return;
+    const path = remote_memory.path() orelse return;
+    var hosts: remote_memory.Hosts = .{};
+    remote_memory.loadAll(io, path, &hosts);
+    for (0..hosts.count) |index| {
+        const target = hosts.get(index);
+        if (coordinatorHeld(model, PhuxProvider.coordinatorId(.{ .remote = .{ .target = target } }))) continue;
+        const slot = freePeerSlot(model) orelse return;
+        const peer = try createRemotePhuxProvider(gpa, io, target, null);
+        // Lists sessions only; never attaches, so it sizes nobody's panes.
+        peer.standBy();
+        model.phux_peers[slot] = peer;
+    }
+}
+
+fn coordinatorHeld(model: *const model_module.Model, id: anytype) bool {
+    if (model.phux_provider) |active| if (active.effectiveProviderId() == id) return true;
+    for (model.phux_peers) |value| {
+        const peer = value orelse continue;
+        if (peer.effectiveProviderId() == id) return true;
+    }
+    return false;
+}
+
+fn freePeerSlot(model: *const model_module.Model) ?usize {
+    for (model.phux_peers, 0..) |value, slot| if (value == null) return slot;
+    return null;
+}
+
 /// A host selected at launch (the config, `PHUX_REMOTE`, or the remembered
 /// host) resolves in the registry the way Connect to Host does, so the
 /// entry's pinned `session` and its name apply from the first attach rather
@@ -655,7 +690,9 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     errdefer model_module.deinitModel(initialized.model);
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
     attachPhuxProvider(initialized.model, remote_provider);
-    if (remote_provider != null)
+    if (remote_provider != null) {
         initialized.model.phux_peers[0] = try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config);
+        try attachRememberedPeers(std.heap.page_allocator, init.io, initialized.model);
+    }
     return initialized;
 }

@@ -18,8 +18,9 @@ Mac and registered hosts), each on its own connection, listed as host groups
 minted it, so two servers' terminal 7 are two terminals. Picking a session in
 another coordinator's group shows it beside the others without disconnecting
 anything; a coordinator that fails shows why in its group. Disconnect removes
-the host named in the panel, and Disconnect All every host. The last host is
-remembered and reattached beside this Mac on the next launch.
+the host named in the panel, and Disconnect All every host. The hosts
+connected through Connect to Host are remembered and come back beside this
+Mac on the next launch, listing until one of their sessions is shown.
 
 ## Endpoint model
 
@@ -130,18 +131,32 @@ itself once the host it was waiting for connects.
 
 ## Persistence and relaunch
 
-Phux-backed layout lives in the coordinator's shared workspace, so the
-client only needs to remember which coordinator to reattach to. When a host
-chosen through Connect to Host first connects, `<state file>.remote`
-records it (`src/cockpit/remote_memory.zig`). A host selected by
-`phux-remote` or `PHUX_REMOTE` is never written, so removing the setting
-ends it. The file is written the first time a status poll sees the chosen
-host connected, so a host that never connected is not remembered.
-Disconnect All removes the file, and Disconnect removes it when it names the
-host removed; Use this Mac leaves it, because the host stays listed. A torn or foreign file is treated as absent. At launch a
-remembered host is reattached beside this Mac, as the standby coordinator
-(below), and this Mac is active. A configured or environment host is active,
-with this Mac beside it. Saved placements carry the endpoint
+Phux-backed layout lives in each coordinator's shared workspace, so the
+client only needs to remember which coordinators to reattach to. When a host
+chosen through Connect to Host first connects, it joins the hosts
+`<state file>.remote` records (`src/cockpit/remote_memory.zig`): up to three,
+oldest first, one `target=` line each. A file an earlier release wrote, with
+one host, still reads. A host selected by `phux-remote` or `PHUX_REMOTE` is
+never written, so removing the setting ends it. A host is added the first
+time a status poll sees it connected, so a host that never connected is not
+remembered. Disconnect removes the host it names from the file, and
+Disconnect All removes the file; Use this Mac leaves it, because the hosts
+stay listed. A torn or foreign file is treated as absent.
+
+At launch every remembered host is reattached beside the coordinators held,
+each LISTING in its own slot (`startup.attachRememberedPeers`); none attaches
+until one of its sessions is shown. With no host configured this Mac is
+active; a configured or environment host is active with this Mac beside it,
+and is not held a second time if it is also remembered.
+
+A Phux-backed launch keeps no client-side layout for any coordinator: the
+state file is not read, and saved attachment evidence is discarded when the
+Phux provider is attached. A coordinator's tabs come back from its own
+shared workspace when it connects (a peer's, when one of its sessions is
+shown). So placements saved before coordinator ids existed, which carry
+`.phux` beside a remote host's `phux-remote:<target>` endpoint, never match
+anything; that host's workspace projects its terminals again under its own
+coordinator id. Within a run, saved placements carry the endpoint
 `phux-remote:<target>`, which is disjoint from every absolute socket path,
 so a placement never matches the wrong coordinator.
 
@@ -278,7 +293,12 @@ projected reads "workspace unavailable" on its session rows.
   Disconnect followed by a Connect briefly holds a second while the old
   one's close is delivered. Connecting to a fifth is refused with that
   reason, and nothing changes.
-- Only the most recently connected host is remembered for relaunch.
+- Relaunch restores which hosts are held, not what was on screen: each
+  remembered host comes back listing, and none of its sessions is shown
+  again until one is picked. Cockpit keeps no client-side placement for a
+  Phux coordinator across relaunch (for the active coordinator as for a
+  peer): which native window each of its tabs was in and which tab was
+  selected come from its shared workspace when it is shown again.
 - New Window and the available-terminal inventory belong to the active
   coordinator, whichever pane is focused. A peer's edit receipt is applied
   once the edit is queued on that peer; its confirmation or refusal shows in
@@ -292,9 +312,6 @@ projected reads "workspace unavailable" on its session rows.
   once its tabs leave the screen and it lists again.
 - Showing a peer session is refused while the active coordinator has a
   retarget pending, since the two briefly share a coordinator id.
-- Placements saved for a remote active host before coordinator ids existed
-  carry `.phux` and are not matched; that host's workspace projects them
-  again.
 - Known-host rows group terminals by satellite name; two coordinators' own
   terminals share the coordinator row.
 - Catalog search matches titles, directories, sessions and peer host labels.

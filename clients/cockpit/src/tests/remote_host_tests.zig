@@ -61,6 +61,47 @@ test "the remembered host is one exact line, and anything else is forgotten" {
     try testing.expect(remote_memory.encode("a b", &out) == null);
 }
 
+test "remembered hosts are a short exact list, and the one-host file still reads" {
+    var hosts: remote_memory.Hosts = .{};
+    try testing.expect(hosts.add("me@mini"));
+    try testing.expect(hosts.add("studio"));
+    try testing.expect(!hosts.add("studio"));
+    try testing.expect(!hosts.add("a b"));
+    var out: [remote_memory.max_list_file_bytes]u8 = undefined;
+    const encoded = remote_memory.encodeAll(&hosts, &out).?;
+    try testing.expectEqualStrings("phux-cockpit-remote v2\ntarget=me@mini\ntarget=studio\n", encoded);
+    var parsed: remote_memory.Hosts = .{};
+    try testing.expect(remote_memory.parseAll(encoded, &parsed));
+    try testing.expectEqual(@as(usize, 2), parsed.count);
+    try testing.expectEqualStrings("me@mini", parsed.get(0));
+    try testing.expectEqualStrings("studio", parsed.get(1));
+    // A file an earlier release wrote reads as one host.
+    try testing.expect(remote_memory.parseAll("phux-cockpit-remote v1\ntarget=me@mini\n", &parsed));
+    try testing.expectEqual(@as(usize, 1), parsed.count);
+    try testing.expectEqualStrings("me@mini", parsed.get(0));
+    // A full list takes no more; removing one keeps the others in order.
+    try testing.expect(hosts.add("lab"));
+    try testing.expect(!hosts.add("rack"));
+    try testing.expect(hosts.remove("me@mini"));
+    try testing.expect(!hosts.remove("me@mini"));
+    try testing.expectEqual(@as(usize, 2), hosts.count);
+    try testing.expectEqualStrings("studio", hosts.get(0));
+    try testing.expectEqualStrings("lab", hosts.get(1));
+    for ([_][]const u8{
+        "phux-cockpit-remote v2\n",
+        "phux-cockpit-remote v2\ntarget=mini\ntarget=mini\n",
+        "phux-cockpit-remote v2\ntarget=a\ntarget=b\ntarget=c\ntarget=d\n",
+        "phux-cockpit-remote v2\ntarget=mini",
+        "phux-cockpit-remote v2\ntarget=mini\nextra\n",
+        "phux-cockpit-remote v2\ntarget=\n",
+        "phux-cockpit-remote v3\ntarget=mini\n",
+    }) |bytes| {
+        try testing.expect(!remote_memory.parseAll(bytes, &parsed));
+        try testing.expectEqual(@as(usize, 0), parsed.count);
+    }
+    try testing.expect(remote_memory.encodeAll(&remote_memory.Hosts{}, &out) == null);
+}
+
 test "a remembered host restores at launch unless the config names one, and returning local forgets it" {
     const io = testing.io;
     const gpa = testing.allocator;
@@ -253,4 +294,53 @@ test "only a host chosen through Connect to Host is remembered, never one the en
     const chosen = try remote_hosts.handle(engine, &fx, "\x01\x01\x00", &out);
     try testing.expectEqual(@intFromEnum(remote_hosts.Phase.connected), chosen[1]);
     try testing.expectEqualStrings("me@mini", remote_memory.load(io, memory, &remembered).?);
+}
+
+test "every host connected through Connect to Host is remembered; Disconnect forgets one, Disconnect All every one" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var registry = try IsolatedRegistry.init("[[remote]]\nname = \"mini\"\nendpoint = \"ws://127.0.0.1:1\"\n[[remote]]\nname = \"studio\"\nendpoint = \"ws://127.0.0.1:2\"\n");
+    defer registry.deinit();
+    try registry.tmp.dir.writeFile(io, .{ .sub_path = "anchor", .data = "" });
+    const anchor = try registry.tmp.dir.realPathFileAlloc(io, "anchor", gpa);
+    defer gpa.free(anchor);
+    const state_path = try std.fs.path.join(gpa, &.{ std.fs.path.dirname(anchor).?, "workspace.state" });
+    defer gpa.free(state_path);
+    const memory = remote_memory.setPathFor(state_path).?;
+    defer _ = remote_memory.setPathFor(null);
+    remote_hosts.forgetForTests();
+    defer remote_hosts.forgetForTests();
+
+    const engine = try ts_engine.Engine.create(gpa, io);
+    defer engine.destroy();
+    const provider = try support.PhuxProvider.create(gpa, io, .{ .unix = "/remember-unused" }, null, "remember-test");
+    engine.model.phux_provider = provider;
+    try support.PhuxProvider.test_support.attachHost(provider.host);
+    const fx = ts_engine.NoShells{};
+    var out: [remote_hosts.max_bytes]u8 = undefined;
+    var hosts: remote_memory.Hosts = .{};
+
+    // Each host is remembered once a status poll sees it connected, beside
+    // the ones remembered before.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x01\x00", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x01\x00", &out);
+    remote_memory.loadAll(io, memory, &hosts);
+    try testing.expectEqual(@as(usize, 2), hosts.count);
+    try testing.expectEqualStrings("me@mini", hosts.get(0));
+    try testing.expectEqualStrings("studio", hosts.get(1));
+
+    // Disconnect mini, by its registry name: only it is forgotten.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
+    remote_memory.loadAll(io, memory, &hosts);
+    try testing.expectEqual(@as(usize, 1), hosts.count);
+    try testing.expectEqualStrings("studio", hosts.get(0));
+
+    // Disconnect All: none is, and the file is gone.
+    _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x00", &out);
+    remote_memory.loadAll(io, memory, &hosts);
+    try testing.expectEqual(@as(usize, 0), hosts.count);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(io, memory, .{}));
 }
