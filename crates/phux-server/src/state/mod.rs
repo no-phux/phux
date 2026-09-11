@@ -44,6 +44,7 @@ mod agent_tracking;
 mod bindings;
 mod client;
 mod client_table;
+mod conditional_kill;
 mod config;
 mod construct;
 mod cwd;
@@ -62,6 +63,7 @@ mod policy;
 mod reap;
 mod resolve;
 mod resource_table;
+mod satellite_spawns;
 mod session_table;
 mod sessions;
 mod snapshot;
@@ -73,6 +75,7 @@ mod wire_ids;
 use agent_tracking::AgentState;
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
+pub use conditional_kill::KillIfRefusal;
 use config::ServerConfig;
 pub use events::{EventScope, EventSubscription};
 use hub_state::HubState;
@@ -180,6 +183,11 @@ pub struct ServerState {
     /// `LeaseTable::release_all_for`, called from [`Self::detach`]. See
     /// [`lease_table`] for the per-field documentation.
     leases: LeaseTable,
+    /// On a federation hub, which consumer asked for each satellite
+    /// resource this hub spawned, and whether another consumer has attached
+    /// it through the hub since (ADR-0109). Empty off-hub. See
+    /// [`satellite_spawns`].
+    satellite_spawns: satellite_spawns::SatelliteSpawnLedger,
     /// Every core-id ↔ wire-id mapping the server owns (sessions,
     /// terminals, windows) plus the allocators that mint fresh wire ids.
     /// Lives in this crate (and only this crate) because `phux-core` and

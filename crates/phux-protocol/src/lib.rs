@@ -58,7 +58,7 @@ pub use caps::{
 };
 pub use ids::{
     BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, ResourceId,
-    ResourceKind, SatelliteHost, SessionId, StreamId, WindowId,
+    ResourceKind, SatelliteHost, ServerInstance, SessionId, StreamId, WindowId,
 };
 pub use wire::frame::{
     CloseReason, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,

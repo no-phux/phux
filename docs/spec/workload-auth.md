@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # phux-workload/v1 — workload authentication and scoped authority
@@ -512,6 +512,7 @@ point before any handler or satellite branch:
 | `ATTACH_RESOURCE` | `BIND` and `OBSERVE` | named Terminal |
 | `DETACH_RESOURCE` | cleanup-exempt | calling connection's binding only |
 | `KILL_RESOURCE` | `SIGNAL` | named Terminal |
+| `KILL_RESOURCE_IF` | `SIGNAL` | named Terminal |
 | `GET_SCREEN` | `OBSERVE` | named Terminal |
 | `ROUTE_INPUT`, `APPLY_INPUT` | `INPUT` | named Terminal |
 | `KILL_RESOURCES` | `SIGNAL` | every named Terminal; all-or-nothing |

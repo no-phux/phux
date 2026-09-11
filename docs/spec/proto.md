@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -407,6 +407,8 @@ ServerFeature = bitset (u32) {
     WHOAMI             = 0x00040000, // read-only phux.whoami/v1 Global key (L3.md §3.9; ADR-0106)
     LIST_DIRECTORY_HOST = 0x00080000, // LIST_DIRECTORY.host satellite route (L3.md §4.1)
     SSH_ORIGIN         = 0x00100000, // HELLO.ssh_origin honored; whoami reports ssh-stdio (L3.md §3.9)
+    CONDITIONAL_KILL   = 0x00200000, // KILL_RESOURCE_IF, SPAWN_RESOURCE.bind_instance,
+                                     //   RESOURCE_SPAWNED.instance (L1.md §3.1, §5.2.1; ADR-0109)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -473,8 +475,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
 `RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`,
 `HOST_SESSIONS = 0x10000`, `KEEP_EMPTY_SESSIONS = 0x20000`,
-`WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`, and
-`SSH_ORIGIN = 0x100000`; unknown
+`WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
+`SSH_ORIGIN = 0x100000`, and `CONDITIONAL_KILL = 0x200000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -515,6 +517,16 @@ server reports an announced connection as `ssh-stdio` ([L3.md](./L3.md)
 §3.9). The server honors the field only from a same-uid Unix-socket peer, and
 only as a label: its value is whatever the connecting side reported, and it
 grants nothing.
+
+`CONDITIONAL_KILL = 0x200000` gates a command, `KILL_RESOURCE_IF`
+([L1.md](./L1.md) §5.2.1), and the spawn binding that feeds it. A client MUST
+see the bit before sending the command: a server without it cannot decode tag
+`0x1b`, which is why the command is a separate tag, since a peer that skipped a
+precondition would kill unconditionally. `SPAWN_RESOURCE.bind_instance` is
+safe to send unadvertised. A server without the bit skips the field and
+answers an unbound `OK`, which tells the client there is no token to bind. The
+token in `RESOURCE_SPAWNED.instance` names the answering server's id space:
+through a hub, the satellite's ([L1.md](./L1.md) §3.1).
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -1013,6 +1025,9 @@ ErrorCode = enum {
     OVERFLOW             = 211,  // L1.md §5.5: the call exceeds 65,536 bytes
                                  //   or the bounded append lane is full;
                                  //   nothing was appended
+    PRECONDITION_FAILED  = 212,  // L1.md §5.2.1: a KILL_RESOURCE_IF condition
+                                 //   is false, unknown, or one a hub cannot
+                                 //   vouch for; nothing was killed
 
     INTERNAL_ERROR       = 65535,
 }
@@ -1048,7 +1063,7 @@ What a code does tell a receiver is its scope: how far to degrade.
 | Scope | Codes | What the receiver keeps |
 |---|---|---|
 | Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `WRONG_RESOURCE_KIND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
-| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
+| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, `PRECONDITION_FAILED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
 | Connection | `VERSION_INCOMPATIBLE`, `FRAME_TOO_LARGE`, `INVALID_COMMAND`, admission/revocation/expiry `PERMISSION_DENIED` | nothing beyond the frames still in flight |
 
 `Connection` scope means the consumer SHOULD expect the server to close the

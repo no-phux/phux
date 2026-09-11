@@ -167,6 +167,14 @@ pub struct Counters {
     pub next_window_wire_id: u32,
     /// Next session-touch timestamp (resolves `AttachTarget::Last`).
     pub next_touch_timestamp: u64,
+    /// The instance token naming the terminal id space (ADR-0109). It rides
+    /// with the allocators because it must change exactly when they start
+    /// over: an upgrade that restores `next_terminal_wire_id` restores the
+    /// token too. `None` from an image that predates the token; the new
+    /// image then keeps the fresh token it minted, which no client can hold
+    /// a stale copy of.
+    #[serde(default)]
+    pub server_instance: Option<[u8; 16]>,
 }
 
 /// A session in the blob.
@@ -295,6 +303,15 @@ pub enum SplitDirBlob {
 mod tests {
     use super::*;
 
+    /// ADR-0109: counters written by an image that predates the instance
+    /// token still decode, with no token.
+    #[test]
+    fn counters_from_an_older_image_decode_without_an_instance_token() {
+        let json = r#"{"next_session_wire_id":3,"next_terminal_wire_id":5,"next_window_wire_id":4,"next_touch_timestamp":42}"#;
+        let counters: Counters = serde_json::from_str(json).expect("older counters decode");
+        assert_eq!(counters.server_instance, None);
+    }
+
     fn sample() -> StateBlob {
         StateBlob {
             version: BLOB_VERSION,
@@ -304,6 +321,7 @@ mod tests {
                 next_terminal_wire_id: 5,
                 next_window_wire_id: 4,
                 next_touch_timestamp: 42,
+                server_instance: Some([7; 16]),
             },
             sessions: vec![SessionBlob {
                 wire_id: 1,

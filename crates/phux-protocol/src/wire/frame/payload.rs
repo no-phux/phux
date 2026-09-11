@@ -1,7 +1,7 @@
 //! Shared sub-record payload types: attach targets (SPEC §13), viewport
 //! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
 
-use crate::ids::{GroupId, ResourceId, ResourceKind, SessionId};
+use crate::ids::{GroupId, ResourceId, ResourceKind, ServerInstance, SessionId};
 
 // -----------------------------------------------------------------------------
 // SpawnResource — the kind-bearing half of SPAWN_RESOURCE (L1.md §1.2).
@@ -48,6 +48,13 @@ pub struct SpawnResource {
     /// bytes, non-empty). The same value ADR-0068's
     /// `phux.agent-session/v1` record carries as `native_id`.
     pub native_id: Option<String>,
+    /// Ask the server to bind the new resource to its instance token
+    /// (field 15, `docs/spec/L1.md` §3.1, ADR-0109). A server that
+    /// advertises [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill)
+    /// answers such a spawn with [`SpawnResult::OkBound`]; one without the
+    /// bit skips the field by length and answers [`SpawnResult::Ok`]. Valid
+    /// for every kind.
+    pub bind_instance: bool,
 }
 
 impl SpawnResource {
@@ -60,6 +67,7 @@ impl SpawnResource {
             parent: Some(parent),
             provider: Some(provider.into()),
             native_id: None,
+            bind_instance: false,
         }
     }
 
@@ -67,6 +75,13 @@ impl SpawnResource {
     #[must_use]
     pub fn with_native_id(mut self, native_id: Option<String>) -> Self {
         self.native_id = native_id;
+        self
+    }
+
+    /// Builder setter for [`Self::bind_instance`].
+    #[must_use]
+    pub const fn with_bind_instance(mut self, bind_instance: bool) -> Self {
+        self.bind_instance = bind_instance;
         self
     }
 
@@ -78,6 +93,7 @@ impl SpawnResource {
             && self.parent.is_none()
             && self.provider.is_none()
             && self.native_id.is_none()
+            && !self.bind_instance
     }
 }
 
@@ -266,6 +282,38 @@ pub enum SpawnResult {
     Ok(ResourceId),
     /// Structured failure; see [`SpawnError`].
     Err(SpawnError),
+    /// The freshly spawned resource's identifier, bound to the instance
+    /// token of the server that allocated it (ADR-0109). Only a spawn that
+    /// set [`SpawnResource::bind_instance`] is answered this way, so a
+    /// caller that never asks never sees it. On the wire it is the `Ok` tag
+    /// plus `RESOURCE_SPAWNED` field 3 (`docs/spec/L1.md` §3.1).
+    OkBound {
+        /// The freshly spawned resource.
+        id: ResourceId,
+        /// The token naming the id space `id` was allocated from.
+        instance: ServerInstance,
+    },
+}
+
+impl SpawnResult {
+    /// The spawned resource's id, bound or not; `None` for a refusal.
+    #[must_use]
+    pub const fn spawned_id(&self) -> Option<&ResourceId> {
+        match self {
+            Self::Ok(id) | Self::OkBound { id, .. } => Some(id),
+            Self::Err(_) => None,
+        }
+    }
+
+    /// The instance token the spawned id is bound to, when the server bound
+    /// it.
+    #[must_use]
+    pub const fn instance(&self) -> Option<ServerInstance> {
+        match self {
+            Self::OkBound { instance, .. } => Some(*instance),
+            Self::Ok(_) | Self::Err(_) => None,
+        }
+    }
 }
 
 /// Error variants for [`FrameKind::ResourceMoved`](super::FrameKind::ResourceMoved) (ADR-0056).

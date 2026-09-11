@@ -47,6 +47,10 @@ pub mod agent_prompt;
 pub mod agent_wait;
 pub mod ask;
 pub mod attach;
+// Conditional kills (ADR-0109): bind a spawn to the server's instance token
+// and kill it later only if it is still untouched. Pure builders plus one
+// request wrapper over `attach::connection`.
+pub mod conditional_kill;
 pub mod explain;
 pub mod layout_ops;
 pub mod perf;

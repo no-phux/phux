@@ -1601,12 +1601,25 @@ async fn relay_spawn_to_satellite(
     relay.spawn(spawn).await
 }
 
+/// ADR-0109: remember which hub consumer asked for a satellite resource, so
+/// the hub can tell its consumers apart when a conditional kill asks whether
+/// anyone else attached it. Every consumer shares one link identity on the
+/// satellite, so the satellite cannot. Recorded before the reply goes out,
+/// so no consumer can know the id first.
+fn record_satellite_spawn(state: &SharedState, client_id: ClientId, result: &SpawnResult) {
+    if let Some(phux_protocol::ids::ResourceId::Satellite { host, id }) = result.spawned_id() {
+        let instance = result.instance();
+        state.with_mut(|s| s.hub_record_satellite_spawn(host.clone(), *id, instance, client_id));
+    }
+}
+
 /// Relay a satellite-targeted spawn and reply with its re-tagged result.
 ///
 /// Only a validated payload reaches route lookup. Ownership or independent
 /// agent-session provenance refusals are returned without touching the link.
 pub(crate) async fn dispatch_satellite_spawn(
     state: &SharedState,
+    client_id: ClientId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     request_id: u32,
     host: &phux_protocol::ids::SatelliteHost,
@@ -1616,6 +1629,7 @@ pub(crate) async fn dispatch_satellite_spawn(
         Ok(spawn) => relay_spawn_to_satellite(state, host, spawn).await,
         Err(error) => SpawnResult::Err(error),
     };
+    record_satellite_spawn(state, client_id, &result);
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::ResourceSpawned {
             request_id,
@@ -1848,6 +1862,7 @@ pub(crate) async fn handle_spawn_terminal(
     let kind = resource
         .as_ref()
         .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
+    let bind_instance = resource.as_ref().is_some_and(|r| r.bind_instance);
     match crate::resource::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
         Some(crate::resource::ResourceKind::AgentSession) => {
@@ -1898,10 +1913,10 @@ pub(crate) async fn handle_spawn_terminal(
                 term,
                 owner_terminal,
                 initial_size,
-                resource: None,
+                resource: forwarded_bind_request(bind_instance),
             },
         );
-        dispatch_satellite_spawn(state, out_tx, request_id, &host, spawn).await;
+        dispatch_satellite_spawn(state, client_id, out_tx, request_id, &host, spawn).await;
         return;
     }
 
@@ -1980,9 +1995,34 @@ pub(crate) async fn handle_spawn_terminal(
         stream_id: stream_id_from(u64::from(request_id)),
         profile,
         limits: bootstrap_limits,
+        bind_instance,
     }
     .publish(output_pumps, connection_token)
     .await;
+}
+
+/// The resource record a satellite Terminal spawn forwards: the bind request
+/// alone, when the consumer asked for one (ADR-0109). The satellite answers
+/// with its own instance token, which the hub relays unchanged.
+fn forwarded_bind_request(
+    bind_instance: bool,
+) -> Option<Box<phux_protocol::wire::frame::SpawnResource>> {
+    bind_instance.then(|| {
+        Box::new(phux_protocol::wire::frame::SpawnResource::default().with_bind_instance(true))
+    })
+}
+
+/// The success reply for a spawn: bound to `instance` when the spawn set
+/// `bind_instance` (ADR-0109), the plain `Ok` otherwise, so a consumer that
+/// never asks sees the reply it always has.
+pub(crate) const fn spawned_result(
+    id: phux_protocol::ids::ResourceId,
+    instance: Option<phux_protocol::ids::ServerInstance>,
+) -> SpawnResult {
+    match instance {
+        Some(instance) => SpawnResult::OkBound { id, instance },
+        None => SpawnResult::Ok(id),
+    }
 }
 
 /// Record the decoded `SPAWN_RESOURCE` payload at the handler's entry point.
@@ -2269,6 +2309,10 @@ fn subscribe_spawning_client(
 )> {
     state.with_mut(|s| {
         let wire_terminal_id = s.intern_terminal_wire(core_terminal_id);
+        // ADR-0109: provenance goes in before any subscription can, so the
+        // spawner's own subscription below never reads as someone else's
+        // attach. Nothing awaits between the pane's creation and here.
+        s.record_spawn(core_terminal_id, client_id);
         let client_caps = s
             .attached()
             .get(&client_id)
@@ -2361,6 +2405,9 @@ struct SpawnPublication<'a> {
     profile: BootstrapStreamProfile,
     /// Negotiated bootstrap bounds.
     limits: BootstrapLimits,
+    /// The spawn set `bind_instance`: answer with the instance token
+    /// (ADR-0109).
+    bind_instance: bool,
 }
 
 impl SpawnPublication<'_> {
@@ -2386,10 +2433,13 @@ impl SpawnPublication<'_> {
     /// Queue the successful `RESOURCE_SPAWNED` reply. `false` once the
     /// client's outbound mailbox has closed.
     async fn queue_spawned_ok(&self) -> bool {
+        let instance = self
+            .bind_instance
+            .then(|| self.state.with(|s| s.idspace.instance()));
         self.out_tx
             .send(Outbound::Frame(FrameKind::ResourceSpawned {
                 request_id: self.request_id,
-                result: SpawnResult::Ok(self.wire_terminal_id.clone()),
+                result: spawned_result(self.wire_terminal_id.clone(), instance),
             }))
             .await
             .is_ok()

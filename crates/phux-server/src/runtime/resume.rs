@@ -63,6 +63,7 @@ mod tests {
                 next_terminal_wire_id: 1,
                 next_window_wire_id: 1,
                 next_touch_timestamp: 1,
+                server_instance: None,
             },
             sessions: Vec::new(),
             windows: Vec::new(),

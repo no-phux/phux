@@ -118,6 +118,14 @@ pub enum ErrorCode {
     /// output ring or rate budget is exhausted. Nothing was appended; the
     /// producer may retry after backing off.
     Overflow = 211,
+    /// `KILL_RESOURCE_IF` (ADR-0109): a precondition did not hold, or could
+    /// not be established, so nothing was killed. The instance token no
+    /// longer names this server's id space, the resource has been attached
+    /// by a connection other than the one that spawned it, a condition bit
+    /// is unknown, or a hub cannot vouch for a satellite's resource. The
+    /// message says which. Every case has the same recovery: leave the
+    /// resource alone.
+    PreconditionFailed = 212,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -189,7 +197,8 @@ impl ErrorCode {
             | Self::InputNotWritten
             | Self::NotProducer
             | Self::RecordInvalid
-            | Self::Overflow => ErrorScope::Request,
+            | Self::Overflow
+            | Self::PreconditionFailed => ErrorScope::Request,
             Self::TerminalNotFound
             | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
@@ -232,6 +241,7 @@ impl ErrorCode {
             209 => Self::NotProducer,
             210 => Self::RecordInvalid,
             211 => Self::Overflow,
+            212 => Self::PreconditionFailed,
             65535 => Self::InternalError,
             _ => return None,
         })
@@ -557,6 +567,7 @@ mod tests {
         ErrorCode::NotProducer,
         ErrorCode::RecordInvalid,
         ErrorCode::Overflow,
+        ErrorCode::PreconditionFailed,
         ErrorCode::InternalError,
     ];
 
@@ -608,5 +619,6 @@ mod tests {
         assert_eq!(ErrorCode::NotProducer.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::RecordInvalid.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
+        assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
     }
 }

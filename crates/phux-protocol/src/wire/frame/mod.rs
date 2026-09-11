@@ -663,6 +663,11 @@ pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = 0x19;
 /// `TRANSCRIBE`; the producer verb of a producer-fed resource, gated on
 /// `ServerFeature::ResourceKinds`.
 pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = 0x1a;
+/// Wire tag for [`Command::KillResourceIf`]. Appended after
+/// `APPEND_RESOURCE_OUTPUT`; gated on `ServerFeature::ConditionalKill`
+/// (ADR-0109). A new tag rather than a field on `KILL_RESOURCE`, so a peer
+/// without the feature fails to decode it instead of killing unconditionally.
+pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = 0x1b;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -723,7 +728,8 @@ mod whoami;
 
 pub use command::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
-    ReportedAgentState, ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
+    KillConditions, KillPrecondition, ReportedAgentState, ResourceEventType, ResourceLifecycle,
+    StateScope, TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
@@ -749,11 +755,12 @@ pub(in crate::wire) use codec::{
     decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
     decode_bootstrap_stream_profile, decode_env, decode_focus_event, decode_key_event,
     decode_metadata_scope_key, decode_mouse_event, decode_move_result, decode_optional_u32,
-    decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id, decode_string_list,
-    decode_terminal_id, decode_viewport_info, encode_attach_target, encode_bootstrap_codec,
-    encode_bootstrap_profile, encode_env, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_move_result, encode_paste_event, encode_scope, encode_spawn_result, encode_string_list,
-    encode_terminal_id, encode_viewport_info,
+    decode_paste_event, decode_scope, decode_server_instance, decode_spawn_result,
+    decode_stream_id, decode_string_list, decode_terminal_id, decode_viewport_info,
+    encode_attach_target, encode_bootstrap_codec, encode_bootstrap_profile, encode_env,
+    encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
+    encode_paste_event, encode_scope, encode_server_instance, encode_spawn_result,
+    encode_string_list, encode_terminal_id, encode_viewport_info,
 };
 pub(in crate::wire) use command_codec::{
     decode_agent_event, decode_command, decode_command_result, encode_agent_event, encode_command,

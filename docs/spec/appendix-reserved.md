@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-11
 ---
 
 # Appendix B — Reserved ranges
@@ -79,6 +79,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x18` | `GET_PERF`                  | [L1.md](./L1.md) | shipped |
 | `0x19` | `TRANSCRIBE`                | [L1.md](./L1.md) | shipped |
 | `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | shipped |
+| `0x1b` | `KILL_RESOURCE_IF`          | [L1.md §5.2.1](./L1.md) | shipped |
 
 `KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
@@ -108,6 +109,12 @@ proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 `WRONG_RESOURCE_KIND = 208`, `NOT_PRODUCER = 209`, `RECORD_INVALID = 210`,
 and `OVERFLOW = 211` are allocated by the resource model
 ([proto.md §9](./proto.md); [L1.md §1.1, §5.5](./L1.md)).
+`PRECONDITION_FAILED = 212` is allocated by ADR-0109 ([L1.md §5.2.1](./L1.md)).
+
+`KILL_RESOURCE_IF` condition bits ([L1.md §5.2.1](./L1.md)) allocate upward
+from `0x01`: `0x01 UNATTACHED_SINCE_SPAWN` is taken. A decoder keeps a bit it
+does not know, and a server refuses a kill that carries one with
+`PRECONDITION_FAILED`, so a new condition is additive and never ignored.
 
 `SpawnError` ([L1.md §3.1](./L1.md)) allocates sequentially from `0x00`:
 `0x00..=0x03` are the group / spawn / satellite codes and `0x04

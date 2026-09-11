@@ -1619,6 +1619,10 @@ fn arb_spawn_result() -> impl Strategy<Value = SpawnResult> {
     prop_oneof![
         arb_terminal_id().prop_map(SpawnResult::Ok),
         arb_spawn_error().prop_map(SpawnResult::Err),
+        (arb_terminal_id(), any::<[u8; 16]>()).prop_map(|(id, bytes)| SpawnResult::OkBound {
+            id,
+            instance: phux_protocol::ids::ServerInstance::new(bytes),
+        }),
     ]
 }
 
@@ -1721,6 +1725,7 @@ proptest! {
                 parent,
                 provider: None,
                 native_id: None,
+                bind_instance: false,
             })),
         });
     }
@@ -1797,6 +1802,49 @@ proptest! {
         assert_round_trip(&FrameKind::Command {
             request_id,
             command: Command::KillResource { terminal_id },
+        });
+    }
+
+    /// KILL_RESOURCE_IF (ADR-0109): every instance presence and every
+    /// condition byte round-trips, unknown bits included, so a server can
+    /// refuse a condition it does not know instead of dropping it.
+    #[test]
+    fn roundtrip_command_kill_resource_if(
+        request_id in any::<u32>(),
+        terminal_id in arb_terminal_id(),
+        instance in proptest::option::of(any::<[u8; 16]>()),
+        bits in any::<u8>(),
+    ) {
+        let precondition = phux_protocol::wire::frame::KillPrecondition {
+            instance: instance.map(phux_protocol::ids::ServerInstance::new),
+            conditions: phux_protocol::wire::frame::KillConditions::from_bits(bits),
+        };
+        assert_round_trip(&FrameKind::Command {
+            request_id,
+            command: Command::KillResourceIf { terminal_id, precondition },
+        });
+    }
+
+    /// SPAWN_RESOURCE.bind_instance (field 15) round-trips on a Terminal
+    /// spawn. Unset, it leaves the canonical `resource: None` spawn.
+    #[test]
+    fn roundtrip_spawn_bind_instance(
+        request_id in any::<u32>(),
+        bind in any::<bool>(),
+        satellite in proptest::option::of("[a-z]{1,8}"),
+    ) {
+        assert_round_trip(&FrameKind::SpawnResource {
+            request_id,
+            group: GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
         });
     }
 

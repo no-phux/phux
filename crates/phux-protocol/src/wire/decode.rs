@@ -1573,6 +1573,7 @@ impl<'a> Decoder<'a> {
         let mut parent: Option<ResourceId> = None;
         let mut provider: Option<String> = None;
         let mut native_id: Option<String> = None;
+        let mut bind_instance = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::spawn_terminal::REQUEST_ID => {
@@ -1629,6 +1630,9 @@ impl<'a> Decoder<'a> {
                 field::spawn_terminal::NATIVE_ID => {
                     native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
                 }
+                field::spawn_terminal::BIND_INSTANCE => {
+                    bind_instance = sub!(value, decode_bind_instance);
+                }
                 _ => {}
             }
         }
@@ -1637,8 +1641,9 @@ impl<'a> Decoder<'a> {
             parent,
             provider,
             native_id,
+            bind_instance,
         };
-        // A body carrying none of fields 11-14 is the plain Terminal spawn,
+        // A body carrying none of fields 11-15 is the plain Terminal spawn,
         // and so is one that spells the defaults out; both decode to `None`
         // so the value is canonical and re-encodes to the pre-kind bytes.
         let resource = (!resource.is_default()).then(|| Box::new(resource));
@@ -1663,6 +1668,7 @@ impl<'a> Decoder<'a> {
     fn decode_terminal_spawned(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::SpawnResult> = None;
+        let mut instance: Option<crate::ids::ServerInstance> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_spawned::REQUEST_ID => {
@@ -1671,12 +1677,16 @@ impl<'a> Decoder<'a> {
                 field::terminal_spawned::RESULT => {
                     result = Some(sub!(value, decode_spawn_result));
                 }
+                field::terminal_spawned::INSTANCE => {
+                    instance = Some(sub!(value, crate::wire::frame::decode_server_instance));
+                }
                 _ => {}
             }
         }
+        let result = result.ok_or(DecodeError::UnexpectedEof)?;
         Ok(FrameKind::ResourceSpawned {
             request_id,
-            result: result.ok_or(DecodeError::UnexpectedEof)?,
+            result: bind_spawn_result(result, instance),
         })
     }
 
@@ -1849,6 +1859,32 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// Read `SPAWN_RESOURCE.bind_instance` (field 15): `0` or `1`.
+fn decode_bind_instance(dec: &mut Decoder<'_>) -> Result<bool, DecodeError> {
+    match dec.read_u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(DecodeError::UnknownEnumValue {
+            field: "SpawnResource.bind_instance",
+            value: u32::from(other),
+        }),
+    }
+}
+
+/// Fold `RESOURCE_SPAWNED.instance` (field 3) into the typed result. A
+/// successful result with a token is `SpawnResult::OkBound`; a token beside
+/// a refusal binds nothing and is dropped.
+fn bind_spawn_result(
+    result: crate::wire::frame::SpawnResult,
+    instance: Option<crate::ids::ServerInstance>,
+) -> crate::wire::frame::SpawnResult {
+    use crate::wire::frame::SpawnResult;
+    match (result, instance) {
+        (SpawnResult::Ok(id), Some(instance)) => SpawnResult::OkBound { id, instance },
+        (result, _) => result,
+    }
+}
+
 /// Decode one of `SPAWN_RESOURCE`'s agent-facet strings (`provider`,
 /// `native_id`), refusing an empty value or one over `max_bytes` before the
 /// bytes are copied out of the frame.
@@ -1889,11 +1925,13 @@ fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
     let Some(resource) = resource.as_deref() else {
         return Ok(());
     };
+    // `bind_instance` is valid for every kind, so it has no rule here.
     let SpawnResource {
         kind,
         parent,
         provider,
         native_id,
+        ..
     } = resource;
     let rule = |field: u32, required: bool| DecodeError::InvalidSpawnForKind {
         kind: kind.as_wire(),

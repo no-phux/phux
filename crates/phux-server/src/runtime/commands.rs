@@ -727,6 +727,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::AttachResource { .. } => "attach_terminal",
         Command::DetachResource { .. } => "detach_terminal",
         Command::KillResource { .. } => "kill_terminal",
+        Command::KillResourceIf { .. } => "kill_resource_if",
         Command::KillResources { .. } => "kill_terminals",
         Command::DetachClients { .. } => "detach_clients",
         Command::GetState { .. } => "get_state",
@@ -837,6 +838,10 @@ pub(crate) async fn handle_command(
         other => other,
     };
 
+    // ADR-0109: a verb that drives or reads a resource another connection
+    // spawned counts as attaching it; noted before the verb runs.
+    note_local_use(state, client_id, &command);
+
     // Federation relay (phux-v45.4, ADR-0007 §4): a command targeting a
     // satellite-owned terminal never touches local dispatch — see
     // `handle_satellite_command`.
@@ -907,6 +912,10 @@ pub(crate) async fn handle_command(
         Command::KillResources { ids } => handle_kill_terminals(state, &ids),
         Command::DetachClients { session } => handle_detach_clients(state, session.as_deref()),
         Command::KillResource { terminal_id } => handle_kill_terminal(state, &terminal_id),
+        Command::KillResourceIf {
+            terminal_id,
+            precondition,
+        } => handle_kill_resource_if(state, &terminal_id, &precondition),
         Command::GetTerminalState {
             terminal_id,
             include_scrollback,
@@ -1036,6 +1045,38 @@ fn handle_kill_terminal(
                 CommandResult::Ok
             },
         )
+}
+
+/// Build the reply for `KILL_RESOURCE_IF` (ADR-0109, L1 §5.2.1): check the
+/// precondition and kill in one acquisition of the state lock, so no attach
+/// can land between the two. A refusal kills nothing. The teardown is the
+/// same one `KILL_RESOURCE` takes.
+fn handle_kill_resource_if(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    precondition: &phux_protocol::wire::frame::KillPrecondition,
+) -> CommandResult {
+    match state.with_mut(|s| s.kill_resource_if(terminal_id, precondition)) {
+        Ok(()) => CommandResult::Ok,
+        Err(refusal) => kill_if_refusal(terminal_id, refusal),
+    }
+}
+
+/// The typed refusal a `KILL_RESOURCE_IF` answers when it killed nothing.
+fn kill_if_refusal(
+    terminal_id: &phux_protocol::ids::ResourceId,
+    refusal: crate::state::KillIfRefusal,
+) -> CommandResult {
+    match refusal {
+        crate::state::KillIfRefusal::NotFound => CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: format!("no such terminal: {terminal_id:?}"),
+        },
+        crate::state::KillIfRefusal::Precondition(why) => CommandResult::Error {
+            code: ErrorCode::PreconditionFailed,
+            message: format!("{terminal_id} not killed: {why}"),
+        },
+    }
 }
 
 /// Handle `ATTACH_RESOURCE` (SPEC §5.1 tag 0x01, phux-v45.7): subscribe the
@@ -2441,6 +2482,7 @@ async fn handle_satellite_command(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) {
+    note_satellite_use(state, host, client_id, &command);
     let result = match state.with(|s| s.hub_relay(host)) {
         None => CommandResult::Error {
             code: ErrorCode::UnsupportedSatelliteRoute,
@@ -2494,10 +2536,115 @@ async fn handle_satellite_command(
                 )
                 .await
             }
+            Command::KillResourceIf {
+                terminal_id,
+                precondition,
+            } => {
+                relay_conditional_kill(state, &relay, host, terminal_id, precondition, &command)
+                    .await
+            }
             _ => relay.command(command.clone()).await,
         },
     };
     reply_satellite_command(state, client_id, request_id, host, &command, out_tx, result).await;
+}
+
+/// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,
+/// if any. A connection other than the spawner naming a resource this way
+/// counts as attaching it for `UNATTACHED_SINCE_SPAWN`, whether or not the
+/// command then succeeds: `ATTACH_RESOURCE`, input without a subscription
+/// (`ROUTE_INPUT`, `APPLY_INPUT`, what `phux send-keys` sends), the input
+/// lease, an upload, a transcription, a signal, and a screen read.
+const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::ResourceId> {
+    match command {
+        Command::AttachResource { terminal_id }
+        | Command::RouteInput { terminal_id, .. }
+        | Command::ApplyInput { terminal_id, .. }
+        | Command::AcquireInput { terminal_id, .. }
+        | Command::PutFile { terminal_id, .. }
+        | Command::Transcribe { terminal_id, .. }
+        | Command::SignalTerminal { terminal_id, .. }
+        | Command::GetScreen { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
+}
+
+/// Note a local resource `command` uses (see [`used_resource`]) before the
+/// command runs, so a conditional kill checked after it sees it. A
+/// satellite-tagged id is the hub's to note, in [`note_satellite_use`].
+fn note_local_use(state: &SharedState, client_id: ClientId, command: &Command) {
+    if let Some(terminal_id) = used_resource(command) {
+        state.with_mut(|s| s.note_resource_use(terminal_id, client_id));
+    }
+}
+
+/// ADR-0109: note a hub consumer's use of a satellite resource (see
+/// [`used_resource`]) in the hub's spawn ledger, before it is relayed.
+/// Every hub consumer is the same connection on the satellite, so only the
+/// hub can tell whether the use came from the consumer that spawned the
+/// resource. Noted on forward, not on success, so a kill checked after it
+/// cannot race it.
+fn note_satellite_use(
+    state: &SharedState,
+    host: &phux_protocol::ids::SatelliteHost,
+    client_id: ClientId,
+    command: &Command,
+) {
+    let Some(id) = used_resource(command).and_then(phux_protocol::ids::ResourceId::local_id) else {
+        return;
+    };
+    state.with_mut(|s| s.hub_note_satellite_use(host, id, client_id));
+}
+
+/// Relay a `KILL_RESOURCE_IF` to the satellite that owns the resource, with
+/// its precondition unchanged, once the hub has checked the half of
+/// `UNATTACHED_SINCE_SPAWN` only it can see: that it spawned the resource and
+/// no other hub consumer has attached it (ADR-0109, L1 §9.1). The satellite
+/// then checks the instance token and its own attachments. A refusal here
+/// kills nothing and never touches the link.
+async fn relay_conditional_kill(
+    state: &SharedState,
+    relay: &crate::hub::relay::RelayHandle,
+    host: &phux_protocol::ids::SatelliteHost,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    precondition: &phux_protocol::wire::frame::KillPrecondition,
+    command: &Command,
+) -> CommandResult {
+    if !hub_vouches_for_kill(state, host, terminal_id, precondition) {
+        return CommandResult::Error {
+            code: ErrorCode::PreconditionFailed,
+            message: format!(
+                "{host}/{terminal_id} not killed: this hub did not spawn it under that \
+                 instance token, no longer remembers it, or another hub consumer has \
+                 attached or used it"
+            ),
+        };
+    }
+    relay.command(command.clone()).await
+}
+
+/// `true` unless the kill asks for `UNATTACHED_SINCE_SPAWN` and the hub's
+/// spawn ledger cannot vouch for it under the kill's instance token. A
+/// record from before a satellite restart carries the old token, so it never
+/// vouches for the new pane that reuses its id. `terminal_id` is already
+/// satellite-local.
+fn hub_vouches_for_kill(
+    state: &SharedState,
+    host: &phux_protocol::ids::SatelliteHost,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    precondition: &phux_protocol::wire::frame::KillPrecondition,
+) -> bool {
+    use phux_protocol::wire::frame::KillConditions;
+    if !precondition
+        .conditions
+        .contains(KillConditions::UNATTACHED_SINCE_SPAWN)
+    {
+        return true;
+    }
+    let (Some(id), Some(instance)) = (terminal_id.local_id(), precondition.instance) else {
+        return false;
+    };
+    state.with(|s| s.hub_vouches_unattached(host, id, instance))
 }
 
 /// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just

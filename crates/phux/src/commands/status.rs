@@ -146,6 +146,7 @@ fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
         (ServerFeature::Whoami, "whoami"),
         (ServerFeature::ListDirectoryHost, "list_directory_host"),
         (ServerFeature::SshOrigin, "ssh_origin"),
+        (ServerFeature::ConditionalKill, "conditional_kill"),
     ];
     NAMED
         .iter()
@@ -598,7 +599,8 @@ mod tests {
         assert!(feature_names(ServerFeatureSet::new()).is_empty());
         let all = ServerFeatureSet::from_wire(u32::MAX);
         let names = feature_names(all);
-        assert_eq!(names.len(), 16, "one name per known bit: {names:?}");
+        assert_eq!(names.len(), 17, "one name per known bit: {names:?}");
+        assert!(names.contains(&"conditional_kill"));
         assert!(names.contains(&"host_sessions"));
         assert!(names.contains(&"keep_empty_sessions"));
         assert!(names.contains(&"whoami"));

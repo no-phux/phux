@@ -157,6 +157,24 @@ pub(super) struct ResourceTable {
     /// Next connection-global bootstrap id for per-terminal attaches, keyed
     /// by client. Monotonic, so a tombstoned generation's id is never reused.
     next_bootstrap: HashMap<ClientId, u64>,
+    /// ADR-0109: for each resource created by `SPAWN_RESOURCE`, the
+    /// connection that spawned it and whether any other connection has
+    /// subscribed to its output or used it since. A resource with no entry was not
+    /// spawned by a client (a session seed, a pane rebuilt by an upgrade)
+    /// and is never "unattached since spawn". Dropped with the resource.
+    spawns: HashMap<ResourceId, SpawnRecord>,
+}
+
+/// Who spawned a resource, and whether another connection has attached it
+/// since (ADR-0109, `docs/spec/L1.md` §5.2.1).
+#[derive(Debug, Clone, Copy)]
+struct SpawnRecord {
+    /// The connection whose `SPAWN_RESOURCE` created the resource. Its own
+    /// subscriptions never count as an attach.
+    spawner: ClientId,
+    /// Set the first time any other connection subscribes to or uses the
+    /// resource; never cleared.
+    used_by_other: bool,
 }
 
 impl Default for ResourceTable {
@@ -177,6 +195,7 @@ impl ResourceTable {
             pumps: HashMap::new(),
             output_pumps: HashMap::new(),
             next_bootstrap: HashMap::new(),
+            spawns: HashMap::new(),
         }
     }
 
@@ -259,11 +278,53 @@ impl ResourceTable {
     /// Subscribe `client` to `terminal`, deduplicating: a client already on
     /// the list is not pushed twice, so a re-attach cannot double-fan
     /// `RESOURCE_OUTPUT` at it.
+    ///
+    ///
+    /// Every path that puts a client on a resource's output goes through
+    /// here (`ATTACH_RESOURCE`, a session `ATTACH`'s sweep, the spawner's
+    /// own auto-subscription), so this is where a spawned resource learns
+    /// it has been attached by someone other than its spawner (ADR-0109).
+    /// The mark stays even if that subscription is later rolled back.
     pub(super) fn subscribe(&mut self, client: ClientId, terminal: ResourceId) {
+        self.note_use(client, terminal);
         let subs = self.subscribers.entry(terminal).or_default();
         if !subs.contains(&client) {
             subs.push(client);
         }
+    }
+
+    // -- spawn provenance (ADR-0109) -----------------------------------
+
+    /// Record that `spawner`'s `SPAWN_RESOURCE` created `terminal`. Called
+    /// before anything can subscribe to the new resource.
+    pub(super) fn record_spawn(&mut self, terminal: ResourceId, spawner: ClientId) {
+        self.spawns.insert(
+            terminal,
+            SpawnRecord {
+                spawner,
+                used_by_other: false,
+            },
+        );
+    }
+
+    /// Note that `client` attached or used `terminal`: subscribed to its
+    /// output, or named it in a verb that drives or reads it (ADR-0109,
+    /// L1 §5.2.1). Only a connection other than the spawner counts.
+    pub(super) fn note_use(&mut self, client: ClientId, terminal: ResourceId) {
+        if let Some(record) = self.spawns.get_mut(&terminal)
+            && record.spawner != client
+        {
+            record.used_by_other = true;
+        }
+    }
+
+    /// `true` iff `terminal` was spawned by a client and no connection but
+    /// its spawner has attached or used it since.
+    #[must_use]
+    pub(super) fn unattached_since_spawn(&self, terminal: ResourceId) -> bool {
+        self.spawns
+            .get(&terminal)
+            .is_some_and(|record| !record.used_by_other)
     }
 
     /// Remove `client` from `terminal`'s subscriber list (the
@@ -438,6 +499,7 @@ impl ResourceTable {
             token.cancel();
         }
         self.subscribers.remove(&terminal);
+        self.spawns.remove(&terminal);
         self.pumps.retain(|(_, pane), generation| {
             if *pane == terminal {
                 generation.cancel.cancel();

@@ -497,6 +497,10 @@ pub mod spawn_terminal {
     pub const PROVIDER: u32 = 13;
     /// Optional opaque provider-native session id (`str`).
     pub const NATIVE_ID: u32 = 14;
+    /// Optional `u8` flag (`1` = bind): answer with the server's instance
+    /// token in `RESOURCE_SPAWNED.instance` (ADR-0109). Absent or `0` =
+    /// unbound.
+    pub const BIND_INSTANCE: u32 = 15;
 }
 
 /// `RESOURCE_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
@@ -505,6 +509,10 @@ pub mod terminal_spawned {
     pub const REQUEST_ID: u32 = 1;
     /// `SpawnResult` tagged union (positional).
     pub const RESULT: u32 = 2;
+    /// Optional 16-byte instance token binding a successful result's id
+    /// (ADR-0109); written only in reply to a spawn that set
+    /// `BIND_INSTANCE`.
+    pub const INSTANCE: u32 = 3;
 }
 
 /// `MOVE_RESOURCE` body fields (`docs/spec/L1.md` §10.1; ADR-0056).

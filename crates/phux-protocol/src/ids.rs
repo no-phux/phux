@@ -212,6 +212,36 @@ impl core::fmt::Debug for FileUploadId {
     }
 }
 
+/// The server's resource id space, named by 16 random bytes
+/// (`docs/spec/L1.md` §3.1, ADR-0109).
+///
+/// A server mints a fresh token whenever its `ResourceId` allocator starts
+/// over, which is exactly when an id it handed out can name a different
+/// resource. A graceful upgrade keeps the allocator and so keeps the token;
+/// a cold restart replaces both. A client binds a spawned resource to the
+/// token in `RESOURCE_SPAWNED` and hands it back in `KILL_RESOURCE_IF`, so a
+/// late kill cannot land on a pane that merely reuses the id.
+///
+/// Opaque: compare bytes only. The value names an id space, not a process,
+/// and it is distinct from `HELLO_OK.server_id`, which changes on every
+/// re-exec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerInstance([u8; 16]);
+
+impl ServerInstance {
+    /// Wrap 16 token bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the 16-byte wire representation.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
 /// Federation-routing host identifier for a [`ResourceId::Satellite`].
 ///
 /// Per [ADR-0007] the satellite link is an opaque host token negotiated at

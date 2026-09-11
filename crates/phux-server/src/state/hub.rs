@@ -52,4 +52,41 @@ impl ServerState {
     pub(crate) fn hub_relays_all(&self) -> Vec<crate::hub::relay::RelayHandle> {
         self.hub.relays_all()
     }
+
+    /// Remember that hub consumer `spawner` asked for `host`'s resource `id`,
+    /// bound to `instance` when the spawn asked for binding (ADR-0109).
+    pub(crate) fn hub_record_satellite_spawn(
+        &mut self,
+        host: phux_protocol::ids::SatelliteHost,
+        id: u32,
+        instance: Option<phux_protocol::ids::ServerInstance>,
+        spawner: super::ClientId,
+    ) {
+        self.satellite_spawns
+            .record_spawn(host, id, instance, spawner);
+    }
+
+    /// Note that hub consumer `client` is attaching or using `host`'s
+    /// resource `id` (ADR-0109).
+    pub(crate) fn hub_note_satellite_use(
+        &mut self,
+        host: &phux_protocol::ids::SatelliteHost,
+        id: u32,
+        client: super::ClientId,
+    ) {
+        self.satellite_spawns.note_use(host, id, client);
+    }
+
+    /// Whether this hub can vouch that it spawned `host`'s resource `id`
+    /// under `instance` and no consumer but the spawner attached or used it
+    /// through the hub since (ADR-0109).
+    #[must_use]
+    pub(crate) fn hub_vouches_unattached(
+        &self,
+        host: &phux_protocol::ids::SatelliteHost,
+        id: u32,
+        instance: phux_protocol::ids::ServerInstance,
+    ) -> bool {
+        self.satellite_spawns.vouches_unattached(host, id, instance)
+    }
 }

@@ -61,6 +61,11 @@
 //!   unknown host, a host on a non-hub server, a down satellite, and a
 //!   satellite that never answers all resolve to a `DIRECTORY_LISTING`
 //!   refusal naming the host, the last at the 10 s relay deadline.
+//! * `conditional_kill` (ADR-0109) — a bound satellite spawn carries the
+//!   satellite's own instance token back through the hub; the satellite
+//!   evaluates a relayed `KILL_RESOURCE_IF` (an untouched pane dies, a stale
+//!   token or a satellite-local attach refuses), and the hub refuses one for
+//!   a pane a second hub consumer attached.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -95,6 +100,9 @@ mod detach_fence;
 
 #[path = "hub_relay_federation/list_directory.rs"]
 mod list_directory;
+
+#[path = "hub_relay_federation/conditional_kill.rs"]
+mod conditional_kill;
 
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).

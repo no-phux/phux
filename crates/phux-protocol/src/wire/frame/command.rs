@@ -589,6 +589,97 @@ pub enum Command {
         /// One or more complete records under the resource's codec.
         bytes: Vec<u8>,
     },
+    /// Kill one resource only if every precondition holds
+    /// (`docs/spec/L1.md` §5.2.1, ADR-0109). The server checks the
+    /// precondition and kills in one acquisition of its state, so nothing
+    /// can attach between the check and the kill. When a condition fails
+    /// it answers `ERROR(PRECONDITION_FAILED)` and kills nothing. A hub
+    /// relays the precondition unchanged to the satellite that owns a
+    /// `SATELLITE`-tagged id. Gated on
+    /// [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill).
+    KillResourceIf {
+        /// The resource to terminate.
+        terminal_id: ResourceId,
+        /// What must hold for the kill to proceed.
+        precondition: KillPrecondition,
+    },
+}
+
+/// The preconditions a [`Command::KillResourceIf`] carries (ADR-0109).
+///
+/// Wire body, after the tagged `ResourceId`: an `Option` tag (`0`/`1`), the
+/// 16 instance bytes when it is `1`, then the condition bits as one `u8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct KillPrecondition {
+    /// When `Some`, the server's current instance token must equal it: the
+    /// id is meaningful only in the id space the caller learned it from.
+    pub instance: Option<crate::ids::ServerInstance>,
+    /// Further conditions, as a bitset.
+    pub conditions: KillConditions,
+}
+
+impl KillPrecondition {
+    /// The precondition for a late kill of a resource this client spawned
+    /// and bound to `instance`: the id space must be unchanged, and no other
+    /// connection may have attached or used it since.
+    #[must_use]
+    pub const fn spawned_and_unattached(instance: crate::ids::ServerInstance) -> Self {
+        Self {
+            instance: Some(instance),
+            conditions: KillConditions::UNATTACHED_SINCE_SPAWN,
+        }
+    }
+}
+
+/// Condition bits of a [`KillPrecondition`] (`u8` on the wire).
+///
+/// A decoder keeps bits it does not know, and a server that receives one
+/// refuses the kill with `PRECONDITION_FAILED`: an unknown condition can never
+/// be ignored into an unconditional kill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct KillConditions(u8);
+
+impl KillConditions {
+    /// No condition beyond the instance token.
+    pub const NONE: Self = Self(0);
+    /// No connection other than the one that spawned the resource has
+    /// attached or used it since it was spawned, and it has no child
+    /// resource. Requires [`KillPrecondition::instance`]; a server refuses the
+    /// bit without it (`docs/spec/L1.md` §5.2.1 defines it exactly).
+    pub const UNATTACHED_SINCE_SPAWN: Self = Self(0x01);
+    /// Every bit this build assigns a meaning to.
+    const KNOWN: u8 = Self::UNATTACHED_SINCE_SPAWN.0;
+
+    /// Wrap raw wire bits, keeping unknown ones.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    /// The raw wire bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// `true` iff every bit of `other` is set here.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The set with `other`'s bits added.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The bits this build does not know; nonzero means the server must
+    /// refuse.
+    #[must_use]
+    pub const fn unknown_bits(self) -> u8 {
+        self.0 & !Self::KNOWN
+    }
 }
 
 /// Acknowledgement for one [`Command::PutFile`] chunk.

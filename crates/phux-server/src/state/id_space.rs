@@ -76,6 +76,21 @@ pub struct IdSpace {
     /// [`phux_protocol::wire::info::WindowInfo::id`] in the `ATTACHED`
     /// snapshot.
     windows: IdBridge<WindowId, WireWindowId>,
+    /// The token naming the terminal id space (ADR-0109): minted with the
+    /// allocator, replaced only with it. A cold start mints a new one; a
+    /// graceful upgrade restores both from the handoff blob.
+    instance: phux_protocol::ids::ServerInstance,
+}
+
+/// Mint a random instance token from the OS CSPRNG.
+#[allow(
+    clippy::expect_used,
+    reason = "a server cannot safely hand out ids without a token that names their space"
+)]
+fn fresh_instance() -> phux_protocol::ids::ServerInstance {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable for the instance token");
+    phux_protocol::ids::ServerInstance::new(bytes)
 }
 
 impl Default for IdSpace {
@@ -85,14 +100,31 @@ impl Default for IdSpace {
 }
 
 impl IdSpace {
-    /// Build an empty id space with all three allocators at `1`.
+    /// Build an empty id space with all three allocators at `1` and a fresh
+    /// random instance token.
     #[must_use]
     pub fn new() -> Self {
         Self {
             sessions: IdBridge::new(),
             terminals: IdBridge::new(),
             windows: IdBridge::new(),
+            instance: fresh_instance(),
         }
+    }
+
+    // -- instance token (ADR-0109) -------------------------------------
+
+    /// The token naming this id space. Every terminal id this space hands
+    /// out is meaningful only together with it.
+    #[must_use]
+    pub const fn instance(&self) -> phux_protocol::ids::ServerInstance {
+        self.instance
+    }
+
+    /// Adopt `instance` after a graceful upgrade restored the allocators it
+    /// names.
+    pub(super) const fn set_instance(&mut self, instance: phux_protocol::ids::ServerInstance) {
+        self.instance = instance;
     }
 
     // -- sessions -----------------------------------------------------

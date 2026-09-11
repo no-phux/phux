@@ -12,6 +12,7 @@ impl ServerState {
             clients: ClientTable::new(),
             resources: ResourceTable::new(),
             leases: LeaseTable::new(),
+            satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
             idspace: IdSpace::new(),
             metadata: MetadataStore::default(),
             agent: AgentState::new(),

@@ -237,4 +237,12 @@ impl ServerState {
     pub fn unsubscribe_terminal(&mut self, client: ClientId, terminal: ResourceId) {
         self.resources.unsubscribe(client, terminal);
     }
+
+    /// Record that `client`'s `SPAWN_RESOURCE` created `terminal`
+    /// (ADR-0109). Call it before anything subscribes to the new resource:
+    /// from then on a subscription by any other connection marks the
+    /// resource as attached, which `KILL_RESOURCE_IF` checks.
+    pub fn record_spawn(&mut self, terminal: ResourceId, client: ClientId) {
+        self.resources.record_spawn(terminal, client);
+    }
 }

@@ -144,6 +144,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0106](./0106-identity-is-the-serving-user.md) | Identity is the serving user; whoami reports it | Accepted (builds on [0003](./0003-server-process-model.md)) |
 | [0107](./0107-satellite-sessions-are-listed-never-adopted.md) | Satellite sessions are listed, never adopted | Accepted (builds on [0066](./0066-host-namespace.md)) |
 | [0108](./0108-a-hub-relays-host-queries-per-request.md) | A hub relays host queries to satellites per request | Accepted (builds on [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
+| [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) | Late kills are conditional on instance and attachment | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md)) |
 
 ## When to write an ADR
 

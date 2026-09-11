@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # Module structure
@@ -119,7 +119,11 @@ src/
     subscribers, output pumps, and the engine JoinSet), client.rs,
     client_table.rs, metadata.rs, leases.rs, lease_table.rs, hub.rs,
     hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
-    hook_dispatch.rs, lifecycle.rs, reap.rs, snapshot.rs, viewport.rs, ...
+    hook_dispatch.rs, lifecycle.rs, reap.rs, snapshot.rs, viewport.rs,
+    conditional_kill.rs (KILL_RESOURCE_IF: instance token and spawn
+    provenance checked and applied in one borrow, ADR-0109),
+    satellite_spawns.rs (the hub's bounded record of which consumer
+    asked for each satellite resource, ADR-0109), ...
   resource/           — the generic resource core and the engines behind it
     mod.rs            — ResourceCore (engine-side: kind, parent, wire id,
                         checked u64 output sequence, output broadcast,
@@ -248,6 +252,8 @@ src/
     input_replay.rs   — the ADR-0053 acknowledged-input replay journal
     outcome.rs        — AttachError / AttachEnd, the exit vocabulary every
                         verb reports through
+  conditional_kill.rs — bind a spawn to the server's instance token and
+                        build, send, and classify KILL_RESOURCE_IF (ADR-0109)
   selector.rs         — client-side TARGET selector resolution (ADR-0021)
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
   layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,

@@ -72,6 +72,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::Whoami,
         ServerFeature::ListDirectoryHost,
         ServerFeature::SshOrigin,
+        ServerFeature::ConditionalKill,
     ])
 }
 

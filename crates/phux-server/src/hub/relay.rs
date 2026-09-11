@@ -1102,6 +1102,13 @@ impl RelaySession {
                 reply,
                 subscribe,
             } => {
+                if let Some(message) = self.conditional_kill_rejection(&command) {
+                    let _ = reply.send(CommandResult::Error {
+                        code: ErrorCode::PreconditionFailed,
+                        message,
+                    });
+                    return None;
+                }
                 if let Some(sub) = subscribe.as_ref()
                     && let Some((code, message)) = self.subscription_rejection(sub)
                 {
@@ -1162,6 +1169,26 @@ impl RelaySession {
             } => self.subscribe_forward(subscription, &forward),
             RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
         }
+    }
+
+    /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` cannot
+    /// decode `KILL_RESOURCE_IF`, so the hub refuses it here with the typed
+    /// "nothing was killed" code instead of letting the consumer wait out
+    /// the relay deadline. `None` for every other command.
+    fn conditional_kill_rejection(&self, command: &Command) -> Option<String> {
+        let Command::KillResourceIf { .. } = command else {
+            return None;
+        };
+        if self
+            .satellite_features
+            .contains(ServerFeature::ConditionalKill)
+        {
+            return None;
+        }
+        Some(format!(
+            "satellite {} cannot evaluate a conditional kill; nothing was killed",
+            self.host
+        ))
     }
 
     /// Put one relayed `LIST_DIRECTORY` on the wire under a link-side id,
@@ -1915,25 +1942,7 @@ impl RelaySession {
             );
             return;
         };
-        let retagged = match result {
-            SpawnResult::Ok(ResourceId::Local { id }) => {
-                SpawnResult::Ok(ResourceId::satellite(self.host.clone(), id))
-            }
-            SpawnResult::Ok(ResourceId::Satellite { .. }) => {
-                warn!(
-                    satellite = %self.host,
-                    "satellite answered a spawn with a Satellite-tagged id; hub-and-spoke does not chain"
-                );
-                SpawnResult::Err(SpawnError::SpawnFailed(
-                    "satellite returned a chained satellite id".to_owned(),
-                ))
-            }
-            err @ SpawnResult::Err(_) => err,
-            // `SpawnResult` is `#[non_exhaustive]`: a future variant a
-            // newer satellite sends passes through untouched (it carries
-            // no terminal id to re-tag).
-            other => other,
-        };
+        let retagged = retag_spawn_result(&self.host, result);
         // A dropped receiver (consumer timed out / disconnected) is fine.
         let _ = reply.send(retagged);
     }
@@ -2445,6 +2454,65 @@ impl RelaySession {
     }
 }
 
+/// The kill verbs' outbound rewrite: `KILL_RESOURCE` and `KILL_RESOURCE_IF`
+/// both move to the satellite's `Local` id space. The precondition crosses
+/// the link unchanged, and the satellite evaluates it against its own
+/// instance and provenance (ADR-0109). `None` for any other command.
+fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
+    match command {
+        Command::KillResource { terminal_id } => {
+            let (host, id) = satellite_route(terminal_id)?;
+            Some((
+                host,
+                Command::KillResource {
+                    terminal_id: ResourceId::local(id),
+                },
+            ))
+        }
+        Command::KillResourceIf {
+            terminal_id,
+            precondition,
+        } => {
+            let (host, id) = satellite_route(terminal_id)?;
+            Some((
+                host,
+                Command::KillResourceIf {
+                    terminal_id: ResourceId::local(id),
+                    precondition: *precondition,
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Re-tag a satellite's spawn reply for the consumer (phux-v45.6): the
+/// freshly allocated `Local { id }` becomes `Satellite { host, id }`, and an
+/// instance token binding it passes through unchanged (ADR-0109), since it
+/// names the satellite's id space. A `Satellite`-tagged id in the
+/// satellite's own reply is out of the hub-and-spoke topology and becomes
+/// `SpawnFailed` rather than chaining. A refusal, or a future variant that
+/// carries no id, passes through untouched.
+fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult {
+    let Some(spawned) = result.spawned_id() else {
+        return result;
+    };
+    let ResourceId::Local { id } = spawned else {
+        warn!(
+            satellite = %host,
+            "satellite answered a spawn with a Satellite-tagged id; hub-and-spoke does not chain"
+        );
+        return SpawnResult::Err(SpawnError::SpawnFailed(
+            "satellite returned a chained satellite id".to_owned(),
+        ));
+    };
+    let id = ResourceId::satellite(host.clone(), *id);
+    match result.instance() {
+        Some(instance) => SpawnResult::OkBound { id, instance },
+        None => SpawnResult::Ok(id),
+    }
+}
+
 /// Split a satellite-tagged wire id into its host and satellite-local id.
 pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost, u32)> {
     match terminal_id {
@@ -2482,14 +2550,8 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 },
             ))
         }
-        Command::KillResource { terminal_id } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::KillResource {
-                    terminal_id: ResourceId::local(id),
-                },
-            ))
+        Command::KillResource { .. } | Command::KillResourceIf { .. } => {
+            route_kill_to_satellite(command)
         }
         Command::GetScreen {
             terminal_id,
@@ -2837,8 +2899,14 @@ mod tests {
                 elapsed_seconds: None,
             },
             Command::ReportAgentState {
-                terminal_id: sat,
+                terminal_id: sat.clone(),
                 state: phux_protocol::wire::frame::ReportedAgentState::Done,
+            },
+            Command::KillResourceIf {
+                terminal_id: sat,
+                precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
+                    phux_protocol::ids::ServerInstance::new([3; 16]),
+                ),
             },
         ];
         for command in commands {
@@ -3434,6 +3502,101 @@ mod tests {
             rx.try_recv().expect("resolved"),
             SpawnResult::Err(SpawnError::GroupNotFound)
         );
+    }
+
+    /// ADR-0109: the bind request crosses the link, and the satellite's
+    /// instance token comes back unchanged beside the re-tagged id.
+    #[test]
+    fn session_keeps_a_bound_spawn_token_while_retagging_the_id() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let mut request = spawn_request(reply);
+        if let RelayRequest::Spawn { spawn, .. } = &mut request {
+            spawn.resource = Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::default().with_bind_instance(true),
+            ));
+        }
+        let wire = session.handle_request(request);
+        let FrameKind::SpawnResource {
+            request_id,
+            resource,
+            ..
+        } = decode(&wire)
+        else {
+            panic!("expected SPAWN_RESOURCE on the wire");
+        };
+        assert!(
+            resource.is_some_and(|r| r.bind_instance),
+            "the bind request crosses the link"
+        );
+        let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
+        session
+            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
+                request_id,
+                result: SpawnResult::OkBound {
+                    id: ResourceId::local(42),
+                    instance,
+                },
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(
+            rx.try_recv().expect("spawn resolved"),
+            SpawnResult::OkBound {
+                id: ResourceId::satellite("devbox", 42),
+                instance,
+            }
+        );
+    }
+
+    /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` never
+    /// sees the tag, and the consumer gets the typed refusal at once; one
+    /// that did receives the precondition unchanged.
+    #[test]
+    fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
+        let command = Command::KillResourceIf {
+            terminal_id: ResourceId::local(9),
+            precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
+                phux_protocol::ids::ServerInstance::new([3; 16]),
+            ),
+        };
+        let mut older = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let wire = older.handle_request_checked(RelayRequest::Command {
+            command: command.clone(),
+            reply,
+            subscribe: None,
+        });
+        assert!(wire.is_none(), "an older satellite never sees the tag");
+        assert!(older.pending.is_empty());
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            CommandResult::Error {
+                code: ErrorCode::PreconditionFailed,
+                ..
+            }
+        ));
+
+        let mut current = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::ConditionalKill]),
+        );
+        let (reply, _rx) = oneshot::channel();
+        let wire = current
+            .handle_request_checked(RelayRequest::Command {
+                command: command.clone(),
+                reply,
+                subscribe: None,
+            })
+            .expect("relayed to a satellite that evaluates it");
+        let FrameKind::Command {
+            command: relayed, ..
+        } = decode(&wire)
+        else {
+            panic!("expected COMMAND on the wire");
+        };
+        assert_eq!(relayed, command, "the precondition crosses unchanged");
     }
 
     #[tokio::test]

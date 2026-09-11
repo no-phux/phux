@@ -2106,9 +2106,13 @@ impl FrameKind {
         if let Some(native_id) = &resource.native_id {
             enc.write_field(field::spawn_terminal::NATIVE_ID, native_id.as_bytes());
         }
+        if resource.bind_instance {
+            enc.write_field(field::spawn_terminal::BIND_INSTANCE, &[1]);
+        }
     }
 
-    /// Write the `RESOURCE_SPAWNED` payload.
+    /// Write the `RESOURCE_SPAWNED` payload. A bound result adds field 3,
+    /// so an unbound reply keeps the bytes it always had.
     fn encode_terminal_spawned(enc: &mut Encoder<'_>, request_id: u32, result: &SpawnResult) {
         enc.write_field_with(field::terminal_spawned::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -2116,6 +2120,11 @@ impl FrameKind {
         enc.write_field_with(field::terminal_spawned::RESULT, |e| {
             encode_spawn_result(result, e);
         });
+        if let Some(instance) = result.instance() {
+            enc.write_field_with(field::terminal_spawned::INSTANCE, |e| {
+                super::encode_server_instance(&instance, e);
+            });
+        }
     }
 
     /// Write the `MOVE_RESOURCE` payload.

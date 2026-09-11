@@ -970,6 +970,11 @@ pub const LIST_DIRECTORY_HOST: u32 = 0x0008_0000;
 /// connection's whoami route as `ssh-stdio` (`docs/spec/L3.md` §3.9).
 pub const SSH_ORIGIN: u32 = 0x0010_0000;
 
+/// Wire bit advertising conditional kills (`docs/spec/L1.md` §5.2.1,
+/// ADR-0109): `KILL_RESOURCE_IF`, `SPAWN_RESOURCE.bind_instance`, and
+/// `RESOURCE_SPAWNED.instance`.
+pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1066,6 +1071,14 @@ pub enum ServerFeature {
     /// trust that `uds` from this server means no bridge announced ssh
     /// (`docs/spec/L3.md` §3.9).
     SshOrigin = SSH_ORIGIN,
+    /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109): it kills a
+    /// resource only when the caller's instance token still names its id
+    /// space and, if asked, no connection but the spawning one has attached
+    /// the resource, and it refuses with `PRECONDITION_FAILED` otherwise. It
+    /// also answers a `SPAWN_RESOURCE` that sets `bind_instance` with the
+    /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
+    /// before sending the command: an older server cannot decode the tag.
+    ConditionalKill = CONDITIONAL_KILL,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1088,7 +1101,8 @@ impl ServerFeatureSet {
         | (ServerFeature::KeepEmptySessions as u32)
         | (ServerFeature::Whoami as u32)
         | (ServerFeature::ListDirectoryHost as u32)
-        | (ServerFeature::SshOrigin as u32);
+        | (ServerFeature::SshOrigin as u32)
+        | (ServerFeature::ConditionalKill as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1801,6 +1815,11 @@ mod tests {
         assert!(
             !ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectoryHost)
         );
+        assert_eq!(CONDITIONAL_KILL, 0x0020_0000);
+        assert!(
+            ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
+        );
+        assert!(!ServerFeatureSet::from_wire(SSH_ORIGIN).contains(ServerFeature::ConditionalKill));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

@@ -80,7 +80,10 @@ pub(crate) async fn spawn_agent_session(
     };
 
     if let Some(host) = satellite {
-        relay_agent_session_spawn(state, request_id, resource, host, &parent, out_tx).await;
+        relay_agent_session_spawn(
+            state, client_id, request_id, resource, host, &parent, out_tx,
+        )
+        .await;
         return;
     }
 
@@ -128,6 +131,8 @@ pub(crate) async fn spawn_agent_session(
         };
         let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
         let wire = s.intern_terminal_wire(core);
+        // ADR-0109: provenance before the spawner's own subscription.
+        s.record_spawn(core, client_id);
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
         Ok((core, wire))
     });
@@ -160,10 +165,13 @@ pub(crate) async fn spawn_agent_session(
             .await;
     }
 
+    let instance = resource
+        .bind_instance
+        .then(|| state.with(|s| s.idspace.instance()));
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::ResourceSpawned {
             request_id,
-            result: SpawnResult::Ok(wire_session.clone()),
+            result: crate::runtime::attach::spawned_result(wire_session.clone(), instance),
         }))
         .await;
     // The same announcement a Terminal spawn makes, carrying what the
@@ -216,6 +224,7 @@ pub(crate) async fn spawn_agent_session(
 /// with the parent reduced to that satellite's `Local` space.
 async fn relay_agent_session_spawn(
     state: &SharedState,
+    client_id: ClientId,
     request_id: u32,
     resource: &SpawnResource,
     host: &phux_protocol::ids::SatelliteHost,
@@ -260,8 +269,15 @@ async fn relay_agent_session_spawn(
         initial_size: None,
         resource: Some(Box::new(forwarded)),
     };
-    crate::runtime::attach::dispatch_satellite_spawn(state, out_tx, request_id, host, Ok(spawn))
-        .await;
+    crate::runtime::attach::dispatch_satellite_spawn(
+        state,
+        client_id,
+        out_tx,
+        request_id,
+        host,
+        Ok(spawn),
+    )
+    .await;
 }
 
 /// Queue a typed `RESOURCE_SPAWNED` refusal.

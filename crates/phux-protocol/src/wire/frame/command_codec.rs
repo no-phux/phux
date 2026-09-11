@@ -19,23 +19,24 @@ use super::{
     COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
     COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
     COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
-    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
-    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
-    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
-    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
-    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID,
-    COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED,
-    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
-    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
-    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
-    InputMode, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
-    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
-    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
-    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_paste_event, encode_terminal_id,
+    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
+    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
+    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
+    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
+    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
+    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
+    ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
+    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
+    EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
+    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
+    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
+    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
+    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
+    encode_terminal_id,
 };
 
 // -----------------------------------------------------------------------------
@@ -69,6 +70,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::KillResource { terminal_id } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE);
             encode_terminal_id(terminal_id, enc);
+        }
+        Command::KillResourceIf {
+            terminal_id,
+            precondition,
+        } => {
+            enc.write_u8(COMMAND_TAG_KILL_RESOURCE_IF);
+            encode_terminal_id(terminal_id, enc);
+            encode_kill_precondition(precondition, enc);
         }
         Command::GetState { scope } => {
             enc.write_u8(COMMAND_TAG_GET_STATE);
@@ -356,9 +365,47 @@ fn decode_terminal_subscription_command(
         COMMAND_TAG_KILL_RESOURCE => Command::KillResource {
             terminal_id: decode_terminal_id(dec)?,
         },
+        COMMAND_TAG_KILL_RESOURCE_IF => Command::KillResourceIf {
+            terminal_id: decode_terminal_id(dec)?,
+            precondition: decode_kill_precondition(dec)?,
+        },
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+/// Write a `KILL_RESOURCE_IF` precondition: an `Option` tag, the 16 instance
+/// bytes when present, then the condition bits.
+fn encode_kill_precondition(precondition: &KillPrecondition, enc: &mut Encoder<'_>) {
+    match &precondition.instance {
+        None => enc.write_u8(0),
+        Some(instance) => {
+            enc.write_u8(1);
+            super::codec::encode_server_instance(instance, enc);
+        }
+    }
+    enc.write_u8(precondition.conditions.bits());
+}
+
+/// Read a `KILL_RESOURCE_IF` precondition. Unknown condition bits are kept,
+/// so the server can refuse them with a typed error rather than the
+/// connection failing on a malformed frame.
+fn decode_kill_precondition(dec: &mut Decoder<'_>) -> Result<KillPrecondition, DecodeError> {
+    let instance = match dec.read_u8()? {
+        0 => None,
+        1 => Some(super::codec::decode_server_instance(dec)?),
+        other => {
+            return Err(DecodeError::UnknownEnumValue {
+                field: "Option<ServerInstance> tag",
+                value: u32::from(other),
+            });
+        }
+    };
+    let conditions = KillConditions::from_bits(dec.read_u8()?);
+    Ok(KillPrecondition {
+        instance,
+        conditions,
+    })
 }
 
 /// Decode the live agent affordances (SPEC §6): `GET_SCREEN`, `ROUTE_INPUT`,

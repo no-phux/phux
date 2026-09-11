@@ -183,6 +183,7 @@ impl ServerState {
                 next_terminal_wire_id: self.idspace.next_terminal_wire(),
                 next_window_wire_id: self.idspace.next_window_wire(),
                 next_touch_timestamp: self.sessions.next_touch_timestamp(),
+                server_instance: Some(*self.idspace.instance().as_bytes()),
             },
             sessions,
             windows,
@@ -485,6 +486,12 @@ impl ServerState {
             .set_next_window_wire(blob.counters.next_window_wire_id);
         self.sessions
             .set_next_touch_timestamp(blob.counters.next_touch_timestamp);
+        // ADR-0109: the terminal allocator was restored, so no id can repeat
+        // and the token that names the id space must survive with it.
+        if let Some(bytes) = blob.counters.server_instance {
+            self.idspace
+                .set_instance(phux_protocol::ids::ServerInstance::new(bytes));
+        }
     }
 }
 
@@ -700,6 +707,44 @@ mod tests {
                 assert!(
                     String::from_utf8_lossy(&p2.vt_replay_bytes).contains("hello"),
                     "rebuilt pane should replay its seed snapshot"
+                );
+            })
+            .await;
+    }
+
+    /// ADR-0109: the instance token changes exactly when pane ids can
+    /// repeat. A cold start mints a new one; an upgrade, which restores the
+    /// allocators, restores it too; a blob from an image that predates the
+    /// token leaves the new image's fresh one in place (ids still cannot
+    /// repeat, and no client can hold a token that image never issued).
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = ServerState::new();
+                let token = state.idspace.instance();
+                let blob = state.build_upgrade_blob(7).await;
+                assert_eq!(blob.counters.server_instance, Some(*token.as_bytes()));
+
+                let mut upgraded = ServerState::new();
+                assert_ne!(
+                    upgraded.idspace.instance(),
+                    token,
+                    "a cold start mints a new token"
+                );
+                upgraded.rebuild_from_blob(&blob).expect("rebuild");
+                assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
+
+                let mut legacy = state.build_upgrade_blob(7).await;
+                legacy.counters.server_instance = None;
+                let mut from_legacy = ServerState::new();
+                let fresh = from_legacy.idspace.instance();
+                from_legacy.rebuild_from_blob(&legacy).expect("rebuild");
+                assert_eq!(
+                    from_legacy.idspace.instance(),
+                    fresh,
+                    "nothing to restore: the fresh token stands"
                 );
             })
             .await;

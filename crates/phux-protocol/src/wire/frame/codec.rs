@@ -671,7 +671,12 @@ pub(in crate::wire) fn decode_metadata_scope_key(
 
 pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encoder<'_>) {
     match result {
-        SpawnResult::Ok(terminal_id) => {
+        // A bound result is the same `Ok` bytes; its instance token rides
+        // `RESOURCE_SPAWNED` field 3, which an older decoder skips.
+        SpawnResult::Ok(terminal_id)
+        | SpawnResult::OkBound {
+            id: terminal_id, ..
+        } => {
             enc.write_u8(SPAWN_RESULT_OK);
             encode_terminal_id(terminal_id, enc);
         }
@@ -680,6 +685,27 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
             encode_spawn_error(err, enc);
         }
     }
+}
+
+/// Write a [`ServerInstance`](crate::ids::ServerInstance) as its 16 raw bytes.
+pub(in crate::wire) fn encode_server_instance(
+    instance: &crate::ids::ServerInstance,
+    enc: &mut Encoder<'_>,
+) {
+    for byte in instance.as_bytes() {
+        enc.write_u8(*byte);
+    }
+}
+
+/// Read a [`ServerInstance`](crate::ids::ServerInstance) from 16 raw bytes.
+pub(in crate::wire) fn decode_server_instance(
+    dec: &mut Decoder<'_>,
+) -> Result<crate::ids::ServerInstance, DecodeError> {
+    let mut bytes = [0; 16];
+    for byte in &mut bytes {
+        *byte = dec.read_u8()?;
+    }
+    Ok(crate::ids::ServerInstance::new(bytes))
 }
 
 pub(in crate::wire) fn decode_spawn_result(

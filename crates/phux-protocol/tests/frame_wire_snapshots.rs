@@ -489,6 +489,57 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 result: SpawnResult::Ok(ResourceId::local(0x0000_002A)),
             },
         ),
+        // ADR-0109: a bound reply is the `Ok` bytes above plus field 3, the
+        // 16-byte instance token, so an older decoder reads the same `Ok`.
+        (
+            "snap_terminal_spawned_ok_bound",
+            FrameKind::ResourceSpawned {
+                request_id: 0x0000_0001,
+                result: SpawnResult::OkBound {
+                    id: ResourceId::local(0x0000_002A),
+                    instance: phux_protocol::ids::ServerInstance::new([0xA5; 16]),
+                },
+            },
+        ),
+        (
+            "snap_spawn_terminal_bind_instance",
+            FrameKind::SpawnResource {
+                request_id: 0x0000_0010,
+                group: GroupId::new(1),
+                command: None,
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: Some(SatelliteHost::new("edge")),
+                owner_terminal: None,
+                agent_session: None,
+                initial_size: None,
+                resource: Some(Box::new(SpawnResource::default().with_bind_instance(true))),
+            },
+        ),
+        (
+            "snap_command_kill_resource_if",
+            FrameKind::Command {
+                request_id: 0x0000_0011,
+                command: Command::KillResourceIf {
+                    terminal_id: ResourceId::satellite("edge", 0x0000_0009),
+                    precondition:
+                        phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
+                            phux_protocol::ids::ServerInstance::new([0xA5; 16]),
+                        ),
+                },
+            },
+        ),
+        (
+            "snap_command_result_error_precondition_failed",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0011,
+                result: CommandResult::Error {
+                    code: ErrorCode::PreconditionFailed,
+                    message: "attached".to_owned(),
+                },
+            },
+        ),
         (
             "snap_terminal_spawned_err_group_not_found",
             FrameKind::ResourceSpawned {
