@@ -97,6 +97,13 @@
                     <text overflow="ellipsis">{row.label}</text>
                     <text foreground="text_muted" overflow="ellipsis">{row.detail}</text>
                   </column>
+                  <!-- A session row's own actions: Rename goes to the coordinator
+                       that listed the row, by the row's captured target. -->
+                  <context-menu>
+                    <if test="{row.renamable}">
+                      <menu-item on-press="rename_row:{row.target}">Rename Session…</menu-item>
+                    </if>
+                  </context-menu>
                 </list-item>
               </for>
             </list>

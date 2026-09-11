@@ -296,6 +296,12 @@ pub const Host = struct {
     pub fn start(host: *Host, client_name: []const u8) !void {
         try outboundSize(client_name.len);
         try resultError(c.phux_client_queue_hello(host.client, bytes(client_name)));
+        // Renames any client makes reach this connection's session list from
+        // the start (the switcher rows and the header follow them), not only
+        // after this client's own first rename. The client subscribes right
+        // after HELLO_OK: a read-only SUBSCRIBE_METADATA, never an ATTACH, so
+        // a listing connection follows renames without holding a viewport.
+        try resultError(c.phux_client_follow_session_names(host.client));
         try host.stageOutgoing();
     }
 

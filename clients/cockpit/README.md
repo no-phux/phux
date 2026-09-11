@@ -177,8 +177,10 @@ beside the others, in the same windows, without disconnecting anything.
 Every terminal carries the coordinator that minted it, so input always
 reaches the right machine. A coordinator that fails says why in its group.
 Window > Rename Session… renames the session on screen, on the coordinator
-that owns it and no other; the header and the switcher follow the server's
-answer, and a refused name says why.
+that owns it and no other, and a session row's context menu in the switcher
+renames that row's session on the coordinator that listed it, a listing
+host's included; a refused name says why. Renames any client makes reach
+the header and the switcher live on every connected coordinator.
 Use this Mac makes this Mac active and keeps the hosts listed; Disconnect
 removes the host named in the panel, and Disconnect All every host. The
 connected hosts are remembered and come back beside this Mac after relaunch,

@@ -772,6 +772,64 @@ fn session_renamed() -> FrameKind {
     }
 }
 
+/// Another client's rename of the listing fixture's `build` (1) to `ship`,
+/// as the server broadcasts it to a client that never attached.
+fn standby_session_renamed() -> FrameKind {
+    use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope};
+    FrameKind::MetadataChanged {
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+        value: Some(b"build\0ship".to_vec()),
+    }
+}
+
+/// A listing client that follows renames subscribes right after `HELLO_OK`,
+/// lists, and reads another client's rename into its list, attaching nothing.
+fn verify_standby_session_renamed(hello: &[u8], state: &[u8], renamed: &[u8]) {
+    use phux_client_ffi::{
+        PhuxSessionInfo, phux_client_follow_session_names, phux_client_query_sessions,
+        phux_client_session_get,
+    };
+    let client = Client::new();
+    // SAFETY: live same-thread handle with valid spans throughout; the name
+    // borrows the client until the next mutable call, and none happens
+    // before it is read.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(client.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            phux_client_follow_session_names(client.0),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Hello { .. }));
+        client.feed(hello);
+        assert!(matches!(
+            client.take_outgoing(),
+            FrameKind::SubscribeMetadata { .. }
+        ));
+        assert_eq!(
+            phux_client_query_sessions(client.0, 1),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Command { .. }));
+        client.feed(state);
+        client.feed(renamed);
+        let mut session = PhuxSessionInfo::default();
+        assert_eq!(
+            phux_client_session_get(client.0, 0, &raw mut session),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            slice::from_raw_parts(session.name.data, session.name.len),
+            b"ship"
+        );
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Negotiated);
+        assert_eq!(phux_client_outgoing_count(client.0), 0, "no ATTACH, ever");
+    }
+}
+
 /// An attached client reads the broadcast into its session list in place.
 fn verify_session_renamed(hello: &[u8], attached: &[u8], renamed: &[u8]) {
     use phux_client_ffi::{PhuxSessionInfo, phux_client_session_count, phux_client_session_get};
@@ -821,6 +879,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_standby(&hello, &standby);
     let renamed = encode(&[session_renamed()]);
     verify_session_renamed(&hello, &attached, &renamed);
+    let standby_renamed = encode(&[standby_session_renamed()]);
+    verify_standby_session_renamed(&hello, &standby, &standby_renamed);
     let hello_keep_empty = encode(&[hello_keep_empty()]);
     let standby_keep_empty = encode(&[standby_keep_empty_state()]);
     let attached_empty = encode(&attached_empty());
@@ -841,6 +901,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     std::fs::write(output.join("spawn-bound.bin"), &spawn_bound)?;
     std::fs::write(output.join("session_renamed.bin"), &renamed)?;
+    std::fs::write(output.join("standby_session_renamed.bin"), &standby_renamed)?;
     std::fs::write(output.join("hello_keep_empty.bin"), &hello_keep_empty)?;
     std::fs::write(
         output.join("standby_keep_empty_state.bin"),
@@ -858,7 +919,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename, keep-empty sessions and bound spawns; wrote hello_conditional_kill.bin, spawn-bound.bin, hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename (followed by a listing client too), keep-empty sessions and bound spawns; wrote hello_conditional_kill.bin, spawn-bound.bin, hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), standby_session_renamed.bin, hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),

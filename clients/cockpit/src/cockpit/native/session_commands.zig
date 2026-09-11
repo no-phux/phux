@@ -18,6 +18,18 @@
 //! `phux.session.name/v1` on that coordinator's own connection; the server's
 //! METADATA_CHANGED renames the session in that coordinator's list, which the
 //! header and the switcher read.
+//!
+//! Kinds 6 and 7 name the session of one switcher row instead:
+//!
+//!   request  version=1, kind:u8, name_len:u8, name UTF-8, target_len:u8,
+//!            target (the row's captured catalog target, catalog_targets.zig)
+//!
+//! The target carries the coordinator that listed the row and that
+//! coordinator's context, so it resolves only against that coordinator as it
+//! was when the row was captured (`rowTarget`); a coordinator no longer held,
+//! retargeted or reconnected since, or no longer listing that session, names
+//! nothing and nothing is sent. A listing peer's row is renamed on that peer's listing connection:
+//! the write is metadata, so the peer still never attaches.
 
 const std = @import("std");
 const support = @import("../phux_support.zig");
@@ -31,15 +43,19 @@ pub const max_text_bytes: usize = 240;
 pub const max_bytes: usize = 5 + 3 * max_text_bytes;
 
 /// 4 and 5 serve the Empty session state (empty_session.zig): New Tab in
-/// the empty session a window shows, and dismissing a picked one.
-pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3, new_tab = 4, dismiss = 5 };
+/// the empty session a window shows, and dismissing a picked one. 6 and 7
+/// are 1 and 2 for the session a switcher row names (below).
+pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3, new_tab = 4, dismiss = 5, describe_row = 6, rename_row = 7 };
 /// `unavailable`: nothing on screen can be renamed. `refused`: this rename
 /// changed nothing; the reason says why.
 pub const Phase = enum(u8) { ready = 0, pending = 1, renamed = 2, refused = 3, unavailable = 4 };
 pub const Error = error{ InvalidRequest, BufferTooSmall };
 
-/// The rename sent to one coordinator, on one of its connections.
-pub const Flight = struct { coordinator: support.ProviderId, epoch: u64, request_id: u32 };
+/// The rename sent to one coordinator, on one of its connections. `context`
+/// is that provider's own lifetime (`context_id`): ids move with a retarget
+/// and epochs and request ids are per-connection counters, so only the
+/// context tells the provider it was sent to from one that took its id.
+pub const Flight = struct { coordinator: support.ProviderId, context: u64, epoch: u64, request_id: u32 };
 
 /// One rename slot per coordinator Cockpit can hold (the active one and its
 /// peers). A pending rename refuses a second rename on its own coordinator
@@ -75,25 +91,32 @@ pub const Flights = struct {
     }
 };
 
-pub const Request = struct { kind: Kind, name: []const u8 = "" };
+pub const Request = struct { kind: Kind, name: []const u8 = "", target: []const u8 = "" };
 
 pub fn decode(bytes: []const u8) Error!Request {
     if (bytes.len < 3 or bytes[0] != version) return error.InvalidRequest;
-    const kind: Kind = switch (bytes[1]) {
-        1 => .describe,
-        2 => .rename,
-        3 => .status,
-        4 => .new_tab,
-        5 => .dismiss,
-        else => return error.InvalidRequest,
-    };
-    if (@as(usize, bytes[2]) != bytes.len - 3) return error.InvalidRequest;
-    const name = bytes[3..];
+    const kind = std.enums.fromInt(Kind, bytes[1]) orelse return error.InvalidRequest;
+    const name_end = 3 + @as(usize, bytes[2]);
+    if (name_end > bytes.len) return error.InvalidRequest;
+    const name = bytes[3..name_end];
+    const target = try decodeTarget(kind, bytes, name_end);
     switch (kind) {
-        .rename => if (name.len == 0 or !std.unicode.utf8ValidateSlice(name)) return error.InvalidRequest,
-        .describe, .status, .new_tab, .dismiss => if (name.len != 0) return error.InvalidRequest,
+        .rename, .rename_row => if (name.len == 0 or !std.unicode.utf8ValidateSlice(name)) return error.InvalidRequest,
+        .describe, .status, .new_tab, .dismiss, .describe_row => if (name.len != 0) return error.InvalidRequest,
     }
-    return .{ .kind = kind, .name = name };
+    return .{ .kind = kind, .name = name, .target = target };
+}
+
+/// A row kind's captured target follows its name; every other kind ends at
+/// its name.
+fn decodeTarget(kind: Kind, bytes: []const u8, at: usize) Error![]const u8 {
+    if (kind != .describe_row and kind != .rename_row) {
+        return if (at == bytes.len) "" else error.InvalidRequest;
+    }
+    if (at >= bytes.len) return error.InvalidRequest;
+    const target = bytes[at + 1 ..];
+    if (target.len != bytes[at] or target.len == 0) return error.InvalidRequest;
+    return target;
 }
 
 pub const Reply = struct { phase: Phase, name: []const u8 = "", host: []const u8 = "", reason: []const u8 = "" };
@@ -133,6 +156,8 @@ pub fn handle(engine: anytype, fx: anytype, payload: []const u8, out: []u8) Erro
     const reply = switch (request.kind) {
         .describe => describe(engine),
         .rename => rename(engine, request.name, &scratch),
+        .describe_row => if (rowTarget(engine, request.target)) |target| describeTarget(engine, target) else row_gone,
+        .rename_row => if (rowTarget(engine, request.target)) |target| renameTarget(engine, target, request.name, &scratch) else row_gone,
         .status => status(engine, &scratch),
         .new_tab => newTab(engine, fx),
         .dismiss => blk: {
@@ -157,15 +182,64 @@ const empty_session = @import("empty_session.zig");
 
 const nothing_on_screen: Reply = .{ .phase = .unavailable, .reason = "No Phux session is on screen to rename." };
 
+const row_gone: Reply = .{ .phase = .unavailable, .reason = "That session is no longer listed there. Refresh the switcher and try again." };
+
+/// A session to rename and the coordinator that owns it.
+pub const Target = struct { provider: *support.PhuxProvider, session: u32, name: []const u8 };
+
+/// The session a switcher row names, on the coordinator that listed the row
+/// and on no other. The captured target is resolved against that
+/// coordinator's current context (catalog_targets.zig); a session row is the
+/// active coordinator's and a peer session row that peer's, each looked up by
+/// the id the target carries, never by name. Null (so nothing is sent) when
+/// that coordinator is no longer held, has moved on, or no longer lists it.
+/// A listing peer qualifies: its negotiated connection can write metadata.
+pub fn rowTarget(engine: anytype, bytes: []const u8) ?Target {
+    if (comptime !support.phux_enabled) return null;
+    const model = engine.model;
+    const captured = navigation.targets.decode(bytes) orelse return null;
+    const entry = captured.resolve(model) orelse return null;
+    var owner: *support.PhuxProvider = undefined;
+    var session: u32 = 0;
+    switch (entry) {
+        .session => |id| {
+            owner = model.phux() orelse return null;
+            session = id;
+        },
+        .peer_session => |row| {
+            owner = model.phuxPeerAt(model.peerSlot(row.coordinator) orelse return null) orelse return null;
+            session = row.id;
+        },
+        .placed_terminal, .available_terminal, .peer_unavailable => return null,
+    }
+    if (owner.providerId() != captured.provider_id or session == 0) return null;
+    const state = owner.state();
+    if (state != .negotiated and state != .attached) return null;
+    for (owner.sessionCatalog()) |listed| {
+        if (listed.id == session and listed.name.len != 0) return .{ .provider = owner, .session = session, .name = listed.name };
+    }
+    return null;
+}
+
 /// The session a rename would name, and whose host it is on.
 pub fn describe(engine: anytype) Reply {
     const target = engine.renameTarget() orelse return nothing_on_screen;
+    return describeTarget(engine, target);
+}
+
+fn describeTarget(engine: anytype, target: anytype) Reply {
     return .{ .phase = .ready, .name = target.name, .host = hostLabel(engine.model, target.provider) };
 }
 
 fn rename(engine: anytype, name: []const u8, scratch: *Scratch) Reply {
     if (comptime !support.phux_enabled) return nothing_on_screen;
     const target = engine.renameTarget() orelse return nothing_on_screen;
+    return renameTarget(engine, target, name, scratch);
+}
+
+/// Rename `target`'s session on `target.provider`'s connection alone.
+fn renameTarget(engine: anytype, target: anytype, name: []const u8, scratch: *Scratch) Reply {
+    if (comptime !support.phux_enabled) return nothing_on_screen;
     const host = hostLabel(engine.model, target.provider);
     var reply: Reply = .{ .phase = .refused, .name = target.name, .host = host };
     // One rename at a time per coordinator; another coordinator's pending
@@ -194,7 +268,7 @@ fn rename(engine: anytype, name: []const u8, scratch: *Scratch) Reply {
         reply.reason = std.fmt.bufPrint(&scratch.reason, "Could not send the rename to {s}.", .{host}) catch "Could not send the rename.";
         return reply;
     };
-    engine.rename_flights.put(slot, .{ .coordinator = coordinator, .epoch = target.provider.connectionEpoch(), .request_id = request_id });
+    engine.rename_flights.put(slot, .{ .coordinator = coordinator, .context = target.provider.context_id, .epoch = target.provider.connectionEpoch(), .request_id = request_id });
     return outcome(engine, target.provider, request_id, scratch);
 }
 
@@ -202,7 +276,7 @@ fn rename(engine: anytype, name: []const u8, scratch: *Scratch) Reply {
 /// connection. A flight whose connection moved on can never settle.
 fn flightPending(engine: anytype, flight: Flight) bool {
     const owner = engine.model.phuxFor(flight.coordinator) orelse return false;
-    if (owner.connectionEpoch() != flight.epoch) return false;
+    if (owner.context_id != flight.context or owner.connectionEpoch() != flight.epoch) return false;
     const info = owner.renameInfo();
     return info.request_id == flight.request_id and info.status == .pending;
 }
@@ -217,7 +291,7 @@ fn status(engine: anytype, scratch: *Scratch) Reply {
     const flight = engine.rename_flights.of(coordinator) orelse return describe(engine);
     const unknown: Reply = .{ .phase = .refused, .reason = "The connection ended before the rename was confirmed." };
     const owner = engine.model.phuxFor(flight.coordinator) orelse return unknown;
-    if (owner.connectionEpoch() != flight.epoch) return unknown;
+    if (owner.context_id != flight.context or owner.connectionEpoch() != flight.epoch) return unknown;
     return outcome(engine, owner, flight.request_id, scratch);
 }
 
@@ -263,6 +337,28 @@ test "a rename request names its session; malformed requests are refused" {
     try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 2, 2, 0xff, 0xfe }));
     try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 3, 1, 'x' }));
     try std.testing.expectError(error.InvalidRequest, decode(&.{ 2, 1, 0 }));
+    // Row kinds: the name, then target_len and the target, exactly.
+    const row = try decode(&.{ 1, 7, 4, 's', 'h', 'i', 'p', 2, 0xaa, 0xbb });
+    try std.testing.expectEqual(Kind.rename_row, row.kind);
+    try std.testing.expectEqualStrings("ship", row.name);
+    try std.testing.expectEqualSlices(u8, &.{ 0xaa, 0xbb }, row.target);
+    const described = try decode(&.{ 1, 6, 0, 1, 0xaa });
+    try std.testing.expectEqual(Kind.describe_row, described.kind);
+    try std.testing.expectEqualSlices(u8, &.{0xaa}, described.target);
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 7, 1, 'x' })); // no target_len
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 7, 1, 'x', 0 })); // empty target
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 7, 1, 'x', 2, 0xaa })); // short
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 7, 1, 'x', 1, 0xaa, 0xbb })); // trailing
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 7, 0, 1, 0xaa })); // rename needs a name
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 6, 1, 'x', 1, 0xaa })); // describe takes none
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 2, 1, 'x', 1, 0xaa })); // only row kinds carry one
+    try std.testing.expectError(error.InvalidRequest, decode(&.{ 1, 8, 0 }));
+    var longest: [3 + 255 + 1 + 255]u8 = @splat('a');
+    longest[0] = 1;
+    longest[1] = 7;
+    longest[2] = 255;
+    longest[3 + 255] = 255;
+    try std.testing.expectEqual(@as(usize, 255), (try decode(&longest)).target.len);
     var out: [max_bytes]u8 = undefined;
     const bytes = try encode(.{ .phase = .refused, .name = "a", .host = "mini", .reason = "why" }, &out);
     try std.testing.expectEqualSlices(u8, &.{ 1, 3, 1, 'a', 4, 'm', 'i', 'n', 'i', 3, 'w', 'h', 'y' }, bytes);

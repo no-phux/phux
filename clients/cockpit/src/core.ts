@@ -23,6 +23,10 @@ import {
   SESSION_KIND_STATUS,
   SESSION_KIND_NEW_TAB,
   SESSION_KIND_DISMISS,
+  SESSION_KIND_DESCRIBE_ROW,
+  SESSION_KIND_RENAME_ROW,
+  sessionRowRequest,
+  sessionRowTarget,
   SESSION_PHASE_READY,
   SESSION_PHASE_PENDING,
   SESSION_PHASE_RENAMED,
@@ -117,6 +121,8 @@ export interface SwitcherRow {
   readonly host: Uint8Array;
   readonly selectable: boolean;
   readonly disabled: boolean;
+  /// A listed session (this Mac's or a peer's): its context menu offers Rename.
+  readonly renamable: boolean;
 }
 
 export interface ThemeRow {
@@ -247,6 +253,10 @@ export interface Model {
   readonly window3RenameOpen: boolean;
   readonly window4RenameOpen: boolean;
   readonly renameQuery: Uint8Array;
+  /// The captured target of the switcher row Rename was chosen on, or empty
+  /// for the session on screen. The engine resolves it against the
+  /// coordinator that listed the row, never another.
+  readonly renameRow: Uint8Array;
   readonly renameAnchor: number;
   readonly renameFocus: number;
   readonly renameTitle: Uint8Array;
@@ -388,6 +398,7 @@ export type Msg =
   | { readonly kind: "directory_loaded"; readonly body: Uint8Array }
   | { readonly kind: "directory_failed"; readonly error: Uint8Array }
   | { readonly kind: "rename_open" }
+  | { readonly kind: "rename_row"; readonly target: Uint8Array }
   | { readonly kind: "rename_close" }
   | { readonly kind: "rename_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "rename_submit" }
@@ -494,6 +505,7 @@ export const viewUnbound = [
   "renameFocus",
   "renameBusy",
   "renameAwaiting",
+  "renameRow",
   "rename_open",
   "session_loaded",
   "session_failed",
@@ -629,7 +641,8 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
     const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
     const kind = row.kind >= 0 && row.kind <= 3 ? Math.trunc(row.kind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
-      highlighted: row.highlighted, selectable: row.selectable, disabled: !row.selectable, target: row.target });
+      highlighted: row.highlighted, selectable: row.selectable, disabled: !row.selectable, target: row.target,
+      renamable: kind === 2 && row.selectable && sessionRowTarget(row.target) });
   }
   return result;
 }
@@ -810,10 +823,23 @@ function renameState(model: Model): TextEditState {
 function openRename(model: Model): RenameDecision {
   if (model.renameOpen || model.settingsOpen) return renameDecision(model, NO_BYTES, false);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false,
+  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: NO_BYTES,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
     renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session on screen...") });
   return renameDecision(next, sessionRequest(SESSION_KIND_DESCRIBE, NO_BYTES), true);
+}
+
+/// Rename from a switcher row's context menu: the same panel, naming that
+/// row's session by the row's own captured target. It never falls back to
+/// the session on screen; a row that is not a session row opens nothing.
+function openRenameRow(model: Model, target: Uint8Array): RenameDecision {
+  if (model.renameOpen || model.settingsOpen || !sessionRowTarget(target)) return renameDecision(model, NO_BYTES, false);
+  const row = target.slice();
+  const base = model.paletteOpen ? closePalette(model) : model;
+  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: row,
+    renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
+    renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session...") });
+  return renameDecision(next, sessionRowRequest(SESSION_KIND_DESCRIBE_ROW, NO_BYTES, row), true);
 }
 
 function closeRename(model: Model): RenameDecision {
@@ -840,8 +866,10 @@ function submitRename(model: Model): RenameDecision {
   if (model.renameQuery.length === 0) {
     return renameDecision({ ...model, renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
   }
-  return renameDecision({ ...model, renameBusy: true, renameNotice: asciiBytes("Renaming...") },
-    sessionRequest(SESSION_KIND_RENAME, model.renameQuery), false);
+  const request = model.renameRow.length > 0
+    ? sessionRowRequest(SESSION_KIND_RENAME_ROW, model.renameQuery, model.renameRow)
+    : sessionRequest(SESSION_KIND_RENAME, model.renameQuery);
+  return renameDecision({ ...model, renameBusy: true, renameNotice: asciiBytes("Renaming...") }, request, false);
 }
 
 function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
@@ -877,6 +905,7 @@ function receiveSession(model: Model, body: Uint8Array): RenameDecision {
 
 function renameTransition(model: Model, msg: Msg): RenameDecision | null {
   if (msg.kind === "rename_open") return openRename(model);
+  if (msg.kind === "rename_row") return openRenameRow(model, msg.target);
   if (msg.kind === "session_loaded") return receiveSession(model, msg.body);
   if (msg.kind === "session_failed") {
     if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
@@ -1578,6 +1607,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window3RenameOpen: false,
       window4RenameOpen: false,
       renameQuery: new Uint8Array(0),
+      renameRow: new Uint8Array(0),
       renameAnchor: 0,
       renameFocus: 0,
       renameTitle: asciiBytes("Rename Session"),

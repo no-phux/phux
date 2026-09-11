@@ -14,8 +14,13 @@
 //!
 //! The first rename on a client subscribes to the key, so this client hears
 //! its own rename and every later one on that server, and applies each to
-//! the session list in place. Neither a listing nor an attached client needs
-//! to attach anything for this: a rename writes metadata, it sizes nothing.
+//! the session list in place. A client that asks to follow renames
+//! (`phux_client_follow_session_names`) subscribes as soon as `HELLO_OK` is
+//! applied instead, so renames other clients make reach its list before it
+//! has renamed anything. Neither a listing nor an attached client needs to
+//! attach anything for this: the subscription is read-only and a rename
+//! writes metadata; neither sizes anything. The server delivers
+//! `METADATA_CHANGED` to a subscriber that never attached.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"
@@ -58,6 +63,9 @@ pub(crate) struct SessionRename {
     message: Vec<u8>,
     /// Whether this client has subscribed to the rename key.
     subscribed: bool,
+    /// Subscribe as soon as the connection is negotiated, not at the first
+    /// rename (`phux_client_follow_session_names`).
+    follow: bool,
     /// Bumped whenever a rename changed the session list in place.
     sessions_revision: u64,
 }
@@ -73,6 +81,7 @@ impl Default for SessionRename {
             barrier: None,
             message: Vec::new(),
             subscribed: false,
+            follow: false,
             sessions_revision: 0,
         }
     }
@@ -252,19 +261,36 @@ fn refusal(client: &Client, current: &[u8], new_name: &[u8]) -> Result<u32, Stri
     Ok(session.session_id)
 }
 
+/// Subscribe to the rename key once per client. Read-only: it attaches
+/// nothing and sizes nothing.
+fn subscribe(client: &mut Client) -> Result<(), BridgeError> {
+    if client.session_rename.subscribed {
+        return Ok(());
+    }
+    client.queue_frame(&FrameKind::SubscribeMetadata {
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+    })?;
+    client.session_rename.subscribed = true;
+    Ok(())
+}
+
+/// `HELLO_OK` was applied: a client following renames subscribes now, as the
+/// first frame it queues on the negotiated connection.
+pub(crate) fn negotiated(client: &mut Client) -> Result<(), BridgeError> {
+    if client.session_rename.follow {
+        subscribe(client)?;
+    }
+    Ok(())
+}
+
 fn queue_rename(
     client: &mut Client,
     request_id: u32,
     current: &[u8],
     new_name: &[u8],
 ) -> Result<(), BridgeError> {
-    if !client.session_rename.subscribed {
-        client.queue_frame(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: SESSION_NAME_KEY.to_owned(),
-        })?;
-        client.session_rename.subscribed = true;
-    }
+    subscribe(client)?;
     let mut value = current.to_vec();
     value.push(0);
     value.extend_from_slice(new_name);
@@ -339,6 +365,29 @@ pub unsafe extern "C" fn phux_client_rename_session(
                     return Err(error);
                 }
             }
+        }
+        Ok(())
+    })
+}
+
+/// Follow renames any client makes, from the start of the connection.
+///
+/// Subscribes to `phux.session.name/v1` now if `HELLO_OK` has been applied,
+/// else as soon as it is. Once per client; idempotent.
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_follow_session_names(
+    client: *mut PhuxClient,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        if client.detached {
+            return Err(BridgeError::state("the connection has ended"));
+        }
+        client.session_rename.follow = true;
+        if client.protocol_ready {
+            subscribe(client)?;
         }
         Ok(())
     })
@@ -648,6 +697,93 @@ mod tests {
         );
         assert_eq!(info(client).1, STATUS_UNKNOWN_OUTCOME);
         unsafe { crate::phux_client_free(client) };
+    }
+
+    fn hello_ok() -> FrameKind {
+        FrameKind::HelloOk {
+            protocol_major: crate::PROTOCOL_VERSION.major,
+            protocol_minor: crate::PROTOCOL_VERSION.minor,
+            protocol_patch: crate::PROTOCOL_VERSION.patch,
+            server_caps: phux_protocol::caps::ServerCapabilities::new(),
+            server_id: b"server".to_vec(),
+            selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
+                .expect("limits"),
+        }
+    }
+
+    fn subscription() -> FrameKind {
+        FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: SESSION_NAME_KEY.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_follower_subscribes_right_after_hello_ok_and_hears_other_clients_renames() {
+        // A client that has queued HELLO and not yet heard HELLO_OK.
+        let client = negotiated(&["build", "deploy"]);
+        unsafe {
+            (*client).inner.protocol_ready = false;
+            (*client).inner.hello_queued = true;
+        }
+        assert_eq!(
+            unsafe { phux_client_follow_session_names(client) },
+            PhuxClientResult::Ok
+        );
+        assert!(sent(client).is_empty(), "nothing before HELLO_OK");
+        assert_eq!(feed(client, &hello_ok()), PhuxClientResult::Ok);
+        // One read-only subscription, and never an attach.
+        assert_eq!(sent(client), [subscription()]);
+
+        // Another client's rename moves the list, though this one renamed
+        // nothing; no rename of ours is pending or settled by it.
+        assert_eq!(feed(client, &changed(b"build\0ship")), PhuxClientResult::Ok);
+        assert_eq!(names(client), ["ship", "deploy"]);
+        let (_, status, revision, _) = info(client);
+        assert_eq!((status, revision), (STATUS_NONE, 1));
+
+        // Following again, or renaming, does not subscribe a second time.
+        assert_eq!(
+            unsafe { phux_client_follow_session_names(client) },
+            PhuxClientResult::Ok
+        );
+        assert!(sent(client).is_empty());
+        assert_eq!(rename(client, 1, "ship", "sail"), PhuxClientResult::Ok);
+        let frames = sent(client);
+        assert_eq!(frames.len(), 2, "write and confirmation read only");
+        assert!(!frames.contains(&subscription()));
+        unsafe { crate::phux_client_free(client) };
+    }
+
+    #[test]
+    fn following_on_a_negotiated_client_subscribes_at_once_and_not_after_detach() {
+        let client = negotiated(&["build"]);
+        assert_eq!(
+            unsafe { phux_client_follow_session_names(client) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(sent(client), [subscription()]);
+        unsafe { crate::phux_client_free(client) };
+
+        // A client that never follows subscribes only at its first rename.
+        let lazy = negotiated(&["build"]);
+        unsafe {
+            (*lazy).inner.protocol_ready = false;
+            (*lazy).inner.hello_queued = true;
+        }
+        assert_eq!(feed(lazy, &hello_ok()), PhuxClientResult::Ok);
+        assert!(sent(lazy).is_empty());
+        unsafe { crate::phux_client_free(lazy) };
+
+        let ended = negotiated(&["build"]);
+        unsafe { (*ended).inner.detached = true };
+        assert_eq!(
+            unsafe { phux_client_follow_session_names(ended) },
+            PhuxClientResult::InvalidState
+        );
+        assert!(sent(ended).is_empty());
+        unsafe { crate::phux_client_free(ended) };
     }
 
     #[test]

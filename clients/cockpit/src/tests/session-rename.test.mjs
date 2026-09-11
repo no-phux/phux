@@ -115,6 +115,84 @@ test('Escape closes the panel and gives the keyboard back', () => {
   assert.equal(model.renameOpen, false);
 });
 
+/// A captured catalog target (catalog_targets.zig): tag 2, `resource` 2 for
+/// the active coordinator's session, 3 for a peer's, 1 for a terminal.
+function rowTarget(resource, session, provider = 0x80000001) {
+  const out = new Uint8Array(resource === 1 ? 43 : 38);
+  out[0] = 2;
+  out[1] = resource;
+  const view = new DataView(out.buffer);
+  view.setBigUint64(2, BigInt(provider), true);
+  view.setUint32(34, session, true);
+  return out;
+}
+
+test('a session row offers Rename in its context menu, by its own captured target', () => {
+  const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  assert.match(markup, /on-press="palette_pick:\{row\.target\}">[\s\S]*?<context-menu>\s*<if test="\{row\.renamable\}">\s*<menu-item on-press="rename_row:\{row\.target\}">Rename Session…<\/menu-item>/);
+});
+
+test('only a listed session row is renamable: never a terminal or a peer group row', async () => {
+  const { navigationScopedRequest } = await import('../protocol.ts');
+  const revision = { hi: 0, lo: 7 };
+  const rows = [
+    ['mini build', rowTarget(3, 1), 2, 1],
+    ['This Mac fixture', rowTarget(2, 1, 1), 2, 1],
+    ['mini unavailable', rowTarget(3, 0), 2, 1],
+    ['a terminal', rowTarget(1, 7), 0, 1],
+  ];
+  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 1, new Uint8Array());
+  const records = rows.flatMap(([label, target], index) => {
+    const l = bytes(label);
+    return [index, 0, l.length, target.length, 0, ...target, ...l];
+  });
+  const metadata = rows.flatMap(([, , kind, selectable]) => [kind, selectable, 0]);
+  const body = new Uint8Array([...head, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
+  let [model] = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'palette_open' });
+  [model] = step(model, { kind: 'palette_scope', scope: 1 });
+  [model] = step(model, { kind: 'navigation_loaded', body });
+  assert.deepEqual(model.paletteRows.map(row => row.renamable), [true, true, false, false]);
+});
+
+test('Rename on a row describes and renames that row, never the session on screen', () => {
+  const target = rowTarget(3, 1);
+  let [model, cmd] = step(initialModel()[0], { kind: 'palette_open' });
+  [model, cmd] = step(model, { kind: 'rename_row', target });
+  assert.equal(model.renameOpen, true);
+  assert.equal(model.paletteOpen, false, 'the panel takes the modal slot');
+  assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 6, 0, 38, ...target])]);
+  [model] = step(model, { kind: 'session_loaded', body: reply(0, 'build', 'mini') });
+  assert.equal(text(model.renameTitle), 'Rename build on mini');
+  model = { ...model, renameQuery: bytes('ship') };
+  [model, cmd] = step(model, { kind: 'rename_submit' });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 7, 4, ...bytes('ship'), 38, ...target])]);
+  // The coordinator's refusal keeps the panel and says why.
+  [model] = step(model, { kind: 'session_loaded', body: reply(3, 'build', 'mini', '"ship" already exists on mini.') });
+  assert.equal(model.renameOpen, true);
+  assert.equal(text(model.renameNotice), '"ship" already exists on mini.');
+  // A stale row is refused by the engine; the panel shows its reason.
+  [model] = step(model, { kind: 'session_loaded', body: reply(4, '', '', 'That session is no longer listed there.') });
+  assert.equal(text(model.renameNotice), 'That session is no longer listed there.');
+
+  // Window > Rename Session afterwards names the session on screen again.
+  [model] = step(model, { kind: 'rename_close' });
+  [model, cmd] = step(model, { kind: 'rename_open' });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 1, 0])]);
+  [model, cmd] = step({ ...model, renameBusy: false, renameQuery: bytes('x') }, { kind: 'rename_submit' });
+  assert.deepEqual(sessionRequests(cmd), [sessionRequest(2, bytes('x'))]);
+});
+
+test('Rename on a row that is not a session row opens nothing and sends nothing', () => {
+  const [opened] = step(initialModel()[0], { kind: 'palette_open' });
+  for (const target of [rowTarget(1, 7), rowTarget(3, 0), new Uint8Array()]) {
+    const [model, cmd] = step(opened, { kind: 'rename_row', target });
+    assert.equal(model.renameOpen, false);
+    assert.equal(model.paletteOpen, true);
+    assert.deepEqual(sessionRequests(cmd), []);
+  }
+});
+
 test('the reply codec reads each field and refuses torn replies', () => {
   const decoded = sessionReply(reply(3, 'a', 'mini', 'why'));
   assert.equal(decoded.phase, 3);

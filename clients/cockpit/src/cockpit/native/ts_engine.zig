@@ -1788,8 +1788,8 @@ pub const Engine = struct {
     }
 
     /// A session of a peer coordinator: show it beside the others. Only that
-    /// peer restarts its connection, and its first frame after HELLO_OK is
-    /// then ATTACH for that session; the active coordinator and every other
+    /// peer restarts its connection, and after HELLO_OK and its read-only
+    /// rename subscription it sends ATTACH for that session; the active coordinator and every other
     /// peer keep their connections. A peer already showing a session leaves
     /// it for this one.
     pub fn showPeerSession(self: *Engine, coordinator: support.ProviderId, session: u32, fx: anytype) bool {

@@ -1229,6 +1229,17 @@ typedef struct PhuxSessionRenameInfo {
 PhuxClientResult phux_client_rename_session(PhuxClient *client, uint32_t request_id, PhuxBytes current, PhuxBytes new_name);
 PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxSessionRenameInfo *out_info);
 
+/* Follow renames any client makes, from the start of the connection.
+ * Additive to ABI version 2. Queues the SUBSCRIBE_METADATA of
+ * phux.session.name/v1 now if HELLO_OK has been applied, else as the first
+ * frame queued once it is; a later rename does not subscribe again. The
+ * subscription is read-only: it never attaches or sizes anything, and the
+ * server delivers METADATA_CHANGED to a client that never attached, so a
+ * listing client may follow. Each broadcast renames the session list in
+ * place and bumps sessions_revision, as above. Idempotent; INVALID_STATE
+ * once DETACHED. */
+PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
+
 /* ---------------------------------------------------------- remote hosts
  *
  * Reach a remote phux server the way `phux attach --remote HOST` does

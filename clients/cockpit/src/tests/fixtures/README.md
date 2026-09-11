@@ -39,6 +39,10 @@ Use a private target directory per worktree for concurrent builds.
   (Global) with the applied value `fixture\0renamed`: the server's broadcast of
   a rename of the attached session. The generator checks that an attached
   client reads it into its session list.
+- `standby_session_renamed.bin`: the same broadcast with `build\0ship`, another
+  client's rename of the first session `standby_state.bin` lists. The
+  generator checks that a listing client that follows renames subscribes
+  right after `HELLO_OK`, reads it into its list, and never attaches.
 - Keep-empty sessions (ADR-0105): `hello_keep_empty.bin` is `hello.bin` that
   also advertises `KeepEmptySessions`. `standby_keep_empty_state.bin` answers
   a listing client's first query (ID 1) with `build` (1, one window) and the

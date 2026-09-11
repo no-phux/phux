@@ -959,7 +959,7 @@ fn apply_hello_ok(
         .features
         .contains(phux_protocol::ServerFeature::ConditionalKill);
     client.protocol_ready = true;
-    Ok(())
+    session_rename::negotiated(client)
 }
 
 /// Rejects an attach-lifecycle frame that answers an attach this client never

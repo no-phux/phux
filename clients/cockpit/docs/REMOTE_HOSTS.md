@@ -244,16 +244,18 @@ persisted.
 A peer starts by LISTING. It never attaches: an attached client is a
 subscriber, and under the server's default `window-size = smallest` its
 viewport would size every pane of its session for everyone else, and every
-pane's output would stream to it for nothing. After HELLO_OK it asks GET_STATE
-(`phux_client_query_sessions`), once per connection and again whenever the
-switcher refreshes. Its group lists only while that list belongs to the
+pane's output would stream to it for nothing. After HELLO_OK it subscribes to
+session renames (read-only, see [Renaming a session](#renaming-a-session)) and
+asks GET_STATE (`phux_client_query_sessions`), once per connection and again
+whenever the switcher refreshes. Its group lists only while that list belongs to the
 current connection and no retarget is pending; on disconnect and the moment
 it is retargeted it forgets the list and its generation, so rows captured
 from it stop resolving.
 
 Picking one of its sessions makes it SHOW that session
-(`Engine.showPeerSession`): only that peer restarts its connection, and its
-first frame after HELLO_OK is ATTACH for that session, by id. Its shared
+(`Engine.showPeerSession`): only that peer restarts its connection, and
+after HELLO_OK it sends its read-only rename subscription and then ATTACH
+for that session, by id. Its shared
 workspace then projects into the same windows as the active coordinator's
 (`Model.peer_workspaces`): each coordinator's publication replaces only its
 own tabs, keeps every other showing coordinator's tabs in place with their
@@ -325,31 +327,50 @@ tab holds the focused pane, on the coordinator that minted that pane's ref
 (`Engine.renameTarget`). With no Phux pane focused it is the active
 coordinator's attached session. A pane whose coordinator Cockpit no longer
 holds names nothing, and the rename is refused rather than sent to another
-coordinator; a listing peer's sessions are never on screen, so a rename never
-reaches one. The write is `phux.session.name/v1` (`current\0new`,
+coordinator. The write is `phux.session.name/v1` (`current\0new`,
 [L3.md](../../../docs/spec/L3.md) section 3.1) on that coordinator's own
 connection, through `phux_client_rename_session`. It writes metadata only:
 nothing attaches and no viewport changes.
 
+A session row in the switcher offers the same panel from its context menu
+(right-click, Rename Session…). It names the row's session by the row's
+captured catalog target, on the coordinator that listed the row
+(`session_commands.rowTarget`): this Mac's row renames on this Mac, a peer's
+row on that peer, whether the peer is showing or only listing. The target is
+resolved against that coordinator's current context, so a row captured
+before its coordinator was removed, retargeted or reconnected, or naming a
+session that coordinator no longer lists, names nothing: the panel says the
+session is no longer listed, and nothing is sent anywhere. A listing peer's rename goes out on its listing
+connection. It is a metadata write, so the peer still never attaches and
+holds no viewport. Terminal rows and a failed peer's Unavailable row offer
+no Rename.
+
 The name is judged first against that coordinator's list as Cockpit shows
-it, then by phux-client-ffi against the client's own list, which subscribes to
-the key and confirms the write with a `GET_STATE` barrier. A name another
-session holds, a control character, or a second rename while one is pending
-is refused with a reason, and nothing is sent. The server's
+it, then by phux-client-ffi against the client's own list, and the write is
+confirmed with a `GET_STATE` barrier. A name another session holds, a
+control character, or a second rename on the same coordinator while one is
+pending is refused with a reason, and nothing is sent. The server's
 `METADATA_CHANGED` renames the session in that coordinator's list in place,
 so the switcher's row and, for the active coordinator, the header follow it.
-Renames other clients make reach the list once this client has renamed a
-session on that connection (it subscribes then); until then the next
-workspace refresh carries them.
+
+Every coordinator connection, a listing peer's included, subscribes to the
+key right after `HELLO_OK` (`phux_client_follow_session_names`), so a rename
+any client makes reaches that coordinator's list as soon as the server
+broadcasts it, not at the next refresh. The subscription is a read-only
+`SUBSCRIBE_METADATA`, never an `ATTACH`, and the server delivers
+`METADATA_CHANGED` to a connection that never attached (its metadata fanout
+falls back to the subscriber's own mailbox), so listing peers follow renames
+without attaching.
 
 The panel talks to the engine over its own request and completion slot:
 
 | Offset | Request `cockpit.session` |
 |---|---|
 | 0 | version 1 |
-| 1 | kind: 1 describe the session on screen, 2 rename it, 3 the last rename's outcome |
-| 2 | name length: required for rename, 1 to 255; empty otherwise |
+| 1 | kind: 1 describe the session on screen, 2 rename it, 3 the last rename's outcome, 6 describe a row's session, 7 rename it |
+| 2 | name length: required for 2 and 7, 1 to 255; empty otherwise |
 | 3 | new name, UTF-8 |
+| then | kinds 6 and 7 only: target length, then the row's captured target |
 
 | Offset | Reply |
 |---|---|
@@ -449,8 +470,10 @@ projected reads "workspace unavailable" on its session rows.
   conditionally or otherwise), when the spawn's reply never arrived, when its
   placement had already been sent (it may still land), when the peer's next
   connection shows a session instead of listing (that attach would count as
-  another connection's), or when the peer is removed first. Cockpit never
-  kills one unconditionally.
+  another connection's), when the peer is removed first, or when eight such
+  spawns are already waiting for that peer (`peer_edits.max_strays`).
+  Cockpit never kills one unconditionally, so none of these can be closed
+  without the server's conditional kill.
 - Relaunch shows again only the remembered host whose tab was the front
   window's selected tab
   ([ADR-0110](../../../ADR/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)).
@@ -471,12 +494,11 @@ projected reads "workspace unavailable" on its session rows.
   held only through `phux-remote` or `PHUX_REMOTE` is not remembered, so
   nothing of it is kept. The front host appears once it lists and the
   window has had its first frame, shortly after launch.
-- Rename Session renames the session on screen. The switcher's rows carry
-  opaque captured targets and have no per-row action, so a session that is
-  not on screen, a listing peer's included, is renamed by showing it first.
-  Renames other clients make reach Cockpit's lists live only once Cockpit
-  has renamed a session on that connection (the key is subscribed then);
-  until then the next session list or workspace refresh carries them.
+- Window > Rename Session renames the session on screen; any other listed
+  session, a listing peer's included, is renamed from its switcher row's
+  context menu, which is reached by right-click. A rename that races the
+  row's coordinator reconnecting, or its session leaving the list, is
+  refused as no longer listed, and is asked again from the refreshed row.
 - A peer's empty session is attached only by New Tab; until then Cockpit
   holds no attach to it, and its Empty session state shows only in the
   window it was picked in. The active coordinator's empty session shows its

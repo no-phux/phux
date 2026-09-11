@@ -149,7 +149,13 @@ peer restarts its connection to attach it, and its tabs join the windows
 (see [Remote hosts](REMOTE_HOSTS.md#several-coordinators)). A peer that
 cannot list contributes one kind 2 row naming its host, with detail
 `Unavailable · <reason>` or `Connecting…`, never selectable; its target is an
-inert tag 3 with session 0. Every terminal target carries the provider id of
+inert tag 3 with session 0. A session row whose target names a session
+(resource 2 or 3, session not 0) also carries a context menu with Rename
+Session…. It sends the row's captured target to the `cockpit.session`
+request (kinds 6 and 7, see
+[Remote hosts](REMOTE_HOSTS.md#renaming-a-session)), which renames on the
+coordinator that listed the row. It never enters the command FIFO and never
+activates the row. Every terminal target carries the provider id of
 the coordinator that minted the ref and is resolved against that
 coordinator alone, so a target for one server's terminal 7 never selects
 another's.

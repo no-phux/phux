@@ -34,20 +34,23 @@ const TerminalRef = support.TerminalRef;
 const type_attach: u8 = 0x02;
 const type_spawn: u8 = 0x22;
 const type_command: u8 = 0x31;
+const type_subscribe_metadata: u8 = 0x54;
 
-fn countFrames(provider: *support.PhuxProvider) struct { total: usize, attach: usize, command: usize, spawn: usize } {
+fn countFrames(provider: *support.PhuxProvider) struct { total: usize, attach: usize, command: usize, spawn: usize, subscribe: usize } {
     var total: usize = 0;
     var attach: usize = 0;
     var command: usize = 0;
     var spawn: usize = 0;
+    var subscribe: usize = 0;
     while (provider.bridge.outgoing.take()) |frame| {
         defer provider.bridge.outgoing.release(frame);
         total += 1;
         if (frame[4] == type_attach) attach += 1;
         if (frame[4] == type_command) command += 1;
         if (frame[4] == type_spawn) spawn += 1;
+        if (frame[4] == type_subscribe_metadata) subscribe += 1;
     }
-    return .{ .total = total, .attach = attach, .command = command, .spawn = spawn };
+    return .{ .total = total, .attach = attach, .command = command, .spawn = spawn, .subscribe = subscribe };
 }
 
 fn refOn(provider: *const support.PhuxProvider, id: u32) !TerminalRef {
@@ -886,6 +889,214 @@ test "a refused rename says why and writes nothing; a pane of a coordinator no l
     try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
 }
 
+// ------------------------------- renames followed live, and Rename on a row
+
+/// This Mac attached to `fixture`, and mini beside it LISTING through real
+/// frames: negotiated, its GET_STATE queued, never attached.
+fn listingPair() !Pair {
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    errdefer engine.destroy();
+    const here = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/multi-coordinator-unused" }, null, "multi");
+    engine.model.phux_provider = here;
+    try fixture.attachHostWith(here.host, "hello.bin");
+    const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
+    engine.model.phux_peers[0] = mini;
+    mini.standBy();
+    try mini.host.start("multi");
+    try fixture.stageFixture(mini.bridge, "hello.bin");
+    _ = try mini.drainReadiness();
+    return .{ .engine = engine, .here = here, .mini = mini };
+}
+
+/// The captured target of the sessions-page row labelled `label`.
+fn pageTarget(page: []const u8, label: []const u8, out: *[targets.max_len]u8) ![]const u8 {
+    // The 15-byte scoped request echo, then total:u16 and count:u8.
+    var at: usize = 18;
+    for (0..page[17]) |_| {
+        const label_len = page[at + 2];
+        const target_len = std.mem.readInt(u16, page[at + 3 ..][0..2], .little);
+        const target = page[at + 5 ..][0..target_len];
+        if (std.mem.eql(u8, page[at + 5 + target_len ..][0..label_len], label)) {
+            @memcpy(out[0..target_len], target);
+            return out[0..target_len];
+        }
+        at += 5 + target_len + label_len;
+    }
+    return error.RowNotFound;
+}
+
+/// One `cockpit.session` row request (kind 6 or 7) through the bridge's handler.
+fn rowCommand(engine: *ts_engine.Engine, kind: u8, name: []const u8, target: []const u8, out: *[session_commands.max_bytes]u8) !SessionAnswer {
+    var request: [4 + 255 + 255]u8 = undefined;
+    request[0] = session_commands.version;
+    request[1] = kind;
+    request[2] = @intCast(name.len);
+    @memcpy(request[3..][0..name.len], name);
+    request[3 + name.len] = @intCast(target.len);
+    @memcpy(request[4 + name.len ..][0..target.len], target);
+    var fx: PeerFx = .{};
+    const reply = try session_commands.handle(engine, &fx, request[0 .. 4 + name.len + target.len], out);
+    const host_at = 3 + @as(usize, reply[2]);
+    const reason_at = host_at + 1 + @as(usize, reply[host_at]);
+    return .{
+        .phase = @enumFromInt(reply[1]),
+        .name = reply[3..host_at],
+        .host = reply[host_at + 1 .. reason_at],
+        .reason = reply[reason_at + 1 ..],
+    };
+}
+
+test "every coordinator connection follows renames from its handshake, and a listing peer never attaches for it" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    // phux-c2td.33: the key used to be subscribed only at this Cockpit's own
+    // first rename, so another client's rename reached a list only on the
+    // next refresh. Now every connection subscribes right after HELLO_OK.
+    const active = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/multi-coordinator-unused" }, null, "multi");
+    defer active.destroy();
+    try active.host.start("multi");
+    _ = countFrames(active);
+    try fixture.stageFixture(active.bridge, "hello.bin");
+    _ = try active.host.drainReadiness();
+    const negotiated = countFrames(active);
+    try testing.expectEqual(@as(usize, 1), negotiated.subscribe);
+    try testing.expectEqual(@as(usize, 1), negotiated.total);
+
+    var pair = try listingPair();
+    defer pair.engine.destroy();
+    // The listing peer: one read-only subscription beside its GET_STATE.
+    const handshake = countFrames(pair.mini);
+    try testing.expectEqual(@as(usize, 1), handshake.subscribe);
+    try testing.expectEqual(@as(usize, 1), handshake.command);
+    try testing.expectEqual(@as(usize, 0), handshake.attach);
+    try testing.expect(!pair.mini.showing());
+
+    // Each connection subscribes again: the next one is a new client.
+    pair.mini.stop();
+    try pair.mini.host.reconnect("multi");
+    _ = countFrames(pair.mini);
+    try fixture.stageFixture(pair.mini.bridge, "hello.bin");
+    _ = try pair.mini.drainReadiness();
+    const again = countFrames(pair.mini);
+    try testing.expectEqual(@as(usize, 1), again.subscribe);
+    try testing.expectEqual(@as(usize, 0), again.attach);
+}
+
+test "another client's rename moves the switcher row and the header live, on the active coordinator and on a listing peer" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try listingPair();
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    var fx: PeerFx = .{};
+    try fixture.stageFixture(pair.mini.bridge, "standby_state.bin");
+    try testing.expect((try pair.mini.drainReadiness()).sessions_listed);
+    _ = countFrames(pair.mini);
+    _ = countFrames(pair.here);
+
+    // Someone else renames mini's `build` to `ship`: the listing peer's row
+    // follows at once, and mini still attaches nothing.
+    var page_out: [navigation.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "build") != null);
+    try fixture.stageFixture(pair.mini.bridge, "standby_session_renamed.bin");
+    wakeMini(engine, &fx);
+    try testing.expectEqualStrings("ship", pair.mini.standbyCatalog()[0].name);
+    const page = try sessionsPage(engine, &page_out);
+    try testing.expect(std.mem.indexOf(u8, page, "ship") != null);
+    try testing.expect(std.mem.indexOf(u8, page, "build") == null);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).attach);
+    try testing.expect(!pair.mini.showing());
+
+    // Someone else renames This Mac's attached `fixture`: the header and its
+    // row follow, though this Cockpit renamed nothing.
+    var before: [ts_snapshot.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&before), "renamed") == null);
+    try fixture.stageFixture(pair.here.bridge, "session_renamed.bin");
+    _ = engine.onPhuxChannel(&fx, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    var after: [ts_snapshot.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&after), "renamed") != null);
+    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "renamed") != null);
+    try testing.expect(pair.here.renameInfo().status == .none);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).attach);
+}
+
+test "Rename on a switcher row goes to the coordinator that listed it and to no other, and a listing peer never attaches" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try listingPair();
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    var fx: PeerFx = .{};
+    try fixture.stageFixture(pair.mini.bridge, "standby_state.bin");
+    try testing.expect((try pair.mini.drainReadiness()).sessions_listed);
+    var page_out: [navigation.max_bytes]u8 = undefined;
+    const page = try sessionsPage(engine, &page_out);
+    var build_buffer: [targets.max_len]u8 = undefined;
+    var fixture_buffer: [targets.max_len]u8 = undefined;
+    const build = try pageTarget(page, "build", &build_buffer);
+    const here_row = try pageTarget(page, "fixture", &fixture_buffer);
+    _ = countFrames(pair.mini);
+    _ = countFrames(pair.here);
+    var out: [session_commands.max_bytes]u8 = undefined;
+
+    // mini's `build` row names mini's `build`, though mini is only listing.
+    const described = try rowCommand(engine, 6, "", build, &out);
+    try testing.expectEqual(session_commands.Phase.ready, described.phase);
+    try testing.expectEqualStrings("build", described.name);
+    try testing.expectEqualStrings("mini", described.host);
+    // Renaming it writes on mini's listing connection: the write and its
+    // confirmation read, no ATTACH; This Mac hears nothing.
+    try testing.expectEqual(session_commands.Phase.pending, (try rowCommand(engine, 7, "ship", build, &out)).phase);
+    const written = contains(pair.mini, "build\x00ship");
+    try testing.expect(written.found);
+    try testing.expectEqual(@as(usize, 2), written.total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expect(!pair.mini.showing());
+    // mini's server applies it; the rename settles and the row follows.
+    try fixture.stageFixture(pair.mini.bridge, "standby_session_renamed.bin");
+    wakeMini(engine, &fx);
+    try testing.expectEqual(session_commands.Phase.renamed, (try sessionCommand(engine, 3, "", &out)).phase);
+    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "ship") != null);
+    _ = countFrames(pair.mini);
+
+    // This Mac's `fixture` row renames on This Mac alone.
+    try testing.expectEqual(session_commands.Phase.pending, (try rowCommand(engine, 7, "renamed", here_row, &out)).phase);
+    try testing.expect(contains(pair.here, "fixture\x00renamed").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+
+    // A name mini's other session holds is refused with the reason, and
+    // nothing is sent anywhere.
+    const refused = try rowCommand(engine, 7, "deploy", build, &out);
+    try testing.expectEqual(session_commands.Phase.refused, refused.phase);
+    try testing.expectEqualStrings("\"deploy\" already exists on mini.", refused.reason);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // Fail closed: mini's row claimed by This Mac's id, or held against a
+    // context mini has left, names nothing and reaches no coordinator.
+    var forged = build_buffer;
+    std.mem.writeInt(u64, forged[2..10], @intFromEnum(pair.here.providerId()), .little);
+    try testing.expectEqual(session_commands.Phase.unavailable, (try rowCommand(engine, 7, "x", forged[0..build.len], &out)).phase);
+    var stale = build_buffer;
+    stale[26] +%= 1;
+    const gone = try rowCommand(engine, 7, "x", stale[0..build.len], &out);
+    try testing.expectEqual(session_commands.Phase.unavailable, gone.phase);
+    try testing.expect(gone.reason.len != 0);
+    try testing.expectEqual(session_commands.Phase.unavailable, (try rowCommand(engine, 6, "", stale[0..build.len], &out)).phase);
+    // This Mac's session row claimed by mini's id: a session by number is
+    // only the active coordinator's, so it names nothing on mini.
+    var claimed = fixture_buffer;
+    std.mem.writeInt(u64, claimed[2..10], @intFromEnum(pair.mini.providerId()), .little);
+    try testing.expectEqual(session_commands.Phase.unavailable, (try rowCommand(engine, 7, "x", claimed[0..here_row.len], &out)).phase);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expect(!pair.mini.showing());
+
+    // mini's connection ends: its row, captured on that connection, names
+    // nothing, and nothing reaches either coordinator.
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    try testing.expectEqual(session_commands.Phase.unavailable, (try rowCommand(engine, 7, "x", build, &out)).phase);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
 // ------------------------------------ keep-empty sessions (empty_session.zig)
 
 const empty_session = @import("../cockpit/native/empty_session.zig");
@@ -1195,10 +1406,11 @@ test "without CONDITIONAL_KILL a peer's unplaced spawn is left running and nothi
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
     _ = countFrames(pair.here);
     try relistMini(&pair, &fx, "hello.bin");
-    // The new connection's HELLO, then GET_STATE and no other command: no
-    // kill of any kind.
+    // The new connection's HELLO, its read-only rename subscription, then
+    // GET_STATE and no other command: no kill of any kind.
     const frames = countFrames(pair.mini);
-    try testing.expectEqual(@as(usize, 2), frames.total);
+    try testing.expectEqual(@as(usize, 3), frames.total);
+    try testing.expectEqual(@as(usize, 1), frames.subscribe);
     try testing.expectEqual(@as(usize, 1), frames.command);
     try testing.expectEqual(@as(usize, 0), frames.attach);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
