@@ -47,6 +47,13 @@ fn isSplit(kind: Kind) bool {
 /// is closed if it is still empty (`retireOrphans`).
 const Provisional = struct { window: usize, epoch: u64 };
 
+/// A terminal this peer spawned for a tab or split, bound to its instance
+/// token, whose placement was never sent: the connection ended, or the peer
+/// stopped showing, first. Killed conditionally once the peer lists again
+/// (`sendStrays`), never unconditionally (ADR-0109).
+const Stray = struct { ref: TerminalRef, instance: [16]u8 };
+pub const max_strays: usize = 8;
+
 /// Which terminal owns a spawn: the focused one (New Tab, a split), none (a
 /// directory on the coordinator's own host), or an exact one (a satellite
 /// directory, owned by the pane it was listed for). As in durable_creation.
@@ -89,21 +96,82 @@ const Creation = struct {
     /// New Window's native window, opened for this tab, and its epoch.
     window: ?usize = null,
     window_epoch: u64 = 0,
+    /// The spawn's instance token, when the peer bound it (CONDITIONAL_KILL).
+    instance: ?[16]u8 = null,
+
+    /// Spawned and bound, and its placement never sent: the only terminal a
+    /// peer may later kill, and only conditionally. A placement already sent
+    /// may land on that server, so a `placing` entry never qualifies.
+    fn stray(entry: Creation) ?Stray {
+        const instance = entry.instance orelse return null;
+        const ref = entry.terminal orelse return null;
+        if (entry.stage != .publishing and entry.stage != .attaching) return null;
+        return .{ .ref = ref, .instance = instance };
+    }
 };
 
 pub const Edits = struct {
     mutations: [max_peers]shared_mutations.Coordinator = @splat(.{}),
     creations: [max_peers][max_creations]?Creation = @splat(@splat(null)),
     orphans: [max_peers * max_creations]?Provisional = @splat(null),
+    strays: [max_peers][max_strays]?Stray = @splat(@splat(null)),
 
     /// The slot's connection ended or it now holds another coordinator:
     /// nothing queued for it may continue. A mutation already sent may still
-    /// land on that server; forgetting it never rolls one back.
+    /// land on that server; forgetting it never rolls one back. A bound
+    /// spawn whose placement was never sent is kept as a stray.
     pub fn forget(self: *Edits, slot: usize) void {
         if (slot >= max_peers) return;
-        for (self.creations[slot]) |held| if (held) |entry| self.orphan(entry);
+        for (self.creations[slot]) |held| if (held) |entry| self.drop(slot, entry);
         self.mutations[slot] = .{};
         self.creations[slot] = @splat(null);
+    }
+
+    fn drop(self: *Edits, slot: usize, entry: Creation) void {
+        self.orphan(entry);
+        const stray = entry.stray() orelse return;
+        for (&self.strays[slot]) |*held| {
+            if (held.* != null) continue;
+            held.* = stray;
+            return;
+        }
+    }
+
+    /// The slot now holds another coordinator, or none: its strays are not
+    /// this coordinator's to kill.
+    pub fn dropStrays(self: *Edits, slot: usize) void {
+        if (slot >= max_peers) return;
+        self.strays[slot] = @splat(null);
+    }
+
+    pub fn strayCount(self: *const Edits, slot: usize) usize {
+        var count: usize = 0;
+        for (self.strays[slot]) |held| {
+            if (held != null) count += 1;
+        }
+        return count;
+    }
+
+    /// The peer lists again: ask it to kill each of its strays, each only
+    /// if its instance token still matches and no other connection has
+    /// attached or used it (KILL_RESOURCE_IF). Best effort: the outcome is
+    /// not waited for, and a refusal leaves the terminal running. A peer
+    /// without CONDITIONAL_KILL on this connection kills nothing; its strays
+    /// are dropped. Only that peer's own terminals are ever named.
+    pub fn sendStrays(self: *Edits, model: *Model, slot: usize) usize {
+        if (comptime !support.phux_enabled) return 0;
+        if (slot >= max_peers) return 0;
+        const peer = model.phuxPeerAt(slot) orelse return 0;
+        const supported = peer.conditionalKillSupported();
+        var sent: usize = 0;
+        for (&self.strays[slot]) |*held| {
+            const stray = held.* orelse continue;
+            held.* = null;
+            if (!supported or stray.ref.provider_id != peer.providerId()) continue;
+            _ = peer.requestKillIf(stray.ref, stray.instance) catch continue;
+            sent += 1;
+        }
+        return sent;
     }
 
     fn orphan(self: *Edits, entry: Creation) void {
@@ -246,7 +314,13 @@ pub const Edits = struct {
             entry.window = index;
             entry.window_epoch = model.window_epochs[index];
         }
-        entry.request = peer.requestSpawnIn(owner, viewport, cwd) catch |err| {
+        // Bound when the peer can kill it conditionally later, should the
+        // placement never be sent (`Creation.stray`).
+        const spawned = if (peer.conditionalKillSupported())
+            peer.requestSpawnBound(owner, viewport, cwd)
+        else
+            peer.requestSpawnIn(owner, viewport, cwd);
+        entry.request = spawned catch |err| {
             if (entry.window) |index| model.closeWindow(index);
             return err;
         };
@@ -308,7 +382,7 @@ pub const Edits = struct {
         for (&self.creations[slot]) |*held| {
             const entry = if (held.*) |*value| value else continue;
             if (entry.epoch != peer_view.peer.connectionEpoch() or entry.session != peer_view.shared_workspace.session) {
-                self.orphan(entry.*);
+                self.drop(slot, entry.*);
                 held.* = null;
                 changed = true;
                 continue;
@@ -370,6 +444,7 @@ fn accept(model: *Model, slot: usize, entry: *Creation, result: support.Operatio
     if (ref.provider_id != entry.coordinator) return error.ForeignCoordinator;
     if (entry.terminal) |expected| if (!expected.eql(ref)) return error.IdentityMismatch;
     entry.terminal = ref;
+    if (result.kind == .spawn) entry.instance = result.instance;
     // A satellite terminal publishes only once subscribed, as for the
     // active coordinator's spawns.
     if (entry.stage == .spawning and result.kind == .spawn and ref.terminal_id.phux.kind == 1) {

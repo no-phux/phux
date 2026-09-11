@@ -303,6 +303,9 @@ pub(crate) struct Client {
     /// facets carry the keep-empty mark, and a windowless keep-empty session
     /// is a real, empty one.
     pub keep_empty_sessions: bool,
+    /// `HELLO_OK` advertised `CONDITIONAL_KILL` (ADR-0109): a spawn may ask
+    /// for its instance binding, and `KILL_RESOURCE_IF` is understood.
+    pub conditional_kill: bool,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
@@ -365,6 +368,7 @@ impl Client {
             list_directory: false,
             list_directory_host: false,
             keep_empty_sessions: false,
+            conditional_kill: false,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             session_rename: crate::session_rename::SessionRename::default(),

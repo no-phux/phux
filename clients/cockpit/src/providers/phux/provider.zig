@@ -527,6 +527,21 @@ pub const PhuxProvider = struct {
         return self.host.renameInfo();
     }
 
+    /// CONDITIONAL_KILL on this coordinator's current connection (ADR-0109).
+    pub fn conditionalKillSupported(self: *const PhuxProvider) bool {
+        return self.host.conditionalKillSupported();
+    }
+
+    pub fn requestSpawnBound(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
+        return self.host.requestSpawnBound(owner_ref, viewport, cwd);
+    }
+
+    /// A conditional kill of this coordinator's own bound spawn, on this
+    /// coordinator's connection alone (host.requestKillIf).
+    pub fn requestKillIf(self: *PhuxProvider, terminal_ref: provider.TerminalRef, instance: [16]u8) !u32 {
+        return self.host.requestKillIf(terminal_ref, instance);
+    }
+
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
         return self.host.requestDetach(terminal_ref);
     }

@@ -23,6 +23,192 @@ fn history_send(id: ResourceId) -> phux_client_core::session::KernelSend {
 }
 
 #[test]
+fn a_bound_spawn_needs_conditional_kill_and_its_reply_carries_the_instance() {
+    let mut h = Harness::attached();
+    let options = PhuxSpawnOptions {
+        request_id: 10,
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: harness owns the client; the options outlive each call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn_bound(h.ptr(), &raw const options),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "nothing queued without the bit"
+    );
+    h.0.inner.conditional_kill = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn_bound(h.ptr(), &raw const options),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("spawn decodes");
+    assert!(matches!(
+        &frame,
+        FrameKind::SpawnResource { resource: Some(resource), .. } if resource.bind_instance
+    ));
+    h.0.inner.outgoing.clear();
+    let token = ServerInstance::new([7; 16]);
+    assert_eq!(
+        h.feed(FrameKind::ResourceSpawned {
+            request_id: 10,
+            result: SpawnResult::OkBound {
+                id: ResourceId::local(9),
+                instance: token,
+            },
+        }),
+        PhuxClientResult::Ok
+    );
+    // An ordinary spawn next: its reply carries no instance.
+    let plain = PhuxSpawnOptions {
+        request_id: 11,
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const plain),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("spawn decodes");
+    assert!(matches!(
+        frame,
+        FrameKind::SpawnResource { resource: None, .. }
+    ));
+    assert_eq!(
+        h.feed(FrameKind::ResourceSpawned {
+            request_id: 11,
+            result: SpawnResult::Ok(ResourceId::local(10)),
+        }),
+        PhuxClientResult::Ok
+    );
+    let mut out = [0u8; 16];
+    let mut bound = false;
+    // SAFETY: harness owns the client; both outputs are writable.
+    unsafe {
+        assert_eq!(
+            phux_client_operation_instance(h.ptr(), 0, out.as_mut_ptr(), &raw mut bound),
+            PhuxClientResult::Ok
+        );
+        assert!(bound);
+        assert_eq!(out, [7; 16]);
+        assert_eq!(
+            phux_client_operation_instance(h.ptr(), 1, out.as_mut_ptr(), &raw mut bound),
+            PhuxClientResult::Ok
+        );
+        assert!(!bound);
+        assert_eq!(
+            phux_client_operation_instance(h.ptr(), 2, out.as_mut_ptr(), &raw mut bound),
+            PhuxClientResult::NoValue
+        );
+    }
+}
+
+#[test]
+fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_never_attached() {
+    let mut h = Harness::new();
+    h.negotiate();
+    let id = ResourceId::local(9);
+    let raw = terminal_id_out(&id);
+    let token = [7u8; 16];
+    // SAFETY: harness owns the client; the ID and token outlive each call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_kill_if(h.ptr(), 1, &raw const raw, token.as_ptr()),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "nothing queued without the bit"
+    );
+    h.0.inner.conditional_kill = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_kill_if(h.ptr(), 1, &raw const raw, token.as_ptr()),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("kill decodes");
+    assert_eq!(
+        frame,
+        FrameKind::Command {
+            request_id: 1,
+            command: Command::KillResourceIf {
+                terminal_id: ResourceId::local(9),
+                precondition: KillPrecondition::spawned_and_unattached(ServerInstance::new(token)),
+            },
+        }
+    );
+    h.0.inner.outgoing.clear();
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok,
+        }),
+        PhuxClientResult::Ok
+    );
+    let mut result = PhuxOperationResult::default();
+    // SAFETY: harness owns the client; the output is writable.
+    unsafe {
+        assert_eq!(
+            phux_client_operation_get(h.ptr(), 0, &raw mut result),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        (result.kind, result.status, result.terminal_id.id),
+        (4, 1, 9)
+    );
+
+    // A failed precondition is a refusal with the server's reason.
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_kill_if(h.ptr(), 2, &raw const raw, token.as_ptr()),
+            PhuxClientResult::Ok
+        );
+    }
+    h.0.inner.outgoing.clear();
+    assert_eq!(
+        h.feed(FrameKind::Error {
+            request_id: Some(2),
+            code: ErrorCode::PreconditionFailed,
+            message: "attached elsewhere".into(),
+        }),
+        PhuxClientResult::Ok
+    );
+    let mut refused = PhuxOperationResult::default();
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_operation_get(h.ptr(), 1, &raw mut refused),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        (refused.kind, refused.status, refused.error_domain),
+        (4, 2, 2)
+    );
+    assert_eq!(
+        refused.error_code,
+        u32::from(ErrorCode::PreconditionFailed.as_wire())
+    );
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "a refusal sends nothing more"
+    );
+}
+
+#[test]
 fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_request() {
     let mut h = Harness::attached_with_cursor(Some(bytes::Bytes::from_static(&[42; 32])));
     let id = ResourceId::local(1);

@@ -542,6 +542,66 @@ fn verify_standby(hello: &[u8], state: &[u8]) {
     }
 }
 
+/// A server with conditional kills (ADR-0109), otherwise `hello()`.
+fn hello_conditional_kill() -> FrameKind {
+    FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
+            ServerFeature::TerminalReply,
+            ServerFeature::ConditionalKill,
+        ])),
+        server_id: b"cockpit-fixture".to_vec(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid limits"),
+    }
+}
+
+/// The reply to a bound spawn (request 1): local terminal 8, bound to the
+/// fixture instance token.
+const fn spawn_bound() -> FrameKind {
+    FrameKind::ResourceSpawned {
+        request_id: 1,
+        result: phux_protocol::wire::frame::SpawnResult::OkBound {
+            id: ResourceId::local(8),
+            instance: phux_protocol::ids::ServerInstance::new([0xa5; 16]),
+        },
+    }
+}
+
+/// An attached client asks for a bound spawn and reads the token back.
+fn verify_spawn_bound(hello: &[u8], attached: &[u8], spawned: &[u8]) {
+    use phux_client_ffi::{
+        PhuxSpawnOptions, phux_client_operation_instance, phux_client_queue_spawn_bound,
+    };
+    let client = Client::new();
+    client.negotiate_and_attach(hello, attached);
+    let options = PhuxSpawnOptions {
+        request_id: 1,
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: live same-thread handle; the options outlive the call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn_bound(client.0, &raw const options),
+            PhuxClientResult::Ok
+        );
+    }
+    client.feed(spawned);
+    let mut token = [0u8; 16];
+    let mut bound = false;
+    // SAFETY: live handle; both outputs are writable.
+    unsafe {
+        assert_eq!(
+            phux_client_operation_instance(client.0, 0, token.as_mut_ptr(), &raw mut bound),
+            PhuxClientResult::Ok
+        );
+    }
+    assert!(bound);
+    assert_eq!(token, [0xa5; 16]);
+}
+
 /// A server with keep-empty sessions (ADR-0105), otherwise `hello()`.
 fn hello_keep_empty() -> FrameKind {
     FrameKind::HelloOk {
@@ -771,7 +831,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         &attached_empty,
         &workspace_empty,
     );
+    let hello_conditional_kill = encode(&[hello_conditional_kill()]);
+    let spawn_bound = encode(&[spawn_bound()]);
+    verify_spawn_bound(&hello_conditional_kill, &attached, &spawn_bound);
     std::fs::create_dir_all(&output)?;
+    std::fs::write(
+        output.join("hello_conditional_kill.bin"),
+        &hello_conditional_kill,
+    )?;
+    std::fs::write(output.join("spawn-bound.bin"), &spawn_bound)?;
     std::fs::write(output.join("session_renamed.bin"), &renamed)?;
     std::fs::write(output.join("hello_keep_empty.bin"), &hello_keep_empty)?;
     std::fs::write(
@@ -790,7 +858,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename and keep-empty sessions; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename, keep-empty sessions and bound spawns; wrote hello_conditional_kill.bin, spawn-bound.bin, hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),

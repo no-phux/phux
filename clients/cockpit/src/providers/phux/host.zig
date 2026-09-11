@@ -475,6 +475,41 @@ pub const Host = struct {
     /// `cwd` empty inherits the server's default; otherwise the shell starts
     /// there. Copied by the queue call.
     pub fn requestSpawnIn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
+        return host.spawnWith(owner_ref, viewport, cwd, false);
+    }
+
+    /// A spawn bound to the server's instance token (ADR-0109), so a later
+    /// conditional kill can name exactly this terminal. Refused by a server
+    /// without CONDITIONAL_KILL; ask `conditionalKillSupported` first.
+    pub fn requestSpawnBound(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
+        return host.spawnWith(owner_ref, viewport, cwd, true);
+    }
+
+    pub fn conditionalKillSupported(host: *const Host) bool {
+        var supported = false;
+        if (c.phux_client_conditional_kill_supported(host.client, &supported) != c.PHUX_CLIENT_OK) return false;
+        return supported;
+    }
+
+    /// KILL_RESOURCE_IF for a terminal this coordinator spawned and bound:
+    /// killed only if its instance token still matches and no connection
+    /// but the spawning one has attached or used it. Never unconditional.
+    /// A listing connection may send it; it attaches nothing.
+    pub fn requestKillIf(host: *Host, terminal_ref: provider.TerminalRef, instance: [16]u8) !u32 {
+        if (host.bridge.incoming.takeDisconnect() != null) host.disconnect();
+        if (host.disconnected) return error.InvalidState;
+        const now = host.state();
+        if (now != .negotiated and now != .attached) return error.InvalidState;
+        const remote = host.remoteFromRef(terminal_ref) orelse return error.InvalidIdentity;
+        const request_id = try host.operation_ledger.nextId();
+        const raw = cId(&remote);
+        try resultError(c.phux_client_queue_kill_if(host.client, request_id, &raw, &instance));
+        host.operation_ledger.accepted(request_id, host.client_generation, .kill_if, terminal_ref);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool) !u32 {
         const request_id = try host.preflightOperation();
         try host.reserveTerminalSlot(null);
         const owner_id = try host.spawnOwner(owner_ref);
@@ -492,7 +527,10 @@ pub const Host = struct {
             .cols = viewport.cols,
             .rows = viewport.rows,
         };
-        try resultError(c.phux_client_queue_spawn(host.client, &options));
+        if (bound)
+            try resultError(c.phux_client_queue_spawn_bound(host.client, &options))
+        else
+            try resultError(c.phux_client_queue_spawn(host.client, &options));
         host.operation_ledger.accepted(request_id, host.client_generation, .spawn, null);
         host.stageOutgoing() catch host.disconnect();
         return request_id;
@@ -1278,6 +1316,10 @@ pub const Host = struct {
             raw.version = c.PHUX_CLIENT_ABI_VERSION;
             try resultError(c.phux_client_operation_get(host.client, index, &raw));
             result.* = try copyOperation(raw, host.client_generation, host.provider_id);
+            var instance: [16]u8 = undefined;
+            var bound = false;
+            if (c.phux_client_operation_instance(host.client, index, &instance, &bound) == c.PHUX_CLIENT_OK and bound)
+                result.instance = instance;
         }
         try resultError(c.phux_client_operation_clear(host.client));
         for (copied[0..count]) |result| {
@@ -1287,6 +1329,8 @@ pub const Host = struct {
     }
 
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
+        // A conditional kill names a terminal it never admits as a replica.
+        if (result.kind == .kill_if) return;
         const terminal_ref = result.terminal_ref orelse return;
         if (result.kind == .detach) {
             if (result.status == .success) host.removeOperationReplica(terminal_ref);

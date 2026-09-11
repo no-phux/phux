@@ -955,6 +955,9 @@ fn apply_hello_ok(
     client.keep_empty_sessions = server_caps
         .features
         .contains(phux_protocol::ServerFeature::KeepEmptySessions);
+    client.conditional_kill = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::ConditionalKill);
     client.protocol_ready = true;
     Ok(())
 }

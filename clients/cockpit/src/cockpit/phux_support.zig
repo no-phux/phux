@@ -71,11 +71,12 @@ const DisabledPhuxProvider = struct {
     pub const OperationResult = struct {
         request_id: u32,
         connection_epoch: u64,
-        kind: enum { spawn, attach, detach },
+        kind: enum { spawn, attach, detach, kill_if },
         status: enum { success, refused, unknown_outcome },
         terminal_ref: ?TerminalRef,
         error_domain: enum { none, spawn, protocol },
         error_code: u32,
+        instance: ?[16]u8 = null,
 
         pub fn message(_: *const @This()) []const u8 {
             return "";
@@ -162,6 +163,15 @@ const DisabledPhuxProvider = struct {
         message: []const u8 = "",
     };
     pub fn requestRename(_: *DisabledPhuxProvider, _: []const u8, _: []const u8) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn conditionalKillSupported(_: *const DisabledPhuxProvider) bool {
+        return false;
+    }
+    pub fn requestSpawnBound(_: *DisabledPhuxProvider, _: ?TerminalRef, _: Viewport, _: []const u8) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn requestKillIf(_: *DisabledPhuxProvider, _: TerminalRef, _: [16]u8) error{Disabled}!u32 {
         return error.Disabled;
     }
     pub fn renameInfo(_: *const DisabledPhuxProvider) @This().RenameInfo {

@@ -1081,6 +1081,100 @@ test "the available inventory follows the focused pane's coordinator, and a peer
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
 }
 
+// ------------------------------------- unplaced spawns (ADR-0109, strays)
+
+/// The instance token spawn-bound.bin binds terminal 8 to.
+const fixture_instance = [_]u8{0xa5} ** 16;
+
+/// mini, listing again on a fresh connection: HELLO_OK, then its list. Its
+/// wakes arrive on the slot's current channel: the close that ended the
+/// last connection moved the slot to its next channel generation.
+fn relistMini(pair: *Pair, fx: *PeerFx, hello: []const u8) !void {
+    pair.mini.standBy();
+    pair.mini.stop();
+    try pair.mini.host.reconnect("multi");
+    const key = pair.engine.peerChannelKey(0);
+    try fixture.stageFixture(pair.mini.bridge, hello);
+    _ = pair.engine.onPeerChannel(fx, .{ .key = key, .kind = .data }, null);
+    try fixture.stageFixture(pair.mini.bridge, "standby_state.bin");
+    _ = pair.engine.onPeerChannel(fx, .{ .key = key, .kind = .data }, null);
+}
+
+test "a peer's spawn whose placement was never sent is killed there, conditionally, once it lists again" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.startWith("hello_conditional_kill.bin");
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+    try testing.expect(pair.mini.conditionalKillSupported());
+
+    // New Tab spawns terminal 8 on mini, bound to mini's instance token;
+    // mini's connection ends before its placement is sent.
+    try testing.expect(intent(engine, .new_terminal, 0));
+    try feedMini(&pair, &fx, "spawn-bound.bin");
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.strayCount(0));
+    _ = countFrames(pair.here);
+
+    // Listing again, mini alone is asked to kill it, bound to that token
+    // and to nobody having attached it; This Mac hears nothing.
+    try relistMini(&pair, &fx, "hello_conditional_kill.bin");
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
+    const sent = contains(pair.mini, &fixture_instance);
+    try testing.expect(sent.found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
+test "without CONDITIONAL_KILL a peer's unplaced spawn is left running and nothing is killed" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+    try testing.expect(!pair.mini.conditionalKillSupported());
+    try testing.expect(intent(engine, .new_terminal, 0));
+    try feedMini(&pair, &fx, "spawn-local.bin");
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    // Unbound, it is no stray: nothing could kill it safely.
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
+    _ = countFrames(pair.here);
+    try relistMini(&pair, &fx, "hello.bin");
+    // The new connection's HELLO, then GET_STATE and no other command: no
+    // kill of any kind.
+    const frames = countFrames(pair.mini);
+    try testing.expectEqual(@as(usize, 2), frames.total);
+    try testing.expectEqual(@as(usize, 1), frames.command);
+    try testing.expectEqual(@as(usize, 0), frames.attach);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
+test "a peer's spawn whose placement was already sent is never killed" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.startWith("hello_conditional_kill.bin");
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+    try testing.expect(intent(engine, .new_terminal, 0));
+    try feedMini(&pair, &fx, "spawn-bound.bin");
+    try feedMini(&pair, &fx, "local-ready.bin");
+    // Its placement is on the wire: the refresh settles and the add is sent.
+    try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
+    try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
+    drainMini(&pair, &fx);
+    try testing.expect(miniSent(engine, .add));
+    // The connection ends before the add is confirmed: the add may still
+    // land there, so the terminal is no stray, and nothing is killed.
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
+    try relistMini(&pair, &fx, "hello_conditional_kill.bin");
+    try testing.expect(!contains(pair.mini, &fixture_instance).found);
+}
+
 test "an edit of a peer that cannot take one is refused and reaches no coordinator" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);

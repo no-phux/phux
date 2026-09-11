@@ -8,7 +8,10 @@
 use std::collections::{HashMap, HashSet};
 use std::{mem, ptr};
 
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnError, SpawnResult};
+use phux_protocol::ids::ServerInstance;
+use phux_protocol::wire::frame::{
+    Command, CommandResult, FrameKind, KillPrecondition, SpawnError, SpawnResource, SpawnResult,
+};
 use phux_protocol::{GroupId, ResourceId, SatelliteHost};
 
 use crate::client::Client;
@@ -119,9 +122,13 @@ impl Default for PhuxOperationResult {
 
 #[derive(Clone, Debug)]
 enum Pending {
-    Spawn { satellite: Option<SatelliteHost> },
+    Spawn {
+        satellite: Option<SatelliteHost>,
+    },
     Attach(ResourceId),
     Detach(ResourceId),
+    /// `KILL_RESOURCE_IF` (ADR-0109): never admits or retires anything.
+    Kill(ResourceId),
 }
 
 impl Pending {
@@ -130,13 +137,14 @@ impl Pending {
             Self::Spawn { .. } => 1,
             Self::Attach(_) => 2,
             Self::Detach(_) => 3,
+            Self::Kill(_) => 4,
         }
     }
 
     fn terminal(&self) -> Option<ResourceId> {
         match self {
             Self::Spawn { .. } => None,
-            Self::Attach(id) | Self::Detach(id) => Some(id.clone()),
+            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) => Some(id.clone()),
         }
     }
 }
@@ -150,6 +158,8 @@ struct Completion {
     error_code: u32,
     terminal: Option<ResourceId>,
     message: Vec<u8>,
+    /// A bound spawn's instance token (`phux_client_operation_instance`).
+    instance: Option<[u8; 16]>,
 }
 
 #[derive(Default)]
@@ -281,7 +291,16 @@ impl Operations {
             error_domain,
             error_code,
             message: bounded_message(message),
+            instance: None,
         });
+    }
+
+    /// Record the instance token a bound spawn's reply carried, on the
+    /// completion just recorded for it.
+    fn bind_last(&mut self, instance: Option<[u8; 16]>) {
+        if let Some(last) = self.completed.last_mut() {
+            last.instance = instance;
+        }
     }
 
     pub(crate) fn disconnect(&mut self) {
@@ -368,7 +387,10 @@ unsafe fn command_in(
     Ok(Some(command))
 }
 
-unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeError> {
+unsafe fn spawn_frame(
+    options: &PhuxSpawnOptions,
+    bind_instance: bool,
+) -> Result<FrameKind, BridgeError> {
     check_struct(
         options.size,
         mem::size_of::<PhuxSpawnOptions>(),
@@ -397,7 +419,9 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
         owner_terminal,
         agent_session: None,
         initial_size: Some((options.cols, options.rows)),
-        resource: None,
+        // Field 15 only when asked: an unbound spawn stays byte-identical.
+        resource: bind_instance
+            .then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
     })
 }
 
@@ -439,23 +463,158 @@ pub unsafe extern "C" fn phux_client_queue_spawn(
     client: *mut PhuxClient,
     options: *const PhuxSpawnOptions,
 ) -> PhuxClientResult {
+    // SAFETY: forwards the options contract.
+    with_client_mut(client, |client| unsafe {
+        queue_spawn(client, options, false)
+    })
+}
+
+/// `phux_client_queue_spawn` with `SPAWN_RESOURCE.bind_instance` set
+/// (ADR-0109). Refused, with nothing queued, without `CONDITIONAL_KILL`.
+///
+/// # Safety
+/// As for `phux_client_queue_spawn`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_spawn_bound(
+    client: *mut PhuxClient,
+    options: *const PhuxSpawnOptions,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        client.ensure_attached()?;
-        // SAFETY: caller supplies readable options when non-null.
-        let options =
-            unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+        if !client.conditional_kill {
+            return Err(BridgeError::state(
+                "the server did not advertise CONDITIONAL_KILL; a spawn cannot be bound",
+            ));
+        }
         // SAFETY: forwards the options contract.
-        let frame = unsafe { spawn_frame(options) }?;
-        ensure_queue_capacity(client, options.request_id)?;
-        client.operations.check_admission_capacity()?;
-        let FrameKind::SpawnResource { satellite, .. } = &frame else {
-            unreachable!()
-        };
-        let pending = Pending::Spawn {
-            satellite: satellite.clone(),
-        };
-        client.queue_frame(&frame)?;
-        client.operations.insert(options.request_id, pending);
+        unsafe { queue_spawn(client, options, true) }
+    })
+}
+
+unsafe fn queue_spawn(
+    client: &mut Client,
+    options: *const PhuxSpawnOptions,
+    bind_instance: bool,
+) -> Result<(), BridgeError> {
+    client.ensure_attached()?;
+    // SAFETY: caller supplies readable options when non-null.
+    let options =
+        unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+    // SAFETY: forwards the options contract.
+    let frame = unsafe { spawn_frame(options, bind_instance) }?;
+    ensure_queue_capacity(client, options.request_id)?;
+    client.operations.check_admission_capacity()?;
+    let FrameKind::SpawnResource { satellite, .. } = &frame else {
+        unreachable!()
+    };
+    let pending = Pending::Spawn {
+        satellite: satellite.clone(),
+    };
+    client.queue_frame(&frame)?;
+    client.operations.insert(options.request_id, pending);
+    Ok(())
+}
+
+/// Queue `KILL_RESOURCE_IF` for a terminal this client spawned and bound.
+///
+/// The server kills it only if its instance token still equals `instance`
+/// and no connection but the spawning one has attached or used it. There is
+/// no unconditional variant here. Needs only a negotiated client.
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread; the ID and
+/// its host span are readable, and `instance` is 16 readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_kill_if(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_id: *const PhuxResourceId,
+    instance: *const u8,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        if !client.protocol_ready || client.detached {
+            return Err(BridgeError::state(
+                "a conditional kill needs a negotiated connection",
+            ));
+        }
+        if !client.conditional_kill {
+            return Err(BridgeError::state(
+                "the server did not advertise CONDITIONAL_KILL; nothing is killed",
+            ));
+        }
+        if instance.is_null() {
+            return Err(BridgeError::invalid("instance is null"));
+        }
+        // SAFETY: caller supplies 16 readable instance bytes.
+        let token: [u8; 16] = unsafe { bytes_in(instance, 16) }?
+            .try_into()
+            .map_err(|_| BridgeError::invalid("instance must be 16 bytes"))?;
+        // SAFETY: caller supplies a readable ID and its host span.
+        let id = unsafe { terminal_id_in(terminal_id) }?;
+        valid_terminal(&id)?;
+        ensure_queue_capacity(client, request_id)?;
+        client.queue_frame(&FrameKind::Command {
+            request_id,
+            command: Command::KillResourceIf {
+                terminal_id: id.clone(),
+                precondition: KillPrecondition::spawned_and_unattached(ServerInstance::new(token)),
+            },
+        })?;
+        client.operations.insert(request_id, Pending::Kill(id));
+        Ok(())
+    })
+}
+
+/// The instance token the completion at `index` carried: a bound spawn's.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out_instance` is 16 writable
+/// bytes and `out_bound` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_operation_instance(
+    client: *const PhuxClient,
+    index: usize,
+    out_instance: *mut u8,
+    out_bound: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        // SAFETY: caller supplies a writable flag when non-null.
+        let bound = unsafe { out_bound.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("bound output is null"))?;
+        *bound = false;
+        if out_instance.is_null() {
+            return Err(BridgeError::invalid("instance output is null"));
+        }
+        let result = client
+            .operations
+            .completed
+            .get(index)
+            .ok_or_else(|| BridgeError {
+                result: PhuxClientResult::NoValue,
+                message: String::new(),
+            })?;
+        if let Some(token) = result.instance {
+            // SAFETY: caller supplies 16 writable bytes, disjoint from the client.
+            unsafe { ptr::copy_nonoverlapping(token.as_ptr(), out_instance, token.len()) };
+            *bound = true;
+        }
+        Ok(())
+    })
+}
+
+/// Whether `HELLO_OK` advertised `CONDITIONAL_KILL`.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out_supported` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_conditional_kill_supported(
+    client: *const PhuxClient,
+    out_supported: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        // SAFETY: caller supplies a writable output when non-null.
+        let out = unsafe { out_supported.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("supported output is null"))?;
+        *out = client.conditional_kill;
         Ok(())
     })
 }
@@ -617,9 +776,10 @@ fn complete_spawn(
             "RESOURCE_SPAWNED does not answer a spawn",
         ));
     };
+    // A bound spawn's reply names the id space its terminal came from
+    // (phux_client_operation_instance); an unbound one carries none.
+    let instance = result.instance().map(|token| *token.as_bytes());
     match result {
-        // This ABI never requests an instance binding, so a bound reply is
-        // an ordinary success; its instance token is not surfaced.
         SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
             if matches!(id, ResourceId::Local { .. }) {
@@ -628,6 +788,7 @@ fn complete_spawn(
             client
                 .operations
                 .complete(request_id, 1, Some(id), 0, 0, "");
+            client.operations.bind_last(instance);
         }
         SpawnResult::Err(error) => {
             let (code, message) = spawn_error(error);

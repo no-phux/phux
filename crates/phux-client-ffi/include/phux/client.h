@@ -482,7 +482,9 @@ typedef PhuxAttachResourceOptions PhuxDetachResourceOptions;
 typedef enum PhuxOperationKind {
     PHUX_OPERATION_SPAWN = 1,
     PHUX_OPERATION_ATTACH_RESOURCE = 2,
-    PHUX_OPERATION_DETACH_RESOURCE = 3
+    PHUX_OPERATION_DETACH_RESOURCE = 3,
+    /* phux_client_queue_kill_if (see "conditional kill" below); additive. */
+    PHUX_OPERATION_KILL_IF = 4
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -1126,6 +1128,36 @@ typedef enum PhuxSessionQueryStatus {
 PhuxClientResult phux_client_query_sessions(PhuxClient *client, uint32_t request_id);
 /** Writes the latest query's request ID (0 before any) and status. */
 PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint32_t *out_request_id, uint32_t *out_status);
+
+/* ---------------------------------------------------- conditional kill
+ *
+ * ADR-0109, docs/spec/L1.md sections 3.1 and 5.2.1. Additive to ABI version
+ * 2: PhuxSpawnOptions and PhuxOperationResult are unchanged. All of it
+ * requires HELLO_OK to have advertised CONDITIONAL_KILL (0x00200000);
+ * otherwise PHUX_CLIENT_INVALID_STATE, nothing queued, no request ID
+ * consumed.
+ *
+ * phux_client_queue_spawn_bound is phux_client_queue_spawn with
+ * SPAWN_RESOURCE.bind_instance set: the server binds the new terminal to its
+ * instance token and its RESOURCE_SPAWNED carries the 16-byte token.
+ * phux_client_operation_instance reads it for the completion at index:
+ * *out_bound is false (and out_instance untouched) for every completion that
+ * carried none, including every unbound spawn.
+ *
+ * phux_client_queue_kill_if sends KILL_RESOURCE_IF for terminal_id with the
+ * precondition a late kill of one's own spawn needs: the server's instance
+ * token still equals `instance`, and no connection but the spawning one has
+ * attached or used the terminal (UNATTACHED_SINCE_SPAWN). The server checks
+ * and kills atomically; a failed condition answers PRECONDITION_FAILED and
+ * kills nothing. It needs only a negotiated client, attached or not, and is
+ * correlated like the other operations: a completion of kind
+ * PHUX_OPERATION_KILL_IF, success or refused (error_domain protocol, code
+ * the wire ErrorCode). There is deliberately no unconditional kill here. */
+PhuxClientResult phux_client_queue_spawn_bound(PhuxClient *client, const PhuxSpawnOptions *options);
+PhuxClientResult phux_client_operation_instance(const PhuxClient *client, size_t index, uint8_t out_instance[16], bool *out_bound);
+PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id, const uint8_t instance[16]);
+/** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
+PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 
 /* ------------------------------------------------ keep-empty sessions
  *

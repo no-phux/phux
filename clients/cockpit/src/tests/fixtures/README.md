@@ -47,6 +47,11 @@ Use a private target directory per worktree for concurrent builds.
   resources) then `ATTACH_READY`. `workspace_empty.bin` is the automatic
   workspace read that follows, correlated as a fresh client's first internal
   requests: absent layout metadata, then the same registry.
+- Conditional kills (ADR-0109): `hello_conditional_kill.bin` is `hello.bin`
+  that also advertises `ConditionalKill`. `spawn-bound.bin` answers a bound
+  spawn (request 1) with local terminal 8 bound to the instance token of
+  sixteen `0xa5` bytes. The generator checks that an attached client asks for
+  the binding and reads the token back.
 - The VT chunk clears/homes the screen, writes `COCKPIT FIXTURE` at row 0,
   column 0, enables bracketed paste (`CSI ? 2004 h`), focus reporting
   (`CSI ? 1004 h`), and Kitty keyboard disambiguation (`CSI > 1 u`).

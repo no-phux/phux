@@ -1389,6 +1389,12 @@ pub const Engine = struct {
         // Nothing presents a listing peer's terminals, so nothing rings for
         // them; its list settling is what moves.
         while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
+        // A listing peer's only operations are conditional kills of its
+        // strays: best effort, their outcomes are not waited for.
+        while (peer.takeOperationResult()) |_| {}
+        // Listing again: its strays (spawns whose placement was never sent)
+        // are killed there, each only if still unattached since its spawn.
+        if (delta.sessions_listed) _ = self.peer_edits.sendStrays(self.model, slot);
         return self.commitProviderChange(delta.sessions_listed or delta.detached or delta.sessions_renamed);
     }
 
@@ -1636,6 +1642,7 @@ pub const Engine = struct {
         const peer = model.phuxPeerAt(slot) orelse return;
         self.stopShowingPeer(slot);
         empty_session.forgetPeer(model, peer.providerId(), true);
+        self.peer_edits.dropStrays(slot);
         model.phux_peers[slot] = null;
         model.phux_peer_reopen[slot] = false;
         model.peer_failed[slot] = false;
@@ -1710,6 +1717,9 @@ pub const Engine = struct {
         }
         model.peer_failed[slot] = false;
         self.resetPeerRetry(slot);
+        // The slot now names another coordinator: strays of the one it
+        // held are not this one's to kill.
+        self.peer_edits.dropStrays(slot);
         self.restartCoordinators(fx, slot);
     }
 

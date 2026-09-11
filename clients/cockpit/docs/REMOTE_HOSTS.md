@@ -398,9 +398,20 @@ projected reads "workspace unavailable" on its session rows.
 - A new tab or split that a peer has spawned but not yet placed is dropped
   from Cockpit's queue if the peer stops showing, restarts or fails first
   (for instance, choosing another coordinator's tab within the spawn's round
-  trip). Its terminal keeps running on that host, unplaced. Keeping the peer
-  attached until the placement lands would hold a viewport for a peer that
-  is not displaying, so Cockpit does not.
+  trip). Keeping the peer attached until the placement lands would hold a
+  viewport for a peer that is not displaying, so Cockpit does not. When the
+  peer's server advertises `CONDITIONAL_KILL` (0x00200000), its spawns are
+  bound to the server's instance token, and once the peer lists again Cockpit
+  asks it to kill such a terminal only if nobody else has attached or used it
+  since (`KILL_RESOURCE_IF`,
+  [ADR-0109](../../../ADR/0109-late-kills-are-conditional-on-instance-and-attachment.md));
+  a refused kill leaves it running. The terminal stays running, unplaced,
+  when the server lacks that bit (the spawn is unbound and nothing is killed,
+  conditionally or otherwise), when the spawn's reply never arrived, when its
+  placement had already been sent (it may still land), when the peer's next
+  connection shows a session instead of listing (that attach would count as
+  another connection's), or when the peer is removed first. Cockpit never
+  kills one unconditionally.
 - Relaunch restores which hosts are held, not what was on screen: each
   remembered host comes back listing, and none of its sessions is shown
   again until one is picked. Cockpit keeps no client-side placement for a
