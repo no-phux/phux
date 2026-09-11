@@ -2660,7 +2660,7 @@ fn window_spawned_opens_active_window_focused_on_new_pane() {
     assert!(panes.contains_key(&tid(2)), "new pane got a slot");
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
     assert!(
-        outcome.adopt_windows.is_empty(),
+        outcome.adopt_spawned.is_empty(),
         "a local spawn already streams to its spawner"
     );
 }
@@ -2701,9 +2701,12 @@ fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
     );
     assert_eq!(focused, Some(tid(1)));
     assert!(!outcome.layout_replaced && !outcome.emit_set_metadata);
-    assert_eq!(outcome.adopt_windows.len(), 1);
-    assert_eq!(outcome.adopt_windows[0].name, "2");
-    assert_eq!(outcome.adopt_windows[0].adopt, Some(sat));
+    let [crate::attach::actions::ParkedAdopt::Window(window)] = outcome.adopt_spawned.as_slice()
+    else {
+        panic!("expected one parked window: {:?}", outcome.adopt_spawned);
+    };
+    assert_eq!(window.name, "2");
+    assert_eq!(window.adopt, Some(sat));
 }
 
 /// The parked satellite window opens, focused and saved, once its attach
@@ -2897,6 +2900,8 @@ fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<ResourceId> {
             focused_at_request: anchor,
             dir: SplitDir::Horizontal,
             zoom_on_spawn,
+            host: crate::attach::actions::SplitHost::Attached,
+            adopt: None,
         },
     );
     let mut pending_windows = HashMap::new();
@@ -2951,6 +2956,347 @@ fn terminal_spawned_zoom_on_spawn_zooms_the_new_pane() {
 #[test]
 fn terminal_spawned_without_zoom_on_spawn_clears_zoom() {
     assert_eq!(drive_spawned_with_pending_split(false), None);
+}
+
+/// `edge/@9`, the satellite pane the split tests spawn.
+fn edge_pane() -> ResourceId {
+    ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9)
+}
+
+/// A split of pane 1 parked with `host` and `adopt`.
+fn parked_split(
+    host: crate::attach::actions::SplitHost,
+    adopt: Option<ResourceId>,
+) -> crate::attach::actions::PendingSplit {
+    crate::attach::actions::PendingSplit {
+        focused_at_request: tid(1),
+        dir: SplitDir::Horizontal,
+        zoom_on_spawn: false,
+        host,
+        adopt,
+    }
+}
+
+/// What one reply did to a workspace with a split parked under request 9.
+struct SplitReply {
+    outcome: FrameOutcome,
+    /// The active window's leaves after the reply.
+    leaves: Vec<ResourceId>,
+    focused: Option<ResourceId>,
+    belled: bool,
+    parked: usize,
+    workspace: Workspace,
+}
+
+/// phux-c2td.18: drive one reply through the dispatcher with `split` parked
+/// under request 9 against a workspace holding pane 1.
+fn drive_split_reply(split: crate::attach::actions::PendingSplit, frame: FrameKind) -> SplitReply {
+    drive_split_reply_in(Workspace::single(tid(1)), Some(tid(1)), split, frame)
+}
+
+/// [`drive_split_reply`] against `workspace`, focused on `focused`.
+fn drive_split_reply_in(
+    mut workspace: Workspace,
+    mut focused: Option<ResourceId>,
+    split: crate::attach::actions::PendingSplit,
+    frame: FrameKind,
+) -> SplitReply {
+    let mut panes = panes_for(&[&tid(1)]);
+    let mut out: Vec<u8> = Vec::new();
+    let mut zoomed = None;
+    let mut session_name = String::new();
+    let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+    let overlay = Overlay;
+    let mut pending_splits = HashMap::from([(9, split)]);
+    let mut pending_windows = HashMap::new();
+    let outcome = handle_server_frame(
+        &mut out,
+        frame,
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+        &mut zoomed,
+        &mut session_name,
+        None,
+        None,
+        None,
+        (80, 24),
+        &mut predict,
+        &overlay,
+        None,
+        &mut pending_splits,
+        &mut pending_windows,
+        &mut HashSet::new(),
+        &mut AgentMetaIndex::default(),
+        false,
+        false,
+    )
+    .expect("split reply");
+    let leaves = workspace
+        .active_window()
+        .and_then(|window| window.tree.as_ref())
+        .map(crate::layout::leaves)
+        .unwrap_or_default();
+    SplitReply {
+        outcome,
+        leaves,
+        focused,
+        belled: out.contains(&0x07),
+        parked: pending_splits.len(),
+        workspace,
+    }
+}
+
+/// phux-c2td.18: a split spawned on a satellite does not apply yet. The
+/// relayed pane streams to no one until it is attached, and the attach can
+/// be refused, so the reply hands the split back to be parked on it.
+#[test]
+fn a_split_spawned_on_a_satellite_waits_for_its_attach() {
+    use crate::attach::actions::{ParkedAdopt, SplitHost};
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let edge = phux_protocol::ids::SatelliteHost::new("edge");
+    let reply = drive_split_reply(
+        parked_split(SplitHost::Satellite(edge.clone()), None),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::Ok(edge_pane()),
+        },
+    );
+    assert_eq!(
+        reply.leaves,
+        vec![tid(1)],
+        "nothing splits before the attach"
+    );
+    assert_eq!(reply.focused, Some(tid(1)));
+    assert!(!reply.outcome.layout_replaced && !reply.outcome.emit_set_metadata);
+    assert!(!reply.belled);
+    let [ParkedAdopt::Split(split)] = reply.outcome.adopt_spawned.as_slice() else {
+        panic!(
+            "expected one parked split: {:?}",
+            reply.outcome.adopt_spawned
+        );
+    };
+    assert_eq!(split.adopt, Some(edge_pane()));
+    assert_eq!(split.host, SplitHost::Satellite(edge));
+    assert_eq!(split.focused_at_request, tid(1));
+}
+
+/// The parked satellite split applies, focused and saved, once its attach
+/// succeeds.
+#[test]
+fn a_spawned_satellite_split_applies_when_its_attach_succeeds() {
+    use crate::attach::actions::SplitHost;
+
+    let edge = phux_protocol::ids::SatelliteHost::new("edge");
+    let reply = drive_split_reply(
+        parked_split(SplitHost::Satellite(edge), Some(edge_pane())),
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1), edge_pane()]);
+    assert_eq!(reply.focused, Some(edge_pane()));
+    assert!(reply.outcome.layout_replaced && reply.outcome.emit_set_metadata);
+    assert!(reply.outcome.reflow_panes);
+    assert!(reply.outcome.notices.is_empty());
+    assert!(!reply.belled, "success does not bell");
+    assert_eq!(reply.parked, 0, "the parked split is consumed");
+}
+
+/// A refused attach of a spawned satellite split, as a `COMMAND_RESULT`
+/// error or a correlated `ERROR`, leaves no dead split: nothing splits,
+/// nothing is saved, the bell rings, and the notice names the host.
+#[test]
+fn a_spawned_satellite_split_refusal_bells_and_names_the_host() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    let edge = phux_protocol::ids::SatelliteHost::new("edge");
+    for frame in [
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite edge is unreachable: link is down".to_owned(),
+            },
+        },
+        FrameKind::Error {
+            request_id: Some(9),
+            code: ErrorCode::TerminalNotFound,
+            message: "no such terminal".to_owned(),
+        },
+    ] {
+        let reply = drive_split_reply(
+            parked_split(SplitHost::Satellite(edge.clone()), Some(edge_pane())),
+            frame,
+        );
+        assert_eq!(reply.leaves, vec![tid(1)], "no dead split is left behind");
+        assert_eq!(reply.focused, Some(tid(1)), "focus stays put");
+        assert!(!reply.outcome.emit_set_metadata && !reply.outcome.layout_replaced);
+        assert!(reply.belled, "a refusal bells");
+        assert_eq!(reply.outcome.notices.len(), 1);
+        assert!(
+            reply.outcome.notices[0]
+                .text
+                .contains("split onto satellite edge"),
+            "the notice names the host: {}",
+            reply.outcome.notices[0].text
+        );
+        assert_eq!(reply.parked, 0, "the parked split is consumed");
+    }
+}
+
+/// A satellite split whose relayed spawn is refused (the satellite is
+/// unreachable) bells and names the host too.
+#[test]
+fn a_satellite_split_whose_spawn_is_refused_names_the_host() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::{SpawnError, SpawnResult};
+
+    let reply = drive_split_reply(
+        parked_split(
+            SplitHost::Satellite(phux_protocol::ids::SatelliteHost::new("edge")),
+            None,
+        ),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::Err(SpawnError::SatelliteUnreachable(
+                "satellite edge link is down".to_owned(),
+            )),
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1)]);
+    assert!(reply.belled);
+    assert_eq!(reply.outcome.notices.len(), 1);
+    assert!(
+        reply.outcome.notices[0]
+            .text
+            .contains("could not split onto satellite edge: satellite edge link is down"),
+        "{}",
+        reply.outcome.notices[0].text
+    );
+    assert!(reply.outcome.adopt_spawned.is_empty());
+}
+
+/// A hub without host-aware spawns opened a satellite pane's split on
+/// itself. It applies as a local split does, and the notice says the pane
+/// is on this host, so it is not taken for a pane on the satellite.
+#[test]
+fn a_satellite_split_on_an_older_hub_says_it_opened_on_this_host() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let reply = drive_split_reply(
+        parked_split(
+            SplitHost::AttachedInsteadOf(phux_protocol::ids::SatelliteHost::new("edge")),
+            None,
+        ),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::Ok(tid(2)),
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1), tid(2)]);
+    assert!(reply.outcome.adopt_spawned.is_empty());
+    assert_eq!(reply.outcome.notices.len(), 1);
+    let text = &reply.outcome.notices[0].text;
+    assert!(
+        text.contains("on this host") && text.contains("edge"),
+        "{text}"
+    );
+}
+
+/// A local split's reply raises no notice.
+#[test]
+fn a_local_split_reply_raises_no_notice() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let reply = drive_split_reply(
+        parked_split(SplitHost::Attached, None),
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::Ok(tid(2)),
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1), tid(2)]);
+    assert!(reply.outcome.notices.is_empty());
+}
+
+/// phux-c2td.18: the user switched windows while a satellite split waited on
+/// its attach. The split lands beside its source pane, in that pane's window,
+/// and neither the window on screen nor its focus moves.
+#[test]
+fn a_split_parked_across_a_window_switch_lands_beside_its_source() {
+    use crate::attach::actions::SplitHost;
+
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("2".to_owned(), tid(5));
+    assert_eq!(workspace.active, 1, "the user is on the other window");
+    let reply = drive_split_reply_in(
+        workspace,
+        Some(tid(5)),
+        parked_split(
+            SplitHost::Satellite(phux_protocol::ids::SatelliteHost::new("edge")),
+            Some(edge_pane()),
+        ),
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+    );
+    assert_eq!(
+        window_leaves(&reply.workspace, 0),
+        vec![tid(1), edge_pane()]
+    );
+    assert_eq!(window_leaves(&reply.workspace, 1), vec![tid(5)]);
+    assert_eq!(reply.workspace.active, 1, "the window on screen stays");
+    assert_eq!(reply.focused, Some(tid(5)), "focus is not stolen");
+    assert!(reply.outcome.emit_set_metadata, "the split is saved");
+    assert!(!reply.belled);
+}
+
+/// phux-c2td.18: the source pane closed while its split waited. Nothing is
+/// split beside some other pane: the split is dropped, with a bell and a
+/// notice, for a satellite split's attach and a local split's spawn alike.
+#[test]
+fn a_split_whose_source_pane_closed_is_dropped() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::SpawnResult;
+
+    let edge = phux_protocol::ids::SatelliteHost::new("edge");
+    for (split, frame) in [
+        (
+            parked_split(SplitHost::Satellite(edge), Some(edge_pane())),
+            FrameKind::CommandResult {
+                request_id: 9,
+                result: phux_protocol::wire::frame::CommandResult::Ok,
+            },
+        ),
+        (
+            parked_split(SplitHost::Attached, None),
+            FrameKind::ResourceSpawned {
+                request_id: 9,
+                result: SpawnResult::Ok(tid(2)),
+            },
+        ),
+    ] {
+        // Pane 1, the split's source, is gone; pane 3 is what remains.
+        let reply = drive_split_reply_in(Workspace::single(tid(3)), Some(tid(3)), split, frame);
+        assert_eq!(reply.leaves, vec![tid(3)], "nothing lands beside pane 3");
+        assert_eq!(reply.focused, Some(tid(3)));
+        assert!(!reply.outcome.emit_set_metadata && !reply.outcome.layout_replaced);
+        assert!(reply.belled);
+        assert_eq!(reply.outcome.notices.len(), 1);
+        assert!(
+            reply.outcome.notices[0].text.contains("split dropped"),
+            "{}",
+            reply.outcome.notices[0].text
+        );
+        assert_eq!(reply.parked, 0);
+    }
 }
 
 /// phux-flywheel: the apply-vs-paint split is observable. Driving a

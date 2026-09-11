@@ -13,7 +13,8 @@ use phux_protocol::wire::frame::{
 };
 
 use crate::attach::actions::{
-    self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed,
+    self, ParkedAdopt, PendingSplit, PendingWindow, SplitHost, apply_spawned_ok,
+    apply_terminal_closed,
 };
 use crate::attach::outcome::{AttachEnd, AttachError, describe_exit};
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, content_rect, paint_focused_pane};
@@ -1271,38 +1272,31 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
         return Ok(FrameOutcome::default());
     };
     match result {
-        SpawnResult::Ok(new_id) => apply_split_spawned(ctx, new_id, &pending),
-        SpawnResult::Err(SpawnError::GroupNotFound) => {
-            // v0.1 clients only ever target DEFAULT_GROUP_ID,
-            // which the server always exposes; this branch
-            // means a server-side L2 invariant changed under
-            // us. Log loudly + bell.
-            tracing::warn!(
-                request_id,
-                "ResourceSpawned: server reports GroupNotFound for DEFAULT group",
-            );
-            let _ = actions::write_bell(ctx.out);
-            Ok(FrameOutcome::default())
+        // phux-c2td.18: a split spawned on a satellite through the hub
+        // streams to no one until it is attached, and that attach can be
+        // refused. Hand the split back to be parked on the attach: it
+        // applies only when the attach succeeds, as a satellite window does.
+        SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
+            adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
+                adopt: Some(new_id),
+                ..pending
+            })],
+            ..FrameOutcome::default()
+        }),
+        SpawnResult::Ok(new_id) => {
+            let mut outcome = apply_split_spawned(ctx, new_id, &pending)?;
+            outcome.notices.extend(split_fallback_notice(&pending.host));
+            Ok(outcome)
         }
-        SpawnResult::Err(SpawnError::SpawnFailed(reason)) => {
-            tracing::warn!(
-                request_id,
-                reason = %reason,
-                "ResourceSpawned: server-side spawn failed",
-            );
+        SpawnResult::Err(err) => {
+            log_split_spawn_error(request_id, &err);
             let _ = actions::write_bell(ctx.out);
-            Ok(FrameOutcome::default())
-        }
-        // SpawnError is #[non_exhaustive] — catch future
-        // variants so newer servers don't take the client down.
-        SpawnResult::Err(other) => {
-            tracing::warn!(
-                request_id,
-                error = ?other,
-                "ResourceSpawned: unknown spawn error variant",
-            );
-            let _ = actions::write_bell(ctx.out);
-            Ok(FrameOutcome::default())
+            Ok(FrameOutcome {
+                notices: split_refusal_notice(&pending.host, &spawn_error_reason(&err))
+                    .into_iter()
+                    .collect(),
+                ..FrameOutcome::default()
+            })
         }
         // SpawnResult is also #[non_exhaustive].
         _ => {
@@ -1312,67 +1306,103 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     }
 }
 
-/// Fold a successfully spawned split into the active window: apply the parked
-/// intent, seed the new pane's slot, and move focus onto it.
+/// Log why a split's spawn failed, by error kind.
+fn log_split_spawn_error(request_id: u32, err: &SpawnError) {
+    match err {
+        // v0.1 clients only ever target DEFAULT_GROUP_ID, which the server
+        // always exposes; this means a server-side L2 invariant changed
+        // under us. Log loudly.
+        SpawnError::GroupNotFound => tracing::warn!(
+            request_id,
+            "ResourceSpawned: server reports GroupNotFound for DEFAULT group",
+        ),
+        SpawnError::SpawnFailed(reason) => tracing::warn!(
+            request_id,
+            reason = %reason,
+            "ResourceSpawned: server-side spawn failed",
+        ),
+        // SpawnError is #[non_exhaustive] — catch future variants so newer
+        // servers don't take the client down.
+        other => tracing::warn!(
+            request_id,
+            error = ?other,
+            "ResourceSpawned: spawn refused",
+        ),
+    }
+}
+
+/// A spawn error as the reason a notice gives: the server's own words when
+/// it sent some, else the error's name.
+fn spawn_error_reason(err: &SpawnError) -> String {
+    match err {
+        SpawnError::SpawnFailed(reason) | SpawnError::SatelliteUnreachable(reason) => {
+            reason.clone()
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// The notice for a split that could not open on its satellite, naming the
+/// host. A split on the attached server's host keeps the bare bell.
+fn split_refusal_notice(host: &SplitHost, reason: &str) -> Option<Notice> {
+    let SplitHost::Satellite(satellite) = host else {
+        return None;
+    };
+    Some(Notice::warn(format!(
+        "could not split onto satellite {satellite}: {reason}"
+    )))
+}
+
+/// The notice for a satellite pane's split that a hub without host-aware
+/// spawns opened on itself: the new pane is on this host, not the
+/// satellite, and the user should not have to guess which.
+fn split_fallback_notice(host: &SplitHost) -> Option<Notice> {
+    let SplitHost::AttachedInsteadOf(satellite) = host else {
+        return None;
+    };
+    Some(Notice::warn(format!(
+        "this hub may not be able to spawn on {satellite}; the split opened on this host"
+    )))
+}
+
+/// Fold a successfully spawned split into the window holding the pane it was
+/// split from: apply the parked intent there, seed the new pane's slot, and,
+/// when that window is the one on screen, move focus onto it.
+///
+/// phux-c2td.18: a satellite split waits through two relayed round trips, so
+/// the user may have switched windows, or closed the source pane, meanwhile.
+/// The split follows its source pane's window rather than whatever window is
+/// active, and one whose source pane is gone is dropped ([`split_dropped`])
+/// rather than put beside some other pane.
 fn apply_split_spawned<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
-    let Some(active_ls) = ctx.workspace.active_window_mut() else {
-        tracing::warn!("ResourceSpawned: no active window to apply split into");
-        let _ = actions::write_bell(ctx.out);
-        return Ok(FrameOutcome::default());
+    let Some(index) = window_holding_pane(ctx.workspace, &pending.focused_at_request) else {
+        return Ok(split_dropped(
+            ctx,
+            &new_id,
+            "the pane it was split from has closed",
+        ));
     };
-    let new_state = match apply_spawned_ok(active_ls, new_id.clone(), pending) {
+    let window = &mut ctx.workspace.windows[index].state;
+    let new_state = match apply_spawned_ok(window, new_id.clone(), pending) {
         Ok(new_state) => new_state,
         Err(err) => {
-            tracing::warn!(
-                error = %err,
-                terminal = ?new_id,
-                "apply_spawned_ok failed; dropping spawned terminal",
-            );
-            let _ = actions::write_bell(ctx.out);
-            return Ok(FrameOutcome::default());
+            tracing::warn!(error = %err, terminal = ?new_id, "apply_spawned_ok failed");
+            return Ok(split_dropped(ctx, &new_id, "the layout could not take it"));
         }
     };
-    *active_ls = new_state;
-    // phux-x2hm: a split un-zooms (tmux parity). The
-    // new pane needs its tile, and the reflow_panes
-    // diff below is taken against the now-cleared
-    // (real, tiled) view.
-    // phux-r82.7: unless the parked intent asked to
-    // zoom the spawned pane (`placement = "zoomed"`
-    // plugin panes) — then the new pane fills the
-    // window and un-zooming reveals it tiled beside
-    // its anchor.
-    *ctx.zoomed = if pending.zoom_on_spawn {
-        Some(new_id.clone())
-    } else {
-        None
-    };
+    *window = new_state;
     // Seed pane metadata so the first bootstrap lands
     // on a warm rendering slot. Vacant-or-occupied —
     // never overwrite existing frontend metadata.
-    if let std::collections::hash_map::Entry::Vacant(v) = ctx.panes.entry(new_id) {
+    if let std::collections::hash_map::Entry::Vacant(v) = ctx.panes.entry(new_id.clone()) {
         v.insert(PaneSlot::new()?);
     }
-    // Move focus to the freshly spawned pane —
-    // tmux-compatible (apply_split already sets
-    // focus inside the returned state).
-    ctx.focused_resource.clone_from(
-        &ctx.workspace
-            .active_window()
-            .and_then(|ls| ls.focus.clone()),
-    );
-    // Re-anchor predictive echo to the freshly
-    // focused pane (phux-7ry0). The split leaves the
-    // predict layer holding the previous pane's
-    // viewport + cursor; a keystroke before the new
-    // pane's first snapshot would otherwise echo at
-    // the old pane's coordinates (mid-screen ghost).
-    if let Some(fid) = ctx.focused_resource.as_ref() {
-        reanchor_predict_to_pane(ctx.predict, ctx.panes, fid);
+    if index == ctx.workspace.active {
+        focus_landed_split(ctx, new_id, pending.zoom_on_spawn);
     }
     Ok(FrameOutcome {
         layout_replaced: true,
@@ -1383,6 +1413,61 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
         // instead of leaving panes at spawn size.
         reflow_panes: true,
         ..FrameOutcome::default()
+    })
+}
+
+/// The split just landed in the window on screen: zoom and focus follow it.
+fn focus_landed_split<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    new_id: ResourceId,
+    zoom_on_spawn: bool,
+) {
+    // phux-x2hm: a split un-zooms (tmux parity). The new pane needs its
+    // tile, and the reflow_panes diff is taken against the now-cleared
+    // (real, tiled) view. phux-r82.7: unless the parked intent asked to zoom
+    // the spawned pane (`placement = "zoomed"` plugin panes) — then the new
+    // pane fills the window and un-zooming reveals it tiled beside its
+    // anchor.
+    *ctx.zoomed = zoom_on_spawn.then_some(new_id);
+    // Move focus to the freshly spawned pane — tmux-compatible
+    // (apply_split already sets focus inside the returned state).
+    ctx.focused_resource.clone_from(
+        &ctx.workspace
+            .active_window()
+            .and_then(|ls| ls.focus.clone()),
+    );
+    // Re-anchor predictive echo to the freshly focused pane (phux-7ry0).
+    // The split leaves the predict layer holding the previous pane's
+    // viewport + cursor; a keystroke before the new pane's first snapshot
+    // would otherwise echo at the old pane's coordinates (mid-screen ghost).
+    if let Some(fid) = ctx.focused_resource.as_ref() {
+        reanchor_predict_to_pane(ctx.predict, ctx.panes, fid);
+    }
+}
+
+/// A spawned split that has nowhere to go: bell, and say why. The layout,
+/// focus, and zoom are left as they are.
+fn split_dropped<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    new_id: &ResourceId,
+    why: &str,
+) -> FrameOutcome {
+    tracing::warn!(terminal = ?new_id, why, "split dropped");
+    let _ = actions::write_bell(ctx.out);
+    FrameOutcome {
+        notices: vec![Notice::warn(format!("split dropped: {why}"))],
+        ..FrameOutcome::default()
+    }
+}
+
+/// The index of the window whose layout has `pane` as a leaf.
+fn window_holding_pane(workspace: &Workspace, pane: &ResourceId) -> Option<usize> {
+    workspace.windows.iter().position(|window| {
+        window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| layout::leaves(tree).contains(pane))
     })
 }
 
@@ -1776,36 +1861,36 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
     }
 }
 
-/// The `ERROR` arm: a correlated refusal of a parked satellite-session
-/// attach (phux-c2td.3) decides that window; anything else is the ordinary
-/// error notice.
+/// The `ERROR` arm: a correlated refusal of a parked satellite attach
+/// (phux-c2td.3, phux-c2td.18) decides that window or split; anything else
+/// is the ordinary error notice.
 fn error_frame_outcome<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: Option<u32>,
     code: ErrorCode,
     message: String,
 ) -> Result<FrameOutcome, AttachError> {
-    if let Some(pending) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
-        return handle_window_adopt_reply(ctx, &pending, Some(message));
+    if let Some(parked) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
+        return handle_adopt_reply(ctx, parked, Some(message));
     }
     Ok(handle_error_frame(request_id, code, &message))
 }
 
-/// The `COMMAND_RESULT` arm: the reply to a parked satellite-session attach
-/// (phux-c2td.3) decides whether its window opens; any other reply that
-/// reached the dispatcher instead of its awaiter is dropped, inert (see the
-/// arm's comment in [`dispatch_frame`]).
+/// The `COMMAND_RESULT` arm: the reply to a parked satellite attach
+/// (phux-c2td.3, phux-c2td.18) decides whether its window opens or its split
+/// applies; any other reply that reached the dispatcher instead of its
+/// awaiter is dropped, inert (see the arm's comment in [`dispatch_frame`]).
 fn command_result_outcome<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
     result: phux_protocol::wire::frame::CommandResult,
 ) -> Result<FrameOutcome, AttachError> {
-    if let Some(pending) = take_pending_adopt(ctx, request_id) {
+    if let Some(parked) = take_pending_adopt(ctx, request_id) {
         let refusal = match result {
             phux_protocol::wire::frame::CommandResult::Error { message, .. } => Some(message),
             _ => None,
         };
-        return handle_window_adopt_reply(ctx, &pending, refusal);
+        return handle_adopt_reply(ctx, parked, refusal);
     }
     tracing::debug!(
         request_id,
@@ -1814,52 +1899,96 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
     Ok(FrameOutcome::default())
 }
 
-/// phux-c2td.3: take the parked satellite-session window behind
-/// `request_id`, if that is what the id names. A spawn-parked window (no
-/// `adopt`) stays parked for its `RESOURCE_SPAWNED`.
+/// Take the window or split parked on the satellite attach behind
+/// `request_id`, if that is what the id names. A spawn-parked window or
+/// split (no `adopt`) stays parked for its `RESOURCE_SPAWNED`.
 fn take_pending_adopt<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
-) -> Option<PendingWindow> {
+) -> Option<ParkedAdopt> {
     if ctx
         .pending_windows
         .get(&request_id)
-        .is_none_or(|pending| pending.adopt.is_none())
+        .is_some_and(|pending| pending.adopt.is_some())
     {
-        return None;
+        return ctx
+            .pending_windows
+            .remove(&request_id)
+            .map(ParkedAdopt::Window);
     }
-    ctx.pending_windows.remove(&request_id)
+    if ctx
+        .pending_splits
+        .get(&request_id)
+        .is_some_and(|pending| pending.adopt.is_some())
+    {
+        return ctx
+            .pending_splits
+            .remove(&request_id)
+            .map(ParkedAdopt::Split);
+    }
+    None
 }
 
-/// phux-c2td.3: apply the reply to a satellite-session window's
-/// `ATTACH_RESOURCE`.
+/// Apply the reply to a parked satellite pane's `ATTACH_RESOURCE`.
 ///
-/// Success opens the window on the adopted pane, makes it active, focuses
-/// the pane, and asks for the layout broadcast and a reflow — the same
-/// follow-up a spawned new window gets. Its slot normally exists already,
-/// seeded by the pane's `BOOTSTRAP_BEGIN`. A refusal opens nothing and saves
-/// nothing: it bells and says which host and session could not be opened,
-/// because a dead window in the shared layout would be the worse outcome.
-fn handle_window_adopt_reply<W: crate::attach::RenderSink>(
+/// Success opens the window (phux-c2td.3) or applies the split
+/// (phux-c2td.18) on the adopted pane, exactly as a local spawn's reply
+/// would. A refusal opens nothing and saves nothing ([`adopt_refused`]):
+/// a dead window or split in the shared layout would be the worse outcome.
+fn handle_adopt_reply<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    pending: &PendingWindow,
+    parked: ParkedAdopt,
     refusal: Option<String>,
 ) -> Result<FrameOutcome, AttachError> {
-    let Some(pane) = pending.adopt.clone() else {
+    let Some(pane) = parked.pane().cloned() else {
         return Ok(FrameOutcome::default());
     };
     if let Some(reason) = refusal {
-        tracing::warn!(window = %pending.name, %reason, "satellite window attach refused");
-        let _ = actions::write_bell(ctx.out);
-        let host = pane.host().map_or_else(String::new, ToString::to_string);
-        return Ok(FrameOutcome {
-            notices: vec![Notice::warn(format!(
-                "could not open {} on satellite {host}: {reason}",
-                pending.name
-            ))],
-            ..FrameOutcome::default()
-        });
+        return Ok(adopt_refused(ctx, &parked, &pane, &reason));
     }
+    match parked {
+        ParkedAdopt::Window(window) => open_adopted_window(ctx, &window, pane),
+        ParkedAdopt::Split(split) => apply_split_spawned(ctx, pane, &split),
+    }
+}
+
+/// A refused satellite attach: bell, and say which host could not open the
+/// window or the split.
+fn adopt_refused<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    parked: &ParkedAdopt,
+    pane: &ResourceId,
+    reason: &str,
+) -> FrameOutcome {
+    let host = pane.host().map_or_else(String::new, ToString::to_string);
+    tracing::warn!(%host, %reason, "satellite attach refused");
+    let _ = actions::write_bell(ctx.out);
+    let text = match parked {
+        ParkedAdopt::Window(window) => {
+            format!(
+                "could not open {} on satellite {host}: {reason}",
+                window.name
+            )
+        }
+        ParkedAdopt::Split(_) => format!("could not split onto satellite {host}: {reason}"),
+    };
+    FrameOutcome {
+        notices: vec![Notice::warn(text)],
+        ..FrameOutcome::default()
+    }
+}
+
+/// phux-c2td.3: open a satellite pane's window once its attach succeeded.
+///
+/// Opens the window on the adopted pane, makes it active, focuses the pane,
+/// and asks for the layout broadcast and a reflow — the same follow-up a
+/// spawned new window gets. Its slot normally exists already, seeded by the
+/// pane's `BOOTSTRAP_BEGIN`.
+fn open_adopted_window<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    pending: &PendingWindow,
+    pane: ResourceId,
+) -> Result<FrameOutcome, AttachError> {
     ctx.workspace.add_window(pending.name.clone(), pane.clone());
     if let std::collections::hash_map::Entry::Vacant(slot) = ctx.panes.entry(pane) {
         slot.insert(PaneSlot::new()?);
@@ -1898,10 +2027,10 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
         // back to be parked on the attach, the satellite-session open path:
         // it opens only when the attach succeeds.
         SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
-            adopt_windows: vec![PendingWindow {
+            adopt_spawned: vec![ParkedAdopt::Window(PendingWindow {
                 name: pending.name.clone(),
                 adopt: Some(new_id),
-            }],
+            })],
             ..FrameOutcome::default()
         }),
         SpawnResult::Ok(new_id) => {

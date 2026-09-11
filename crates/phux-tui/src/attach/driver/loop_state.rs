@@ -28,7 +28,7 @@ use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
-use crate::attach::actions::{PendingSplit, PendingWindow};
+use crate::attach::actions::{ParkedAdopt, PendingSplit, PendingWindow};
 use crate::attach::connection::{Connection, NegotiatedBootstrap};
 use crate::attach::input::StdinParser;
 use crate::attach::input_dispatch::{
@@ -2330,7 +2330,7 @@ impl SessionLoop {
         }
         self.attach_discovered_panes(conn, &outcome.attach_panes)
             .await?;
-        self.attach_spawned_windows(conn, std::mem::take(&mut outcome.adopt_windows))
+        self.attach_spawned_panes(conn, std::mem::take(&mut outcome.adopt_spawned))
             .await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(&mut outcome, repaint);
@@ -2404,22 +2404,22 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// Park each window spawned on a satellite through the hub and attach its
-    /// pane under a tracked request id. The reply decides the window
-    /// (`server_frame::handler::handle_window_adopt_reply`): it opens on
-    /// success, and a refusal bells and names the host.
-    async fn attach_spawned_windows(
+    /// Park each window or split spawned on a satellite through the hub and
+    /// attach its pane under a tracked request id. The reply decides it
+    /// (`server_frame::handler::handle_adopt_reply`): the window opens or the
+    /// split applies on success, and a refusal bells and names the host.
+    async fn attach_spawned_panes(
         &mut self,
         conn: &mut Connection,
-        windows: Vec<PendingWindow>,
+        parked: Vec<ParkedAdopt>,
     ) -> Result<(), AttachError> {
-        for window in windows {
-            let Some(terminal_id) = window.adopt.clone() else {
+        for adopt in parked {
+            let Some(terminal_id) = adopt.pane().cloned() else {
                 continue;
             };
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
-            self.pending_windows.insert(request_id, window);
+            self.park_adopt(request_id, adopt);
             send_unless_peer_gone(
                 conn,
                 &FrameKind::Command {
@@ -2430,6 +2430,19 @@ impl SessionLoop {
             .await?;
         }
         Ok(())
+    }
+
+    /// Park a spawned satellite pane's window or split under `request_id`,
+    /// in the map its kind's replies are looked up in.
+    fn park_adopt(&mut self, request_id: u32, adopt: ParkedAdopt) {
+        match adopt {
+            ParkedAdopt::Window(window) => {
+                self.pending_windows.insert(request_id, window);
+            }
+            ParkedAdopt::Split(split) => {
+                self.pending_splits.insert(request_id, split);
+            }
+        }
     }
 
     /// phux-k0cw: fold anything the frame said about a session OTHER than

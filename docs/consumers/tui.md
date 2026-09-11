@@ -1719,6 +1719,21 @@ the hub's own host from the hub user's home: the title says `on this host`
 and a header row says the satellite cannot be listed, so the hub's paths are
 not mistaken for the satellite's.
 
+**Splitting a satellite pane** (`split-pane` with a satellite pane focused)
+opens the new pane on that same satellite, through the same hub relay a
+satellite window uses, starting at the focused pane's directory there when
+the client knows it. The split appears only once the new pane attaches; a
+refused spawn or attach rings the bell and names the host in a status notice
+(`could not split onto satellite devbox: ...`), and leaves no dead split
+behind. The split lands beside the pane it was split from, in that pane's
+window, even if you switched windows while it opened; if that pane closed in
+the meantime the split is dropped with a bell and a `split dropped` notice
+rather than put beside some other pane. A split of a local pane is unchanged.
+Against a hub that does not advertise `LIST_DIRECTORY_HOST`, the bit that
+shipped with host-aware spawns, the split opens on the hub as it always did,
+and a notice says so (`this hub may not be able to spawn on devbox; the split
+opened on this host`), so the new pane is not taken for one on the satellite.
+
 ### 5.6 Agent-fleet dashboard
 
 The **agent-fleet dashboard** (`agent-fleet`, `C-a A`) is the one-view

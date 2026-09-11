@@ -16,7 +16,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
-use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow};
+use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow, SplitHost};
 use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::HostedPlacement;
@@ -92,7 +92,7 @@ pub(super) fn run_action(
     let mut effects = ActionEffects::default();
     let e = &mut effects;
     match resolved.action.as_str() {
-        "split-pane" => split_pane(resolved, ctx, focused, e),
+        "split-pane" => split_pane(resolved, ctx, focused, panes, e),
         "kill-pane" => kill_focused_pane(focused, e),
         "take-input" => take_input(ctx, focused, e),
         "give-input" => give_input(ctx, focused, e),
@@ -144,10 +144,19 @@ pub(super) fn run_action(
 /// `handle_server_frame`'s `ResourceSpawned` arm and
 /// `apply_spawned_ok`. We park a `PendingSplit` keyed by
 /// request id so the reply knows which leaf to split.
+///
+/// phux-c2td.18: splitting a satellite pane spawns the new pane on that
+/// satellite through the attached hub (`SPAWN_RESOURCE.satellite`), at the
+/// focused pane's directory there when the client knows it. The reply
+/// attaches the relayed pane and the split applies only when that attach
+/// succeeds (`server_frame::handler`). A hub without host-aware spawns
+/// ([`split_host`]) spawns the pane on itself, as before, and the reply's
+/// notice says so. A local split is unchanged: no host, no cwd.
 fn split_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
     let Some(dir) = split_dir_arg(resolved) else {
@@ -164,29 +173,59 @@ fn split_pane(
         return;
     };
     let request_id = take_request_id(ctx);
+    let host = split_host(&focused_id, ctx.directory_support);
+    let satellite = match &host {
+        SplitHost::Satellite(satellite) => Some(satellite.clone()),
+        SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
+    };
+    // A local split's cwd inheritance is phux-4li.1; until then the
+    // server picks (typically $HOME). A satellite split starts where the
+    // pane it splits is, on that satellite. `command = None` invokes the
+    // spawning server's default shell; `env = None` inherits its
+    // environment as-is.
+    let cwd = satellite
+        .as_ref()
+        .and_then(|satellite| pane_cwd_on(Some(satellite), Some(&focused_id), panes));
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
         zoom_on_spawn: false,
+        host,
+        adopt: None,
     };
-    // CWD inheritance is phux-4li.1; until then we let the
-    // server pick (typically $HOME). `command = None` invokes
-    // the server's default shell; `env = None` inherits the
-    // server's environment as-is.
     let frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
-        cwd: None,
+        cwd,
         env: None,
         term: None,
-        satellite: None,
+        satellite,
         owner_terminal: None,
         agent_session: None,
         initial_size: predicted_split_size(ctx, &pending),
         resource: None,
     };
     effects.spawn_terminal = Some((request_id, pending, frame));
+}
+
+/// The host a split of `focused` spawns on (phux-c2td.18).
+///
+/// A local pane splits on the attached server. A satellite pane splits on
+/// its satellite when the hub advertises `LIST_DIRECTORY_HOST`, the bit that
+/// shipped with host-aware spawns (`new-window { host }`). A hub without it
+/// may predate `SPAWN_RESOURCE.satellite`, and such a peer skips the
+/// unknown field and spawns on itself, so against it the split stays on the
+/// hub and says so rather than landing somewhere the user did not expect.
+fn split_host(focused: &ResourceId, support: DirectorySupport) -> SplitHost {
+    let Some(host) = focused.host() else {
+        return SplitHost::Attached;
+    };
+    if support == DirectorySupport::HostAware {
+        SplitHost::Satellite(host.clone())
+    } else {
+        SplitHost::AttachedInsteadOf(host.clone())
+    }
 }
 
 /// phux-4li.12: soft-kill — write `exit\n` as a sequence of
@@ -1123,6 +1162,8 @@ fn plugin_pane(
                 // `split-pane` default (vertical divider).
                 dir: SplitDir::Horizontal,
                 zoom_on_spawn: entry.placement == HostedPlacement::Zoomed,
+                host: SplitHost::Attached,
+                adopt: None,
             };
             set_spawn_initial_size(&mut frame, predicted_split_size(ctx, &pending));
             effects.spawn_terminal = Some((request_id, pending, frame));

@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
+use crate::attach::actions::SplitHost;
 use crate::attach::connection::Connection;
 use crate::attach::directory_picker::ListingHost;
 use crate::attach::focus::FocusHistory;
@@ -695,6 +696,99 @@ fn new_window_with_a_host_spawns_on_that_satellite() {
             if cwd == "/home/e/src" && *host == edge()),
         "{frame:?}"
     );
+}
+
+/// `split-pane` with `direction = vertical`.
+fn split_action() -> phux_config::keybind::ResolvedAction {
+    let mut action = bare_action("split-pane");
+    action.args.insert(
+        "direction".to_owned(),
+        toml::Value::String("vertical".into()),
+    );
+    action
+}
+
+/// phux-c2td.18: splitting a satellite pane spawns the new pane on that
+/// satellite through the hub, at the pane's directory there.
+#[test]
+fn split_pane_on_a_satellite_pane_spawns_on_that_satellite_at_its_cwd() {
+    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
+    let effects = run_in(
+        &split_action(),
+        &mut workspace,
+        None,
+        ALL_FEATURES,
+        &[],
+        &panes,
+    );
+    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), satellite: Some(host), .. }
+            if cwd == "/home/e/src" && *host == edge()),
+        "{frame:?}"
+    );
+    assert_eq!(pending.host, SplitHost::Satellite(edge()));
+    assert_eq!(
+        pending.adopt, None,
+        "nothing to attach until the spawn answers"
+    );
+}
+
+/// A local pane's split is what it always was: no host, no cwd, even when
+/// the client knows the pane's directory.
+#[test]
+fn split_pane_on_a_local_pane_is_unchanged() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut slot = PaneSlot::new().expect("pane slot");
+    slot.cwd = Some("/srv/app".to_owned());
+    let panes = HashMap::from([(tid(1), slot)]);
+    let effects = run_in(
+        &split_action(),
+        &mut workspace,
+        None,
+        ALL_FEATURES,
+        &[],
+        &panes,
+    );
+    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    assert!(
+        matches!(
+            &frame,
+            FrameKind::SpawnResource {
+                cwd: None,
+                satellite: None,
+                ..
+            }
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(pending.host, SplitHost::Attached);
+}
+
+/// A hub without host-aware spawns keeps today's split on itself, with no
+/// satellite path, and the parked split remembers which satellite it stands
+/// in for so the reply can say where the pane opened.
+#[test]
+fn split_pane_on_a_satellite_pane_stays_on_an_older_hub() {
+    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
+    let features = ServerFeatureSet::with(&[
+        ServerFeature::SpawnInitialSize,
+        ServerFeature::ListDirectory,
+    ]);
+    let effects = run_in(&split_action(), &mut workspace, None, features, &[], &panes);
+    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    assert!(
+        matches!(
+            &frame,
+            FrameKind::SpawnResource {
+                cwd: None,
+                satellite: None,
+                ..
+            }
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(pending.host, SplitHost::AttachedInsteadOf(edge()));
 }
 
 /// Against a server that never advertised `LIST_DIRECTORY` the action bells

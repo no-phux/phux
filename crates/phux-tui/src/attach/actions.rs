@@ -530,6 +530,48 @@ pub(super) struct PendingSplit {
     /// (`placement = "zoomed"` plugin panes). Built-in `split-pane`
     /// always parks `false` (a split un-zooms, tmux parity).
     pub zoom_on_spawn: bool,
+    /// phux-c2td.18: the host the new pane was asked of. A split on a
+    /// satellite pane spawns on that satellite; against a hub that cannot,
+    /// it spawns here and the reply says so.
+    pub host: SplitHost,
+    /// phux-c2td.18: `Some(pane)` once a satellite spawn has answered and the
+    /// split waits on that pane's `ATTACH_RESOURCE` reply; the split applies
+    /// only when the attach succeeds. `None` while the spawn is in flight.
+    pub adopt: Option<ResourceId>,
+}
+
+/// Which host a parked split's pane is spawned on (phux-c2td.18).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) enum SplitHost {
+    /// The attached server's own host: a split of a local pane.
+    #[default]
+    Attached,
+    /// A satellite, through the attached hub (`SPAWN_RESOURCE.satellite`):
+    /// a split of a pane on that satellite.
+    Satellite(phux_protocol::ids::SatelliteHost),
+    /// The attached server's own host, in place of this satellite, because
+    /// the hub does not advertise host-aware spawns.
+    AttachedInsteadOf(phux_protocol::ids::SatelliteHost),
+}
+
+/// A window or split parked on the `ATTACH_RESOURCE` of a satellite pane: it
+/// opens only when that attach succeeds.
+#[derive(Debug, Clone)]
+pub(super) enum ParkedAdopt {
+    /// A window adopting its pane ([`PendingWindow::adopt`]).
+    Window(PendingWindow),
+    /// A split adopting its pane ([`PendingSplit::adopt`]).
+    Split(PendingSplit),
+}
+
+impl ParkedAdopt {
+    /// The satellite pane whose attach decides this window or split.
+    pub(super) const fn pane(&self) -> Option<&ResourceId> {
+        match self {
+            Self::Window(window) => window.adopt.as_ref(),
+            Self::Split(split) => split.adopt.as_ref(),
+        }
+    }
 }
 
 /// A `new-window` action that emitted a `SPAWN_RESOURCE` and is awaiting
@@ -1123,6 +1165,8 @@ mod tests {
                     focused_at_request: state.focus.clone().expect("focus"),
                     dir,
                     zoom_on_spawn: false,
+                    host: SplitHost::Attached,
+                    adopt: None,
                 };
                 let predicted =
                     predicted_spawn_dims(&state, &pending, content).expect("split is predictable");
@@ -1160,6 +1204,8 @@ mod tests {
             focused_at_request: state.focus.clone().expect("focus"),
             dir: SplitDir::Horizontal,
             zoom_on_spawn: true,
+            host: SplitHost::Attached,
+            adopt: None,
         };
         assert_eq!(
             predicted_spawn_dims(&state, &pending, content),
@@ -1177,6 +1223,8 @@ mod tests {
             focused_at_request: t(1),
             dir: SplitDir::Horizontal,
             zoom_on_spawn: false,
+            host: SplitHost::Attached,
+            adopt: None,
         };
         assert_eq!(
             predicted_spawn_dims(
@@ -1222,6 +1270,8 @@ mod tests {
             focused_at_request: t(1),
             dir: SplitDir::Horizontal,
             zoom_on_spawn: false,
+            host: SplitHost::Attached,
+            adopt: None,
         };
         let new_state = apply_spawned_ok(&state, t(2), &pending).expect("split applies");
         // apply_split sets focus to the freshly added pane.
@@ -1252,6 +1302,8 @@ mod tests {
             focused_at_request: t(2),
             dir: SplitDir::Horizontal,
             zoom_on_spawn: false,
+            host: SplitHost::Attached,
+            adopt: None,
         };
         let new_state =
             apply_spawned_ok(&state, t(99), &pending).expect("split applies against request");
@@ -1273,6 +1325,8 @@ mod tests {
             focused_at_request: t(42),
             dir: SplitDir::Vertical,
             zoom_on_spawn: false,
+            host: SplitHost::Attached,
+            adopt: None,
         };
         let new_state = apply_spawned_ok(&state, t(2), &pending).expect("split applies");
         let leaves = crate::layout::leaves(new_state.tree.as_ref().expect("tree"));
@@ -1345,6 +1399,8 @@ mod tests {
                 focused_at_request: state.focus.clone().expect("focus"),
                 dir,
                 zoom_on_spawn: false,
+                host: SplitHost::Attached,
+                adopt: None,
             };
             state = apply_spawned_ok(&state, t(next_id), &pending).expect("split");
             splits += 1;

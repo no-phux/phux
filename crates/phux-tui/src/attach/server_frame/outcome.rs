@@ -89,12 +89,13 @@ pub(in crate::attach) struct FrameOutcome {
     /// each Terminal so its authoritative snapshot/output stream can populate
     /// a pane slot; this does not alter client-local focus.
     pub(in crate::attach) attach_panes: Vec<ResourceId>,
-    /// Windows for satellite panes this client just spawned through the hub
-    /// (`new-window { host }`). The driver parks each under a fresh request
-    /// id and sends `ATTACH_RESOURCE`; the window opens only when that
-    /// attach succeeds (`handle_window_adopt_reply`), and a refusal bells
-    /// and names the host instead of leaving a blank window.
-    pub(in crate::attach) adopt_windows: Vec<crate::attach::actions::PendingWindow>,
+    /// Windows and splits for satellite panes this client just spawned
+    /// through the hub (`new-window { host }`, `split-pane` on a satellite
+    /// pane). The driver parks each under a fresh request id and sends
+    /// `ATTACH_RESOURCE`; the window opens, or the split applies, only when
+    /// that attach succeeds (`handle_adopt_reply`), and a refusal bells and
+    /// names the host instead of leaving a blank window or a dead split.
+    pub(in crate::attach) adopt_spawned: Vec<crate::attach::actions::ParkedAdopt>,
     /// phux-4li.12: `true` ⇒ the server-side frame mutated layout in
     /// a way the *local* client originated (split landed, kill folded);
     /// the driver should broadcast the new envelope via
