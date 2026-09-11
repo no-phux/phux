@@ -1286,10 +1286,17 @@ pub const Host = struct {
         return sessionsDigest(host.sessions.items, host.sessions_generation) != before;
     }
 
+    /// Everything a switcher row shows of a session: its id and name, and
+    /// the window count and keep-empty flags its Empty session label is
+    /// derived from. A listing peer's session that gains or loses its
+    /// windows keeps its id and name, so without them its row would keep
+    /// the old label until an unrelated repaint.
     fn sessionsDigest(sessions: []const SessionSummary, generation: u64) u64 {
         var hasher = std.hash.Wyhash.init(generation);
         for (sessions) |session| {
             hasher.update(std.mem.asBytes(&session.id));
+            hasher.update(std.mem.asBytes(&session.window_count));
+            hasher.update(&.{ @intFromBool(session.keep_empty), @intFromBool(session.empty) });
             hasher.update(session.name);
             hasher.update(&.{0});
         }
@@ -2076,6 +2083,39 @@ test "session summaries copy every server field and own their names" {
         .attached_client_count = 0,
         .focused = false,
     }));
+}
+
+test "a listing's digest moves when a session gains or loses its windows, not only its name" {
+    // phux-c2td.31: a listing peer's keep-empty session that gains a window
+    // keeps its id and name. The digest hashed only those, so the refresh
+    // reported no change and its row kept the Empty session label.
+    var name = [_]u8{ 's', 'c', 'r', 'a', 't', 'c', 'h' };
+    const empty: SessionSummary = .{
+        .id = 3,
+        .name = &name,
+        .created_at_unix_secs = 0,
+        .window_count = 0,
+        .attached_client_count = 0,
+        .focused = false,
+        .keep_empty = true,
+        .empty = true,
+    };
+    const baseline = Host.sessionsDigest(&.{empty}, 1);
+    try std.testing.expectEqual(baseline, Host.sessionsDigest(&.{empty}, 1));
+
+    var windowed = empty;
+    windowed.window_count = 1;
+    windowed.empty = false;
+    try std.testing.expect(Host.sessionsDigest(&.{windowed}, 1) != baseline);
+    var counted = empty;
+    counted.window_count = 2;
+    try std.testing.expect(Host.sessionsDigest(&.{counted}, 1) != baseline);
+    var unflagged = empty;
+    unflagged.keep_empty = false;
+    try std.testing.expect(Host.sessionsDigest(&.{unflagged}, 1) != baseline);
+    var not_empty = empty;
+    not_empty.empty = false;
+    try std.testing.expect(Host.sessionsDigest(&.{not_empty}, 1) != baseline);
 }
 
 test "grid damage freezes a published canvas until replacement copy" {

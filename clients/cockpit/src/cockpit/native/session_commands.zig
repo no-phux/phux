@@ -41,6 +41,40 @@ pub const Error = error{ InvalidRequest, BufferTooSmall };
 /// The rename sent to one coordinator, on one of its connections.
 pub const Flight = struct { coordinator: support.ProviderId, epoch: u64, request_id: u32 };
 
+/// One rename slot per coordinator Cockpit can hold (the active one and its
+/// peers). A pending rename refuses a second rename on its own coordinator
+/// only: the client holds one rename per connection, and every coordinator
+/// has its own connection. `last` is the coordinator the latest rename went
+/// to, whose outcome `status` reports.
+pub const Flights = struct {
+    pub const capacity: usize = 1 + @import("../model.zig").max_phux_peers;
+
+    slots: [capacity]?Flight = @splat(null),
+    last: ?support.ProviderId = null,
+
+    pub fn of(self: *const Flights, coordinator: support.ProviderId) ?Flight {
+        for (self.slots) |slot| if (slot) |flight| if (flight.coordinator == coordinator) return flight;
+        return null;
+    }
+
+    /// The slot a rename on `coordinator` goes into: that coordinator's own,
+    /// else a free one, else one whose rename can no longer settle
+    /// (`settled(engine, flight)`). Null only if every slot holds another
+    /// coordinator's live rename, which the coordinator bound rules out; it
+    /// is asked before anything is sent.
+    pub fn slotFor(self: *const Flights, coordinator: support.ProviderId, engine: anytype, comptime settled: anytype) ?usize {
+        for (self.slots, 0..) |slot, index| if (slot) |flight| if (flight.coordinator == coordinator) return index;
+        for (self.slots, 0..) |slot, index| if (slot == null) return index;
+        for (self.slots, 0..) |slot, index| if (settled(engine, slot.?)) return index;
+        return null;
+    }
+
+    pub fn put(self: *Flights, index: usize, flight: Flight) void {
+        self.slots[index] = flight;
+        self.last = flight.coordinator;
+    }
+};
+
 pub const Request = struct { kind: Kind, name: []const u8 = "" };
 
 pub fn decode(bytes: []const u8) Error!Request {
@@ -134,7 +168,14 @@ fn rename(engine: anytype, name: []const u8, scratch: *Scratch) Reply {
     const target = engine.renameTarget() orelse return nothing_on_screen;
     const host = hostLabel(engine.model, target.provider);
     var reply: Reply = .{ .phase = .refused, .name = target.name, .host = host };
-    if (engine.rename_flight) |flight| if (flightPending(engine, flight)) {
+    // One rename at a time per coordinator; another coordinator's pending
+    // rename is on another connection and does not refuse this one.
+    const coordinator = target.provider.providerId();
+    if (engine.rename_flights.of(coordinator)) |flight| if (flightPending(engine, flight)) {
+        reply.reason = "A rename is already in progress.";
+        return reply;
+    };
+    const slot = engine.rename_flights.slotFor(coordinator, engine, flightSettled) orelse {
         reply.reason = "A rename is already in progress.";
         return reply;
     };
@@ -153,7 +194,7 @@ fn rename(engine: anytype, name: []const u8, scratch: *Scratch) Reply {
         reply.reason = std.fmt.bufPrint(&scratch.reason, "Could not send the rename to {s}.", .{host}) catch "Could not send the rename.";
         return reply;
     };
-    engine.rename_flight = .{ .coordinator = target.provider.providerId(), .epoch = target.provider.connectionEpoch(), .request_id = request_id };
+    engine.rename_flights.put(slot, .{ .coordinator = coordinator, .epoch = target.provider.connectionEpoch(), .request_id = request_id });
     return outcome(engine, target.provider, request_id, scratch);
 }
 
@@ -166,9 +207,14 @@ fn flightPending(engine: anytype, flight: Flight) bool {
     return info.request_id == flight.request_id and info.status == .pending;
 }
 
+fn flightSettled(engine: anytype, flight: Flight) bool {
+    return !flightPending(engine, flight);
+}
+
 /// The last rename's outcome, read from the coordinator it was sent to.
 fn status(engine: anytype, scratch: *Scratch) Reply {
-    const flight = engine.rename_flight orelse return describe(engine);
+    const coordinator = engine.rename_flights.last orelse return describe(engine);
+    const flight = engine.rename_flights.of(coordinator) orelse return describe(engine);
     const unknown: Reply = .{ .phase = .refused, .reason = "The connection ended before the rename was confirmed." };
     const owner = engine.model.phuxFor(flight.coordinator) orelse return unknown;
     if (owner.connectionEpoch() != flight.epoch) return unknown;

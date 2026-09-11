@@ -794,6 +794,58 @@ test "Rename Session writes to the coordinator that owns the session on screen, 
     try testing.expectEqual(session_commands.Phase.renamed, (try sessionCommand(engine, 3, "", &out)).phase);
 }
 
+test "a pending rename refuses a second rename on its own coordinator only" {
+    // phux-c2td.31: the pending rename was one engine-wide slot, so a rename
+    // still pending on mini refused a rename of This Mac's session as well.
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    try pair.projectBoth();
+    const engine = pair.engine;
+    const model = engine.model;
+    var fx: PeerFx = .{};
+    var out: [session_commands.max_bytes]u8 = undefined;
+
+    // mini's tab is on screen: its rename is sent to mini and stays pending.
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommand(engine, 2, "renamed", &out)).phase);
+    try testing.expect(contains(pair.mini, "fixture\x00renamed").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // This Mac's tab: its rename goes out while mini's is still pending.
+    try testing.expect(model.selectTerminal(try refOn(pair.here, 7)));
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommand(engine, 2, "renamed", &out)).phase);
+    try testing.expect(contains(pair.here, "fixture\x00renamed").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+
+    // A second rename on This Mac, whose rename is still pending, is refused
+    // and nothing is sent to either coordinator.
+    const again = try sessionCommand(engine, 2, "other", &out);
+    try testing.expectEqual(session_commands.Phase.refused, again.phase);
+    try testing.expectEqualStrings("A rename is already in progress.", again.reason);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    // So is a second rename on mini, once its tab is on screen again.
+    try testing.expect(model.selectTerminal(try refOn(pair.mini, 7)));
+    const mini_again = try sessionCommand(engine, 2, "other", &out);
+    try testing.expectEqual(session_commands.Phase.refused, mini_again.phase);
+    try testing.expectEqualStrings("A rename is already in progress.", mini_again.reason);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // Each settles on its own coordinator; status reports the latest rename,
+    // This Mac's, which is still pending until This Mac's server applies it.
+    try feedMini(&pair, &fx, "session_renamed.bin");
+    try testing.expectEqualStrings("renamed", pair.mini.sessionCatalog()[0].name);
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommand(engine, 3, "", &out)).phase);
+    try fixture.stageFixture(pair.here.bridge, "session_renamed.bin");
+    _ = engine.onPhuxChannel(&fx, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try testing.expectEqual(session_commands.Phase.renamed, (try sessionCommand(engine, 3, "", &out)).phase);
+    // mini's rename settled, so mini takes another.
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommand(engine, 2, "third", &out)).phase);
+    try testing.expect(contains(pair.mini, "renamed\x00third").found);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
 test "a refused rename says why and writes nothing; a pane of a coordinator no longer held names nothing" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);

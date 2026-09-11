@@ -220,9 +220,11 @@ pub const Engine = struct {
     /// is not listing. A failure after it stayed listed `peer_retry_stable_ms`
     /// starts its backoff over; an earlier one keeps it growing.
     peer_listed_since: [model_module.max_phux_peers]?std.Io.Timestamp = @splat(null),
-    /// The last Rename Session sent, and to which coordinator's connection
-    /// (session_commands.zig). Its outcome is read from that coordinator only.
-    rename_flight: ?@import("session_commands.zig").Flight = null,
+    /// Each coordinator's last Rename Session, and on which of its
+    /// connections (session_commands.zig): one pending rename per
+    /// coordinator, so a rename on one never refuses a rename on another.
+    /// Each outcome is read from its own coordinator only.
+    rename_flights: @import("session_commands.zig").Flights = .{},
 
     const empty_session = @import("empty_session.zig");
 
