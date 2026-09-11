@@ -26,6 +26,7 @@ const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
+const peer_edits = @import("../peer_edits.zig");
 
 test "projection refusal publishes newly retained completion independently from refusal flag" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -161,6 +162,9 @@ const SplitDrag = struct {
     shared_revision: u64 = 0,
     window_epoch: u64 = 0,
     original_fraction: f32 = 0.5,
+    /// The coordinator whose tab holds the divider; its projection's
+    /// revision is the one `shared_revision` was taken from.
+    authority: ?support.ProviderId = null,
 };
 
 /// Snapshot flag bit reserved for the engine: the last intent was refused
@@ -199,6 +203,8 @@ pub const Engine = struct {
     remote_pointer: @import("shipping_pointer.zig").State = .{},
     /// Go to Directory's listed host, fixed when the picker opens.
     directory_origin: @import("directory_picker.zig").Origin = .{},
+    /// Edits of a showing peer's tabs, queued to that coordinator alone.
+    peer_edits: peer_edits.Edits = .{},
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -909,18 +915,33 @@ pub const Engine = struct {
         return receipt;
     }
 
-    /// Close Tab and Close Pane on a peer's tab go to that coordinator. The
+    /// Edits of a peer's tab (close, close pane, split, reorder) and New Tab
+    /// with a peer's pane focused go to that coordinator (peer_edits). The
     /// active coordinator's correlated queue cannot track another server's
-    /// mutation, so the receipt is applied once it is sent; the peer's next
-    /// publication drops the tab. Null: not a peer operation.
+    /// mutation, so the receipt is applied once the edit is queued there;
+    /// the peer's next publication shows it. A peer that cannot take it
+    /// refuses: the edit never falls through to the active coordinator.
+    /// Null: not a peer operation.
     fn peerOperation(self: *Engine, operation: protocol.Intent) ?tab_commands.Status {
         if (self.model.phux() == null) return null;
         const sent = switch (operation.kind) {
             .close_tab => self.peerCloseTab(operation.argument),
-            .native_command => if (operation.argument == 3) self.peerClosePane() else null,
+            .new_terminal => self.peerCreate(.tab),
+            .native_command => self.peerNativeCommand(operation.argument),
             else => null,
         } orelse return null;
         return if (sent) .applied else .rejected;
+    }
+
+    /// Null when the command does not address a peer's tab or pane.
+    fn peerNativeCommand(self: *Engine, command: u8) ?bool {
+        return switch (command) {
+            3 => self.peerClosePane(),
+            4 => self.peerCreate(.split_right),
+            5 => self.peerCreate(.split_down),
+            8, 9 => self.peerReorderSelected(command == 9),
+            else => null,
+        };
     }
 
     /// Null when the tab is not a peer's.
@@ -933,9 +954,53 @@ pub const Engine = struct {
 
     /// Null when the focused pane is not a peer's.
     fn peerClosePane(self: *Engine) ?bool {
+        _ = self.focusedPeer() orelse return null;
+        return self.closePeerPane(self.model.focusedTerminalRef().?);
+    }
+
+    /// The coordinator of the focused pane, when it is a peer's.
+    fn focusedPeer(self: *const Engine) ?support.ProviderId {
         const ref = self.model.focusedTerminalRef() orelse return null;
         if (support.providerKind(ref) != .phux or self.model.activeOwnsRef(ref)) return null;
-        return self.closePeerPane(ref);
+        return ref.provider_id;
+    }
+
+    /// New Tab or a split with a peer's pane focused: on that peer. Null
+    /// when the focused pane is not a peer's.
+    fn peerCreate(self: *Engine, kind: peer_edits.Kind) ?bool {
+        const coordinator = self.focusedPeer() orelse return null;
+        return self.createOnPeer(coordinator, kind, "", .focused);
+    }
+
+    /// Move a peer's selected tab in that peer's own order. Null when the
+    /// selected tab is not a peer's.
+    fn peerReorderSelected(self: *Engine, right: bool) ?bool {
+        const workspace = self.model.ws();
+        const index = workspace.selected_tab;
+        if (!self.model.foreignTab(workspace, index)) return null;
+        const owner = shared_workspace.tabAuthority(workspace.treeConst(index).?).?;
+        const id = workspace.shared_ids[index] orelse return false;
+        self.peer_edits.reorder(self.model, owner, id, right) catch return false;
+        return true;
+    }
+
+    fn createOnPeer(self: *Engine, coordinator: support.ProviderId, kind: peer_edits.Kind, cwd: []const u8, owner: peer_edits.Owner) bool {
+        self.supersedeSelection();
+        self.peer_edits.create(self.model, coordinator, kind, cwd, owner) catch return false;
+        return true;
+    }
+
+    /// Go to Directory's Open Here on a peer's listing: a new tab on that
+    /// coordinator, owned as `openTabAt` owns the active coordinator's.
+    pub fn openPeerTabAt(self: *Engine, coordinator: support.ProviderId, cwd: []const u8, owner: ?TerminalRef) bool {
+        return self.createOnPeer(coordinator, .tab, cwd, if (owner) |ref| .{ .terminal = ref } else .none);
+    }
+
+    /// Whether a new tab can open on coordinator `id` now: the active one,
+    /// or a peer that is showing a projected session.
+    pub fn opensTabsOn(self: *Engine, id: support.ProviderId) bool {
+        if (self.model.phux()) |active| if (active.providerId() == id) return true;
+        return peer_edits.editable(self.model, id);
     }
 
     fn executeOperation(self: *Engine, id: u64, operation: protocol.Intent, fx: anytype) ?tab_commands.Status {
@@ -985,19 +1050,8 @@ pub const Engine = struct {
         const model = self.model;
         if (model.foreignTab(model.ws(), model.ws().selected_tab)) return error.ForeignCoordinator;
         const id = model.ws().shared_ids[model.ws().selected_tab] orelse return error.StaleTarget;
-        const target = neighborIndex(model.phux().?.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
+        const target = peer_edits.neighborIndex(model.phux().?.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
         try model.shared_mutations.requestReorderCorrelated(model, id, @intCast(target), command_id);
-    }
-
-    /// Where window `id` moves one step left or right in the coordinator's
-    /// order; null at either end or when it is not listed.
-    fn neighborIndex(windows: anytype, id: [16]u8, right: bool) ?usize {
-        for (windows, 0..) |window, index| {
-            if (!std.mem.eql(u8, &window.id, &id)) continue;
-            if ((!right and index == 0) or (right and index + 1 == windows.len)) return null;
-            return if (right) index + 1 else index - 1;
-        }
-        return null;
     }
 
     fn operationSupersedesFocus(operation: protocol.Intent) bool {
@@ -1019,6 +1073,9 @@ pub const Engine = struct {
     fn supersedeSelection(self: *Engine) void {
         self.model.shared_workspace.desired_terminal = null;
         self.creation.supersedeFocus();
+        // A peer's pending placement must not take focus back either.
+        for (&self.model.peer_workspaces) |*state| state.desired_terminal = null;
+        self.peer_edits.supersedeFocus();
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -1194,6 +1251,7 @@ pub const Engine = struct {
     fn peerClosed(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
         const model = self.model;
         model.phuxPeerAt(slot).?.stop();
+        self.peer_edits.forget(slot);
         if (model.phux_peer_reopen[slot]) {
             model.phux_peer_reopen[slot] = false;
             self.openPeerChannel(fx, slot, on_event);
@@ -1206,6 +1264,7 @@ pub const Engine = struct {
     fn failPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
         peer.stop();
+        self.peer_edits.forget(slot);
         self.model.peer_failed[slot] = true;
         fx.closeChannel(support.phuxPeerChannelKey(slot));
         return self.commitProviderChange(true);
@@ -1221,14 +1280,19 @@ pub const Engine = struct {
         var changed = false;
         while (peer.takeOperationResult()) |result| {
             _ = state.completeSubscription(result, peer.workspaceSnapshot().request_id);
+            _ = self.peer_edits.complete(model, slot, result);
             changed = true;
         }
         changed = self.drainNotices(fx, peer) or changed;
         const published = peer.workspaceSnapshot();
         if (published.state == .unavailable) return changed;
         peerProjectionContext(peer, state) catch return changed;
+        // Before projecting, so a confirmed new tab is selected as it lands.
+        changed = self.peer_edits.pump(model, slot) or changed;
         const projected = self.projectPeer(peer, state, published);
-        if (published.status != .pending) state.releaseUnused(model);
+        // A terminal spawned for a new tab or split is not placed yet; it
+        // must not be detached as unused before its placement lands.
+        if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
         state.subscribe(model);
         return projected or changed;
     }
@@ -1323,28 +1387,14 @@ pub const Engine = struct {
         const tree = workspace.treeConst(index) orelse return false;
         const id = workspace.shared_ids[index] orelse return false;
         const owner = shared_workspace.tabAuthority(tree) orelse return false;
-        // Revision and session are the peer's, filled in when addressed.
-        return self.requestPeerMutation(owner, .{ .expected_revision = 0, .session_id = 0, .kind = .remove_window, .window_id = id });
+        self.peer_edits.removeWindow(self.model, owner, id) catch return false;
+        self.supersedeSelection();
+        return true;
     }
 
     /// Close a peer's pane on that coordinator.
     fn closePeerPane(self: *Engine, ref: TerminalRef) bool {
-        const peer = self.model.phuxForRef(ref) orelse return false;
-        const window = @import("../shared_mutations.zig").terminalWindow(peer.workspaceSnapshot(), ref) orelse return false;
-        return self.requestPeerMutation(ref.provider_id, .{ .expected_revision = 0, .session_id = 0, .kind = .remove, .window_id = window, .terminal_ref = ref });
-    }
-
-    /// One layout mutation addressed to the showing peer that owns it,
-    /// against the revision it last published.
-    fn requestPeerMutation(self: *Engine, coordinator: support.ProviderId, mutation: @import("provider_contract").workspace.Mutation) bool {
-        const slot = self.model.peerSlot(coordinator) orelse return false;
-        const peer = self.model.phux_peers[slot].?;
-        if (!peer.showing() or peer.state() != .attached) return false;
-        const published = peer.workspaceSnapshot();
-        var addressed = mutation;
-        addressed.expected_revision = published.revision;
-        addressed.session_id = published.session_id;
-        _ = peer.requestWorkspaceMutation(addressed) catch return false;
+        self.peer_edits.removePane(self.model, ref) catch return false;
         self.supersedeSelection();
         return true;
     }
@@ -1363,6 +1413,9 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return false;
         const peer = self.model.phuxPeerAt(slot) orelse return false;
         if (peer.state() != .new) peer.stop();
+        // The next connection is a new epoch: nothing queued for this one
+        // may reach it.
+        self.peer_edits.forget(slot);
         if (fx.peerChannelLive(slot)) {
             self.model.phux_peer_reopen[slot] = true;
             fx.closeChannel(support.phuxPeerChannelKey(slot));
@@ -1396,6 +1449,7 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
         const state = &model.peer_workspaces[slot];
+        self.peer_edits.forget(slot);
         if (peer.showing()) {
             // Its own tabs, by the id they carry; never another's.
             state.authority = peer.providerId();
@@ -1562,7 +1616,7 @@ pub const Engine = struct {
     /// same model flags the shipping app uses.
     fn newTerminal(self: *Engine) bool {
         const model = self.model;
-        if (model.phux() != null) return self.createDurable(.tab);
+        if (model.phux() != null) return self.peerCreate(.tab) orelse self.createDurable(.tab);
         if (!model.canAddPane()) return false;
         const pane = model.provider.createTerminal() catch {
             model.terminal_limit_refused = true;
@@ -1730,10 +1784,10 @@ pub const Engine = struct {
 
     fn moveSharedTab(self: *Engine, right: bool) bool {
         const model = self.model;
-        if (model.foreignTab(model.ws(), model.ws().selected_tab)) return false;
+        if (self.peerReorderSelected(right)) |sent| return sent;
         const id = model.ws().shared_ids[model.ws().selected_tab] orelse return false;
         const remote = model.phux() orelse return false;
-        const target = neighborIndex(remote.workspaceSnapshot().windows, id, right) orelse return false;
+        const target = peer_edits.neighborIndex(remote.workspaceSnapshot().windows, id, right) orelse return false;
         model.shared_mutations.requestReorderNative(model, id, @intCast(target)) catch return false;
         return true;
     }
@@ -1835,7 +1889,11 @@ pub const Engine = struct {
 
     fn splitFocusedPane(self: *Engine, orientation: layout.Orientation) bool {
         const model = self.model;
-        if (model.phux() != null) return self.createDurable(if (orientation == .horizontal) .split_right else .split_down);
+        if (model.phux() != null) {
+            // A peer's pane splits on that peer.
+            if (self.peerCreate(if (orientation == .horizontal) .split_right else .split_down)) |sent| return sent;
+            return self.createDurable(if (orientation == .horizontal) .split_right else .split_down);
+        }
         if (!model.canAddPane()) return false;
         const tree = model.selectedTree() orelse return false;
         const target = tree.focus;
@@ -2342,12 +2400,25 @@ pub const Engine = struct {
         const workspace = self.model.wsAt(drag.window_index) orelse return null;
         const id = drag.shared_id orelse return workspace.selectedTree();
         if (self.model.window_epochs[drag.window_index] != drag.window_epoch) return null;
-        if (self.model.shared_workspace.revision != drag.shared_revision) return null;
+        if (self.projectionRevision(drag.authority) != drag.shared_revision) return null;
         for (workspace.shared_ids[0..workspace.tab_count], 0..) |candidate, index| {
             const known = candidate orelse continue;
-            if (std.mem.eql(u8, &known, &id)) return &workspace.tabs[index];
+            if (!std.mem.eql(u8, &known, &id)) continue;
+            // Two coordinators may name a window alike: the drag's tab is
+            // the one its own coordinator projected. beginSplitDrag always
+            // records it; a divider implies leaves.
+            if (drag.authority) |authority| if (shared_workspace.tabAuthority(&workspace.tabs[index]) != authority) continue;
+            return &workspace.tabs[index];
         }
         return null;
+    }
+
+    /// The revision of the projection a tab of `authority` came from: a
+    /// peer's own, else the active coordinator's.
+    fn projectionRevision(self: *Engine, authority: ?support.ProviderId) u64 {
+        const id = authority orelse return self.model.shared_workspace.revision;
+        const state = self.model.sharedWorkspaceFor(id) orelse return self.model.shared_workspace.revision;
+        return state.revision;
     }
 
     fn moveSplitDrag(self: *Engine, drag: SplitDrag, point: geometry.PointF) bool {
@@ -2379,9 +2450,15 @@ pub const Engine = struct {
         const ratio = tree.node(drag.node).fraction;
         tree.setFraction(drag.node, drag.original_fraction);
         if (!commit or ratio == drag.original_fraction) return ratio != drag.original_fraction;
-        // Another coordinator's split snaps back rather than reaching this one.
-        if (self.model.foreignTree(tree)) return true;
         const path = @import("../shared_workspace.zig").splitPath(tree, drag.node) catch return false;
+        // Another coordinator's divider resizes on that coordinator; its
+        // projection moves the divider when it confirms. A refusal leaves it
+        // snapped back and names the peer's workspace, never the active one.
+        if (self.model.foreignTree(tree)) {
+            const owner = shared_workspace.tabAuthority(tree) orelse return true;
+            self.peer_edits.resize(self.model, owner, id, path.bits, path.len, ratio) catch {};
+            return true;
+        }
         self.model.shared_mutations.requestResizeNative(self.model, id, path.bits, path.len, ratio) catch {
             self.model.shared_workspace.refused = true;
         };
@@ -2410,6 +2487,7 @@ pub const Engine = struct {
             if (point.x < divider.rect.x or point.x > divider.rect.x + divider.rect.width or
                 point.y < divider.rect.y or point.y > divider.rect.y + divider.rect.height) continue;
             self.model.active_window = window_index;
+            const authority = shared_workspace.tabAuthority(tree);
             self.split_drag = .{
                 .window_id = raw.window_id,
                 .pointer_id = raw.pointer_id,
@@ -2418,9 +2496,10 @@ pub const Engine = struct {
                 .orientation = divider.orientation,
                 .bounds = divider.bounds,
                 .shared_id = workspace.shared_ids[workspace.selected_tab],
-                .shared_revision = self.model.shared_workspace.revision,
+                .shared_revision = self.projectionRevision(authority),
                 .window_epoch = self.model.window_epochs[window_index],
                 .original_fraction = tree.node(divider.node).fraction,
+                .authority = authority,
             };
             return false;
         }

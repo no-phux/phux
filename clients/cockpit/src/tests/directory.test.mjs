@@ -14,13 +14,14 @@ const u32 = n => [n % 256, Math.floor(n / 256) % 256, Math.floor(n / 65536) % 25
 const u16 = n => [n % 256, Math.floor(n / 256)];
 
 /// A `cockpit.directory` reply as the engine encodes it.
-function reply({ status = 2, request = 1, truncated = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '', via = '' } = {}) {
+function reply({ status = 2, request = 1, truncated = false, noOpenHere = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '', via = '' } = {}) {
   const p = bytes(path);
   const q = bytes(query);
   const m = bytes(message);
   const h = bytes(host);
   const v = bytes(via);
-  const out = [1, status, ...u32(request), truncated ? 1 : 0, 0, ...u16(total), ...u16(offset), p.length, ...p, q.length, ...q, rows.length];
+  const flags = (truncated ? 1 : 0) | (noOpenHere ? 2 : 0);
+  const out = [1, status, ...u32(request), flags, 0, ...u16(total), ...u16(offset), p.length, ...p, q.length, ...q, rows.length];
   for (const [index, name, symlink] of rows) {
     const n = bytes(name);
     out.push(...u16(index), symlink ? 1 : 0, n.length, ...n);
@@ -93,21 +94,29 @@ test('a satellite listing names its host in the heading, and a hub that cannot l
   assert.equal(directoryPage(bare.subarray(0, bare.length - 1)), null, 'the via trailer is required');
 });
 
-test('a listing through another coordinator names it, and Open Here says why it cannot, sending nothing', () => {
+test('a listing through another coordinator names it and opens its tab there; one that cannot says why, sending nothing', () => {
   let [model] = opened();
   [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '', scope: 1, host: 'devbox', via: 'mini' }) });
   assert.equal(text(model.dirTitle), 'Go to Directory on devbox via mini');
+  // A peer showing a session takes Open Here: the engine opens it on mini.
   [model] = step(model, { kind: 'directory_loaded', body: reply({ total: 1, rows: [[0, 'src']], scope: 1, host: 'devbox', via: 'mini' }) });
-  assert.equal(model.dirOpenHere, false);
-  assert.match(text(model.dirNotice), /active coordinator only/);
+  assert.equal(model.dirOpenHere, true);
   let cmd;
+  [, cmd] = step(model, { kind: 'dir_here' });
+  assert.ok(directoryCommand(cmd), 'Open Here is sent for the peer listing');
+  // One that cannot take a tab now (flags bit 1) says so and sends nothing.
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ total: 1, rows: [[0, 'src']], scope: 1, host: 'devbox', via: 'mini', noOpenHere: true }) });
+  assert.equal(model.dirOpenHere, false);
+  assert.match(text(model.dirNotice), /cannot open a new tab/);
   [model, cmd] = step(model, { kind: 'dir_here' });
   assert.equal(directoryCommand(cmd), undefined, 'no cockpit.directory request');
   assert.equal(model.dirClosing, false);
-  assert.match(text(model.dirNotice), /active coordinator only/);
+  assert.match(text(model.dirNotice), /cannot open a new tab/);
   // Its own coordinator's home and the host-without-relay form name it too.
   assert.equal(text(directoryTitle(directoryPage(reply({ via: 'mini' })))), 'Go to Directory on mini');
   assert.equal(text(directoryTitle(directoryPage(reply({ scope: 2, host: 'devbox', via: 'mini' })))), 'Go to Directory on mini, not devbox');
+  // The truncated bit alone never hides Open Here.
+  assert.equal(directoryPage(reply({ truncated: true })).openHere, true);
   // The active coordinator's listing keeps Open Here.
   [model] = opened();
   [model] = step(model, { kind: 'directory_loaded', body: LISTED });

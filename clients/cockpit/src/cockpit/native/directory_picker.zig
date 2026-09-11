@@ -10,12 +10,12 @@
 //!            5 open a new tab in the listed directory (`index` 0xffff) or
 //!            in entry `index`
 //!   reply    version=1, status:u8, request_id:u32, flags:u8 (bit 0
-//!            truncated), error:u8, total:u16, offset:u16, path_len:u8,
-//!            path, query_len:u8, query, count:u8, rows (index:u16,
-//!            flags:u8 bit 0 symlink, name_len:u8, name), message_len:u8,
-//!            message, scope:u8 (Scope), host_len:u8, host, via_len:u8, via
-//!            (the coordinator the listing came through when it is not the
-//!            active one; Open Here is unavailable then)
+//!            truncated, bit 1 Open Here unavailable), error:u8, total:u16,
+//!            offset:u16, path_len:u8, path, query_len:u8, query, count:u8,
+//!            rows (index:u16, flags:u8 bit 0 symlink, name_len:u8, name),
+//!            message_len:u8, message, scope:u8 (Scope), host_len:u8, host,
+//!            via_len:u8, via (the coordinator the listing came through when
+//!            it is not the active one, for the heading)
 //!
 //! The listing itself is the connected server's (LIST_DIRECTORY,
 //! docs/spec/L3.md section 4), retained by the one Phux provider's client, so
@@ -101,8 +101,16 @@ pub fn handle(engine: anytype, payload: []const u8, out: []u8) Error![]const u8 
         .parent => try parent(engine, remote, request),
         .here => try openHere(engine, remote, request),
     }
-    return encodePage(engine.model, remote, &engine.directory_origin, request, out);
+    const open_here = engine.opensTabsOn(engine.directory_origin.coordinator);
+    return encodePage(engine.model, remote, &engine.directory_origin, open_here, request, out);
 }
+
+/// Reply flag bits.
+pub const flag_truncated: u8 = 1 << 0;
+/// The listing's coordinator cannot take a new tab now (a peer that is not
+/// showing a projected session): no Open a new tab here row, and the core
+/// says so instead of sending one.
+pub const flag_open_here_unavailable: u8 = 1 << 1;
 
 const no_coordinator = "Go to Directory needs a Phux coordinator";
 
@@ -132,7 +140,7 @@ fn focusedCoordinator(model: *Model) ?support.ProviderId {
 }
 
 /// The coordinator a listing came through, when it is not the active one:
-/// its tabs cannot be opened here, and the heading names it.
+/// the heading names it.
 fn viaLabel(model: *const Model, origin: *const Origin) []const u8 {
     if (origin.coordinator == model.attachmentAuthority()) return "";
     return projection.peerHostLabel(model, origin.coordinator);
@@ -254,11 +262,14 @@ fn parent(engine: anytype, remote: anytype, request: Request) Error!void {
 /// was opened over owns the spawn, so the provider routes it through the
 /// hub's satellite relay (SPAWN_RESOURCE.satellite). A coordinator listing's
 /// tab has no owner, so no focused satellite route can carry its directory
-/// to another host.
+/// to another host. Either way it opens on the coordinator the listing came
+/// through: the active one, or the peer whose pane was focused
+/// (Engine.openPeerTabAt). A coordinator that cannot take a tab now is
+/// refused (`OtherCoordinator`), never replaced by another: the directory
+/// names a path on its machine.
 fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
-    // New tabs open on the active coordinator only; another coordinator's
-    // directory would name a path on the wrong machine.
-    if (viaLabel(engine.model, &engine.directory_origin).len != 0) return error.OtherCoordinator;
+    const origin = &engine.directory_origin;
+    if (!engine.opensTabsOn(origin.coordinator)) return error.OtherCoordinator;
     const info = try currentInfo(remote, request.request_id);
     if (info.status != .listed) return error.StaleListing;
     var buffer: [max_path_bytes]u8 = undefined;
@@ -266,8 +277,12 @@ fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
         copyPath(info.path, &buffer) orelse return error.Refused
     else
         try entryPath(remote, info.path, request.index, &buffer);
-    const owner = if (engine.directory_origin.scope == .satellite) engine.directory_origin.terminal else null;
-    if (!engine.openTabAt(path, owner)) return error.Refused;
+    const owner = if (origin.scope == .satellite) origin.terminal else null;
+    const opened = if (origin.coordinator == engine.model.attachmentAuthority())
+        engine.openTabAt(path, owner)
+    else
+        engine.openPeerTabAt(origin.coordinator, path, owner);
+    if (!opened) return error.Refused;
 }
 
 /// Listed: the server's lexical parent. Refused: the attempted path's, so a
@@ -338,12 +353,15 @@ fn wireStatus(status: anytype) Status {
     };
 }
 
-fn encodePage(model: *const Model, remote: anytype, origin: *const Origin, request: Request, out: []u8) Error![]const u8 {
+fn encodePage(model: *const Model, remote: anytype, origin: *const Origin, open_here: bool, request: Request, out: []u8) Error![]const u8 {
     const info = remote.directoryInfo();
     const via = viaLabel(model, origin);
-    const page = collect(remote, info, request.query, request.offset, via.len == 0);
+    const page = collect(remote, info, request.query, request.offset, open_here);
+    var flags: u8 = 0;
+    if (info.truncated) flags |= flag_truncated;
+    if (!open_here) flags |= flag_open_here_unavailable;
     var writer: Writer = .{ .out = out };
-    try writer.header(wireStatus(info.status), info.request_id, info.truncated, @intCast(@min(info.error_code, 255)), page.total, request.offset);
+    try writer.header(wireStatus(info.status), info.request_id, flags, @intCast(@min(info.error_code, 255)), page.total, request.offset);
     try writer.text(info.path, max_text_bytes);
     try writer.text(request.query, max_query_bytes);
     try writer.byte(@intCast(page.count));
@@ -361,7 +379,7 @@ fn encodePage(model: *const Model, remote: anytype, origin: *const Origin, reque
 
 fn encodeNotice(status: Status, message: []const u8, request: Request, out: []u8) Error![]const u8 {
     var writer: Writer = .{ .out = out };
-    try writer.header(status, 0, false, 0, 0, request.offset);
+    try writer.header(status, 0, 0, 0, 0, request.offset);
     try writer.text("", max_text_bytes);
     try writer.text(request.query, max_query_bytes);
     try writer.byte(0);
@@ -387,13 +405,13 @@ const Writer = struct {
         try self.byte(@intCast(value >> 8));
     }
 
-    fn header(self: *Writer, status: Status, request_id: u32, truncated: bool, error_code: u8, total: usize, offset: u16) Error!void {
+    fn header(self: *Writer, status: Status, request_id: u32, flags: u8, error_code: u8, total: usize, offset: u16) Error!void {
         try self.byte(version);
         try self.byte(@intFromEnum(status));
         var id: [4]u8 = undefined;
         std.mem.writeInt(u32, &id, request_id, .little);
         for (id) |value| try self.byte(value);
-        try self.byte(@intFromBool(truncated));
+        try self.byte(flags);
         try self.byte(error_code);
         try self.u16le(@intCast(@min(total, std.math.maxInt(u16))));
         try self.u16le(offset);

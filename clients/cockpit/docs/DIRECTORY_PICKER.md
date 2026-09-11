@@ -116,7 +116,7 @@ Every reply is the page that the action leaves behind:
 | version | 1 |
 | status | 0 unsupported, 1 pending, 2 listed, 3 refused, 4 unknown, 5 unavailable |
 | request ID | u32, the listing the rows belong to |
-| flags | bit 0: truncated |
+| flags | bit 0: truncated; bit 1: Open Here unavailable (the listing's coordinator cannot take a new tab now) |
 | error | the wire DirectoryErrorCode when refused |
 | total, offset | u16 each: matching rows, and the echoed offset |
 | path | length u8, then the path, elided at 240 bytes |
@@ -125,7 +125,7 @@ Every reply is the page that the action leaves behind:
 | message | length u8, then the server's text, elided at 240 bytes |
 | scope | u8: 0 the coordinator, 1 a satellite, 2 the coordinator in place of a satellite |
 | host | length u8, then the satellite the picker was opened over (empty for scope 0) |
-| via | length u8, then the coordinator the listing came through, when it is not the active one (empty otherwise) |
+| via | length u8, then the coordinator the listing came through, when it is not the active one (empty otherwise), for the heading |
 
 ### Panes of another coordinator
 
@@ -137,10 +137,16 @@ satellite name is only ever resolved by the hub that relays that pane: two
 coordinators that both federate a `devbox` never answer for each other. A
 listing through a coordinator other than the active one names it (`via`):
 the heading reads "Go to Directory on <satellite> via <coordinator>", or
-"on <coordinator>" for its own host. New tabs open on the active coordinator
-only, so such a listing has no Open a new tab here row, the Open Here button
-says so instead of sending anything, and the engine refuses one that arrives
-anyway (`OtherCoordinator`). A refused Open Here is reported as the terminal
+"on <coordinator>" for its own host. Open a new tab here opens on the
+coordinator the listing came through: on a peer's listing, the tab opens on
+that peer (`Engine.openPeerTabAt`, see
+[Remote hosts](REMOTE_HOSTS.md#listing-and-showing)), owned by the satellite
+pane when it lists a satellite. A peer that cannot take a tab now (it is not
+showing a projected session) sets flags bit 1: the listing has no Open a new
+tab here row, the Open Here button says so instead of sending anything, and
+the engine refuses one that arrives anyway (`OtherCoordinator`). It never
+opens the tab on another coordinator instead, since the directory names a
+path on that peer's machine. A refused Open Here is reported as the terminal
 limit only when capacity refused it.
 
 Row index 0xffff is "Open a new tab here" and 0xfffe is `..`; the core

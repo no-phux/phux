@@ -1061,9 +1061,11 @@ pub fn isCapacityError(err: anyerror) bool {
         err == error.TabCapacity or err == error.OperationCapacity;
 }
 
-/// New Tab and New Window with another coordinator's pane focused open on the
-/// active coordinator without an owner. A split of that pane is refused: its
-/// new pane would belong to the other coordinator's tab.
+/// New Window with another coordinator's pane focused opens on the active
+/// coordinator without an owner. New Tab and splits of that pane go to that
+/// coordinator (Engine.peerCreate, peer_edits) before reaching here; a split
+/// that reaches here anyway is refused: its new pane would belong to the
+/// other coordinator's tab.
 fn focusedOwner(model: *const Model, kind: Kind) !?TerminalRef {
     const ref = model.focusedTerminalRef() orelse return null;
     if (support.providerKind(ref) == .phux and !model.activeOwnsRef(ref)) {

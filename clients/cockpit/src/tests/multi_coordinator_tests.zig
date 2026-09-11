@@ -17,6 +17,12 @@ const picker = @import("../cockpit/native/directory_picker.zig");
 const remote_commands = @import("../cockpit/native/remote_presentation_commands.zig");
 const shipping_pointer = @import("../cockpit/native/shipping_pointer.zig");
 const update_module = @import("../cockpit/update.zig");
+const protocol = @import("../cockpit/native/ts_protocol.zig");
+const scene = @import("../cockpit/native/scene.zig");
+const projection = @import("../cockpit/native/workspace_projection.zig");
+const layout = @import("../cockpit/layout.zig");
+const shared_workspace = @import("../cockpit/shared_workspace.zig");
+const geometry = native_sdk.geometry;
 
 const testing = std.testing;
 const targets = navigation.targets;
@@ -26,19 +32,22 @@ const TerminalRef = support.TerminalRef;
 
 /// Wire type bytes after the 4-byte length prefix (phux-protocol frame/mod.rs).
 const type_attach: u8 = 0x02;
+const type_spawn: u8 = 0x22;
 const type_command: u8 = 0x31;
 
-fn countFrames(provider: *support.PhuxProvider) struct { total: usize, attach: usize, command: usize } {
+fn countFrames(provider: *support.PhuxProvider) struct { total: usize, attach: usize, command: usize, spawn: usize } {
     var total: usize = 0;
     var attach: usize = 0;
     var command: usize = 0;
+    var spawn: usize = 0;
     while (provider.bridge.outgoing.take()) |frame| {
         defer provider.bridge.outgoing.release(frame);
         total += 1;
         if (frame[4] == type_attach) attach += 1;
         if (frame[4] == type_command) command += 1;
+        if (frame[4] == type_spawn) spawn += 1;
     }
-    return .{ .total = total, .attach = attach, .command = command };
+    return .{ .total = total, .attach = attach, .command = command, .spawn = spawn };
 }
 
 fn refOn(provider: *const support.PhuxProvider, id: u32) !TerminalRef {
@@ -358,14 +367,17 @@ test "Go to Directory over a peer's satellite pane asks that peer, even when bot
     const page = try picker.handle(engine, pickerRequest(.page, 1, &request), &out);
     try testing.expect(std.mem.indexOf(u8, page, "devbox") != null);
     try testing.expect(std.mem.endsWith(u8, page, "\x04mini"));
-    // No Open Here row on another coordinator's listing, and Open Here is
-    // refused without spawning anywhere.
-    try testing.expect(std.mem.indexOf(u8, page, "\xff\xff") == null);
+    // mini shows a projected session, so its listing offers Open Here: the
+    // tab would open on mini.
+    try testing.expect(std.mem.indexOf(u8, page, "\xff\xff") != null);
     // The drain's own subscription frames are not the question here.
     _ = countFrames(pair.mini);
     _ = countFrames(pair.here);
-    try testing.expectError(error.OtherCoordinator, picker.handle(engine, pickerRequest(.here, 1, &request), &out));
+    // Its satellite pane is not attached, so Open Here is refused rather
+    // than opened ownerless, and nothing reaches either coordinator.
+    try testing.expectError(error.Refused, picker.handle(engine, pickerRequest(.here, 1, &request), &out));
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
 
@@ -481,4 +493,231 @@ test "a catalog target resolves only against the coordinator that minted it" {
     try testing.expect(decoded.resolve(model) == null);
     try testing.expect(model.locateTerminal(mini7) == null);
     try testing.expect(here_target.resolve(model) != null);
+}
+
+// ------------------------------------------ edits of a peer's tabs (peer_edits)
+
+fn intent(engine: *ts_engine.Engine, kind: protocol.IntentKind, argument: u8) bool {
+    const bytes = protocol.encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .argument = argument, .window = 255 });
+    return engine.applyIntent(&bytes, &ts_engine.NoShells{});
+}
+
+/// mini's own published workspace projected beside the others and its tab
+/// selected, so mini's terminal 7 is the focused pane.
+fn showMini(pair: *Pair) !void {
+    const model = pair.engine.model;
+    model.peer_workspaces[0].authority = pair.mini.providerId();
+    _ = try model.peer_workspaces[0].apply(model, pair.mini.workspaceSnapshot(), pair.mini.connectionEpoch());
+    try testing.expect(model.selectTerminal(try refOn(pair.mini, 7)));
+    _ = countFrames(pair.here);
+    _ = countFrames(pair.mini);
+}
+
+fn drainMini(pair: *Pair, fx: *PeerFx) void {
+    _ = pair.engine.onPeerChannel(fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null);
+}
+
+fn feedMini(pair: *Pair, fx: *PeerFx, name: []const u8) !void {
+    try fixture.stageFixture(pair.mini.bridge, name);
+    drainMini(pair, fx);
+}
+
+/// A canonical workspace reply with only its request correlation changed,
+/// staged on mini, as durable_creation_tests stages them for the active
+/// coordinator: mini's host issued the same request sequence.
+fn miniWorkspaceReply(pair: *Pair, name: []const u8, expected: u32, request: u32) !void {
+    const path = try std.fmt.allocPrint(testing.allocator, "src/providers/phux/fixtures/{s}", .{name});
+    defer testing.allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
+    try testing.expectEqual(0x8000_0000 + expected, std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
+    try testing.expect(pair.mini.bridge.incoming.stage(bytes));
+}
+
+/// Whether mini's own edit queue holds a mutation of `kind` it has sent.
+/// Frame totals are not the measure: focus follows the focused pane.
+fn miniSent(engine: *ts_engine.Engine, kind: @FieldType(shared.Mutation, "kind")) bool {
+    for (engine.peer_edits.mutations[0].pending) |slot| {
+        const entry = slot orelse continue;
+        if (entry.mutation.kind == kind and entry.mutation_request != 0) return true;
+    }
+    return false;
+}
+
+/// The coordinator of the tab holding `ref`.
+fn tabOwner(model: *model_module.Model, ref: TerminalRef) ?contract.ProviderId {
+    const place = model.locateTerminal(ref) orelse return null;
+    return shared_workspace.tabAuthority(&model.wsAt(place.window).?.tabs[place.tab]);
+}
+
+test "New Tab, reorder and split with a peer's pane focused go to that peer and to no other" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+
+    // New Tab: a SPAWN on mini. This Mac's coordinator hears nothing and
+    // holds no creation of its own.
+    try testing.expect(intent(engine, .new_terminal, 0));
+    try testing.expectEqual(@as(usize, 1), countFrames(pair.mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+
+    // mini spawns terminal 8 and publishes it live; its placement is asked
+    // of mini alone, refresh then add, as the active coordinator's is.
+    try feedMini(&pair, &fx, "spawn-local.bin");
+    try feedMini(&pair, &fx, "local-ready.bin");
+    try testing.expect(countFrames(pair.mini).total >= 1);
+    try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
+    try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
+    drainMini(&pair, &fx);
+    try miniWorkspaceReply(&pair, "workspace_add_metadata.bin", 14, 5);
+    try miniWorkspaceReply(&pair, "workspace_add_state.bin", 13, 4);
+    drainMini(&pair, &fx);
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    // The new tab is mini's and has focus.
+    const mini7 = try refOn(pair.mini, 7);
+    const mini8 = try refOn(pair.mini, 8);
+    try testing.expectEqual(pair.mini.providerId(), tabOwner(model, mini8).?);
+    try testing.expect(model.focusedTerminalRef().?.eql(mini8));
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expect(!model.peer_workspaces[0].refused);
+    _ = countFrames(pair.mini);
+
+    // Reorder: mini's first window moves right in mini's own order.
+    try testing.expect(model.selectTerminal(mini7));
+    try testing.expect(!miniSent(engine, .reorder));
+    try testing.expect(intent(engine, .native_command, @intFromEnum(protocol.NativeCommand.move_tab_right)));
+    try testing.expect(miniSent(engine, .reorder));
+    try testing.expect(countFrames(pair.mini).command >= 1);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expect(!model.shared_workspace.refused);
+
+    // Split of mini's pane: a SPAWN on mini, owned by that pane.
+    try testing.expect(intent(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    try testing.expectEqual(@as(usize, 1), countFrames(pair.mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+}
+
+test "a split of a peer's pane lands on that peer, and dragging its divider resizes it there" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try showMini(&pair);
+    var fx: PeerFx = .{};
+
+    try testing.expect(intent(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    try testing.expectEqual(@as(usize, 1), countFrames(pair.mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try feedMini(&pair, &fx, "spawn-local.bin");
+    try feedMini(&pair, &fx, "local-ready.bin");
+    try miniWorkspaceReply(&pair, "workspace_rename_metadata.bin", 5, 3);
+    try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
+    drainMini(&pair, &fx);
+    try miniWorkspaceReply(&pair, "workspace_split_metadata.bin", 8, 5);
+    try miniWorkspaceReply(&pair, "workspace_split_state.bin", 7, 4);
+    drainMini(&pair, &fx);
+    const tree = model.selectedTree().?;
+    try testing.expectEqual(@as(usize, 2), tree.paneCount());
+    try testing.expectEqual(pair.mini.providerId(), shared_workspace.tabAuthority(tree).?);
+    try testing.expect(model.focusedTerminalRef().?.eql(try refOn(pair.mini, 8)));
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+
+    // Size the window, then drag the divider between mini's two panes.
+    engine.pumpViewports(&fx, .{ .label = scene.canvas_label, .size = geometry.SizeF.init(980, 640) });
+    _ = countFrames(pair.mini);
+    _ = countFrames(pair.here);
+    const workspace = model.ws();
+    const chrome = projection.workspaceChromeIn(model, workspace, workspace.surface_size);
+    var dividers: [layout.max_panes - 1]layout.Divider = undefined;
+    const count = tree.dividers(chrome.content, projection.split_divider_width, projection.split_pane_min_width, projection.split_pane_min_height, &dividers);
+    try testing.expectEqual(@as(usize, 1), count);
+    const x = dividers[0].rect.x + dividers[0].rect.width / 2;
+    const y = dividers[0].rect.y + dividers[0].rect.height / 2;
+    const none = ts_engine.NoShells{};
+    try testing.expect(!miniSent(engine, .resize));
+    _ = engine.onPointer(&none, .{ .label = scene.canvas_label, .kind = .pointer_down, .pointer_id = 1, .x = x, .y = y });
+    try testing.expect(engine.split_drag != null);
+    _ = engine.onPointer(&none, .{ .label = scene.canvas_label, .kind = .pointer_drag, .pointer_id = 1, .x = x - 120, .y = y });
+    _ = engine.onPointer(&none, .{ .label = scene.canvas_label, .kind = .pointer_up, .pointer_id = 1, .x = x - 120, .y = y });
+    try testing.expect(engine.split_drag == null);
+    // The resize went to mini; This Mac heard nothing, and neither
+    // coordinator's workspace is marked refused.
+    try testing.expect(miniSent(engine, .resize));
+    try testing.expect(countFrames(pair.mini).command >= 1);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expect(!model.peer_workspaces[0].refused);
+}
+
+test "Open Here on a peer's listing opens the tab on that peer" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.startWith("hello_directory_host.bin");
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    try showMini(&pair);
+    var request: [11]u8 = undefined;
+    var out: [picker.max_bytes]u8 = undefined;
+    _ = try picker.handle(engine, pickerRequest(.open, 0, &request), &out);
+    try testing.expectEqual(pair.mini.providerId(), engine.directory_origin.coordinator);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try fixture.stageFixture(pair.mini.bridge, "directory_listing.bin");
+    var fx: PeerFx = .{};
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null));
+    const page = try picker.handle(engine, pickerRequest(.page, 1, &request), &out);
+    try testing.expect(std.mem.indexOf(u8, page, "\xff\xff") != null);
+    try testing.expectEqual(@as(u8, 0), page[6] & picker.flag_open_here_unavailable);
+    _ = countFrames(pair.mini);
+    _ = countFrames(pair.here);
+
+    _ = try picker.handle(engine, pickerRequest(.here, 1, &request), &out);
+    // One SPAWN, on mini; This Mac's coordinator hears nothing.
+    try testing.expectEqual(@as(usize, 1), countFrames(pair.mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+}
+
+test "an edit of a peer that cannot take one is refused and reaches no coordinator" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    // mini's pane is focused, but mini's workspace is not projected for this
+    // connection: New Tab and a split are refused, never sent to This Mac.
+    const tree = engine.model.selectedTree().?;
+    const replaced = tree.nodes[tree.focus].terminal;
+    defer tree.nodes[tree.focus].terminal = replaced;
+    tree.nodes[tree.focus].terminal = try refOn(pair.mini, 7);
+    _ = countFrames(pair.here);
+    _ = countFrames(pair.mini);
+    try testing.expect(!intent(engine, .new_terminal, 0));
+    try testing.expect(!intent(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    // No SPAWN or request reached mini (its focus event is input, not an
+    // edit), and nothing at all reached This Mac.
+    const refused = countFrames(pair.mini);
+    try testing.expectEqual(@as(usize, 0), refused.spawn);
+    try testing.expectEqual(@as(usize, 0), refused.command);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
+    // Standing by, it takes no edit either.
+    pair.mini.standBy();
+    try testing.expect(!intent(engine, .new_terminal, 0));
+    const standing = countFrames(pair.mini);
+    try testing.expectEqual(@as(usize, 0), standing.spawn);
+    try testing.expectEqual(@as(usize, 0), standing.command);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
 }

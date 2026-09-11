@@ -56,8 +56,12 @@ export interface DirectoryPage {
   readonly scope: number;
   readonly host: Uint8Array;
   /// The coordinator the listing came through when it is not the active
-  /// one; a new tab cannot open in its directories.
+  /// one, for the heading.
   readonly via: Uint8Array;
+  /// Whether Open a new tab here can open one now (reply flags bit 1 clear):
+  /// the listing's coordinator is the active one, or a peer showing a
+  /// session. The tab opens on that coordinator.
+  readonly openHere: boolean;
 }
 
 export const NO_DIRECTORY_REQUEST = new Uint8Array(4);
@@ -126,6 +130,7 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
     scope: bytes[messageEnd],
     host: bytes.subarray(messageEnd + 2, hostEnd),
     via: bytes.subarray(hostEnd + 1, viaEnd),
+    openHere: (bytes[6] & 2) === 0,
   };
 }
 
@@ -177,8 +182,8 @@ function viaTitle(page: DirectoryPage): Uint8Array {
   return join(asciiBytes("Go to Directory on "), page.via, new Uint8Array(0));
 }
 
-/// What Open Here says on a listing through another coordinator.
-export const DIR_OTHER_COORDINATOR_NOTICE = "New tabs open on the active coordinator only. Enter browses.";
+/// What Open Here says when the listing's coordinator cannot take a tab now.
+export const DIR_OPEN_HERE_UNAVAILABLE_NOTICE = "This host cannot open a new tab right now. Enter browses.";
 
 /// The notice under the list for one settled or waiting page.
 export function directoryNotice(page: DirectoryPage): Uint8Array {
@@ -187,7 +192,7 @@ export function directoryNotice(page: DirectoryPage): Uint8Array {
   if (page.status === DIR_STATUS_UNKNOWN) return asciiBytes("The connection ended before the listing arrived. Try again.");
   if (page.status !== DIR_STATUS_LISTED) return page.message.length > 0 ? page.message : asciiBytes("Directory listing unavailable. Try again.");
   if (page.total === 0) return asciiBytes("No matching directories");
-  if (page.via.length > 0) return asciiBytes(DIR_OTHER_COORDINATOR_NOTICE);
+  if (!page.openHere) return asciiBytes(DIR_OPEN_HERE_UNAVAILABLE_NOTICE);
   if (page.truncated) return asciiBytes("Enter to open  /  Showing the first 1024 directories");
   return asciiBytes("Enter to open  /  Escape to cancel");
 }

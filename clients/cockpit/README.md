@@ -708,10 +708,10 @@ Cockpit** workflow against the existing draft tag.
   session, and terminal identity. Unavailable or mismatched attachments remain
   pending; Cockpit does not invent replacement work. Satellite restoration
   also requires matching route-incarnation evidence.
-- At most four Phux coordinators at once. New tabs, splits and the
-  available-terminal inventory belong to the active coordinator; a peer's
-  shown tabs are used in place. See
-  [Remote hosts](docs/REMOTE_HOSTS.md#known-limits).
+- At most four Phux coordinators at once. A shown peer's tabs are edited on
+  that peer (splits, reorder, close, New Tab with its pane focused); New
+  Window and the available-terminal inventory belong to the active
+  coordinator. See [Remote hosts](docs/REMOTE_HOSTS.md#known-limits).
 - Ephemeral local PTY restoration restores layout and working directories,
   not the former processes or scrollback. Phux-backed work survives in its
   coordinator independently of the app; see

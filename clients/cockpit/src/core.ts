@@ -33,7 +33,7 @@ import {
   directoryRowLabel,
   directoryNotice,
   directoryTitle,
-  DIR_OTHER_COORDINATOR_NOTICE,
+  DIR_OPEN_HERE_UNAVAILABLE_NOTICE,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -220,7 +220,8 @@ export interface Model {
   readonly dirNotice: Uint8Array;
   /// The picker's heading: names the satellite a listing comes from.
   readonly dirTitle: Uint8Array;
-  /// Open Here can open a tab in this listing (the active coordinator's).
+  /// Open Here can open a tab in this listing, on the coordinator it came
+  /// through (the active one, or a peer showing a session).
   readonly dirOpenHere: boolean;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
@@ -749,7 +750,7 @@ function showDirectory(model: Model, page: DirectoryPage): Model {
   const rows = directoryRows(page);
   const shown: Model = { ...model, dirRequest: page.request, dirStarting: false, dirBusy: false,
     dirAwaiting: page.status === DIR_STATUS_PENDING, dirRows: rows, dirCursor: 0,
-    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page), dirOpenHere: page.via.length === 0,
+    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page), dirOpenHere: page.openHere,
     dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total, dirNotice: directoryNotice(page) };
   return highlightDirectory(shown, Math.min(model.dirCursor, rows.length - 1));
 }
@@ -822,8 +823,8 @@ function activateDirectory(model: Model, index: number): DirectoryDecision {
   if (model.dirBusy || model.dirStarting) return unchangedDirectory(model);
   const row = index >= 0 && index <= 65535 ? Math.trunc(index) : 0;
   if (row === DIR_UP) return startDirectoryListing(model, DIR_KIND_PARENT, 0);
-  // A listing through another coordinator: say so, and send nothing.
-  if (row === DIR_HERE && !model.dirOpenHere) return unchangedDirectory({ ...model, dirNotice: asciiBytes(DIR_OTHER_COORDINATOR_NOTICE) });
+  // A listing whose coordinator cannot take a tab now: say so, send nothing.
+  if (row === DIR_HERE && !model.dirOpenHere) return unchangedDirectory({ ...model, dirNotice: asciiBytes(DIR_OPEN_HERE_UNAVAILABLE_NOTICE) });
   if (row === DIR_HERE) {
     return directoryDecision({ ...model, dirBusy: true, dirClosing: true, dirNotice: asciiBytes("Opening a new tab...") },
       directoryRequest(DIR_KIND_HERE, model.dirRequest, model.dirOffset, DIR_HERE, model.dirQuery), false);

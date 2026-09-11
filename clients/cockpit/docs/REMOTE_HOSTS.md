@@ -199,11 +199,24 @@ closed, or its session has no windows) it returns to listing
 (`Engine.settlePeers`, after every native mutation and channel wake): its
 tabs leave and only its connection restarts as a standby, so the attach and
 every viewport it held end and the new connection asks GET_STATE. Picking
-one of its sessions shows it again. Close Tab and Close Pane on a peer's
-tab go to that coordinator as the same layout-only removal the active
-coordinator's tabs send to theirs; its terminals keep running there. Go to
-Directory over a peer's pane lists through that peer (see
-[Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)).
+one of its sessions shows it again.
+
+Every edit of a peer's tab goes to that coordinator and to no other
+(`src/cockpit/peer_edits.zig`): Close Tab and Close Pane (the same
+layout-only removal the active coordinator's tabs send to theirs; its
+terminals keep running there), splits, reordering within its own order, and
+a divider drag. New Tab with one of its panes focused opens on it, and so
+does Open a new tab here on a directory listing made through it (see
+[Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)). Each
+peer has its own edit queue, with the checks the active coordinator's queue
+makes: connection, session, revision, target, and one edit at a time. A new
+tab or split spawns on the peer first and is placed once its terminal
+publishes live, and the confirmed placement selects it unless the user has
+chosen something else meanwhile. A peer that is not showing a projected
+session takes no edit, and the edit is refused rather than sent anywhere
+else. A refused peer edit names that peer's workspace on its switcher rows,
+never the active coordinator's. A restart, failure or removal of the peer
+forgets its queued edits; one already sent may still land on that server.
 
 | Action | Active | Peers |
 |---|---|---|
@@ -237,14 +250,10 @@ projected reads "workspace unavailable" on its session rows.
   fifth is refused with a reason.
 - Disconnect removes every registered host, not one of several. Only the
   most recently connected host is remembered for relaunch.
-- New tabs, splits and the available-terminal inventory belong to the active
-  coordinator. A showing peer's panes are typed into, selected, searched and
-  sized on their own host, and its tabs and panes close there. Split,
-  reorder and split-drag on a peer's tab are refused (a split-drag snaps
-  back), without marking the active coordinator's workspace refused. New Tab
-  with a peer's pane focused opens on the active coordinator. Go to
-  Directory over a peer's pane lists that peer's host, but cannot open a tab
-  there.
+- New Window and the available-terminal inventory belong to the active
+  coordinator, whichever pane is focused. A peer's edit receipt is applied
+  once the edit is queued on that peer; its confirmation or refusal shows in
+  the peer's own projection and switcher rows, not as a command result.
 - A peer is shown only while one of its tabs is on screen. Keeping a peer's
   tab in the background while another coordinator's tab is selected is not
   possible: choosing that other tab returns the peer to listing.
