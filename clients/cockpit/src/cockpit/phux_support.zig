@@ -99,6 +99,7 @@ const DisabledPhuxProvider = struct {
     const SyncDelta = struct {
         metadata_changed: bool = false,
         directory_changed: bool = false,
+        sessions_listed: bool = false,
         ready_published: bool = false,
         generation_changed: bool = false,
         detached: bool = false,
@@ -175,6 +176,10 @@ const DisabledPhuxProvider = struct {
     pub fn sessionCatalog(_: *const DisabledPhuxProvider) []const @This().SessionSummary {
         return &.{};
     }
+    pub fn standbyCatalog(_: *const DisabledPhuxProvider) []const @This().SessionSummary {
+        return &.{};
+    }
+    pub fn refreshStandby(_: *DisabledPhuxProvider) void {}
     pub fn agentSessions(_: *const DisabledPhuxProvider) []const @This().AgentSession {
         return &.{};
     }
@@ -249,6 +254,8 @@ else
 pub const SessionSummary = PhuxProvider.SessionSummary;
 pub const OperationResult = PhuxProvider.OperationResult;
 pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else DisabledPhuxProvider.SyncDelta;
+/// The endpoint a Phux provider dials, in either build.
+pub const PhuxEndpoint = if (phux_enabled) @import("phux_provider").Endpoint else DisabledPhuxProvider.Endpoint;
 pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
 pub const AgentSession = PhuxProvider.AgentSession;
 pub const AgentState = PhuxProvider.AgentState;
@@ -263,6 +270,9 @@ pub const pointer_module = if (phux_enabled) @import("phux_pointer") else Disabl
 
 pub const phux_channel_key: u64 = 102;
 pub const pointer_channel_key: u64 = 103;
+/// The standby coordinator held beside the active one (docs/REMOTE_HOSTS.md,
+/// "Side by side"): its own worker and channel, so either can restart alone.
+pub const phux_peer_channel_key: u64 = 104;
 pub const max_remote_terminals: usize = provider_contract.workspace.max_terminals;
 
 pub const ProviderKind = enum { local, phux };

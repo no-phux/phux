@@ -118,6 +118,13 @@ const EngineFx = struct {
     pub fn restartPhux(self: EngineFx, engine: *Engine) bool {
         return engine.restartNavigationConnection(self, phuxChannel);
     }
+    pub fn peerChannelLive(self: EngineFx) bool {
+        const handle = self.effects.channelHandle(cockpit.phux_peer_channel_key) orelse return false;
+        return handle.live();
+    }
+    pub fn restartPeer(self: EngineFx, engine: *Engine) bool {
+        return engine.restartPeerConnection(self, peerChannel);
+    }
 };
 
 fn engineFx() ?EngineFx {
@@ -710,6 +717,17 @@ fn phuxChannel(event: native_sdk.EffectChannelEvent) core.Msg {
     return .engine_wake;
 }
 
+/// The standby coordinator's wakes (docs/REMOTE_HOSTS.md, "Side by side"):
+/// only its session catalog can move, which is one ordered invalidation.
+fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| {
+            if (engine.onPeerChannel(fx, event, peerChannel)) bridge.announce(engine);
+        }
+    }
+    return .engine_wake;
+}
+
 fn pointerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| engine.onPointerChannel(fx, event, pointerChannel);
@@ -727,7 +745,10 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     switch (event) {
-        .start => engine.startProviderChannels(fx, phuxChannel, pointerChannel),
+        .start => {
+            engine.startProviderChannels(fx, phuxChannel, pointerChannel);
+            engine.openPeerChannel(fx, peerChannel);
+        },
         .activate => engine.setFocused(fx, true),
         .deactivate => engine.setFocused(fx, false),
         .stop => {

@@ -54,6 +54,8 @@ pub const SyncDelta = struct {
     /// A go-to-directory listing settled (listed, refused or unknown) in
     /// this drain; the picker reads it on the next snapshot invalidation.
     directory_changed: bool = false,
+    /// A standby's session query settled with a different list than before.
+    sessions_listed: bool = false,
     ready_published: bool = false,
     generation_changed: bool = false,
     detached: bool = false,
@@ -616,11 +618,14 @@ pub const Host = struct {
         errdefer host.disconnect();
         var delta: SyncDelta = .{};
         const directory_before = host.directoryStatusRaw();
+        const query_before = host.sessionQueryStatus();
         while (host.bridge.incoming.take()) |frame| {
             defer host.bridge.incoming.release(frame);
             try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
         }
         delta.directory_changed = host.directoryStatusRaw() != directory_before;
+        if (query_before == session_query_pending and host.sessionQueryStatus() == session_query_ok)
+            delta.sessions_listed = try host.adoptListedSessions();
         host.captureWorkspace();
         delta.removed_count += try host.prepareAttachAdmission();
         // Catalog first, effects second, in one drain: the catalog is the
@@ -1071,6 +1076,59 @@ pub const Host = struct {
     fn clearSessions(host: *Host) void {
         for (host.sessions.items) |*session| session.deinit(host.gpa);
         host.sessions.items.len = 0;
+    }
+
+    const session_query_pending: u32 = 1;
+    const session_query_ok: u32 = 2;
+    comptime {
+        std.debug.assert(c.PHUX_SESSION_QUERY_PENDING == session_query_pending);
+        std.debug.assert(c.PHUX_SESSION_QUERY_OK == session_query_ok);
+    }
+
+    /// Standby: ask for the session list without attaching (GET_STATE). Null
+    /// while a query is already outstanding.
+    pub fn querySessions(host: *Host) !?u32 {
+        if (host.disconnected or host.state() != .negotiated) return error.InvalidState;
+        if (host.sessionQueryStatus() == session_query_pending) return null;
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_query_sessions(host.client, request_id));
+        host.operation_ledger.last_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    fn sessionQueryStatus(host: *const Host) u32 {
+        var request_id: u32 = 0;
+        var status: u32 = 0;
+        if (c.phux_client_session_query_status(host.client, &request_id, &status) != c.PHUX_CLIENT_OK) return 0;
+        return status;
+    }
+
+    /// Adopt a settled query's list as this connection's. True when it
+    /// differs from the list it replaces, so an unchanged refresh announces
+    /// nothing and a refresh loop cannot feed itself.
+    fn adoptListedSessions(host: *Host) !bool {
+        const before = sessionsDigest(host.sessions.items, host.sessions_generation);
+        try host.refreshSessions();
+        return sessionsDigest(host.sessions.items, host.sessions_generation) != before;
+    }
+
+    fn sessionsDigest(sessions: []const SessionSummary, generation: u64) u64 {
+        var hasher = std.hash.Wyhash.init(generation);
+        for (sessions) |session| {
+            hasher.update(std.mem.asBytes(&session.id));
+            hasher.update(session.name);
+            hasher.update(&.{0});
+        }
+        return hasher.final();
+    }
+
+    /// A standby's list describes only the connection that listed it: on
+    /// disconnect or retarget it goes, and the generation no longer matches
+    /// any connection, so rows captured from it stop resolving.
+    pub fn forgetSessions(host: *Host) void {
+        host.clearSessions();
+        host.sessions_generation = 0;
     }
 
     fn captureOperations(host: *Host) !void {

@@ -10,6 +10,9 @@ import { asciiBytes } from "@native-sdk/core";
 export const REMOTE_KIND_STATUS = 1;
 export const REMOTE_KIND_CONNECT = 2;
 export const REMOTE_KIND_LOCAL = 3;
+/// Remove the remote host entirely: its group leaves the switcher and it is
+/// no longer reattached at launch. "Use this Mac" only makes this Mac active.
+export const REMOTE_KIND_DISCONNECT = 4;
 
 export const REMOTE_PHASE_LOCAL = 0;
 export const REMOTE_PHASE_CONNECTING = 1;

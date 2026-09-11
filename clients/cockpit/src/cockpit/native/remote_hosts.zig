@@ -32,7 +32,10 @@ pub const version: u8 = 1;
 pub const max_text_bytes: usize = 240;
 pub const max_bytes: usize = 4 + 2 * max_text_bytes;
 
-pub const Kind = enum(u8) { status = 1, connect = 2, local = 3 };
+/// 4 removes the remote host entirely: its switcher group goes, and it is no
+/// longer reattached at launch. 3 (Use this Mac) only makes this Mac active
+/// and keeps the remote host listed beside it.
+pub const Kind = enum(u8) { status = 1, connect = 2, local = 3, disconnect = 4 };
 pub const Phase = enum(u8) { local = 0, connecting = 1, connected = 2, failed = 3, reconnecting = 4 };
 pub const Error = error{ InvalidRequest, BufferTooSmall };
 
@@ -44,13 +47,14 @@ pub fn decode(bytes: []const u8) Error!Request {
         1 => .status,
         2 => .connect,
         3 => .local,
+        4 => .disconnect,
         else => return error.InvalidRequest,
     };
     if (@as(usize, bytes[2]) != bytes.len - 3) return error.InvalidRequest;
     const target = bytes[3..];
     switch (kind) {
         .connect => if (target.len == 0 or !config_module.validPhuxRemote(target)) return error.InvalidRequest,
-        .status, .local => if (target.len != 0) return error.InvalidRequest,
+        .status, .local, .disconnect => if (target.len != 0) return error.InvalidRequest,
     }
     return .{ .kind = kind, .target = target };
 }
@@ -87,6 +91,7 @@ pub fn handle(engine: anytype, fx: anytype, payload: []const u8, out: []u8) Erro
         .status => status(engine.model, &scratch),
         .connect => connect(engine, fx, request.target, &scratch),
         .local => returnLocal(engine, fx),
+        .disconnect => disconnect(engine, fx),
     };
     return encode(reply, out);
 }
@@ -125,17 +130,26 @@ fn connect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) 
         .reason = copy(&scratch.reason, described.message.slice()),
     };
     const session = described.session.slice();
-    remote.requestRetarget(
-        .{ .remote = .{ .target = target } },
-        if (session.len == 0) null else session,
-        described.name.slice(),
-    ) catch return .{ .phase = .failed, .host = target, .reason = "out of memory" };
+    const pinned: ?[]const u8 = if (session.len == 0) null else session;
+    const endpoint: support.PhuxEndpoint = .{ .remote = .{ .target = target } };
+    // From this Mac, its coordinator stays listed beside the host as the
+    // peer. From one remote host to another only the active side moves: this
+    // Mac is already the peer, and the switcher holds one remote host.
+    if (remote.remoteTarget() == null) {
+        engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch
+            return .{ .phase = .failed, .host = target, .reason = "out of memory" };
+    } else {
+        remote.requestRetarget(endpoint, pinned, described.name.slice()) catch
+            return .{ .phase = .failed, .host = target, .reason = "out of memory" };
+        restart(engine, fx);
+    }
     choose(target);
-    restart(engine, fx);
     return .{ .phase = .connecting, .host = copy(&scratch.host, described.name.slice()) };
 }
 
-/// Back to the configured local coordinator, and forget the remembered host.
+/// Use this Mac: make the local coordinator the active one. The remote host
+/// stays listed beside it as the peer and stays remembered, so this is
+/// simply selecting this Mac's group; Disconnect is what removes the host.
 fn returnLocal(engine: anytype, fx: anytype) Reply {
     if (comptime !support.phux_enabled) return .{ .phase = .local };
     const model = engine.model;
@@ -143,11 +157,29 @@ fn returnLocal(engine: anytype, fx: anytype) Reply {
     if (remote.remoteTarget() == null) return .{ .phase = .local };
     const socket = model.config.phux_socket.slice();
     const session = model.config.phux_session.slice();
-    remote.requestRetarget(.{ .unix = socket }, if (session.len == 0) null else session, null) catch
+    engine.exchangeCoordinators(fx, .{ .unix = socket }, if (session.len == 0) null else session, null) catch
         return .{ .phase = .failed, .reason = "out of memory" };
     choose(null);
+    return .{ .phase = .local };
+}
+
+/// Remove the remote host: this Mac becomes active if it was not, the peer
+/// goes (its group leaves the switcher), and the host is no longer
+/// reattached at launch.
+fn disconnect(engine: anytype, fx: anytype) Reply {
+    if (comptime !support.phux_enabled) return .{ .phase = .local };
+    const model = engine.model;
+    const remote = model.phux() orelse return .{ .phase = .local };
+    if (remote.remoteTarget() != null) {
+        const socket = model.config.phux_socket.slice();
+        const session = model.config.phux_session.slice();
+        remote.requestRetarget(.{ .unix = socket }, if (session.len == 0) null else session, null) catch
+            return .{ .phase = .failed, .reason = "out of memory" };
+        restart(engine, fx);
+    }
+    engine.dropPeer(fx);
+    choose(null);
     remember(model, null);
-    restart(engine, fx);
     return .{ .phase = .local };
 }
 

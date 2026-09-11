@@ -76,6 +76,7 @@ fn entryLabel(model: *const Model, entry: Entry, out: []u8) []const u8 {
         .placed_terminal => |placed| projection.terminalTitleInto(model, placed.terminal_ref, out),
         .available_terminal => |ref| projection.terminalTitleInto(model, ref, out),
         .session => |id| sessionLabel(model, id, out),
+        .peer_session => |id| peerSessionLabel(model, id, out),
     };
 }
 
@@ -95,7 +96,7 @@ fn terminalRef(entry: *const Entry) ?*const model_module.TerminalRef {
     return switch (entry.*) {
         .placed_terminal => &entry.placed_terminal.terminal_ref,
         .available_terminal => &entry.available_terminal,
-        .session => null,
+        .session, .peer_session => null,
     };
 }
 
@@ -108,6 +109,7 @@ fn entryHost(entry: *const Entry) ?[]const u8 {
 
 fn selectable(model: *const Model, row: *const Row) bool {
     if (row.is_host) return true;
+    if (row.entry == .peer_session) return peerSessionNamed(model, row.entry.peer_session);
     if (row.entry != .available_terminal) return true;
     if (entryHost(&row.entry) == null) return true;
     const remote = model.phuxConst() orelse return false;
@@ -119,7 +121,7 @@ fn rowKind(row: *const Row) u8 {
     return switch (row.entry) {
         .placed_terminal => 0,
         .available_terminal => 1,
-        .session => 2,
+        .session, .peer_session => 2,
     };
 }
 
@@ -136,9 +138,44 @@ fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
     return hostLabel(host);
 }
 
+/// The active coordinator's host group: the registered host's label, or
+/// "This Mac" once a peer makes the grouping visible.
 fn sessionDetail(model: *const Model, out: []u8) []const u8 {
-    const host = remoteHost(model) orelse return "Phux session";
+    const host = remoteHost(model) orelse
+        (if (model.phuxPeerConst() != null) "This Mac" else return "Phux session");
     return std.fmt.bufPrint(out, "Phux session · {s}", .{host}) catch "Phux session";
+}
+
+/// The standby coordinator's host group, the other of the two.
+fn peerGroupLabel(model: *const Model) []const u8 {
+    if (comptime !support.phux_enabled) return "This Mac";
+    if (model.phuxActiveIsRemote()) return "This Mac";
+    const peer = model.phuxPeerConst() orelse return "This Mac";
+    return peer.remoteLabel() orelse "This Mac";
+}
+
+fn peerSessionDetail(model: *const Model, out: []u8) []const u8 {
+    return std.fmt.bufPrint(out, "Phux session · {s}", .{peerGroupLabel(model)}) catch "Phux session";
+}
+
+/// A standby session is selectable only by name: that is how the retargeted
+/// connection attaches it, and an unnamed one would attach the server's last.
+fn peerSessionNamed(model: *const Model, id: u32) bool {
+    const peer = model.phuxPeerConst() orelse return false;
+    for (peer.standbyCatalog()) |session| {
+        if (session.id == id) return session.name.len != 0;
+    }
+    return false;
+}
+
+fn peerSessionLabel(model: *const Model, id: u32, out: []u8) []const u8 {
+    const peer = model.phuxPeerConst() orelse return "Session";
+    for (peer.standbyCatalog()) |session| {
+        if (session.id != id) continue;
+        if (session.name.len > 0) return session.name;
+        break;
+    }
+    return std.fmt.bufPrint(out, "Session #{d}", .{id}) catch "Session";
 }
 
 fn terminalDirectory(model: *const Model, ref: model_module.TerminalRef) []const u8 {
@@ -153,6 +190,7 @@ fn terminalDirectory(model: *const Model, ref: model_module.TerminalRef) []const
 fn rowDetail(model: *const Model, row: *const Row, out: []u8) []const u8 {
     if (row.is_host) return "Known terminal host";
     if (!selectable(model, row)) return "Ownership unavailable";
+    if (row.entry == .peer_session) return peerSessionDetail(model, out);
     const ref = terminalRef(&row.entry) orelse return sessionDetail(model, out);
     const host = if (entryHost(&row.entry)) |value| coordinatorLabel(model, value) else "Local PTY";
     if (row.entry != .placed_terminal) return locationDetail(host, terminalDirectory(model, ref.*), out);
@@ -267,7 +305,8 @@ fn firstHostOccurrence(model: *const Model, host: []const u8, index: usize) bool
 fn matches(model: *const Model, entry: *const Entry, index: usize, request: Request) bool {
     switch (request.scope) {
         .all => {},
-        .sessions => if (entry.* != .session) return false,
+        // Both host groups: the active coordinator's and the standby's.
+        .sessions => if (entry.* != .session and entry.* != .peer_session) return false,
         .known_hosts => {
             const host = entryHost(entry) orelse return false;
             if (!firstHostOccurrence(model, host, index)) return false;

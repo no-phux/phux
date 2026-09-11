@@ -8,7 +8,9 @@ const Entry = model_module.PaletteDestination;
 const TerminalRef = model_module.TerminalRef;
 
 pub const max_len = 34 + 9 + support.RemoteResourceId.max_host_bytes;
-pub const Resource = union(enum) { terminal: TerminalRef, session: u32 };
+/// `peer_session` names a session of the standby coordinator; its context is
+/// that provider's, so a replaced or exchanged peer invalidates it.
+pub const Resource = union(enum) { terminal: TerminalRef, session: u32, peer_session: u32 };
 
 pub const Context = struct {
     provider: u64,
@@ -22,11 +24,13 @@ pub const Target = struct {
     resource: Resource,
 
     pub fn resolve(self: Target, model: *const Model) ?Entry {
+        if (self.resource == .peer_session) return resolvePeerSession(model, self.context, self.resource.peer_session);
         const current = contextFor(model, self.provider_id) orelse return null;
         if (!std.meta.eql(current, self.context)) return null;
         return switch (self.resource) {
             .terminal => |ref| resolveTerminal(model, ref),
             .session => |id| resolveSession(model, id),
+            .peer_session => unreachable,
         };
     }
 
@@ -39,6 +43,11 @@ pub const Target = struct {
         switch (self.resource) {
             .session => |id| {
                 out[1] = 2;
+                std.mem.writeInt(u32, out[34..38], id, .little);
+                return out[0..38];
+            },
+            .peer_session => |id| {
+                out[1] = 3;
                 std.mem.writeInt(u32, out[34..38], id, .little);
                 return out[0..38];
             },
@@ -55,15 +64,30 @@ fn contextFor(model: *const Model, id: support.ProviderId) ?Context {
     return .{ .provider = remote.context_id, .host = remote.host.context_id, .epoch = remote.connectionEpoch() };
 }
 
+/// The standby coordinator's context: its own provider and host lifetimes
+/// and the connection its session catalog came from. Exchanging the two
+/// coordinators or replacing the peer changes it.
+fn peerContext(model: *const Model) ?Context {
+    if (comptime !support.phux_enabled) return null;
+    const peer = model.phuxPeerConst() orelse return null;
+    return .{ .provider = peer.context_id, .host = peer.host.context_id, .epoch = peer.host.sessions_generation };
+}
+
 pub fn capture(model: *const Model, entry: Entry) ?Target {
+    if (entry == .peer_session) return .{
+        .provider_id = .phux,
+        .context = peerContext(model) orelse return null,
+        .resource = .{ .peer_session = entry.peer_session },
+    };
     const resource: Resource = switch (entry) {
         .placed_terminal => |placed| .{ .terminal = placed.terminal_ref },
         .available_terminal => |ref| .{ .terminal = ref },
         .session => |id| .{ .session = id },
+        .peer_session => unreachable,
     };
     const provider_id: support.ProviderId = switch (resource) {
         .terminal => |ref| ref.provider_id,
-        .session => .phux,
+        .session, .peer_session => .phux,
     };
     var context = contextFor(model, provider_id) orelse return null;
     if (provider_id == .phux) context.epoch = inventoryEpoch(model, entry);
@@ -77,6 +101,7 @@ fn inventoryEpoch(model: *const Model, entry: Entry) u64 {
         .placed_terminal => |placed| if (remote.owner(placed.terminal_ref)) |owner| owner.generation.epoch_id else 0,
         .available_terminal => |ref| if (catalogContains(model, ref)) remote.connectionEpoch() else 0,
         .session => remote.host.sessions_generation,
+        .peer_session => 0,
     };
 }
 
@@ -112,6 +137,21 @@ fn resolveSession(model: *const Model, id: u32) ?Entry {
     if (remote.host.sessions_generation != remote.connectionEpoch()) return null;
     for (remote.sessionCatalog()) |session| {
         if (session.id == id) return .{ .session = id };
+    }
+    return null;
+}
+
+/// Held against the peer that listed it: exchanging the two coordinators,
+/// replacing the peer, or a catalog from an older peer connection refuses.
+fn resolvePeerSession(model: *const Model, expected: Context, id: u32) ?Entry {
+    if (comptime !support.phux_enabled) return null;
+    const current = peerContext(model) orelse return null;
+    if (!std.meta.eql(current, expected)) return null;
+    const peer = model.phuxPeerConst() orelse return null;
+    // A standby that disconnected, is being retargeted, or listed on an older
+    // connection offers nothing; forgetting also moved the context above.
+    for (peer.standbyCatalog()) |session| {
+        if (session.id == id and session.name.len != 0) return .{ .peer_session = id };
     }
     return null;
 }
@@ -159,6 +199,10 @@ fn decodeResource(bytes: []const u8, provider_id: support.ProviderId) ?Resource 
         2 => {
             if (provider_id != .phux or bytes.len != 38) return null;
             return .{ .session = std.mem.readInt(u32, bytes[34..38], .little) };
+        },
+        3 => {
+            if (provider_id != .phux or bytes.len != 38) return null;
+            return .{ .peer_session = std.mem.readInt(u32, bytes[34..38], .little) };
         },
         else => return null,
     }

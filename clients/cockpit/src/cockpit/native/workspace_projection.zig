@@ -1283,11 +1283,14 @@ pub fn paletteSection(entry: PaletteEntry) PaletteSection {
     return switch (entry) {
         .placed_terminal => .open,
         .available_terminal => .available,
-        .session => .sessions,
+        .session, .peer_session => .sessions,
     };
 }
 
-const PaletteStage = enum { placed, available, sessions, done };
+/// Sessions come in two host groups: this Mac's coordinator first, then the
+/// remote host, whichever of the two is active (`first_sessions` names the
+/// group listed first).
+const PaletteStage = enum { placed, available, first_sessions, second_sessions, done };
 
 pub const PaletteIterator = struct {
     model: *const Model,
@@ -1298,6 +1301,7 @@ pub const PaletteIterator = struct {
     pane_index: usize = 0,
     remote_index: usize = 0,
     session_index: usize = 0,
+    peer_index: usize = 0,
 
     pub fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
         return .{ .model = model, .needle = workspace.palette.needle() };
@@ -1371,6 +1375,27 @@ pub const PaletteIterator = struct {
         return null;
     }
 
+    fn nextPeerSession(iterator: *PaletteIterator) ?PaletteEntry {
+        const peer = iterator.model.phuxPeerConst() orelse return null;
+        // Only a connected standby with a list from this connection and no
+        // pending retarget: otherwise the rows would name another host's
+        // sessions under this group's label.
+        const sessions = peer.standbyCatalog();
+        while (iterator.peer_index < sessions.len) {
+            const entry: PaletteEntry = .{ .peer_session = sessions[iterator.peer_index].id };
+            iterator.peer_index += 1;
+            if (iterator.accepts(entry)) return entry;
+        }
+        return null;
+    }
+
+    /// This Mac's group first: the peer's sessions lead only while the
+    /// active provider is the remote host's.
+    fn nextGroup(iterator: *PaletteIterator, first: bool) ?PaletteEntry {
+        const peer_first = iterator.model.phuxActiveIsRemote() and iterator.model.phuxPeerConst() != null;
+        return if (first != peer_first) iterator.nextSession() else iterator.nextPeerSession();
+    }
+
     pub fn next(iterator: *PaletteIterator) ?PaletteEntry {
         while (true) {
             switch (iterator.stage) {
@@ -1378,9 +1403,12 @@ pub const PaletteIterator = struct {
                     iterator.stage = .available;
                 },
                 .available => if (iterator.nextAvailable()) |entry| return entry else {
-                    iterator.stage = .sessions;
+                    iterator.stage = .first_sessions;
                 },
-                .sessions => if (iterator.nextSession()) |entry| return entry else {
+                .first_sessions => if (iterator.nextGroup(true)) |entry| return entry else {
+                    iterator.stage = .second_sessions;
+                },
+                .second_sessions => if (iterator.nextGroup(false)) |entry| return entry else {
                     iterator.stage = .done;
                 },
                 .done => return null,
@@ -1466,7 +1494,21 @@ pub fn paletteDestinationMatches(model: *const Model, entry: PaletteEntry, needl
         .placed_terminal => |placed| placedDestinationMatches(model, placed, needle),
         .available_terminal => |terminal_ref| terminalDestinationMatches(model, terminal_ref, needle),
         .session => |session_id| sessionDestinationMatches(model, session_id, needle),
+        .peer_session => |session_id| peerSessionMatches(model, session_id, needle),
     };
+}
+
+/// A standby coordinator's session matches by its name or by its host
+/// group's label, so typing a host name narrows the switcher to that host.
+fn peerSessionMatches(model: *const Model, session_id: u32, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    const peer = model.phuxPeerConst() orelse return false;
+    const host = if (model.phuxActiveIsRemote()) "This Mac" else peer.remoteLabel() orelse "This Mac";
+    if (containsIgnoreCase(host, needle)) return true;
+    for (peer.standbyCatalog()) |session| {
+        if (session.id == session_id) return containsIgnoreCase(session.name, needle);
+    }
+    return false;
 }
 
 fn placedDestinationMatches(

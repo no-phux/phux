@@ -137,6 +137,14 @@ keep their own names. The host panel talks to the engine over its
 own `cockpit.remote` request and completion slot, never through catalog
 pages; see [Remote hosts](REMOTE_HOSTS.md).
 
+When a standby coordinator is held beside the active one, its sessions
+follow as a second host group, with this Mac's group always first. Rows
+read `Phux session · This Mac` or `Phux session · <host>`. A standby session
+row is kind 2 (session) and carries target resource tag 3 (`peer_session`),
+which is held against the standby provider's own context and connection.
+Activating it makes that coordinator the active one, through the same
+retarget-and-restart path as Connect to Host.
+
 ## Snapshot and connection state
 
 Snapshot byte 23, formerly reserved, carries `local=0`, `connecting=1`,

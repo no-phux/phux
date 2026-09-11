@@ -381,6 +381,15 @@ fn publish_catalog(client: &mut Client, catalog: Catalog) -> Result<(), BridgeEr
     Ok(())
 }
 
+/// The session summaries a `GET_STATE` snapshot carries, validated and
+/// bounded exactly as `ATTACHED`'s catalog is (see `crate::session_query`).
+pub(crate) fn session_summaries(
+    snapshot: SessionSnapshot,
+) -> Result<Vec<crate::client::SessionSummary>, BridgeError> {
+    let selected = snapshot.focused_session.get();
+    Ok(Catalog::from_snapshot(snapshot, selected)?.sessions)
+}
+
 fn publish(
     client: &mut Client,
     catalog: Catalog,

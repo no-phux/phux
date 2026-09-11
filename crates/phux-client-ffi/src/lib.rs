@@ -12,6 +12,7 @@ mod grid_metadata;
 mod operations;
 mod pointer;
 mod remote;
+mod session_query;
 mod types;
 mod workspace;
 
@@ -43,6 +44,7 @@ pub use pointer::{
     phux_client_terminal_mouse_mode,
 };
 pub use remote::*;
+pub use session_query::*;
 pub use types::*;
 pub use workspace::*;
 
@@ -680,6 +682,9 @@ fn dispatch_frame(
     notify_attached: &mut bool,
 ) -> Result<(), BridgeError> {
     let Some(frame) = directory::dispatch(client, frame) else {
+        return Ok(());
+    };
+    let Some(frame) = session_query::dispatch(client, frame)? else {
         return Ok(());
     };
     let Some(frame) = workspace::dispatch(client, frame) else {

@@ -170,10 +170,13 @@ registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
 `PHUX_REMOTE=NAME`, selects one at launch. The status bar names the host
 while connecting, connected, reconnecting, or failed, and gives the reason
 when it fails. A failure keeps the entered host so a retry is one keystroke.
-The chosen host is remembered and reattached after relaunch. Use this Mac
-returns to the local coordinator. Cockpit never pairs a host; an
-unregistered one fails with the CLI command that pairs it. See
-[Remote hosts](docs/REMOTE_HOSTS.md).
+This Mac's coordinator stays connected beside the host: the switcher lists
+both as host groups, "This Mac" first, and picking a session in the other
+group makes that coordinator active. Use this Mac does the same from the
+host panel and keeps the host listed; Disconnect removes it. The host is
+remembered and reattached beside this Mac after relaunch. Cockpit never
+pairs a host; an unregistered one fails with the CLI command that pairs it.
+See [Remote hosts](docs/REMOTE_HOSTS.md).
 
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line
 comment, and there are deliberately no trailing comments because `#` is also how

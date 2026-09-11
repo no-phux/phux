@@ -97,6 +97,13 @@ pub const PhuxProvider = struct {
     /// Connect to Host, applied by the next `open`/`reconnect` after the old
     /// worker has stopped; see `requestRetarget`.
     pending_retarget: ?Retarget = null,
+    /// The standby coordinator of a side-by-side switcher (`standBy`). It
+    /// never attaches: attaching would make it a subscriber that clamps
+    /// every pane under `window-size = smallest` to its placeholder size and
+    /// streams output nobody sees. It only lists sessions with GET_STATE.
+    standby: bool = false,
+    /// The connection epoch whose session list the standby asked for.
+    standby_query_epoch: u64 = 0,
 
     pub fn create(gpa: std.mem.Allocator, io: std.Io, endpoint: Endpoint, session: ?[]const u8, client_name: []const u8) !*PhuxProvider {
         const self = try gpa.create(PhuxProvider);
@@ -146,6 +153,8 @@ pub const PhuxProvider = struct {
         if (self.worker) |worker| worker.stop();
         self.worker = null;
         self.host.disconnect();
+        // A standby's list described the connection that just ended.
+        if (self.standby) self.host.forgetSessions();
     }
 
     /// Preserve provider identity, terminal order, and the last complete canvas
@@ -192,15 +201,67 @@ pub const PhuxProvider = struct {
     /// the engine's ordinary restart path (frozen canvases, session handoff,
     /// close-before-reopen) instead of a second lifecycle.
     pub fn requestRetarget(self: *PhuxProvider, endpoint: Endpoint, session: ?[]const u8, label: ?[]const u8) !void {
+        self.commitRetarget(try self.prepareRetarget(endpoint, session, label));
+    }
+
+    /// The allocating half of `requestRetarget`, so a caller moving two
+    /// providers can fail before either one changes.
+    pub fn prepareRetarget(self: *const PhuxProvider, endpoint: Endpoint, session: ?[]const u8, label: ?[]const u8) !Retarget {
         var next_endpoint = try OwnedEndpoint.init(self.gpa, endpoint);
         errdefer next_endpoint.deinit(self.gpa);
         const next_session = if (session) |name| try self.gpa.dupe(u8, name) else null;
         errdefer if (next_session) |name| self.gpa.free(name);
         const next_label = if (label) |text| try self.gpa.dupe(u8, text) else null;
+        return .{ .endpoint = next_endpoint, .session = next_session, .label = next_label };
+    }
+
+    /// The infallible half. A standby forgets its list at once: it described
+    /// the host it is leaving, and must not be offered under the new label.
+    pub fn commitRetarget(self: *PhuxProvider, next: Retarget) void {
         self.clearPendingRetarget();
-        self.pending_retarget = .{ .endpoint = next_endpoint, .session = next_session, .label = next_label };
+        self.pending_retarget = next;
         // The new host starts with no history, even before it is applied.
         self.remote_status.reset();
+        if (self.standby) self.host.forgetSessions();
+    }
+
+    pub fn discardRetarget(self: *const PhuxProvider, next: Retarget) void {
+        var endpoint = next.endpoint;
+        endpoint.deinit(self.gpa);
+        if (next.session) |name| self.gpa.free(name);
+        if (next.label) |text| self.gpa.free(text);
+    }
+
+    /// Make this provider the standby coordinator: it lists sessions with
+    /// GET_STATE and never attaches (see `standby`).
+    pub fn standBy(self: *PhuxProvider) void {
+        self.standby = true;
+    }
+
+    /// Once per connection, after negotiation.
+    fn queueStandbyQuery(self: *PhuxProvider) !void {
+        if (self.host.state() != .negotiated) return;
+        if (self.standby_query_epoch == self.connectionEpoch()) return;
+        _ = try self.host.querySessions();
+        self.standby_query_epoch = self.connectionEpoch();
+    }
+
+    /// Ask the standby's server again, as a switcher refresh does for the
+    /// active coordinator; at most one query is outstanding.
+    pub fn refreshStandby(self: *PhuxProvider) void {
+        if (!self.standby or self.host.state() != .negotiated) return;
+        _ = self.host.querySessions() catch {};
+    }
+
+    /// The standby's sessions while they describe the host it is connected
+    /// to: negotiated (or attached), listed on this connection, and with no
+    /// retarget pending. Anything else lists nothing.
+    pub fn standbyCatalog(self: *const PhuxProvider) []const host_mod.SessionSummary {
+        if (self.pending_retarget != null) return &.{};
+        const current = self.host.state();
+        if (current != .negotiated and current != .attached) return &.{};
+        if (self.host.sessions_generation != self.host.connectionEpoch()) return &.{};
+        return self.host.sessionCatalog();
     }
 
     fn clearPendingRetarget(self: *PhuxProvider) void {
@@ -265,6 +326,49 @@ pub const PhuxProvider = struct {
         self.remote_label = owned;
     }
 
+    /// An owned copy of where this provider's next connection goes: the
+    /// pending retarget when there is one, else the applied endpoint, with
+    /// its session and label. A host exchange copies each side before either
+    /// retarget, because a retarget frees the pending target that a borrowed
+    /// slice would point at.
+    pub const TargetCopy = struct {
+        endpoint: OwnedEndpoint,
+        session: ?[]u8,
+        label: ?[]u8,
+
+        pub fn descriptor(self: *const TargetCopy) Endpoint {
+            return self.endpoint.borrowed();
+        }
+
+        pub fn deinit(self: *TargetCopy, gpa: std.mem.Allocator) void {
+            self.endpoint.deinit(gpa);
+            if (self.session) |value| gpa.free(value);
+            if (self.label) |value| gpa.free(value);
+        }
+    };
+
+    pub fn copyTarget(self: *const PhuxProvider, gpa: std.mem.Allocator) !TargetCopy {
+        var endpoint = try OwnedEndpoint.init(gpa, self.effectiveEndpoint().borrowed());
+        errdefer endpoint.deinit(gpa);
+        const source: ?[]const u8 = if (self.pending_retarget) |pending| pending.session else self.currentSessionName();
+        const session = if (source) |value| try gpa.dupe(u8, value) else null;
+        errdefer if (session) |value| gpa.free(value);
+        const label = if (self.remoteLabel()) |value| try gpa.dupe(u8, value) else null;
+        return .{ .endpoint = endpoint, .session = session, .label = label };
+    }
+
+    /// The session a host exchange returns to: the attached one by name,
+    /// else the one this connection was asked for. Borrowed from the host's
+    /// session catalog or the applied session, until the next retarget applies.
+    pub fn currentSessionName(self: *const PhuxProvider) ?[]const u8 {
+        if (self.host.selectedSessionId()) |attached| {
+            for (self.host.sessionCatalog()) |entry| {
+                if (entry.id == attached and entry.name.len != 0) return entry.name;
+            }
+        }
+        return self.session;
+    }
+
     /// The last recorded connection failure, copied into `out`.
     pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
         return self.remote_status.failureInto(out);
@@ -302,6 +406,11 @@ pub const PhuxProvider = struct {
         const delta = try self.host.drainReadiness();
         if (self.host.state() == .detached) {
             self.attach_queued = false;
+            return delta;
+        }
+        // A standby lists, it never attaches (see `standby`).
+        if (self.standby) {
+            try self.queueStandbyQuery();
             return delta;
         }
         try self.queueNegotiatedAttach();

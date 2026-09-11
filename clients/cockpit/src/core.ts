@@ -8,6 +8,7 @@ import {
   REMOTE_KIND_STATUS,
   REMOTE_KIND_CONNECT,
   REMOTE_KIND_LOCAL,
+  REMOTE_KIND_DISCONNECT,
   REMOTE_PHASE_LOCAL,
   REMOTE_PHASE_CONNECTED,
   REMOTE_PHASE_FAILED,
@@ -322,6 +323,7 @@ export type Msg =
   | { readonly kind: "host_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "host_submit" }
   | { readonly kind: "host_local" }
+  | { readonly kind: "host_disconnect" }
   | { readonly kind: "dir_open" }
   | { readonly kind: "dir_close" }
   | { readonly kind: "dir_edit"; readonly edit: TextInputEvent }
@@ -1743,6 +1745,15 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [
         { ...model, hostBusy: true, hostAwaiting: true, hostNotice: asciiBytes("Returning to this Mac...") },
         Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_LOCAL, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ];
+    }
+    case "host_disconnect": {
+      if (!model.hostOpen || model.hostBusy) return model;
+      return [
+        { ...model, hostBusy: true, hostAwaiting: true, hostNotice: asciiBytes("Disconnecting the remote host...") },
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_DISCONNECT, NO_BYTES), {
           key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
         }),
       ];

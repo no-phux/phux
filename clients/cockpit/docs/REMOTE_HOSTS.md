@@ -7,14 +7,16 @@ last-reviewed: 2026-09-10
 # Remote hosts
 
 **TL;DR.** Connect to Host (`cmd+shift+O`, Window > Connect to Host…, or
-the switcher's Connect to Host button) points Cockpit's one Phux provider at
-a host in the phux CLI's own `[[remote]]` registry, resolved the way
+the switcher's Connect to Host button) points Cockpit's active Phux provider
+at a host in the phux CLI's own `[[remote]]` registry, resolved the way
 `phux --remote HOST` resolves it. phux-client-ffi's remote tunnel dials QUIC
 or TLS WebSocket with the pinned certificate and bearer token, then relays
 frames through a Unix-domain socket pair. The socket worker and session
-kernel are unchanged. The chosen host is remembered beside the state file and
-reattached on the next launch. A remote host replaces the local coordinator
-for the session; the two are not shown side by side yet.
+kernel are unchanged. This Mac's coordinator stays connected beside the
+host, so the switcher lists both as host groups ("This Mac" first). Picking
+the other group's session makes that coordinator active. Disconnect removes
+only the host's group. The host is remembered beside the state file and
+reattached beside this Mac on the next launch.
 
 ## Endpoint model
 
@@ -126,16 +128,64 @@ client only needs to remember which coordinator to reattach to. When a host
 chosen through Connect to Host first connects, `<state file>.remote`
 records it (`src/cockpit/remote_memory.zig`). A host selected by
 `phux-remote` or `PHUX_REMOTE` is never written, so removing the setting
-ends it. Use this Mac removes the file. A torn
-or foreign file is treated as absent. Saved placements carry the endpoint
+ends it. The file is written the first time a status poll sees the chosen
+host connected, so a host that never connected is not remembered.
+Disconnect removes the file; Use this Mac leaves it, because the host stays
+listed. A torn or foreign file is treated as absent. At launch a
+remembered host is reattached beside this Mac, as the standby coordinator
+(below), and this Mac is active. A configured or environment host is active,
+with this Mac beside it. Saved placements carry the endpoint
 `phux-remote:<target>`, which is disjoint from every absolute socket path,
 so a placement never matches the wrong coordinator.
 
+## Side by side
+
+The model holds the active Phux provider (`Model.phux_provider`) and at most
+one standby coordinator (`Model.phux_peer`). The standby is this Mac's
+coordinator while a remote host is active, and the remote host while this Mac
+is. It runs its own socket worker on its own channel
+(`phux_peer_channel_key`, 104), so either one restarts alone. Every terminal
+surface belongs to the active provider.
+
+The standby never attaches. An attached client is a subscriber: under the
+server's default `window-size = smallest` its viewport would size every pane
+of its session for everyone else, and every pane's output would stream to it
+for nothing. After HELLO_OK it instead asks GET_STATE
+(`phux_client_query_sessions`), once per connection and again whenever the
+switcher refreshes, so it sizes no pane and streams nothing. Its group lists
+only while that list belongs to the current connection and no retarget is
+pending. On disconnect, and the moment it is retargeted, the standby forgets
+the list and its generation, so rows captured from it stop resolving. They
+cannot attach a session by name on the wrong host.
+
+| Action | Active | Standby |
+|---|---|---|
+| Connect to Host from this Mac | the host | this Mac (created on first use) |
+| Connect to Host from a host | the new host | this Mac, unchanged |
+| a session in the other group | that coordinator, that session | the one it left |
+| Use this Mac | this Mac | the host, still listed |
+| Disconnect | this Mac | none: the host's group goes |
+
+Each move retargets the providers through `requestRetarget` and restarts
+them through the path Reconnect uses. Frozen canvases, session handoff and
+command fencing therefore behave as for any host switch, and both
+connections redial. The switcher lists this Mac's sessions first, then the
+host's, whichever is active. Standby rows carry a `peer_session` target held
+against the standby provider's own context, so an exchange or a Disconnect
+invalidates rows captured before it.
+
 ## Known limits
 
-- One coordinator at a time. A remote host's catalog replaces the local one
-  and is labeled with the host's name. Showing both catalogs side by side
-  needs a model that holds more than one Phux provider.
+- One remote host at a time, beside this Mac. Connecting to a second host
+  replaces the first, and this Mac stays listed.
+- The standby lists sessions only. Its terminals are not in the switcher's
+  terminal rows, and activating one of its sessions redials both
+  connections rather than handing over live replicas.
+- A standby session is selectable only by name, because that is how the
+  retargeted connection attaches it. An unnamed session is listed but
+  cannot be picked.
+- A standby that fails to connect is not reported in the status line. Its
+  group simply disappears until the standby reconnects and lists again.
 - Catalog search matches titles, directories and sessions, not the host
   label.
 - A registry entry's pinned `session` is requested both by Connect to Host

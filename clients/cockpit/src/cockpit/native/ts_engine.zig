@@ -527,6 +527,9 @@ pub const Engine = struct {
     /// The real runtime timer and explicit navigation share a bounded refresh;
     /// UI invalidations cannot turn it into a request/reply spin loop.
     pub fn refreshWorkspace(self: *Engine) void {
+        // The standby's list is refreshed with the switcher's; it announces
+        // only when the list actually changed, so this cannot feed itself.
+        if (self.model.phuxPeer()) |peer| peer.refreshStandby();
         const remote = self.model.phux() orelse return;
         if (remote.state() != .attached) return;
         const now = std.Io.Clock.awake.now(self.model.provider.io);
@@ -586,6 +589,9 @@ pub const Engine = struct {
     pub fn stopProviderChannels(self: *Engine, fx: anytype) void {
         if (self.model.phux()) |remote| remote.stop();
         fx.closeChannel(support.phux_channel_key);
+        if (self.model.phuxPeer()) |peer| peer.stop();
+        self.model.phux_peer_reopen = false;
+        fx.closeChannel(support.phux_peer_channel_key);
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();
             pointer_state.monitor = null;
@@ -734,6 +740,7 @@ pub const Engine = struct {
             .placed_terminal => |placed| self.selectPlacedNavigation(placed, fx),
             .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
             .session => |id| self.selectSessionNavigation(id, fx),
+            .peer_session => |id| self.switchToPeer(id, fx),
         };
     }
 
@@ -795,6 +802,13 @@ pub const Engine = struct {
                     return .applied;
                 }
                 return self.admitSessionCommand(command_id, session, null, fx);
+            },
+            // The other coordinator becomes the active one; its attach is
+            // reported through the ordinary connection status, like Connect
+            // to Host, not through a correlated session receipt.
+            .peer_session => |session| {
+                if (!self.switchToPeer(session, fx)) return null;
+                return .accepted_pending;
             },
         }
     }
@@ -985,6 +999,159 @@ pub const Engine = struct {
         const accepted = fx.restartPhux(self);
         if (accepted) self.supersedeSelection();
         return accepted;
+    }
+
+    // ---------------------------------------------- the standby coordinator
+    //
+    // The model holds the active Phux provider and at most one peer: this
+    // Mac's coordinator while a registered remote host is active, and the
+    // remote host's while this Mac is. The peer runs its own worker on its own
+    // channel so either restarts alone. Only its session catalog is read; it
+    // lists as its own host group in the switcher, and selecting one of its
+    // sessions exchanges the two through the retarget-and-restart path that
+    // Connect to Host uses.
+
+    /// Open the peer's channel and start (or restart) its worker. A peer that
+    /// cannot open stays listed without sessions until its next restart.
+    pub fn openPeerChannel(self: *Engine, fx: anytype, on_event: anytype) void {
+        if (comptime !support.phux_enabled) return;
+        const peer = self.model.phuxPeer() orelse return;
+        const handle = fx.openChannel(.{ .key = support.phux_peer_channel_key, .on_event = on_event, .max_pending = 1 });
+        if (!handle.live()) return;
+        if (peer.state() == .new) {
+            peer.open(handle) catch fx.closeChannel(support.phux_peer_channel_key);
+        } else {
+            peer.reconnect(handle) catch fx.closeChannel(support.phux_peer_channel_key);
+        }
+    }
+
+    /// Drain a peer wake. The bool says the switcher's host groups may have
+    /// moved, which is one ordered invalidation like any catalog change.
+    pub fn onPeerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        if (event.key != support.phux_peer_channel_key) return false;
+        const model = self.model;
+        const peer = model.phuxPeer() orelse return false;
+        switch (event.kind) {
+            .data => {
+                const delta = peer.drainReadiness() catch {
+                    peer.stop();
+                    fx.closeChannel(support.phux_peer_channel_key);
+                    return self.commitProviderChange(true);
+                };
+                // Nothing presents a peer's terminals, so nothing rings for them.
+                while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
+                // A standby never attaches; its list settling is what moves.
+                return self.commitProviderChange(delta.sessions_listed or delta.detached);
+            },
+            .closed, .rejected => {
+                peer.stop();
+                if (model.phux_peer_reopen) {
+                    model.phux_peer_reopen = false;
+                    self.openPeerChannel(fx, on_event);
+                }
+                return self.commitProviderChange(true);
+            },
+        }
+    }
+
+    /// Restart the peer as Reconnect restarts the active provider: a live
+    /// channel publishes its close first, then reopens on that event.
+    pub fn restartPeerConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        const peer = self.model.phuxPeer() orelse return false;
+        if (peer.state() != .new) peer.stop();
+        if (fx.peerChannelLive()) {
+            self.model.phux_peer_reopen = true;
+            fx.closeChannel(support.phux_peer_channel_key);
+        } else {
+            self.model.phux_peer_reopen = false;
+            self.openPeerChannel(fx, on_event);
+        }
+        return true;
+    }
+
+    /// Remove the peer entirely: its host group leaves the switcher.
+    pub fn dropPeer(self: *Engine, fx: anytype) void {
+        if (comptime !support.phux_enabled) return;
+        const peer = self.model.phux_peer orelse return;
+        self.model.phux_peer = null;
+        self.model.phux_peer_reopen = false;
+        peer.stop();
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(support.phux_peer_channel_key);
+        peer.destroy();
+        self.revision +%= 1;
+    }
+
+    /// Point the active provider at `endpoint` and keep the coordinator it
+    /// leaves beside it as the peer (created on first use), then restart
+    /// both. The leaving side is where the active provider goes now or is
+    /// about to go, so an exchange before a restart has applied the previous
+    /// one still keeps the right host. `endpoint`, `session` and `label` must
+    /// not borrow either provider's pending target; switchToPeer copies.
+    pub fn exchangeCoordinators(self: *Engine, fx: anytype, endpoint: support.PhuxEndpoint, session: ?[]const u8, label: ?[]const u8) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const model = self.model;
+        const active = model.phux() orelse return error.NoProvider;
+        const gpa = std.heap.page_allocator;
+        // Copied: the active retarget below frees a pending target these
+        // slices would otherwise point into.
+        var leaving = try active.copyTarget(gpa);
+        defer leaving.deinit(gpa);
+        // All-or-nothing: every allocation happens before either side is
+        // committed, so a failure leaves both providers as they were.
+        const next_active = try active.prepareRetarget(endpoint, session, label);
+        errdefer active.discardRetarget(next_active);
+        if (model.phux_peer) |peer| {
+            const next_peer = try peer.prepareRetarget(leaving.descriptor(), leaving.session, leaving.label);
+            active.commitRetarget(next_active);
+            peer.commitRetarget(next_peer);
+        } else {
+            const peer = try support.PhuxProvider.create(gpa, model.provider.io, leaving.descriptor(), leaving.session, "phux-cockpit");
+            errdefer peer.destroy();
+            if (leaving.label) |text| try peer.setRemoteLabel(text);
+            // Lists sessions only; never attaches, so it sizes nobody's panes.
+            peer.standBy();
+            active.commitRetarget(next_active);
+            model.phux_peer = peer;
+        }
+        self.restartCoordinators(fx);
+    }
+
+    fn restartCoordinators(self: *Engine, fx: anytype) void {
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
+        if (comptime @hasDecl(Fx, "restartPeer")) _ = fx.restartPeer(self);
+    }
+
+    /// A session of the other coordinator: make that coordinator active,
+    /// attached to the chosen session, and stand the current one by.
+    pub fn switchToPeer(self: *Engine, session: u32, fx: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
+        const peer = self.model.phuxPeer() orelse return false;
+        // Borrowed from the peer's session catalog, which no retarget frees.
+        const name = peerSessionName(peer, session) orelse return false;
+        // Copied: the exchange retargets the peer, freeing any pending
+        // target its borrowed endpoint and label would point into.
+        var incoming = peer.copyTarget(std.heap.page_allocator) catch return false;
+        defer incoming.deinit(std.heap.page_allocator);
+        self.exchangeCoordinators(fx, incoming.descriptor(), name, incoming.label) catch return false;
+        self.supersedeSelection();
+        return true;
+    }
+
+    /// The chosen session by name, which is how the retargeted connection
+    /// attaches it. An unnamed session is refused rather than sent as a null
+    /// name, which the server would read as "its last session".
+    fn peerSessionName(peer: anytype, id: u32) ?[]const u8 {
+        for (peer.standbyCatalog()) |entry| {
+            if (entry.id != id) continue;
+            return if (entry.name.len == 0) null else entry.name;
+        }
+        return null;
     }
 
     fn reconnectNavigation(self: *Engine, fx: anytype) bool {

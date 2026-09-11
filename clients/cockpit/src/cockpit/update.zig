@@ -383,6 +383,8 @@ fn activatePaletteDestination(model: *Model, fx: *Fx, destination: app_types.Pal
         .placed_terminal => |placed| activatePlacedDestination(model, fx, placed),
         .available_terminal => |terminal_ref| activateAvailableDestination(model, fx, terminal_ref),
         .session => |session_id| activateSessionDestination(model, fx, session_id),
+        // The retained spike update path never holds a standby coordinator.
+        .peer_session => {},
     }
 }
 /// Convert the presentational cursor to a durable payload at the moment the

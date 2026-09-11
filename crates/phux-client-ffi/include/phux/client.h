@@ -1069,6 +1069,33 @@ PhuxClientResult phux_client_directory_info(const PhuxClient *client, PhuxDirect
 /** PHUX_CLIENT_INVALID_ARGUMENT for an index at or past entry_count. */
 PhuxClientResult phux_client_directory_entry_get(const PhuxClient *client, size_t index, PhuxDirectoryEntry *out_entry);
 
+/* ------------------------------------------ sessions without attaching
+ *
+ * GET_STATE after HELLO_OK, for a client that only needs a server's session
+ * list, such as the standby coordinator of a multi-host selector. An
+ * attached client is a subscriber: it contributes its viewport to every
+ * pane's window-size policy and streams every pane. A client that only
+ * queries does neither. Additive to ABI version 2.
+ *
+ * Requires a negotiated client that has neither attached nor queued ATTACH,
+ * with no query already pending. request_id shares the strictly increasing
+ * host request space. The reply replaces the list phux_client_session_count
+ * and phux_client_session_get read, validated and bounded as ATTACHED's
+ * catalog is; query again to refresh it. A refusal (correlated ERROR or an
+ * error result) settles the query as REFUSED and keeps the previous list.
+ * Disconnecting while PENDING yields UNKNOWN_OUTCOME. */
+typedef enum PhuxSessionQueryStatus {
+    PHUX_SESSION_QUERY_NONE = 0,
+    PHUX_SESSION_QUERY_PENDING = 1,
+    PHUX_SESSION_QUERY_OK = 2,
+    PHUX_SESSION_QUERY_REFUSED = 3,
+    PHUX_SESSION_QUERY_UNKNOWN_OUTCOME = 4
+} PhuxSessionQueryStatus;
+
+PhuxClientResult phux_client_query_sessions(PhuxClient *client, uint32_t request_id);
+/** Writes the latest query's request ID (0 before any) and status. */
+PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint32_t *out_request_id, uint32_t *out_status);
+
 /* ---------------------------------------------------------- remote hosts
  *
  * Reach a remote phux server the way `phux attach --remote HOST` does

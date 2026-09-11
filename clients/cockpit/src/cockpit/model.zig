@@ -677,6 +677,9 @@ pub const PaletteDestination = union(enum) {
     placed_terminal: PlacedTerminalDestination,
     available_terminal: TerminalRef,
     session: u32,
+    /// A session of the standby coordinator (`Model.phux_peer`). Selecting
+    /// one makes that coordinator the active one.
+    peer_session: u32,
 };
 
 /// Replace the bounded remote inventory with the provider's latest complete
@@ -712,6 +715,14 @@ pub const Model = struct {
     /// terminal's first spawn, so no live argv ever aliases a dead one.
     cwd_argv: [max_terminals]local.CwdArgv = [_]local.CwdArgv{.{}} ** max_terminals,
     phux_provider: ?*PhuxProvider = null,
+    /// The standby coordinator, held beside the active one on its own channel
+    /// (support.phux_peer_channel_key): this Mac's while a remote host is
+    /// active, the remote host's while this Mac is. Only its session catalog
+    /// is read; every terminal surface belongs to `phux_provider`. Selecting
+    /// one of its sessions exchanges the two (Engine.switchToPeer).
+    phux_peer: ?*PhuxProvider = null,
+    /// The peer's channel is closing for a restart; reopen on its close event.
+    phux_peer_reopen: bool = false,
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
@@ -1048,6 +1059,25 @@ pub const Model = struct {
     pub fn phuxConst(model: *const Model) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
         return model.phux_provider;
+    }
+
+    /// The standby coordinator; see `phux_peer`.
+    pub fn phuxPeer(model: *Model) ?*PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        return model.phux_peer;
+    }
+
+    pub fn phuxPeerConst(model: *const Model) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        return model.phux_peer;
+    }
+
+    /// Whether the active provider dials, or is about to dial, a registered
+    /// remote host. The switcher lists this Mac's sessions first either way.
+    pub fn phuxActiveIsRemote(model: *const Model) bool {
+        if (comptime !support.phux_enabled) return false;
+        const active = model.phux_provider orelse return false;
+        return active.remoteTarget() != null;
     }
 
     pub fn containsTerminal(model: *const Model, terminal_ref: TerminalRef) bool {
@@ -2055,6 +2085,8 @@ pub fn deinitModel(model: *Model) void {
         }
         if (model.phux_provider) |remote| remote.destroy();
         model.phux_provider = null;
+        if (model.phux_peer) |peer| peer.destroy();
+        model.phux_peer = null;
     }
     for (&model.secondary) |*slot| {
         if (slot.*) |workspace| std.heap.page_allocator.destroy(workspace);

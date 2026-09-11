@@ -427,6 +427,55 @@ fn verify_directory(hello: &[u8], attached: &[u8], listing: &[u8]) {
     }
 }
 
+/// The reply to a standby's first host request (ID 1): `GET_STATE` listing two
+/// sessions, `build` (1) and `deploy` (2), for a client that never attaches.
+fn standby_state() -> FrameKind {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "build"),
+            SessionInfo::new(SessionId::new(2), "deploy"),
+        ]);
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+/// Negotiate without attaching, query sessions, and read the fixture back.
+fn verify_standby(hello: &[u8], state: &[u8]) {
+    use phux_client_ffi::{phux_client_query_sessions, phux_client_session_count};
+    use phux_protocol::wire::frame::{Command, StateScope};
+    let client = Client::new();
+    // SAFETY: live same-thread handle with valid spans throughout.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(client.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Hello { .. }));
+        client.feed(hello);
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Negotiated);
+        assert_eq!(
+            phux_client_query_sessions(client.0, 1),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(
+            client.take_outgoing(),
+            FrameKind::Command {
+                request_id: 1,
+                command: Command::GetState {
+                    scope: StateScope::Server
+                }
+            }
+        ));
+        client.feed(state);
+        assert_eq!(phux_client_session_count(client.0), 2);
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Negotiated);
+        assert_eq!(phux_client_outgoing_count(client.0), 0, "no ATTACH, ever");
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os().nth(1).map_or_else(
         || {
@@ -448,17 +497,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let hello_directory = encode(&[hello_with_directory()]);
     let listing = encode(&[directory_listing()]);
     verify_directory(&hello_directory, &attached, &listing);
+    let standby = encode(&[standby_state()]);
+    verify_standby(&hello, &standby);
     std::fs::create_dir_all(&output)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
     std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
+    std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize and directory listing; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), directory_listing.bin ({} bytes) to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing and standby session query; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes) to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),
         listing.len(),
+        standby.len(),
         output.display()
     );
     Ok(())

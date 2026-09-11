@@ -160,6 +160,18 @@ test('Use this Mac returns to the local coordinator and closes the panel', () =>
   assert.equal(model.hostName.length, 0);
 });
 
+test('Disconnect removes the remote host; Use this Mac only makes this Mac active', () => {
+  let [model, cmd] = step(opened(), { kind: 'host_disconnect' });
+  assertRemoteRequest(cmd, new Uint8Array([1, 4, 0]));
+  assert.equal(model.hostBusy, true);
+  assert.equal(step(model, { kind: 'host_disconnect' })[1], null, 'one request in flight');
+  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
+  assert.equal(model.hostOpen, false);
+  assert.equal(cmd.name, 'cockpit.committed');
+  const panel = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  assert.match(panel, /on-press="host_disconnect">Disconnect<\/button>/);
+});
+
 test('the codec refuses what it cannot frame or read', () => {
   assert.deepEqual(remoteRequest(2, new Uint8Array(300)), new Uint8Array([1, 2, 0]));
   assert.equal(remoteReply(new Uint8Array([2, 1, 0, 0])), null, 'version');

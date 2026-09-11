@@ -295,6 +295,8 @@ pub(crate) struct Client {
     pub list_directory: bool,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
+    /// The outstanding `GET_STATE` of a client that lists without attaching.
+    pub session_query: crate::session_query::SessionQuery,
     pub detached: bool,
 }
 
@@ -350,6 +352,7 @@ impl Client {
             terminal_reply: false,
             list_directory: false,
             directory: crate::directory::DirectoryState::default(),
+            session_query: crate::session_query::SessionQuery::default(),
             detached: false,
         }
     }
@@ -464,6 +467,7 @@ impl Client {
         self.operations.disconnect();
         self.workspace.disconnect();
         self.directory.disconnect();
+        self.session_query.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();

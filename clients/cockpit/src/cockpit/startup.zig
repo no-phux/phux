@@ -119,11 +119,40 @@ pub fn createPhuxProviderFromConfig(
     // never admitted by this composition. The remote endpoint is a registry
     // label that phux-client-ffi resolves, pins, and authenticates.
     const remote_target = config.phux_remote.slice();
-    if (remote_target.len != 0) {
+    // A remembered host (`.default` provenance) is reattached beside this
+    // Mac, as the peer; only a configured or environment host is active.
+    if (remote_target.len != 0 and config.phux_remote_source != .default) {
         if (!config_module.validPhuxRemote(remote_target)) return error.InvalidPhuxRemote;
         return try createRemotePhuxProvider(gpa, io, remote_target, session);
     }
     return try PhuxProvider.create(gpa, io, .{ .unix = socket }, session, "phux-cockpit");
+}
+
+/// The coordinator held beside the active one at launch, so the switcher
+/// lists both (docs/REMOTE_HOSTS.md, "Side by side"): this Mac's while a
+/// configured or environment host is active, the remembered host while this
+/// Mac is, and none when no remote host is involved. The remembered host
+/// honors its registry entry's pinned session, as the active one would.
+pub fn createPhuxPeerFromConfig(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+) !?*PhuxProvider {
+    if (comptime !phux_enabled) return null;
+    const remote_target = config.phux_remote.slice();
+    if (remote_target.len == 0) return null;
+    if (!config_module.validPhuxRemote(remote_target)) return error.InvalidPhuxRemote;
+    const peer = if (config.phux_remote_source == .default)
+        try createRemotePhuxProvider(gpa, io, remote_target, null)
+    else blk: {
+        const socket = config.phux_socket.slice();
+        if (!config_module.validPhuxSocket(socket)) return error.InvalidPhuxSocket;
+        // The configured session names the active host's session, not this Mac's.
+        break :blk try PhuxProvider.create(gpa, io, .{ .unix = socket }, null, "phux-cockpit");
+    };
+    // Lists sessions only; never attaches, so it sizes nobody's panes.
+    peer.standBy();
+    return peer;
 }
 
 /// A host selected at launch (the config, `PHUX_REMOTE`, or the remembered
@@ -626,5 +655,7 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     errdefer model_module.deinitModel(initialized.model);
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
     attachPhuxProvider(initialized.model, remote_provider);
+    if (remote_provider != null)
+        initialized.model.phux_peer = try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config);
     return initialized;
 }

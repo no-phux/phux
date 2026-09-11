@@ -499,6 +499,7 @@ fn destinationMatches(actual: model_module.PaletteDestination, expected: model_m
     return switch (expected) {
         .available_terminal => |ref| actual.available_terminal.eql(ref),
         .session => |id| actual.session == id,
+        .peer_session => |id| actual.peer_session == id,
         .placed_terminal => false,
     };
 }
