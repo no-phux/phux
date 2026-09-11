@@ -7,7 +7,7 @@ pub const State = enum(u8) { quiet, attaching, recovering, frozen, unavailable, 
 pub fn state(model: *const model_module.Model, ref: support.TerminalRef) State {
     if (comptime !support.phux_enabled) return .quiet;
     if (support.providerKind(ref) != .phux) return .quiet;
-    const remote = model.phuxConst() orelse return .unavailable;
+    const remote = model.phuxForRefConst(ref) orelse return .unavailable;
     if (model.attachmentPending(ref)) return .recovering;
     const phase = remote.phase(ref) orelse return .attaching;
     if (phase != .live) return phaseState(phase);

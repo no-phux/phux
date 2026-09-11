@@ -49,6 +49,7 @@ const Reply = struct {
     first: ?u16,
     scope: picker.Scope,
     host: []const u8,
+    via: []const u8,
     bytes: []const u8,
 };
 
@@ -60,7 +61,9 @@ fn parse(bytes: []const u8) Reply {
     for (0..count) |_| at += 4 + @as(usize, bytes[at + 3]);
     const scope_at = at + 1 + @as(usize, bytes[at]);
     const host_len: usize = bytes[scope_at + 1];
-    std.debug.assert(scope_at + 2 + host_len == bytes.len);
+    const via_at = scope_at + 2 + host_len;
+    const via_len: usize = bytes[via_at];
+    std.debug.assert(via_at + 1 + via_len == bytes.len);
     return .{
         .status = @enumFromInt(bytes[1]),
         .request_id = std.mem.readInt(u32, bytes[2..6], .little),
@@ -69,6 +72,7 @@ fn parse(bytes: []const u8) Reply {
         .first = if (count == 0) null else std.mem.readInt(u16, bytes[query_end + 1 ..][0..2], .little),
         .scope = @enumFromInt(bytes[scope_at]),
         .host = bytes[scope_at + 2 ..][0..host_len],
+        .via = bytes[via_at + 1 ..][0..via_len],
         .bytes = bytes,
     };
 }

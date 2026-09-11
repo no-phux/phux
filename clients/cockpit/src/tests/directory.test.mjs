@@ -14,17 +14,18 @@ const u32 = n => [n % 256, Math.floor(n / 256) % 256, Math.floor(n / 65536) % 25
 const u16 = n => [n % 256, Math.floor(n / 256)];
 
 /// A `cockpit.directory` reply as the engine encodes it.
-function reply({ status = 2, request = 1, truncated = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '' } = {}) {
+function reply({ status = 2, request = 1, truncated = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '', via = '' } = {}) {
   const p = bytes(path);
   const q = bytes(query);
   const m = bytes(message);
   const h = bytes(host);
+  const v = bytes(via);
   const out = [1, status, ...u32(request), truncated ? 1 : 0, 0, ...u16(total), ...u16(offset), p.length, ...p, q.length, ...q, rows.length];
   for (const [index, name, symlink] of rows) {
     const n = bytes(name);
     out.push(...u16(index), symlink ? 1 : 0, n.length, ...n);
   }
-  out.push(m.length, ...m, scope, h.length, ...h);
+  out.push(m.length, ...m, scope, h.length, ...h, v.length, ...v);
   return new Uint8Array(out);
 }
 function request(kind, id, offset, index, query = '') {
@@ -88,7 +89,29 @@ test('a satellite listing names its host in the heading, and a hub that cannot l
   assert.equal(text(directoryTitle(page)), 'Go to Directory on build-host');
   assert.equal(directoryPage(reply({ scope: 3 })), null, 'an unknown scope is refused');
   const bare = reply();
-  assert.equal(directoryPage(bare.subarray(0, bare.length - 2)), null, 'the scope trailer is required');
+  assert.equal(directoryPage(bare.subarray(0, bare.length - 3)), null, 'the scope trailer is required');
+  assert.equal(directoryPage(bare.subarray(0, bare.length - 1)), null, 'the via trailer is required');
+});
+
+test('a listing through another coordinator names it, and Open Here says why it cannot, sending nothing', () => {
+  let [model] = opened();
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '', scope: 1, host: 'devbox', via: 'mini' }) });
+  assert.equal(text(model.dirTitle), 'Go to Directory on devbox via mini');
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ total: 1, rows: [[0, 'src']], scope: 1, host: 'devbox', via: 'mini' }) });
+  assert.equal(model.dirOpenHere, false);
+  assert.match(text(model.dirNotice), /active coordinator only/);
+  let cmd;
+  [model, cmd] = step(model, { kind: 'dir_here' });
+  assert.equal(directoryCommand(cmd), undefined, 'no cockpit.directory request');
+  assert.equal(model.dirClosing, false);
+  assert.match(text(model.dirNotice), /active coordinator only/);
+  // Its own coordinator's home and the host-without-relay form name it too.
+  assert.equal(text(directoryTitle(directoryPage(reply({ via: 'mini' })))), 'Go to Directory on mini');
+  assert.equal(text(directoryTitle(directoryPage(reply({ scope: 2, host: 'devbox', via: 'mini' })))), 'Go to Directory on mini, not devbox');
+  // The active coordinator's listing keeps Open Here.
+  [model] = opened();
+  [model] = step(model, { kind: 'directory_loaded', body: LISTED });
+  assert.equal(model.dirOpenHere, true);
 });
 
 test('Go to Directory is a menu command with its own chord, not cmd+shift+G', () => {

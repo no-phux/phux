@@ -1,6 +1,14 @@
 //! Identity-based projection of the Rust-owned workspace. Only selection and
 //! native-window placement are remembered here; shared trees always come from
 //! the provider's confirmed snapshot.
+//!
+//! Each coordinator on screen projects its own workspace through its own
+//! `State` (its `authority`). A publication replaces that coordinator's tabs
+//! and nothing else: another showing coordinator's tabs keep their windows,
+//! order and selection, and the replaced group goes back where it was.
+//! Anything no showing coordinator owns (a coordinator that stopped showing,
+//! an ephemeral local tab) gives way, as one coordinator's projection always
+//! cleared it.
 const std = @import("std");
 const contract = @import("provider_contract");
 const shared = contract.workspace;
@@ -62,6 +70,9 @@ pub const State = struct {
     detachments: [capacity]?Subscription = @splat(null),
     views: std.ArrayListUnmanaged(SessionView) = .empty,
     context_hash: ?u64 = null,
+    /// The coordinator whose workspace this projects. Every leaf of every
+    /// window it publishes must carry this id (MixedAuthority otherwise).
+    authority: contract.ProviderId = .phux,
 
     pub fn deinit(self: *State) void {
         self.views.deinit(std.heap.page_allocator);
@@ -94,7 +105,7 @@ pub const State = struct {
         };
         for (0..model_module.max_windows) |index| {
             const workspace = model.wsAtConst(index) orelse continue;
-            captureWindow(&result, workspace, index, model.window_epochs[index]);
+            captureWindow(&result, workspace, index, model.window_epochs[index], self.authority);
         }
         return result;
     }
@@ -113,7 +124,7 @@ pub const State = struct {
 
     pub fn leaveSession(self: *State, model: *Model) !void {
         try self.remember(model);
-        clearProjection(model);
+        _ = clearAuthority(model, self.authority);
         self.session = 0;
         self.revision = 0;
         self.epoch = 0;
@@ -145,7 +156,7 @@ pub const State = struct {
         self.applyHint(model, &previous);
         const candidate = try std.heap.page_allocator.create(Candidate);
         defer std.heap.page_allocator.destroy(candidate);
-        candidate.* = .{};
+        candidate.* = .{ .authority = self.authority };
         try candidate.prepare(model, snapshot, &previous);
         candidate.restoreSelection(&previous);
         candidate.publish(model, &previous);
@@ -189,7 +200,7 @@ pub const State = struct {
     /// Shared membership authorizes discovery/subscription, never input before
     /// the exact replica has completed its ordinary bootstrap barrier.
     pub fn subscribe(self: *State, model: *Model) void {
-        const remote = model.phux() orelse return;
+        const remote = model.phuxFor(self.authority) orelse return;
         if (remote.state() != .attached) return;
         self.subscription_refused = false;
         self.pruneSubscriptions(remote);
@@ -243,7 +254,7 @@ pub const State = struct {
     /// Catalog-only terminals need no replica. Release stream capacity after a
     /// confirmed topology change, while the durable process stays discoverable.
     pub fn releaseUnused(self: *State, model: *Model) void {
-        const remote = model.phux() orelse return;
+        const remote = model.phuxFor(self.authority) orelse return;
         if (remote.state() != .attached) return;
         for (&self.detachments) |*entry| {
             const pending = entry.* orelse continue;
@@ -265,7 +276,7 @@ pub const State = struct {
             } else free = index;
         }
         const index = free orelse return;
-        const remote = model.phux() orelse return;
+        const remote = model.phuxFor(self.authority) orelse return;
         const request = remote.requestDetach(ref) catch return;
         self.detachments[index] = .{ .ref = ref, .request = request, .epoch = remote.connectionEpoch() };
     }
@@ -281,7 +292,7 @@ pub const State = struct {
             } else free = index;
         }
         const index = free orelse return;
-        const remote = model.phux() orelse return;
+        const remote = model.phuxFor(self.authority) orelse return;
         const request = remote.requestAttach(ref) catch {
             self.subscription_refused = true;
             return;
@@ -347,10 +358,11 @@ fn rehomeTabs(model: *Model, source_index: usize) void {
     }
 }
 
-fn captureWindow(view: *SessionView, workspace: *const model_module.Workspace, native_window: usize, epoch: u64) void {
+fn captureWindow(view: *SessionView, workspace: *const model_module.Workspace, native_window: usize, epoch: u64, authority: contract.ProviderId) void {
     view.web_selected[native_window] = workspace.web_selected;
     for (0..workspace.tab_count) |index| {
         const id = workspace.shared_ids[index] orelse continue;
+        if (tabAuthority(&workspace.tabs[index]) != authority) continue;
         if (view.count == view.placements.len) return;
         view.placements[view.count] = .{
             .id = id,
@@ -368,20 +380,81 @@ fn captureWindow(view: *SessionView, workspace: *const model_module.Workspace, n
     }
 }
 
-fn clearProjection(model: *Model) void {
+/// The coordinator a tab belongs to: the id its leaves carry. A shared tab's
+/// leaves all carry one (MixedAuthority otherwise); an empty tab has none.
+pub fn tabAuthority(tree: *const layout.Tree) ?contract.ProviderId {
+    for (tree.nodes) |node| {
+        if (node.kind != .leaf) continue;
+        const ref = node.terminal orelse continue;
+        return ref.provider_id;
+    }
+    return null;
+}
+
+/// Whether a tab stays while `authority` republishes: another coordinator's
+/// tab whose terminals are still on screen.
+fn retainedBeside(model: *const Model, tree: *const layout.Tree, authority: contract.ProviderId) bool {
+    const owner = tabAuthority(tree) orelse return false;
+    if (owner == authority or owner == .local) return false;
+    return model.projectsAuthority(owner);
+}
+
+/// Where a window's cleared group sat, and which kept tab was selected, so a
+/// republished group goes back in place and a kept selection survives.
+const Cleared = struct { anchor: ?usize = null, selected: ?usize = null };
+
+/// Drop `authority`'s tabs, and any tab no showing coordinator owns, from
+/// every window. The kept tabs close up in their order.
+fn clearAuthority(model: *Model, authority: contract.ProviderId) [model_module.max_windows]Cleared {
+    var result: [model_module.max_windows]Cleared = @splat(.{});
     for (0..model_module.max_windows) |index| {
         const workspace = model.wsAt(index) orelse continue;
-        workspace.tabs = @splat(.{});
-        workspace.tab_ids = @splat(0);
-        workspace.shared_ids = @splat(null);
-        workspace.tab_count = 0;
-        workspace.selected_tab = 0;
-        workspace.hovered_tab = model_module.no_hovered_tab;
+        result[index] = clearWindow(model, workspace, authority);
     }
-    model.saved_attachments = .{};
+    // Saved attachment evidence is the active coordinator's alone
+    // (Model.captureAttachmentContexts): its projection replaces it.
+    if (authority == model.attachmentAuthority()) model.saved_attachments = .{};
+    return result;
+}
+
+fn clearWindow(model: *const Model, workspace: *model_module.Workspace, authority: contract.ProviderId) Cleared {
+    var cleared: Cleared = .{};
+    var kept: usize = 0;
+    for (0..workspace.tab_count) |tab| {
+        if (!retainedBeside(model, &workspace.tabs[tab], authority)) {
+            if (cleared.anchor == null) cleared.anchor = kept;
+            continue;
+        }
+        if (tab != kept) {
+            workspace.tabs[kept] = workspace.tabs[tab];
+            workspace.tab_ids[kept] = workspace.tab_ids[tab];
+            workspace.shared_ids[kept] = workspace.shared_ids[tab];
+        }
+        if (tab == workspace.selected_tab) cleared.selected = kept;
+        kept += 1;
+    }
+    for (kept..model_module.max_tabs) |tab| {
+        workspace.tabs[tab] = .{};
+        workspace.tab_ids[tab] = 0;
+        workspace.shared_ids[tab] = null;
+    }
+    workspace.tab_count = kept;
+    workspace.selected_tab = cleared.selected orelse 0;
+    workspace.hovered_tab = model_module.no_hovered_tab;
+    return cleared;
+}
+
+fn retainedCount(model: *const Model, window: usize, authority: contract.ProviderId) usize {
+    const workspace = model.wsAtConst(window) orelse return 0;
+    var count: usize = 0;
+    for (workspace.tabs[0..workspace.tab_count]) |*tree| {
+        if (retainedBeside(model, tree, authority)) count += 1;
+    }
+    return count;
 }
 
 const Candidate = struct {
+    authority: contract.ProviderId = .phux,
     trees: [capacity]layout.Tree = @splat(.{}),
     placements: [capacity]Placement = undefined,
     count: usize = 0,
@@ -392,6 +465,8 @@ const Candidate = struct {
 
     fn prepare(self: *Candidate, model: *const Model, snapshot: shared.Snapshot, previous: *const SessionView) !void {
         if (snapshot.windows.len > capacity or snapshot.nodes.len > self.seen.len) return error.WorkspaceCapacity;
+        // Another showing coordinator's tabs keep their slots.
+        for (0..model_module.max_windows) |window| self.counts[window] = retainedCount(model, window, self.authority);
         for (snapshot.windows, 0..) |window, index| {
             var placement = previous.find(window.id) orelse Placement{
                 .id = window.id,
@@ -472,7 +547,7 @@ const Candidate = struct {
 
     fn recordTerminal(self: *Candidate, ref: TerminalRef) !void {
         if (self.terminal_count == shared.max_replicas) return error.ReplicaCapacity;
-        if (ref.provider_id != .phux) return error.MixedAuthority;
+        if (ref.provider_id != self.authority) return error.MixedAuthority;
         if (self.terminal_count == self.terminals.len) return error.TerminalCapacity;
         for (self.terminals[0..self.terminal_count]) |known| {
             if (known.eql(ref)) return error.DuplicateTerminal;
@@ -482,27 +557,81 @@ const Candidate = struct {
     }
 
     fn publish(self: *const Candidate, model: *Model, previous: *const SessionView) void {
-        clearProjection(model);
+        const cleared = clearAuthority(model, self.authority);
+        // Web selection and the active window are client-wide: only the
+        // active coordinator's projection restores them, so showing a peer
+        // never moves them.
+        const home = self.authority == model.attachmentAuthority();
         for (0..model_module.max_windows) |window| {
             const workspace = model.wsAt(window) orelse continue;
-            workspace.web_selected = previous.web_selected[window];
+            if (home) workspace.web_selected = previous.web_selected[window];
+            self.publishWindow(workspace, window, cleared[window]);
         }
+        mintUnrestoredTabIds(model);
+        if (home) restoreActiveWindow(model, previous);
+        model.pruneAttachmentState();
+    }
+
+    /// Insert this window's placements where the group sat before (after
+    /// the kept tabs when it had none), shifting later kept tabs right.
+    fn publishWindow(self: *const Candidate, workspace: *model_module.Workspace, window: usize, cleared: Cleared) void {
+        const incoming = self.placementsIn(window);
+        const kept = workspace.tab_count;
+        const at = @min(cleared.anchor orelse kept, kept);
+        openGap(workspace, at, kept, incoming);
+        const published = self.fillGap(workspace, window, at);
+        workspace.tab_count = kept + incoming;
+        workspace.selected_tab = selectedAfter(published, cleared.selected, at, incoming);
+    }
+
+    fn placementsIn(self: *const Candidate, window: usize) usize {
+        var count: usize = 0;
+        for (self.placements[0..self.count]) |placement| {
+            if (placement.native_window == window) count += 1;
+        }
+        return count;
+    }
+
+    /// Write this window's placements into the gap at `at`; the tab a
+    /// placement selects, if any.
+    fn fillGap(self: *const Candidate, workspace: *model_module.Workspace, window: usize, at: usize) ?usize {
+        var tab = at;
+        var selected: ?usize = null;
         for (self.placements[0..self.count], 0..) |placement, index| {
-            const workspace = model.wsAt(placement.native_window).?;
-            const tab = workspace.tab_count;
+            if (placement.native_window != window) continue;
             workspace.tabs[tab] = self.trees[index];
             workspace.shared_ids[tab] = placement.id;
             workspace.tab_ids[tab] = if (placement.tab_generation == workspace.tab_generation) placement.tab_id else 0;
-            workspace.tab_count += 1;
-            if (placement.selected) workspace.selected_tab = tab;
+            if (placement.selected) selected = tab;
+            tab += 1;
         }
-        mintUnrestoredTabIds(model);
-        if (model.windowOpen(previous.active_window) and model.window_epochs[previous.active_window] == previous.active_epoch) {
-            model.active_window = previous.active_window;
-        } else model.active_window = model.firstOpenWindow();
-        model.pruneAttachmentState();
+        return selected;
     }
 };
+
+fn restoreActiveWindow(model: *Model, previous: *const SessionView) void {
+    if (model.windowOpen(previous.active_window) and model.window_epochs[previous.active_window] == previous.active_epoch) {
+        model.active_window = previous.active_window;
+    } else model.active_window = model.firstOpenWindow();
+}
+
+/// Shift the kept tabs from `at` right by `width`, leaving a gap there.
+fn openGap(workspace: *model_module.Workspace, at: usize, kept: usize, width: usize) void {
+    var from = kept;
+    while (from > at) {
+        from -= 1;
+        workspace.tabs[from + width] = workspace.tabs[from];
+        workspace.tab_ids[from + width] = workspace.tab_ids[from];
+        workspace.shared_ids[from + width] = workspace.shared_ids[from];
+    }
+}
+
+/// A published selection wins; else a kept selection, shifted past the gap.
+fn selectedAfter(published: ?usize, kept: ?usize, at: usize, width: usize) usize {
+    if (published) |value| return value;
+    const value = kept orelse return 0;
+    return if (value >= at) value + width else value;
+}
 
 /// Reserve every preserved key before minting missing ones. A rollover can
 /// revisit a key belonging to a later candidate; incremental publication would

@@ -677,10 +677,19 @@ pub const PaletteDestination = union(enum) {
     placed_terminal: PlacedTerminalDestination,
     available_terminal: TerminalRef,
     session: u32,
-    /// A session of the standby coordinator (`Model.phux_peer`). Selecting
-    /// one makes that coordinator the active one.
-    peer_session: u32,
+    /// A session of a coordinator held beside the active one
+    /// (`Model.phux_peers`), named by that coordinator's identity. Selecting
+    /// one shows it beside the others without disconnecting anything.
+    peer_session: PeerSession,
+    /// A peer that cannot list sessions: its group's one row, carrying the
+    /// reason. Never selectable, so a failed host is visible, not absent.
+    peer_unavailable: support.ProviderId,
 };
+
+pub const PeerSession = struct { coordinator: support.ProviderId, id: u32 };
+
+/// Coordinators beside the active one: this Mac's plus registered hosts.
+pub const max_phux_peers: usize = 3;
 
 /// Replace the bounded remote inventory with the provider's latest complete
 /// publication. The inventory ceiling is independent of every workspace's tab
@@ -715,14 +724,26 @@ pub const Model = struct {
     /// terminal's first spawn, so no live argv ever aliases a dead one.
     cwd_argv: [max_terminals]local.CwdArgv = [_]local.CwdArgv{.{}} ** max_terminals,
     phux_provider: ?*PhuxProvider = null,
-    /// The standby coordinator, held beside the active one on its own channel
-    /// (support.phux_peer_channel_key): this Mac's while a remote host is
-    /// active, the remote host's while this Mac is. Only its session catalog
-    /// is read; every terminal surface belongs to `phux_provider`. Selecting
-    /// one of its sessions exchanges the two (Engine.switchToPeer).
-    phux_peer: ?*PhuxProvider = null,
-    /// The peer's channel is closing for a restart; reopen on its close event.
-    phux_peer_reopen: bool = false,
+    /// Coordinators held beside the active one: this Mac's while a remote
+    /// host is active, and any registered hosts. Each has its own worker and
+    /// channel (support.phuxPeerChannelKey), so any one restarts alone. A
+    /// peer LISTS until one of its sessions is picked: standby, GET_STATE
+    /// only, never attached, so it sizes nobody's panes and streams nothing.
+    /// Picking one makes it SHOW: it attaches that session and its shared
+    /// workspace projects beside the active coordinator's (`peer_workspaces`).
+    /// Terminal identity is qualified by coordinator
+    /// (`TerminalRef.provider_id`), so every ref routes to exactly the
+    /// provider that minted it (`phuxForRef`), never to another server that
+    /// happens to use the same numeric id.
+    phux_peers: [max_phux_peers]?*PhuxProvider = @splat(null),
+    /// A peer's channel is closing for a restart; reopen on its close event.
+    phux_peer_reopen: [max_phux_peers]bool = @splat(false),
+    /// A peer's connection failed or was lost, and it has not listed since.
+    /// Its group then shows why, instead of disappearing.
+    peer_failed: [max_phux_peers]bool = @splat(false),
+    /// Each showing peer's projection, as `shared_workspace` is the active
+    /// coordinator's. A listing peer's is empty.
+    peer_workspaces: [max_phux_peers]@import("shared_workspace.zig").State = [_]@import("shared_workspace.zig").State{.{}} ** max_phux_peers,
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
@@ -1061,15 +1082,112 @@ pub const Model = struct {
         return model.phux_provider;
     }
 
-    /// The standby coordinator; see `phux_peer`.
+    /// The first peer: the one a single remote host stands beside.
     pub fn phuxPeer(model: *Model) ?*PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        return model.phux_peer;
+        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        return null;
     }
 
     pub fn phuxPeerConst(model: *const Model) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        return model.phux_peer;
+        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        return null;
+    }
+
+    pub fn phuxPeerAt(model: *Model, slot: usize) ?*PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (slot >= max_phux_peers) return null;
+        return model.phux_peers[slot];
+    }
+
+    pub fn phuxPeerAtConst(model: *const Model, slot: usize) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (slot >= max_phux_peers) return null;
+        return model.phux_peers[slot];
+    }
+
+    /// The slot of the peer connected to coordinator `id`.
+    pub fn peerSlot(model: *const Model, id: support.ProviderId) ?usize {
+        if (comptime !support.phux_enabled) return null;
+        if (id == .local) return null;
+        for (model.phux_peers, 0..) |slot, index| {
+            const peer = slot orelse continue;
+            if (peer.providerId() == id) return index;
+        }
+        return null;
+    }
+
+    /// The provider that mints refs for coordinator `id`: the active one or
+    /// a peer. Null for a local PTY and for a coordinator no longer held.
+    pub fn phuxFor(model: *Model, id: support.ProviderId) ?*PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (id == .local) return null;
+        if (model.phux_provider) |active| if (active.providerId() == id) return active;
+        const slot = model.peerSlot(id) orelse return null;
+        return model.phux_peers[slot];
+    }
+
+    pub fn phuxForConst(model: *const Model, id: support.ProviderId) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (id == .local) return null;
+        if (model.phux_provider) |active| if (active.providerId() == id) return active;
+        const slot = model.peerSlot(id) orelse return null;
+        return model.phux_peers[slot];
+    }
+
+    /// Where a ref's input, sizing and presentation go: the coordinator
+    /// that minted it, and no other.
+    pub fn phuxForRef(model: *Model, ref: TerminalRef) ?*PhuxProvider {
+        return model.phuxFor(ref.provider_id);
+    }
+
+    pub fn phuxForRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        return model.phuxForConst(ref.provider_id);
+    }
+
+    /// Whether coordinator `id`'s terminals are on screen: the active one's
+    /// always may be; a peer's only while it shows a session. A listing
+    /// peer is never attached, so none of its terminals can be.
+    pub fn projectsAuthority(model: *const Model, id: support.ProviderId) bool {
+        if (comptime !support.phux_enabled) return false;
+        if (model.phux_provider) |active| if (active.providerId() == id) return true;
+        const slot = model.peerSlot(id) orelse return false;
+        return model.phux_peers[slot].?.showing();
+    }
+
+    /// The projection state for coordinator `id`'s shared workspace.
+    pub fn sharedWorkspaceFor(model: *Model, id: support.ProviderId) ?*@import("shared_workspace.zig").State {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phux_provider) |active| if (active.providerId() == id) return &model.shared_workspace;
+        const slot = model.peerSlot(id) orelse return null;
+        return &model.peer_workspaces[slot];
+    }
+
+    /// The coordinator whose placements carry saved attachment evidence:
+    /// the active one. A showing peer's placements are projected from its
+    /// own shared workspace on every connection instead.
+    pub fn attachmentAuthority(model: *const Model) support.ProviderId {
+        if (model.phuxConst()) |active| return active.providerId();
+        return .phux;
+    }
+
+    /// Whether a ref is the active coordinator's own terminal.
+    pub fn activeOwnsRef(model: *const Model, ref: TerminalRef) bool {
+        return ref.provider_id == model.attachmentAuthority();
+    }
+
+    /// A tab another coordinator projected. Cockpit's tab and split commands
+    /// address the active coordinator, so they refuse such a tab rather than
+    /// send one machine's window or terminal to another.
+    pub fn foreignTree(model: *const Model, tab: *const layout.Tree) bool {
+        const owner = @import("shared_workspace.zig").tabAuthority(tab) orelse return false;
+        return owner != .local and owner != model.attachmentAuthority();
+    }
+
+    pub fn foreignTab(model: *const Model, workspace: *const Workspace, index: usize) bool {
+        const tab = workspace.treeConst(index) orelse return false;
+        return model.foreignTree(tab);
     }
 
     /// Whether the active provider dials, or is about to dial, a registered
@@ -1084,7 +1202,7 @@ pub const Model = struct {
         if (model.attachmentPending(terminal_ref)) return false;
         return switch (support.providerKind(terminal_ref)) {
             .local => model.provider.contains(terminal_ref),
-            .phux => if (model.phuxConst()) |remote| remote.contains(terminal_ref) else false,
+            .phux => if (model.phuxForRefConst(terminal_ref)) |remote| remote.contains(terminal_ref) else false,
         };
     }
 
@@ -1092,7 +1210,7 @@ pub const Model = struct {
         if (model.attachmentPending(terminal_ref)) return null;
         return switch (support.providerKind(terminal_ref)) {
             .local => model.provider.owner(terminal_ref),
-            .phux => if (model.phuxConst()) |remote| remote.owner(terminal_ref) else null,
+            .phux => if (model.phuxForRefConst(terminal_ref)) |remote| remote.owner(terminal_ref) else null,
         };
     }
 
@@ -1100,7 +1218,7 @@ pub const Model = struct {
         if (model.attachmentPending(owner_value.terminal_ref)) return false;
         return switch (support.providerKind(owner_value.terminal_ref)) {
             .local => model.provider.ownerIsCurrent(owner_value),
-            .phux => if (model.phuxConst()) |remote| remote.ownerIsCurrent(owner_value) else false,
+            .phux => if (model.phuxForRefConst(owner_value.terminal_ref)) |remote| remote.ownerIsCurrent(owner_value) else false,
         };
     }
 
@@ -1113,7 +1231,7 @@ pub const Model = struct {
     pub fn agentSessionsUnder(model: *const Model, terminal_ref: TerminalRef, out: []*const AgentSession) usize {
         if (comptime !support.phux_enabled) return 0;
         if (support.providerKind(terminal_ref) != .phux) return 0;
-        const remote = model.phuxConst() orelse return 0;
+        const remote = model.phuxForRefConst(terminal_ref) orelse return 0;
         return remote.agentSessionsUnder(terminal_ref, out);
     }
 
@@ -1122,7 +1240,7 @@ pub const Model = struct {
     pub fn agentAttention(model: *const Model, terminal_ref: TerminalRef) bool {
         if (comptime !support.phux_enabled) return false;
         if (support.providerKind(terminal_ref) != .phux) return false;
-        const remote = model.phuxConst() orelse return false;
+        const remote = model.phuxForRefConst(terminal_ref) orelse return false;
         return remote.agentAttention(terminal_ref);
     }
 
@@ -1130,14 +1248,14 @@ pub const Model = struct {
     pub fn isAgentSession(model: *const Model, terminal_ref: TerminalRef) bool {
         if (comptime !support.phux_enabled) return false;
         if (support.providerKind(terminal_ref) != .phux) return false;
-        const remote = model.phuxConst() orelse return false;
+        const remote = model.phuxForRefConst(terminal_ref) orelse return false;
         return remote.isAgentSession(terminal_ref);
     }
 
     pub fn remotePresentation(model: *const Model, terminal_ref: TerminalRef) ?Presentation {
         if (model.attachmentPending(terminal_ref)) return null;
         if (support.providerKind(terminal_ref) != .phux) return null;
-        const remote = model.phuxConst() orelse return null;
+        const remote = model.phuxForRefConst(terminal_ref) orelse return null;
         return remote.presentation(terminal_ref);
     }
 
@@ -1305,7 +1423,7 @@ pub const Model = struct {
 
     pub fn resolveRestoredAttachment(model: *Model, ref: TerminalRef) bool {
         if (!model.restoredAttachmentMatches(ref)) return false;
-        const remote = model.phuxConst() orelse return false;
+        const remote = model.phuxForRefConst(ref) orelse return false;
         const presentation = remote.presentation(ref) orelse return false;
         if (presentation.phase != .live) return false;
         const index = model.saved_attachments.find(ref).?;
@@ -1322,6 +1440,7 @@ pub const Model = struct {
     fn captureAttachmentContexts(model: *Model) !void {
         var table: topology.attachments.Table = .{};
         var pending: [topology.attachments.max_references]bool = @splat(false);
+        const authority = model.attachmentAuthority();
         for (0..max_windows) |window_index| {
             const workspace = model.wsAtConst(window_index) orelse continue;
             for (workspace.tabs[0..workspace.tab_count]) |current| {
@@ -1329,6 +1448,9 @@ pub const Model = struct {
                 const count = current.terminals(&refs);
                 for (refs[0..count]) |ref| {
                     if (ref.terminal_id != .phux) continue;
+                    // One context describes one coordinator's connection; a
+                    // showing peer's refs must never be saved under it.
+                    if (ref.provider_id != authority) continue;
                     const index = try table.append(model.attachmentReference(ref));
                     pending[index] = model.attachmentPending(ref);
                 }
@@ -2076,6 +2198,7 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalResourceId) !void {
 
 pub fn deinitModel(model: *Model) void {
     model.shared_workspace.deinit();
+    for (&model.peer_workspaces) |*state| state.deinit();
     model.clearRemotePaint();
     if (comptime support.phux_enabled) {
         if (model.pointer_state) |pointer_state| {
@@ -2085,8 +2208,10 @@ pub fn deinitModel(model: *Model) void {
         }
         if (model.phux_provider) |remote| remote.destroy();
         model.phux_provider = null;
-        if (model.phux_peer) |peer| peer.destroy();
-        model.phux_peer = null;
+        for (&model.phux_peers) |*slot| {
+            if (slot.*) |peer| peer.destroy();
+            slot.* = null;
+        }
     }
     for (&model.secondary) |*slot| {
         if (slot.*) |workspace| std.heap.page_allocator.destroy(workspace);

@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # Shipping navigation seam
@@ -137,13 +137,20 @@ keep their own names. The host panel talks to the engine over its
 own `cockpit.remote` request and completion slot, never through catalog
 pages; see [Remote hosts](REMOTE_HOSTS.md).
 
-When a standby coordinator is held beside the active one, its sessions
-follow as a second host group, with this Mac's group always first. Rows
-read `Phux session · This Mac` or `Phux session · <host>`. A standby session
-row is kind 2 (session) and carries target resource tag 3 (`peer_session`),
-which is held against the standby provider's own context and connection.
-Activating it makes that coordinator the active one, through the same
-retarget-and-restart path as Connect to Host.
+When peer coordinators are held beside the active one, each lists its
+sessions as its own host group, with this Mac's group always first. Rows
+read `Phux session · This Mac` or `Phux session · <host>`. A peer session
+row is kind 2 (session) and carries target resource tag 3 (`peer_session`)
+under that peer's own provider id, held against that peer's context and
+connection. Activating it shows the session beside the others: only that
+peer restarts its connection to attach it, and its tabs join the windows
+(see [Remote hosts](REMOTE_HOSTS.md#several-coordinators)). A peer that
+cannot list contributes one kind 2 row naming its host, with detail
+`Unavailable · <reason>` or `Connecting…`, never selectable; its target is an
+inert tag 3 with session 0. Every terminal target carries the provider id of
+the coordinator that minted the ref and is resolved against that
+coordinator alone, so a target for one server's terminal 7 never selects
+another's.
 
 ## Snapshot and connection state
 

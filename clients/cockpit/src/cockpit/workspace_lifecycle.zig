@@ -27,7 +27,7 @@ pub fn closePane(model: *Model, fx: anytype, ref: support.TerminalRef, kill: boo
 fn releaseRemote(model: *Model, ref: support.TerminalRef) bool {
     if (comptime !support.phux_enabled) return true;
     if (support.providerKind(ref) != .phux) return true;
-    const remote = model.phux() orelse return true;
+    const remote = model.phuxForRef(ref) orelse return true;
     if (!remote.contains(ref)) return true;
     if (remote.state() != .attached) return true;
     _ = remote.requestDetach(ref) catch {

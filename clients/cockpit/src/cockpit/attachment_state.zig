@@ -64,7 +64,9 @@ pub const Reference = struct {
     context: Context = .{},
 
     pub fn valid(self: *const Reference) bool {
-        if (self.terminal_ref.provider_id != .phux) return false;
+        // Any Phux coordinator: this Mac's (`.phux`) or a registered host's
+        // (contract.phuxCoordinatorId). The endpoint in the context names it.
+        if (!contract.isPhuxCoordinator(self.terminal_ref.provider_id)) return false;
         const remote = switch (self.terminal_ref.terminal_id) {
             .local => return false,
             .phux => |id| id,

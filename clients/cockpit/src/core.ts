@@ -33,6 +33,7 @@ import {
   directoryRowLabel,
   directoryNotice,
   directoryTitle,
+  DIR_OTHER_COORDINATOR_NOTICE,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -219,6 +220,8 @@ export interface Model {
   readonly dirNotice: Uint8Array;
   /// The picker's heading: names the satellite a listing comes from.
   readonly dirTitle: Uint8Array;
+  /// Open Here can open a tab in this listing (the active coordinator's).
+  readonly dirOpenHere: boolean;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -696,7 +699,7 @@ function openDirectory(model: Model): DirectoryDecision {
     dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
     dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
     dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing..."),
-    dirTitle: asciiBytes("Go to Directory") });
+    dirTitle: asciiBytes("Go to Directory"), dirOpenHere: true });
   return directoryDecision(next, directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), true);
 }
 
@@ -746,7 +749,7 @@ function showDirectory(model: Model, page: DirectoryPage): Model {
   const rows = directoryRows(page);
   const shown: Model = { ...model, dirRequest: page.request, dirStarting: false, dirBusy: false,
     dirAwaiting: page.status === DIR_STATUS_PENDING, dirRows: rows, dirCursor: 0,
-    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page),
+    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page), dirOpenHere: page.via.length === 0,
     dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total, dirNotice: directoryNotice(page) };
   return highlightDirectory(shown, Math.min(model.dirCursor, rows.length - 1));
 }
@@ -819,6 +822,8 @@ function activateDirectory(model: Model, index: number): DirectoryDecision {
   if (model.dirBusy || model.dirStarting) return unchangedDirectory(model);
   const row = index >= 0 && index <= 65535 ? Math.trunc(index) : 0;
   if (row === DIR_UP) return startDirectoryListing(model, DIR_KIND_PARENT, 0);
+  // A listing through another coordinator: say so, and send nothing.
+  if (row === DIR_HERE && !model.dirOpenHere) return unchangedDirectory({ ...model, dirNotice: asciiBytes(DIR_OTHER_COORDINATOR_NOTICE) });
   if (row === DIR_HERE) {
     return directoryDecision({ ...model, dirBusy: true, dirClosing: true, dirNotice: asciiBytes("Opening a new tab...") },
       directoryRequest(DIR_KIND_HERE, model.dirRequest, model.dirOffset, DIR_HERE, model.dirQuery), false);
@@ -1350,6 +1355,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       dirPath: new Uint8Array(0),
       dirNotice: new Uint8Array(0),
       dirTitle: asciiBytes("Go to Directory"),
+      dirOpenHere: true,
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,

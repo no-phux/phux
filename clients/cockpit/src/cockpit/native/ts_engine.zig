@@ -25,6 +25,7 @@ const interaction = @import("../terminal_interaction.zig");
 const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
+const shared_workspace = @import("../shared_workspace.zig");
 
 test "projection refusal publishes newly retained completion independently from refusal flag" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -389,7 +390,13 @@ pub const Engine = struct {
 
     fn drainRemoteNotices(self: *Engine, fx: anytype) bool {
         if (comptime !support.phux_enabled) return false;
-        const remote = self.model.phux() orelse return false;
+        return self.drainNotices(fx, self.model.phux() orelse return false);
+    }
+
+    /// One coordinator's bells, each checked against that coordinator's own
+    /// current owner.
+    fn drainNotices(self: *Engine, fx: anytype, remote: *support.PhuxProvider) bool {
+        if (comptime !support.phux_enabled) return false;
         var changed = false;
         // Host admission is bounded to max_notices; every owned payload is freed.
         while (remote.takeNotice()) |notice| {
@@ -498,20 +505,32 @@ pub const Engine = struct {
         const server = remote.serverId() orelse return error.MissingServerIdentity;
         const session = remote.selectedSessionId() orelse return error.MissingSession;
         var remote_endpoint: [@import("../attachment_state.zig").max_endpoint_bytes]u8 = undefined;
-        const endpoint = switch (remote.endpointDescriptor()) {
+        const endpoint = try coordinatorEndpoint(remote, &remote_endpoint);
+        model.shared_workspace.authority = remote.providerId();
+        model.shared_workspace.setContext(contextHash(endpoint, server));
+        try model.setAttachmentContext(endpoint, server, session);
+    }
+
+    /// Where a coordinator is reached. A registered host is identified by its
+    /// registry label; the prefix keeps it disjoint from every absolute
+    /// socket path, so a saved placement can never match the wrong
+    /// coordinator.
+    fn coordinatorEndpoint(remote: anytype, out: *[@import("../attachment_state.zig").max_endpoint_bytes]u8) ![]const u8 {
+        return switch (remote.endpointDescriptor()) {
             .unix => |path| path,
-            // A registered host is identified by its registry label. The
-            // prefix keeps it disjoint from every absolute socket path, so a
-            // saved placement can never match the wrong coordinator.
-            .remote => |host| std.fmt.bufPrint(&remote_endpoint, "phux-remote:{s}", .{host.target}) catch
+            .remote => |host| std.fmt.bufPrint(out, "phux-remote:{s}", .{host.target}) catch
                 return error.UnsupportedEndpoint,
             else => return error.UnsupportedEndpoint,
         };
+    }
+
+    /// Endpoint and server incarnation, never the session: numeric
+    /// identities from a replacement server cannot recover old focus.
+    fn contextHash(endpoint: []const u8, server: []const u8) u64 {
         var hash = std.hash.Wyhash.init(0);
         hash.update(endpoint);
         hash.update(server);
-        model.shared_workspace.setContext(hash.final());
-        try model.setAttachmentContext(endpoint, server, session);
+        return hash.final();
     }
 
     fn refuseSharedWorkspace(self: *Engine) bool {
@@ -529,17 +548,27 @@ pub const Engine = struct {
     /// The real runtime timer and explicit navigation share a bounded refresh;
     /// UI invalidations cannot turn it into a request/reply spin loop.
     pub fn refreshWorkspace(self: *Engine) void {
-        // The standby's list is refreshed with the switcher's; it announces
-        // only when the list actually changed, so this cannot feed itself.
-        if (self.model.phuxPeer()) |peer| peer.refreshStandby();
-        const remote = self.model.phux() orelse return;
-        if (remote.state() != .attached) return;
+        // A listing peer's list is refreshed with the switcher's; it
+        // announces only when the list actually changed, so this cannot feed
+        // itself.
+        for (self.model.phux_peers) |value| if (value) |peer| peer.refreshStandby();
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         if (self.last_workspace_refresh) |last| {
             if (last.durationTo(now).toMilliseconds() < 1000) return;
         }
-        const request = remote.requestWorkspaceRefresh() catch return;
-        if (request != null) self.last_workspace_refresh = now;
+        var requested = refreshAttached(self.model.phux());
+        for (self.model.phux_peers) |value| {
+            const peer = value orelse continue;
+            if (peer.showing()) requested = refreshAttached(peer) or requested;
+        }
+        if (requested) self.last_workspace_refresh = now;
+    }
+
+    fn refreshAttached(remote: ?*support.PhuxProvider) bool {
+        const value = remote orelse return false;
+        if (value.state() != .attached) return false;
+        const request = value.requestWorkspaceRefresh() catch return false;
+        return request != null;
     }
 
     fn providerDisconnected(self: *Engine) void {
@@ -591,9 +620,11 @@ pub const Engine = struct {
     pub fn stopProviderChannels(self: *Engine, fx: anytype) void {
         if (self.model.phux()) |remote| remote.stop();
         fx.closeChannel(support.phux_channel_key);
-        if (self.model.phuxPeer()) |peer| peer.stop();
-        self.model.phux_peer_reopen = false;
-        fx.closeChannel(support.phux_peer_channel_key);
+        for (self.model.phux_peers, 0..) |value, slot| {
+            if (value) |peer| peer.stop();
+            self.model.phux_peer_reopen[slot] = false;
+            fx.closeChannel(support.phuxPeerChannelKey(slot));
+        }
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();
             pointer_state.monitor = null;
@@ -607,6 +638,9 @@ pub const Engine = struct {
     /// native mutation. The model fingerprint is the complete list of state
     /// transitions worth saving, so new intent kinds cannot forget to opt in.
     pub fn noteTopologyChange(self: *Engine, fx: anytype, on_fire: anytype) void {
+        // After every native mutation: a peer none of whose tabs is on
+        // screen any more goes back to listing.
+        _ = self.settlePeers(fx);
         const state = &self.model.state;
         const fingerprint = self.model.topologyFingerprint();
         if (fingerprint == state.fingerprint) return;
@@ -742,7 +776,8 @@ pub const Engine = struct {
             .placed_terminal => |placed| self.selectPlacedNavigation(placed, fx),
             .available_terminal => |ref| self.selectAvailableNavigation(ref, fx),
             .session => |id| self.selectSessionNavigation(id, fx),
-            .peer_session => |id| self.switchToPeer(id, fx),
+            .peer_session => |target| self.showPeerSession(target.coordinator, target.id, fx),
+            .peer_unavailable => |coordinator| self.retryPeer(coordinator, fx),
         };
     }
 
@@ -787,32 +822,41 @@ pub const Engine = struct {
                 if (!self.selectPlacedNavigation(placed, fx)) return null;
                 return .applied;
             },
-            .available_terminal => |ref| {
-                const remote = self.model.phux() orelse return null;
-                if (remote.terminalSession(ref) == remote.selectedSessionId()) {
-                    self.creation.requestAttachCorrelated(self.model, ref, command_id) catch return null;
-                    self.model.shared_workspace.desired_terminal = null;
-                    self.creation.supersedeFocusExceptCommand(command_id);
-                    return .accepted_pending;
-                }
-                const session = remote.terminalSession(ref) orelse return null;
-                return self.admitSessionCommand(command_id, session, ref, fx);
-            },
-            .session => |session| {
-                if (self.sessionSelectionStatus(session) == .applied) {
-                    self.supersedeSelection();
-                    return .applied;
-                }
-                return self.admitSessionCommand(command_id, session, null, fx);
-            },
-            // The other coordinator becomes the active one; its attach is
-            // reported through the ordinary connection status, like Connect
-            // to Host, not through a correlated session receipt.
-            .peer_session => |session| {
-                if (!self.switchToPeer(session, fx)) return null;
-                return .accepted_pending;
-            },
+            .available_terminal => |ref| return self.admitAvailableTerminal(command_id, ref, fx),
+            .session => |session| return self.admitSession(command_id, session, fx),
+            // That coordinator shows the session beside the others; its
+            // attach is reported through its own connection, not through a
+            // correlated session receipt.
+            .peer_session => |target| return pendingIf(self.showPeerSession(target.coordinator, target.id, fx)),
+            .peer_unavailable => |coordinator| return pendingIf(self.retryPeer(coordinator, fx)),
         }
+    }
+
+    fn pendingIf(accepted: bool) ?tab_commands.Status {
+        return if (accepted) .accepted_pending else null;
+    }
+
+    /// The available inventory is the active coordinator's: a terminal of
+    /// its current session attaches here; another session's switches first.
+    fn admitAvailableTerminal(self: *Engine, command_id: u64, ref: TerminalRef, fx: anytype) ?tab_commands.Status {
+        const remote = self.model.phux() orelse return null;
+        if (ref.provider_id != remote.providerId()) return null;
+        if (remote.terminalSession(ref) == remote.selectedSessionId()) {
+            self.creation.requestAttachCorrelated(self.model, ref, command_id) catch return null;
+            self.model.shared_workspace.desired_terminal = null;
+            self.creation.supersedeFocusExceptCommand(command_id);
+            return .accepted_pending;
+        }
+        const session = remote.terminalSession(ref) orelse return null;
+        return self.admitSessionCommand(command_id, session, ref, fx);
+    }
+
+    fn admitSession(self: *Engine, command_id: u64, session: u32, fx: anytype) ?tab_commands.Status {
+        if (self.sessionSelectionStatus(session) == .applied) {
+            self.supersedeSelection();
+            return .applied;
+        }
+        return self.admitSessionCommand(command_id, session, null, fx);
     }
 
     fn sessionSelectionStatus(self: *const Engine, id: u32) tab_commands.Status {
@@ -855,7 +899,7 @@ pub const Engine = struct {
             if (!self.model.windowOpen(operation.window)) return self.tabReceipt(id, .stale_target);
             self.model.active_window = operation.window;
         }
-        const status = self.executeOperation(id, operation, fx) orelse {
+        const status = self.peerOperation(operation) orelse self.executeOperation(id, operation, fx) orelse {
             self.model.active_window = previous;
             return self.tabReceipt(id, .unavailable);
         };
@@ -863,6 +907,35 @@ pub const Engine = struct {
         var receipt = self.tabReceipt(id, .none);
         receipt.status = status;
         return receipt;
+    }
+
+    /// Close Tab and Close Pane on a peer's tab go to that coordinator. The
+    /// active coordinator's correlated queue cannot track another server's
+    /// mutation, so the receipt is applied once it is sent; the peer's next
+    /// publication drops the tab. Null: not a peer operation.
+    fn peerOperation(self: *Engine, operation: protocol.Intent) ?tab_commands.Status {
+        if (self.model.phux() == null) return null;
+        const sent = switch (operation.kind) {
+            .close_tab => self.peerCloseTab(operation.argument),
+            .native_command => if (operation.argument == 3) self.peerClosePane() else null,
+            else => null,
+        } orelse return null;
+        return if (sent) .applied else .rejected;
+    }
+
+    /// Null when the tab is not a peer's.
+    fn peerCloseTab(self: *Engine, index: u8) ?bool {
+        const workspace = self.model.ws();
+        if (index >= workspace.tab_count) return null;
+        if (!self.model.foreignTab(workspace, index)) return null;
+        return self.closePeerWindow(workspace, index);
+    }
+
+    /// Null when the focused pane is not a peer's.
+    fn peerClosePane(self: *Engine) ?bool {
+        const ref = self.model.focusedTerminalRef() orelse return null;
+        if (support.providerKind(ref) != .phux or self.model.activeOwnsRef(ref)) return null;
+        return self.closePeerPane(ref);
     }
 
     fn executeOperation(self: *Engine, id: u64, operation: protocol.Intent, fx: anytype) ?tab_commands.Status {
@@ -885,6 +958,7 @@ pub const Engine = struct {
             .close_tab => {
                 const workspace = self.model.ws();
                 if (operation.argument >= workspace.tab_count) return error.StaleTarget;
+                if (self.model.foreignTab(workspace, operation.argument)) return error.ForeignCoordinator;
                 const shared_id = workspace.shared_ids[operation.argument] orelse return error.StaleTarget;
                 try self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
             },
@@ -897,6 +971,7 @@ pub const Engine = struct {
         switch (command) {
             3 => {
                 const ref = self.model.focusedTerminalRef() orelse return error.StaleTarget;
+                if (!self.model.activeOwnsRef(ref)) return error.ForeignCoordinator;
                 try self.model.shared_mutations.requestRemoveCorrelated(self.model, ref, id);
             },
             4 => try self.creation.requestCorrelated(self.model, .split_right, id),
@@ -908,16 +983,21 @@ pub const Engine = struct {
 
     fn reorderCorrelated(self: *Engine, command_id: u64, right: bool) !void {
         const model = self.model;
+        if (model.foreignTab(model.ws(), model.ws().selected_tab)) return error.ForeignCoordinator;
         const id = model.ws().shared_ids[model.ws().selected_tab] orelse return error.StaleTarget;
-        const windows = model.phux().?.workspaceSnapshot().windows;
+        const target = neighborIndex(model.phux().?.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
+        try model.shared_mutations.requestReorderCorrelated(model, id, @intCast(target), command_id);
+    }
+
+    /// Where window `id` moves one step left or right in the coordinator's
+    /// order; null at either end or when it is not listed.
+    fn neighborIndex(windows: anytype, id: [16]u8, right: bool) ?usize {
         for (windows, 0..) |window, index| {
             if (!std.mem.eql(u8, &window.id, &id)) continue;
-            if ((!right and index == 0) or (right and index + 1 == windows.len)) return error.StaleTarget;
-            const target = if (right) index + 1 else index - 1;
-            try model.shared_mutations.requestReorderCorrelated(model, id, @intCast(target), command_id);
-            return;
+            if ((!right and index == 0) or (right and index + 1 == windows.len)) return null;
+            return if (right) index + 1 else index - 1;
         }
-        return error.StaleTarget;
+        return null;
     }
 
     fn operationSupersedesFocus(operation: protocol.Intent) bool {
@@ -1003,99 +1083,347 @@ pub const Engine = struct {
         return accepted;
     }
 
-    // ---------------------------------------------- the standby coordinator
+    // ------------------------------------ coordinators beside the active one
     //
-    // The model holds the active Phux provider and at most one peer: this
-    // Mac's coordinator while a registered remote host is active, and the
-    // remote host's while this Mac is. The peer runs its own worker on its own
-    // channel so either restarts alone. Only its session catalog is read; it
-    // lists as its own host group in the switcher, and selecting one of its
-    // sessions exchanges the two through the retarget-and-restart path that
-    // Connect to Host uses.
+    // The model holds the active Phux provider and up to max_phux_peers more:
+    // this Mac's coordinator while a registered remote host is active, and
+    // registered hosts. Each runs its own worker on its own channel
+    // (support.phuxPeerChannelKey), so any one restarts or fails alone. A peer
+    // LISTS its sessions (GET_STATE, never attached, so it sizes nobody's
+    // panes and streams nothing) until one of them is picked. It then SHOWS
+    // that session: it attaches it on its own connection and its shared
+    // workspace projects into the same windows as the active coordinator's.
+    // No other coordinator redials. Terminal identity carries the coordinator
+    // (TerminalRef.provider_id), so every key, resize and selection routes to
+    // the one that minted it.
 
-    /// Open the peer's channel and start (or restart) its worker. A peer that
-    /// cannot open stays listed without sessions until its next restart.
-    pub fn openPeerChannel(self: *Engine, fx: anytype, on_event: anytype) void {
+    /// Open every peer's channel at launch.
+    pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
+        for (0..model_module.max_phux_peers) |slot| self.openPeerChannel(fx, slot, on_event);
+    }
+
+    /// Open one peer's channel and start (or restart) its worker. A peer that
+    /// cannot open is shown as unavailable until its next restart.
+    pub fn openPeerChannel(self: *Engine, fx: anytype, slot: usize, on_event: anytype) void {
         if (comptime !support.phux_enabled) return;
-        const peer = self.model.phuxPeer() orelse return;
-        const handle = fx.openChannel(.{ .key = support.phux_peer_channel_key, .on_event = on_event, .max_pending = 1 });
-        if (!handle.live()) return;
+        const peer = self.model.phuxPeerAt(slot) orelse return;
+        const key = support.phuxPeerChannelKey(slot);
+        const handle = fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
+        if (!handle.live()) {
+            self.model.peer_failed[slot] = true;
+            return;
+        }
         if (peer.state() == .new) {
-            peer.open(handle) catch fx.closeChannel(support.phux_peer_channel_key);
+            peer.open(handle) catch return self.peerOpenFailed(fx, slot);
         } else {
-            peer.reconnect(handle) catch fx.closeChannel(support.phux_peer_channel_key);
+            peer.reconnect(handle) catch return self.peerOpenFailed(fx, slot);
         }
     }
 
-    /// Drain a peer wake. The bool says the switcher's host groups may have
-    /// moved, which is one ordered invalidation like any catalog change.
+    fn peerOpenFailed(self: *Engine, fx: anytype, slot: usize) void {
+        self.model.peer_failed[slot] = true;
+        fx.closeChannel(support.phuxPeerChannelKey(slot));
+    }
+
+    /// Drain one peer's wake. A listing peer can only move the switcher's
+    /// host groups; a showing peer also projects its workspace and rings
+    /// its bells. Either way it is one ordered invalidation.
     pub fn onPeerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
-        if (event.key != support.phux_peer_channel_key) return false;
+        // A showing peer's focused pane may have just become live.
+        defer self.syncRemoteFocus();
+        const slot = support.peerSlotForKey(event.key, model_module.max_phux_peers) orelse return false;
+        if (self.model.phuxPeerAt(slot) == null) return false;
+        return switch (event.kind) {
+            .data => self.drainPeer(fx, slot),
+            .closed, .rejected => self.peerClosed(fx, slot, on_event),
+        };
+    }
+
+    fn drainPeer(self: *Engine, fx: anytype, slot: usize) bool {
+        const peer = self.model.phuxPeerAt(slot).?;
+        const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
+        if (delta.sessions_listed or delta.ready_published) self.model.peer_failed[slot] = false;
+        if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
+        // Nothing presents a listing peer's terminals, so nothing rings for
+        // them; its list settling is what moves.
+        while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
+        return self.commitProviderChange(delta.sessions_listed or delta.detached);
+    }
+
+    fn drainShowingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
+        if (delta.detached) return self.peerDetached(fx, slot);
+        const projected = self.drainShowingPeer(fx, slot);
+        return self.commitProviderChange(projected or peerPublicationMoved(delta));
+    }
+
+    /// The server ended the shown session: its tabs leave, and the peer goes
+    /// back to listing on a fresh connection instead of freezing for good.
+    fn peerDetached(self: *Engine, fx: anytype, slot: usize) bool {
+        self.stopShowingPeer(slot);
+        self.model.phuxPeerAt(slot).?.standBy();
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPeer")) return self.failPeer(fx, slot);
+        _ = fx.restartPeer(self, slot);
+        return self.commitProviderChange(true);
+    }
+
+    /// A failed peer's group row, picked: dial it again. The group reads
+    /// Connecting… until it lists.
+    pub fn retryPeer(self: *Engine, coordinator: support.ProviderId, fx: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPeer")) return false;
+        const slot = self.model.peerSlot(coordinator) orelse return false;
+        if (!self.model.peer_failed[slot]) return false;
+        self.model.peer_failed[slot] = false;
+        return fx.restartPeer(self, slot);
+    }
+
+    /// A settled Go to Directory listing moves too: the picker may be
+    /// listing through this peer.
+    fn peerPublicationMoved(delta: support.SyncDelta) bool {
+        return delta.sessions_listed or delta.ready_published or delta.metadata_changed or delta.directory_changed;
+    }
+
+    /// Reopen a peer restarting on purpose; otherwise its group says it failed.
+    /// A close event carries only its slot's channel key: one that arrives
+    /// after Disconnect and a new Connect reused the slot is taken for the new
+    /// peer's, so it stops that connection too and marks it failed. Picking
+    /// its row redials it.
+    fn peerClosed(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
         const model = self.model;
-        const peer = model.phuxPeer() orelse return false;
-        switch (event.kind) {
-            .data => {
-                const delta = peer.drainReadiness() catch {
-                    peer.stop();
-                    fx.closeChannel(support.phux_peer_channel_key);
-                    return self.commitProviderChange(true);
-                };
-                // Nothing presents a peer's terminals, so nothing rings for them.
-                while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
-                // A standby never attaches; its list settling is what moves.
-                return self.commitProviderChange(delta.sessions_listed or delta.detached);
-            },
-            .closed, .rejected => {
-                peer.stop();
-                if (model.phux_peer_reopen) {
-                    model.phux_peer_reopen = false;
-                    self.openPeerChannel(fx, on_event);
-                }
-                return self.commitProviderChange(true);
-            },
+        model.phuxPeerAt(slot).?.stop();
+        if (model.phux_peer_reopen[slot]) {
+            model.phux_peer_reopen[slot] = false;
+            self.openPeerChannel(fx, slot, on_event);
+        } else model.peer_failed[slot] = true;
+        return self.commitProviderChange(true);
+    }
+
+    /// A peer's connection failed: stop it and say so in its host group.
+    /// Its placed tabs keep their last frames, frozen, until it reconnects.
+    fn failPeer(self: *Engine, fx: anytype, slot: usize) bool {
+        const peer = self.model.phuxPeerAt(slot) orelse return false;
+        peer.stop();
+        self.model.peer_failed[slot] = true;
+        fx.closeChannel(support.phuxPeerChannelKey(slot));
+        return self.commitProviderChange(true);
+    }
+
+    /// A showing peer's wake, as `drainPhux` is the active one's: attach and
+    /// detach results settle its subscriptions, its bells ring, and its
+    /// shared workspace projects beside the other coordinators' tabs.
+    fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize) bool {
+        const model = self.model;
+        const peer = model.phuxPeerAt(slot).?;
+        const state = &model.peer_workspaces[slot];
+        var changed = false;
+        while (peer.takeOperationResult()) |result| {
+            _ = state.completeSubscription(result, peer.workspaceSnapshot().request_id);
+            changed = true;
+        }
+        changed = self.drainNotices(fx, peer) or changed;
+        const published = peer.workspaceSnapshot();
+        if (published.state == .unavailable) return changed;
+        peerProjectionContext(peer, state) catch return changed;
+        const projected = self.projectPeer(peer, state, published);
+        if (published.status != .pending) state.releaseUnused(model);
+        state.subscribe(model);
+        return projected or changed;
+    }
+
+    /// Apply a peer's publication beside the other coordinators' tabs. A
+    /// refused one keeps the last good tabs and is named on its rows.
+    fn projectPeer(self: *Engine, peer: *support.PhuxProvider, state: anytype, published: anytype) bool {
+        const model = self.model;
+        const generation = state.projection_generation;
+        const first = state.session == 0;
+        const projected = state.apply(model, published, peer.connectionEpoch()) catch blk: {
+            const newly = !state.refused;
+            state.refused = true;
+            break :blk newly;
+        };
+        // Showing a session means seeing it: its first projection takes the
+        // selection, so it is not taken back to listing as hidden.
+        if (first and state.session != 0) revealAuthority(model, peer.providerId());
+        if (generation != state.projection_generation) self.split_drag = null;
+        return projected;
+    }
+
+    /// Select the first tab coordinator `id` projected, in the first window
+    /// holding one, and make that window active.
+    fn revealAuthority(model: *Model, id: support.ProviderId) void {
+        for (0..model_module.max_windows) |index| {
+            if (!model.windowOpen(index)) continue;
+            const workspace = model.wsAt(index) orelse continue;
+            for (0..workspace.tab_count) |tab| {
+                const tree = workspace.treeConst(tab) orelse continue;
+                if (shared_workspace.tabAuthority(tree) != id) continue;
+                workspace.selected_tab = tab;
+                workspace.web_selected = false;
+                model.active_window = index;
+                return;
+            }
         }
     }
 
-    /// Restart the peer as Reconnect restarts the active provider: a live
-    /// channel publishes its close first, then reopens on that event.
-    pub fn restartPeerConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
+    /// Keep each showing peer on screen or let it go. A peer is shown only
+    /// while one of its tabs is the selected, painted tab of an open window.
+    /// Once none is (another session's tab was chosen, its tabs were closed,
+    /// its session has no windows) it returns to listing, so it holds no
+    /// viewport that could size its session for anyone else. Before its
+    /// first projection lands there is nothing to judge. Called after every
+    /// native mutation; true when a peer went back to listing.
+    pub fn settlePeers(self: *Engine, fx: anytype) bool {
         if (comptime !support.phux_enabled) return false;
-        const peer = self.model.phuxPeer() orelse return false;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime !@hasDecl(Fx, "restartPeer")) return false;
+        var changed = false;
+        for (0..model_module.max_phux_peers) |slot| {
+            if (!self.peerHidden(slot)) continue;
+            self.unshowPeer(fx, slot);
+            changed = true;
+        }
+        return self.commitProviderChange(changed);
+    }
+
+    fn peerHidden(self: *const Engine, slot: usize) bool {
+        const model = self.model;
+        const peer = model.phuxPeerAtConst(slot) orelse return false;
+        if (!peer.showing()) return false;
+        if (model.peer_workspaces[slot].session == 0) return false;
+        return !authorityVisible(model, peer.providerId());
+    }
+
+    fn authorityVisible(model: *const Model, id: support.ProviderId) bool {
+        for (0..model_module.max_windows) |index| {
+            if (!model.windowOpen(index)) continue;
+            const workspace = model.wsAtConst(index) orelse continue;
+            if (workspace.web_selected) continue;
+            const tree = workspace.treeConst(workspace.selected_tab) orelse continue;
+            if (shared_workspace.tabAuthority(tree) == id) return true;
+        }
+        return false;
+    }
+
+    /// Back to listing: its tabs leave, and it reconnects as a standby, so
+    /// its attach (and every viewport it held) ends and the new connection
+    /// only asks GET_STATE.
+    fn unshowPeer(self: *Engine, fx: anytype, slot: usize) void {
+        self.stopShowingPeer(slot);
+        self.model.phuxPeerAt(slot).?.standBy();
+        _ = fx.restartPeer(self, slot);
+    }
+
+    /// Close a peer's tab on that coordinator: the same layout-only window
+    /// removal a tab of the active coordinator sends to its own. Its
+    /// terminals keep running there; its next publication drops the tab.
+    fn closePeerWindow(self: *Engine, workspace: *const model_module.Workspace, index: usize) bool {
+        const tree = workspace.treeConst(index) orelse return false;
+        const id = workspace.shared_ids[index] orelse return false;
+        const owner = shared_workspace.tabAuthority(tree) orelse return false;
+        // Revision and session are the peer's, filled in when addressed.
+        return self.requestPeerMutation(owner, .{ .expected_revision = 0, .session_id = 0, .kind = .remove_window, .window_id = id });
+    }
+
+    /// Close a peer's pane on that coordinator.
+    fn closePeerPane(self: *Engine, ref: TerminalRef) bool {
+        const peer = self.model.phuxForRef(ref) orelse return false;
+        const window = @import("../shared_mutations.zig").terminalWindow(peer.workspaceSnapshot(), ref) orelse return false;
+        return self.requestPeerMutation(ref.provider_id, .{ .expected_revision = 0, .session_id = 0, .kind = .remove, .window_id = window, .terminal_ref = ref });
+    }
+
+    /// One layout mutation addressed to the showing peer that owns it,
+    /// against the revision it last published.
+    fn requestPeerMutation(self: *Engine, coordinator: support.ProviderId, mutation: @import("provider_contract").workspace.Mutation) bool {
+        const slot = self.model.peerSlot(coordinator) orelse return false;
+        const peer = self.model.phux_peers[slot].?;
+        if (!peer.showing() or peer.state() != .attached) return false;
+        const published = peer.workspaceSnapshot();
+        var addressed = mutation;
+        addressed.expected_revision = published.revision;
+        addressed.session_id = published.session_id;
+        _ = peer.requestWorkspaceMutation(addressed) catch return false;
+        self.supersedeSelection();
+        return true;
+    }
+
+    fn peerProjectionContext(peer: anytype, state: anytype) !void {
+        const server = peer.serverId() orelse return error.MissingServerIdentity;
+        var buffer: [@import("../attachment_state.zig").max_endpoint_bytes]u8 = undefined;
+        const endpoint = try coordinatorEndpoint(peer, &buffer);
+        state.authority = peer.providerId();
+        state.setContext(contextHash(endpoint, server));
+    }
+
+    /// Restart one peer as Reconnect restarts the active provider: a live
+    /// channel publishes its close first, then reopens on that event.
+    pub fn restartPeerConnection(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
+        if (comptime !support.phux_enabled) return false;
+        const peer = self.model.phuxPeerAt(slot) orelse return false;
         if (peer.state() != .new) peer.stop();
-        if (fx.peerChannelLive()) {
-            self.model.phux_peer_reopen = true;
-            fx.closeChannel(support.phux_peer_channel_key);
+        if (fx.peerChannelLive(slot)) {
+            self.model.phux_peer_reopen[slot] = true;
+            fx.closeChannel(support.phuxPeerChannelKey(slot));
         } else {
-            self.model.phux_peer_reopen = false;
-            self.openPeerChannel(fx, on_event);
+            self.model.phux_peer_reopen[slot] = false;
+            self.openPeerChannel(fx, slot, on_event);
         }
         return true;
     }
 
-    /// Remove the peer entirely: its host group leaves the switcher.
-    pub fn dropPeer(self: *Engine, fx: anytype) void {
+    /// Remove one peer entirely: its host group leaves the switcher and its
+    /// tabs leave the windows. Every other coordinator stays as it was.
+    pub fn dropPeer(self: *Engine, fx: anytype, slot: usize) void {
         if (comptime !support.phux_enabled) return;
-        const peer = self.model.phux_peer orelse return;
-        self.model.phux_peer = null;
-        self.model.phux_peer_reopen = false;
+        const model = self.model;
+        const peer = model.phuxPeerAt(slot) orelse return;
+        self.stopShowingPeer(slot);
+        model.phux_peers[slot] = null;
+        model.phux_peer_reopen[slot] = false;
+        model.peer_failed[slot] = false;
         peer.stop();
         const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(support.phux_peer_channel_key);
+        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(support.phuxPeerChannelKey(slot));
         peer.destroy();
         self.revision +%= 1;
     }
 
-    /// Point the active provider at `endpoint` and keep the coordinator it
-    /// leaves beside it as the peer (created on first use), then restart
-    /// both. The leaving side is where the active provider goes now or is
-    /// about to go, so an exchange before a restart has applied the previous
-    /// one still keeps the right host. `endpoint`, `session` and `label` must
-    /// not borrow either provider's pending target; switchToPeer copies.
+    /// Take a showing peer's tabs out of the windows and forget its
+    /// projection. Done before its identity changes or it goes.
+    fn stopShowingPeer(self: *Engine, slot: usize) void {
+        const model = self.model;
+        const peer = model.phuxPeerAt(slot) orelse return;
+        const state = &model.peer_workspaces[slot];
+        if (peer.showing()) {
+            // Its own tabs, by the id they carry; never another's.
+            state.authority = peer.providerId();
+            state.leaveSession(model) catch {};
+            self.split_drag = null;
+        }
+        state.deinit();
+        state.* = .{};
+    }
+
+    /// Make `endpoint` the active coordinator and keep the one it leaves
+    /// listed beside the others. A peer already reaching `endpoint` trades
+    /// places with the active provider; otherwise the leaving coordinator
+    /// takes a free slot. Only those two restart, through the path Reconnect
+    /// uses. `endpoint`, `session` and `label` must not borrow either
+    /// provider's pending target.
     pub fn exchangeCoordinators(self: *Engine, fx: anytype, endpoint: support.PhuxEndpoint, session: ?[]const u8, label: ?[]const u8) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const model = self.model;
         const active = model.phux() orelse return error.NoProvider;
+        // Already the active coordinator: a plain retarget, no second copy.
+        if (support.PhuxProvider.coordinatorId(endpoint) == active.effectiveProviderId()) {
+            try active.requestRetarget(endpoint, session, label);
+            const Fx = navigationFxType(@TypeOf(fx));
+            if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
+            return;
+        }
+        const slot = self.peerSlotForEndpoint(endpoint) orelse self.freePeerSlot() orelse return error.PeerCapacity;
         const gpa = std.heap.page_allocator;
         // Copied: the active retarget below frees a pending target these
         // slices would otherwise point into.
@@ -1105,8 +1433,11 @@ pub const Engine = struct {
         // committed, so a failure leaves both providers as they were.
         const next_active = try active.prepareRetarget(endpoint, session, label);
         errdefer active.discardRetarget(next_active);
-        if (model.phux_peer) |peer| {
+        if (model.phux_peers[slot]) |peer| {
             const next_peer = try peer.prepareRetarget(leaving.descriptor(), leaving.session, leaving.label);
+            // Its tabs carry the identity it is about to give up.
+            self.stopShowingPeer(slot);
+            peer.standBy();
             active.commitRetarget(next_active);
             peer.commitRetarget(next_peer);
         } else {
@@ -1116,44 +1447,74 @@ pub const Engine = struct {
             // Lists sessions only; never attaches, so it sizes nobody's panes.
             peer.standBy();
             active.commitRetarget(next_active);
-            model.phux_peer = peer;
+            model.phux_peers[slot] = peer;
         }
-        self.restartCoordinators(fx);
+        model.peer_failed[slot] = false;
+        self.restartCoordinators(fx, slot);
     }
 
-    fn restartCoordinators(self: *Engine, fx: anytype) void {
+    fn peerSlotForEndpoint(self: *const Engine, endpoint: support.PhuxEndpoint) ?usize {
+        const wanted = support.PhuxProvider.coordinatorId(endpoint);
+        for (self.model.phux_peers, 0..) |value, slot| {
+            const peer = value orelse continue;
+            if (peer.effectiveProviderId() == wanted) return slot;
+        }
+        return null;
+    }
+
+    fn freePeerSlot(self: *const Engine) ?usize {
+        for (self.model.phux_peers, 0..) |value, slot| if (value == null) return slot;
+        return null;
+    }
+
+    fn restartCoordinators(self: *Engine, fx: anytype, slot: usize) void {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
-        if (comptime @hasDecl(Fx, "restartPeer")) _ = fx.restartPeer(self);
+        if (comptime @hasDecl(Fx, "restartPeer")) _ = fx.restartPeer(self, slot);
     }
 
-    /// A session of the other coordinator: make that coordinator active,
-    /// attached to the chosen session, and stand the current one by.
-    pub fn switchToPeer(self: *Engine, session: u32, fx: anytype) bool {
+    /// A session of a peer coordinator: show it beside the others. Only that
+    /// peer restarts its connection, and its first frame after HELLO_OK is
+    /// then ATTACH for that session; the active coordinator and every other
+    /// peer keep their connections. A peer already showing a session leaves
+    /// it for this one.
+    pub fn showPeerSession(self: *Engine, coordinator: support.ProviderId, session: u32, fx: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
-        const peer = self.model.phuxPeer() orelse return false;
-        // Borrowed from the peer's session catalog, which no retarget frees.
-        const name = peerSessionName(peer, session) orelse return false;
-        // Copied: the exchange retargets the peer, freeing any pending
-        // target its borrowed endpoint and label would point into.
-        var incoming = peer.copyTarget(std.heap.page_allocator) catch return false;
-        defer incoming.deinit(std.heap.page_allocator);
-        self.exchangeCoordinators(fx, incoming.descriptor(), name, incoming.label) catch return false;
+        if (comptime !@hasDecl(Fx, "restartPeer")) return false;
+        const model = self.model;
+        const slot = self.showableSlot(coordinator, session) orelse return false;
+        const peer = model.phux_peers[slot].?;
+        const state = &model.peer_workspaces[slot];
+        state.authority = peer.providerId();
+        if (peer.showing()) {
+            if (peer.selectedSessionId() == session and peer.state() == .attached) {
+                self.supersedeSelection();
+                return true;
+            }
+            state.leaveSession(model) catch return false;
+        }
+        peer.show(session) catch return false;
+        _ = fx.restartPeer(self, slot);
         self.supersedeSelection();
         return true;
     }
 
-    /// The chosen session by name, which is how the retargeted connection
-    /// attaches it. An unnamed session is refused rather than sent as a null
-    /// name, which the server would read as "its last session".
-    fn peerSessionName(peer: anytype, id: u32) ?[]const u8 {
+    /// The slot of a peer that lists `session` and may show it now.
+    fn showableSlot(self: *const Engine, coordinator: support.ProviderId, session: u32) ?usize {
+        const model = self.model;
+        // Mid-exchange two providers can briefly hold one coordinator id.
+        if (model.phuxConst()) |active| if (active.pending_retarget != null) return null;
+        const slot = model.peerSlot(coordinator) orelse return null;
+        if (!peerListsSession(model.phux_peers[slot].?, session)) return null;
+        return slot;
+    }
+
+    fn peerListsSession(peer: anytype, id: u32) bool {
         for (peer.standbyCatalog()) |entry| {
-            if (entry.id != id) continue;
-            return if (entry.name.len == 0) null else entry.name;
+            if (entry.id == id) return true;
         }
-        return null;
+        return false;
     }
 
     fn reconnectNavigation(self: *Engine, fx: anytype) bool {
@@ -1219,10 +1580,11 @@ pub const Engine = struct {
     }
 
     /// Closing the last leaf retires its window; remote execution stays live.
-    fn closeTab(self: *Engine, index: u8, fx: anytype) bool {
+    pub fn closeTab(self: *Engine, index: u8, fx: anytype) bool {
         const model = self.model;
         if (model.phux() != null) {
             if (index >= model.ws().tab_count) return false;
+            if (model.foreignTab(model.ws(), index)) return self.closePeerWindow(model.ws(), index);
             const id = model.ws().shared_ids[index] orelse return false;
             model.shared_mutations.requestRemoveWindowNative(model, id) catch return false;
             self.supersedeSelection();
@@ -1368,17 +1730,12 @@ pub const Engine = struct {
 
     fn moveSharedTab(self: *Engine, right: bool) bool {
         const model = self.model;
+        if (model.foreignTab(model.ws(), model.ws().selected_tab)) return false;
         const id = model.ws().shared_ids[model.ws().selected_tab] orelse return false;
         const remote = model.phux() orelse return false;
-        const windows = remote.workspaceSnapshot().windows;
-        for (windows, 0..) |window, index| {
-            if (!std.mem.eql(u8, &window.id, &id)) continue;
-            if ((!right and index == 0) or (right and index + 1 == windows.len)) return false;
-            const target = if (right) index + 1 else index - 1;
-            model.shared_mutations.requestReorderNative(model, id, @intCast(target)) catch return false;
-            return true;
-        }
-        return false;
+        const target = neighborIndex(remote.workspaceSnapshot().windows, id, right) orelse return false;
+        model.shared_mutations.requestReorderNative(model, id, @intCast(target)) catch return false;
+        return true;
     }
 
     fn clipboardCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
@@ -1511,6 +1868,8 @@ pub const Engine = struct {
     fn closeFocusedPane(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
         if (self.model.phux() != null) {
+            // Another coordinator's pane closes on that coordinator.
+            if (!self.model.activeOwnsRef(ref)) return self.closePeerPane(ref);
             self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;
             self.supersedeSelection();
             return true;
@@ -1526,8 +1885,10 @@ pub const Engine = struct {
     pub fn openTabAt(self: *Engine, cwd: []const u8, owner: ?support.TerminalRef) bool {
         if (self.model.phux() == null) return false;
         self.supersedeSelection();
-        self.creation.requestIn(self.model, .tab, cwd, owner) catch {
-            self.model.terminal_limit_refused = true;
+        self.creation.requestIn(self.model, .tab, cwd, owner) catch |err| {
+            // Only capacity is the terminal limit; any other refusal is the
+            // picker's own to state.
+            self.model.terminal_limit_refused = durable_creation.isCapacityError(err);
             return false;
         };
         self.model.terminal_limit_refused = false;
@@ -1536,8 +1897,9 @@ pub const Engine = struct {
 
     fn createDurable(self: *Engine, kind: durable_creation.Kind) bool {
         self.supersedeSelection();
-        self.creation.request(self.model, kind) catch {
-            self.model.terminal_limit_refused = true;
+        self.creation.request(self.model, kind) catch |err| {
+            // A split of another coordinator's pane is refused, not a limit.
+            if (err != error.ForeignCoordinator) self.model.terminal_limit_refused = true;
             return false;
         };
         self.model.terminal_limit_refused = false;
@@ -1714,7 +2076,7 @@ pub const Engine = struct {
 
     fn remoteNaturalKey(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         const input = terminal_runtime.providerNaturalKey(event) orelse return false;
-        const remote = self.model.phux() orelse return false;
+        const remote = self.model.phuxForRef(ref) orelse return false;
         const owner = self.model.terminalOwner(ref) orelse return false;
         self.remote_natural_keys_held |= terminal_runtime.macosNaturalTextKeyMask(event.key);
         remote.sendKey(owner, &input) catch {};
@@ -1723,7 +2085,7 @@ pub const Engine = struct {
 
     fn remoteScrollKey(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         const state = self.model.remoteUi(ref) orelse return false;
-        const remote = self.model.phux() orelse return false;
+        const remote = self.model.phuxForRef(ref) orelse return false;
         const presentation = self.model.remotePresentation(ref) orelse return false;
         const scroll = scrollKey(event, presentation.rows) orelse return false;
         remote.scrollViewport(state.owner, scroll) catch {};
@@ -2017,6 +2379,8 @@ pub const Engine = struct {
         const ratio = tree.node(drag.node).fraction;
         tree.setFraction(drag.node, drag.original_fraction);
         if (!commit or ratio == drag.original_fraction) return ratio != drag.original_fraction;
+        // Another coordinator's split snaps back rather than reaching this one.
+        if (self.model.foreignTree(tree)) return true;
         const path = @import("../shared_workspace.zig").splitPath(tree, drag.node) catch return false;
         self.model.shared_mutations.requestResizeNative(self.model, id, path.bits, path.len, ratio) catch {
             self.model.shared_workspace.refused = true;
@@ -2144,16 +2508,21 @@ pub const Engine = struct {
         self.creation.observeFocus(self.model);
         const next = self.currentRemoteFocusOwner();
         if (support.optOwnerEql(self.remote_focus_owner, next)) return;
-        const remote = self.model.phux() orelse return;
-        if (self.remote_focus_owner) |previous| remote.sendFocus(previous, false) catch {};
+        // Focus can move between coordinators: each side hears it on its own
+        // connection.
+        if (self.remote_focus_owner) |previous| {
+            if (self.model.phuxForRef(previous.terminal_ref)) |remote| remote.sendFocus(previous, false) catch {};
+        }
         self.remote_focus_owner = next;
-        if (next) |owner| remote.sendFocus(owner, true) catch {};
+        if (next) |owner| {
+            if (self.model.phuxForRef(owner.terminal_ref)) |remote| remote.sendFocus(owner, true) catch {};
+        }
     }
 
     fn currentRemoteFocusOwner(self: *Engine) ?support.ReplicaOwner {
         const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
         if (comptime support.phux_enabled) {
-            if (ref) |value| if (self.model.phux()) |remote| remote.acknowledgeBell(value);
+            if (ref) |value| if (self.model.phuxForRef(value)) |remote| remote.acknowledgeBell(value);
         }
         return if (ref) |value| self.model.terminalOwner(value) else null;
     }

@@ -8,8 +8,9 @@ const Entry = model_module.PaletteDestination;
 const TerminalRef = model_module.TerminalRef;
 
 pub const max_len = 34 + 9 + support.RemoteResourceId.max_host_bytes;
-/// `peer_session` names a session of the standby coordinator; its context is
-/// that provider's, so a replaced or exchanged peer invalidates it.
+/// `peer_session` names a session of the peer coordinator `Target.provider_id`
+/// names; its context is that provider's, so a replaced, retargeted or
+/// dropped peer invalidates it. `session` is the active coordinator's.
 pub const Resource = union(enum) { terminal: TerminalRef, session: u32, peer_session: u32 };
 
 pub const Context = struct {
@@ -24,12 +25,13 @@ pub const Target = struct {
     resource: Resource,
 
     pub fn resolve(self: Target, model: *const Model) ?Entry {
-        if (self.resource == .peer_session) return resolvePeerSession(model, self.context, self.resource.peer_session);
+        if (self.resource == .peer_session) return resolvePeerSession(model, self.provider_id, self.context, self.resource.peer_session);
         const current = contextFor(model, self.provider_id) orelse return null;
         if (!std.meta.eql(current, self.context)) return null;
         return switch (self.resource) {
-            .terminal => |ref| resolveTerminal(model, ref),
-            .session => |id| resolveSession(model, id),
+            .terminal => |ref| if (ref.provider_id == self.provider_id) resolveTerminal(model, ref) else null,
+            // A session by number is only the active coordinator's.
+            .session => |id| if (activeId(model) == self.provider_id) resolveSession(model, id) else null,
             .peer_session => unreachable,
         };
     }
@@ -56,58 +58,82 @@ pub const Target = struct {
     }
 };
 
+/// A coordinator's context, whichever of the held coordinators minted `id`:
+/// its provider and host lifetimes and its connection. A ref of a
+/// coordinator no longer held has none, so it resolves to nothing.
 fn contextFor(model: *const Model, id: support.ProviderId) ?Context {
     if (id == .local) return .{ .provider = model.provider.context_id };
-    if (id != .phux) return null;
     if (comptime !support.phux_enabled) return null;
-    const remote = model.phuxConst() orelse return null;
+    const remote = model.phuxForConst(id) orelse return null;
     return .{ .provider = remote.context_id, .host = remote.host.context_id, .epoch = remote.connectionEpoch() };
 }
 
-/// The standby coordinator's context: its own provider and host lifetimes
-/// and the connection its session catalog came from. Exchanging the two
-/// coordinators or replacing the peer changes it.
-fn peerContext(model: *const Model) ?Context {
+fn activeId(model: *const Model) ?support.ProviderId {
     if (comptime !support.phux_enabled) return null;
-    const peer = model.phuxPeerConst() orelse return null;
+    const remote = model.phuxConst() orelse return null;
+    return remote.providerId();
+}
+
+/// A peer coordinator's context: its own provider and host lifetimes and
+/// the connection its session catalog came from. Exchanging, retargeting or
+/// dropping the peer changes it.
+fn peerContext(model: *const Model, coordinator: support.ProviderId) ?Context {
+    if (comptime !support.phux_enabled) return null;
+    const slot = model.peerSlot(coordinator) orelse return null;
+    const peer = model.phuxPeerAtConst(slot).?;
     return .{ .provider = peer.context_id, .host = peer.host.context_id, .epoch = peer.host.sessions_generation };
 }
 
 pub fn capture(model: *const Model, entry: Entry) ?Target {
-    if (entry == .peer_session) return .{
-        .provider_id = .phux,
-        .context = peerContext(model) orelse return null,
-        .resource = .{ .peer_session = entry.peer_session },
+    return switch (entry) {
+        .placed_terminal => |placed| captureTerminal(model, entry, placed.terminal_ref),
+        .available_terminal => |ref| captureTerminal(model, entry, ref),
+        .session => |id| captureSession(model, entry, id),
+        .peer_session => |target| capturePeerSession(model, target.coordinator, target.id),
+        // No session is numbered 0: it names the group's retry while failed.
+        .peer_unavailable => |coordinator| capturePeerSession(model, coordinator, 0),
     };
-    const resource: Resource = switch (entry) {
-        .placed_terminal => |placed| .{ .terminal = placed.terminal_ref },
-        .available_terminal => |ref| .{ .terminal = ref },
-        .session => |id| .{ .session = id },
-        .peer_session => unreachable,
-    };
-    const provider_id: support.ProviderId = switch (resource) {
-        .terminal => |ref| ref.provider_id,
-        .session, .peer_session => .phux,
-    };
+}
+
+/// Held against the coordinator that minted the ref.
+fn captureTerminal(model: *const Model, entry: Entry, ref: TerminalRef) ?Target {
+    var context = contextFor(model, ref.provider_id) orelse return null;
+    if (ref.provider_id != .local) context.epoch = inventoryEpoch(model, entry);
+    return .{ .provider_id = ref.provider_id, .context = context, .resource = .{ .terminal = ref } };
+}
+
+/// A session by number is the active coordinator's.
+fn captureSession(model: *const Model, entry: Entry, id: u32) ?Target {
+    const provider_id = activeId(model) orelse return null;
     var context = contextFor(model, provider_id) orelse return null;
-    if (provider_id == .phux) context.epoch = inventoryEpoch(model, entry);
-    return .{ .provider_id = provider_id, .context = context, .resource = resource };
+    context.epoch = inventoryEpoch(model, entry);
+    return .{ .provider_id = provider_id, .context = context, .resource = .{ .session = id } };
+}
+
+fn capturePeerSession(model: *const Model, coordinator: support.ProviderId, id: u32) ?Target {
+    const context = peerContext(model, coordinator) orelse return null;
+    return .{ .provider_id = coordinator, .context = context, .resource = .{ .peer_session = id } };
 }
 
 fn inventoryEpoch(model: *const Model, entry: Entry) u64 {
     if (comptime !support.phux_enabled) return 0;
-    const remote = model.phuxConst() orelse return 0;
     return switch (entry) {
-        .placed_terminal => |placed| if (remote.owner(placed.terminal_ref)) |owner| owner.generation.epoch_id else 0,
-        .available_terminal => |ref| if (catalogContains(model, ref)) remote.connectionEpoch() else 0,
-        .session => remote.host.sessions_generation,
-        .peer_session => 0,
+        .placed_terminal => |placed| blk: {
+            const remote = model.phuxForRefConst(placed.terminal_ref) orelse break :blk 0;
+            break :blk if (remote.owner(placed.terminal_ref)) |owner| owner.generation.epoch_id else 0;
+        },
+        .available_terminal => |ref| blk: {
+            const remote = model.phuxForRefConst(ref) orelse break :blk 0;
+            break :blk if (catalogContains(model, ref)) remote.connectionEpoch() else 0;
+        },
+        .session => if (model.phuxConst()) |remote| remote.host.sessions_generation else 0,
+        .peer_session, .peer_unavailable => 0,
     };
 }
 
 fn placedReplicaCurrent(model: *const Model, ref: TerminalRef) bool {
     if (ref.provider_id == .local) return true;
-    const remote = model.phuxConst() orelse return false;
+    const remote = model.phuxForRefConst(ref) orelse return false;
     const owner = remote.owner(ref) orelse return false;
     return owner.generation.epoch_id == remote.connectionEpoch();
 }
@@ -118,13 +144,13 @@ fn resolveTerminal(model: *const Model, ref: TerminalRef) ?Entry {
         if (!placedReplicaCurrent(model, ref)) return null;
         return .{ .placed_terminal = .{ .window = @intCast(location.window), .tab = @intCast(location.tab), .terminal_ref = ref } };
     }
-    if (ref.provider_id != .phux) return null;
+    if (ref.provider_id == .local) return null;
     if (!catalogContains(model, ref)) return null;
     return .{ .available_terminal = ref };
 }
 
 fn catalogContains(model: *const Model, ref: TerminalRef) bool {
-    const remote = model.phuxConst() orelse return false;
+    const remote = model.phuxForRefConst(ref) orelse return false;
     for (remote.catalogTerminals()) |terminal| {
         if (terminal.terminal_ref.eql(ref)) return true;
     }
@@ -141,17 +167,21 @@ fn resolveSession(model: *const Model, id: u32) ?Entry {
     return null;
 }
 
-/// Held against the peer that listed it: exchanging the two coordinators,
-/// replacing the peer, or a catalog from an older peer connection refuses.
-fn resolvePeerSession(model: *const Model, expected: Context, id: u32) ?Entry {
+/// Held against the peer that listed it: exchanging, retargeting or dropping
+/// that peer, or a catalog from an older connection of it, refuses. Shown by
+/// id, so an unnamed session is as selectable as a named one.
+fn resolvePeerSession(model: *const Model, coordinator: support.ProviderId, expected: Context, id: u32) ?Entry {
     if (comptime !support.phux_enabled) return null;
-    const current = peerContext(model) orelse return null;
+    const current = peerContext(model, coordinator) orelse return null;
     if (!std.meta.eql(current, expected)) return null;
-    const peer = model.phuxPeerConst() orelse return null;
-    // A standby that disconnected, is being retargeted, or listed on an older
+    const slot = model.peerSlot(coordinator) orelse return null;
+    // Session 0 is the group's unavailable row: it retries a failed peer.
+    if (id == 0) return if (model.peer_failed[slot]) .{ .peer_unavailable = coordinator } else null;
+    const peer = model.phuxPeerAtConst(slot).?;
+    // A peer that disconnected, is being retargeted, or listed on an older
     // connection offers nothing; forgetting also moved the context above.
     for (peer.standbyCatalog()) |session| {
-        if (session.id == id and session.name.len != 0) return .{ .peer_session = id };
+        if (session.id == id) return .{ .peer_session = .{ .coordinator = coordinator, .id = id } };
     }
     return null;
 }
@@ -196,20 +226,25 @@ fn decodeResource(bytes: []const u8, provider_id: support.ProviderId) ?Resource 
             return .{ .terminal = .{ .provider_id = provider_id, .terminal_id = .{ .local = @enumFromInt(std.mem.readInt(u64, bytes[34..42], .little)) } } };
         },
         1 => return decodeRemote(bytes, provider_id),
+        // Any Phux coordinator; resolution then refuses one no longer held.
         2 => {
-            if (provider_id != .phux or bytes.len != 38) return null;
+            if (!isCoordinator(provider_id) or bytes.len != 38) return null;
             return .{ .session = std.mem.readInt(u32, bytes[34..38], .little) };
         },
         3 => {
-            if (provider_id != .phux or bytes.len != 38) return null;
+            if (!isCoordinator(provider_id) or bytes.len != 38) return null;
             return .{ .peer_session = std.mem.readInt(u32, bytes[34..38], .little) };
         },
         else => return null,
     }
 }
 
+fn isCoordinator(id: support.ProviderId) bool {
+    return @import("provider_contract").isPhuxCoordinator(id);
+}
+
 fn decodeRemote(bytes: []const u8, provider_id: support.ProviderId) ?Resource {
-    if (provider_id != .phux or bytes.len < 43) return null;
+    if (!isCoordinator(provider_id) or bytes.len < 43) return null;
     if (bytes.len != 43 + @as(usize, bytes[42])) return null;
     const id = support.RemoteResourceId.fromPhux(
         std.mem.readInt(u32, bytes[34..38], .little),
@@ -241,7 +276,17 @@ test "navigation opaque catalog targets preserve full identity and bounded host 
     out[42] -= 1;
     try std.testing.expect(decode(&out) == null);
     out[42] += 1;
-    out[2] ^= 1; // Same resource under a different provider never aliases.
+    // Same resource under another coordinator never aliases: it decodes as
+    // that coordinator's terminal, not this one's.
+    const mini = @import("provider_contract").phuxCoordinatorId("mini");
+    std.mem.writeInt(u64, out[2..10], @intFromEnum(mini), .little);
+    const other = decode(&out).?;
+    try std.testing.expectEqual(mini, other.provider_id);
+    try std.testing.expect(!other.resource.terminal.eql(target.resource.terminal));
+    // An id no coordinator can have, and a local id, carry no Phux resource.
+    std.mem.writeInt(u64, out[2..10], @intFromEnum(support.ProviderId.phux) ^ 1, .little);
+    try std.testing.expect(decode(&out) == null);
+    std.mem.writeInt(u64, out[2..10], @intFromEnum(support.ProviderId.local), .little);
     try std.testing.expect(decode(&out) == null);
 
     const local: Target = .{ .provider_id = .local, .context = target.context, .resource = .{ .terminal = .{

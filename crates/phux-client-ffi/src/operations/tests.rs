@@ -588,6 +588,34 @@ fn detached_stream_is_unsolicited_and_wrong_reply_does_not_consume_detach() {
 }
 
 #[test]
+fn a_bound_spawn_reply_completes_like_an_unbound_one() {
+    // This ABI never asks for an instance binding; a server that binds
+    // anyway still answered the spawn, and its token is not surfaced.
+    let mut h = Harness::attached();
+    assert_eq!(h.spawn(10), PhuxClientResult::Ok);
+    assert_eq!(
+        h.feed(FrameKind::ResourceSpawned {
+            request_id: 10,
+            result: SpawnResult::OkBound {
+                id: ResourceId::local(2),
+                instance: phux_protocol::ids::ServerInstance::new([7; 16]),
+            },
+        }),
+        PhuxClientResult::Ok
+    );
+    let result = h.result(0);
+    assert_eq!(
+        (
+            result.request_id,
+            result.kind,
+            result.status,
+            result.terminal_id.id
+        ),
+        (10, 1, 1, 2)
+    );
+}
+
+#[test]
 fn local_spawn_is_correlated_and_admitted_before_bootstrap_without_restarting_attach() {
     let mut h = Harness::attached();
     assert_eq!(h.spawn(10), PhuxClientResult::Ok);

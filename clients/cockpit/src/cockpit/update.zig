@@ -383,8 +383,8 @@ fn activatePaletteDestination(model: *Model, fx: *Fx, destination: app_types.Pal
         .placed_terminal => |placed| activatePlacedDestination(model, fx, placed),
         .available_terminal => |terminal_ref| activateAvailableDestination(model, fx, terminal_ref),
         .session => |session_id| activateSessionDestination(model, fx, session_id),
-        // The retained spike update path never holds a standby coordinator.
-        .peer_session => {},
+        // The retained spike update path never holds a peer coordinator.
+        .peer_session, .peer_unavailable => {},
     }
 }
 /// Convert the presentational cursor to a durable payload at the moment the
@@ -2387,7 +2387,7 @@ fn sendRemoteFocus(model: *Model, terminal_ref: ?TerminalRef, focused: bool) voi
     const ref = terminal_ref orelse return;
     if (providerKind(ref) != .phux) return;
     const owner = model.terminalOwner(ref) orelse return;
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(ref) orelse return;
     remote.sendFocus(owner, focused) catch {};
 }
 
@@ -2395,7 +2395,8 @@ fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *Remote
     clearRemoteSelection(model, state);
     const presentation = model.remotePresentation(terminal_ref) orelse return;
     const cursor = presentation.grid.cursor orelse canvas.TerminalCursor{};
-    const remote = model.phux() orelse return;
+    // The selection belongs to the coordinator that minted the pane.
+    const remote = model.phuxForRef(terminal_ref) orelse return;
     const point: provider_contract.DocumentPoint = .{
         .space = .viewport,
         .row = @as(u32, cursor.y),
@@ -2420,7 +2421,7 @@ fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *Remote
 }
 
 fn applyRemoteSelection(model: *Model, state: *RemoteUiState) void {
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
     const next = remote.createAnchor(state.owner, .{
         .space = .viewport,
         .row = state.head_y,
@@ -2483,7 +2484,7 @@ fn clearRemoteSelection(model: *Model, state: *RemoteUiState) void {
         state.end_anchor = 0;
         state.gesture_handle = 0;
     }
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
     remote.clearSelection(state.owner) catch {};
     if (state.start_anchor != 0)
         remote.releaseAnchor(state.owner, .{ .opaque_id = state.start_anchor });

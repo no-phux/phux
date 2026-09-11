@@ -286,7 +286,7 @@ fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, i
     if (model.provider.terminalConst(pane.terminal)) |terminal| {
         try paintLocalPane(terminal, builder, index, tokens, options);
     } else {
-        const remote = model.phuxConst() orelse return false;
+        const remote = model.phuxForRefConst(pane.terminal) orelse return false;
         @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.cursor_color);
         const presentation = model.remotePaintPresentation(pane.terminal) orelse return false;
         options.running = presentation.phase == .live;

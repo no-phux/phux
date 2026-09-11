@@ -77,7 +77,7 @@ fn sendPointerToOwner(
     const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
     if (frame.width <= 0 or frame.height <= 0 or presentation.cols == 0 or presentation.rows == 0)
         return false;
-    const remote = model.phux() orelse return false;
+    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
     if (!(remote.mouseTracking(owner) catch return false)) return false;
 
     const local_x = @max(0, @min(

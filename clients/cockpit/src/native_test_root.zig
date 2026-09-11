@@ -578,5 +578,6 @@ test {
     _ = @import("cockpit/native/remote_hosts.zig");
     _ = @import("tests/remote_host_tests.zig");
     _ = @import("tests/directory_picker_tests.zig");
+    _ = @import("tests/multi_coordinator_tests.zig");
     _ = @import("tests/side_by_side_tests.zig");
 }

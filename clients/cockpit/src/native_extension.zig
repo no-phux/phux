@@ -118,12 +118,12 @@ const EngineFx = struct {
     pub fn restartPhux(self: EngineFx, engine: *Engine) bool {
         return engine.restartNavigationConnection(self, phuxChannel);
     }
-    pub fn peerChannelLive(self: EngineFx) bool {
-        const handle = self.effects.channelHandle(cockpit.phux_peer_channel_key) orelse return false;
+    pub fn peerChannelLive(self: EngineFx, slot: usize) bool {
+        const handle = self.effects.channelHandle(cockpit.phux_peer_channel_key + slot) orelse return false;
         return handle.live();
     }
-    pub fn restartPeer(self: EngineFx, engine: *Engine) bool {
-        return engine.restartPeerConnection(self, peerChannel);
+    pub fn restartPeer(self: EngineFx, engine: *Engine, slot: usize) bool {
+        return engine.restartPeerConnection(self, slot, peerChannel);
     }
 };
 
@@ -710,19 +710,25 @@ fn clipboardRead(event: native_sdk.EffectClipboardResult) core.Msg {
 fn phuxChannel(event: native_sdk.EffectChannelEvent) core.Msg {
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
-            if (engine.onPhuxChannel(fx, event, phuxChannel)) bridge.announce(engine);
+            const changed = engine.onPhuxChannel(fx, event, phuxChannel);
+            // Settled before announcing, so the chrome never shows a peer
+            // that has just gone back to listing.
+            if (engine.settlePeers(fx) or changed) bridge.announce(engine);
             engine.noteTopologyChange(fx, topologyTimer);
         }
     }
     return .engine_wake;
 }
 
-/// The standby coordinator's wakes (docs/REMOTE_HOSTS.md, "Side by side"):
-/// only its session catalog can move, which is one ordered invalidation.
+/// Every peer coordinator's wakes (docs/REMOTE_HOSTS.md, "Several
+/// coordinators"), told apart by channel key: a listing peer's session list
+/// or a showing peer's projection, each one ordered invalidation.
 fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
-            if (engine.onPeerChannel(fx, event, peerChannel)) bridge.announce(engine);
+            const changed = engine.onPeerChannel(fx, event, peerChannel);
+            if (engine.settlePeers(fx) or changed) bridge.announce(engine);
+            engine.noteTopologyChange(fx, topologyTimer);
         }
     }
     return .engine_wake;
@@ -747,7 +753,7 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
     switch (event) {
         .start => {
             engine.startProviderChannels(fx, phuxChannel, pointerChannel);
-            engine.openPeerChannel(fx, peerChannel);
+            engine.openPeerChannels(fx, peerChannel);
         },
         .activate => engine.setFocused(fx, true),
         .deactivate => engine.setFocused(fx, false),

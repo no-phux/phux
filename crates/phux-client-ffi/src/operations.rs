@@ -618,7 +618,9 @@ fn complete_spawn(
         ));
     };
     match result {
-        SpawnResult::Ok(id) => {
+        // This ABI never requests an instance binding, so a bound reply is
+        // an ordinary success; its instance token is not surfaced.
+        SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
             if matches!(id, ResourceId::Local { .. }) {
                 client.operations.dynamic.insert(id.clone());

@@ -747,7 +747,7 @@ fn remoteTitle(model: *const Model, id: TerminalRef) []const u8 {
     if (model.remotePresentation(id)) |presentation| {
         if (presentation.title.len != 0) return clampTitle(presentation.title);
     }
-    const remote = model.phuxConst() orelse return "Phux";
+    const remote = model.phuxForRefConst(id) orelse return "Phux";
     for (remote.catalogTerminals()) |*entry| {
         if (!entry.terminal_ref.eql(id)) continue;
         if (entry.title.len != 0) return clampTitle(entry.title.slice());
@@ -756,9 +756,16 @@ fn remoteTitle(model: *const Model, id: TerminalRef) []const u8 {
     return "Phux";
 }
 
+/// The coordinator whose shared workspace a tab came from.
+fn tabCoordinator(model: *const Model, workspace: *const Workspace, index: usize) ?*const support.PhuxProvider {
+    const tree = workspace.treeConst(index) orelse return null;
+    const owner = @import("../shared_workspace.zig").tabAuthority(tree) orelse return null;
+    return model.phuxForConst(owner);
+}
+
 pub fn tabTitleInto(model: *const Model, workspace: *const Workspace, index: usize, out: []u8) []const u8 {
     if (workspace.shared_ids[index]) |id| {
-        if (model.phuxConst()) |remote| {
+        if (tabCoordinator(model, workspace, index)) |remote| {
             for (remote.workspaceSnapshot().windows) |*window| {
                 if (!std.mem.eql(u8, &window.id, &id)) continue;
                 if (window.name.len != 0) return clampTitle(window.name.slice());
@@ -1033,7 +1040,7 @@ pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     // OR if an agent running under it is waiting on an answer.
     if (model.agentAttention(id)) return true;
     if (comptime support.phux_enabled) {
-        if (model.phuxConst()) |remote| if (remote.bellRung(id)) return true;
+        if (model.phuxForRefConst(id)) |remote| if (remote.bellRung(id)) return true;
     }
     const presentation = model.remotePresentation(id) orelse return true;
     return presentation.phase == .failed or presentation.phase == .tombstoned;
@@ -1283,14 +1290,54 @@ pub fn paletteSection(entry: PaletteEntry) PaletteSection {
     return switch (entry) {
         .placed_terminal => .open,
         .available_terminal => .available,
-        .session, .peer_session => .sessions,
+        .session, .peer_session, .peer_unavailable => .sessions,
     };
 }
 
-/// Sessions come in two host groups: this Mac's coordinator first, then the
-/// remote host, whichever of the two is active (`first_sessions` names the
-/// group listed first).
-const PaletteStage = enum { placed, available, first_sessions, second_sessions, done };
+/// Sessions come in host groups, one per coordinator: this Mac's first,
+/// then each registered host, whichever of them is active.
+const PaletteStage = enum { placed, available, sessions, done };
+
+/// One host group: the active coordinator's, or the peer in a slot.
+pub const Group = union(enum) { active, peer: usize };
+
+/// The host groups in switcher order: this Mac's coordinator first, then
+/// registered hosts, each pass in active-then-slot order.
+pub fn coordinatorGroups(model: *const Model, out: *[1 + model_module.max_phux_peers]Group) usize {
+    if (comptime !support.phux_enabled) return 0;
+    var count: usize = 0;
+    for ([_]bool{ false, true }) |remote_pass| {
+        if (model.phuxConst()) |active| if ((active.remoteTarget() != null) == remote_pass) {
+            out[count] = .active;
+            count += 1;
+        };
+        for (0..model_module.max_phux_peers) |slot| {
+            const peer = model.phuxPeerAtConst(slot) orelse continue;
+            if ((peer.remoteTarget() != null) != remote_pass) continue;
+            out[count] = .{ .peer = slot };
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/// What a peer's group is called: its registered host's label, else This Mac.
+pub fn peerHostLabel(model: *const Model, coordinator: support.ProviderId) []const u8 {
+    if (comptime !support.phux_enabled) return "This Mac";
+    const slot = model.peerSlot(coordinator) orelse return "This Mac";
+    const peer = model.phuxPeerAtConst(slot).?;
+    return peer.remoteLabel() orelse "This Mac";
+}
+
+/// A peer with nothing to list that is not simply connected with no
+/// sessions: failed, or still connecting. Its group shows one row saying so.
+fn peerDegraded(model: *const Model, slot: usize) bool {
+    if (comptime !support.phux_enabled) return false;
+    const peer = model.phuxPeerAtConst(slot) orelse return false;
+    if (model.peer_failed[slot]) return true;
+    const state = peer.state();
+    return state != .negotiated and state != .attached;
+}
 
 pub const PaletteIterator = struct {
     model: *const Model,
@@ -1301,7 +1348,7 @@ pub const PaletteIterator = struct {
     pane_index: usize = 0,
     remote_index: usize = 0,
     session_index: usize = 0,
-    peer_index: usize = 0,
+    group: usize = 0,
 
     pub fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
         return .{ .model = model, .needle = workspace.palette.needle() };
@@ -1375,25 +1422,41 @@ pub const PaletteIterator = struct {
         return null;
     }
 
-    fn nextPeerSession(iterator: *PaletteIterator) ?PaletteEntry {
-        const peer = iterator.model.phuxPeerConst() orelse return null;
-        // Only a connected standby with a list from this connection and no
+    fn nextPeerSession(iterator: *PaletteIterator, slot: usize) ?PaletteEntry {
+        const peer = iterator.model.phuxPeerAtConst(slot) orelse return null;
+        const coordinator = peer.providerId();
+        // Only a connected peer with a list from this connection and no
         // pending retarget: otherwise the rows would name another host's
         // sessions under this group's label.
         const sessions = peer.standbyCatalog();
-        while (iterator.peer_index < sessions.len) {
-            const entry: PaletteEntry = .{ .peer_session = sessions[iterator.peer_index].id };
-            iterator.peer_index += 1;
+        if (sessions.len == 0) {
+            // A peer that cannot list is still a group: one row says why.
+            if (iterator.session_index != 0 or !peerDegraded(iterator.model, slot)) return null;
+            iterator.session_index = 1;
+            const entry: PaletteEntry = .{ .peer_unavailable = coordinator };
+            return if (iterator.accepts(entry)) entry else null;
+        }
+        while (iterator.session_index < sessions.len) {
+            const entry: PaletteEntry = .{ .peer_session = .{ .coordinator = coordinator, .id = sessions[iterator.session_index].id } };
+            iterator.session_index += 1;
             if (iterator.accepts(entry)) return entry;
         }
         return null;
     }
 
-    /// This Mac's group first: the peer's sessions lead only while the
-    /// active provider is the remote host's.
-    fn nextGroup(iterator: *PaletteIterator, first: bool) ?PaletteEntry {
-        const peer_first = iterator.model.phuxActiveIsRemote() and iterator.model.phuxPeerConst() != null;
-        return if (first != peer_first) iterator.nextSession() else iterator.nextPeerSession();
+    fn nextGrouped(iterator: *PaletteIterator) ?PaletteEntry {
+        var order: [1 + model_module.max_phux_peers]Group = undefined;
+        const count = coordinatorGroups(iterator.model, &order);
+        while (iterator.group < count) {
+            const found = switch (order[iterator.group]) {
+                .active => iterator.nextSession(),
+                .peer => |slot| iterator.nextPeerSession(slot),
+            };
+            if (found) |entry| return entry;
+            iterator.group += 1;
+            iterator.session_index = 0;
+        }
+        return null;
     }
 
     pub fn next(iterator: *PaletteIterator) ?PaletteEntry {
@@ -1403,12 +1466,9 @@ pub const PaletteIterator = struct {
                     iterator.stage = .available;
                 },
                 .available => if (iterator.nextAvailable()) |entry| return entry else {
-                    iterator.stage = .first_sessions;
+                    iterator.stage = .sessions;
                 },
-                .first_sessions => if (iterator.nextGroup(true)) |entry| return entry else {
-                    iterator.stage = .second_sessions;
-                },
-                .second_sessions => if (iterator.nextGroup(false)) |entry| return entry else {
+                .sessions => if (iterator.nextGrouped()) |entry| return entry else {
                     iterator.stage = .done;
                 },
                 .done => return null,
@@ -1494,19 +1554,21 @@ pub fn paletteDestinationMatches(model: *const Model, entry: PaletteEntry, needl
         .placed_terminal => |placed| placedDestinationMatches(model, placed, needle),
         .available_terminal => |terminal_ref| terminalDestinationMatches(model, terminal_ref, needle),
         .session => |session_id| sessionDestinationMatches(model, session_id, needle),
-        .peer_session => |session_id| peerSessionMatches(model, session_id, needle),
+        .peer_session => |target| peerSessionMatches(model, target, needle),
+        .peer_unavailable => |coordinator| needle.len == 0 or containsIgnoreCase(peerHostLabel(model, coordinator), needle),
     };
 }
 
-/// A standby coordinator's session matches by its name or by its host
-/// group's label, so typing a host name narrows the switcher to that host.
-fn peerSessionMatches(model: *const Model, session_id: u32, needle: []const u8) bool {
+/// A peer coordinator's session matches by its name or by its host group's
+/// label, so typing a host name narrows the switcher to that host.
+fn peerSessionMatches(model: *const Model, target: model_module.PeerSession, needle: []const u8) bool {
     if (needle.len == 0) return true;
-    const peer = model.phuxPeerConst() orelse return false;
-    const host = if (model.phuxActiveIsRemote()) "This Mac" else peer.remoteLabel() orelse "This Mac";
-    if (containsIgnoreCase(host, needle)) return true;
+    if (comptime !support.phux_enabled) return false;
+    if (containsIgnoreCase(peerHostLabel(model, target.coordinator), needle)) return true;
+    const slot = model.peerSlot(target.coordinator) orelse return false;
+    const peer = model.phuxPeerAtConst(slot).?;
     for (peer.standbyCatalog()) |session| {
-        if (session.id == session_id) return containsIgnoreCase(session.name, needle);
+        if (session.id == target.id) return containsIgnoreCase(session.name, needle);
     }
     return false;
 }
@@ -1543,7 +1605,7 @@ fn localDestinationMatches(model: *const Model, ref: TerminalRef, needle: []cons
 }
 
 fn catalogDestinationMatches(model: *const Model, ref: TerminalRef, needle: []const u8) bool {
-    const remote = model.phuxConst() orelse return false;
+    const remote = model.phuxForRefConst(ref) orelse return false;
     for (remote.catalogTerminals()) |*entry| {
         if (!entry.terminal_ref.eql(ref)) continue;
         return containsIgnoreCase(entry.title.slice(), needle) or containsIgnoreCase(entry.cwd.slice(), needle);
@@ -1836,7 +1898,7 @@ pub fn viewportDiffers(model: *const Model, proposal: PaneViewport) bool {
     if (model.provider.terminalConst(proposal.terminal)) |terminal| {
         return proposal.cols != terminal.cols or proposal.rows != terminal.rows;
     }
-    const remote = model.phuxConst() orelse return false;
+    const remote = model.phuxForRefConst(proposal.terminal) orelse return false;
     const last = remote.lastViewport(proposal.terminal) orelse return true;
     return !last.eql(.{ .cols = proposal.cols, .rows = proposal.rows });
 }

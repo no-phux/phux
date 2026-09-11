@@ -13,7 +13,9 @@
 //!            truncated), error:u8, total:u16, offset:u16, path_len:u8,
 //!            path, query_len:u8, query, count:u8, rows (index:u16,
 //!            flags:u8 bit 0 symlink, name_len:u8, name), message_len:u8,
-//!            message, scope:u8 (Scope), host_len:u8, host
+//!            message, scope:u8 (Scope), host_len:u8, host, via_len:u8, via
+//!            (the coordinator the listing came through when it is not the
+//!            active one; Open Here is unavailable then)
 //!
 //! The listing itself is the connected server's (LIST_DIRECTORY,
 //! docs/spec/L3.md section 4), retained by the one Phux provider's client, so
@@ -51,7 +53,7 @@ pub const here_index: u16 = 0xffff;
 pub const up_index: u16 = 0xfffe;
 
 pub const max_bytes: usize = 12 + 1 + max_text_bytes + 1 + max_query_bytes + 1 +
-    page_size * (4 + max_name_bytes) + 1 + max_text_bytes + 2 + max_name_bytes;
+    page_size * (4 + max_name_bytes) + 1 + max_text_bytes + 2 + max_name_bytes + 1 + max_name_bytes;
 
 comptime {
     std.debug.assert(max_bytes <= 4096);
@@ -59,7 +61,7 @@ comptime {
 
 pub const Kind = enum(u8) { open = 1, page = 2, descend = 3, parent = 4, here = 5 };
 pub const Status = enum(u8) { unsupported = 0, pending = 1, listed = 2, refused = 3, unknown_outcome = 4, unavailable = 5 };
-pub const Error = error{ InvalidRequest, BufferTooSmall, StaleListing, Refused };
+pub const Error = error{ InvalidRequest, BufferTooSmall, StaleListing, Refused, OtherCoordinator };
 
 pub const Request = struct {
     kind: Kind,
@@ -87,13 +89,11 @@ pub fn decode(bytes: []const u8) Error!Request {
 pub fn handle(engine: anytype, payload: []const u8, out: []u8) Error![]const u8 {
     const request = try decode(payload);
     if (comptime !support.phux_enabled)
-        return encodeNotice(.unavailable, "Go to Directory needs a Phux coordinator", request, out);
-    const remote = engine.model.phux() orelse
-        return encodeNotice(.unavailable, "Go to Directory needs a Phux coordinator", request, out);
-    if (remote.state() != .attached)
-        return encodeNotice(.unavailable, "Phux is not connected. Reconnect, then try again.", request, out);
-    if (!remote.directorySupported())
-        return encodeNotice(.unsupported, "This coordinator cannot list directories. Update phux on that host.", request, out);
+        return encodeNotice(.unavailable, no_coordinator, request, out);
+    if (request.kind == .open and !beginListing(engine)) return encodeNotice(.unavailable, no_coordinator, request, out);
+    const remote = engine.model.phuxFor(engine.directory_origin.coordinator) orelse
+        return encodeNotice(.unavailable, no_coordinator, request, out);
+    if (listingNotice(remote)) |notice| return encodeNotice(notice.status, notice.message, request, out);
     switch (request.kind) {
         .open => try open(engine, remote),
         .page => {},
@@ -101,7 +101,41 @@ pub fn handle(engine: anytype, payload: []const u8, out: []u8) Error![]const u8 
         .parent => try parent(engine, remote, request),
         .here => try openHere(engine, remote, request),
     }
-    return encodePage(remote, &engine.directory_origin, request, out);
+    return encodePage(engine.model, remote, &engine.directory_origin, request, out);
+}
+
+const no_coordinator = "Go to Directory needs a Phux coordinator";
+
+/// The listing belongs to the coordinator that minted the focused pane,
+/// fixed when the picker opens: another coordinator is never asked, so a
+/// satellite name is only ever resolved by the hub it came from.
+fn beginListing(engine: anytype) bool {
+    const coordinator = focusedCoordinator(engine.model) orelse return false;
+    engine.directory_origin = .{ .coordinator = coordinator };
+    return true;
+}
+
+/// Why this coordinator cannot list right now, if it cannot.
+fn listingNotice(remote: anytype) ?struct { status: Status, message: []const u8 } {
+    if (remote.state() != .attached) return .{ .status = .unavailable, .message = "Phux is not connected. Reconnect, then try again." };
+    if (!remote.directorySupported()) return .{ .status = .unsupported, .message = "This coordinator cannot list directories. Update phux on that host." };
+    return null;
+}
+
+/// The focused pane's coordinator, else the active one.
+fn focusedCoordinator(model: *Model) ?support.ProviderId {
+    if (model.focusedTerminalRef()) |ref| {
+        if (support.providerKind(ref) == .phux and model.phuxForRef(ref) != null) return ref.provider_id;
+    }
+    const active = model.phux() orelse return null;
+    return active.providerId();
+}
+
+/// The coordinator a listing came through, when it is not the active one:
+/// its tabs cannot be opened here, and the heading names it.
+fn viaLabel(model: *const Model, origin: *const Origin) []const u8 {
+    if (origin.coordinator == model.attachmentAuthority()) return "";
+    return projection.peerHostLabel(model, origin.coordinator);
 }
 
 /// Whose directories the retained listing names (reply trailer `scope`).
@@ -122,6 +156,8 @@ pub const Scope = enum(u8) {
 /// every row. `terminal` is the satellite pane it was opened over; it owns
 /// its host storage, so the host never borrows client or catalog memory.
 pub const Origin = struct {
+    /// The coordinator whose provider asks LIST_DIRECTORY for this listing.
+    coordinator: support.ProviderId = .phux,
     scope: Scope = .coordinator,
     terminal: ?support.TerminalRef = null,
 
@@ -143,11 +179,13 @@ pub const Origin = struct {
 /// satellite when the hub can relay the request, and otherwise the
 /// coordinator, labeled as such. Anything else lists the coordinator.
 pub fn originFor(model: *const Model, remote: anytype) Origin {
-    const ref = model.focusedTerminalRef() orelse return .{};
-    if (support.providerKind(ref) != .phux) return .{};
-    if (ref.terminal_id.phux.host().len == 0) return .{};
+    const coordinator = remote.providerId();
+    const ref = model.focusedTerminalRef() orelse return .{ .coordinator = coordinator };
+    // Only a pane this coordinator minted names one of its satellites.
+    if (support.providerKind(ref) != .phux or ref.provider_id != coordinator) return .{ .coordinator = coordinator };
+    if (ref.terminal_id.phux.host().len == 0) return .{ .coordinator = coordinator };
     const scope: Scope = if (remote.directoryHostSupported()) .satellite else .coordinator_instead;
-    return .{ .scope = scope, .terminal = ref };
+    return .{ .coordinator = coordinator, .scope = scope, .terminal = ref };
 }
 
 /// Start where the focused terminal is, when the listed host is the one it
@@ -218,6 +256,9 @@ fn parent(engine: anytype, remote: anytype, request: Request) Error!void {
 /// tab has no owner, so no focused satellite route can carry its directory
 /// to another host.
 fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
+    // New tabs open on the active coordinator only; another coordinator's
+    // directory would name a path on the wrong machine.
+    if (viaLabel(engine.model, &engine.directory_origin).len != 0) return error.OtherCoordinator;
     const info = try currentInfo(remote, request.request_id);
     if (info.status != .listed) return error.StaleListing;
     var buffer: [max_path_bytes]u8 = undefined;
@@ -272,10 +313,10 @@ const Page = struct {
     }
 };
 
-fn collect(remote: anytype, info: anytype, query: []const u8, offset: usize) Page {
+fn collect(remote: anytype, info: anytype, query: []const u8, offset: usize, open_here: bool) Page {
     var page: Page = .{};
     if (query.len == 0) {
-        if (info.status == .listed) page.add(.{ .index = here_index }, offset);
+        if (open_here and info.status == .listed) page.add(.{ .index = here_index }, offset);
         if (parentOf(info) != null) page.add(.{ .index = up_index }, offset);
     }
     if (info.status != .listed) return page;
@@ -297,9 +338,10 @@ fn wireStatus(status: anytype) Status {
     };
 }
 
-fn encodePage(remote: anytype, origin: *const Origin, request: Request, out: []u8) Error![]const u8 {
+fn encodePage(model: *const Model, remote: anytype, origin: *const Origin, request: Request, out: []u8) Error![]const u8 {
     const info = remote.directoryInfo();
-    const page = collect(remote, info, request.query, request.offset);
+    const via = viaLabel(model, origin);
+    const page = collect(remote, info, request.query, request.offset, via.len == 0);
     var writer: Writer = .{ .out = out };
     try writer.header(wireStatus(info.status), info.request_id, info.truncated, @intCast(@min(info.error_code, 255)), page.total, request.offset);
     try writer.text(info.path, max_text_bytes);
@@ -313,6 +355,7 @@ fn encodePage(remote: anytype, origin: *const Origin, request: Request, out: []u
     try writer.text(info.message, max_text_bytes);
     try writer.byte(@intFromEnum(origin.scope));
     try writer.text(origin.namedHost(), max_name_bytes);
+    try writer.text(via, max_name_bytes);
     return out[0..writer.at];
 }
 
@@ -324,6 +367,7 @@ fn encodeNotice(status: Status, message: []const u8, request: Request, out: []u8
     try writer.byte(0);
     try writer.text(message, max_text_bytes);
     try writer.byte(@intFromEnum(Scope.coordinator));
+    try writer.text("", max_name_bytes);
     try writer.text("", max_name_bytes);
     return out[0..writer.at];
 }

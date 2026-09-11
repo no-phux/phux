@@ -499,7 +499,8 @@ fn destinationMatches(actual: model_module.PaletteDestination, expected: model_m
     return switch (expected) {
         .available_terminal => |ref| actual.available_terminal.eql(ref),
         .session => |id| actual.session == id,
-        .peer_session => |id| actual.peer_session == id,
+        .peer_session => |target| actual.peer_session.id == target.id and actual.peer_session.coordinator == target.coordinator,
+        .peer_unavailable => |coordinator| actual.peer_unavailable == coordinator,
         .placed_terminal => false,
     };
 }

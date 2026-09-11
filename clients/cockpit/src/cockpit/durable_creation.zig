@@ -207,7 +207,7 @@ pub const Creation = struct {
         if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
         const slot = try self.vacant();
         const owner = switch (choice) {
-            .focused => try spawnOwner(model, model.focusedTerminalRef()),
+            .focused => try focusedOwner(model, kind),
             .none => null,
             .terminal => |ref| try spawnOwner(model, ref),
         };
@@ -1052,6 +1052,25 @@ fn hasCapacity(model: *const Model, reserved: usize) bool {
         for (workspace.tabs[0..workspace.tab_count]) |tree| count += tree.paneCount();
     }
     return count < @import("topology.zig").max_terminals;
+}
+
+/// Whether a creation refusal is a capacity limit (terminals, panes, tabs,
+/// outstanding operations) rather than a refused destination or owner.
+pub fn isCapacityError(err: anyerror) bool {
+    return err == error.TerminalCapacity or err == error.PaneCapacity or
+        err == error.TabCapacity or err == error.OperationCapacity;
+}
+
+/// New Tab and New Window with another coordinator's pane focused open on the
+/// active coordinator without an owner. A split of that pane is refused: its
+/// new pane would belong to the other coordinator's tab.
+fn focusedOwner(model: *const Model, kind: Kind) !?TerminalRef {
+    const ref = model.focusedTerminalRef() orelse return null;
+    if (support.providerKind(ref) == .phux and !model.activeOwnsRef(ref)) {
+        if (isSplit(kind)) return error.ForeignCoordinator;
+        return null;
+    }
+    return spawnOwner(model, ref);
 }
 
 fn spawnOwner(model: *const Model, origin: ?TerminalRef) !?TerminalRef {

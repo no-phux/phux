@@ -130,6 +130,9 @@ const Terminal = struct {
     history_unread_rows: u64 = 0,
     bell_owner: ?provider.ReplicaOwner = null,
     viewport: ?provider.Viewport = null,
+    /// The coordinator this replica belongs to (`Host.provider_id` when it
+    /// was admitted): part of every ref and owner it publishes.
+    provider_id: provider.ProviderId = .phux,
 
     fn deinit(terminal: *Terminal, gpa: std.mem.Allocator) void {
         terminal.canvas.deinit(gpa);
@@ -138,7 +141,7 @@ const Terminal = struct {
     }
 
     fn terminalRef(terminal: *const Terminal) provider.TerminalRef {
-        return phuxRef(terminal.id);
+        return .{ .provider_id = terminal.provider_id, .terminal_id = .{ .phux = terminal.id } };
     }
 
     fn owner(terminal: *const Terminal) provider.ReplicaOwner {
@@ -206,6 +209,35 @@ pub const Host = struct {
     /// streams declare. Never a replica: see agent_sessions.zig.
     agents: agent_sessions.Registry = .{},
     attached_session_id: ?u32 = null,
+    /// The coordinator this host is connected to (contract.phuxCoordinatorId).
+    /// Every ref it mints carries it, and every ref it is handed must carry
+    /// it: another coordinator's terminal 7 is not this one's, so a ref that
+    /// names another coordinator is refused rather than routed here.
+    provider_id: provider.ProviderId = .phux,
+
+    /// A retarget clears every replica first, so no terminal keeps the
+    /// identity of the coordinator it left. Any replica still held is
+    /// restamped anyway: a host's terminals always carry its own id.
+    pub fn setProviderId(host: *Host, id: provider.ProviderId) void {
+        host.provider_id = id;
+        host.agents.provider_id = id;
+        host.workspace_store.provider_id = id;
+        for (host.terminals.items) |*terminal| terminal.provider_id = id;
+    }
+
+    /// The replica identity a ref names on THIS coordinator, or null for a
+    /// local PTY or another coordinator's terminal.
+    fn remoteFromRef(host: *const Host, terminal_ref: provider.TerminalRef) ?RemoteId {
+        if (terminal_ref.provider_id != host.provider_id) return null;
+        return switch (terminal_ref.terminal_id) {
+            .phux => |id| id,
+            .local => null,
+        };
+    }
+
+    fn refFor(host: *const Host, id: RemoteId) provider.TerminalRef {
+        return .{ .provider_id = host.provider_id, .terminal_id = .{ .phux = id } };
+    }
 
     /// Presentation-only update: no input, render query or replica mutation.
     pub fn setColorPolicy(host: *Host, policy: ColorPolicy) void {
@@ -301,7 +333,7 @@ pub const Host = struct {
         const name = try workspace.Text.init(value.name);
         var owned = value;
         owned.name = name.slice();
-        const raw = try workspace_bridge.mutation(&owned, request_id);
+        const raw = try workspace_bridge.mutation(&owned, request_id, host.provider_id);
         try resultError(c.phux_client_workspace_mutate(host.client, &raw));
         host.workspaceAccepted(request_id);
         return request_id;
@@ -455,7 +487,7 @@ pub const Host = struct {
 
     pub fn requestAttach(host: *Host, terminal_ref: provider.TerminalRef) !u32 {
         const request_id = try host.preflightOperation();
-        const remote = remoteFromRef(terminal_ref) orelse return error.InvalidIdentity;
+        const remote = host.remoteFromRef(terminal_ref) orelse return error.InvalidIdentity;
         const raw = cId(&remote);
         _ = try remoteFromC(raw);
         if (remote.id == 0) return error.InvalidIdentity;
@@ -530,7 +562,7 @@ pub const Host = struct {
     fn admitOperationTerminal(host: *Host, remote: RemoteId) void {
         for (host.terminals.items) |*terminal| if (terminal.id.eql(remote)) return;
         std.debug.assert(host.terminals.items.len < max_terminals);
-        host.terminals.appendAssumeCapacity(.{ .id = remote });
+        host.terminals.appendAssumeCapacity(.{ .id = remote, .provider_id = host.provider_id });
     }
 
     fn spawnOwner(host: *const Host, terminal_ref: ?provider.TerminalRef) !?*const RemoteId {
@@ -703,7 +735,7 @@ pub const Host = struct {
 
     /// The agent sessions running under one terminal. `out` bounds the answer.
     pub fn agentSessionsUnder(host: *const Host, ref: provider.TerminalRef, out: []*const AgentSession) usize {
-        const parent = remoteFromRef(ref) orelse return 0;
+        const parent = host.remoteFromRef(ref) orelse return 0;
         return host.agents.childrenOf(parent, out);
     }
 
@@ -711,14 +743,14 @@ pub const Host = struct {
     /// on a person. A signal SOURCE for the quiet attention path, beside the
     /// bell and the phase latches — never a second attention mechanism.
     pub fn agentAttention(host: *const Host, ref: provider.TerminalRef) bool {
-        const parent = remoteFromRef(ref) orelse return false;
+        const parent = host.remoteFromRef(ref) orelse return false;
         return host.agents.parentNeedsAttention(parent);
     }
 
     /// Whether this identity is an agent session rather than a terminal.
     /// Nothing that renders a surface may be reached through one.
     pub fn isAgentSession(host: *const Host, ref: provider.TerminalRef) bool {
-        const id = remoteFromRef(ref) orelse return false;
+        const id = host.remoteFromRef(ref) orelse return false;
         return host.agents.findConst(id) != null;
     }
 
@@ -1002,7 +1034,7 @@ pub const Host = struct {
     pub fn clearSearchResults(host: *Host, expected_owner: ?provider.ReplicaOwner) void {
         const stored_owner = host.search_owner orelse return;
         if (expected_owner) |expected| if (!stored_owner.eql(expected)) return;
-        const remote = remoteFromRef(stored_owner.terminal_ref) orelse {
+        const remote = host.remoteFromRef(stored_owner.terminal_ref) orelse {
             host.search_results.items.len = 0;
             host.search_owner = null;
             return;
@@ -1165,7 +1197,7 @@ pub const Host = struct {
             raw.size = @sizeOf(c.PhuxOperationResult);
             raw.version = c.PHUX_CLIENT_ABI_VERSION;
             try resultError(c.phux_client_operation_get(host.client, index, &raw));
-            result.* = try copyOperation(raw, host.client_generation);
+            result.* = try copyOperation(raw, host.client_generation, host.provider_id);
         }
         try resultError(c.phux_client_operation_clear(host.client));
         for (copied[0..count]) |result| {
@@ -1193,7 +1225,7 @@ pub const Host = struct {
     }
 
     fn admitOperationReplica(host: *Host, ref: provider.TerminalRef) !void {
-        const remote = remoteFromRef(ref) orelse return error.InvalidIdentity;
+        const remote = host.remoteFromRef(ref) orelse return error.InvalidIdentity;
         _ = try host.ensureTerminal(cId(&remote));
     }
 
@@ -1473,7 +1505,7 @@ pub const Host = struct {
             .kind = kind,
             .detail = effect.detail,
             .status_code = effect.status_code,
-            .terminal_ref = phuxRef(remote),
+            .terminal_ref = host.refFor(remote),
             .generation = generation,
             .bytes = owned,
         });
@@ -1487,7 +1519,7 @@ pub const Host = struct {
         // pane and route keystrokes at a resource that cannot take them.
         if (host.agents.findConst(id) != null) return error.Protocol;
         if (host.terminals.items.len == max_terminals) return error.OutOfMemory;
-        try host.terminals.append(host.gpa, .{ .id = id });
+        try host.terminals.append(host.gpa, .{ .id = id, .provider_id = host.provider_id });
         return &host.terminals.items[host.terminals.items.len - 1];
     }
 
@@ -1498,13 +1530,13 @@ pub const Host = struct {
     }
 
     fn findTerminal(host: *Host, terminal_ref: provider.TerminalRef) ?*Terminal {
-        const id = remoteFromRef(terminal_ref) orelse return null;
+        const id = host.remoteFromRef(terminal_ref) orelse return null;
         for (host.terminals.items) |*terminal| if (terminal.id.eql(id)) return terminal;
         return null;
     }
 
     fn findTerminalConst(host: *const Host, terminal_ref: provider.TerminalRef) ?*const Terminal {
-        const id = remoteFromRef(terminal_ref) orelse return null;
+        const id = host.remoteFromRef(terminal_ref) orelse return null;
         for (host.terminals.items) |*terminal| if (terminal.id.eql(id)) return terminal;
         return null;
     }
@@ -1590,14 +1622,7 @@ fn remoteFromC(raw: c.PhuxResourceId) !RemoteId {
     return RemoteId.fromPhux(raw.kind, raw.id, host_name) catch return error.InvalidIdentity;
 }
 
-fn remoteFromRef(terminal_ref: provider.TerminalRef) ?RemoteId {
-    if (terminal_ref.provider_id != .phux) return null;
-    return switch (terminal_ref.terminal_id) {
-        .phux => |id| id,
-        .local => null,
-    };
-}
-
+/// This Mac's coordinator's ref; tests and the default provider id only.
 fn phuxRef(id: RemoteId) provider.TerminalRef {
     return .{ .provider_id = .phux, .terminal_id = .{ .phux = id } };
 }
@@ -1611,7 +1636,7 @@ fn cId(id: *const RemoteId) c.PhuxResourceId {
     };
 }
 
-fn copyOperation(raw: c.PhuxOperationResult, epoch: u64) !OperationResult {
+fn copyOperation(raw: c.PhuxOperationResult, epoch: u64, provider_id: provider.ProviderId) !OperationResult {
     var result: OperationResult = .{
         .request_id = raw.request_id,
         .connection_epoch = epoch,
@@ -1620,7 +1645,7 @@ fn copyOperation(raw: c.PhuxOperationResult, epoch: u64) !OperationResult {
         .error_domain = std.enums.fromInt(operations.types.ErrorDomain, raw.error_domain) orelse return error.Protocol,
         .error_code = raw.error_code,
     };
-    if (raw.terminal_id.id != 0) result.terminal_ref = phuxRef(try remoteFromC(raw.terminal_id));
+    if (raw.terminal_id.id != 0) result.terminal_ref = .{ .provider_id = provider_id, .terminal_id = .{ .phux = try remoteFromC(raw.terminal_id) } };
     const message = try effectSlice(raw.message);
     if (message.len > result.message_storage.len) return error.Protocol;
     @memcpy(result.message_storage[0..message.len], message);
@@ -2499,6 +2524,35 @@ test "detach churn leaves discovery to authoritative registry refresh" {
     try completeWorkspaceFixture(host, "workspace_refresh");
     try std.testing.expectEqual(@as(usize, 3), host.catalogRefs(&refs));
     try std.testing.expectEqual(initial, host.terminals.items.len);
+}
+
+test "a host mints its coordinator's refs and refuses another coordinator's terminal with the same id" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    // As a provider does: the coordinator's id before its first connection.
+    const mini = provider.phuxCoordinatorId("mini");
+    host.setProviderId(mini);
+    try test_support.attachHost(host);
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 7, "");
+    const terminal = try host.ensureTerminal(cId(&id));
+    terminal.published = true;
+    terminal.phase = .live;
+    const mine = host.refFor(id);
+    try std.testing.expectEqual(mini, mine.provider_id);
+    try std.testing.expect(host.contains(mine));
+    try std.testing.expect(host.owner(mine).?.terminal_ref.eql(mine));
+    // This Mac's terminal 7 is not this coordinator's terminal 7.
+    const here = phuxRef(id);
+    try std.testing.expect(!host.contains(here));
+    try std.testing.expect(host.owner(here) == null);
+    try std.testing.expect(host.presentation(here) == null);
+    try std.testing.expectError(error.InvalidIdentity, host.requestAttach(here));
+    const foreign_owner: provider.ReplicaOwner = .{ .terminal_ref = here, .generation = terminal.generation };
+    try std.testing.expectError(error.InvalidState, host.sendKey(foreign_owner, &.{ .action = .press, .physical = @enumFromInt(0), .text = "x" }));
+    try std.testing.expectError(error.InvalidState, host.viewportResize(here, .{ .cols = 80, .rows = 24 }));
+    try test_support.expectOutgoingCount(&bridge, 0);
 }
 
 test "satellite spawn requires explicit attach and permits READY before command acknowledgment" {

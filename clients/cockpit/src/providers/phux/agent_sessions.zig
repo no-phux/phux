@@ -106,6 +106,8 @@ pub const Session = struct {
     catalog_state: State = .unknown,
     /// What this session's own records have established, once any have.
     stream_state: ?State = null,
+    /// The coordinator that listed it; its refs carry it.
+    provider_id: provider.ProviderId = .phux,
 
     /// The state to show. The stream outranks the catalog (ADR-0103 decision
     /// 5): both describe the same session, and only one of them is the agent.
@@ -114,18 +116,18 @@ pub const Session = struct {
     }
 
     pub fn ref(session: *const Session) provider.TerminalRef {
-        return .{ .provider_id = .phux, .terminal_id = .{ .phux = session.id } };
+        return .{ .provider_id = session.provider_id, .terminal_id = .{ .phux = session.id } };
     }
 
     pub fn parentRef(session: *const Session) ?provider.TerminalRef {
         const parent = session.parent orelse return null;
-        return .{ .provider_id = .phux, .terminal_id = .{ .phux = parent } };
+        return .{ .provider_id = session.provider_id, .terminal_id = .{ .phux = parent } };
     }
 
     pub fn deinit(session: *Session, gpa: std.mem.Allocator) void {
         gpa.free(session.provider_name);
         gpa.free(session.native_id);
-        session.* = .{ .id = session.id };
+        session.* = .{ .id = session.id, .provider_id = session.provider_id };
     }
 };
 
@@ -133,11 +135,13 @@ pub const Session = struct {
 /// streams have since established.
 pub const Registry = struct {
     sessions: std.ArrayListUnmanaged(Session) = .empty,
+    /// The coordinator the roster belongs to (`Host.provider_id`).
+    provider_id: provider.ProviderId = .phux,
 
     pub fn deinit(registry: *Registry, gpa: std.mem.Allocator) void {
         registry.clear(gpa);
         registry.sessions.deinit(gpa);
-        registry.* = .{};
+        registry.* = .{ .provider_id = registry.provider_id };
     }
 
     pub fn clear(registry: *Registry, gpa: std.mem.Allocator) void {
@@ -176,7 +180,7 @@ pub const Registry = struct {
         }
         try next.ensureTotalCapacity(gpa, entries.len);
         for (entries) |entry| {
-            var session = try copyEntry(gpa, entry);
+            var session = try copyEntry(gpa, entry, registry.provider_id);
             errdefer session.deinit(gpa);
             if (registry.findConst(entry.id)) |existing| session.stream_state = existing.stream_state;
             next.appendAssumeCapacity(session);
@@ -244,7 +248,7 @@ pub const Registry = struct {
     }
 };
 
-fn copyEntry(gpa: std.mem.Allocator, entry: Entry) Error!Session {
+fn copyEntry(gpa: std.mem.Allocator, entry: Entry, provider_id: provider.ProviderId) Error!Session {
     const provider_name = try copyText(gpa, entry.provider_name);
     errdefer gpa.free(provider_name);
     const native_id = try copyText(gpa, entry.native_id);
@@ -256,6 +260,7 @@ fn copyEntry(gpa: std.mem.Allocator, entry: Entry) Error!Session {
         .provider_name = provider_name,
         .native_id = native_id,
         .catalog_state = State.parse(entry.state),
+        .provider_id = provider_id,
     };
 }
 

@@ -117,6 +117,21 @@ const DisabledPhuxProvider = struct {
         return error.Disabled;
     }
     pub fn destroy(_: *DisabledPhuxProvider) void {}
+    pub fn coordinatorId(_: Endpoint) ProviderId {
+        return .phux;
+    }
+    pub fn providerId(_: *const DisabledPhuxProvider) ProviderId {
+        return .phux;
+    }
+    pub fn effectiveProviderId(_: *const DisabledPhuxProvider) ProviderId {
+        return .phux;
+    }
+    pub fn showing(_: *const DisabledPhuxProvider) bool {
+        return false;
+    }
+    pub fn show(_: *DisabledPhuxProvider, _: u32) error{Disabled}!void {
+        return error.Disabled;
+    }
     pub fn open(_: *DisabledPhuxProvider, _: native_sdk.ChannelHandle) error{Disabled}!void {
         return error.Disabled;
     }
@@ -273,6 +288,17 @@ pub const pointer_channel_key: u64 = 103;
 /// The standby coordinator held beside the active one (docs/REMOTE_HOSTS.md,
 /// "Side by side"): its own worker and channel, so either can restart alone.
 pub const phux_peer_channel_key: u64 = 104;
+
+/// Peer `slot`'s channel (`Model.phux_peers`): 104, 105, 106.
+pub fn phuxPeerChannelKey(slot: usize) u64 {
+    return phux_peer_channel_key + slot;
+}
+
+/// The peer slot a channel key belongs to, if any.
+pub fn peerSlotForKey(key: u64, slots: usize) ?usize {
+    if (key < phux_peer_channel_key or key >= phux_peer_channel_key + slots) return null;
+    return @intCast(key - phux_peer_channel_key);
+}
 pub const max_remote_terminals: usize = provider_contract.workspace.max_terminals;
 
 pub const ProviderKind = enum { local, phux };

@@ -170,13 +170,16 @@ registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
 `PHUX_REMOTE=NAME`, selects one at launch. The status bar names the host
 while connecting, connected, reconnecting, or failed, and gives the reason
 when it fails. A failure keeps the entered host so a retry is one keystroke.
-This Mac's coordinator stays connected beside the host: the switcher lists
-both as host groups, "This Mac" first, and picking a session in the other
-group makes that coordinator active. Use this Mac does the same from the
-host panel and keeps the host listed; Disconnect removes it. The host is
-remembered and reattached beside this Mac after relaunch. Cockpit never
-pairs a host; an unregistered one fails with the CLI command that pairs it.
-See [Remote hosts](docs/REMOTE_HOSTS.md).
+Cockpit holds up to four coordinators at once, this Mac and registered
+hosts, each on its own connection: the switcher lists them as host groups,
+"This Mac" first. Picking a session in another coordinator's group shows it
+beside the others, in the same windows, without disconnecting anything.
+Every terminal carries the coordinator that minted it, so input always
+reaches the right machine. A coordinator that fails says why in its group.
+Use this Mac makes this Mac active and keeps the hosts listed; Disconnect
+removes them. The last host is remembered and reattached beside this Mac
+after relaunch. Cockpit never pairs a host; an unregistered one fails with
+the CLI command that pairs it. See [Remote hosts](docs/REMOTE_HOSTS.md).
 
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line
 comment, and there are deliberately no trailing comments because `#` is also how
@@ -705,8 +708,9 @@ Cockpit** workflow against the existing draft tag.
   session, and terminal identity. Unavailable or mismatched attachments remain
   pending; Cockpit does not invent replacement work. Satellite restoration
   also requires matching route-incarnation evidence.
-- One Phux coordinator at a time: a connected remote host replaces the local
-  coordinator's catalog rather than appearing beside it. See
+- At most four Phux coordinators at once. New tabs, splits and the
+  available-terminal inventory belong to the active coordinator; a peer's
+  shown tabs are used in place. See
   [Remote hosts](docs/REMOTE_HOSTS.md#known-limits).
 - Ephemeral local PTY restoration restores layout and working directories,
   not the former processes or scrollback. Phux-backed work survives in its

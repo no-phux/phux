@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # Go to Directory
@@ -125,6 +125,23 @@ Every reply is the page that the action leaves behind:
 | message | length u8, then the server's text, elided at 240 bytes |
 | scope | u8: 0 the coordinator, 1 a satellite, 2 the coordinator in place of a satellite |
 | host | length u8, then the satellite the picker was opened over (empty for scope 0) |
+| via | length u8, then the coordinator the listing came through, when it is not the active one (empty otherwise) |
+
+### Panes of another coordinator
+
+With several coordinators held (docs/REMOTE_HOSTS.md, "Several
+coordinators"), the listing belongs to the coordinator that minted the
+focused pane, fixed when the picker opens. That coordinator's provider asks
+LIST_DIRECTORY and its own feature bits decide the satellite relay, so a
+satellite name is only ever resolved by the hub that relays that pane: two
+coordinators that both federate a `devbox` never answer for each other. A
+listing through a coordinator other than the active one names it (`via`):
+the heading reads "Go to Directory on <satellite> via <coordinator>", or
+"on <coordinator>" for its own host. New tabs open on the active coordinator
+only, so such a listing has no Open a new tab here row, the Open Here button
+says so instead of sending anything, and the engine refuses one that arrives
+anyway (`OtherCoordinator`). A refused Open Here is reported as the terminal
+limit only when capacity refused it.
 
 Row index 0xffff is "Open a new tab here" and 0xfffe is `..`; the core
 supplies their labels. The core accepts a reply only while the picker is

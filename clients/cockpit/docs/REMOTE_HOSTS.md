@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # Remote hosts
@@ -12,11 +12,14 @@ at a host in the phux CLI's own `[[remote]]` registry, resolved the way
 `phux --remote HOST` resolves it. phux-client-ffi's remote tunnel dials QUIC
 or TLS WebSocket with the pinned certificate and bearer token, then relays
 frames through a Unix-domain socket pair. The socket worker and session
-kernel are unchanged. This Mac's coordinator stays connected beside the
-host, so the switcher lists both as host groups ("This Mac" first). Picking
-the other group's session makes that coordinator active. Disconnect removes
-only the host's group. The host is remembered beside the state file and
-reattached beside this Mac on the next launch.
+kernel are unchanged. Cockpit holds up to four coordinators at once (this
+Mac and registered hosts), each on its own connection, listed as host groups
+("This Mac" first). Every terminal identity carries the coordinator that
+minted it, so two servers' terminal 7 are two terminals. Picking a session in
+another coordinator's group shows it beside the others without disconnecting
+anything; a coordinator that fails shows why in its group. Disconnect removes
+the hosts. The last host is remembered and reattached beside this Mac on the
+next launch.
 
 ## Endpoint model
 
@@ -138,56 +141,128 @@ with this Mac beside it. Saved placements carry the endpoint
 `phux-remote:<target>`, which is disjoint from every absolute socket path,
 so a placement never matches the wrong coordinator.
 
-## Side by side
+## Several coordinators
 
-The model holds the active Phux provider (`Model.phux_provider`) and at most
-one standby coordinator (`Model.phux_peer`). The standby is this Mac's
-coordinator while a remote host is active, and the remote host while this Mac
-is. It runs its own socket worker on its own channel
-(`phux_peer_channel_key`, 104), so either one restarts alone. Every terminal
-surface belongs to the active provider.
+The model holds the active Phux provider (`Model.phux_provider`) and up to
+three more (`Model.phux_peers`): this Mac's coordinator while a remote host
+is active, and registered hosts. Each peer runs its own socket worker on its
+own channel (`phuxPeerChannelKey(slot)`: 104, 105, 106), so any one restarts
+or fails alone.
 
-The standby never attaches. An attached client is a subscriber: under the
-server's default `window-size = smallest` its viewport would size every pane
-of its session for everyone else, and every pane's output would stream to it
-for nothing. After HELLO_OK it instead asks GET_STATE
+### Identity
+
+A terminal's identity is the coordinator that minted it plus the server's
+id: `TerminalRef.provider_id` is `contract.phuxCoordinatorId(target)`. This
+Mac's coordinator is `.phux`, the id every saved placement already carries;
+a registered host's is derived from its registry target, with bit 31 set so
+it can equal neither `.phux` nor `.local`. The id follows the endpoint, so it
+is stable across reconnects and relaunches and moves with a retarget.
+
+Every provider mints refs with its own id (`Host.provider_id`: replicas,
+workspace nodes, catalog rows, agent sessions, operation results, bells),
+and refuses a ref with any other id: another coordinator's terminal 7 is
+never looked up, resized, typed into or detached here. The model routes each
+ref to the provider that minted it (`Model.phuxForRef`), which is how input,
+sizing, painting, selection, search, bells, titles and catalog targets all
+reach the right machine. A catalog target is captured against its
+coordinator's own context, so a target for a coordinator no longer held, or
+retargeted since, resolves to nothing. Saved attachment evidence is kept for
+the active coordinator's refs only; its endpoint and provider id are both
+persisted.
+
+### Listing and showing
+
+A peer starts by LISTING. It never attaches: an attached client is a
+subscriber, and under the server's default `window-size = smallest` its
+viewport would size every pane of its session for everyone else, and every
+pane's output would stream to it for nothing. After HELLO_OK it asks GET_STATE
 (`phux_client_query_sessions`), once per connection and again whenever the
-switcher refreshes, so it sizes no pane and streams nothing. Its group lists
-only while that list belongs to the current connection and no retarget is
-pending. On disconnect, and the moment it is retargeted, the standby forgets
-the list and its generation, so rows captured from it stop resolving. They
-cannot attach a session by name on the wrong host.
+switcher refreshes. Its group lists only while that list belongs to the
+current connection and no retarget is pending; on disconnect and the moment
+it is retargeted it forgets the list and its generation, so rows captured
+from it stop resolving.
 
-| Action | Active | Standby |
+Picking one of its sessions makes it SHOW that session
+(`Engine.showPeerSession`): only that peer restarts its connection, and its
+first frame after HELLO_OK is ATTACH for that session, by id. Its shared
+workspace then projects into the same windows as the active coordinator's
+(`Model.peer_workspaces`): each coordinator's publication replaces only its
+own tabs, keeps every other showing coordinator's tabs in place with their
+selection, and puts its own group back where it was. Each of its terminals
+is sized on its own server by the sizing pump once a pane shows it. Picking
+another session of a showing peer leaves the first session's tabs for it.
+
+A peer stays shown only while one of its tabs is the selected, painted tab
+of an open window. Its first projection takes the selection. Once none of
+its tabs is on screen (another tab or session was chosen, its tabs were
+closed, or its session has no windows) it returns to listing
+(`Engine.settlePeers`, after every native mutation and channel wake): its
+tabs leave and only its connection restarts as a standby, so the attach and
+every viewport it held end and the new connection asks GET_STATE. Picking
+one of its sessions shows it again. Close Tab and Close Pane on a peer's
+tab go to that coordinator as the same layout-only removal the active
+coordinator's tabs send to theirs; its terminals keep running there. Go to
+Directory over a peer's pane lists through that peer (see
+[Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)).
+
+| Action | Active | Peers |
 |---|---|---|
-| Connect to Host from this Mac | the host | this Mac (created on first use) |
-| Connect to Host from a host | the new host | this Mac, unchanged |
-| a session in the other group | that coordinator, that session | the one it left |
-| Use this Mac | this Mac | the host, still listed |
-| Disconnect | this Mac | none: the host's group goes |
+| a session in a peer's group | unchanged | that peer shows it, beside the others |
+| Connect to Host | the host | the coordinator it left joins the list; a listed host trades places |
+| Use this Mac | this Mac | the host joins the list, others unchanged |
+| Disconnect | this Mac | none: every host's group and tabs go |
 
-Each move retargets the providers through `requestRetarget` and restarts
-them through the path Reconnect uses. Frozen canvases, session handoff and
-command fencing therefore behave as for any host switch, and both
-connections redial. The switcher lists this Mac's sessions first, then the
-host's, whichever is active. Standby rows carry a `peer_session` target held
-against the standby provider's own context, so an exchange or a Disconnect
-invalidates rows captured before it.
+Connect to Host and Use this Mac retarget two providers through
+`requestRetarget` and restart them through the path Reconnect uses; no other
+coordinator moves. A peer that trades places first takes its tabs out of the
+windows and stands by, because its identity is about to change. The switcher
+lists this Mac's group first, then registered hosts.
+
+### A failed coordinator
+
+A peer whose connection fails or closes, or whose channel cannot open, is
+marked failed until it lists again. Its group then shows one row, named for
+the host, reading "Unavailable" with the recorded reason (a remote host's
+dial or connection failure), else "the connection was lost". Picking that
+row dials that peer again (`Engine.retryPeer`); the row then reads
+"Connecting…" and is not selectable until the peer fails again or lists. A
+showing peer's tabs keep their last frames, frozen, while it is down. If its
+server ends the shown session instead, its tabs leave and it goes back to
+listing on a fresh connection. A showing peer whose workspace cannot be
+projected reads "workspace unavailable" on its session rows.
 
 ## Known limits
 
-- One remote host at a time, beside this Mac. Connecting to a second host
-  replaces the first, and this Mac stays listed.
-- The standby lists sessions only. Its terminals are not in the switcher's
-  terminal rows, and activating one of its sessions redials both
-  connections rather than handing over live replicas.
-- A standby session is selectable only by name, because that is how the
-  retargeted connection attaches it. An unnamed session is listed but
-  cannot be picked.
-- A standby that fails to connect is not reported in the status line. Its
-  group simply disappears until the standby reconnects and lists again.
-- Catalog search matches titles, directories and sessions, not the host
-  label.
+- At most four coordinators: the active one and three peers. Connecting to a
+  fifth is refused with a reason.
+- Disconnect removes every registered host, not one of several. Only the
+  most recently connected host is remembered for relaunch.
+- New tabs, splits and the available-terminal inventory belong to the active
+  coordinator. A showing peer's panes are typed into, selected, searched and
+  sized on their own host, and its tabs and panes close there. Split,
+  reorder and split-drag on a peer's tab are refused (a split-drag snaps
+  back), without marking the active coordinator's workspace refused. New Tab
+  with a peer's pane focused opens on the active coordinator. Go to
+  Directory over a peer's pane lists that peer's host, but cannot open a tab
+  there.
+- A peer is shown only while one of its tabs is on screen. Keeping a peer's
+  tab in the background while another coordinator's tab is selected is not
+  possible: choosing that other tab returns the peer to listing.
+- A showing peer's placements are not saved as attachment evidence; they
+  are projected again from its workspace when it reconnects. A failed peer
+  is not restarted automatically: picking its group's row retries it.
+- A channel close event carries only its slot's key. One that arrives after
+  Disconnect and a new Connect reused the slot is taken for the new peer's:
+  it stops that peer's connection and marks it failed. Picking its row
+  redials it.
+- Showing a peer session is refused while the active coordinator has a
+  retarget pending, since the two briefly share a coordinator id.
+- Placements saved for a remote active host before coordinator ids existed
+  carry `.phux` and are not matched; that host's workspace projects them
+  again.
+- Known-host rows group terminals by satellite name; two coordinators' own
+  terminals share the coordinator row.
+- Catalog search matches titles, directories, sessions and peer host labels.
 - A registry entry's pinned `session` is requested both by Connect to Host
   and when a host selected at launch (remembered, `phux-remote` or
   `PHUX_REMOTE`) is attached. An explicit `phux-session` or `PHUX_SESSION`

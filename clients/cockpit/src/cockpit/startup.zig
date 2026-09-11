@@ -656,6 +656,6 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
     attachPhuxProvider(initialized.model, remote_provider);
     if (remote_provider != null)
-        initialized.model.phux_peer = try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config);
+        initialized.model.phux_peers[0] = try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config);
     return initialized;
 }

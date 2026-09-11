@@ -121,7 +121,7 @@ fn failureReason(remote: anytype, scratch: *Scratch) []const u8 {
 fn connect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
     if (comptime !support.phux_enabled)
         return .{ .phase = .failed, .host = target, .reason = "this build of Cockpit has no Phux provider" };
-    const remote = engine.model.phux() orelse
+    _ = engine.model.phux() orelse
         return .{ .phase = .failed, .host = target, .reason = "Phux is not configured" };
     const described = support.PhuxProvider.describeRemote(target);
     if (described.state != .resolved) return .{
@@ -132,17 +132,14 @@ fn connect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) 
     const session = described.session.slice();
     const pinned: ?[]const u8 = if (session.len == 0) null else session;
     const endpoint: support.PhuxEndpoint = .{ .remote = .{ .target = target } };
-    // From this Mac, its coordinator stays listed beside the host as the
-    // peer. From one remote host to another only the active side moves: this
-    // Mac is already the peer, and the switcher holds one remote host.
-    if (remote.remoteTarget() == null) {
-        engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch
-            return .{ .phase = .failed, .host = target, .reason = "out of memory" };
-    } else {
-        remote.requestRetarget(endpoint, pinned, described.name.slice()) catch
-            return .{ .phase = .failed, .host = target, .reason = "out of memory" };
-        restart(engine, fx);
-    }
+    // The host becomes active and the coordinator it leaves stays listed
+    // beside it: this Mac, or a host connected before. A host already listed
+    // trades places with the active one; nothing else moves.
+    engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch |err| return .{
+        .phase = .failed,
+        .host = target,
+        .reason = if (err == error.PeerCapacity) "Cockpit already holds four coordinators. Disconnect first." else "out of memory",
+    };
     choose(target);
     return .{ .phase = .connecting, .host = copy(&scratch.host, described.name.slice()) };
 }
@@ -163,9 +160,9 @@ fn returnLocal(engine: anytype, fx: anytype) Reply {
     return .{ .phase = .local };
 }
 
-/// Remove the remote host: this Mac becomes active if it was not, the peer
-/// goes (its group leaves the switcher), and the host is no longer
-/// reattached at launch.
+/// Remove the remote hosts: this Mac becomes active if it was not, every
+/// peer goes (their groups and tabs leave), and no host is reattached at
+/// launch.
 fn disconnect(engine: anytype, fx: anytype) Reply {
     if (comptime !support.phux_enabled) return .{ .phase = .local };
     const model = engine.model;
@@ -177,7 +174,7 @@ fn disconnect(engine: anytype, fx: anytype) Reply {
             return .{ .phase = .failed, .reason = "out of memory" };
         restart(engine, fx);
     }
-    engine.dropPeer(fx);
+    for (0..model.phux_peers.len) |slot| engine.dropPeer(fx, slot);
     choose(null);
     remember(model, null);
     return .{ .phase = .local };

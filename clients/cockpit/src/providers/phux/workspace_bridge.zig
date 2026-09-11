@@ -25,7 +25,15 @@ pub fn text(raw: c.PhuxBytes) !ws.Text {
     return ws.Text.init(value);
 }
 
+/// This Mac's coordinator's ref for `raw`; see `terminalRefFor`.
 pub fn terminalRef(raw: c.PhuxResourceId) !contract.TerminalRef {
+    return terminalRefFor(.phux, raw);
+}
+
+/// `raw` as a ref of the coordinator `provider_id` names: the server's id is
+/// only unique on that server.
+pub fn terminalRefFor(provider_id: contract.ProviderId, raw: c.PhuxResourceId) !contract.TerminalRef {
+    if (!contract.isPhuxCoordinator(provider_id)) return error.InvalidIdentity;
     const host_name = try text(raw.host);
     switch (raw.kind) {
         c.PHUX_RESOURCE_ID_LOCAL => if (host_name.len != 0) return error.InvalidIdentity,
@@ -33,20 +41,22 @@ pub fn terminalRef(raw: c.PhuxResourceId) !contract.TerminalRef {
         else => return error.InvalidIdentity,
     }
     if (raw.id == 0) return error.InvalidIdentity;
-    return .{ .provider_id = .phux, .terminal_id = .{
+    return .{ .provider_id = provider_id, .terminal_id = .{
         .phux = try contract.RemoteResourceId.fromPhux(raw.kind, raw.id, host_name.slice()),
     } };
 }
 
-pub fn rawTerminal(ref: *const ?contract.TerminalRef) !c.PhuxResourceId {
+/// Another coordinator's terminal is refused: its numeric id would name a
+/// different terminal, or none, on this one.
+pub fn rawTerminal(ref: *const ?contract.TerminalRef, provider_id: contract.ProviderId) !c.PhuxResourceId {
     const value = if (ref.*) |*value| value else return std.mem.zeroes(c.PhuxResourceId);
-    if (value.provider_id != .phux) return error.InvalidIdentity;
+    if (value.provider_id != provider_id) return error.InvalidIdentity;
     const remote = switch (value.terminal_id) {
         .phux => |*id| id,
         else => return error.InvalidIdentity,
     };
     const raw: c.PhuxResourceId = .{ .kind = remote.kind, .id = remote.id, .host = bytes(remote.host()) };
-    _ = try terminalRef(raw);
+    _ = try terminalRefFor(provider_id, raw);
     return raw;
 }
 
@@ -55,7 +65,7 @@ fn bytes(value: []const u8) c.PhuxBytes {
 }
 
 /// Returned pointers borrow the caller-owned mutation, never a local ID copy.
-pub fn mutation(value: *const ws.Mutation, request_id: u32) !c.PhuxWorkspaceMutation {
+pub fn mutation(value: *const ws.Mutation, request_id: u32, provider_id: contract.ProviderId) !c.PhuxWorkspaceMutation {
     _ = try text(bytes(value.name));
     var raw = record(c.PhuxWorkspaceMutation);
     raw.request_id = request_id;
@@ -63,8 +73,8 @@ pub fn mutation(value: *const ws.Mutation, request_id: u32) !c.PhuxWorkspaceMuta
     raw.session_id = value.session_id;
     raw.kind = @intFromEnum(value.kind);
     raw.window_id = value.window_id;
-    raw.terminal_id = try rawTerminal(&value.terminal_ref);
-    raw.new_terminal_id = try rawTerminal(&value.new_terminal_ref);
+    raw.terminal_id = try rawTerminal(&value.terminal_ref, provider_id);
+    raw.new_terminal_id = try rawTerminal(&value.new_terminal_ref, provider_id);
     raw.name = bytes(value.name);
     raw.direction = @intFromEnum(value.direction);
     raw.index = value.index;
@@ -80,12 +90,14 @@ pub const Store = struct {
     windows: []ws.Window = &.{},
     nodes: []ws.Node = &.{},
     catalog: []ws.CatalogTerminal = &.{},
+    /// The coordinator whose publication this is; its refs carry it.
+    provider_id: contract.ProviderId = .phux,
 
     pub fn deinit(self: *Store, gpa: std.mem.Allocator) void {
         gpa.free(self.windows);
         gpa.free(self.nodes);
         gpa.free(self.catalog);
-        self.* = .{};
+        self.* = .{ .provider_id = self.provider_id };
     }
 
     pub fn snapshot(self: *const Store) ws.Snapshot {
@@ -133,7 +145,7 @@ pub const Store = struct {
             self.message = message;
             return true;
         }
-        var next: Store = .{ .info = info, .message = message };
+        var next: Store = .{ .info = info, .message = message, .provider_id = self.provider_id };
         errdefer next.deinit(gpa);
         try next.copyRecords(gpa, client, raw);
         self.deinit(gpa);
@@ -158,13 +170,13 @@ pub const Store = struct {
         for (self.nodes, 0..) |*node, index| {
             var raw = record(c.PhuxWorkspaceNode);
             try check(c.phux_client_workspace_node_get(client, index, &raw));
-            node.* = try nodeFromC(raw, info.node_count);
+            node.* = try nodeFromC(raw, info.node_count, self.provider_id);
         }
         for (self.catalog, 0..) |*entry, index| {
             var raw = record(c.PhuxCatalogTerminal);
             try check(c.phux_client_catalog_terminal_get(client, index, &raw));
             entry.* = .{
-                .terminal_ref = try terminalRef(raw.terminal_id),
+                .terminal_ref = try terminalRefFor(self.provider_id, raw.terminal_id),
                 .session_id = raw.session_id,
                 .title = try text(raw.title),
                 .cwd = try text(raw.cwd),
@@ -189,8 +201,8 @@ fn infoFromC(raw: c.PhuxWorkspaceInfo) !ws.Snapshot {
     };
 }
 
-fn nodeFromC(raw: c.PhuxWorkspaceNode, count: u32) !ws.Node {
-    if (raw.kind == 1) return .{ .kind = .leaf, .terminal_ref = try terminalRef(raw.terminal_id) };
+fn nodeFromC(raw: c.PhuxWorkspaceNode, count: u32, provider_id: contract.ProviderId) !ws.Node {
+    if (raw.kind == 1) return .{ .kind = .leaf, .terminal_ref = try terminalRefFor(provider_id, raw.terminal_id) };
     try validateSplit(raw, count);
     return .{ .kind = switch (raw.kind) {
         2 => .horizontal,
@@ -222,7 +234,10 @@ test "workspace mutation maps every field and borrows the owning satellite IDs" 
         .path_bits = 5,
         .path_len = 3,
     };
-    const raw = try mutation(&value, 71);
+    const raw = try mutation(&value, 71, .phux);
+    // The same mutation addressed to another coordinator names no terminal of
+    // it: refused before it reaches the wire.
+    try std.testing.expectError(error.InvalidIdentity, mutation(&value, 71, contract.phuxCoordinatorId("mini")));
     try std.testing.expectEqual(@sizeOf(c.PhuxWorkspaceMutation), raw.size);
     try std.testing.expectEqual(c.PHUX_CLIENT_ABI_VERSION, raw.version);
     try std.testing.expectEqual(@as(u32, 71), raw.request_id);
@@ -262,9 +277,9 @@ test "workspace split ratios require two nonempty panes" {
     raw.first = 0;
     raw.second = 1;
     raw.ratio = 0;
-    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2));
+    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2, .phux));
     raw.ratio = 1;
-    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2));
+    try std.testing.expectError(error.InvalidWorkspace, nodeFromC(raw, 2, .phux));
     raw.ratio = 0.5;
-    try std.testing.expectEqual(@as(f32, 0.5), (try nodeFromC(raw, 2)).ratio);
+    try std.testing.expectEqual(@as(f32, 0.5), (try nodeFromC(raw, 2, .phux)).ratio);
 }

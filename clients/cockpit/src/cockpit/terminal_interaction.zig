@@ -37,7 +37,7 @@ fn selectionText(model: *Model, ref: TerminalRef) ![]u8 {
         return std.heap.page_allocator.dupe(u8, result);
     }
     const state = model.remoteUi(ref) orelse return error.NoSelection;
-    const remote = model.phux() orelse return error.NoProvider;
+    const remote = model.phuxForRef(ref) orelse return error.NoProvider;
     state.copy_failed = false;
     const text = try remoteSelectionText(model, remote, state);
     state.copied_bytes = text.len;
@@ -125,7 +125,7 @@ pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
         pasteLocal(model, pane, fx, text);
         return;
     }
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(model.paste_owner.terminal_ref) orelse return;
     if (model.paste_target == .search_needle) {
         pasteRemoteSearch(model, text);
         return;
@@ -160,7 +160,9 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
         resizeLocal(pane, fx, viewport);
         return;
     }
-    const remote = model.phux() orelse return;
+    // Each coordinator's terminal is sized on its own server, only once a
+    // pane shows it and it is live.
+    const remote = model.phuxForRef(ref) orelse return;
     if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
     const presentation = model.remotePresentation(ref) orelse return;
     if (presentation.phase != .live) return;
@@ -184,7 +186,7 @@ pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
         return;
     }
     if (state.selecting) return;
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(ref) orelse return;
     update.remote_selection.clear(model, state);
     remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch return;
     remote.sendKey(state.owner, &.{
@@ -207,7 +209,7 @@ pub fn modifiers(event: Event) contract.ModifierMask {
 }
 
 pub fn remoteKey(model: *Model, ref: TerminalRef, event: Event) void {
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(ref) orelse return;
     const owner = model.terminalOwner(ref) orelse return;
     const input = runtime.providerKey(event) orelse return;
     remote.sendKey(owner, &input) catch {};

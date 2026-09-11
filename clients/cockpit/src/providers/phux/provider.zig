@@ -126,7 +126,28 @@ pub const PhuxProvider = struct {
         };
         errdefer if (owned_label) |label| gpa.free(label);
         self.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .host = host, .endpoint = owned_endpoint, .session = owned_session, .client_name = owned_client_name, .remote_label = owned_label, .context_id = try provider.context.allocate() };
+        host.setProviderId(coordinatorId(endpoint));
         return self;
+    }
+
+    /// The coordinator an endpoint reaches (contract.phuxCoordinatorId).
+    pub fn coordinatorId(endpoint: Endpoint) provider.ProviderId {
+        return provider.phuxCoordinatorId(switch (endpoint) {
+            .remote => |remote| remote.target,
+            else => null,
+        });
+    }
+
+    /// The coordinator this provider is connected to, which every ref it
+    /// publishes carries. It follows the applied endpoint: a pending
+    /// retarget moves it only when the next connection starts.
+    pub fn providerId(self: *const PhuxProvider) provider.ProviderId {
+        return self.host.provider_id;
+    }
+
+    /// The coordinator this provider dials next, pending retarget included.
+    pub fn effectiveProviderId(self: *const PhuxProvider) provider.ProviderId {
+        return coordinatorId(self.effectiveEndpoint().borrowed());
     }
 
     pub fn destroy(self: *PhuxProvider) void {
@@ -236,6 +257,25 @@ pub const PhuxProvider = struct {
     /// GET_STATE and never attaches (see `standby`).
     pub fn standBy(self: *PhuxProvider) void {
         self.standby = true;
+        self.session_id = null;
+    }
+
+    /// Whether this coordinator's terminals may be on screen: it attaches a
+    /// session. A standby only lists.
+    pub fn showing(self: *const PhuxProvider) bool {
+        return !self.standby;
+    }
+
+    /// Show `session_id` of this listing coordinator beside the others. The
+    /// next connection attaches it the way the active provider attaches its
+    /// own; each terminal then gets its real size from the sizing pump once
+    /// a pane shows it. Takes effect when the connection restarts.
+    pub fn show(self: *PhuxProvider, session_id: u32) !void {
+        if (session_id == 0) return error.InvalidIdentity;
+        self.standby = false;
+        self.session_id = session_id;
+        self.attach_queued = false;
+        self.standby_query_epoch = 0;
     }
 
     /// Once per connection, after negotiation.
@@ -287,6 +327,8 @@ pub const PhuxProvider = struct {
         self.remote_label = next.label;
         self.session_id = null;
         if (self.host.state() != .new) self.host.clearSessionReplicas();
+        // Replicas are gone, so no terminal keeps the old coordinator's id.
+        self.host.setProviderId(coordinatorId(self.endpoint.borrowed()));
         self.remote_status.reset();
     }
 

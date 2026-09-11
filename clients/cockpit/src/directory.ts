@@ -55,6 +55,9 @@ export interface DirectoryPage {
   readonly message: Uint8Array;
   readonly scope: number;
   readonly host: Uint8Array;
+  /// The coordinator the listing came through when it is not the active
+  /// one; a new tab cannot open in its directories.
+  readonly via: Uint8Array;
 }
 
 export const NO_DIRECTORY_REQUEST = new Uint8Array(4);
@@ -107,7 +110,9 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
   const messageEnd = listed.end + 1 + bytes[listed.end];
   if (messageEnd + 2 > bytes.length || bytes[messageEnd] > DIR_SCOPE_INSTEAD) return null;
   const hostEnd = messageEnd + 2 + bytes[messageEnd + 1];
-  if (hostEnd !== bytes.length) return null;
+  if (hostEnd >= bytes.length) return null;
+  const viaEnd = hostEnd + 1 + bytes[hostEnd];
+  if (viaEnd !== bytes.length) return null;
   return {
     status: bytes[1],
     request: bytes.slice(2, 6),
@@ -120,6 +125,7 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
     message: bytes.subarray(listed.end + 1, messageEnd),
     scope: bytes[messageEnd],
     host: bytes.subarray(messageEnd + 2, hostEnd),
+    via: bytes.subarray(hostEnd + 1, viaEnd),
   };
 }
 
@@ -153,11 +159,26 @@ export function directoryRowLabel(row: DirectoryRow): Uint8Array {
 /// connected coordinator's: a satellite by name, and a hub that cannot list
 /// the focused satellite by saying whose directories are shown instead.
 export function directoryTitle(page: DirectoryPage): Uint8Array {
+  if (page.via.length > 0) return viaTitle(page);
   if (page.host.length === 0) return asciiBytes("Go to Directory");
   if (page.scope === DIR_SCOPE_SATELLITE) return join(asciiBytes("Go to Directory on "), page.host, new Uint8Array(0));
   if (page.scope === DIR_SCOPE_INSTEAD) return join(asciiBytes("Go to Directory on the coordinator, not "), page.host, new Uint8Array(0));
   return asciiBytes("Go to Directory");
 }
+
+/// A listing through another coordinator than the active one names it.
+function viaTitle(page: DirectoryPage): Uint8Array {
+  if (page.scope === DIR_SCOPE_SATELLITE && page.host.length > 0) {
+    return join(asciiBytes("Go to Directory on "), page.host, join(asciiBytes(" via "), page.via, new Uint8Array(0)));
+  }
+  if (page.scope === DIR_SCOPE_INSTEAD && page.host.length > 0) {
+    return join(asciiBytes("Go to Directory on "), page.via, join(asciiBytes(", not "), page.host, new Uint8Array(0)));
+  }
+  return join(asciiBytes("Go to Directory on "), page.via, new Uint8Array(0));
+}
+
+/// What Open Here says on a listing through another coordinator.
+export const DIR_OTHER_COORDINATOR_NOTICE = "New tabs open on the active coordinator only. Enter browses.";
 
 /// The notice under the list for one settled or waiting page.
 export function directoryNotice(page: DirectoryPage): Uint8Array {
@@ -166,6 +187,7 @@ export function directoryNotice(page: DirectoryPage): Uint8Array {
   if (page.status === DIR_STATUS_UNKNOWN) return asciiBytes("The connection ended before the listing arrived. Try again.");
   if (page.status !== DIR_STATUS_LISTED) return page.message.length > 0 ? page.message : asciiBytes("Directory listing unavailable. Try again.");
   if (page.total === 0) return asciiBytes("No matching directories");
+  if (page.via.length > 0) return asciiBytes(DIR_OTHER_COORDINATOR_NOTICE);
   if (page.truncated) return asciiBytes("Enter to open  /  Showing the first 1024 directories");
   return asciiBytes("Enter to open  /  Escape to cancel");
 }

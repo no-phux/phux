@@ -20,6 +20,30 @@ pub const ProviderId = enum(u64) {
     _,
 };
 
+const remote_coordinator_base: u64 = 0x7068_7578_8000_0000;
+
+/// The identity of one Phux coordinator, derived from where it is reached so
+/// it is stable across reconnects and relaunches. This Mac's coordinator (a
+/// socket) is `.phux`, which every saved placement from before several
+/// coordinators existed already names. A registered remote host is keyed by
+/// its registry target, with bit 31 set so it can never equal `.phux` or
+/// `.local`. Terminal ids are allocated per server, so two coordinators can
+/// both publish terminal 7; the provider id is what keeps those two apart in
+/// every placement, target and input route.
+pub fn phuxCoordinatorId(remote_target: ?[]const u8) ProviderId {
+    const target = remote_target orelse return .phux;
+    const mixed = std.hash.Wyhash.hash(remote_coordinator_base, target);
+    return @enumFromInt(remote_coordinator_base | (mixed & 0x7fff_ffff));
+}
+
+/// Whether an id read from outside (a saved placement, a catalog target)
+/// can name a Phux coordinator at all: this Mac's, or the remote form
+/// `phuxCoordinatorId` produces. Anything else is refused on decode.
+pub fn isPhuxCoordinator(id: ProviderId) bool {
+    if (id == .phux) return true;
+    return (@intFromEnum(id) & 0xffff_ffff_8000_0000) == remote_coordinator_base;
+}
+
 /// Durable identities owned by the built-in local provider.
 pub const LocalResourceId = enum(u64) {
     terminal_1 = 0x7465_726d_0000_0001,
@@ -320,6 +344,23 @@ test "replica identity includes provider epoch stream and bootstrap" {
     try std.testing.expect(!base.sameReplica(.{ .epoch_id = 9, .stream_id = 2, .bootstrap_id = 3 }));
     try std.testing.expect(!base.sameReplica(.{ .epoch_id = 1, .stream_id = 9, .bootstrap_id = 3 }));
     try std.testing.expect(!base.sameReplica(.{ .epoch_id = 1, .stream_id = 2, .bootstrap_id = 9 }));
+}
+
+test "coordinator identity separates hosts and keeps this Mac's saved id" {
+    try std.testing.expectEqual(ProviderId.phux, phuxCoordinatorId(null));
+    const mini = phuxCoordinatorId("mini");
+    try std.testing.expectEqual(mini, phuxCoordinatorId("mini"));
+    try std.testing.expect(mini != .phux and mini != .local);
+    try std.testing.expect(mini != phuxCoordinatorId("studio"));
+    try std.testing.expect(isPhuxCoordinator(.phux) and isPhuxCoordinator(mini));
+    try std.testing.expect(!isPhuxCoordinator(.local));
+    try std.testing.expect(!isPhuxCoordinator(@enumFromInt(1)));
+    // The same numeric terminal on two coordinators is two identities.
+    const id: RemoteResourceId = .{ .kind = 0, .id = 7 };
+    const here: TerminalRef = .{ .provider_id = .phux, .terminal_id = .{ .phux = id } };
+    const there: TerminalRef = .{ .provider_id = mini, .terminal_id = .{ .phux = id } };
+    try std.testing.expect(!here.eql(there));
+    try std.testing.expect(here.hash() != there.hash());
 }
 
 test "viewport equality includes pixel geometry" {

@@ -68,7 +68,7 @@ pub fn command(model: *Model, ref: contract.TerminalRef, value: Command) bool {
 }
 
 fn clear(model: *Model, state: *State) bool {
-    const remote = model.phux() orelse return false;
+    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return false;
     remote.clearPresentation(state.owner) catch return false;
     state.selecting = false;
     state.start_anchor = 0;
@@ -99,7 +99,7 @@ fn selectAll(model: *Model, ref: contract.TerminalRef, state: *State) bool {
     const total = view.history_total_rows;
     const cols = view.cols;
     if (total == 0 or cols == 0 or total > std.math.maxInt(u32)) return false;
-    const remote = model.phux() orelse return false;
+    const remote = model.phuxForRef(ref) orelse return false;
     const start = remote.createAnchor(state.owner, .{ .space = .history, .row = 0, .column = 0 }) catch return false;
     const end = remote.createAnchor(state.owner, .{ .space = .history, .row = @intCast(total - 1), .column = cols - 1 }) catch {
         remote.releaseAnchor(state.owner, start);
@@ -119,7 +119,7 @@ fn selectAll(model: *Model, ref: contract.TerminalRef, state: *State) bool {
 
 pub fn close(model: *Model, state: *State) void {
     if (comptime !support.phux_enabled) return;
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
     remote.clearSearchResults(state.owner);
     selection.clear(model, state);
     if (state.search.restore_bottom) {
@@ -136,7 +136,7 @@ pub fn close(model: *Model, state: *State) void {
 fn refresh(model: *Model, state: *State, step: Step) bool {
     if (comptime !support.phux_enabled) return false;
     if (!state.search.open) return false;
-    const remote = model.phux() orelse return false;
+    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return false;
     state.search.failed = false;
     selection.clear(model, state);
     if (state.search.needle_len == 0) {
