@@ -1734,6 +1734,27 @@ shipped with host-aware spawns, the split opens on the hub as it always did,
 and a notice says so (`this hub may not be able to spawn on devbox; the split
 opened on this host`), so the new pane is not taken for one on the satellite.
 
+**A refused attach cleans up after itself where it can.** A window or split
+spawned on a satellite exists there before it attaches. When that attach is
+refused, the TUI opens nothing and sends a best-effort kill for the spawned
+pane through the hub, the same host-qualified kill `phux kill devbox/@7`
+sends, so no shell is left running on the satellite with nothing pointing at
+it. A split dropped because the pane it was split from closed kills its new
+pane the same way. A kill that fails is logged at debug level only.
+
+Two cases still leave the pane running, where `phux ls` lists it and
+`phux kill devbox/@7` removes it. When the refusal says the satellite is
+unreachable, no kill is sent: it could not reach the pane, and the hub waits
+on each relayed command before reading the client's next input, so a kill to
+a silent satellite would freeze typing for up to 30 seconds. And switching
+sessions while a satellite window or split is still opening drops what the
+client was waiting for without a kill, because a kill sent on the way out
+would hold up the switch the same way.
+
+The kill goes only to a pane this client spawned that no window holds and no
+other open is waiting on: opening a satellite session from the session picker
+never kills that session's pane, whatever the attach answers.
+
 ### 5.6 Agent-fleet dashboard
 
 The **agent-fleet dashboard** (`agent-fleet`, `C-a A`) is the one-view

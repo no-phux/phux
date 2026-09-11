@@ -463,6 +463,9 @@ pub(super) struct SessionLoop {
     /// same lifecycle as `pending_splits`. The `ResourceSpawned` arm checks
     /// this map first; a hit opens a new window on the spawned pane.
     pending_windows: HashMap<u32, PendingWindow>,
+    /// phux-c2td.20: kills in flight for satellite panes this client spawned
+    /// whose attach was refused; their replies are consumed and logged.
+    orphan_kills: super::orphans::OrphanKills,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
@@ -705,6 +708,7 @@ impl SessionLoop {
             next_request_id: 1,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
+            orphan_kills: super::orphans::OrphanKills::default(),
             pending_directory: None,
             expected_closes: HashSet::new(),
             agent_meta: AgentMetaIndex::default(),
@@ -2065,6 +2069,9 @@ impl SessionLoop {
             .observe_reply(now, batch.iter().filter_map(frame_paint_target));
         let paint_now = self.pacer.admit(now, is_reply);
         for (frame_idx, frame) in batch.into_iter().enumerate() {
+            let Some(frame) = self.orphan_kills.settle(frame) else {
+                continue;
+            };
             let Some(frame) = self.intercept_peer_reply(conn, frame, &mut repaint).await? else {
                 continue;
             };
@@ -2332,6 +2339,8 @@ impl SessionLoop {
             .await?;
         self.attach_spawned_panes(conn, std::mem::take(&mut outcome.adopt_spawned))
             .await?;
+        self.kill_orphaned_spawns(conn, std::mem::take(&mut outcome.kill_orphans))
+            .await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(&mut outcome, repaint);
         self.finish_paint(outcome.status_bar_painted);
@@ -2428,6 +2437,24 @@ impl SessionLoop {
                 },
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    /// phux-c2td.20: kill each satellite pane this client spawned whose
+    /// attach was refused, best effort, through the hub. A write to a gone
+    /// peer is dropped at debug; the replies settle in
+    /// [`super::orphans::OrphanKills::settle`], also at debug.
+    async fn kill_orphaned_spawns(
+        &mut self,
+        conn: &mut Connection,
+        panes: Vec<ResourceId>,
+    ) -> Result<(), AttachError> {
+        for frame in self
+            .orphan_kills
+            .kill_frames(panes, &mut self.next_request_id)
+        {
+            send_unless_peer_gone(conn, &frame).await?;
         }
         Ok(())
     }

@@ -566,9 +566,23 @@ pub(super) enum ParkedAdopt {
 
 impl ParkedAdopt {
     /// The satellite pane whose attach decides this window or split.
-    pub(super) const fn pane(&self) -> Option<&ResourceId> {
+    pub(super) fn pane(&self) -> Option<&ResourceId> {
         match self {
-            Self::Window(window) => window.adopt.as_ref(),
+            Self::Window(window) => window.adopt.as_ref().map(Adopt::pane),
+            Self::Split(split) => split.adopt.as_ref(),
+        }
+    }
+
+    /// The pane this client spawned for this window or split, if it did: a
+    /// split always spawns its pane, a window only when it did not adopt an
+    /// existing satellite session's (phux-c2td.20).
+    pub(super) const fn spawned_pane(&self) -> Option<&ResourceId> {
+        match self {
+            Self::Window(PendingWindow {
+                adopt: Some(Adopt::Spawned(pane)),
+                ..
+            }) => Some(pane),
+            Self::Window(_) => None,
             Self::Split(split) => split.adopt.as_ref(),
         }
     }
@@ -584,12 +598,35 @@ impl ParkedAdopt {
 pub(super) struct PendingWindow {
     /// Name for the window the spawned pane will seed.
     pub name: String,
-    /// phux-c2td.3: `Some(pane)` when the window adopts a pane that already
-    /// exists — a satellite session's active pane — instead of one being
-    /// spawned. Its reply is the `ATTACH_RESOURCE` `COMMAND_RESULT` (or a
-    /// correlated `ERROR`), not a `RESOURCE_SPAWNED`, and the window opens
-    /// only when that attach succeeds.
-    pub adopt: Option<phux_protocol::ResourceId>,
+    /// phux-c2td.3: `Some` when the window waits on a satellite pane's
+    /// attach instead of a spawn: a satellite session's active pane, or a
+    /// pane this client just spawned on a satellite. Its reply is the
+    /// `ATTACH_RESOURCE` `COMMAND_RESULT` (or a correlated `ERROR`), not a
+    /// `RESOURCE_SPAWNED`, and the window opens only when that attach
+    /// succeeds.
+    pub adopt: Option<Adopt>,
+}
+
+/// The satellite pane a parked window attaches before it opens, and whose
+/// it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Adopt {
+    /// A pane that already existed: a satellite session's active pane
+    /// (phux-c2td.3). A refused attach leaves it alone.
+    Existing(ResourceId),
+    /// A pane this client just spawned on a satellite for this window.
+    /// Nothing else references it, so a refused attach kills it
+    /// (phux-c2td.20).
+    Spawned(ResourceId),
+}
+
+impl Adopt {
+    /// The pane, whichever way it came.
+    pub(super) const fn pane(&self) -> &ResourceId {
+        match self {
+            Self::Existing(pane) | Self::Spawned(pane) => pane,
+        }
+    }
 }
 
 /// Pure seam for the `ResourceSpawned { Ok }` handler (phux-4li.12).

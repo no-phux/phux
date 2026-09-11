@@ -26,6 +26,7 @@ mod entry;
 mod headless;
 mod loop_state;
 mod main_loop;
+mod orphans;
 mod overlay_paint;
 mod session_io;
 mod subscriptions;

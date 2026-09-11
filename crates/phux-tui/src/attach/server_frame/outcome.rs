@@ -96,6 +96,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// that attach succeeds (`handle_adopt_reply`), and a refusal bells and
     /// names the host instead of leaving a blank window or a dead split.
     pub(in crate::attach) adopt_spawned: Vec<crate::attach::actions::ParkedAdopt>,
+    /// phux-c2td.20: satellite panes this client spawned whose attach was
+    /// refused, so no window or split references them. The driver sends
+    /// each a best-effort `KILL_RESOURCE` through the hub, the host-qualified
+    /// kill `phux kill host/@id` uses, and logs a failed kill at debug.
+    pub(in crate::attach) kill_orphans: Vec<ResourceId>,
     /// phux-4li.12: `true` ⇒ the server-side frame mutated layout in
     /// a way the *local* client originated (split landed, kill folded);
     /// the driver should broadcast the new envelope via

@@ -155,6 +155,185 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
     }
 }
 
+// ---- phux-c2td.20: orphaned satellite spawns ------------------------------
+
+/// `edge/@9`, the satellite pane a parked window spawned.
+fn spawned_edge_pane() -> ResourceId {
+    ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9)
+}
+
+/// A bootstrapped loop over a socket pair, with a window parked on the
+/// attach of the satellite pane it just spawned (request 900).
+async fn loop_with_spawned_window() -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let mut client = Connection::from_stream(a);
+    let server = Connection::from_stream(b);
+    let negotiated = NegotiatedBootstrap {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        server_features: ServerFeatureSet::new(),
+    };
+    let mut state = SessionLoop::new(
+        negotiated,
+        PredictiveConfig::disabled(),
+        false,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    state
+        .bootstrap(&mut client, &mut out, initial_attached(), None)
+        .await
+        .unwrap();
+    state.pending_windows.insert(
+        900,
+        PendingWindow {
+            name: "2".to_owned(),
+            adopt: Some(crate::attach::actions::Adopt::Spawned(spawned_edge_pane())),
+        },
+    );
+    (state, client, server, out)
+}
+
+/// Every `KILL_RESOURCE` the client sent before a FIFO barrier, with its
+/// request id.
+async fn kills_sent(client: &mut Connection, server: &mut Connection) -> Vec<(u32, ResourceId)> {
+    client
+        .send(&FrameKind::GetMetadata {
+            request_id: u32::MAX,
+            scope: Scope::Global,
+            key: "test.barrier".into(),
+        })
+        .await
+        .unwrap();
+    let mut kills = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match server.recv().await.unwrap() {
+                FrameKind::GetMetadata {
+                    request_id: u32::MAX,
+                    ..
+                } => break,
+                FrameKind::Command {
+                    request_id,
+                    command: Command::KillResource { terminal_id },
+                } => kills.push((request_id, terminal_id)),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    kills
+}
+
+/// Feed the parked spawned window's attach a refusal with `code`.
+async fn refuse_spawned_attach(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    out: &mut Vec<u8>,
+    code: phux_protocol::wire::frame::ErrorCode,
+) {
+    state
+        .apply_server_frame(
+            client,
+            out,
+            None,
+            FrameKind::CommandResult {
+                request_id: 900,
+                result: phux_protocol::wire::frame::CommandResult::Error {
+                    code,
+                    message: "attach refused".to_owned(),
+                },
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+}
+
+/// A refused attach of a spawned satellite window sends exactly one kill,
+/// for that pane on that host, and the kill's own refusal is consumed
+/// without reaching the frame handler.
+#[tokio::test(flavor = "current_thread")]
+async fn a_refused_spawned_attach_sends_one_kill_for_its_pane() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, mut server, mut out) = loop_with_spawned_window().await;
+    refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::TerminalNotFound,
+    )
+    .await;
+
+    let kills = kills_sent(&mut client, &mut server).await;
+    assert_eq!(kills.len(), 1, "{kills:?}");
+    let (kill_id, pane) = &kills[0];
+    assert_eq!(*pane, spawned_edge_pane());
+    assert_eq!(
+        pane.host().map(phux_protocol::ids::SatelliteHost::as_str),
+        Some("edge")
+    );
+    assert_eq!(state.workspace.windows.len(), 1, "no window opened");
+    let refused_kill = FrameKind::Error {
+        request_id: Some(*kill_id),
+        code: ErrorCode::SatelliteUnreachable,
+        message: "satellite edge link is down".to_owned(),
+    };
+    assert_eq!(state.orphan_kills.settle(refused_kill), None);
+}
+
+/// A refusal saying the satellite is unreachable sends no kill: none could
+/// reach the pane, and the hub would hold this client's next frames behind
+/// the attempt for up to its 30 s relay deadline.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreachable_satellite_refusal_sends_no_kill() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, mut server, mut out) = loop_with_spawned_window().await;
+    refuse_spawned_attach(
+        &mut state,
+        &mut client,
+        &mut out,
+        ErrorCode::SatelliteUnreachable,
+    )
+    .await;
+
+    assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
+    assert_eq!(state.workspace.windows.len(), 1, "no window opened");
+}
+
+/// A successful attach opens the window and kills nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn a_successful_spawned_attach_sends_no_kill() {
+    use phux_protocol::wire::frame::CommandResult;
+
+    let (mut state, mut client, mut server, mut out) = loop_with_spawned_window().await;
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::CommandResult {
+                request_id: 900,
+                result: CommandResult::Ok,
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
+    assert_eq!(state.workspace.windows.len(), 2, "the window opened");
+}
+
 // ---- phux-c2td.3: held federation notices --------------------------------
 
 fn host_rows() -> Vec<phux_protocol::wire::info::HostInventory> {

@@ -13,7 +13,7 @@ use phux_protocol::wire::frame::{
 };
 
 use crate::attach::actions::{
-    self, ParkedAdopt, PendingSplit, PendingWindow, SplitHost, apply_spawned_ok,
+    self, Adopt, ParkedAdopt, PendingSplit, PendingWindow, SplitHost, apply_spawned_ok,
     apply_terminal_closed,
 };
 use crate::attach::outcome::{AttachEnd, AttachError, describe_exit};
@@ -1446,7 +1446,9 @@ fn focus_landed_split<W: crate::attach::RenderSink>(
 }
 
 /// A spawned split that has nowhere to go: bell, and say why. The layout,
-/// focus, and zoom are left as they are.
+/// focus, and zoom are left as they are. The pane it spawned would then run
+/// with nothing referencing it, so it is killed (phux-c2td.20): its spawn or
+/// attach just answered, so its host is reachable.
 fn split_dropped<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     new_id: &ResourceId,
@@ -1456,6 +1458,7 @@ fn split_dropped<W: crate::attach::RenderSink>(
     let _ = actions::write_bell(ctx.out);
     FrameOutcome {
         notices: vec![Notice::warn(format!("split dropped: {why}"))],
+        kill_orphans: unreferenced(ctx, new_id).into_iter().collect(),
         ..FrameOutcome::default()
     }
 }
@@ -1871,7 +1874,7 @@ fn error_frame_outcome<W: crate::attach::RenderSink>(
     message: String,
 ) -> Result<FrameOutcome, AttachError> {
     if let Some(parked) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
-        return handle_adopt_reply(ctx, parked, Some(message));
+        return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }));
     }
     Ok(handle_error_frame(request_id, code, &message))
 }
@@ -1887,7 +1890,9 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
 ) -> Result<FrameOutcome, AttachError> {
     if let Some(parked) = take_pending_adopt(ctx, request_id) {
         let refusal = match result {
-            phux_protocol::wire::frame::CommandResult::Error { message, .. } => Some(message),
+            phux_protocol::wire::frame::CommandResult::Error { code, message } => {
+                Some(AdoptRefusal { code, message })
+            }
             _ => None,
         };
         return handle_adopt_reply(ctx, parked, refusal);
@@ -1938,13 +1943,13 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
 fn handle_adopt_reply<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     parked: ParkedAdopt,
-    refusal: Option<String>,
+    refusal: Option<AdoptRefusal>,
 ) -> Result<FrameOutcome, AttachError> {
     let Some(pane) = parked.pane().cloned() else {
         return Ok(FrameOutcome::default());
     };
-    if let Some(reason) = refusal {
-        return Ok(adopt_refused(ctx, &parked, &pane, &reason));
+    if let Some(refusal) = refusal {
+        return Ok(adopt_refused(ctx, &parked, &pane, &refusal));
     }
     match parked {
         ParkedAdopt::Window(window) => open_adopted_window(ctx, &window, pane),
@@ -1952,16 +1957,25 @@ fn handle_adopt_reply<W: crate::attach::RenderSink>(
     }
 }
 
-/// A refused satellite attach: bell, and say which host could not open the
-/// window or the split.
+/// Why a parked satellite attach was refused: the wire code, which decides
+/// whether a kill could reach the pane, and the server's words.
+struct AdoptRefusal {
+    code: ErrorCode,
+    message: String,
+}
+
+/// A refused satellite attach: bell, say which host could not open the
+/// window or the split, and ask the driver to kill the pane when this
+/// client spawned it and nothing else references it ([`orphaned_pane`]).
 fn adopt_refused<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     parked: &ParkedAdopt,
     pane: &ResourceId,
-    reason: &str,
+    refusal: &AdoptRefusal,
 ) -> FrameOutcome {
     let host = pane.host().map_or_else(String::new, ToString::to_string);
-    tracing::warn!(%host, %reason, "satellite attach refused");
+    let reason = &refusal.message;
+    tracing::warn!(%host, %reason, code = ?refusal.code, "satellite attach refused");
     let _ = actions::write_bell(ctx.out);
     let text = match parked {
         ParkedAdopt::Window(window) => {
@@ -1974,8 +1988,62 @@ fn adopt_refused<W: crate::attach::RenderSink>(
     };
     FrameOutcome {
         notices: vec![Notice::warn(text)],
+        kill_orphans: orphaned_pane(ctx, parked, refusal.code)
+            .into_iter()
+            .collect(),
         ..FrameOutcome::default()
     }
+}
+
+/// phux-c2td.20: the pane a refused attach leaves running on its satellite
+/// with nothing referencing it, when a kill could reach it: one this client
+/// spawned for this window or split ([`ParkedAdopt::spawned_pane`]) that is
+/// otherwise unreferenced ([`unreferenced`]). A satellite session's existing
+/// pane, and any pane that did get a window, is never returned.
+fn orphaned_pane<W: crate::attach::RenderSink>(
+    ctx: &FrameCtx<'_, W>,
+    parked: &ParkedAdopt,
+    code: ErrorCode,
+) -> Option<ResourceId> {
+    if !kill_can_reach(code) {
+        return None;
+    }
+    unreferenced(ctx, parked.spawned_pane()?)
+}
+
+/// Whether a kill for the pane behind a refusal with `code` could reach it.
+/// `SATELLITE_UNREACHABLE` says it could not: the kill would meet the same
+/// silence, and the hub waits on each relayed command, up to its 30 s relay
+/// deadline, before it reads this client's next frame, so the kill would
+/// hold every keystroke behind it.
+const fn kill_can_reach(code: ErrorCode) -> bool {
+    !matches!(code, ErrorCode::SatelliteUnreachable)
+}
+
+/// `pane`, when nothing in this client references it: no window holds it
+/// and no other parked window or split waits on its attach (the session
+/// picker's open of that same pane, say).
+fn unreferenced<W: crate::attach::RenderSink>(
+    ctx: &FrameCtx<'_, W>,
+    pane: &ResourceId,
+) -> Option<ResourceId> {
+    (!pane_is_referenced(ctx, pane)).then(|| pane.clone())
+}
+
+/// Whether a window holds `pane` or a parked window or split adopts it.
+fn pane_is_referenced<W: crate::attach::RenderSink>(
+    ctx: &FrameCtx<'_, W>,
+    pane: &ResourceId,
+) -> bool {
+    let adopting_window = ctx
+        .pending_windows
+        .values()
+        .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
+    let adopting_split = ctx
+        .pending_splits
+        .values()
+        .any(|split| split.adopt.as_ref() == Some(pane));
+    window_holding_pane(ctx.workspace, pane).is_some() || adopting_window || adopting_split
 }
 
 /// phux-c2td.3: open a satellite pane's window once its attach succeeded.
@@ -2029,7 +2097,7 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
         SpawnResult::Ok(new_id) if !new_id.is_local() => Ok(FrameOutcome {
             adopt_spawned: vec![ParkedAdopt::Window(PendingWindow {
                 name: pending.name.clone(),
-                adopt: Some(new_id),
+                adopt: Some(Adopt::Spawned(new_id)),
             })],
             ..FrameOutcome::default()
         }),

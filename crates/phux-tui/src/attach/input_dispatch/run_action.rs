@@ -16,7 +16,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
-use crate::attach::actions::{self, ActionError, PendingSplit, PendingWindow, SplitHost};
+use crate::attach::actions::{self, ActionError, Adopt, PendingSplit, PendingWindow, SplitHost};
 use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::HostedPlacement;
@@ -1010,7 +1010,7 @@ fn open_satellite_session(
         request_id,
         PendingWindow {
             name: format!("{host}/{name}"),
-            adopt: Some(target.clone()),
+            adopt: Some(Adopt::Existing(target.clone())),
         },
     );
     // The pane exists already, so there is no spawn: attach it. Its
@@ -1045,7 +1045,7 @@ fn focus_open_satellite_pane(
 fn attach_in_flight(pending: &HashMap<u32, PendingWindow>, target: &ResourceId) -> bool {
     pending
         .values()
-        .any(|window| window.adopt.as_ref() == Some(target))
+        .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(target))
 }
 
 /// The hub-routable pane behind a satellite session name, or `None` when

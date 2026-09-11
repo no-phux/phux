@@ -2706,16 +2706,21 @@ fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
         panic!("expected one parked window: {:?}", outcome.adopt_spawned);
     };
     assert_eq!(window.name, "2");
-    assert_eq!(window.adopt, Some(sat));
+    assert_eq!(
+        window.adopt,
+        Some(crate::attach::actions::Adopt::Spawned(sat)),
+        "a window spawned here is this client's to clean up"
+    );
 }
 
 /// The parked satellite window opens, focused and saved, once its attach
-/// succeeds.
+/// succeeds, and its pane is not killed.
 #[test]
 fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
     let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
     let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
         "2",
+        crate::attach::actions::Adopt::Spawned(sat.clone()),
         FrameKind::CommandResult {
             request_id: 9,
             result: phux_protocol::wire::frame::CommandResult::Ok,
@@ -2726,57 +2731,165 @@ fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
     assert_eq!(focused, Some(sat));
     assert!(outcome.layout_replaced && outcome.emit_set_metadata);
     assert!(!out.contains(&0x07), "success does not bell");
+    assert!(
+        outcome.kill_orphans.is_empty(),
+        "a pane with a window is kept"
+    );
     assert_eq!(parked, 0);
 }
 
 /// A refused attach of a spawned satellite window opens nothing, saves
-/// nothing, bells, and names the host.
+/// nothing, bells, and names the host. The pane it spawned there is
+/// referenced by nothing, so exactly that pane is killed (phux-c2td.20),
+/// unless the refusal says the satellite is unreachable: then no kill could
+/// reach it, and the hub would hold this client's input behind the attempt.
 #[test]
 fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
     use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 
-    let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
-        "2",
-        FrameKind::CommandResult {
-            request_id: 9,
-            result: CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: "satellite edge is unreachable: link is down".to_owned(),
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    for (frame, killed) in [
+        (
+            FrameKind::CommandResult {
+                request_id: 9,
+                result: CommandResult::Error {
+                    code: ErrorCode::SatelliteUnreachable,
+                    message: "satellite edge is unreachable: link is down".to_owned(),
+                },
             },
-        },
+            Vec::new(),
+        ),
+        (
+            FrameKind::CommandResult {
+                request_id: 9,
+                result: CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: "no such terminal".to_owned(),
+                },
+            },
+            vec![sat.clone()],
+        ),
+        (
+            FrameKind::Error {
+                request_id: Some(9),
+                code: ErrorCode::ResourceExhausted,
+                message: "satellite edge link is saturated; retry".to_owned(),
+            },
+            vec![sat.clone()],
+        ),
+    ] {
+        let (outcome, workspace, focused, out, parked) = drive_adopt_reply(
+            "2",
+            crate::attach::actions::Adopt::Spawned(sat.clone()),
+            frame,
+        );
+        assert_eq!(workspace.windows.len(), 1, "no blank window is left behind");
+        assert_eq!(focused, Some(tid(1)));
+        assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
+        assert!(out.contains(&0x07), "a refusal bells");
+        assert_eq!(outcome.notices.len(), 1);
+        assert!(
+            outcome.notices[0].text.contains("on satellite edge"),
+            "the notice names the host: {}",
+            outcome.notices[0].text
+        );
+        assert_eq!(outcome.kill_orphans, killed);
+        assert_eq!(parked, 0);
+    }
+}
+
+/// A spawned pane that some window already holds is never killed by a
+/// refused attach: it is referenced, whatever the attach said.
+#[test]
+fn a_refused_attach_never_kills_a_pane_a_window_holds() {
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("edge".to_owned(), sat.clone());
+    let (outcome, _workspace, _focused, out, parked) = drive_adopt_reply_in(
+        workspace,
+        Vec::new(),
+        "2",
+        crate::attach::actions::Adopt::Spawned(sat),
+        reachable_refusal(),
     );
-    assert_eq!(workspace.windows.len(), 1, "no blank window is left behind");
-    assert_eq!(focused, Some(tid(1)));
-    assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
-    assert!(out.contains(&0x07), "a refusal bells");
-    assert_eq!(outcome.notices.len(), 1);
-    assert!(
-        outcome.notices[0].text.contains("on satellite edge"),
-        "the notice names the host: {}",
-        outcome.notices[0].text
-    );
+    assert!(out.contains(&0x07), "the refusal still bells");
+    assert!(outcome.kill_orphans.is_empty(), "a held pane is kept");
     assert_eq!(parked, 0);
 }
 
+/// A spawned pane that another open is waiting on (the session picker's
+/// `Existing` adopt of that same pane) is never killed from under it.
+#[test]
+fn a_refused_attach_never_kills_a_pane_another_open_waits_on() {
+    use crate::attach::actions::{Adopt, PendingWindow};
+
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    let picker_open = PendingWindow {
+        name: "edge/build".to_owned(),
+        adopt: Some(Adopt::Existing(sat.clone())),
+    };
+    let (outcome, _workspace, _focused, out, parked) = drive_adopt_reply_in(
+        Workspace::single(tid(1)),
+        vec![(10, picker_open)],
+        "2",
+        Adopt::Spawned(sat),
+        reachable_refusal(),
+    );
+    assert!(out.contains(&0x07), "the refusal still bells");
+    assert!(
+        outcome.kill_orphans.is_empty(),
+        "the picker's open is still waiting on it"
+    );
+    assert_eq!(parked, 1, "only the refused window is consumed");
+}
+
+/// A refusal of request 9 whose code says the satellite answered.
+fn reachable_refusal() -> FrameKind {
+    FrameKind::CommandResult {
+        request_id: 9,
+        result: phux_protocol::wire::frame::CommandResult::Error {
+            code: phux_protocol::wire::frame::ErrorCode::TerminalNotFound,
+            message: "no such terminal".to_owned(),
+        },
+    }
+}
+
 /// phux-c2td.3: drive one reply through the dispatcher with a parked
-/// satellite-session window (request 9, adopting `edge/@9`). Returns the
-/// outcome, the workspace, focus, the bytes written, and how many windows
-/// are still parked.
+/// satellite-session window (request 9, adopting the existing `edge/@9`).
+/// Returns the outcome, the workspace, focus, the bytes written, and how
+/// many windows are still parked.
 fn drive_satellite_adopt_reply(
     frame: FrameKind,
 ) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
-    drive_adopt_reply("edge/build", frame)
+    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
+    drive_adopt_reply(
+        "edge/build",
+        crate::attach::actions::Adopt::Existing(sat),
+        frame,
+    )
 }
 
-/// [`drive_satellite_adopt_reply`] with the parked window named `name`.
+/// [`drive_satellite_adopt_reply`] with the parked window named `name`,
+/// adopting `adopt`.
 fn drive_adopt_reply(
     name: &str,
+    adopt: crate::attach::actions::Adopt,
+    frame: FrameKind,
+) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
+    drive_adopt_reply_in(Workspace::single(tid(1)), Vec::new(), name, adopt, frame)
+}
+
+/// [`drive_adopt_reply`] against `workspace`, focused on pane 1, with the
+/// windows in `in_flight` parked too.
+fn drive_adopt_reply_in(
+    mut workspace: Workspace,
+    in_flight: Vec<(u32, crate::attach::actions::PendingWindow)>,
+    name: &str,
+    adopt: crate::attach::actions::Adopt,
     frame: FrameKind,
 ) -> (FrameOutcome, Workspace, Option<ResourceId>, Vec<u8>, usize) {
     use crate::attach::actions::PendingWindow;
 
-    let sat = ResourceId::satellite(phux_protocol::ids::SatelliteHost::new("edge"), 9);
-    let mut workspace = Workspace::single(tid(1));
     let mut focused = Some(tid(1));
     let mut panes = panes_for(&[&tid(1)]);
     let mut out: Vec<u8> = Vec::new();
@@ -2785,12 +2898,12 @@ fn drive_adopt_reply(
     let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
+    let mut pending_windows: HashMap<u32, PendingWindow> = in_flight.into_iter().collect();
     pending_windows.insert(
         9,
         PendingWindow {
             name: name.to_owned(),
-            adopt: Some(sat),
+            adopt: Some(adopt),
         },
     );
     let mut expected_closes = HashSet::new();
@@ -2838,6 +2951,7 @@ fn satellite_session_attach_success_opens_its_window() {
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
     assert!(outcome.notices.is_empty());
     assert!(!out.contains(&0x07), "success does not bell");
+    assert!(outcome.kill_orphans.is_empty());
     assert_eq!(parked, 0, "the parked window is consumed");
 }
 
@@ -2872,6 +2986,10 @@ fn satellite_session_attach_refusal_leaves_no_window() {
             outcome.notices[0].text.contains("edge/build"),
             "the notice names the host and session: {}",
             outcome.notices[0].text
+        );
+        assert!(
+            outcome.kill_orphans.is_empty(),
+            "a satellite session's own pane is never killed"
         );
         assert_eq!(parked, 0, "the parked window is consumed");
     }
@@ -3102,6 +3220,10 @@ fn a_spawned_satellite_split_applies_when_its_attach_succeeds() {
     assert!(reply.outcome.reflow_panes);
     assert!(reply.outcome.notices.is_empty());
     assert!(!reply.belled, "success does not bell");
+    assert!(
+        reply.outcome.kill_orphans.is_empty(),
+        "an applied split keeps its pane"
+    );
     assert_eq!(reply.parked, 0, "the parked split is consumed");
 }
 
@@ -3114,19 +3236,25 @@ fn a_spawned_satellite_split_refusal_bells_and_names_the_host() {
     use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 
     let edge = phux_protocol::ids::SatelliteHost::new("edge");
-    for frame in [
-        FrameKind::CommandResult {
-            request_id: 9,
-            result: CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: "satellite edge is unreachable: link is down".to_owned(),
+    for (frame, killed) in [
+        (
+            FrameKind::CommandResult {
+                request_id: 9,
+                result: CommandResult::Error {
+                    code: ErrorCode::SatelliteUnreachable,
+                    message: "satellite edge is unreachable: link is down".to_owned(),
+                },
             },
-        },
-        FrameKind::Error {
-            request_id: Some(9),
-            code: ErrorCode::TerminalNotFound,
-            message: "no such terminal".to_owned(),
-        },
+            Vec::new(),
+        ),
+        (
+            FrameKind::Error {
+                request_id: Some(9),
+                code: ErrorCode::TerminalNotFound,
+                message: "no such terminal".to_owned(),
+            },
+            vec![edge_pane()],
+        ),
     ] {
         let reply = drive_split_reply(
             parked_split(SplitHost::Satellite(edge.clone()), Some(edge_pane())),
@@ -3143,6 +3271,10 @@ fn a_spawned_satellite_split_refusal_bells_and_names_the_host() {
                 .contains("split onto satellite edge"),
             "the notice names the host: {}",
             reply.outcome.notices[0].text
+        );
+        assert_eq!(
+            reply.outcome.kill_orphans, killed,
+            "the spawned pane, unless no kill could reach it"
         );
         assert_eq!(reply.parked, 0, "the parked split is consumed");
     }
@@ -3261,19 +3393,22 @@ fn a_split_parked_across_a_window_switch_lands_beside_its_source() {
 /// phux-c2td.18: the source pane closed while its split waited. Nothing is
 /// split beside some other pane: the split is dropped, with a bell and a
 /// notice, for a satellite split's attach and a local split's spawn alike.
+/// phux-c2td.20: the pane it spawned is referenced by nothing, so it is
+/// killed.
 #[test]
 fn a_split_whose_source_pane_closed_is_dropped() {
     use crate::attach::actions::SplitHost;
     use phux_protocol::wire::frame::SpawnResult;
 
     let edge = phux_protocol::ids::SatelliteHost::new("edge");
-    for (split, frame) in [
+    for (split, frame, spawned) in [
         (
             parked_split(SplitHost::Satellite(edge), Some(edge_pane())),
             FrameKind::CommandResult {
                 request_id: 9,
                 result: phux_protocol::wire::frame::CommandResult::Ok,
             },
+            edge_pane(),
         ),
         (
             parked_split(SplitHost::Attached, None),
@@ -3281,6 +3416,7 @@ fn a_split_whose_source_pane_closed_is_dropped() {
                 request_id: 9,
                 result: SpawnResult::Ok(tid(2)),
             },
+            tid(2),
         ),
     ] {
         // Pane 1, the split's source, is gone; pane 3 is what remains.
@@ -3295,6 +3431,7 @@ fn a_split_whose_source_pane_closed_is_dropped() {
             "{}",
             reply.outcome.notices[0].text
         );
+        assert_eq!(reply.outcome.kill_orphans, vec![spawned]);
         assert_eq!(reply.parked, 0);
     }
 }
