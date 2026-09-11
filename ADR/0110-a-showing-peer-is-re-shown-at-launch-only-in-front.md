@@ -14,6 +14,7 @@ window's real size, and only once its own list still carries that session.
 
 Status: Accepted
 Date: 2026-09-11
+Superseded in part by [ADR-0111](./0111-how-a-front-restore-is-judged.md): decision 5's drop of a front record whose first connection fails.
 
 ## Context
 

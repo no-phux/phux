@@ -83,11 +83,23 @@ pub fn cancelFront(model: *Model) void {
     }
 }
 
-/// The peer's connection failed before its front record was shown: that
-/// record is dropped, so the peer comes back listing only.
+/// The peer's connection failed before its front record was shown. The
+/// first time, the record is kept for the backoff redial: that connection is
+/// a lister's, so it attaches nothing, and the record is judged when it
+/// lists, exactly as on the first connection. A choice the user makes
+/// meanwhile cancels it as before. A second failure drops it, so the peer
+/// comes back listing only and a host that returns later never takes the
+/// front window.
 pub fn failed(model: *Model, slot: usize) void {
-    const restore = model.peer_restore[slot] orelse return;
-    if (restore.pending) model.peer_restore[slot] = null;
+    const restore = if (model.peer_restore[slot]) |*value| value else return;
+    if (!restore.pending) return;
+    if (restore.retried) {
+        model.peer_restore[slot] = null;
+        return;
+    }
+    restore.retried = true;
+    // Whatever that connection listed is gone with it.
+    restore.listed = false;
 }
 
 /// The shared window of the tab to select when `coordinator` first

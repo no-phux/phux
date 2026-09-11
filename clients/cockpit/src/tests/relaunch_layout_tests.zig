@@ -15,6 +15,7 @@ const ts_engine = @import("../cockpit/native/ts_engine.zig");
 const peer_restore = @import("../cockpit/native/peer_restore.zig");
 const remote_memory = @import("../cockpit/remote_memory.zig");
 const scene = @import("../cockpit/native/scene.zig");
+const shared_workspace = @import("../cockpit/shared_workspace.zig");
 
 const testing = std.testing;
 const fixture = support.PhuxProvider.test_support;
@@ -47,13 +48,41 @@ fn countFrames(provider: *support.PhuxProvider) Frames {
     return takeFrames(provider, 0, 0);
 }
 
-/// Channel and peer-restart effects, counted per slot; nothing real.
+/// A workspace reply fixture staged on `provider`, its request id restamped
+/// to the read it answers (the fixtures carry the ids of the sequence they
+/// were generated for).
+fn workspaceReply(provider: *support.PhuxProvider, name: []const u8, request: u32) !void {
+    const path = try std.fmt.allocPrint(testing.allocator, "src/providers/phux/fixtures/{s}", .{name});
+    defer testing.allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(bytes);
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
+    try testing.expect(provider.bridge.incoming.stage(bytes));
+}
+
+const Front = struct { authority: ?contract.ProviderId, window: ?[16]u8 };
+
+/// The selected tab of the front window: which coordinator's, and its
+/// shared window.
+fn frontTab(model: *const model_module.Model) Front {
+    const workspace = model.wsAtConst(model.active_window) orelse return .{ .authority = null, .window = null };
+    const tree = workspace.treeConst(workspace.selected_tab) orelse return .{ .authority = null, .window = null };
+    return .{ .authority = shared_workspace.tabAuthority(tree), .window = workspace.shared_ids[workspace.selected_tab] };
+}
+
+/// Channel, peer-restart and retry-timer effects, counted per slot; nothing
+/// real.
 const PeerFx = struct {
     restarts: [model_module.max_phux_peers]usize = @splat(0),
+    /// The last retry timer armed, if any.
+    retry_key: ?u64 = null,
 
     pub fn restartPeer(self: *@This(), _: *ts_engine.Engine, slot: usize) bool {
         self.restarts[slot] += 1;
         return true;
+    }
+    pub fn schedulePeerRetry(self: *@This(), key: u64, _: u64) void {
+        self.retry_key = key;
     }
     pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle {
         return .{};
@@ -99,8 +128,36 @@ const Launch = struct {
         return peer;
     }
 
+    /// A wake on the slot's current channel (its key moves on each close).
     fn wake(self: *Launch, fx: *PeerFx, slot: usize) void {
-        _ = self.engine.onPeerChannel(fx, .{ .key = support.phuxPeerChannelKey(slot), .kind = .data }, null);
+        _ = self.engine.onPeerChannel(fx, .{ .key = self.engine.peerChannelKey(slot), .kind = .data }, null);
+    }
+
+    /// The slot's current connection closes without Cockpit asking.
+    fn fail(self: *Launch, fx: *PeerFx, slot: usize) void {
+        _ = self.engine.onPeerChannel(fx, .{ .key = self.engine.peerChannelKey(slot), .kind = .closed }, null);
+    }
+
+    /// The restart a show asked for, as the runtime runs it: the peer's next
+    /// connection negotiates, its first frame is ATTACH, the server answers
+    /// ATTACHED, and its workspace read is answered with `metadata` and
+    /// `state` (their request ids stamped as that read's, 1 and 0).
+    fn attachShown(self: *Launch, fx: *PeerFx, slot: usize, metadata: []const u8, state: []const u8) !void {
+        const peer = self.engine.model.phux_peers[slot].?;
+        peer.stop();
+        try peer.host.reconnect("relaunch");
+        try self.hello(fx, slot);
+        try fixture.stageFixture(peer.bridge, "attached.bin");
+        self.wake(fx, slot);
+        try workspaceReply(peer, metadata, 1);
+        try workspaceReply(peer, state, 0);
+        self.wake(fx, slot);
+    }
+
+    /// This Mac's workspace, already read, projects now (a wake on its
+    /// channel).
+    fn projectHere(self: *Launch, fx: *PeerFx) void {
+        _ = self.engine.onPhuxChannel(fx, .{ .key = support.phux_channel_key, .kind = .data }, null);
     }
 
     /// HELLO_OK on the peer's connection: it asks GET_STATE and lists nothing yet.
@@ -124,6 +181,12 @@ const Launch = struct {
 
     fn server(self: *Launch, slot: usize) u64 {
         return remote_memory.serverHash(self.engine.model.phux_peers[slot].?.serverId().?);
+    }
+
+    /// The server every fixture's HELLO_OK names, for a peer whose own
+    /// connection has not negotiated yet.
+    fn fixtureServer(self: *Launch) u64 {
+        return remote_memory.serverHash(self.here.serverId().?);
     }
 
     /// The front window as its first frame measures it.
@@ -297,7 +360,7 @@ test "a restored record that names another coordinator than its slot's peer is d
     try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
 }
 
-test "a failed first connection drops a front record; a hint is consumed once, by its own coordinator and session" {
+test "a front record is kept through one failed connection and dropped by a second; a hint is consumed once, by its own coordinator and session" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
     defer engine.destroy();
@@ -306,7 +369,11 @@ test "a failed first connection drops a front record; a hint is consumed once, b
     model.phux_peers[0] = mini;
     mini.standBy();
     const shown: remote_memory.Shown = .{ .session = 4, .server = 9, .window = @splat(7), .front = true };
-    model.peer_restore[0] = .{ .coordinator = mini.providerId(), .shown = shown, .pending = true };
+    model.peer_restore[0] = .{ .coordinator = mini.providerId(), .shown = shown, .pending = true, .listed = true };
+    peer_restore.failed(model, 0);
+    // Kept for the redial, but what the failed connection listed is not.
+    try testing.expect(model.peer_restore[0].?.pending and model.peer_restore[0].?.retried);
+    try testing.expect(!model.peer_restore[0].?.listed);
     peer_restore.failed(model, 0);
     try testing.expect(model.peer_restore[0] == null);
 
@@ -478,4 +545,175 @@ test "Disconnect clears the removed host's restore state and leaves the others" 
     try testing.expect(model.peer_restore[0] == null);
     try testing.expect(model.peer_restore[1] != null);
     try testing.expectEqual(launch.studio.providerId(), model.peer_restore[1].?.coordinator);
+}
+
+/// A relaunch whose front record for mini has been shown: mini restarted,
+/// attached `build` (1) at the front window's size, and its first projection
+/// (the workspace `metadata` and `state` replies) has landed. This Mac is
+/// attached and its workspace read, but not projected yet.
+fn restoreMini(launch: *Launch, fx: *PeerFx, window: ?[16]u8, metadata: []const u8, state: []const u8) !void {
+    launch.measure();
+    try launch.hello(fx, 0);
+    launch.remember(0, .{ .session = 1, .server = launch.server(0), .window = window, .front = true });
+    try launch.list(fx, 0);
+    try testing.expectEqual(@as(usize, 1), fx.restarts[0]);
+    try launch.attachShown(fx, 0, metadata, state);
+    try testing.expect(launch.mini.showing());
+    try testing.expect(launch.mini.state() == .attached);
+}
+
+test "relaunch selects the remembered tab on the peer's first projection, end to end" {
+    // phux-c2td.32: the remembered tab was covered only by takeHint's
+    // bookkeeping, never through a real list, attach and projection.
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    // Without a remembered tab, mini's first projection of its two windows
+    // selects its first tab; that is the fallback the hint must beat.
+    var probe = try Launch.start();
+    defer probe.engine.destroy();
+    var probe_fx: PeerFx = .{};
+    try restoreMini(&probe, &probe_fx, null, "workspace_add_metadata.bin", "workspace_add_state.bin");
+    const windows = probe.mini.workspaceSnapshot().windows;
+    try testing.expectEqual(@as(usize, 2), windows.len);
+    const first = windows[0].id;
+    const second = windows[1].id;
+    try testing.expect(!std.mem.eql(u8, &first, &second));
+    try testing.expectEqual(@as(?contract.ProviderId, probe.mini.providerId()), frontTab(probe.engine.model).authority);
+    try testing.expectEqualSlices(u8, &first, &frontTab(probe.engine.model).window.?);
+
+    // The same relaunch remembering mini's second tab selects that one.
+    var launch = try Launch.start();
+    defer launch.engine.destroy();
+    const model = launch.engine.model;
+    var fx: PeerFx = .{};
+    try restoreMini(&launch, &fx, second, "workspace_add_metadata.bin", "workspace_add_state.bin");
+    const front = frontTab(model);
+    try testing.expectEqual(@as(?contract.ProviderId, launch.mini.providerId()), front.authority);
+    try testing.expectEqualSlices(u8, &second, &front.window.?);
+    try testing.expectEqual(@as(usize, 2), model.wsAt(model.active_window).?.tab_count);
+    // Consumed: the live selection is what is kept from now on.
+    try testing.expect(model.peer_restore[0] == null);
+    // Displaying from the moment it attached, so settling keeps it shown.
+    _ = launch.engine.settlePeers(&fx);
+    try testing.expect(launch.mini.showing());
+    try testing.expectEqual(@as(usize, 1), fx.total());
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.studio).attach);
+}
+
+test "the active coordinator's first projection landing after the restored peer's keeps the peer in front; a choice landing with it returns the peer to listing" {
+    // phux-c2td.32: the ordering race. At launch This Mac projects with no
+    // remembered selection, so its tabs land beside mini's selected tab and
+    // mini stays in front (rule A holds because mini is displaying).
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var launch = try Launch.start();
+    defer launch.engine.destroy();
+    const model = launch.engine.model;
+    var fx: PeerFx = .{};
+    try restoreMini(&launch, &fx, null, "workspace_initial_metadata.bin", "workspace_initial_state.bin");
+    try testing.expectEqual(@as(?contract.ProviderId, launch.mini.providerId()), frontTab(model).authority);
+    try testing.expect(model.locateTerminal(try refOn(launch.here, 7)) == null);
+
+    launch.projectHere(&fx);
+    try testing.expect(model.locateTerminal(try refOn(launch.here, 7)) != null);
+    try testing.expectEqual(@as(?contract.ProviderId, launch.mini.providerId()), frontTab(model).authority);
+    _ = launch.engine.settlePeers(&fx);
+    try testing.expect(launch.mini.showing());
+    try testing.expectEqual(@as(usize, 1), fx.total());
+
+    // The other order of events: a choice of This Mac's terminal made after
+    // mini attached lands with This Mac's projection and takes the front
+    // tab. mini is then hidden, so it stands by: its tabs leave and only its
+    // own connection restarts, as a lister.
+    var second = try Launch.start();
+    defer second.engine.destroy();
+    const second_model = second.engine.model;
+    var second_fx: PeerFx = .{};
+    try restoreMini(&second, &second_fx, null, "workspace_initial_metadata.bin", "workspace_initial_state.bin");
+    // What a navigation to that terminal leaves for its projection.
+    second_model.shared_workspace.desired_terminal = try refOn(second.here, 7);
+    second.projectHere(&second_fx);
+    try testing.expectEqual(@as(?contract.ProviderId, second.here.providerId()), frontTab(second_model).authority);
+    _ = second.engine.settlePeers(&second_fx);
+    try testing.expect(!second.mini.showing());
+    try testing.expectEqual(@as(usize, 2), second_fx.restarts[0]);
+    try testing.expectEqual(@as(usize, 0), second_fx.restarts[1]);
+    try testing.expectEqual(@as(u32, 0), second_model.peer_workspaces[0].session);
+    try testing.expect(second_model.locateTerminal(try refOn(second.mini, 7)) == null);
+    // No viewport lingers: its next connection only lists, and never
+    // attaches, and nothing reached This Mac or studio.
+    _ = countFrames(second.mini);
+    second.mini.stop();
+    try second.mini.host.reconnect("relaunch");
+    try second.hello(&second_fx, 0);
+    try testing.expectEqual(@as(usize, 0), countFrames(second.mini).attach);
+    try testing.expectEqual(@as(usize, 0), countFrames(second.studio).attach);
+}
+
+test "a host whose first connection fails is restored by its backoff redial, once, and only while the user has not chosen" {
+    // phux-c2td.32: a front host whose first dial failed stayed listing for
+    // the whole launch. One failure now keeps its record for the redial.
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var launch = try Launch.start();
+    defer launch.engine.destroy();
+    const model = launch.engine.model;
+    var fx: PeerFx = .{};
+    launch.measure();
+    launch.remember(0, .{ .session = 1, .server = launch.fixtureServer(), .front = true });
+    // mini's first connection fails before it lists: no show, a redial armed.
+    launch.fail(&fx, 0);
+    try testing.expectEqual(@as(usize, 0), fx.total());
+    try testing.expect(model.peer_failed[0]);
+    try testing.expect(model.peer_restore[0].?.pending);
+    // The redial is a lister's; only when it lists is the record shown.
+    try testing.expect(launch.engine.onPeerRetryTimer(&fx, fx.retry_key.?));
+    try testing.expectEqual(@as(usize, 1), fx.restarts[0]);
+    try testing.expect(!launch.mini.showing());
+    try launch.mini.host.reconnect("relaunch");
+    try launch.hello(&fx, 0);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.mini).attach);
+    try launch.list(&fx, 0);
+    try testing.expectEqual(@as(usize, 2), fx.restarts[0]);
+    try testing.expect(launch.mini.showing());
+    try testing.expectEqual(@as(?u32, 1), launch.mini.session_id);
+    try testing.expectEqual(@as(usize, 0), fx.restarts[1]);
+    try testing.expectEqual(@as(usize, 0), countFrames(launch.here).total);
+
+    // Two failures before it lists: the record is gone, and the peer lists.
+    var twice = try Launch.start();
+    defer twice.engine.destroy();
+    var twice_fx: PeerFx = .{};
+    twice.measure();
+    twice.remember(0, .{ .session = 1, .server = twice.fixtureServer(), .front = true });
+    twice.fail(&twice_fx, 0);
+    twice.fail(&twice_fx, 0);
+    try testing.expect(twice.engine.model.peer_restore[0] == null);
+    try twice.mini.host.reconnect("relaunch");
+    try twice.hello(&twice_fx, 0);
+    try twice.list(&twice_fx, 0);
+    try testing.expect(!twice.mini.showing());
+    try testing.expectEqual(@as(usize, 0), countFrames(twice.mini).attach);
+
+    // A choice made while the redial is pending cancels the record. The user
+    // picks studio's `deploy` in the switcher, through the engine's own
+    // selection path (Engine.showPeerSession, which supersedes every pending
+    // selection), not by clearing the record directly.
+    var chosen = try Launch.start();
+    defer chosen.engine.destroy();
+    var chosen_fx: PeerFx = .{};
+    chosen.measure();
+    try chosen.hello(&chosen_fx, 1);
+    try chosen.list(&chosen_fx, 1);
+    chosen.remember(0, .{ .session = 1, .server = chosen.fixtureServer(), .front = true });
+    chosen.fail(&chosen_fx, 0);
+    try testing.expect(chosen.engine.model.peer_restore[0].?.pending);
+    try testing.expect(chosen.engine.showPeerSession(chosen.studio.providerId(), 2, &chosen_fx));
+    try testing.expectEqual(@as(usize, 1), chosen_fx.restarts[1]);
+    try testing.expect(chosen.studio.showing());
+    try testing.expect(!chosen.engine.model.peer_restore[0].?.pending);
+    try chosen.mini.host.reconnect("relaunch");
+    try chosen.hello(&chosen_fx, 0);
+    try chosen.list(&chosen_fx, 0);
+    try testing.expect(!chosen.mini.showing());
+    try testing.expectEqual(@as(usize, 0), chosen_fx.restarts[0]);
+    try testing.expectEqual(@as(usize, 0), countFrames(chosen.mini).attach);
 }

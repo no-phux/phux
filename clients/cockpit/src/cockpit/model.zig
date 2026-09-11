@@ -734,6 +734,9 @@ pub const PeerRestore = struct {
     /// then (`listed`) for the front window's first measured frame.
     pending: bool,
     listed: bool = false,
+    /// A front record whose host's connection failed once before it was
+    /// shown: kept for the backoff redial, and dropped on a second failure.
+    retried: bool = false,
 };
 
 /// Replace the bounded remote inventory with the provider's latest complete

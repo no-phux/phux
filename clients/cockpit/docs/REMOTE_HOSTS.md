@@ -182,9 +182,16 @@ session be picked. The front record shows its session through the ordinary
 pick path once the list still carries it (the same server incarnation, and
 not as an empty session) and a frame has measured the front window, so the
 ATTACH carries that window's grid rather than 80 by 24. Its first projection
-selects the remembered tab, or its first tab when that one is gone. A record
+selects the remembered tab, or its first tab when that one is gone. This
+Mac's own first projection carries no remembered selection, so when it lands
+later that tab stays selected; a choice that lands with it takes the tab, and
+the host goes back to listing as any hidden peer does. A front record
+survives one failed connection, before or after its list, as long as it has
+not been shown: the backoff redial, which only lists, is judged when it lists
+([ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)). A record
 whose session is gone, whose server re-executed, whose coordinator is not
-the slot's peer, or whose host's first connection fails is dropped quietly
+the slot's peer, or whose host's connection fails twice before it is shown
+is dropped quietly
 and never applied to another coordinator, and a choice the user makes before
 the list arrives cancels the front one, as do Connect to Host, Use this Mac
 and Disconnect. At most one record is front: a remembered host's tab in front
@@ -447,8 +454,12 @@ projected reads "workspace unavailable" on its session rows.
   front tab was this Mac's. Only the session and which of its tabs was
   selected are kept; which native window each of its tabs was in comes
   from its shared workspace. A server that re-executed since, an upgrade
-  included, drops the record even when the session survived. A host whose
-  first dial fails does not come back on screen on that launch, and one
+  included, drops the record even when the session survived: the ADR-0109
+  instance token, which an upgrade keeps, is in neither HELLO_OK nor the
+  session list. A host whose connection fails twice before it is shown (its
+  first dial and the backoff redial after it,
+  [ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)) does not
+  come back on screen on that launch, and one
   held only through `phux-remote` or `PHUX_REMOTE` is not remembered, so
   nothing of it is kept. The front host appears once it lists and the
   window has had its first frame, shortly after launch.
