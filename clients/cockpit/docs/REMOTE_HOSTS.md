@@ -136,7 +136,6 @@ so a placement never matches the wrong coordinator.
 - One coordinator at a time. A remote host's catalog replaces the local one
   and is labeled with the host's name. Showing both catalogs side by side
   needs a model that holds more than one Phux provider.
-- The panel is presented in the main window only.
 - Catalog search matches titles, directories and sessions, not the host
   label.
 - A registry entry's pinned `session` is requested both by Connect to Host

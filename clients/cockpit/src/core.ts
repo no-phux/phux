@@ -162,11 +162,16 @@ export interface Model {
   readonly paletteLoading: boolean;
   readonly paletteNotice: Uint8Array;
   /// Connect to Host (remote-hosts.ts): an app-wide modal like the switcher,
-  /// presented in the main window. `hostQuery` survives a failure so a retry
-  /// is one keystroke; `hostAwaiting` holds the panel open until the engine
-  /// reports the host connected or failed.
+  /// presented in whichever window invoked it (the snapshot's active window).
+  /// `hostQuery` survives a failure so a retry is one keystroke;
+  /// `hostAwaiting` holds the panel open until the engine reports the host
+  /// connected or failed.
   readonly hostOpen: boolean;
   readonly mainHostOpen: boolean;
+  readonly window1HostOpen: boolean;
+  readonly window2HostOpen: boolean;
+  readonly window3HostOpen: boolean;
+  readonly window4HostOpen: boolean;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -670,7 +675,11 @@ function scopeOverlays(model: Model): Model {
     ...model,
     mainPaletteOpen: model.paletteOpen && active === 0,
     mainSettingsOpen: model.settingsOpen && active === 0,
-    mainHostOpen: model.hostOpen,
+    mainHostOpen: model.hostOpen && active === 0,
+    window1HostOpen: model.hostOpen && active === 1,
+    window2HostOpen: model.hostOpen && active === 2,
+    window3HostOpen: model.hostOpen && active === 3,
+    window4HostOpen: model.hostOpen && active === 4,
     window1PaletteOpen: model.paletteOpen && active === 1,
     window1SettingsOpen: model.settingsOpen && active === 1,
     window2PaletteOpen: model.paletteOpen && active === 2,
@@ -1020,6 +1029,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteNotice: NO_BYTES,
       hostOpen: false,
       mainHostOpen: false,
+      window1HostOpen: false,
+      window2HostOpen: false,
+      window3HostOpen: false,
+      window4HostOpen: false,
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,

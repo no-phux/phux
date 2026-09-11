@@ -4001,6 +4001,26 @@ test "a secondary-window switcher is scoped to the focused window" {
     try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Find terminal or session"));
 }
 
+test "Connect to Host is presented in the secondary window that invoked it" {
+    // The switcher's Connect to Host button is in every window's chrome, but
+    // the panel used to render only in main: invoked from a secondary window
+    // it opened behind the user and took the keyboard with it.
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.activeWindow);
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 1, "Remote host"));
+
+    try rig.dispatch(.host_open);
+    try std.testing.expect(rig.app_state.model.hostOpen);
+    try std.testing.expect(!rig.app_state.model.mainHostOpen);
+    try std.testing.expect(rig.app_state.model.window1HostOpen);
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Remote host"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Remote host"));
+}
+
 fn navigationRequestBytes(revision: u64) [13]u8 {
     var bytes = [_]u8{0} ** 13;
     bytes[0] = 1;

@@ -54,6 +54,33 @@ test('opening asks for status and takes the modal slot from the switcher', () =>
   assert.equal(model.mainHostOpen, false);
 });
 
+test('Connect to Host opens in whichever window invoked it, not always the main one', () => {
+  // The switcher's Connect to Host button is in every window's chrome; the
+  // snapshot's active-window byte says which one the user is in.
+  const secondary = snapshotBytes(2);
+  secondary[18] = 1;
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: secondary });
+  assert.equal(model.activeWindow, 1);
+  [model] = step(model, { kind: 'host_open' });
+  assert.equal(model.hostOpen, true);
+  assert.equal(model.mainHostOpen, false);
+  assert.equal(model.window1HostOpen, true);
+  assert.equal(model.window2HostOpen, false);
+  [model] = step(model, { kind: 'host_close' });
+  assert.equal(model.window1HostOpen, false);
+
+  // Every window's markup presents the shared panel through its own flag. The
+  // panel is its own template: another cockpit-window argument would push the
+  // tab loop past the live interpreter's 16-entry scope bound.
+  const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
+  const component = read('../windows/components/cockpit-window.native');
+  assert.match(component, /<template name="cockpit-host" args="hostopen">/);
+  assert.doesNotMatch(component, /<template name="cockpit-window" args="[^"]*hostopen/);
+  const use = flag => new RegExp(`<use template="cockpit-host" hostopen="\\{${flag}\\}" />`);
+  assert.match(read('../app.native'), use('mainHostOpen'));
+  for (const n of [1, 2, 3, 4]) assert.match(read(`../windows/phux-window-${n}.native`), use(`window${n}HostOpen`));
+});
+
 test('submit sends the typed host; a failure keeps it and the panel for a retry', () => {
   let model = { ...opened(), hostQuery: bytes('me@mini') };
   let cmd;
