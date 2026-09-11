@@ -3,6 +3,13 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/no-phux/phux/compare/cockpit-v0.21.0...cockpit-v0.22.0) (2026-09-11)
+
+
+### Features
+
+* **install:** cockpit curl installer, core-only latest resolution, curl-first hero ([d5e2977](https://github.com/no-phux/phux/commit/d5e2977c1e327c84fe20b1f8192589be693008c1))
+
 ## [0.21.0](https://github.com/no-phux/phux/compare/cockpit-v0.20.0...cockpit-v0.21.0) (2026-09-11)
 
 
