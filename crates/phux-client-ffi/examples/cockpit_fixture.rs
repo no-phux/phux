@@ -542,6 +542,165 @@ fn verify_standby(hello: &[u8], state: &[u8]) {
     }
 }
 
+/// A server with keep-empty sessions (ADR-0105), otherwise `hello()`.
+fn hello_keep_empty() -> FrameKind {
+    FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
+            ServerFeature::TerminalReply,
+            ServerFeature::KeepEmptySessions,
+        ])),
+        server_id: b"cockpit-fixture".to_vec(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid limits"),
+    }
+}
+
+/// `build` (1) with a window, and `scratch` (3), keep-empty with none.
+fn keep_empty_sessions() -> Vec<SessionInfo> {
+    vec![
+        SessionInfo::new(SessionId::new(1), "build").with_window_count(1),
+        SessionInfo::new(SessionId::new(3), "scratch").with_keep_empty(true),
+    ]
+}
+
+/// A listing client's first query (ID 1) on a server holding `scratch`.
+fn standby_keep_empty_state() -> FrameKind {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
+        .with_sessions(keep_empty_sessions());
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+/// The registry as seen attached to `scratch`: no windows and no resources,
+/// with the server's sentinel focus ids.
+fn empty_session_snapshot() -> SessionSnapshot {
+    SessionSnapshot::new(SessionId::new(3), WindowId::new(0), ResourceId::local(0))
+        .with_sessions(keep_empty_sessions())
+}
+
+/// `ATTACH` (id 1) to `scratch`: nothing to bootstrap, then `ATTACH_READY`.
+fn attached_empty() -> [FrameKind; 2] {
+    [
+        FrameKind::Attached {
+            attach_id: 1,
+            snapshot: empty_session_snapshot(),
+            initial_client_id: ClientId::new(1),
+        },
+        FrameKind::AttachReady { attach_id: 1 },
+    ]
+}
+
+/// The automatic workspace read that follows: no layout metadata (the server
+/// deletes it with a keep-empty session's last window), then the registry.
+/// Correlated as a fresh client's first internal requests are.
+fn workspace_empty() -> [FrameKind; 2] {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+    [
+        FrameKind::MetadataValue {
+            request_id: 0x8000_0001,
+            value: None,
+        },
+        FrameKind::CommandResult {
+            request_id: 0x8000_0000,
+            result: CommandResult::OkWith(CommandValue::State(empty_session_snapshot())),
+        },
+    ]
+}
+
+/// A listing client reads `scratch` as keep-empty and empty; an attached one
+/// attaches it with no terminals and reads its empty workspace.
+fn verify_keep_empty(hello: &[u8], standby: &[u8], attached: &[u8], workspace: &[u8]) {
+    use phux_client_ffi::{
+        PHUX_SESSION_FLAG_EMPTY, PHUX_SESSION_FLAG_KEEP_EMPTY, phux_client_keep_empty_supported,
+        phux_client_query_sessions, phux_client_session_flags,
+    };
+    let listing = Client::new();
+    let flags = |client: &Client, index: usize| {
+        let mut flags = u32::MAX;
+        // SAFETY: live same-thread handle and a writable output.
+        assert_eq!(
+            unsafe { phux_client_session_flags(client.0, index, &raw mut flags) },
+            PhuxClientResult::Ok
+        );
+        flags
+    };
+    // SAFETY: live same-thread handles with valid spans throughout.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(listing.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(listing.take_outgoing(), FrameKind::Hello { .. }));
+        listing.feed(hello);
+        let mut supported = false;
+        assert_eq!(
+            phux_client_keep_empty_supported(listing.0, &raw mut supported),
+            PhuxClientResult::Ok
+        );
+        assert!(supported);
+        assert_eq!(
+            phux_client_query_sessions(listing.0, 1),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(listing.take_outgoing(), FrameKind::Command { .. }));
+        listing.feed(standby);
+        assert_eq!(phux_client_outgoing_count(listing.0), 0, "no ATTACH, ever");
+    }
+    assert_eq!(flags(&listing, 0), 0);
+    assert_eq!(
+        flags(&listing, 1),
+        PHUX_SESSION_FLAG_KEEP_EMPTY | PHUX_SESSION_FLAG_EMPTY
+    );
+
+    let client = Client::new();
+    let options = PhuxAttachOptions {
+        size: size_of::<PhuxAttachOptions>(),
+        version: ABI_VERSION,
+        attach_id: 1,
+        target_kind: 2,
+        session_id: 3,
+        name: PhuxBytes::default(),
+        cols: 80,
+        rows: 24,
+        has_pixel_size: false,
+        pixel_width: 0,
+        pixel_height: 0,
+        request_scrollback: false,
+        scrollback_limit_lines: 0,
+    };
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(client.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Hello { .. }));
+        client.feed(hello);
+        assert_eq!(
+            phux_client_queue_attach(client.0, &raw const options),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Attach { .. }));
+        client.feed(attached);
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Attached);
+        // The automatic workspace read: metadata, then registry.
+        assert_eq!(phux_client_outgoing_count(client.0), 2);
+        assert_eq!(phux_client_outgoing_clear(client.0), PhuxClientResult::Ok);
+        client.feed(workspace);
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Attached);
+    }
+    assert_eq!(
+        flags(&client, 1),
+        PHUX_SESSION_FLAG_KEEP_EMPTY | PHUX_SESSION_FLAG_EMPTY
+    );
+}
+
 /// The server's broadcast of an applied rename (`phux.session.name/v1`):
 /// the attached fixture session `fixture` is now `renamed`.
 fn session_renamed() -> FrameKind {
@@ -602,8 +761,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_standby(&hello, &standby);
     let renamed = encode(&[session_renamed()]);
     verify_session_renamed(&hello, &attached, &renamed);
+    let hello_keep_empty = encode(&[hello_keep_empty()]);
+    let standby_keep_empty = encode(&[standby_keep_empty_state()]);
+    let attached_empty = encode(&attached_empty());
+    let workspace_empty = encode(&workspace_empty());
+    verify_keep_empty(
+        &hello_keep_empty,
+        &standby_keep_empty,
+        &attached_empty,
+        &workspace_empty,
+    );
     std::fs::create_dir_all(&output)?;
     std::fs::write(output.join("session_renamed.bin"), &renamed)?;
+    std::fs::write(output.join("hello_keep_empty.bin"), &hello_keep_empty)?;
+    std::fs::write(
+        output.join("standby_keep_empty_state.bin"),
+        &standby_keep_empty,
+    )?;
+    std::fs::write(output.join("attached_empty.bin"), &attached_empty)?;
+    std::fs::write(output.join("workspace_empty.bin"), &workspace_empty)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
     std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
@@ -614,7 +790,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query and session rename; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes) to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename and keep-empty sessions; wrote hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),

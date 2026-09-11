@@ -124,6 +124,7 @@ fn session_summary(session: SessionInfo, selected: u32) -> Result<SessionSummary
         window_count: session.window_count,
         attached_client_count: session.attached_client_count,
         focused: session.id.get() == selected,
+        keep_empty: session.keep_empty,
     })
 }
 

@@ -414,12 +414,27 @@ const Bridge = struct {
             self.session_len = copyInto(&self.session_buffer, "engine unavailable");
             return;
         };
-        const bytes = cockpit.session_commands.handle(engine, payload, &self.session_buffer) catch |err| {
+        const answered = if (engineFx()) |fx|
+            cockpit.session_commands.handle(engine, fx, payload, &self.session_buffer)
+        else
+            cockpit.session_commands.handle(engine, &cockpit.NoShells{}, payload, &self.session_buffer);
+        const bytes = answered catch |err| {
             self.session_len = copyInto(&self.session_buffer, @errorName(err));
             return;
         };
         self.session_ok = true;
         self.session_len = bytes.len;
+        // New Tab and Dismiss move the Empty session state the snapshot shows.
+        const decoded = cockpit.session_commands.decode(payload) catch return;
+        if (decoded.kind == .new_tab or decoded.kind == .dismiss) {
+            if (engineFx()) |fx| {
+                self.spawnShells(engine, fx);
+                engine.noteTopologyChange(fx, topologyTimer);
+            }
+            engine.sequence +%= 1;
+            engine.revision +%= 1;
+            self.announce(engine);
+        }
     }
 
     fn requestTabCommand(self: *Bridge, key: u64, payload: []const u8) void {

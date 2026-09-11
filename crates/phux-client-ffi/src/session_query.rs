@@ -160,6 +160,68 @@ pub unsafe extern "C" fn phux_client_session_query_status(
     })
 }
 
+/// `phux_client_session_flags` bit: the session survives its last window.
+pub const PHUX_SESSION_FLAG_KEEP_EMPTY: u32 = 1;
+/// `phux_client_session_flags` bit: the session is keep-empty and holds no
+/// windows.
+pub const PHUX_SESSION_FLAG_EMPTY: u32 = 2;
+
+/// The keep-empty facets of one session: none from a server without the
+/// feature, whatever its snapshot said.
+const fn session_flags(client: &Client, session: &crate::client::SessionSummary) -> u32 {
+    if !client.keep_empty_sessions || !session.keep_empty {
+        return 0;
+    }
+    if session.window_count == 0 {
+        PHUX_SESSION_FLAG_KEEP_EMPTY | PHUX_SESSION_FLAG_EMPTY
+    } else {
+        PHUX_SESSION_FLAG_KEEP_EMPTY
+    }
+}
+
+/// Read the keep-empty flags of the session `phux_client_session_get` reads
+/// at `index`.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out_flags` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_session_flags(
+    client: *const PhuxClient,
+    index: usize,
+    out_flags: *mut u32,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        // SAFETY: caller supplies a writable output when non-null.
+        let out = unsafe { out_flags.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("flags output is null"))?;
+        *out = 0;
+        let session = client
+            .sessions
+            .get(index)
+            .ok_or_else(|| BridgeError::invalid("session index past the session count"))?;
+        *out = session_flags(client, session);
+        Ok(())
+    })
+}
+
+/// Whether `HELLO_OK` advertised `KEEP_EMPTY_SESSIONS`.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out_supported` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_keep_empty_supported(
+    client: *const PhuxClient,
+    out_supported: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        // SAFETY: caller supplies a writable output when non-null.
+        let out = unsafe { out_supported.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("supported output is null"))?;
+        *out = client.keep_empty_sessions;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +343,93 @@ mod tests {
             "request IDs strictly increase"
         );
         unsafe { crate::phux_client_free(client) };
+    }
+
+    /// A client that negotiated through a real `HELLO_OK` with `features`.
+    fn hello_with(features: &[phux_protocol::ServerFeature]) -> *mut PhuxClient {
+        use phux_protocol::caps::ServerCapabilities;
+        let client = negotiated();
+        unsafe {
+            (*client).inner.protocol_ready = false;
+            (*client).inner.hello_queued = true;
+        }
+        let hello = FrameKind::HelloOk {
+            protocol_major: crate::PROTOCOL_VERSION.major,
+            protocol_minor: crate::PROTOCOL_VERSION.minor,
+            protocol_patch: crate::PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_features(phux_protocol::ServerFeatureSet::with(features)),
+            server_id: b"server".to_vec(),
+            selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
+                .expect("limits"),
+        };
+        assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
+        client
+    }
+
+    /// Three sessions: an ordinary one, a keep-empty one with no windows,
+    /// and a keep-empty one that still has two. Encoded through the codec, so
+    /// the mark rides the snapshot's trailing keep-empty list.
+    fn keep_empty_reply(request_id: u32) -> FrameKind {
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
+                .with_sessions(vec![
+                    SessionInfo::new(SessionId::new(1), "build").with_window_count(1),
+                    SessionInfo::new(SessionId::new(3), "scratch").with_keep_empty(true),
+                    SessionInfo::new(SessionId::new(4), "parked")
+                        .with_keep_empty(true)
+                        .with_window_count(2),
+                ]);
+        FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        }
+    }
+
+    fn flags(client: *mut PhuxClient, index: usize) -> (PhuxClientResult, u32) {
+        let mut out = u32::MAX;
+        let result = unsafe { phux_client_session_flags(client, index, &raw mut out) };
+        (result, out)
+    }
+
+    fn supported(client: *mut PhuxClient) -> bool {
+        let mut out = false;
+        assert_eq!(
+            unsafe { phux_client_keep_empty_supported(client, &raw mut out) },
+            PhuxClientResult::Ok
+        );
+        out
+    }
+
+    #[test]
+    fn keep_empty_is_decoded_from_the_trailing_list_and_gated_on_the_feature() {
+        use phux_protocol::ServerFeature::KeepEmptySessions;
+        let keep = PHUX_SESSION_FLAG_KEEP_EMPTY;
+        let empty = PHUX_SESSION_FLAG_EMPTY;
+        for (features, expected) in [
+            (vec![KeepEmptySessions], [0, keep | empty, keep]),
+            // An older server never marks a session, whatever it sent.
+            (vec![], [0, 0, 0]),
+        ] {
+            let client = hello_with(&features);
+            assert_eq!(supported(client), !features.is_empty());
+            assert_eq!(
+                unsafe { phux_client_query_sessions(client, 1) },
+                PhuxClientResult::Ok
+            );
+            assert_eq!(feed(client, &keep_empty_reply(1)), PhuxClientResult::Ok);
+            assert_eq!(unsafe { crate::phux_client_session_count(client) }, 3);
+            for (index, want) in expected.into_iter().enumerate() {
+                assert_eq!(flags(client, index), (PhuxClientResult::Ok, want));
+            }
+            assert_eq!(flags(client, 3).0, PhuxClientResult::InvalidArgument);
+            assert_eq!(
+                unsafe { phux_client_session_flags(client, 0, std::ptr::null_mut()) },
+                PhuxClientResult::InvalidArgument
+            );
+            unsafe { crate::phux_client_free(client) };
+        }
     }
 
     #[test]

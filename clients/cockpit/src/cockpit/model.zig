@@ -688,6 +688,37 @@ pub const PaletteDestination = union(enum) {
 
 pub const PeerSession = struct { coordinator: support.ProviderId, id: u32 };
 
+/// Bound on the session name an `EmptyPick` keeps for display.
+pub const max_empty_pick_name_bytes: usize = 64;
+
+/// A peer's keep-empty session with no windows, picked in the switcher
+/// (ADR-0105). The window it was picked in shows the Empty session state
+/// instead of attaching it (native/empty_session.zig). New Tab sets
+/// `tab_requested`, which shows the session on that peer; `tab_queued` once
+/// its first tab's spawn is on its way there.
+pub const EmptyPick = struct {
+    coordinator: support.ProviderId,
+    session: u32,
+    window: usize,
+    tab_requested: bool = false,
+    tab_queued: bool = false,
+    name: [max_empty_pick_name_bytes]u8 = undefined,
+    name_len: u8 = 0,
+
+    /// Kept for the state shown while the peer restarts to attach it, when
+    /// its session list is briefly gone. Cut on a UTF-8 boundary.
+    pub fn setName(self: *EmptyPick, name: []const u8) void {
+        var len = @min(name.len, self.name.len);
+        while (len > 0 and len < name.len and (name[len] & 0xc0) == 0x80) len -= 1;
+        @memcpy(self.name[0..len], name[0..len]);
+        self.name_len = @intCast(len);
+    }
+
+    pub fn nameSlice(self: *const EmptyPick) []const u8 {
+        return self.name[0..self.name_len];
+    }
+};
+
 /// Coordinators beside the active one: this Mac's plus registered hosts.
 pub const max_phux_peers: usize = 3;
 
@@ -745,6 +776,8 @@ pub const Model = struct {
     /// Each showing peer's projection, as `shared_workspace` is the active
     /// coordinator's. A listing peer's is empty.
     peer_workspaces: [max_phux_peers]@import("shared_workspace.zig").State = [_]@import("shared_workspace.zig").State{.{}} ** max_phux_peers,
+    /// A peer's empty session picked in the switcher (EmptyPick).
+    empty_pick: ?EmptyPick = null,
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.

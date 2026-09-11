@@ -319,6 +319,36 @@ the core then asks for the outcome with each snapshot until it is renamed
 (the panel closes) or refused (the panel keeps the typed name and says why).
 A rename whose connection ended first reads as refused, outcome unknown.
 
+### Empty sessions
+
+A keep-empty session ([ADR-0105](../../../ADR/0105-sessions-can-outlive-their-last-window.md))
+survives its last window, so a coordinator can hold a session with no
+windows. phux-client-ffi reads the mark from the snapshot's trailing
+keep-empty list ([L1.md](../../../docs/spec/L1.md) section 9.1) and reports
+it through `phux_client_session_flags` (KEEP_EMPTY, and EMPTY when the
+session has no windows) only when HELLO_OK advertised `KEEP_EMPTY_SESSIONS`
+(0x00020000); an older server's sessions always read 0. Its switcher row reads
+`Empty session · <host>` instead of `Phux session`.
+
+Cockpit shows such a session as an Empty session state with New Tab
+(`src/cockpit/native/empty_session.zig`), never as a broken session. A window
+shows it for the active coordinator's attached session when that session is
+empty and the window holds no tab, and for a peer's empty session picked in
+the switcher, in the window it was picked in. The state is a snapshot
+extension record (kind 4: window mask, flags, name, host); it gives way to
+every modal, and a picked one can be dismissed.
+
+Picking a peer's empty session does not attach it: an empty session has no
+tab to display, and a peer attaches only what it displays. New Tab
+(`cockpit.session` kind 4) is what shows it. The active coordinator's own
+empty session takes an ordinary new tab. A peer restarts only its own
+connection to attach that session by id (no other coordinator redials), and
+once its empty workspace projects, the tab spawns on that peer through its
+own edit queue. Until the tab lands the peer is held shown; the session has no
+panes then, so the attach sizes nobody's panes. If the spawn is refused, or
+the peer's connection ends first, the hold ends and a peer with nothing on
+screen returns to listing, as any hidden peer does.
+
 ### A failed coordinator
 
 A peer whose connection fails or closes, or whose channel cannot open, is

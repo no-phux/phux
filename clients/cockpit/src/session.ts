@@ -9,6 +9,10 @@
 export const SESSION_KIND_DESCRIBE = 1;
 export const SESSION_KIND_RENAME = 2;
 export const SESSION_KIND_STATUS = 3;
+/// The Empty session state: New Tab in the empty session a window shows,
+/// and dismissing a picked one. Neither carries a name.
+export const SESSION_KIND_NEW_TAB = 4;
+export const SESSION_KIND_DISMISS = 5;
 
 export const SESSION_PHASE_READY = 0;
 export const SESSION_PHASE_PENDING = 1;

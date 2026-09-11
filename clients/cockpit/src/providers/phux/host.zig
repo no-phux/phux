@@ -89,6 +89,12 @@ pub const SessionSummary = struct {
     window_count: u16,
     attached_client_count: u16,
     focused: bool,
+    /// ADR-0105: the session survives its last window. Only a server that
+    /// advertises KEEP_EMPTY_SESSIONS reports it (phux_client_session_flags).
+    keep_empty: bool = false,
+    /// A keep-empty session that holds no windows: a real, empty session,
+    /// never a broken one.
+    empty: bool = false,
 
     fn deinit(session: *SessionSummary, gpa: std.mem.Allocator) void {
         gpa.free(session.name);
@@ -1125,7 +1131,12 @@ pub const Host = struct {
         for (0..count) |index| {
             var raw: c.PhuxSessionInfo = undefined;
             try resultError(c.phux_client_session_get(host.client, index, &raw));
-            const session = try copySessionSummary(host.gpa, raw);
+            var session = try copySessionSummary(host.gpa, raw);
+            var flags: u32 = 0;
+            if (c.phux_client_session_flags(host.client, index, &flags) == c.PHUX_CLIENT_OK) {
+                session.keep_empty = flags & c.PHUX_SESSION_FLAG_KEEP_EMPTY != 0;
+                session.empty = flags & c.PHUX_SESSION_FLAG_EMPTY != 0;
+            }
             next.append(host.gpa, session) catch {
                 var owned = session;
                 owned.deinit(host.gpa);

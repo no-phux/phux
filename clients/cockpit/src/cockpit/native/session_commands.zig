@@ -30,7 +30,9 @@ pub const version: u8 = 1;
 pub const max_text_bytes: usize = 240;
 pub const max_bytes: usize = 5 + 3 * max_text_bytes;
 
-pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3 };
+/// 4 and 5 serve the Empty session state (empty_session.zig): New Tab in
+/// the empty session a window shows, and dismissing a picked one.
+pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3, new_tab = 4, dismiss = 5 };
 /// `unavailable`: nothing on screen can be renamed. `refused`: this rename
 /// changed nothing; the reason says why.
 pub const Phase = enum(u8) { ready = 0, pending = 1, renamed = 2, refused = 3, unavailable = 4 };
@@ -47,13 +49,15 @@ pub fn decode(bytes: []const u8) Error!Request {
         1 => .describe,
         2 => .rename,
         3 => .status,
+        4 => .new_tab,
+        5 => .dismiss,
         else => return error.InvalidRequest,
     };
     if (@as(usize, bytes[2]) != bytes.len - 3) return error.InvalidRequest;
     const name = bytes[3..];
     switch (kind) {
         .rename => if (name.len == 0 or !std.unicode.utf8ValidateSlice(name)) return error.InvalidRequest,
-        .describe, .status => if (name.len != 0) return error.InvalidRequest,
+        .describe, .status, .new_tab, .dismiss => if (name.len != 0) return error.InvalidRequest,
     }
     return .{ .kind = kind, .name = name };
 }
@@ -89,16 +93,33 @@ const Scratch = struct {
 };
 
 /// Apply one request on the owning thread and encode the answer.
-pub fn handle(engine: anytype, payload: []const u8, out: []u8) Error![]const u8 {
+pub fn handle(engine: anytype, fx: anytype, payload: []const u8, out: []u8) Error![]const u8 {
     const request = try decode(payload);
     var scratch: Scratch = .{};
     const reply = switch (request.kind) {
         .describe => describe(engine),
         .rename => rename(engine, request.name, &scratch),
         .status => status(engine, &scratch),
+        .new_tab => newTab(engine, fx),
+        .dismiss => blk: {
+            empty_session.dismiss(engine.model);
+            break :blk Reply{ .phase = .ready };
+        },
     };
     return encode(reply, out);
 }
+
+/// New Tab in the Empty session state: pending once a tab is on its way to
+/// that session's own coordinator, else refused with the reason.
+fn newTab(engine: anytype, fx: anytype) Reply {
+    if (comptime !support.phux_enabled) return nothing_on_screen;
+    return switch (empty_session.newTab(engine, fx)) {
+        .opened => |view| .{ .phase = .pending, .name = view.name, .host = view.host },
+        .refused => |reason| .{ .phase = .refused, .reason = reason },
+    };
+}
+
+const empty_session = @import("empty_session.zig");
 
 const nothing_on_screen: Reply = .{ .phase = .unavailable, .reason = "No Phux session is on screen to rename." };
 

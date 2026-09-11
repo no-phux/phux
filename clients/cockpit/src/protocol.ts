@@ -8,6 +8,43 @@ const INVALIDATION_LENGTH = 18;
 const EXTENSION_AGENT_ROWS = 1;
 const EXTENSION_TAB_CONTEXTS = 2;
 const EXTENSION_NAVIGATION_CONTEXT = 3;
+/// The Empty session state (empty_session.zig): which windows show it.
+const EXTENSION_EMPTY_SESSION = 4;
+
+/// A keep-empty session with no windows, as the snapshot offers it: a mask
+/// of the windows showing its state (bit 0 is the main window), whether it
+/// was picked in the switcher, whether New Tab is on its way, and its name
+/// and host. `windows` is 0 when no record came.
+export interface SnapshotEmptySession {
+  readonly windows: number;
+  readonly picked: boolean;
+  readonly opening: boolean;
+  readonly name: Uint8Array;
+  readonly host: Uint8Array;
+}
+
+function noEmptySession(): SnapshotEmptySession {
+  return { windows: 0, picked: false, opening: false, name: new Uint8Array(0), host: new Uint8Array(0) };
+}
+
+function readEmptySession(bytes: Uint8Array): SnapshotEmptySession | null {
+  if (bytes.length < 4) return null;
+  const windows = bytes[0];
+  const flags = bytes[1];
+  const nameLength = bytes[2];
+  if (!(windows >= 1 && windows <= 31) || !(flags >= 0 && flags <= 3) || nameLength > 64) return null;
+  const hostAt = 3 + nameLength;
+  if (hostAt >= bytes.length) return null;
+  const hostLength = bytes[hostAt];
+  if (hostLength > 64 || hostAt + 1 + hostLength !== bytes.length) return null;
+  return {
+    windows: Math.trunc(windows),
+    picked: (flags & 1) !== 0,
+    opening: (flags & 2) !== 0,
+    name: bytes.subarray(3, hostAt),
+    host: bytes.subarray(hostAt + 1),
+  };
+}
 
 const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 
@@ -88,6 +125,7 @@ export interface EngineSnapshot extends Invalidation {
   /// The agent rows the `agent_rows` extension record carried, empty when the
   /// snapshot carried none (which is also what an absent record means).
   readonly agents: readonly SnapshotAgentRow[];
+  readonly emptySession: SnapshotEmptySession;
 }
 
 function readU32(bytes: Uint8Array, at: number): number {
@@ -234,6 +272,7 @@ interface SecondaryRecords {
   readonly contexts: Uint8Array;
   readonly agents: readonly SnapshotAgentRow[];
   readonly navigation: NavigationSnapshotContext;
+  readonly empty: SnapshotEmptySession;
 }
 
 /// The `agent_rows` payload: a row count, then `[window][tab][state][flags]
@@ -277,6 +316,7 @@ interface SnapshotExtensions {
   readonly agents: readonly SnapshotAgentRow[];
   readonly contexts: Uint8Array;
   readonly navigation: NavigationSnapshotContext;
+  readonly empty: SnapshotEmptySession;
 }
 
 interface NavigationSnapshotContext {
@@ -315,11 +355,15 @@ function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: 
     const navigation = readNavigationSnapshotContext(payload);
     return navigation === null ? null : { ...previous, navigation };
   }
+  if (kind === EXTENSION_EMPTY_SESSION) {
+    const empty = readEmptySession(payload);
+    return empty === null ? null : { ...previous, empty };
+  }
   return previous;
 }
 
 function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
-  let result: SnapshotExtensions = { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext() };
+  let result: SnapshotExtensions = { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
@@ -353,13 +397,13 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
 
 function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly SecondaryWindow[]): SecondaryRecords | null {
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext() };
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
   const extensions = readExtensions(bytes, at + 5);
   if (extensions === null) return null;
-  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts, navigation: extensions.navigation };
+  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts, navigation: extensions.navigation, empty: extensions.empty };
 }
 
 function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
@@ -420,6 +464,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     tabWidth: bytes[26] + bytes[27] * 256,
     tabs: targetTabs(main.tabs, secondary.contexts, 0),
     agents: secondary.agents,
+    emptySession: secondary.empty,
   };
 }
 

@@ -175,6 +175,35 @@
   </stack>
 </template>
 
+<!-- The Empty session state (ADR-0105): a keep-empty session with no
+     windows, offered with New Tab instead of treated as broken, in the
+     window the snapshot names. A peer's session picked in the switcher can be
+     dismissed; nothing attaches it until New Tab. -->
+<template name="cockpit-empty" args="emptyopen">
+  <stack>
+    <if test="{emptyopen}">
+      <row main="center" cross="start" padding="16">
+        <panel grow="1" max-width="640" padding="16">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <icon name="terminal" width="16" height="16" />
+              <text grow="1" overflow="ellipsis">{emptyName}</text>
+              <if test="{emptyPicked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
+            </row>
+            <text foreground="text_muted" overflow="ellipsis">{emptyDetail}</text>
+            <text wrap="true">This session has no windows. Open a tab to start working in it.</text>
+            <if test="{emptyNotice}"><text wrap="true" foreground="text_muted">{emptyNotice}</text></if>
+            <row gap="8" cross="center">
+              <spacer grow="1" />
+              <button size="sm" disabled="{emptyBusy}" on-press="empty_new_tab">New Tab</button>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 <!-- Go to Directory, presented by whichever window invoked it. The listing
      is the connected coordinator's, so a remote host lists its own
      directories. Rows name listing indices; the engine composes paths. -->

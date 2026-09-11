@@ -418,6 +418,7 @@ mod tests {
                 window_count: 1,
                 attached_client_count: 0,
                 focused: id == 1,
+                keep_empty: false,
             })
             .collect();
         Box::into_raw(Box::new(PhuxClient {

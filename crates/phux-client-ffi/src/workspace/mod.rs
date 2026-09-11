@@ -368,6 +368,7 @@ fn catalog_equal(a: &Catalog, b: &Catalog) -> bool {
                 && a.name == b.name
                 && a.created_at_unix_secs == b.created_at_unix_secs
                 && a.window_count == b.window_count
+                && a.keep_empty == b.keep_empty
         })
 }
 

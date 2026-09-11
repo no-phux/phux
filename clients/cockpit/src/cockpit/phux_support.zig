@@ -95,6 +95,8 @@ const DisabledPhuxProvider = struct {
         window_count: u16,
         attached_client_count: u16,
         focused: bool,
+        keep_empty: bool = false,
+        empty: bool = false,
     };
     const SyncDelta = struct {
         metadata_changed: bool = false,

@@ -141,20 +141,29 @@ fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
 }
 
 /// The active coordinator's host group: the registered host's label, or
-/// "This Mac" once a peer makes the grouping visible.
-fn sessionDetail(model: *const Model, out: []u8) []const u8 {
+/// "This Mac" once a peer makes the grouping visible. A keep-empty session
+/// with no windows reads "Empty session" (ADR-0105), never as broken.
+fn sessionDetail(model: *const Model, id: u32, out: []u8) []const u8 {
+    const kind = if (activeSessionEmpty(model, id)) "Empty session" else "Phux session";
     const host = remoteHost(model) orelse
-        (if (model.phuxPeerConst() != null) "This Mac" else return "Phux session");
-    return std.fmt.bufPrint(out, "Phux session · {s}", .{host}) catch "Phux session";
+        (if (model.phuxPeerConst() != null) "This Mac" else return kind);
+    return std.fmt.bufPrint(out, "{s} · {s}", .{ kind, host }) catch kind;
 }
 
-fn peerSessionDetail(model: *const Model, coordinator: support.ProviderId, out: []u8) []const u8 {
-    const host = projection.peerHostLabel(model, coordinator);
+fn activeSessionEmpty(model: *const Model, id: u32) bool {
+    const remote = model.phuxConst() orelse return false;
+    for (remote.sessionCatalog()) |session| if (session.id == id) return session.empty;
+    return false;
+}
+
+fn peerSessionDetail(model: *const Model, target: model_module.PeerSession, out: []u8) []const u8 {
+    const host = projection.peerHostLabel(model, target.coordinator);
+    const kind = if (@import("empty_session.zig").peerSessionEmpty(model, target.coordinator, target.id)) "Empty session" else "Phux session";
     // A showing peer whose workspace could not be projected says so here,
     // since the chrome's connection state is the active coordinator's.
-    if (peerProjectionRefused(model, coordinator))
-        return std.fmt.bufPrint(out, "Phux session · {s} · workspace unavailable", .{host}) catch "Phux session";
-    return std.fmt.bufPrint(out, "Phux session · {s}", .{host}) catch "Phux session";
+    if (peerProjectionRefused(model, target.coordinator))
+        return std.fmt.bufPrint(out, "{s} · {s} · workspace unavailable", .{ kind, host }) catch kind;
+    return std.fmt.bufPrint(out, "{s} · {s}", .{ kind, host }) catch kind;
 }
 
 fn peerProjectionRefused(model: *const Model, coordinator: support.ProviderId) bool {
@@ -229,8 +238,8 @@ fn rowDetail(model: *const Model, row: *const Row, out: []u8) []const u8 {
     if (row.is_host) return "Known terminal host";
     if (row.entry == .peer_unavailable) return peerUnavailableDetail(model, row.entry.peer_unavailable, out);
     if (!selectable(model, row)) return "Ownership unavailable";
-    if (row.entry == .peer_session) return peerSessionDetail(model, row.entry.peer_session.coordinator, out);
-    const ref = terminalRef(&row.entry) orelse return sessionDetail(model, out);
+    if (row.entry == .peer_session) return peerSessionDetail(model, row.entry.peer_session, out);
+    const ref = terminalRef(&row.entry) orelse return sessionDetail(model, row.entry.session, out);
     const host = if (entryHost(&row.entry)) |value| coordinatorLabelFor(model, ref.*, value) else "Local PTY";
     if (row.entry != .placed_terminal) return locationDetail(host, terminalDirectory(model, ref.*), out);
     var location_buffer: [512]u8 = undefined;

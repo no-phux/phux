@@ -21,6 +21,8 @@ import {
   SESSION_KIND_DESCRIBE,
   SESSION_KIND_RENAME,
   SESSION_KIND_STATUS,
+  SESSION_KIND_NEW_TAB,
+  SESSION_KIND_DISMISS,
   SESSION_PHASE_READY,
   SESSION_PHASE_PENDING,
   SESSION_PHASE_RENAMED,
@@ -251,6 +253,21 @@ export interface Model {
   readonly renameNotice: Uint8Array;
   readonly renameBusy: boolean;
   readonly renameAwaiting: boolean;
+  /// The Empty session state (ADR-0105, empty_session.zig): the windows the
+  /// snapshot says show it, as a mask, and per window whether it is drawn
+  /// (it gives way to every modal). A keep-empty session with no windows is
+  /// offered with New Tab, never shown as broken.
+  readonly emptyWindows: number;
+  readonly mainEmptyOpen: boolean;
+  readonly window1EmptyOpen: boolean;
+  readonly window2EmptyOpen: boolean;
+  readonly window3EmptyOpen: boolean;
+  readonly window4EmptyOpen: boolean;
+  readonly emptyName: Uint8Array;
+  readonly emptyDetail: Uint8Array;
+  readonly emptyPicked: boolean;
+  readonly emptyBusy: boolean;
+  readonly emptyNotice: Uint8Array;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -376,6 +393,10 @@ export type Msg =
   | { readonly kind: "rename_submit" }
   | { readonly kind: "session_loaded"; readonly body: Uint8Array }
   | { readonly kind: "session_failed"; readonly error: Uint8Array }
+  | { readonly kind: "empty_new_tab" }
+  | { readonly kind: "empty_dismiss" }
+  | { readonly kind: "empty_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "empty_failed"; readonly error: Uint8Array }
   | { readonly kind: "remote_loaded"; readonly body: Uint8Array }
   | { readonly kind: "remote_failed"; readonly error: Uint8Array }
   | { readonly kind: "settings_open" }
@@ -476,6 +497,9 @@ export const viewUnbound = [
   "rename_open",
   "session_loaded",
   "session_failed",
+  "emptyWindows",
+  "empty_loaded",
+  "empty_failed",
 ] as const;
 
 const ZERO_U64: WireU64 = { hi: 0, lo: 0 };
@@ -871,6 +895,25 @@ function renameTransition(model: Model, msg: Msg): RenameDecision | null {
   }
 }
 
+/// The Empty session state gives way to every modal.
+function emptyShown(model: Model, bit: number): boolean {
+  if (model.paletteOpen || model.hostOpen || model.dirOpen || model.renameOpen || model.settingsOpen) return false;
+  return (model.emptyWindows & bit) !== 0;
+}
+
+/// The engine's answer to New Tab or Dismiss. A refusal says why and lets
+/// New Tab be pressed again; an accepted New Tab waits for the tab to land,
+/// which the next snapshots show.
+function receiveEmpty(model: Model, body: Uint8Array): Model {
+  const reply = sessionReply(body);
+  if (reply === null) return { ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") };
+  if (reply.phase === SESSION_PHASE_PENDING) {
+    return { ...model, emptyBusy: true, emptyNotice: joinBytes(asciiBytes("Opening a new tab in "), reply.name, asciiBytes("...")) };
+  }
+  if (reply.phase === SESSION_PHASE_READY) return { ...model, emptyBusy: false, emptyNotice: NO_BYTES };
+  return { ...model, emptyBusy: false, emptyNotice: reply.reason.length > 0 ? reply.reason : asciiBytes("No tab was opened.") };
+}
+
 /// The connection under an open picker moved, so its rows named a listing on
 /// the old connection. Withdraw them; once connected again, list afresh.
 function relistDirectory(model: Model, connected: boolean): Model {
@@ -1135,6 +1178,11 @@ function scopeOverlays(model: Model): Model {
     window2HostOpen: model.hostOpen && active === 2,
     window3HostOpen: model.hostOpen && active === 3,
     window4HostOpen: model.hostOpen && active === 4,
+    mainEmptyOpen: emptyShown(model, 1),
+    window1EmptyOpen: emptyShown(model, 2),
+    window2EmptyOpen: emptyShown(model, 4),
+    window3EmptyOpen: emptyShown(model, 8),
+    window4EmptyOpen: emptyShown(model, 16),
     mainRenameOpen: model.renameOpen && active === 0,
     window1RenameOpen: model.renameOpen && active === 1,
     window2RenameOpen: model.renameOpen && active === 2,
@@ -1536,6 +1584,17 @@ export function initialModel(): [Model, Cmd<Msg>] {
       renameNotice: new Uint8Array(0),
       renameBusy: false,
       renameAwaiting: false,
+      emptyWindows: 0,
+      mainEmptyOpen: false,
+      window1EmptyOpen: false,
+      window2EmptyOpen: false,
+      window3EmptyOpen: false,
+      window4EmptyOpen: false,
+      emptyName: new Uint8Array(0),
+      emptyDetail: new Uint8Array(0),
+      emptyPicked: false,
+      emptyBusy: false,
+      emptyNotice: new Uint8Array(0),
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,
@@ -1984,6 +2043,21 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "remote_failed":
       return { ...model, hostBusy: false, hostAwaiting: false, hostNotice: asciiBytes("Connection status unavailable. Try again.") };
+    case "empty_new_tab":
+      if (model.emptyBusy || model.emptyWindows === 0) return model;
+      return [{ ...model, emptyBusy: true, emptyNotice: asciiBytes("Opening a new tab...") },
+        Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_NEW_TAB, NO_BYTES), {
+          key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
+        })];
+    case "empty_dismiss":
+      if (!model.emptyPicked) return model;
+      return [model, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_DISMISS, NO_BYTES), {
+        key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
+      })];
+    case "empty_loaded":
+      return receiveEmpty(model, msg.body);
+    case "empty_failed":
+      return { ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") };
     case "window_closed": {
       const window = msg.window;
       if (!(window >= 1 && window <= 4)) return model;
@@ -2084,6 +2158,8 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const width2 = w2.tabWidth >= 0 && w2.tabWidth <= 65535 ? Math.trunc(w2.tabWidth) : 168;
       const width3 = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
       const width4 = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
+      const rawEmpty = projected.emptySession.windows;
+      const emptyMask = rawEmpty >= 0 && rawEmpty <= 31 ? Math.trunc(rawEmpty) : 0;
       const synced: Model = {
         ...model,
         activeWindow: projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0,
@@ -2137,6 +2213,12 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         window3Status: windowStatus(projected.connection, projected.terminalStates[3], refusedMask !== 0),
         window4Status: windowStatus(projected.connection, projected.terminalStates[4], refusedMask !== 0),
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
+        emptyWindows: emptyMask,
+        emptyName: projected.emptySession.name,
+        emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
+        emptyPicked: projected.emptySession.picked,
+        emptyBusy: projected.emptySession.windows !== 0 && (model.emptyBusy || projected.emptySession.opening),
+        emptyNotice: projected.emptySession.windows === 0 ? NO_BYTES : model.emptyNotice,
       };
       // An open Go to Directory names a listing on the connection that just
       // moved: withdraw its rows, and list again once connected.

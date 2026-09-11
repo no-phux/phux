@@ -1127,6 +1127,27 @@ PhuxClientResult phux_client_query_sessions(PhuxClient *client, uint32_t request
 /** Writes the latest query's request ID (0 before any) and status. */
 PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint32_t *out_request_id, uint32_t *out_status);
 
+/* ------------------------------------------------ keep-empty sessions
+ *
+ * ADR-0105: a keep-empty session survives its last window. The mark rides
+ * the ATTACHED and GET_STATE snapshots' trailing keep-empty list
+ * (docs/spec/L1.md section 9.1), after the resource facets and the hosts
+ * inventory. Additive to ABI version 2; PhuxSessionInfo is unchanged.
+ *
+ * phux_client_session_flags reads the flags of the session
+ * phux_client_session_get reads at the same index: KEEP_EMPTY for a marked
+ * session, and EMPTY as well when it holds no windows. Both are reported
+ * only when HELLO_OK advertised KEEP_EMPTY_SESSIONS (0x00020000); from any
+ * other server every session reads 0, so a window_count of 0 there is not a
+ * claim that a session is empty. INVALID_ARGUMENT for an index at or past
+ * phux_client_session_count or a null output. */
+#define PHUX_SESSION_FLAG_KEEP_EMPTY 0x1u
+#define PHUX_SESSION_FLAG_EMPTY 0x2u
+
+PhuxClientResult phux_client_session_flags(const PhuxClient *client, size_t index, uint32_t *out_flags);
+/** *out_supported: HELLO_OK advertised KEEP_EMPTY_SESSIONS. */
+PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool *out_supported);
+
 /* ------------------------------------------------------- session rename
  *
  * Rename a session on the connected server (phux.session.name/v1,

@@ -703,12 +703,17 @@ const SessionAnswer = struct {
 
 /// One `cockpit.session` request through the handler the bridge calls.
 fn sessionCommand(engine: *ts_engine.Engine, kind: u8, name: []const u8, out: *[session_commands.max_bytes]u8) !SessionAnswer {
+    var fx: PeerFx = .{};
+    return sessionCommandWith(engine, &fx, kind, name, out);
+}
+
+fn sessionCommandWith(engine: *ts_engine.Engine, fx: *PeerFx, kind: u8, name: []const u8, out: *[session_commands.max_bytes]u8) !SessionAnswer {
     var request: [3 + 255]u8 = undefined;
     request[0] = session_commands.version;
     request[1] = kind;
     request[2] = @intCast(name.len);
     @memcpy(request[3..][0..name.len], name);
-    const reply = try session_commands.handle(engine, request[0 .. 3 + name.len], out);
+    const reply = try session_commands.handle(engine, fx, request[0 .. 3 + name.len], out);
     const host_at = 3 + @as(usize, reply[2]);
     const reason_at = host_at + 1 + @as(usize, reply[host_at]);
     return .{
@@ -823,6 +828,139 @@ test "a refused rename says why and writes nothing; a pane of a coordinator no l
     try testing.expectEqual(session_commands.Phase.unavailable, (try sessionCommand(engine, 2, "gone", &out)).phase);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+}
+
+// ------------------------------------ keep-empty sessions (empty_session.zig)
+
+const empty_session = @import("../cockpit/native/empty_session.zig");
+const ts_snapshot = @import("../cockpit/native/ts_snapshot.zig");
+
+fn wakeMini(engine: *ts_engine.Engine, fx: *PeerFx) void {
+    _ = engine.onPeerChannel(fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null);
+}
+
+test "a peer's empty session is listed as empty, and picking it attaches nothing until New Tab shows it there" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const here = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/multi-coordinator-unused" }, null, "multi");
+    model.phux_provider = here;
+    try fixture.attachHostWith(here.host, "hello.bin");
+    // mini lists without attaching: `build` and the keep-empty `scratch` (3).
+    const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
+    model.phux_peers[0] = mini;
+    mini.standBy();
+    try mini.host.start("multi");
+    try fixture.stageFixture(mini.bridge, "hello_keep_empty.bin");
+    _ = try mini.drainReadiness();
+    try fixture.stageFixture(mini.bridge, "standby_keep_empty_state.bin");
+    try testing.expect((try mini.drainReadiness()).sessions_listed);
+    const listed = mini.standbyCatalog();
+    try testing.expect(!listed[0].empty);
+    try testing.expect(listed[1].empty and listed[1].keep_empty);
+    _ = countFrames(mini);
+    _ = countFrames(here);
+
+    // The switcher offers it as an empty session, not as a broken one.
+    var page_out: [navigation.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "Empty session · mini") != null);
+    // Paging the switcher refreshes a listing peer's list (GET_STATE) and the
+    // active coordinator's workspace; neither is an attach.
+    try testing.expectEqual(@as(usize, 0), countFrames(mini).attach);
+    try testing.expectEqual(@as(usize, 0), countFrames(here).attach);
+
+    // Picking it shows the Empty session state; nothing attaches, nothing
+    // restarts, and settling leaves mini listing.
+    var fx: PeerFx = .{};
+    try testing.expect(engine.showPeerSession(mini.providerId(), 3, &fx));
+    try testing.expectEqual(@as(usize, 0), fx.restarts);
+    try testing.expect(!mini.showing());
+    try testing.expectEqual(@as(usize, 0), countFrames(mini).total);
+    try testing.expect(!engine.settlePeers(&fx));
+    try testing.expectEqual(@as(usize, 0), fx.restarts);
+    const shown = empty_session.view(model, 0).?;
+    try testing.expect(shown.picked);
+    try testing.expectEqualStrings("scratch", shown.name);
+    var snap_out: [ts_snapshot.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&snap_out), "scratch") != null);
+
+    // New Tab shows it on mini alone: only mini restarts, to attach it.
+    var out: [session_commands.max_bytes]u8 = undefined;
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommandWith(engine, &fx, 4, "", &out)).phase);
+    try testing.expectEqual(@as(usize, 1), fx.restarts);
+    try testing.expect(mini.showing());
+    try testing.expectEqual(@as(usize, 0), countFrames(here).total);
+
+    // mini's next connection attaches `scratch` by id; This Mac hears nothing.
+    mini.stop();
+    try mini.host.reconnect("multi");
+    try fixture.stageFixture(mini.bridge, "hello_keep_empty.bin");
+    wakeMini(engine, &fx);
+    try testing.expectEqual(@as(usize, 1), countFrames(mini).attach);
+    try fixture.stageFixture(mini.bridge, "attached_empty.bin");
+    wakeMini(engine, &fx);
+    _ = countFrames(mini);
+    // Its empty workspace projects, and its first tab spawns there.
+    try fixture.stageFixture(mini.bridge, "workspace_empty.bin");
+    wakeMini(engine, &fx);
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(@as(usize, 1), countFrames(mini).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(here).total);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    // Held shown while that tab is on its way, not returned to listing.
+    try testing.expect(!engine.settlePeers(&fx));
+    try testing.expect(mini.showing());
+
+    // mini's connection fails before the tab lands: the hold ends, and a
+    // hidden mini goes back to listing.
+    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    try testing.expect(model.empty_pick == null);
+}
+
+test "New Tab in the active coordinator's empty session opens there, and on no peer" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    // This Mac is attached to its keep-empty `scratch` (3), which has no
+    // windows: ATTACHED with nothing to bootstrap, then an empty workspace.
+    const here = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/multi-coordinator-unused" }, null, "multi");
+    model.phux_provider = here;
+    try here.host.start("multi");
+    try fixture.stageFixture(here.bridge, "hello_keep_empty.bin");
+    _ = try here.host.drainReadiness();
+    try here.host.attachSessionId(3, .{ .cols = 80, .rows = 24 });
+    try fixture.stageFixture(here.bridge, "attached_empty.bin");
+    try testing.expect((try here.host.drainReadiness()).ready_published);
+    try fixture.stageFixture(here.bridge, "workspace_empty.bin");
+    _ = try here.host.drainReadiness();
+    here.bridge.outgoing.reset();
+    // mini is shown beside it, attached to its own session.
+    const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
+    model.phux_peers[0] = mini;
+    try mini.show(1);
+    try fixture.attachHostWith(mini.host, "hello.bin");
+    // The engine projects This Mac's empty workspace: no tab anywhere.
+    var fx: PeerFx = .{};
+    _ = engine.onPhuxChannel(&fx, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try testing.expectEqual(@as(usize, 0), model.primary.tab_count);
+    const shown = empty_session.view(model, 0).?;
+    try testing.expect(!shown.picked);
+    try testing.expectEqualStrings("scratch", shown.name);
+    try testing.expectEqualStrings("This Mac", shown.host);
+    var snap_out: [ts_snapshot.max_bytes]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, try engine.snapshot(&snap_out), "scratch") != null);
+    _ = countFrames(here);
+    _ = countFrames(mini);
+
+    // New Tab spawns in `scratch` on This Mac, and mini hears nothing.
+    var out: [session_commands.max_bytes]u8 = undefined;
+    try testing.expectEqual(session_commands.Phase.pending, (try sessionCommandWith(engine, &fx, 4, "", &out)).phase);
+    try testing.expectEqual(@as(usize, 1), countFrames(here).spawn);
+    try testing.expectEqual(@as(usize, 0), countFrames(mini).total);
+    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try testing.expectEqual(@as(usize, 0), fx.restarts);
 }
 
 test "an edit of a peer that cannot take one is refused and reaches no coordinator" {

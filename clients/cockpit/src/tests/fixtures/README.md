@@ -39,6 +39,14 @@ Use a private target directory per worktree for concurrent builds.
   (Global) with the applied value `fixture\0renamed`: the server's broadcast of
   a rename of the attached session. The generator checks that an attached
   client reads it into its session list.
+- Keep-empty sessions (ADR-0105): `hello_keep_empty.bin` is `hello.bin` that
+  also advertises `KeepEmptySessions`. `standby_keep_empty_state.bin` answers
+  a listing client's first query (ID 1) with `build` (1, one window) and the
+  keep-empty `scratch` (3, no windows). `attached_empty.bin` is `ATTACHED`
+  (attach ID 1, session 3, the server's sentinel focus IDs, no windows or
+  resources) then `ATTACH_READY`. `workspace_empty.bin` is the automatic
+  workspace read that follows, correlated as a fresh client's first internal
+  requests: absent layout metadata, then the same registry.
 - The VT chunk clears/homes the screen, writes `COCKPIT FIXTURE` at row 0,
   column 0, enables bracketed paste (`CSI ? 2004 h`), focus reporting
   (`CSI ? 1004 h`), and Kitty keyboard disambiguation (`CSI > 1 u`).

@@ -43,6 +43,9 @@ pub(crate) struct SessionSummary {
     pub window_count: u16,
     pub attached_client_count: u16,
     pub focused: bool,
+    /// The session survives its last window (ADR-0105), as the snapshot's
+    /// trailing session facets say; always false from a server without them.
+    pub keep_empty: bool,
 }
 
 /// One resource from the latest `ATTACHED` snapshot, owned so the C view can
@@ -296,6 +299,10 @@ pub(crate) struct Client {
     /// `HELLO_OK` advertised `LIST_DIRECTORY_HOST` (`docs/spec/L3.md` section
     /// 4.1): a hub lists a named satellite instead of itself.
     pub list_directory_host: bool,
+    /// `HELLO_OK` advertised `KEEP_EMPTY_SESSIONS` (ADR-0105): the session
+    /// facets carry the keep-empty mark, and a windowless keep-empty session
+    /// is a real, empty one.
+    pub keep_empty_sessions: bool,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
@@ -357,6 +364,7 @@ impl Client {
             terminal_reply: false,
             list_directory: false,
             list_directory_host: false,
+            keep_empty_sessions: false,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             session_rename: crate::session_rename::SessionRename::default(),

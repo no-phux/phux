@@ -952,6 +952,9 @@ fn apply_hello_ok(
     client.list_directory_host = server_caps
         .features
         .contains(phux_protocol::ServerFeature::ListDirectoryHost);
+    client.keep_empty_sessions = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::KeepEmptySessions);
     client.protocol_ready = true;
     Ok(())
 }

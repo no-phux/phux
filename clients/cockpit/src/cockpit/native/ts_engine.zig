@@ -220,6 +220,8 @@ pub const Engine = struct {
     /// (session_commands.zig). Its outcome is read from that coordinator only.
     rename_flight: ?@import("session_commands.zig").Flight = null,
 
+    const empty_session = @import("empty_session.zig");
+
     /// Automatic redial of a failed listing peer: 1 s, then twice the last
     /// wait, at most 60 s, until it lists again.
     pub const peer_retry_initial_ms: u64 = 1000;
@@ -1129,6 +1131,9 @@ pub const Engine = struct {
         // A peer's pending placement must not take focus back either.
         for (&self.model.peer_workspaces) |*state| state.desired_terminal = null;
         self.peer_edits.supersedeFocus();
+        // A picked empty session's state gives way too, unless its first tab
+        // is already opening.
+        empty_session.dismiss(self.model);
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -1389,6 +1394,7 @@ pub const Engine = struct {
         const model = self.model;
         model.phuxPeerAt(slot).?.stop();
         self.peer_edits.forget(slot);
+        empty_session.forgetPeer(model, model.phuxPeerAt(slot).?.providerId(), false);
         // That occupancy is gone; the next one opens under a fresh key.
         self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
         model.peer_failed[slot] = true;
@@ -1402,6 +1408,7 @@ pub const Engine = struct {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
         peer.stop();
         self.peer_edits.forget(slot);
+        empty_session.forgetPeer(self.model, peer.providerId(), false);
         self.model.peer_failed[slot] = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
@@ -1428,6 +1435,8 @@ pub const Engine = struct {
         // Before projecting, so a confirmed new tab is selected as it lands.
         changed = self.peer_edits.pump(model, slot) or changed;
         const projected = self.projectPeer(peer, state, published);
+        // A picked empty session New Tab showed: its first tab, on this peer.
+        changed = empty_session.pump(self, slot) or changed;
         // A terminal spawned for a new tab or split is not placed yet; it
         // must not be detached as unused before its placement lands.
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
@@ -1483,11 +1492,20 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         var changed = false;
         for (0..model_module.max_phux_peers) |slot| {
+            if (self.emptyTabHolds(slot)) continue;
             if (!self.peerHidden(slot)) continue;
             self.unshowPeer(fx, slot);
             changed = true;
         }
         return self.commitProviderChange(changed);
+    }
+
+    /// A peer shown by New Tab in a picked empty session stays shown until
+    /// that tab lands on screen, or its spawn is gone without one.
+    fn emptyTabHolds(self: *Engine, slot: usize) bool {
+        const peer = self.model.phuxPeerAtConst(slot) orelse return false;
+        const visible = authorityVisible(self.model, peer.providerId());
+        return empty_session.holds(self.model, slot, self.peer_edits.pendingCreations(slot), visible);
     }
 
     fn peerHidden(self: *const Engine, slot: usize) bool {
@@ -1576,6 +1594,7 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
         self.stopShowingPeer(slot);
+        empty_session.forgetPeer(model, peer.providerId(), true);
         model.phux_peers[slot] = null;
         model.phux_peer_reopen[slot] = false;
         model.peer_failed[slot] = false;
@@ -1684,6 +1703,13 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const model = self.model;
         const slot = self.showableSlot(coordinator, session) orelse return false;
+        // An empty session has no tab to display, so it is not attached: the
+        // window shows the Empty session state, and New Tab shows it
+        // (empty_session.zig).
+        if (empty_session.peerSessionEmpty(model, coordinator, session)) {
+            self.supersedeSelection();
+            return empty_session.pickPeer(model, coordinator, session);
+        }
         const peer = model.phux_peers[slot].?;
         const state = &model.peer_workspaces[slot];
         state.authority = peer.providerId();

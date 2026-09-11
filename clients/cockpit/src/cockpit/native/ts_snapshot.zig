@@ -27,7 +27,9 @@ pub const Error = error{BufferTooSmall};
 /// byte, a `u16` length, then that many payload bytes. A decoder that does
 /// not know a kind steps over it by its length instead of reading what
 /// follows as something it is not, so a later kind costs the seam nothing.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3 };
+/// `empty_session` (empty_session.zig): which windows show the Empty session
+/// state, written only when one does.
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
@@ -60,7 +62,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -102,6 +104,7 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeTargetContexts(model, out, written);
     written = try encodeAgentRows(model, out, written);
     written = try encodeNavigationContext(model, out, written);
+    written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
     return out[0..written];
 }
 

@@ -4,4 +4,5 @@
   <use template="cockpit-host" hostopen="{window3HostOpen}" />
   <use template="cockpit-directory" diropen="{window3DirOpen}" />
   <use template="cockpit-rename" renameopen="{window3RenameOpen}" />
+  <use template="cockpit-empty" emptyopen="{window3EmptyOpen}" />
 </use>
