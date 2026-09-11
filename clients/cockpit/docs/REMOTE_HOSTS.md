@@ -417,7 +417,21 @@ projected reads "workspace unavailable" on its session rows.
   again until one is picked. Cockpit keeps no client-side placement for a
   Phux coordinator across relaunch (for the active coordinator as for a
   peer): which native window each of its tabs was in and which tab was
-  selected come from its shared workspace when it is shown again.
+  selected come from its shared workspace when it is shown again. Showing a
+  peer's session again at launch would need a client-layout persistence
+  design (which coordinators' sessions to re-show, and how a re-shown peer
+  meets the rule that only a displayed peer attaches); that is an open
+  design decision, and no ADR records one yet.
+- Rename Session renames the session on screen. The switcher's rows carry
+  opaque captured targets and have no per-row action, so a session that is
+  not on screen, a listing peer's included, is renamed by showing it first.
+  Renames other clients make reach Cockpit's lists live only once Cockpit
+  has renamed a session on that connection (the key is subscribed then);
+  until then the next session list or workspace refresh carries them.
+- A peer's empty session is attached only by New Tab; until then Cockpit
+  holds no attach to it, and its Empty session state shows only in the
+  window it was picked in. The active coordinator's empty session shows its
+  state only in a window with no tab at all.
 - A peer's edit receipt is applied once the edit is queued on that peer; its
   confirmation or refusal shows in the peer's own projection and switcher
   rows, not as a command result. The available terminals a peer offers are
