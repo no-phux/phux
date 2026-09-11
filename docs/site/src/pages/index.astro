@@ -8,6 +8,46 @@ import release from "../lib/release.json";
 <BaseLayout>
   <!-- ── HERO + live proof ──────────────────────────────────────────────── -->
   <section class="wrap landing-hero">
+    <div class="hero-install-band" aria-label="install phux">
+      <div class="install-band-label">install — pick your surface</div>
+      <div class="install-options">
+        <div class="install-option">
+          <div class="install-label">
+            phux cli · macOS / Linux
+            {release.tag && (
+              <a class="version-badge" href={release.url ?? "https://github.com/no-phux/phux/releases"}>
+                latest {release.tag}
+              </a>
+            )}
+          </div>
+          <pre><code>brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
+brew install no-phux/tap/phux
+phux</code></pre>
+        </div>
+        <div class="install-option">
+          <div class="install-label">
+            cockpit · native macOS
+            {release.cockpit?.tag && (
+              <a class="version-badge" href={release.cockpit.url ?? "https://github.com/no-phux/phux/releases"}>
+                latest {release.cockpit.tag}
+              </a>
+            )}
+          </div>
+          <pre><code>brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
+brew install --cask no-phux/tap/phux-cockpit</code></pre>
+        </div>
+      </div>
+      <p class="install-cap dim">
+        Without Homebrew, <code>curl -fsSL https://phux.sh/install | sh</code> installs
+        the same CLI binaries from the same release, checksum verified.
+        Cockpit needs Apple silicon macOS 11 or later.
+        The <a href="/quickstart/install">install guide</a> also covers release
+        tarballs and source builds.
+      </p>
+    </div>
+
     <div class="hero-copy">
       <p class="eyebrow"><span>SYS</span> terminal control plane / multi-consumer stream</p>
       <h1>Share real terminals with your agents.<span class="hero-cursor" aria-hidden="true">_</span></h1>
@@ -69,27 +109,6 @@ import release from "../lib/release.json";
           reattach — the same bytes a GUI, headless tool, or agent consumes.
         </span>
       </p>
-
-      <div class="hero-install">
-        <div class="install-label">
-          install and run
-          {release.tag && (
-            <a class="version-badge" href={release.url ?? "https://github.com/no-phux/phux/releases"}>
-              latest {release.tag}
-            </a>
-          )}
-        </div>
-        <pre><code>brew trust --tap no-phux/tap # Homebrew 6+
-brew tap no-phux/tap
-brew install no-phux/tap/phux
-phux</code></pre>
-        <p class="install-cap dim">
-          macOS or Linux. Without Homebrew, <code>curl -fsSL https://phux.sh/install | sh</code> installs
-          the same binaries from the same release, checksum verified.
-          The <a href="/quickstart/install">install guide</a> also covers release
-          tarballs and source builds.
-        </p>
-      </div>
     </div>
   </section>
 
@@ -314,28 +333,53 @@ phux</code></pre>
       font-size: 12px;
     }
 
-    /* install line — one copy-paste path, visible on the first scroll */
-    .hero-install {
-      margin-top: 28px;
+    /* install band — both copy-paste paths, front and center above the demo */
+    .hero-install-band {
+      grid-column: 1 / -1;
+      margin-bottom: 44px;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      max-width: 100%;
+      gap: 0;
+      border: 1px solid var(--color-rule);
+      background: var(--color-surface);
+    }
+    .install-band-label {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--color-rule);
+      color: var(--color-warn);
+      font-size: 10px;
+      font-family: var(--font-code);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .install-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .install-option {
+      display: flex;
+      flex-direction: column;
       min-width: 0;
     }
+    .install-option + .install-option {
+      border-left: 1px solid var(--color-rule);
+    }
     .install-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--color-rule);
       color: var(--color-dim);
       font-size: 11.5px;
       font-family: var(--font-code);
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
-    .hero-install pre {
+    .hero-install-band pre {
       background: var(--color-bg-soft);
-      border: 1px solid var(--color-rule);
-      border-radius: 6px;
-      padding: 12px 16px;
+      margin: 0;
+      padding: 12px 14px;
       font-size: 12.5px;
       font-family: var(--font-code);
       line-height: 1.6;
@@ -346,8 +390,9 @@ phux</code></pre>
     .install-cap {
       font-size: 12px;
       margin: 0;
-      text-align: center;
-      max-width: min(62ch, 100%);
+      padding: 8px 14px;
+      border-top: 1px solid var(--color-rule);
+      max-width: none;
     }
 
     @media (max-width: 780px) {
@@ -637,22 +682,11 @@ phux</code></pre>
       margin: 0;
       font-size: inherit;
     }
-    .hero-install {
-      display: grid;
-      grid-template-columns: 120px minmax(0, 1fr);
-      align-items: stretch;
-      gap: 0;
-      margin-top: 16px;
-      border: 1px solid var(--color-rule);
-    }
-    .install-label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px;
-      border-right: 1px solid var(--color-rule);
-      color: var(--color-warn);
-      font-size: 10px;
+    .hero-install-band pre {
+      border: 0;
+      border-radius: 0;
+      background: var(--color-surface);
+      color: var(--color-signal);
     }
     .version-badge {
       color: var(--color-accent, currentColor);
@@ -664,19 +698,7 @@ phux</code></pre>
     .version-badge:hover {
       border-color: currentColor;
     }
-    .hero-install pre {
-      margin: 0;
-      border: 0;
-      border-radius: 0;
-      background: var(--color-surface);
-      padding: 12px;
-      color: var(--color-signal);
-    }
-    .install-cap {
-      grid-column: 1 / -1;
-      max-width: none;
-      padding: 8px 12px;
-      border-top: 1px solid var(--color-rule);
+    .hero-install-band .install-cap {
       text-align: left;
       font-size: 10px;
     }
@@ -830,12 +852,12 @@ phux</code></pre>
         flex-direction: row;
         align-items: center;
       }
-      .hero-install {
+      .install-options {
         grid-template-columns: 1fr;
       }
-      .install-label {
-        border-right: 0;
-        border-bottom: 1px solid var(--color-rule);
+      .install-option + .install-option {
+        border-left: 0;
+        border-top: 1px solid var(--color-rule);
       }
       .section {
         grid-template-columns: 1fr;

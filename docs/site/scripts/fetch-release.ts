@@ -1,19 +1,19 @@
 #!/usr/bin/env bun
 /**
- * fetch-release.ts — stamp the site with the latest phux release.
+ * fetch-release.ts — stamp the site with the latest phux releases.
  *
- * Fetches the newest GitHub release for no-phux/phux and writes
+ * Fetches the newest GitHub releases for no-phux/phux and writes
  * src/lib/release.json, which index.astro imports at build time (the version
- * badge next to the install command). Runs as part of `bun run build`, so the
- * badge is always current with the deployed build.
+ * badges next to the install commands). Runs as part of `bun run build`, so the
+ * badges are always current with the deployed build.
  *
  * Freshness is driven by CI: site-deploy.yml fires on release:published and
- * rebuilds, so a new release ships the badge within minutes. The weekly cron
+ * rebuilds, so a new release ships the badges within minutes. The weekly cron
  * in that workflow is the backstop.
  *
- * Failure policy: the badge is decorative — if GitHub is unreachable or rate
+ * Failure policy: the badges are decorative — if GitHub is unreachable or rate
  * limits the build, keep any previously generated release.json, else write
- * { "tag": null } and let the page omit the badge. Never fail the build.
+ * { "tag": null } and let the page omit the badges. Never fail the build.
  */
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -54,6 +54,31 @@ export function latestCoreRelease(list: GitHubRelease[]): Release | null {
   };
 }
 
+export function latestCockpitRelease(list: GitHubRelease[]): Release | null {
+  // The Cockpit native macOS client ships as its own stream: cockpit-vX.Y.Z.
+  const data = list.find(
+    (release) =>
+      !release.draft &&
+      !release.prerelease &&
+      /^cockpit-v\d+\.\d+\.\d+$/.test(release.tag_name ?? ""),
+  );
+  if (!data?.tag_name) return null;
+  return {
+    tag: data.tag_name,
+    url: data.html_url ?? null,
+    publishedAt: data.published_at ?? null,
+  };
+}
+
+interface StampedReleases {
+  tag: string | null;
+  url: string | null;
+  publishedAt: string | null;
+  cockpit: Release;
+}
+
+const EMPTY: Release = { tag: null, url: null, publishedAt: null };
+
 async function main() {
   try {
     const githubToken = process.env.GITHUB_TOKEN;
@@ -66,19 +91,24 @@ async function main() {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) throw new Error(`github api ${res.status}`);
-    const release = latestCoreRelease((await res.json()) as GitHubRelease[]);
+    const list = (await res.json()) as GitHubRelease[];
+    const release = latestCoreRelease(list);
     if (!release) throw new Error("no core phux release found in recent releases");
-    await writeFile(OUT, JSON.stringify(release, null, 2) + "\n");
-    console.log(`fetch-release: stamped ${release.tag}`);
+    const stamped: StampedReleases = {
+      ...release,
+      cockpit: latestCockpitRelease(list) ?? { ...EMPTY },
+    };
+    await writeFile(OUT, JSON.stringify(stamped, null, 2) + "\n");
+    console.log(`fetch-release: stamped ${release.tag} + ${stamped.cockpit.tag ?? "no-cockpit"}`);
   } catch (err) {
-    // Keep a previously stamped file if one exists; otherwise omit the badge.
+    // Keep a previously stamped file if one exists; otherwise omit the badges.
     try {
       await readFile(OUT, "utf8");
       console.warn(`fetch-release: fetch failed (${err}); keeping existing release.json`);
     } catch {
-      const empty: Release = { tag: null, url: null, publishedAt: null };
+      const empty: StampedReleases = { ...EMPTY, cockpit: { ...EMPTY } };
       await writeFile(OUT, JSON.stringify(empty, null, 2) + "\n");
-      console.warn(`fetch-release: fetch failed (${err}); badge omitted this build`);
+      console.warn(`fetch-release: fetch failed (${err}); badges omitted this build`);
     }
   }
 }

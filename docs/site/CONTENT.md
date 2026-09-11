@@ -107,11 +107,12 @@ hero; the narrative sections run top to bottom below it.
 
 1. **Hero + live proof** — headline is the wedge: "you and your agents share the
    same terminals." Subhead: panes are a view; every terminal is an object on a
-   wire anything can drive. The wasm island sits directly under it as immediate
-   proof — launch-gated (poster of a real session + click to go live; the
-   Worker's session cap means auto-connect would burn capacity). The one
-   copy-paste install path (from source; brew when bottles ship) sits directly
-   below the island, inside the first scroll.
+   wire anything can drive. A full-width install band sits above everything
+   else in the hero with both copy-paste paths side by side — the `phux` CLI
+   (macOS / Linux) and the Cockpit cask (native macOS) — each with its latest
+   release badge. The wasm island sits below it as immediate proof —
+   launch-gated (poster of a real session + click to go live; the
+   Worker's session cap means auto-connect would burn capacity).
 2. **The passthrough is the proof** — the rendered stream is the *actual* bytes a
    gui or an agent gets off the wire, not a screenshot. Demo caption: "the same
    bytes a gui or an agent gets off the wire." Plus the honest demo-backend
