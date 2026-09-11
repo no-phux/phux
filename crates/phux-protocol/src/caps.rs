@@ -964,6 +964,12 @@ pub const WHOAMI: u32 = 0x0004_0000;
 /// for an in-flight draft.
 pub const LIST_DIRECTORY_HOST: u32 = 0x0008_0000;
 
+/// Wire bit advertising that the server honors the HELLO `ssh_origin` field.
+///
+/// `phux stdio-bridge` stamps the field, and the server reports such a
+/// connection's whoami route as `ssh-stdio` (`docs/spec/L3.md` §3.9).
+pub const SSH_ORIGIN: u32 = 0x0010_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1050,6 +1056,16 @@ pub enum ServerFeature {
     /// client MUST see the bit before trusting that a listing came from the
     /// host it named.
     ListDirectoryHost = LIST_DIRECTORY_HOST,
+    /// The server honors the HELLO `ssh_origin` field (field 9) that
+    /// `phux stdio-bridge` stamps on the HELLO it relays. It accepts the field
+    /// only from a Unix-socket peer running as the serving uid, and it only
+    /// relabels that connection's whoami route from `uds` to `ssh-stdio` with
+    /// the ssh client endpoint alongside. Authentication and authorization are
+    /// unchanged. Sending the field unadvertised is safe: an older server
+    /// skips the unknown id by length. The bit is what lets a whoami reader
+    /// trust that `uds` from this server means no bridge announced ssh
+    /// (`docs/spec/L3.md` §3.9).
+    SshOrigin = SSH_ORIGIN,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1071,7 +1087,8 @@ impl ServerFeatureSet {
         | (ServerFeature::HostSessions as u32)
         | (ServerFeature::KeepEmptySessions as u32)
         | (ServerFeature::Whoami as u32)
-        | (ServerFeature::ListDirectoryHost as u32);
+        | (ServerFeature::ListDirectoryHost as u32)
+        | (ServerFeature::SshOrigin as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1309,6 +1326,11 @@ pub struct ClientCapabilities {
     /// wants: over a Unix socket the bytes never leave the machine, so
     /// deflating them spends CPU on both ends to save nothing.
     pub compression: CompressionSet,
+    /// The ssh endpoints `phux stdio-bridge` stamped on this HELLO (HELLO
+    /// field 9, `docs/spec/L3.md` §3.9). Ordinary clients leave it unset; the
+    /// bridge adds it on the HELLO it relays. It is a top-level HELLO field on
+    /// the wire, folded in here the same way `compression` is.
+    pub ssh_origin: Option<crate::wire::ssh_origin::SshOrigin>,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -1347,6 +1369,7 @@ impl ClientCapabilities {
             default_colors: None,
             bootstrap: BootstrapCapabilities::new(),
             compression: CompressionSet::new(),
+            ssh_origin: None,
         }
     }
 
@@ -1354,6 +1377,14 @@ impl ClientCapabilities {
     #[must_use]
     pub const fn with_compression(mut self, compression: CompressionSet) -> Self {
         self.compression = compression;
+        self
+    }
+
+    /// Builder setter for [`Self::ssh_origin`]. Only the bridge's own HELLO
+    /// rewrite and tests call it; an ordinary client never announces ssh.
+    #[must_use]
+    pub const fn with_ssh_origin(mut self, origin: crate::wire::ssh_origin::SshOrigin) -> Self {
+        self.ssh_origin = Some(origin);
         self
     }
 

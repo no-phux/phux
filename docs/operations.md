@@ -711,7 +711,9 @@ The record carries no secret; the credential id is the same non-secret id
 **v0.1 (current):** Remote attach is available for single-server consumers over
 WebSocket/TLS and QUIC/TLS. SSH-stdio is built (phux-v45.9): the dialing side
 runs `ssh HOST phux stdio-bridge`, delegating authentication and encryption to
-SSH; the remote bridge is an ordinary local UDS client on the target host.
+SSH; the remote bridge is an ordinary local UDS client on the target host. The
+bridge labels that connection `ssh-stdio` in `phux whoami`, and that label
+grants nothing: its trust is exactly the UDS peer's.
 
 **Federation hub (current):** Satellites are phux servers on other machines. A server started with `--hub` dials enabled `[[satellites]]`, aggregates their Terminal inventory, and routes host-qualified Terminal operations over the same wire ([ADR-0007](../ADR/0007-mosh-class-transport-and-satellites.md)). Routes are hub-and-spoke and Terminal-scoped: remote sessions/windows are not merged, and relayed VT bytes remain opaque.
 
@@ -754,7 +756,19 @@ Current remote transports:
   server's Unix socket on HOST. Reuses established SSH auth (the hub dials
   with `BatchMode=yes`, so key material must work non-interactively);
   inherits SSH's trust model plus the UDS's owner-only local boundary. No
-  bearer token or certificate pin on this transport (ADR-0038 addendum).
+  bearer token or certificate pin on this transport (ADR-0038 addendum). The
+  bridge stamps the endpoints from its `SSH_CONNECTION` on the HELLO it relays,
+  replacing any the remote client sent, so `phux whoami` reports the
+  connection as `ssh-stdio` with its `ssh_client` rather than as a local `uds`
+  client. The server accepts that stamp only from a Unix-socket peer running
+  as the serving uid, which the bridge always is. It uses the stamp only for
+  that report and never for authentication or authorization
+  ([L3.md](./spec/L3.md) §3.9). Treat `ssh_client` as a label the connecting
+  user's side reported, not a verified address. The ssh client chooses the
+  remote command and can set `SSH_CONNECTION` itself, an older bridge forwards
+  a client's own value, and any process running as the serving user can send
+  one. Strip-and-replace guarantees the sshd-reported address only when ssh
+  forces the bridge command (an `authorized_keys` `command=` restriction).
 
 ### Remote consumer trust model (opt-in)
 

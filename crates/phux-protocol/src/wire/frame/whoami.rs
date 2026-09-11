@@ -21,14 +21,17 @@ pub const WHOAMI_SCHEMA_VERSION: u32 = 1;
 
 /// `auth_route` for a Unix-domain-socket client.
 ///
-/// Trusted by the kernel's peer credentials. A client that arrived through
-/// `phux stdio-bridge` is a UDS client of the serving host, so it reports
-/// this route too.
+/// Trusted by the kernel's peer credentials.
 pub const AUTH_ROUTE_UDS: &str = "uds";
-/// `auth_route` reserved for a connection known to arrive over ssh stdio.
+/// `auth_route` for a Unix-socket client that `phux stdio-bridge` announced
+/// as arriving over `ssh HOST phux stdio-bridge`.
 ///
-/// The bridge is byte-transparent, so the reference server cannot tell such
-/// a client from a local one and reports [`AUTH_ROUTE_UDS`].
+/// The server reports it when a same-uid Unix-socket peer, normally the
+/// bridge, sent the HELLO's `ssh_origin` field. Trust is still that of
+/// [`AUTH_ROUTE_UDS`]: the route word is a label the connecting side reported,
+/// and it grants nothing. The ssh client can set the bridge's
+/// `SSH_CONNECTION`, and an older bridge forwards a client's own field, so
+/// the label is not an authenticated fact.
 pub const AUTH_ROUTE_SSH_STDIO: &str = "ssh-stdio";
 /// `auth_route` for a QUIC client admitted by a bearer credential, directly
 /// or bridged through a relay.
@@ -78,7 +81,8 @@ pub struct WhoamiRecord {
     /// shows an unknown one as-is.
     pub auth_route: String,
     /// The peer process's uid from the kernel's socket credentials; `None`
-    /// on a network route, where there is no such fact.
+    /// on a network route, where there is no such fact. On `ssh-stdio` it is
+    /// the bridge process's uid.
     pub peer_uid: Option<u32>,
     /// The OS user the server runs as.
     pub serving_user: ServingUser,
@@ -86,4 +90,22 @@ pub struct WhoamiRecord {
     pub host: String,
     /// The server's release version.
     pub server_version: String,
+    /// The ssh client endpoint `phux stdio-bridge` announced, on an
+    /// `ssh-stdio` route; `None` on every other route. Additive: a record
+    /// from an older server omits it.
+    #[serde(default)]
+    pub ssh_client: Option<SshClient>,
+}
+
+/// The ssh client endpoint of an `ssh-stdio` connection.
+///
+/// It is what sshd reported to the bridge in `SSH_CONNECTION`. Not secret,
+/// and not an authenticated fact about the peer: it is what the same-user
+/// bridge said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshClient {
+    /// The ssh client's IP address, in its textual form.
+    pub addr: String,
+    /// The ssh client's source port.
+    pub port: u16,
 }

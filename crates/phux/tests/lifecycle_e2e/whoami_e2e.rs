@@ -138,14 +138,20 @@ fn whoami_reports_the_local_socket_peer() {
         "a local client and its server are the same user: {doc}"
     );
     assert!(doc["server_version"].is_string(), "{doc}");
+    assert_eq!(
+        doc["ssh_client"],
+        serde_json::Value::Null,
+        "a direct local client announced no ssh origin: {doc}"
+    );
 
     let prose = phux(dir.path(), &["--socket", socket, "whoami"]);
     assert!(prose.status.success());
     let text = String::from_utf8_lossy(&prose.stdout);
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 7, "{text}");
+    assert_eq!(lines.len(), 8, "{text}");
     assert!(lines.contains(&"auth_route:     uds"), "{text}");
     assert!(lines.contains(&"principal:      none"), "{text}");
+    assert!(lines.contains(&"ssh_client:     none"), "{text}");
 }
 
 /// Over `--remote`: a secure loopback QUIC listener admits the dial by the

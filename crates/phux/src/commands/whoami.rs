@@ -149,6 +149,13 @@ fn prose_lines(record: &WhoamiRecord) -> Vec<String> {
         ("credential_id", or_none(record.credential_id.as_deref())),
         ("auth_route", record.auth_route.clone()),
         (
+            "ssh_client",
+            record.ssh_client.as_ref().map_or_else(
+                || NONE.to_owned(),
+                |client| format!("{} port {}", client.addr, client.port),
+            ),
+        ),
+        (
             "peer_uid",
             record
                 .peer_uid
@@ -194,6 +201,7 @@ mod tests {
             },
             host: "mini".to_owned(),
             server_version: "0.30.0".to_owned(),
+            ssh_client: None,
         }
     }
 
@@ -217,11 +225,26 @@ mod tests {
                 "principal:      phone",
                 "credential_id:  0123abcd",
                 "auth_route:     bearer-quic",
+                "ssh_client:     none",
                 "peer_uid:       none",
                 "serving_user:   me (uid 501)",
                 "host:           mini",
                 "server_version: 0.30.0",
             ]
+        );
+    }
+
+    #[test]
+    fn prose_names_the_ssh_client_of_an_ssh_stdio_route() {
+        let mut record = bearer_record();
+        record.auth_route = "ssh-stdio".to_owned();
+        record.ssh_client = Some(phux_protocol::wire::frame::SshClient {
+            addr: "2001:db8::1".to_owned(),
+            port: 40000,
+        });
+        assert_eq!(
+            prose_lines(&record)[3],
+            "ssh_client:     2001:db8::1 port 40000"
         );
     }
 
@@ -235,8 +258,8 @@ mod tests {
         record.serving_user.name = None;
         let lines = prose_lines(&record);
         assert_eq!(lines[0], "principal:      none");
-        assert_eq!(lines[3], "peer_uid:       501");
-        assert_eq!(lines[4], "serving_user:   uid 501");
+        assert_eq!(lines[4], "peer_uid:       501");
+        assert_eq!(lines[5], "serving_user:   uid 501");
     }
 
     /// `--json` prints the server's object as sent, additive fields and all.

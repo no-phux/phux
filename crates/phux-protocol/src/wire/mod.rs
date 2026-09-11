@@ -16,6 +16,7 @@ pub mod field;
 pub mod frame;
 pub mod framing;
 pub mod info;
+pub mod ssh_origin;
 
 pub use error::DecodeError;
 pub use framing::{FramingError, LENGTH_PREFIX_LEN};

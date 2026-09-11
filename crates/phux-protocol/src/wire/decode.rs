@@ -431,6 +431,7 @@ impl<'a> Decoder<'a> {
         let mut protocol_patch = None;
         let mut client_caps: Option<crate::caps::ClientCapabilities> = None;
         let mut compression: Option<crate::caps::CompressionSet> = None;
+        let mut ssh_origin = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::hello::CLIENT_NAME => {
@@ -458,10 +459,16 @@ impl<'a> Decoder<'a> {
                         |d: &mut Decoder<'_>| d.read_u8()
                     )));
                 }
+                field::hello::SSH_ORIGIN => {
+                    ssh_origin = super::ssh_origin::decode_ssh_origin(value);
+                }
                 _ => {}
             }
         }
         let mut client_caps = client_caps.ok_or(DecodeError::UnexpectedEof)?;
+        if let Some(origin) = ssh_origin {
+            client_caps = client_caps.with_ssh_origin(origin);
+        }
         // The offer rides beside the frozen `CLIENT_CAPS` sub-record on the
         // wire (§6.2 fixes that record's byte order) but belongs with the
         // rest of the client's capabilities in the typed view, so fold it in.

@@ -295,6 +295,7 @@ impl Incoming for QuicListener {
                 crate::auth::ConnectionIdentity {
                     peer: peer_identity,
                     credential,
+                    ssh_origin: None,
                 },
             ));
         }

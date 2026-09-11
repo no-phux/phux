@@ -71,6 +71,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::KeepEmptySessions,
         ServerFeature::Whoami,
         ServerFeature::ListDirectoryHost,
+        ServerFeature::SshOrigin,
     ])
 }
 
@@ -1780,6 +1781,9 @@ async fn negotiate_hello(
         });
     }
     authorize_hello(state, client_id).await?;
+    // After authorization, so the announcement can never take part in it: it
+    // only relabels the whoami route of a same-uid Unix-socket peer.
+    state.with_mut(|s| super::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin));
     let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
 
     let mut effective_client_caps = client_caps;

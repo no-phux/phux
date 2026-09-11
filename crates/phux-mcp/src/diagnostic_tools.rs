@@ -187,12 +187,14 @@ fn whoami_schema() -> Value {
         "phux_whoami",
         "Report who this connection is to the server behind one socket, as that server sees it: \
          the credential `principal` and non-secret `credential_id` (null on the local socket), \
-         the `auth_route` (an open vocabulary such as `uds` or `bearer-quic`; show an unknown \
-         value as-is), the kernel `peer_uid` (local socket only), the `serving_user` {uid, name} \
-         the server and every pane run as, the `host`, and the `server_version`. This is the \
-         same code path as `phux whoami --json` and returns its document unchanged: \
-         `{schema_version: 1, principal, credential_id, auth_route, peer_uid, serving_user, host, \
-         server_version}`; ignore fields you do not know. READ-ONLY and idempotent: it reads one \
+         the `auth_route` (an open vocabulary such as `uds`, `ssh-stdio`, or `bearer-quic`; show \
+         an unknown value as-is), the kernel `peer_uid` (local socket only), the `serving_user` \
+         {uid, name} the server and every pane run as, the `host`, the `server_version`, and on \
+         an `ssh-stdio` route the `ssh_client` {addr, port} the stdio-bridge reported (null \
+         otherwise; a report, not an authenticated fact). This is the same code path as \
+         `phux whoami --json` and returns its document unchanged: `{schema_version: 1, \
+         principal, credential_id, auth_route, peer_uid, serving_user, host, server_version, \
+         ssh_client}`; ignore fields you do not know. READ-ONLY and idempotent: it reads one \
          server-owned key, never changes identity, and never auto-starts a server. \
          A SERVER THAT PREDATES THE KEY IS REFUSED, NOT GUESSED: without the `whoami` feature \
          the call fails with `server_too_old` rather than returning an empty identity.",
@@ -345,6 +347,7 @@ esac
             },
             host: "mini".to_owned(),
             server_version: "0.30.0".to_owned(),
+            ssh_client: None,
         }
     }
 

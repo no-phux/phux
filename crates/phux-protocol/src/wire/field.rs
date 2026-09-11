@@ -51,6 +51,14 @@ pub mod hello {
     /// fleet-wide break, while an unknown top-level id is skipped by
     /// declared length. Absent means "accepts nothing compressed".
     pub const COMPRESSION: u32 = 6;
+    // Ids 7 and 8 are the spec-only `phux-workload/v1` fields
+    // (`docs/spec/proto.md` §6.1.1); they stay reserved here.
+    /// The ssh endpoints `phux stdio-bridge` stamps on a relayed HELLO.
+    ///
+    /// A positional `SshOrigin` sub-record, additive (`docs/spec/L3.md`
+    /// §3.9). The server honors it only from a same-uid Unix-socket peer, and
+    /// only to report the route.
+    pub const SSH_ORIGIN: u32 = 9;
 }
 
 /// `HELLO_OK` body fields (`docs/spec/proto.md` §6.1).

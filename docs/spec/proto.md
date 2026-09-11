@@ -281,6 +281,15 @@ HELLO {
     compression: optional<u8>,        // field 6; §6.4 (CompressionSet bitset)
     workload_profile: optional<str>,  // field 7; §6.1.1
     workload_client_nonce: optional<bytes32>, // field 8; §6.1.1
+    ssh_origin: optional<SshOrigin>,  // field 9; L3.md §3.9, set only by phux stdio-bridge
+}
+
+SshOrigin = {                         // positional, inside field 9
+    client_addr: str,                 // textual IP address
+    client_port: u16,
+    has_server: u8,                   // 0 or 1
+    server_addr: str,                 // present only when has_server = 1
+    server_port: u16,                 // present only when has_server = 1
 }
 
 HELLO_OK {
@@ -397,6 +406,7 @@ ServerFeature = bitset (u32) {
                                      //   session facets (L3.md §3.1; ADR-0105)
     WHOAMI             = 0x00040000, // read-only phux.whoami/v1 Global key (L3.md §3.9; ADR-0106)
     LIST_DIRECTORY_HOST = 0x00080000, // LIST_DIRECTORY.host satellite route (L3.md §4.1)
+    SSH_ORIGIN         = 0x00100000, // HELLO.ssh_origin honored; whoami reports ssh-stdio (L3.md §3.9)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -462,8 +472,9 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
 `GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
 `RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`,
-`HOST_SESSIONS = 0x10000`, `WHOAMI = 0x40000`, and
-`LIST_DIRECTORY_HOST = 0x80000`; unknown
+`HOST_SESSIONS = 0x10000`, `KEEP_EMPTY_SESSIONS = 0x20000`,
+`WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`, and
+`SSH_ORIGIN = 0x100000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -495,6 +506,15 @@ with its own host's listing, which a consumer could take for the satellite's.
 A client MUST therefore require the bit before presenting a reply as the
 named host's listing. Without it, a client lists the serving host and says
 so.
+
+`SSH_ORIGIN = 0x100000` gates how the server treats HELLO field 9,
+`ssh_origin`. `phux stdio-bridge` stamps that field without waiting for the
+bit, because a server without the bit skips the field by length and reports
+the connection as `uds`. The bit tells a `phux.whoami/v1` reader that this
+server reports an announced connection as `ssh-stdio` ([L3.md](./L3.md)
+§3.9). The server honors the field only from a same-uid Unix-socket peer, and
+only as a label: its value is whatever the connecting side reported, and it
+grants nothing.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

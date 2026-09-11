@@ -666,8 +666,11 @@ unchanged, so the tool and the command read the same `phux.whoami/v1` key
 
 Result: the `WhoamiJson` record of [`agents.md`](./agents.md) §4.20:
 `{ "schema_version": 1, "principal", "credential_id", "auth_route",
-"peer_uid", "serving_user": { "uid", "name" }, "host", "server_version" }`.
-Fields a newer server adds pass through; ignore the ones you do not know.
+"peer_uid", "serving_user": { "uid", "name" }, "host", "server_version",
+"ssh_client": { "addr", "port" } | null }`. `ssh_client` is set only on an
+`ssh-stdio` route, a connection that `phux stdio-bridge` announced as arriving
+over ssh. Fields a newer server adds pass through; ignore the ones you do not
+know.
 
 The tool is read-only and idempotent: it reads one server-owned key, never
 changes identity, and never starts a server. It takes no `remote` argument.

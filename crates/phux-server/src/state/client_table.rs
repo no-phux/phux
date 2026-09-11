@@ -418,6 +418,29 @@ impl ClientTable {
             .and_then(|identity| identity.credential.as_ref())
     }
 
+    /// Record the ssh origin a same-uid bridge announced in HELLO. A client
+    /// with no stored identity is left alone: there is nothing to annotate.
+    pub(super) fn set_ssh_origin(
+        &mut self,
+        client: ClientId,
+        origin: phux_protocol::wire::ssh_origin::SshOrigin,
+    ) {
+        if let Some(identity) = self.peer_identities.get_mut(&client) {
+            identity.ssh_origin = Some(origin);
+        }
+    }
+
+    /// The ssh origin recorded for this connection, if any.
+    #[must_use]
+    pub(super) fn ssh_origin(
+        &self,
+        client: ClientId,
+    ) -> Option<phux_protocol::wire::ssh_origin::SshOrigin> {
+        self.peer_identities
+            .get(&client)
+            .and_then(|identity| identity.ssh_origin)
+    }
+
     /// Remove a peer identity when a client disconnects.
     pub(super) fn remove_peer_identity(&mut self, client: ClientId) {
         self.peer_identities.remove(&client);

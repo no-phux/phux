@@ -50,6 +50,26 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
+    /// Record the ssh origin a same-uid `phux stdio-bridge` announced in
+    /// HELLO. The caller has already checked the peer may make the claim
+    /// (`runtime::whoami`); the value only relabels the whoami route.
+    pub fn set_ssh_origin(
+        &mut self,
+        client_id: ClientId,
+        origin: phux_protocol::wire::ssh_origin::SshOrigin,
+    ) {
+        self.clients.set_ssh_origin(client_id, origin);
+    }
+
+    /// The ssh origin recorded for this connection, if any.
+    #[must_use]
+    pub fn ssh_origin(
+        &self,
+        client_id: ClientId,
+    ) -> Option<phux_protocol::wire::ssh_origin::SshOrigin> {
+        self.clients.ssh_origin(client_id)
+    }
+
     /// Whether `client_id` may feed a producer-fed resource's stream
     /// (ADR-0103 §3).
     ///

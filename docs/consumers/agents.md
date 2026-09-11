@@ -1998,17 +1998,24 @@ the server's record, passed through unchanged:
   "peer_uid": null,
   "serving_user": { "uid": 501, "name": "me" },
   "host": "mini",
-  "server_version": "0.30.0"
+  "server_version": "0.30.0",
+  "ssh_client": null
 }
 ```
 
 `principal` and `credential_id` are null on a route with no credential (the
 local socket, or a loopback listener). `credential_id` is the non-secret id
 of §4.18, never a token. `auth_route` is an open vocabulary (`uds`,
-`bearer-quic`, `bearer-wss`, `bearer-webtransport`, `loopback-quic`,
-`loopback-ws`, `loopback-webtransport`, and the reserved `ssh-stdio`). Show an
-unknown value as-is rather than failing. `peer_uid` is the kernel peer uid
-over the local socket and null on every network route. `serving_user` is the
+`ssh-stdio`, `bearer-quic`, `bearer-wss`, `bearer-webtransport`,
+`loopback-quic`, `loopback-ws`, `loopback-webtransport`). Show an unknown
+value as-is rather than failing. `ssh-stdio` is a connection that arrived
+through `ssh HOST phux stdio-bridge` on a server advertising `ssh_origin`.
+Its `ssh_client` is `{"addr": "203.0.113.5", "port": 52144}`, the ssh client
+endpoint the same-user bridge read from `SSH_CONNECTION`. That is a report,
+not an authenticated fact, and it grants nothing beyond `uds`. `ssh_client`
+is null on every other route, and absent from an older server's record.
+`peer_uid` is the kernel peer uid over the local socket (on `ssh-stdio`, the
+bridge's) and null on every network route. `serving_user` is the
 OS user the server runs as, which is also the user every pane runs as; its
 `name` is null when the uid has no password-database entry. Ignore fields you
 do not know: additive fields keep `schema_version` at 1.

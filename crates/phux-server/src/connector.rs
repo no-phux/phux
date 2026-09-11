@@ -260,6 +260,7 @@ impl Incoming for ConnectorIncoming {
                         source_addr: Some(relay.ip()),
                     },
                     credential: Some(credential),
+                    ssh_origin: None,
                 },
             ));
         }

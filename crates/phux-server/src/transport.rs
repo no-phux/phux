@@ -586,6 +586,7 @@ impl Incoming for WsListener {
             WsWriter { tx },
             crate::auth::ConnectionIdentity {
                 peer: peer_identity,
+                ssh_origin: None,
                 credential,
             },
         ))

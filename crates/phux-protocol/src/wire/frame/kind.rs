@@ -1431,6 +1431,13 @@ impl FrameKind {
                 e.write_u8(client_caps.compression.bits());
             });
         }
+        // Additive top-level field that `phux stdio-bridge` stamps on the
+        // HELLO it relays. Ordinary clients leave it absent.
+        if let Some(origin) = client_caps.ssh_origin {
+            enc.write_field_with(field::hello::SSH_ORIGIN, |e| {
+                crate::wire::ssh_origin::encode_ssh_origin(&origin, e);
+            });
+        }
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

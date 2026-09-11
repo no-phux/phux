@@ -681,6 +681,19 @@ fn hello_round_trips_across_capability_shapes() {
     ] {
         shapes.push(ClientCapabilities::new().with_color_support(color));
     }
+    // HELLO field 9, the origin `phux stdio-bridge` stamps: both address
+    // families, with and without the server endpoint.
+    for (client, server) in [
+        ("203.0.113.5:52144", Some("198.51.100.7:22")),
+        ("[2001:db8::1]:40000", None),
+    ] {
+        shapes.push(ClientCapabilities::new().with_ssh_origin(
+            phux_protocol::wire::ssh_origin::SshOrigin {
+                client: client.parse().expect("client endpoint"),
+                server: server.map(|server| server.parse().expect("server endpoint")),
+            },
+        ));
+    }
     for client_caps in shapes {
         assert_round_trip(&FrameKind::Hello {
             client_name: "phux-client".to_owned(),

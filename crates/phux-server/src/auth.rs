@@ -132,6 +132,11 @@ pub struct ConnectionIdentity {
     pub peer: PeerIdentity,
     /// Structured remote credential, when bearer authentication was used.
     pub credential: Option<AuthenticatedCredential>,
+    /// The ssh endpoints a same-uid `phux stdio-bridge` announced in HELLO
+    /// (`docs/spec/L3.md` §3.9). Always `None` at accept. Set afterwards only
+    /// for a Unix-socket peer running as the serving uid. It relabels the
+    /// whoami route and nothing else: policy never reads it.
+    pub ssh_origin: Option<phux_protocol::wire::ssh_origin::SshOrigin>,
 }
 
 impl From<PeerIdentity> for ConnectionIdentity {
@@ -139,6 +144,7 @@ impl From<PeerIdentity> for ConnectionIdentity {
         Self {
             peer,
             credential: None,
+            ssh_origin: None,
         }
     }
 }
