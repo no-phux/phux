@@ -15,8 +15,9 @@ there is no directory listing on the wire, so no directory picker. Identity
 and login semantics (F06, F07, F12 to F14) are absent and partly conflict
 with ADR-0003. Each gap is filed as a child of beads epic `phux-c2td`. The
 [status after the epic](#status-after-epic-phux-c2td) section records what
-landed: every feature now has a surface except F06, F07 and F14 (out of scope
-by ADR-0106), F11 and F24 (unchanged), and two Cockpit gaps (F09, F16).
+landed: every feature now has a surface on every client that can offer it,
+except F06, F07 and F14 (out of scope by ADR-0106) and F11 and F24
+(unchanged).
 
 Feature IDs refer to the [reconstructed spec](SPEC.md). Status: **HAVE**,
 **PART** (partial), **MISS** (missing). Citations are paths on `main`.
@@ -93,14 +94,14 @@ after the epic's work landed, with the commits that delivered each surface.
 | F05 one connection | HAVE | HAVE | HAVE (one tunnel per coordinator) | 10c88e0e |
 | F06/F07 system login | out of scope | out of scope | out of scope | ADR-0106 |
 | F08 host grouping, generated names | HAVE (grouped `ls`, `${random-name}`) | HAVE (grouped picker) | HAVE (grouped by coordinator) | 9d7956e0, 921080fc, be903928 |
-| F09 rename from palette | HAVE | HAVE | MISS (`phux-c2td.28`) | |
+| F09 rename from palette | HAVE | HAVE | HAVE (Rename Session, sent to the owning coordinator) | b354fae5 |
 | F10 one local+remote selector | HAVE (hub lists satellite sessions) | HAVE (satellite session opens its active pane) | HAVE (up to four coordinators side by side, edits routed to the owner) | 921080fc, bba83a59, be903928, 1c692aa7 |
 | F11 CLI inside shells | PART | PART | PART | unchanged |
 | F12/F13 whoami, effective user | HAVE (`phux whoami [--remote]`, `ssh-stdio` route) | n/a | n/a (MCP `phux_whoami`) | f630b03b, 79b54785, 712259a3 |
 | F14 principal to user map | out of scope | n/a | n/a | ADR-0106 |
 | F15 remote `session new` from CLI | HAVE (`--remote` on `ls`, `new`, `kill`, `rename`, `detach`) | n/a | n/a | c3cf97cc |
-| F16/F17 empty session, first tab | HAVE (`phux new --empty`) | HAVE (Empty session state) | MISS (`phux-c2td.29`) | 64586db6 |
-| F18 reconnect restores remote | HAVE | HAVE | HAVE (remembered hosts restore) | 10c88e0e, 980282f8 |
+| F16/F17 empty session, first tab | HAVE (`phux new --empty`) | HAVE (Empty session state) | HAVE (Empty session panel with New Tab) | 64586db6, aff34049 |
+| F18 reconnect restores remote | HAVE | HAVE | HAVE (remembered hosts restore; the front peer's session is re-shown) | 10c88e0e, 980282f8, 0a87a6eb |
 | F19 kill remote by ID | HAVE (`phux kill --remote`) | n/a | n/a | c3cf97cc |
 | F20 live propagation | HAVE | HAVE | HAVE | unchanged |
 | F21 local directory picker | HAVE | HAVE (`go-to-directory`, `C-a G`) | HAVE (Cmd+Shift+J) | b37c4d9f, abe9e9a9, 15b6d549 |
@@ -121,6 +122,8 @@ the service manager.
 - ADR-0108: a hub relays host queries to satellites per request.
 - ADR-0109: late kills are conditional on the satellite's instance and on no
   one else having attached or used the pane.
+- ADR-0110: at launch, a showing peer is re-shown only if its tab was in
+  front, and only after a real frame has measured the window.
 
 ### Safety work beyond the demo
 
@@ -134,7 +137,9 @@ the service manager.
 ### Still open under the epic
 
 - `phux-c2td.17`: live Cockpit acceptance against a real enrolled remote host.
-- `phux-c2td.27`: the remaining multi-coordinator limits (relaunch layout of
-  a showing peer, spawns left unplaced when a peer drops, New Window on
-  peers, flapping backoff, the four-coordinator cap).
-- `phux-c2td.28` (F09) and `phux-c2td.29` (F16) in Cockpit.
+- `phux-c2td.32`: relaunch restore beyond the front host, surviving a server
+  restart, and the untested ordering race.
+
+Outside the epic, `phux-q0i3` tracks a regression it introduced: Cockpit built
+without the Phux FFI no longer compiles, and CI never builds that
+configuration.
