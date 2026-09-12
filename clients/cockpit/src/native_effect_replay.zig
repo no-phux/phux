@@ -1,5 +1,6 @@
-//! Replay ownership for native-only wake channels and timers. Their constructors
-//! change the live Engine but return an effect-free core engine_wake. The core's
+//! Replay ownership for native-only wake channels, timers, and topology writes.
+//! Their constructors and callbacks change the live Engine but return an
+//! effect-free core engine_wake. The core's
 //! separately journaled notifications and host replies remain authoritative.
 //! Never rerun providers, callbacks, or the process-global handle allocator here.
 const std = @import("std");
@@ -7,6 +8,7 @@ const std = @import("std");
 pub const Policy = struct {
     channels: []const u64,
     timers: []const u64,
+    files: []const u64 = &.{},
     dynamic_first: u64,
     dynamic_limit: u64,
     reserved: []const u64 = &.{},
@@ -18,19 +20,23 @@ pub const Policy = struct {
         if (std.mem.indexOfScalar(u64, self.reserved, key) != null) return false;
         return self.dynamic(key) or std.mem.indexOfScalar(u64, keys, key) != null;
     }
+    fn ownsFile(self: Policy, key: u64) bool {
+        return std.mem.indexOfScalar(u64, self.files, key) != null and std.mem.indexOfScalar(u64, self.reserved, key) == null;
+    }
 };
 
 pub fn Replay(comptime sdk: type) type {
     return struct {
         const Self = @This();
-        const Op = enum(u8) { channel = 1, timer = 2 };
+        const Op = enum(u8) { channel = 1, timer = 2, file_write = 3, file_refused = 4 };
         const Channel = struct { active: bool = false, rejected: bool = false, opened: bool = false };
         const Declaration = struct { op: Op, key: u64, value: u64 };
         pub const DrainContext = struct {
             installed: bool,
             primary_canvas_label: []const u8,
         };
-        // version + operation + original key + admission/platform timer ID.
+        pub const FileAttempt = struct { key: u64, op: sdk.EffectFileOp, sequence: u64 };
+        // version + operation + original key + admission/timer ID/file operation.
         const metadata_bytes = 1 + 1 + 8 + 8;
 
         allocator: std.mem.Allocator,
@@ -41,6 +47,7 @@ pub fn Replay(comptime sdk: type) type {
         failed: bool = false,
         channels: std.AutoHashMapUnmanaged(u64, Channel) = .empty,
         timer_ids: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+        files: std.AutoHashMapUnmanaged(u64, void) = .empty,
         pending: usize = 0,
         delivered: usize = 0,
 
@@ -50,6 +57,7 @@ pub fn Replay(comptime sdk: type) type {
         pub fn deinit(self: *Self) void {
             self.channels.deinit(self.allocator);
             self.timer_ids.deinit(self.allocator);
+            self.files.deinit(self.allocator);
         }
         pub fn bindRecorder(self: *Self, recorder: ?*sdk.runtime.SessionRecorder) void {
             self.recorder = recorder;
@@ -71,6 +79,35 @@ pub fn Replay(comptime sdk: type) type {
         pub fn noteTimer(self: *Self, effects: anytype, key: u64) !void {
             const id = timerId(effects, key) orelse 0;
             try self.record(.timer, key, id);
+        }
+        /// Bracket the parent's actual writeFile call. Capture the pending-ring
+        /// sequence BEFORE it, observe provenance AFTER it, without executing IO.
+        pub fn beginFile(self: *Self, effects: anytype, key: u64, op: sdk.EffectFileOp) !FileAttempt {
+            if (self.replaying or op != .write) return self.refuse();
+            if (!self.owns(.file_write, key)) return self.refuse();
+            return .{ .key = key, .op = op, .sequence = effects.pending_seq };
+        }
+        pub fn noteFile(self: *Self, effects: anytype, attempt: FileAttempt) !void {
+            if (attempt.op != .write) return self.refuse();
+            const op: Op = if (fileAdmissionRefused(effects, attempt)) .file_refused else .file_write;
+            try self.record(op, attempt.key, @intFromEnum(attempt.op));
+        }
+        fn fileAdmissionRefused(effects: anytype, attempt: FileAttempt) bool {
+            // Pinned SDK deliverLoopFileAdmission sets rejected_admission on
+            // this loop-thread ring. External rejections set it false. Only
+            // newly staged entries belong to this call; never infer from a
+            // previous terminal on the reused topology key or from .rejected.
+            for (0..effects.pending_exit_len) |offset| {
+                const index = (effects.pending_exit_head + offset) % effects.pending_exits.len;
+                if (effects.pending_exit_seqs[index] < attempt.sequence) continue;
+                const pending = effects.pending_exits[index];
+                if (pending != .file) continue;
+                if (sameFileAttempt(pending.file.result, attempt)) return pending.file.rejected_admission;
+            }
+            return false;
+        }
+        fn sameFileAttempt(result: sdk.EffectFileResult, attempt: FileAttempt) bool {
+            return result.key == attempt.key and result.op == attempt.op;
         }
         fn timerId(effects: anytype, key: u64) ?u64 {
             for (effects.timer_slots, 0..) |slot, index| {
@@ -96,6 +133,7 @@ pub fn Replay(comptime sdk: type) type {
             const keys = switch (op) {
                 .channel => self.policy.channels,
                 .timer => self.policy.timers,
+                .file_write, .file_refused => return self.policy.ownsFile(key),
             };
             return self.policy.owns(keys, key);
         }
@@ -111,9 +149,24 @@ pub fn Replay(comptime sdk: type) type {
                 try self.metadata(result);
                 return true;
             }
-            if (result.kind != .channel or !self.owns(.channel, result.key)) return false;
-            try self.channelResult(result);
+            const op = resultOperation(result) orelse return false;
+            if (!self.owns(op, result.key)) return false;
+            try self.deliverResult(result);
             return true;
+        }
+        fn resultOperation(result: sdk.runtime.EffectResultRecord) ?Op {
+            return switch (result.kind) {
+                .channel => .channel,
+                .file => .file_write,
+                else => null,
+            };
+        }
+        fn deliverResult(self: *Self, result: sdk.runtime.EffectResultRecord) !void {
+            switch (result.kind) {
+                .channel => try self.channelResult(result),
+                .file => try self.fileResult(result),
+                else => unreachable,
+            }
         }
         fn metadata(self: *Self, result: sdk.runtime.EffectResultRecord) !void {
             const declaration = decodeMetadata(result) catch return self.refuse();
@@ -121,6 +174,7 @@ pub fn Replay(comptime sdk: type) type {
             switch (declaration.op) {
                 .channel => try self.declareChannel(declaration.key, declaration.value),
                 .timer => try self.declareTimer(declaration.key, declaration.value),
+                .file_write, .file_refused => try self.declareFile(declaration),
             }
         }
         fn cleanData(result: sdk.runtime.EffectResultRecord) bool {
@@ -158,6 +212,20 @@ pub fn Replay(comptime sdk: type) type {
             // Retain ownership after cancellation/fire: a queued platform event
             // may still carry this native slot ID. No native callback runs.
             try self.timer_ids.put(self.allocator, id, key);
+        }
+        fn declareFile(self: *Self, declaration: Declaration) !void {
+            if (declaration.value != @intFromEnum(sdk.EffectFileOp.write)) return self.refuse();
+            if (declaration.op == .file_refused) return; // SDK skips this terminal.
+            if (self.files.contains(declaration.key)) return self.refuse();
+            try self.files.put(self.allocator, declaration.key, {});
+        }
+        fn fileResult(self: *Self, result: sdk.runtime.EffectResultRecord) !void {
+            if (!writeTerminal(result)) return self.refuse();
+            if (!self.files.remove(result.key)) return self.refuse();
+            self.pending += 1;
+        }
+        fn writeTerminal(result: sdk.runtime.EffectResultRecord) bool {
+            return result.file_op == .write and result.file_event == .terminal and result.payload.len == 0 and !result.file_rejected_admission;
         }
         fn channelResult(self: *Self, result: sdk.runtime.EffectResultRecord) !void {
             const channel = self.channels.getPtr(result.key) orelse return self.refuse();

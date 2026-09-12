@@ -34,6 +34,10 @@ pub fn check(comptime sdk: type, comptime module: type, comptime allocateKey: an
     try live.fireRetry();
     try live.fireRetry();
     try live.rejectRetry();
+    try live.persist(.ok, false);
+    try live.persist(.io_failed, false);
+    try live.persist(.rejected, false); // External refusal MUST feed.
+    try live.persist(.rejected, true); // Deterministic admission skips.
     live.ui.effects.closeChannel(live.native_key);
     try live.wake(); // Closed delivery readmits the mux under another real key.
     try std.testing.expect(live.native_key != first_key);
@@ -46,6 +50,8 @@ pub fn check(comptime sdk: type, comptime module: type, comptime allocateKey: an
     try std.testing.expectEqual(@as(usize, 2), live.native_opens);
     try std.testing.expectEqual(@as(usize, 2), live.retry_fires);
     try std.testing.expectEqual(@as(usize, 1), live.retry_rejections);
+    try std.testing.expectEqual(@as(usize, 4), live.file_callbacks);
+    try std.testing.expectEqual(@as(usize, 4), live.file_writes);
     try std.testing.expectEqual(@as(u32, 2), live.ui.model.notices);
     try std.testing.expectEqual(@as(u32, 2), live.ui.model.replies);
     try std.testing.expectEqualStrings("TWO", &live.ui.model.snapshot);
@@ -57,13 +63,17 @@ pub fn check(comptime sdk: type, comptime module: type, comptime allocateKey: an
     try std.testing.expect(fresh.native_key != live.native_key);
     const report = try sdk.runtime.replaySession(&fresh.harness.runtime, fresh.app(), buffer.bytes[0..buffer.len], .{ .require_same_platform = false });
     try std.testing.expectEqual(@as(usize, 0), report.mismatch_count);
-    try std.testing.expectEqual(@as(u64, 1), report.effects_skipped);
+    try std.testing.expectEqual(@as(u64, 2), report.effects_skipped);
     try std.testing.expectEqualDeep(live.ui.model, fresh.ui.model);
     try std.testing.expectEqual(live.harness.runtime.sessionStateFingerprint(), fresh.harness.runtime.sessionStateFingerprint());
     try std.testing.expectEqual(@as(usize, 0), fresh.native_opens);
     try std.testing.expectEqual(@as(usize, 0), fresh.retry_fires);
     try std.testing.expectEqual(@as(usize, 0), fresh.native_callbacks);
-    try std.testing.expectEqual(@as(usize, 5), fresh.sink.delivered);
+    // The recorded timer at 200 is skipped, so the write at 201 is never
+    // reissued (no IO) and its callback's engine_wake never runs.
+    try std.testing.expectEqual(@as(usize, 0), fresh.file_writes);
+    try std.testing.expectEqual(@as(usize, 0), fresh.file_callbacks);
+    try std.testing.expectEqual(@as(usize, 8), fresh.sink.delivered);
     try std.testing.expectEqual(@as(usize, 0), Fixture.timer_services);
     try std.testing.expect(fresh.sink.channels.contains(first_key));
     try std.testing.expect(!fresh.sink.channels.contains(fresh.native_key));
@@ -93,6 +103,9 @@ fn Driver(comptime sdk: type, comptime module: type, comptime allocateKey: anyty
         retry_rejections: usize = 0,
         retry_starts: usize = 0,
         callback_error: ?anyerror = null,
+        file_callbacks: usize = 0,
+        file_writes: usize = 0,
+        refuse_file: bool = false,
 
         fn create() !*Self {
             const self = try std.testing.allocator.create(Self);
@@ -238,12 +251,39 @@ fn Driver(comptime sdk: type, comptime module: type, comptime allocateKey: anyty
             try self.sink.noteTimer(&self.ui.effects, key);
             try self.wake();
         }
+        fn persist(self: *Self, outcome: sdk.EffectFileOutcome, refuse: bool) !void {
+            self.refuse_file = refuse;
+            self.ui.effects.startTimer(.{ .key = 200, .interval_ms = 1, .mode = .one_shot, .on_fire = topology });
+            try self.sink.noteTimer(&self.ui.effects, 200);
+            try self.harness.runtime.dispatchPlatformEvent(self.app(), .{ .timer = .{ .id = sdk.runtime.effect_timer_platform_id_base } });
+            if (!refuse) try self.ui.effects.feedFileResult(201, outcome, "");
+            try self.wake();
+        }
+        fn topology(_: sdk.EffectTimer) Msg {
+            const self = active.?;
+            self.writeTopology() catch |err| {
+                self.callback_error = err;
+            };
+            return .engine_wake;
+        }
+        fn writeTopology(self: *Self) !void {
+            self.file_writes += 1;
+            const attempt = try self.sink.beginFile(&self.ui.effects, 201, .write);
+            self.ui.effects.writeFile(.{ .key = 201, .path = if (self.refuse_file) "" else "/private/tmp/opencode/native-replay-topology.json", .bytes = "topology", .on_result = topologyWritten });
+            try self.sink.noteFile(&self.ui.effects, attempt);
+        }
+        fn topologyWritten(_: sdk.EffectFileResult) Msg {
+            active.?.file_callbacks += 1;
+            return .engine_wake;
+        }
     };
 }
 
 fn policy(comptime module: type) module.Policy {
     // Actual support.allocatePeerHandle range: lower bound through MAX-1.
-    return .{ .channels = &.{ 102, 103 }, .timers = &.{200}, .dynamic_first = 0x5046_0000_0000_0000, .dynamic_limit = std.math.maxInt(u64), .reserved = &.{ 50, 77, 7001, 0xfefe_0000_0000_0001 } };
+    // Files: 200 is update.zig's topology_state_file_key (timers are another
+    // namespace, so the debounce also uses 200); 201 is the driver's key.
+    return .{ .channels = &.{ 102, 103 }, .timers = &.{200}, .files = &.{ 200, 201 }, .dynamic_first = 0x5046_0000_0000_0000, .dynamic_limit = std.math.maxInt(u64), .reserved = &.{ 50, 77, 7001, 0xfefe_0000_0000_0001 } };
 }
 
 pub fn checkOwnership(comptime sdk: type, comptime module: type, comptime allocateKey: anytype) !void {
@@ -328,4 +368,122 @@ pub fn checkOwnership(comptime sdk: type, comptime module: type, comptime alloca
     unknown.armReplay();
     try std.testing.expectError(error.NativeReplayMismatch, unknown.feed(.{ .kind = .channel, .key = try allocateKey(), .payload = &.{1} }));
     try std.testing.expectError(error.NativeReplayMismatch, unknown.finish());
+    try checkFileOwnership(sdk, module);
+}
+
+/// update.zig topology_state_file_key: the production shape shares the number
+/// with the debounce timer, which lives in the separate timer namespace.
+const topology_file_key: u64 = 200;
+const topology_path = "/private/tmp/opencode/native-replay-topology.json";
+
+fn checkFileOwnership(comptime sdk: type, comptime module: type) !void {
+    const Sink = module.Replay(sdk);
+    const Fx = sdk.Effects(union(enum) { result: sdk.EffectFileResult });
+    const gpa = std.testing.allocator;
+    const recorder = try gpa.create(sdk.runtime.SessionRecorder);
+    defer gpa.destroy(recorder);
+    var buffer: Buffer = .{};
+    recorder.* = sdk.runtime.SessionRecorder.init(.{ .context = &buffer, .write_fn = Buffer.write });
+    recorder.begin(.{ .platform_name = "test", .app_name = "file-owner", .window_width = 400, .window_height = 300 });
+    const effects = try gpa.create(Fx);
+    defer gpa.destroy(effects);
+    effects.* = Fx.init(gpa);
+    defer effects.deinit();
+    effects.executor = .fake;
+    effects.bindJournal(recorder.effectJournal());
+    try rejectWrongAttempts(sdk, module, effects);
+    var live = Sink.init(gpa, 7001, policy(module));
+    defer live.deinit();
+    live.bindRecorder(recorder);
+    // The admission refusal stays staged, undrained, on the reused key while
+    // the next write is admitted (a ring entry is not a slot). Provenance for
+    // the second call must come only from entries IT staged; the earlier
+    // rejected_admission entry would otherwise mark the admitted write refused
+    // and leave its fed terminal undeclared.
+    try writeObserved(Fx, &live, effects, "");
+    try writeObserved(Fx, &live, effects, topology_path);
+    try effects.feedFileResult(topology_file_key, .ok, "");
+    recorder.stageEvent(.wake);
+    try std.testing.expectEqual(.rejected, effects.takeMsg().?.result.outcome);
+    try std.testing.expectEqual(.ok, effects.takeMsg().?.result.outcome);
+    recorder.commitEvent();
+    recorder.finish();
+
+    var sink = Sink.init(gpa, 7001, policy(module));
+    defer sink.deinit();
+    sink.armReplay();
+    var reader = try sdk.runtime.session_journal.Reader.init(buffer.bytes[0..buffer.len]);
+    const context: Sink.DrainContext = .{ .installed = true, .primary_canvas_label = "canvas" };
+    var regenerated: usize = 0;
+    while (try reader.next()) |record| {
+        switch (record) {
+            .effect => |result| {
+                // Mirrors session_replay effectRegeneratesUnderReplay: a
+                // deterministic file admission is never fed to replayControl.
+                if (result.kind == .file and result.file_rejected_admission) {
+                    regenerated += 1;
+                    continue;
+                }
+                if (result.key == 7001) try rejectWrongFileResults(sdk, module, result);
+                try std.testing.expect(try sink.feed(result));
+            },
+            .event => {
+                try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+                try std.testing.expect(!try sink.event(.effects_wake, effects, context));
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), regenerated);
+    try sink.finish();
+    try std.testing.expectEqual(@as(usize, 1), sink.delivered);
+    try std.testing.expectError(error.NativeReplayMismatch, sink.feed(.{ .kind = .file, .key = topology_file_key, .file_op = .write }));
+    try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+}
+
+fn writeObserved(comptime Fx: type, sink: anytype, effects: *Fx, path: []const u8) !void {
+    const attempt = try sink.beginFile(effects, topology_file_key, .write);
+    effects.writeFile(.{ .key = topology_file_key, .path = path, .bytes = "topology", .on_result = Fx.fileMsg(.result) });
+    try sink.noteFile(effects, attempt);
+}
+
+/// Only a recording, owned, whole-file write may be bracketed. Replay never
+/// reissues native IO, so an attempt while armed is itself a divergence.
+fn rejectWrongAttempts(comptime sdk: type, comptime module: type, effects: anytype) !void {
+    const Sink = module.Replay(sdk);
+    for ([_]struct { key: u64, op: sdk.EffectFileOp, replaying: bool }{
+        .{ .key = topology_file_key, .op = .write, .replaying = true },
+        .{ .key = 202, .op = .write, .replaying = false },
+        .{ .key = 7001, .op = .write, .replaying = false },
+        .{ .key = topology_file_key, .op = .read, .replaying = false },
+    }) |wrong| {
+        var sink = Sink.init(std.testing.allocator, 7001, policy(module));
+        defer sink.deinit();
+        if (wrong.replaying) sink.armReplay();
+        try std.testing.expectError(error.NativeReplayMismatch, sink.beginFile(effects, wrong.key, wrong.op));
+        try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+    }
+}
+
+fn rejectWrongFileResults(comptime sdk: type, comptime module: type, declaration: sdk.runtime.EffectResultRecord) !void {
+    const Result = sdk.runtime.EffectResultRecord;
+    const Sink = module.Replay(sdk);
+    for ([_]Result{
+        .{ .kind = .file, .key = topology_file_key, .file_op = .read },
+        .{ .kind = .file, .key = topology_file_key, .file_op = .write, .file_event = .chunk },
+        .{ .kind = .file, .key = topology_file_key, .file_op = .write, .payload = "unexpected bytes" },
+        .{ .kind = .file, .key = topology_file_key, .file_op = .write, .file_rejected_admission = true },
+    }) |wrong| {
+        var sink = Sink.init(std.testing.allocator, 7001, policy(module));
+        defer sink.deinit();
+        sink.armReplay();
+        try std.testing.expect(try sink.feed(declaration));
+        try std.testing.expectError(error.NativeReplayMismatch, sink.feed(wrong));
+        try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+    }
+    var missing = Sink.init(std.testing.allocator, 7001, policy(module));
+    defer missing.deinit();
+    // Unowned file keys forward unchanged; owned but undeclared ones refuse.
+    try std.testing.expect(!try missing.feed(.{ .kind = .file, .key = 202, .file_op = .write }));
+    try std.testing.expectError(error.NativeReplayMismatch, missing.feed(.{ .kind = .file, .key = topology_file_key, .file_op = .write }));
 }
