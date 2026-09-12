@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use bytes::BytesMut;
+use phux_dial::window::SendWindow;
 use phux_protocol::PROTOCOL_VERSION;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
@@ -2957,7 +2958,7 @@ async fn bind_terminal_stream(
         client_id,
         terminal_id.clone(),
         stream_id,
-        QuicWriter::from_stream(send, conn),
+        QuicWriter::from_stream(send, SendWindow::new(conn)),
     );
     // Remember the subscription against control BEFORE bootstrapping with
     // the stream: lifecycle fanout must resolve to control even if the
