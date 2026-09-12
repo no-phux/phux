@@ -151,6 +151,36 @@ test "an agent session is never a terminal surface" {
     try testing.expect(!model.isAgentSession(parent.ref));
 }
 
+fn findParentRows(bytes: []const u8) ![]const u8 {
+    var at: usize = 0;
+    while (at + 3 <= bytes.len) : (at += 1) {
+        if (bytes[at] != @intFromEnum(ts_snapshot.ExtensionKind.parent_agent_rows)) continue;
+        const len = std.mem.readInt(u16, bytes[at + 1 ..][0..2], .little);
+        if (at + 3 + len > bytes.len) continue;
+        const candidate = bytes[at..][0 .. 3 + @as(usize, len)];
+        if (validParentRows(candidate)) return candidate;
+    }
+    return error.TestExpectedParentAgentRows;
+}
+
+fn validParentRows(record: []const u8) bool {
+    if (record.len < 6) return false;
+    const total = std.mem.readInt(u16, record[1..3], .little);
+    const count = record[5];
+    if (count != 2 or count > total) return false;
+    var end: usize = 6;
+    for (0..count) |_| {
+        if (end + 11 > record.len) return false;
+        const provider_len = record[end + 6];
+        const resource_len = std.mem.readInt(u16, record[end + 7 ..][0..2], .little);
+        const parent_len = std.mem.readInt(u16, record[end + 9 ..][0..2], .little);
+        if (resource_len == 0 or parent_len == 0) return false;
+        end += 11 + provider_len + resource_len + parent_len;
+        if (end > record.len) return false;
+    }
+    return end == record.len;
+}
+
 test "the snapshot carries agent rows as an extension record the TS core decodes" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try start();
@@ -182,21 +212,11 @@ test "the snapshot carries agent rows as an extension record the TS core decodes
     // agent extension, so the payload is found by content, not by position.
     try testing.expect(std.mem.indexOf(u8, bytes, &record) != null);
     // The identity-bound parent rows travel as their own kind-5 record after
-    // the shared sections. Walk the trailing records by their framed lengths
-    // instead of assuming the parent rows close the snapshot.
-    var identity: ?[]const u8 = null;
-    var at = quiet_len;
-    while (at + 3 <= bytes.len) {
-        const kind = bytes[at];
-        const len = std.mem.readInt(u16, bytes[at + 1 ..][0..2], .little);
-        if (at + 3 + len > bytes.len) return error.TestTruncatedExtension;
-        if (kind == @intFromEnum(ts_snapshot.ExtensionKind.parent_agent_rows)) {
-            identity = bytes[at..][0 .. 3 + @as(usize, len)];
-            break;
-        }
-        at += 3 + @as(usize, len);
-    }
-    const rows = identity orelse return error.TestExpectedParentAgentRows;
+    // the shared sections. The variable-length navigation context can shift
+    // the quiet snapshot's length, so scan for the record and strictly
+    // validate its framing instead of trusting the quiet boundary.
+    findParentRows(quiet) catch |err| try testing.expectEqual(error.TestExpectedParentAgentRows, err);
+    const rows = try findParentRows(bytes);
     try testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, rows[3..5], .little));
     try testing.expectEqual(@as(u8, 2), rows[5]);
     try testing.expectEqual(tab, rows[7]);

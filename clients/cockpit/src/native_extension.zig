@@ -4870,9 +4870,16 @@ test "shipping burst creation retains revision fence and reports refusal" {
     const engine = bridge.engine.?;
     try rig.dispatch(.new_terminal);
     try rig.dispatch(.new_terminal);
+    // The first create applies at once; the second waits behind it in the
+    // correlated operation queue, so no engine refusal has fired yet.
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    try std.testing.expect(!engine.intent_refused);
+    // Draining the queue replays the second create at its captured revision,
+    // which the first create already moved past: the fence refuses it and
+    // the refusal is reported instead of creating a third tab.
+    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
     try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
     try std.testing.expect(engine.intent_refused);
-    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
 }
 
 test "shipping delayed OS close cannot retire a recycled window slot" {
