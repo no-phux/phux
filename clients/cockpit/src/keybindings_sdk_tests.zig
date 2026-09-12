@@ -1,8 +1,8 @@
 const std = @import("std");
-const sdk = @import("native_sdk");
-const runtime = @import("keybindings_runtime.zig");
-
-test "keybindings SDK registration and fallback dispatch share the applied chord" {
+/// The shipping extension calls this with the engine-exported runtime module.
+/// Importing that file again from the extension would give Config.keybindings
+/// and the registry different module identities.
+pub fn check(comptime sdk: type, comptime runtime: type) !void {
     const menus = [_]sdk.platform.Menu{.{ .title = "Shell", .items = &.{
         .{ .command = "terminal.new", .label = "New Tab", .key = "t", .modifiers = .{ .primary = true } },
     } }};
