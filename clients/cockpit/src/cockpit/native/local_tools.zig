@@ -4,18 +4,54 @@ const std = @import("std");
 
 pub const request_name = "cockpit.local-tools";
 pub const max_bytes = 4096;
-pub const Kind = enum(u8) { describe = 1, edit_config = 2, add_machine = 3 };
-pub const Phase = enum(u8) { ready = 0, queued = 1, failed = 2, editor_required = 3 };
+pub const Kind = enum(u8) { describe = 1, edit_config = 2, add_machine = 3, status = 4, acknowledge = 5 };
+pub const Phase = enum(u8) { ready = 0, queued = 1, failed = 2, editor_required = 3, placed = 4, unknown = 5 };
+pub const ToolStatus = struct { phase: Phase, message: []const u8 };
 pub const Error = error{ InvalidRequest, BufferTooSmall };
 pub const Request = struct { kind: Kind, token: u64, destination: []const u8, name: []const u8 };
 pub const Reply = struct { phase: Phase, operation_id: u32 = 0, token: u64 = 0, target: []const u8 = "", message: []const u8 = "" };
 
+test "local tool operation receipt status and acknowledgement cross the binary boundary" {
+    var request = [_]u8{ 1, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    try std.testing.expect((decode(&request) catch null) != null);
+    request[1] = 5;
+    try std.testing.expect((decode(&request) catch null) != null);
+}
+
 pub const State = struct {
-    const Capture = struct { token: u64, epoch: u64, platform_id: u64, consumed: bool = false };
+    const Capture = struct { token: u64, epoch: u64, platform_id: u64, consumed: bool = false, operation_id: u32 = 0 };
+    const Receipt = struct { operation_id: u32, target: []u8 };
+    const Acknowledged = struct { token: u64, bytes: [max_bytes]u8, len: usize };
     captures: std.AutoHashMapUnmanaged(usize, Capture) = .empty,
+    // Read-only receipt capabilities survive another describe and window closure.
+    // Explicit acknowledgement retires them; never evict an unreported outcome.
+    receipts: std.AutoHashMapUnmanaged(u64, Receipt) = .empty,
+    acknowledged: [16]?Acknowledged = @splat(null),
+    next_ack: usize = 0,
     next_token: u64 = 1,
 
+    fn rememberAcknowledgement(self: *State, token: u64, encoded: []const u8) void {
+        const slot = &self.acknowledged[self.next_ack];
+        slot.* = .{ .token = token, .bytes = undefined, .len = encoded.len };
+        @memcpy(slot.*.?.bytes[0..encoded.len], encoded);
+        self.next_ack = (self.next_ack + 1) % self.acknowledged.len;
+    }
+
+    fn repeatedAcknowledgement(self: *State, request: Request, out: []u8) Error![]const u8 {
+        for (&self.acknowledged) |*slot| {
+            const ack = if (slot.*) |*value| value else continue;
+            if (request.kind != .acknowledge or ack.token != request.token) continue;
+            if (out.len < ack.len) return error.BufferTooSmall;
+            @memcpy(out[0..ack.len], ack.bytes[0..ack.len]);
+            return out[0..ack.len];
+        }
+        return encode(.{ .phase = .failed, .token = request.token, .message = "This launch receipt is no longer available." }, out);
+    }
+
     pub fn deinit(self: *State) void {
+        var receipts = self.receipts.valueIterator();
+        while (receipts.next()) |receipt| std.heap.page_allocator.free(receipt.target);
+        self.receipts.deinit(std.heap.page_allocator);
         self.captures.deinit(std.heap.page_allocator);
         self.* = .{};
     }
@@ -100,6 +136,7 @@ pub fn encode(reply: Reply, out: []u8) Error![]const u8 {
 
 pub fn handle(state: *State, engine: anytype, fx: anytype, preview_dirty: bool, payload: []const u8, out: []u8) Error![]const u8 {
     const request = try decode(payload);
+    if (request.kind == .status or request.kind == .acknowledge) return handleStatus(state, engine, request, out);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const reply = capturedPerform(state, engine, fx, preview_dirty, request, arena.allocator()) catch |err| Reply{
@@ -111,16 +148,51 @@ pub fn handle(state: *State, engine: anytype, fx: anytype, preview_dirty: bool, 
     return encode(reply, out);
 }
 
+fn handleStatus(state: *State, engine: anytype, request: Request, out: []u8) Error![]const u8 {
+    const receipt = state.receipts.get(request.token) orelse return state.repeatedAcknowledgement(request, out);
+    const status = engine.localToolStatus(receipt.operation_id);
+    const encoded = try encode(.{ .phase = status.phase, .operation_id = receipt.operation_id, .token = request.token, .target = receipt.target, .message = status.message }, out);
+    if (request.kind == .acknowledge and status.phase != .queued) {
+        _ = engine.acknowledgeLocalTool(receipt.operation_id);
+        state.rememberAcknowledgement(request.token, encoded);
+        _ = state.receipts.remove(request.token);
+        std.heap.page_allocator.free(receipt.target);
+    }
+    return encoded;
+}
+
 fn capturedPerform(state: *State, engine: anytype, fx: anytype, preview_dirty: bool, request: Request, gpa: std.mem.Allocator) !Reply {
     const token = if (request.kind == .describe) try state.capture(engine.model) else request.token;
     const captured = try state.resolve(engine.model, token);
+    if (request.kind != .describe) return capturedLaunch(state, engine, fx, preview_dirty, request, captured, gpa);
+    var reply = perform(engine, fx, preview_dirty, request, captured.platform_id, gpa) catch |err| Reply{
+        .phase = .failed,
+        .target = engine.model.config_file.path(),
+        .message = failureMessage(err),
+    };
+    reply.token = token;
+    return reply;
+}
+
+fn capturedLaunch(state: *State, engine: anytype, fx: anytype, preview_dirty: bool, request: Request, captured: *State.Capture, gpa: std.mem.Allocator) !Reply {
+    if (state.receipts.count() == 16) return error.OperationCapacity;
+    try state.receipts.ensureUnusedCapacity(std.heap.page_allocator, 1);
+    const target = if (request.kind == .add_machine) request.destination else engine.model.config_file.path();
+    const owned = try std.heap.page_allocator.dupe(u8, target);
+    var retained = false;
+    defer if (!retained) std.heap.page_allocator.free(owned);
     var reply = perform(engine, fx, preview_dirty, request, captured.platform_id, gpa) catch |err| Reply{
         .phase = .failed,
         .target = if (request.kind == .add_machine) request.destination else engine.model.config_file.path(),
         .message = failureMessage(err),
     };
-    reply.token = token;
-    if (reply.phase == .queued) captured.consumed = true;
+    reply.token = request.token;
+    if (reply.phase == .queued) {
+        captured.consumed = true;
+        captured.operation_id = reply.operation_id;
+        state.receipts.putAssumeCapacity(request.token, .{ .operation_id = reply.operation_id, .target = owned });
+        retained = true;
+    }
     return reply;
 }
 
@@ -163,6 +235,7 @@ fn failureMessage(err: anyerror) []const u8 {
         error.AccessDenied, error.ReadOnlyFileSystem => "The local configuration destination is not writable. Check its permissions and Retry.",
         error.LocalRuntimeNotReady => "Local Phux is not ready. Return to This Mac, Retry the connection or Repair Installation, then try again.",
         error.InvalidWindow => "The invoking window has closed. Open this action again from an existing window.",
+        error.OperationCapacity => "Local tool receipts are still pending. Check their outcomes in This Mac before opening another tool.",
         else => "Could not open the dedicated local Phux terminal. Check This Mac connection and Retry; current work is intact.",
     };
 }
@@ -421,6 +494,17 @@ const TestEngine = struct {
     executable_len: usize = 0,
     target: [1024]u8 = undefined,
     target_len: usize = 0,
+    tool_status: ToolStatus = .{ .phase = .queued, .message = "pending" },
+    acknowledgements: usize = 0,
+
+    pub fn localToolStatus(self: *TestEngine, _: u32) ToolStatus {
+        return self.tool_status;
+    }
+
+    pub fn acknowledgeLocalTool(self: *TestEngine, _: u32) bool {
+        self.acknowledgements += 1;
+        return true;
+    }
 
     pub fn launchLocalTool(self: *TestEngine, _: void, window: u64, argv: []const []const u8, _: []const u8) !u32 {
         self.calls += 1;
@@ -506,4 +590,45 @@ test "setup capture survives focus change and cannot be replayed" {
     try std.testing.expectEqual(@intFromEnum(Phase.queued), other[1]);
     try std.testing.expectEqual(@as(u64, 88), engine.window);
     try std.testing.expectEqual(@as(usize, 2), engine.calls);
+}
+
+test "tool receipt survives new describe and closed window until terminal acknowledgement" {
+    var model: TestEngine.Model = .{ .config_file = .{ .value = "/fixture/config" } };
+    var engine: TestEngine = .{ .model = &model };
+    var state: State = .{};
+    defer state.deinit();
+    var output: [max_bytes]u8 = undefined;
+    const describe = [_]u8{ 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const initial = try handle(&state, &engine, {}, false, &describe, &output);
+    const token = std.mem.readInt(u64, initial[6..14], .little);
+    var poll = [_]u8{ 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    std.mem.writeInt(u64, poll[2..10], token, .little);
+    try std.testing.expectEqual(@intFromEnum(Phase.failed), (try handle(&state, &engine, {}, false, &poll, &output))[1]);
+    var setup = [_]u8{ 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 4, 'h', 'o', 's', 't', 0 };
+    std.mem.writeInt(u64, setup[2..10], token, .little);
+    try std.testing.expectEqual(@intFromEnum(Phase.queued), (try handle(&state, &engine, {}, false, &setup, &output))[1]);
+    const next = try handle(&state, &engine, {}, false, &describe, &output);
+    try std.testing.expect(token != std.mem.readInt(u64, next[6..14], .little));
+    model.window_epochs[0] += 1;
+    poll[1] = 5;
+    try std.testing.expectEqual(@intFromEnum(Phase.queued), (try handle(&state, &engine, {}, false, &poll, &output))[1]);
+    try std.testing.expectEqual(@as(usize, 0), engine.acknowledgements);
+    engine.tool_status = .{ .phase = .unknown, .message = "Check This Mac; never replay" };
+    poll[1] = 4;
+    const final = try handle(&state, &engine, {}, false, &poll, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.unknown), final[1]);
+    try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, final[2..6], .little));
+    try std.testing.expectEqualStrings("host", final[16..20]);
+    try std.testing.expectEqual(@as(usize, 1), engine.calls);
+    poll[1] = 5;
+    const ack = try handle(&state, &engine, {}, false, &poll, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.unknown), ack[1]);
+    try std.testing.expectEqualStrings("host", ack[16..20]);
+    try std.testing.expectEqual(@as(usize, 1), engine.acknowledgements);
+    const retried = try handle(&state, &engine, {}, false, &poll, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.unknown), retried[1]);
+    try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, retried[2..6], .little));
+    try std.testing.expectEqual(@as(usize, 1), engine.acknowledgements);
+    poll[1] = 4;
+    try std.testing.expectEqual(@intFromEnum(Phase.failed), (try handle(&state, &engine, {}, false, &poll, &output))[1]);
 }

@@ -1,0 +1,379 @@
+//! Actual Model and Phux FFI frames; no process, config, socket or GUI launch.
+const std = @import("std");
+const support = @import("../cockpit/phux_support.zig");
+const model_module = @import("../cockpit/model.zig");
+const engine_module = @import("../cockpit/native/ts_engine.zig");
+const launch = @import("../cockpit/native/local_tool_launch.zig");
+const tools = @import("../cockpit/native/local_tools.zig");
+const fixture = support.PhuxProvider.test_support;
+const testing = std.testing;
+
+test "localtool disabled provider refuses without effects" {
+    if (comptime support.phux_enabled) return error.SkipZigTest;
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    var engine = struct {}{};
+    _ = adapter.sink();
+    try testing.expectError(error.LocalRuntimeNotReady, adapter.launch(&engine, {}, 0, 0, &.{"/fixture/editor"}, "", "Editor"));
+    adapter.advance(&engine, {});
+}
+
+// Only the new runtime orchestration hooks are controlled here. The Model,
+// providers, operation ledgers, argv encoder and disconnect outcomes are real.
+const Harness = struct {
+    native: *engine_module.Engine,
+    model: *model_module.Model,
+    local: *support.PhuxProvider,
+    remote: *support.PhuxProvider,
+    ready: bool = true,
+    selection: u64 = 1,
+    placements: usize = 0,
+    placement_status: launch.PlacementStatus = .pending,
+    placement_refused: bool = false,
+    may_focus: bool = true,
+
+    fn init() !Harness {
+        const native = try engine_module.Engine.create(testing.allocator, testing.io);
+        errdefer native.destroy();
+        const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "fixture-remote" } }, null, "tool-test");
+        native.model.phux_provider = remote;
+        try fixture.attachHostWith(remote.host, "hello_conditional_kill.bin");
+        try native.model.ensurePeerSlots(1);
+        const local = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture-local-never-dialed" }, null, "tool-test");
+        native.model.peers.items[0].provider = local;
+        try fixture.attachHostWith(local.host, "hello_conditional_kill.bin");
+        return .{ .native = native, .model = native.model, .local = local, .remote = remote };
+    }
+
+    fn deinit(self: *Harness) void {
+        self.native.destroy();
+    }
+
+    pub fn localToolProvider(self: *Harness) ?*support.PhuxProvider {
+        return self.local;
+    }
+
+    pub fn localToolSelectionEpoch(self: *Harness) u64 {
+        return self.selection;
+    }
+
+    pub fn ensureLocalSessionInWindow(self: *Harness, _: usize, _: u64, _: void) !*support.PhuxProvider {
+        if (!self.ready) return error.NotReady;
+        return self.local;
+    }
+
+    pub fn placeLocalToolSpawn(self: *Harness, remote: *support.PhuxProvider, _: usize, _: u64, _: support.OperationResult, may_focus: bool) !u64 {
+        try testing.expect(remote == self.local);
+        if (self.placement_refused) return error.OperationCapacity;
+        self.placements += 1;
+        self.may_focus = may_focus;
+        return 19;
+    }
+
+    pub fn localToolPlacementStatus(self: *Harness, remote: *support.PhuxProvider, ticket: u64) launch.PlacementStatus {
+        std.debug.assert(remote == self.local and ticket == 19);
+        return self.placement_status;
+    }
+
+    fn complete(self: *Harness, adapter: *launch.Adapter, name: []const u8) !void {
+        try fixture.stageFixture(self.local.bridge, name);
+        _ = try self.local.host.drainReadiness();
+        const result = self.local.takeOperationResult() orelse return error.MissingOperation;
+        try testing.expect(adapter.completeFrom(self.local, result));
+    }
+};
+
+fn submit(adapter: *launch.Adapter, harness: *Harness) !u32 {
+    return adapter.launch(harness, {}, 0, harness.model.window_epochs[0], &.{ "/fixture/editor", "--wait", "/local config with spaces" }, "/local cwd", "Edit Configuration — This Mac");
+}
+
+// SPEC's length-delimited fields and string-list encoding, independent of the
+// adapter. Verify argv boundaries and the absence of satellite/owner routing.
+const Wire = struct {
+    bytes: []const u8,
+    at: usize = 0,
+
+    fn varint(self: *Wire) !usize {
+        var value: usize = 0;
+        var shift: u6 = 0;
+        while (self.at < self.bytes.len) {
+            const byte = self.bytes[self.at];
+            self.at += 1;
+            value |= @as(usize, byte & 0x7f) << shift;
+            if (byte < 128) return value;
+            shift = std.math.add(u6, shift, 7) catch return error.BadVarint;
+        }
+        return error.ShortFrame;
+    }
+
+    fn take(self: *Wire, size: usize) ![]const u8 {
+        if (size > self.bytes.len - self.at) return error.ShortFrame;
+        const bytes = self.bytes[self.at..][0..size];
+        self.at += size;
+        return bytes;
+    }
+};
+
+fn field(frame: []const u8, wanted: usize) !?[]const u8 {
+    var wire: Wire = .{ .bytes = frame, .at = 5 };
+    while (wire.at < frame.len) {
+        const id = try wire.varint();
+        _ = try wire.take(1);
+        const value = try wire.take(try wire.varint());
+        if (id == wanted) return value;
+    }
+    return null;
+}
+
+fn expectSpawn(provider: *support.PhuxProvider, argv: []const []const u8, cwd: []const u8) !void {
+    const frame = provider.bridge.outgoing.take() orelse return error.MissingFrame;
+    defer provider.bridge.outgoing.release(frame);
+    try testing.expectEqual(@as(u8, 0x22), frame[4]);
+    var command: Wire = .{ .bytes = (try field(frame, 3)).? };
+    const count = try command.take(4);
+    try testing.expectEqual(argv.len, std.mem.readInt(u32, count[0..4], .big));
+    for (argv) |expected| {
+        const length = try command.take(4);
+        try testing.expectEqualStrings(expected, try command.take(std.mem.readInt(u32, length[0..4], .big)));
+    }
+    try testing.expectEqual(command.bytes.len, command.at);
+    try testing.expectEqualStrings(cwd, (try field(frame, 4)).?);
+    try testing.expect(try field(frame, 7) == null);
+    try testing.expect(try field(frame, 8) == null);
+    try testing.expectEqualSlices(u8, &.{1}, (try field(frame, 15)).?);
+    try testing.expect(provider.bridge.outgoing.take() == null);
+}
+
+fn expectConditionalCleanup(provider: *support.PhuxProvider) !void {
+    const frame = provider.bridge.outgoing.take() orelse return error.MissingFrame;
+    defer provider.bridge.outgoing.release(frame);
+    try testing.expectEqual(@as(u8, 0x31), frame[4]);
+    const command = (try field(frame, 2)).?;
+    try testing.expectEqual(@as(u8, 0x1b), command[0]);
+    const instance: [16]u8 = @splat(0xa5);
+    try testing.expect(std.mem.indexOf(u8, command, &instance) != null);
+    try testing.expect(!provider.bridge.outgoing.hasPending());
+}
+
+test "localtool copies preparing argv and cwd then queues only on local Phux" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    h.ready = false;
+    var argument = "/config with spaces".*;
+    var cwd = "/local cwd".*;
+    const id = try adapter.launch(&h, {}, 0, h.model.window_epochs[0], &.{ "/editor path", "--wait", &argument }, &cwd, "Editor");
+    @memset(&argument, 'x');
+    @memset(&cwd, 'x');
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    h.ready = true;
+    adapter.advance(&h, {});
+    try expectSpawn(h.local, &.{ "/editor path", "--wait", "/config with spaces" }, "/local cwd");
+    try testing.expect(!h.remote.bridge.outgoing.hasPending());
+    try testing.expect(adapter.takeOutcome() == null);
+    try testing.expect(!adapter.acknowledge(id));
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    try testing.expectEqual(@as(usize, 1), h.placements);
+    try testing.expect(adapter.takeOutcome() == null);
+    h.placement_status = .placed;
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(id, outcome.operation_id);
+    try testing.expectEqual(.success, outcome.execution);
+    try testing.expectEqual(.placed, outcome.placement);
+    try testing.expect(outcome.terminal_ref.?.provider_id == h.local.providerId());
+    try testing.expect(adapter.takeOutcome() == null);
+    try testing.expectEqual(.placed, adapter.status(id).?.completed.placement);
+    try testing.expect(adapter.acknowledge(id));
+    try testing.expect(adapter.status(id) == null);
+}
+
+test "localtool setup argv uses a dedicated spawn and unknown disconnect never replays" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const argv = try tools.enrollmentArgv(arena.allocator(), "/fixture/phux", "me@fixture", "Fixture Mac");
+    _ = try adapter.launch(&h, {}, 0, h.model.window_epochs[0], argv, "/local cwd", "Add Machine");
+    try expectSpawn(h.local, &.{ "/fixture/phux", "host", "enroll", "--name", "Fixture Mac", "--", "me@fixture" }, "/local cwd");
+    h.local.host.disconnect();
+    const result = h.local.takeOperationResult().?;
+    try testing.expectEqual(.unknown_outcome, result.status);
+    try testing.expect(adapter.completeFrom(h.local, result));
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(.unknown, outcome.execution);
+    try testing.expectEqual(.not_requested, outcome.placement);
+    adapter.advance(&h, {});
+    try testing.expectEqual(@as(usize, 0), h.placements);
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try testing.expect(!h.remote.bridge.outgoing.hasPending());
+}
+
+test "localtool spawn refusal is final and is never sent to placement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    try h.complete(&adapter, "spawn-refused.bin");
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(.refused, outcome.execution);
+    try testing.expectEqual(.not_requested, outcome.placement);
+    try testing.expectEqual(@as(usize, 0), h.placements);
+}
+
+test "localtool captured window closure conditionally cleans a known bound spawn only" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    h.model.window_epochs[0] += 1;
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(.success, outcome.execution);
+    try testing.expectEqual(.destination_lost, outcome.placement);
+    try testing.expectEqual(@as(usize, 0), h.placements);
+    try expectConditionalCleanup(h.local);
+    try testing.expect(!h.remote.bridge.outgoing.hasPending());
+}
+
+test "localtool later selection suppresses focus and uncertain placement never kills" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    h.selection += 1;
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    try testing.expect(!h.may_focus);
+    h.placement_status = .unknown;
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(.success, outcome.execution);
+    try testing.expectEqual(.unknown, outcome.placement);
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+}
+
+test "localtool replaced client with reused request and epoch cannot complete old launch" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    const previous = h.local;
+    defer previous.destroy();
+    const replacement = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture-local-never-dialed" }, null, "replacement");
+    h.model.peers.items[0].provider = replacement;
+    h.local = replacement;
+    try fixture.attachHostWith(replacement.host, "hello_conditional_kill.bin");
+    const request = try replacement.requestSpawnArgvBound(null, replacement.attach_viewport, "", &.{"/unrelated"});
+    try fixture.stageFixture(replacement.bridge, "spawn-bound.bin");
+    _ = try replacement.host.drainReadiness();
+    const result = replacement.takeOperationResult().?;
+    try testing.expectEqual(@as(u32, 1), request);
+    try testing.expectEqual(previous.connectionEpoch(), result.connection_epoch);
+    try testing.expect(!adapter.completeFrom(replacement, result));
+    adapter.advance(&h, {});
+    try testing.expectEqual(.context_changed, adapter.takeOutcome().?.reason);
+    try testing.expectEqual(@as(usize, 0), h.placements);
+}
+
+test "localtool preparing launch refuses replacement before any spawn" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    h.ready = false;
+    _ = try submit(&adapter, &h);
+    const previous = h.local;
+    defer previous.destroy();
+    const replacement = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture-local-never-dialed" }, null, "replacement");
+    h.model.peers.items[0].provider = replacement;
+    h.local = replacement;
+    h.ready = true;
+    try fixture.attachHostWith(replacement.host, "hello_conditional_kill.bin");
+    adapter.advance(&h, {});
+    try testing.expectEqual(.not_sent, adapter.takeOutcome().?.execution);
+    try testing.expect(!replacement.bridge.outgoing.hasPending());
+}
+
+test "localtool placement admission refusal retains spawn truth and cleans conditionally" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    h.placement_refused = true;
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    const outcome = adapter.takeOutcome().?;
+    try testing.expectEqual(.success, outcome.execution);
+    try testing.expectEqual(.refused, outcome.placement);
+    try expectConditionalCleanup(h.local);
+}
+
+test "localtool replaced host inside same provider cannot satisfy captured source context" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    _ = try submit(&adapter, &h);
+    const previous = h.local.host;
+    defer previous.destroy();
+    h.local.host = try @TypeOf(previous.*).create(testing.allocator, h.local.bridge);
+    h.local.host.setProviderId(h.local.providerId());
+    try fixture.attachHostWith(h.local.host, "hello_conditional_kill.bin");
+    _ = try h.local.requestSpawnArgvBound(null, h.local.attach_viewport, "", &.{"/unrelated"});
+    try fixture.stageFixture(h.local.bridge, "spawn-bound.bin");
+    _ = try h.local.host.drainReadiness();
+    const result = h.local.takeOperationResult().?;
+    try testing.expectEqual(previous.connectionEpoch(), result.connection_epoch);
+    try testing.expect(!adapter.completeFrom(h.local, result));
+    adapter.advance(&h, {});
+    try testing.expectEqual(.context_changed, adapter.takeOutcome().?.reason);
+    try testing.expectEqual(@as(usize, 0), h.placements);
+}
+
+test "localtool Service maps captured platform window and retains completion until acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    var service = adapter.service(&h, {}, "/local cwd");
+    const id = try service.launchLocalTool({}, h.model.wsAt(0).?.window_id, &.{"/fixture/editor"}, "Editor");
+    try expectSpawn(h.local, &.{"/fixture/editor"}, "/local cwd");
+    try testing.expectEqual(.queued, service.localToolStatus(id).phase);
+    try testing.expect(!service.acknowledgeLocalTool(id));
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    try testing.expectEqual(.queued, service.localToolStatus(id).phase);
+    h.placement_status = .placed;
+    adapter.advance(&h, {});
+    try testing.expectEqual(.placed, service.localToolStatus(id).phase);
+    _ = adapter.takeOutcome();
+    try testing.expectEqual(.placed, service.localToolStatus(id).phase);
+    try testing.expect(service.acknowledgeLocalTool(id));
+    try testing.expectEqual(.unknown, service.localToolStatus(id).phase);
+}
