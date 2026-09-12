@@ -9,6 +9,11 @@ pub const PlacementStatus = enum { pending, placed, refused, unknown };
 pub const Execution = enum { not_sent, success, refused, unknown };
 pub const Placement = enum { not_requested, placed, refused, unknown, destination_lost };
 pub const Reason = enum { completed, preparation_failed, spawn_refused, spawn_unknown, invalid_identity, window_closed, context_changed, placement_refused, placement_unknown };
+pub const Cleanup = enum { not_requested, pending, admitted, exhausted, unavailable };
+const owner_capacity = 16;
+/// One admission attempt per owner per advance, with the same finite budget as
+/// retained owners. Exhaustion retains authority until definitive source retirement.
+pub const cleanup_admission_attempts = owner_capacity;
 
 pub const Context = struct {
     coordinator: support.ProviderId,
@@ -37,6 +42,8 @@ pub const Outcome = struct {
     execution: Execution,
     placement: Placement,
     reason: Reason,
+    cleanup: Cleanup = .not_requested,
+    cleanup_request: u32 = 0,
 };
 pub const Status = union(enum) { pending, completed: Outcome };
 
@@ -77,6 +84,12 @@ const Pending = struct {
     ticket: ?u64 = null,
     outcome: ?Outcome = null,
     reported: bool = false,
+    acknowledged: bool = false,
+    ownership_settled: bool = false,
+    abandoned: bool = false,
+    cleanup: Cleanup = .not_requested,
+    cleanup_attempts: usize = 0,
+    cleanup_request: u32 = 0,
 
     fn ownsResult(self: *const Pending, remote: *support.PhuxProvider, result: support.OperationResult) bool {
         const context = self.context orelse return false;
@@ -94,7 +107,7 @@ const Pending = struct {
     }
 
     fn finish(self: *Pending, placement: Placement, reason: Reason) void {
-        self.outcome = .{
+        const outcome: Outcome = .{
             .operation_id = self.id,
             .request_id = self.request,
             .context = self.context,
@@ -104,14 +117,29 @@ const Pending = struct {
             .execution = self.execution(),
             .placement = placement,
             .reason = reason,
+            .cleanup = self.cleanup,
+            .cleanup_request = self.cleanup_request,
         };
+        if (self.outcome) |previous| if (std.meta.eql(previous, outcome)) return;
+        self.outcome = outcome;
+        self.reported = false;
+    }
+
+    fn settle(self: *Pending, placement: Placement, reason: Reason) void {
+        self.ownership_settled = true;
+        self.finish(placement, reason);
+    }
+
+    fn abandon(self: *Pending, placement: Placement, reason: Reason) void {
+        self.abandoned = true;
+        self.finish(placement, reason);
     }
 };
 
 pub const Adapter = struct {
     gpa: std.mem.Allocator = std.heap.page_allocator,
     // Matches the native durable-creation queue's admission bound.
-    pending: [16]?Pending = @splat(null),
+    pending: [owner_capacity]?Pending = @splat(null),
     next_id: u32 = 1,
 
     pub fn deinit(self: *Adapter) void {
@@ -178,15 +206,15 @@ pub const Adapter = struct {
         if (comptime !support.phux_enabled) return;
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
-            if (entry.outcome != null) continue;
-            advanceOne(entry, engine, fx);
+            if (!entry.ownership_settled) advanceOne(entry, engine, fx);
+            releaseAcknowledged(slot);
         }
     }
 
     pub fn takeOutcome(self: *Adapter) ?Outcome {
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
-            if (entry.reported) continue;
+            if (entry.reported or entry.acknowledged) continue;
             const outcome = entry.outcome orelse continue;
             entry.reported = true;
             return outcome;
@@ -197,7 +225,7 @@ pub const Adapter = struct {
     pub fn status(self: *const Adapter, id: u32) ?Status {
         for (self.pending) |slot| {
             const entry = slot orelse continue;
-            if (entry.id != id) continue;
+            if (entry.id != id or entry.acknowledged) continue;
             return if (entry.outcome) |outcome| .{ .completed = outcome } else .pending;
         }
         return null;
@@ -207,13 +235,22 @@ pub const Adapter = struct {
         for (&self.pending) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
             if (entry.id != id or entry.outcome == null) continue;
-            entry.arguments.arena.deinit();
-            slot.* = null;
+            entry.acknowledged = true;
+            releaseAcknowledged(slot);
             return true;
         }
         return false;
     }
 };
+
+/// Acknowledgement retires only UI interest. Outstanding requests and cleanup
+/// keep their bounded slot until disposition or an exact-source retirement.
+fn releaseAcknowledged(slot: *?Pending) void {
+    const entry = if (slot.*) |*value| value else return;
+    if (!entry.acknowledged or !entry.ownership_settled) return;
+    entry.arguments.arena.deinit();
+    slot.* = null;
+}
 
 pub fn Service(comptime Engine: type, comptime Effects: type) type {
     return struct {
@@ -254,6 +291,7 @@ pub fn Service(comptime Engine: type, comptime Effects: type) type {
 }
 
 fn describeOutcome(outcome: Outcome) local_tools.ToolStatus {
+    if (cleanupNotice(outcome.cleanup)) |message| return .{ .phase = .unknown, .message = message };
     if (outcome.execution == .success and outcome.placement == .placed) return .{ .phase = .placed, .message = "The dedicated local Phux terminal is open" };
     if (outcome.execution == .unknown or outcome.placement == .unknown) return .{ .phase = .unknown, .message = "The launch outcome is uncertain. Check This Mac before another launch; this request will not be replayed." };
     return .{ .phase = .failed, .message = switch (outcome.reason) {
@@ -262,6 +300,14 @@ fn describeOutcome(outcome: Outcome) local_tools.ToolStatus {
         .spawn_refused => "Local Phux refused the tool process. Check This Mac before trying the action again.",
         else => "The local tool terminal could not be placed. Check This Mac; existing work is intact.",
     } };
+}
+
+fn cleanupNotice(cleanup: Cleanup) ?[]const u8 {
+    return switch (cleanup) {
+        .pending => "The local process started but could not be placed. Conditional cleanup is waiting for capacity; its identity remains tracked. Check This Mac.",
+        .exhausted, .unavailable => "The local process started but conditional cleanup could not be queued. Its identity remains recorded. Check This Mac before another launch.",
+        .not_requested, .admitted => null,
+    };
 }
 
 fn windowCurrent(model: anytype, window: usize, epoch: u64) bool {
@@ -298,28 +344,47 @@ fn bindPreparation(entry: *Pending, remote: ?*support.PhuxProvider) !void {
 
 fn advanceOne(entry: *Pending, engine: anytype, fx: anytype) void {
     if (entry.request == 0) {
-        prepare(entry, engine, fx) catch entry.finish(.not_requested, .preparation_failed);
+        prepare(entry, engine, fx) catch entry.settle(.not_requested, .preparation_failed);
         return;
     }
-    const context = entry.context orelse return entry.finish(.not_requested, .preparation_failed);
-    const remote = engine.model.phuxForAttachment(context.provider) orelse return entry.finish(.unknown, .context_changed);
-    if (!context.matches(remote)) return entry.finish(.unknown, .context_changed);
-    if (context.session != remote.selectedSessionId()) return entry.finish(.unknown, .context_changed);
+    const context = entry.context orelse return entry.settle(.not_requested, .preparation_failed);
+    const remote = engine.model.phuxForAttachment(context.provider) orelse return retireSource(entry);
+    if (!context.matches(remote)) return retireSource(entry);
+    advanceCurrentSource(entry, engine, remote);
+}
+
+/// Missing/replaced attachment, host or connection epoch is definitive: no new
+/// client may inherit this request or replay cleanup with old authority.
+fn retireSource(entry: *Pending) void {
+    if (entry.cleanup == .pending) entry.cleanup = .unavailable;
+    entry.settle(.unknown, .context_changed);
+}
+
+fn advanceCurrentSource(entry: *Pending, engine: anytype, remote: *support.PhuxProvider) void {
+    if (entry.abandoned) return disposeAbandoned(entry, remote);
+    if (entry.context.?.session != remote.selectedSessionId()) {
+        if (entry.ticket != null) return entry.settle(.unknown, .context_changed);
+        entry.abandon(.unknown, .context_changed);
+        return disposeAbandoned(entry, remote);
+    }
     if (entry.ticket) |ticket| return observePlacement(entry, engine, remote, ticket);
     const result = entry.result orelse {
-        if (remote.state() != .attached) entry.finish(.not_requested, .spawn_unknown);
+        if (remote.state() != .attached) entry.abandon(.not_requested, .spawn_unknown);
         return;
     };
     placeResult(entry, engine, remote, result);
 }
 
 fn placeResult(entry: *Pending, engine: anytype, remote: *support.PhuxProvider, result: support.OperationResult) void {
-    if (result.status != .success) return entry.finish(.not_requested, if (result.status == .refused) .spawn_refused else .spawn_unknown);
-    if (remote.state() != .attached) return entry.finish(.unknown, .context_changed);
-    if (!validSpawn(remote, result)) return entry.finish(.refused, .invalid_identity);
+    if (result.status != .success) return settleUnsuccessful(entry, result);
+    if (remote.state() != .attached) {
+        entry.abandon(.unknown, .context_changed);
+        return disposeAbandoned(entry, remote);
+    }
+    if (!validSpawn(remote, result)) return entry.settle(.refused, .invalid_identity);
     if (!windowCurrent(engine.model, entry.window, entry.window_epoch)) {
-        cleanup(remote, result);
-        return entry.finish(.destination_lost, .window_closed);
+        entry.abandon(.destination_lost, .window_closed);
+        return disposeAbandoned(entry, remote);
     }
     beginPlacement(entry, engine, remote, result);
 }
@@ -336,25 +401,60 @@ fn validSpawn(remote: *support.PhuxProvider, result: support.OperationResult) bo
 fn beginPlacement(entry: *Pending, engine: anytype, remote: *support.PhuxProvider, result: support.OperationResult) void {
     const may_focus = entry.selection_epoch == engine.localToolSelectionEpoch();
     entry.ticket = engine.placeLocalToolSpawn(remote, entry.window, entry.window_epoch, result, may_focus) catch {
-        cleanup(remote, result);
-        return entry.finish(.refused, .placement_refused);
+        entry.abandon(.refused, .placement_refused);
+        return disposeAbandoned(entry, remote);
     };
 }
 
 fn observePlacement(entry: *Pending, engine: anytype, remote: *support.PhuxProvider, ticket: u64) void {
     switch (engine.localToolPlacementStatus(remote, ticket)) {
         .pending => {},
-        .placed => entry.finish(.placed, .completed),
-        .refused => entry.finish(.refused, .placement_refused),
-        .unknown => entry.finish(.unknown, .placement_unknown),
+        .placed => entry.settle(.placed, .completed),
+        .refused => entry.settle(.refused, .placement_refused),
+        .unknown => entry.settle(.unknown, .placement_unknown),
     }
 }
 
-fn cleanup(remote: *support.PhuxProvider, result: support.OperationResult) void {
-    const instance = result.instance orelse return;
-    const ref = result.terminal_ref orelse return;
-    if (!remote.conditionalKillSupported()) return;
-    _ = remote.requestKillIf(ref, instance) catch {};
+fn settleUnsuccessful(entry: *Pending, result: support.OperationResult) void {
+    entry.settle(.not_requested, if (result.status == .refused) .spawn_refused else .spawn_unknown);
+}
+
+/// A terminal UI outcome does not finish a source request. Late success is
+/// accounted for here even after acknowledgement, without placing or respawning.
+fn disposeAbandoned(entry: *Pending, remote: *support.PhuxProvider) void {
+    const result = entry.result orelse return;
+    if (result.status != .success) return settleUnsuccessful(entry, result);
+    if (!validSpawn(remote, result)) return entry.settle(.refused, .invalid_identity);
+    if (entry.cleanup == .not_requested) entry.cleanup = .pending;
+    if (entry.cleanup == .pending) admitCleanup(entry, remote, result);
+    const prior = entry.outcome.?;
+    entry.finish(if (prior.placement == .unknown) .destination_lost else prior.placement, prior.reason);
+}
+
+fn admitCleanup(entry: *Pending, remote: *support.PhuxProvider, result: support.OperationResult) void {
+    const instance = result.instance orelse {
+        entry.cleanup = .unavailable;
+        return;
+    };
+    if (!remote.conditionalKillSupported()) {
+        entry.cleanup = .unavailable;
+        return;
+    }
+    entry.cleanup_attempts += 1;
+    entry.cleanup_request = remote.requestKillIf(result.terminal_ref.?, instance) catch |err| {
+        entry.cleanup = cleanupAdmissionFailure(err, entry.cleanup_attempts);
+        return;
+    };
+    // Transfer to the exact host's accepted operation ledger. Admission is not
+    // evidence that the conditional kill executed; never resend an accepted write.
+    entry.cleanup = .admitted;
+    entry.ownership_settled = true;
+}
+
+fn cleanupAdmissionFailure(err: anyerror, attempts: usize) Cleanup {
+    if (err != error.OperationCapacity) return .unavailable;
+    if (attempts >= cleanup_admission_attempts) return .exhausted;
+    return .pending;
 }
 
 test {

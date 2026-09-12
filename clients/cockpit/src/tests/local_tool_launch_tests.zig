@@ -377,3 +377,273 @@ test "localtool Service maps captured platform window and retains completion unt
     try testing.expect(service.acknowledgeLocalTool(id));
     try testing.expectEqual(.unknown, service.localToolStatus(id).phase);
 }
+
+fn fillOperationLedger(remote: *support.PhuxProvider) !u32 {
+    const ref: support.TerminalRef = .{ .provider_id = remote.providerId(), .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, 8, "") } };
+    var first: u32 = 0;
+    while (true) {
+        const request = remote.requestKillIf(ref, @splat(0xa5)) catch |err| {
+            try testing.expectEqual(error.OperationCapacity, err);
+            break;
+        };
+        if (first == 0) first = request;
+    }
+    try testing.expect(first != 0);
+    // These are background fixture operations, not adapter cleanup attempts.
+    remote.bridge.outgoing.reset();
+    return first;
+}
+
+fn freeOperationSlot(remote: *support.PhuxProvider, request: u32) !void {
+    try remote.host.operation_ledger.complete(.{ .request_id = request, .connection_epoch = remote.connectionEpoch(), .kind = .kill_if, .status = .success });
+    try testing.expectEqual(request, remote.takeOperationResult().?.request_id);
+}
+
+fn cleanupCapacityRegression(close_window: bool) !void {
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    const id = try submit(&adapter, &h);
+    try h.complete(&adapter, "spawn-bound.bin");
+    const occupied = try fillOperationLedger(h.local);
+    if (close_window) h.model.window_epochs[0] += 1 else h.placement_refused = true;
+    adapter.advance(&h, {});
+    try testing.expectEqual(.success, adapter.status(id).?.completed.execution);
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try testing.expect(adapter.acknowledge(id));
+    try freeOperationSlot(h.local, occupied);
+    adapter.advance(&h, {});
+    // d4463859 discarded the OperationCapacity error then ack freed its owner.
+    try expectConditionalCleanup(h.local);
+    adapter.advance(&h, {});
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try testing.expect(!h.remote.bridge.outgoing.hasPending());
+    try testing.expectEqual(@as(usize, 0), h.placements);
+}
+
+test "localtool cleanup capacity retries after window closure and UI acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try cleanupCapacityRegression(true);
+}
+
+test "localtool cleanup capacity retries after placement refusal and UI acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try cleanupCapacityRegression(false);
+}
+
+fn lateSessionResultRegression(acknowledge: bool) !void {
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    const id = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    const source = h.local.host.context_id;
+    const epoch = h.local.connectionEpoch();
+    // Change the actual host's published selection, not its client or ledger.
+    // The outstanding FFI spawn still belongs to precisely this source/epoch.
+    h.local.host.attached_session_id = 2;
+    adapter.advance(&h, {});
+    try testing.expectEqual(.unknown, adapter.status(id).?.completed.execution);
+    if (acknowledge) try testing.expect(adapter.acknowledge(id));
+    try testing.expectEqual(source, h.local.host.context_id);
+    try testing.expectEqual(epoch, h.local.connectionEpoch());
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    // d4463859 either swallowed this result behind outcome!=null, or no longer
+    // owned it after UI ack. Neither path disposed of the known bound process.
+    try expectConditionalCleanup(h.local);
+    if (!acknowledge) {
+        const updated = adapter.status(id).?.completed;
+        try testing.expectEqual(.success, updated.execution);
+        try testing.expect(updated.terminal_ref != null);
+        try testing.expectEqual(.destination_lost, updated.placement);
+    }
+    adapter.advance(&h, {});
+    try testing.expectEqual(@as(usize, 0), h.placements);
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try testing.expect(!h.remote.bridge.outgoing.hasPending());
+}
+
+test "localtool late same-source spawn after session change updates receipt and cleans" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try lateSessionResultRegression(false);
+}
+
+test "localtool late same-source spawn after session change survives UI acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try lateSessionResultRegression(true);
+}
+
+fn retainedOwners(adapter: *const launch.Adapter) usize {
+    var count: usize = 0;
+    for (adapter.pending) |slot| if (slot != null) {
+        count += 1;
+    };
+    return count;
+}
+
+fn replaceSource(h: *Harness) !void {
+    const previous = h.local.host;
+    defer previous.destroy();
+    h.local.host = try @TypeOf(previous.*).create(testing.allocator, h.local.bridge);
+    h.local.host.setProviderId(h.local.providerId());
+    try fixture.attachHostWith(h.local.host, "hello_conditional_kill.bin");
+}
+
+test "localtool cleanup exhaustion records known identity and retains ownership after ack" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    const id = try submit(&adapter, &h);
+    try h.complete(&adapter, "spawn-bound.bin");
+    const occupied = try fillOperationLedger(h.local);
+    h.placement_refused = true;
+    adapter.advance(&h, {});
+    try testing.expectEqual(.pending, adapter.status(id).?.completed.cleanup);
+    var service = adapter.service(&h, {}, "");
+    try testing.expectEqual(.unknown, service.localToolStatus(id).phase);
+    for (0..launch.cleanup_admission_attempts * 2) |_| adapter.advance(&h, {});
+    const exhausted = adapter.status(id).?.completed;
+    try testing.expectEqual(.success, exhausted.execution);
+    try testing.expect(exhausted.terminal_ref != null);
+    try testing.expectEqual(.exhausted, exhausted.cleanup);
+    try testing.expectEqual(@as(u32, 0), exhausted.cleanup_request);
+    try testing.expectEqual(launch.cleanup_admission_attempts, adapter.pending[0].?.cleanup_attempts);
+    try testing.expect(std.mem.indexOf(u8, service.localToolStatus(id).message, "could not be queued") != null);
+    try testing.expect(adapter.acknowledge(id));
+    try testing.expect(adapter.status(id) == null);
+    try testing.expectEqual(@as(usize, 1), retainedOwners(&adapter));
+    try freeOperationSlot(h.local, occupied);
+    adapter.advance(&h, {});
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try testing.expectEqual(@as(usize, 1), retainedOwners(&adapter));
+    // Only source retirement ends this retained exhausted authority; no new
+    // client is allowed to inherit or replay the conditional kill.
+    try replaceSource(&h);
+    adapter.advance(&h, {});
+    try testing.expectEqual(@as(usize, 0), retainedOwners(&adapter));
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+}
+
+test "localtool acknowledged unresolved requests backpressure before writes until source retirement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    var ids: [16]u32 = undefined;
+    // Each attached fixture already publishes terminals. Use two real clients
+    // so adapter ownership capacity, rather than one host's terminal limit, binds.
+    const first = h.local;
+    for (ids[0..8]) |*id| id.* = try submit(&adapter, &h);
+    first.bridge.outgoing.reset();
+    first.host.attached_session_id = 2;
+    try h.model.ensurePeerSlots(2);
+    const second = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture-second-local-never-dialed" }, null, "tool-test");
+    h.model.peers.items[1].provider = second;
+    h.local = second;
+    try fixture.attachHostWith(second.host, "hello_conditional_kill.bin");
+    for (ids[8..]) |*id| id.* = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    h.local.host.attached_session_id = 2;
+    adapter.advance(&h, {});
+    for (ids) |id| try testing.expect(adapter.acknowledge(id));
+    try testing.expectEqual(ids.len, retainedOwners(&adapter));
+    try testing.expectError(error.OperationCapacity, submit(&adapter, &h));
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    try replaceSource(&h);
+    h.local = first;
+    try replaceSource(&h);
+    adapter.advance(&h, {});
+    try testing.expectEqual(@as(usize, 0), retainedOwners(&adapter));
+    try testing.expect(!h.local.bridge.outgoing.hasPending());
+    _ = try submit(&adapter, &h);
+    try expectSpawn(h.local, &.{ "/fixture/editor", "--wait", "/local config with spaces" }, "/local cwd");
+}
+
+test "localtool late success after session selection returns cannot reacquire placement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    const id = try submit(&adapter, &h);
+    h.local.bridge.outgoing.reset();
+    h.local.host.attached_session_id = 2;
+    adapter.advance(&h, {});
+    _ = adapter.takeOutcome();
+    h.local.host.attached_session_id = 1;
+    try h.complete(&adapter, "spawn-bound.bin");
+    adapter.advance(&h, {});
+    try expectConditionalCleanup(h.local);
+    const updated = adapter.takeOutcome().?;
+    try testing.expectEqual(.success, updated.execution);
+    try testing.expectEqual(.destination_lost, updated.placement);
+    try testing.expectEqual(.admitted, updated.cleanup);
+    try testing.expect(updated.cleanup_request != 0);
+    try testing.expectEqual(@as(usize, 0), h.placements);
+    try testing.expect(adapter.acknowledge(id));
+    try testing.expectEqual(@as(usize, 0), retainedOwners(&adapter));
+}
+
+test "localtool late refused or disconnect result retires acknowledged owner without cleanup" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    for ([_]bool{ false, true }) |disconnect| {
+        var h = try Harness.init();
+        defer h.deinit();
+        var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+        defer adapter.deinit();
+        const id = try submit(&adapter, &h);
+        h.local.bridge.outgoing.reset();
+        h.local.host.attached_session_id = 2;
+        adapter.advance(&h, {});
+        try testing.expect(adapter.acknowledge(id));
+        if (disconnect) {
+            h.local.host.disconnect();
+            try testing.expect(adapter.completeFrom(h.local, h.local.takeOperationResult().?));
+        } else try h.complete(&adapter, "spawn-refused.bin");
+        adapter.advance(&h, {});
+        try testing.expectEqual(@as(usize, 0), retainedOwners(&adapter));
+        try testing.expect(!h.local.bridge.outgoing.hasPending());
+        try testing.expectEqual(@as(usize, 0), h.placements);
+    }
+}
+
+test "localtool handler acknowledgement retires receipt but preserves blocked cleanup owner" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var h = try Harness.init();
+    defer h.deinit();
+    var adapter: launch.Adapter = .{ .gpa = testing.allocator };
+    defer adapter.deinit();
+    const id = try submit(&adapter, &h);
+    try h.complete(&adapter, "spawn-bound.bin");
+    const occupied = try fillOperationLedger(h.local);
+    h.model.window_epochs[0] += 1;
+    adapter.advance(&h, {});
+    var state: tools.State = .{};
+    defer state.deinit();
+    // Install the receipt that the successful launch boundary retains, without
+    // invoking an editor or creating a configuration file in this fixture.
+    try state.receipts.put(std.heap.page_allocator, 1, .{ .operation_id = id, .target = try std.heap.page_allocator.dupe(u8, "/local config") });
+    var service = adapter.service(&h, {}, "");
+    var request = [_]u8{ 1, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    var output: [tools.max_bytes]u8 = undefined;
+    const status = try tools.handle(&state, &service, {}, false, &request, &output);
+    try testing.expectEqual(@intFromEnum(tools.Phase.unknown), status[1]);
+    try testing.expectEqual(id, std.mem.readInt(u32, status[2..6], .little));
+    request[1] = 5;
+    const ack = try tools.handle(&state, &service, {}, false, &request, &output);
+    try testing.expectEqual(@intFromEnum(tools.Phase.unknown), ack[1]);
+    try testing.expectEqual(@as(usize, 0), state.receipts.count());
+    try testing.expectEqual(@as(usize, 1), retainedOwners(&adapter));
+    const again = try tools.handle(&state, &service, {}, false, &request, &output);
+    try testing.expectEqual(id, std.mem.readInt(u32, again[2..6], .little));
+    try freeOperationSlot(h.local, occupied);
+    adapter.advance(&h, {});
+    try expectConditionalCleanup(h.local);
+    try testing.expectEqual(@as(usize, 0), retainedOwners(&adapter));
+}

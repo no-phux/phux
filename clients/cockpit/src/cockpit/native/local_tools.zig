@@ -235,7 +235,7 @@ fn failureMessage(err: anyerror) []const u8 {
         error.AccessDenied, error.ReadOnlyFileSystem => "The local configuration destination is not writable. Check its permissions and Retry.",
         error.LocalRuntimeNotReady => "Local Phux is not ready. Return to This Mac, Retry the connection or Repair Installation, then try again.",
         error.InvalidWindow => "The invoking window has closed. Open this action again from an existing window.",
-        error.OperationCapacity => "Local tool receipts are still pending. Check their outcomes in This Mac before opening another tool.",
+        error.OperationCapacity => "Local tool operations or cleanup are still tracked. Check This Mac before opening another tool.",
         else => "Could not open the dedicated local Phux terminal. Check This Mac connection and Retry; current work is intact.",
     };
 }
