@@ -23,6 +23,9 @@ not supported.
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 
+The public install page is
+[https://docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
+
 Once installed, `phux update` is the one command that moves any of them
 forward; see [Updating](#updating).
 

@@ -28,14 +28,12 @@ const { title, description, origin = SITE.docsUrl } = Astro.props;
     <a class="skip" href="#nd-page">Skip to documentation</a>
     <slot />
 
-    <footer class="wrap">
-      <div class="foot">
-        <span class="dim">phux · MIT/Apache-2.0</span>
-        <a href={SITE.url}>phux.sh</a>
-        <a href={SITE.github} target="_blank" rel="noopener">source</a>
-        <a href="/wire">the wire</a>
-        <span class="sp dim">© 2026 no-phux</span>
-      </div>
+    <footer class="docs-foot wrap">
+      <a href={SITE.url}>phux.sh</a>
+      <a href="/overview">Docs</a>
+      <a href="/wire">Protocol</a>
+      <a href={SITE.github} target="_blank" rel="noopener">GitHub</a>
+      <span>© 2026 no-phux</span>
     </footer>
   </body>
 </html>

@@ -65,7 +65,7 @@ export function Docs({
         themeSwitch={{ enabled: false }}
         nav={{
           title: (
-            <span><b aria-hidden="true">◆</b> phux <span className="docs-wordmark">docs</span></span>
+            <span>phux <span className="docs-wordmark">docs</span></span>
           ),
           url: "/overview",
         }}

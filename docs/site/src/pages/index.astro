@@ -3,90 +3,26 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import PhuxTerminal from "../components/PhuxTerminal.tsx";
 import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
+
+const cliInstall = "curl -fsSL https://phux.sh/install | sh";
+const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 ---
 
 <BaseLayout>
-  <!-- ── HERO + live proof ──────────────────────────────────────────────── -->
-  <section class="wrap landing-hero">
-    <div class="hero-install-band" aria-label="install phux">
-      <div class="install-band-label">install — pick your surface</div>
-      <div class="install-options">
-        <div class="install-option">
-          <div class="install-label">
-            phux cli · macOS / Linux
-            {release.tag && (
-              <a class="version-badge" href={release.url ?? "https://github.com/no-phux/phux/releases"}>
-                latest {release.tag}
-              </a>
-            )}
-          </div>
-          <pre><code>curl -fsSL https://phux.sh/install | sh
-phux</code></pre>
-        </div>
-        <div class="install-option">
-          <div class="install-label">
-            cockpit · native macOS
-            {release.cockpit?.tag && (
-              <a class="version-badge" href={release.cockpit.url ?? "https://github.com/no-phux/phux/releases"}>
-                latest {release.cockpit.tag}
-              </a>
-            )}
-          </div>
-          <pre><code>curl -fsSL https://phux.sh/install-cockpit | sh
-open -a "Phux Cockpit"</code></pre>
-        </div>
-      </div>
-      <p class="install-cap dim">
-        Both scripts verify the release checksums before installing anything —
-        read them first, the way you should with any installer. Cockpit needs
-        Apple silicon macOS 11 or later. On Homebrew 6+, tap once
-        (<code>brew trust --tap no-phux/tap && brew tap no-phux/tap</code>) and
-        then <code>brew install no-phux/tap/phux</code> or
-        <code>brew install --cask no-phux/tap/phux-cockpit</code>.
-        The <a href={docsHref("/quickstart/install")}>install guide</a> also covers release
-        tarballs, source builds, and <code>--channel next</code> for green
-        <code>main</code>
-        (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
-      </p>
-    </div>
-
+  <section class="wrap hero">
     <div class="hero-copy">
-      <p class="eyebrow"><span>SYS</span> terminal multiplexer / same objects, many consumers</p>
-      <h1>You and your agents share the same terminals.<span class="hero-cursor" aria-hidden="true">_</span></h1>
-      <p class="tagline">
-        <span class="mark">phux</span> is a terminal multiplexer whose panes
-        are a view. Underneath, each terminal is an addressable object on a
-        wire: you, Cockpit, a script, or an agent attach to the same live
-        emulator. Nobody screen-scrapes. Nobody holds a second copy.
+      <h1>You and your agents share the same terminals.</h1>
+      <p class="lede">
+        phux is a terminal multiplexer whose panes are a view. Underneath,
+        each terminal is an object on a wire: you, Cockpit, a script, or an
+        agent attach to the same live emulator.
       </p>
       <div class="hero-ctas">
-        <a class="cta" href={docsHref("/quickstart")}>quickstart</a>
-        <a class="cta ghost" href={docsHref("/overview")}>docs</a>
-      </div>
-      <div class="hero-points" aria-label="phux design points">
-        <div>
-          <span>01</span>
-          <b>real terminal bytes</b>
-          <p>the same libghostty engine on both ends; nobody re-parses.</p>
-        </div>
-        <div>
-          <span>02</span>
-          <b>many consumers</b>
-          <p>the TUI, Cockpit, browser, and agents share one model.</p>
-        </div>
-        <div>
-          <span>03</span>
-          <b>same objects</b>
-          <p>a script reads and types the terminal you are looking at.</p>
-        </div>
+        <a class="cta" href="#install">Install</a>
+        <a class="cta ghost" href={docsHref("/overview")}>Read the docs</a>
       </div>
     </div>
-
-    <div class="terminal-stage">
-        <div class="terminal-heading">
-          <span><i></i> live / edge + native</span>
-          <b>100×24 / phux-web</b>
-      </div>
+    <div class="hero-stage">
       <PhuxTerminal
         client:idle
         wsUrl={SITE.demoWsUrl}
@@ -94,832 +30,272 @@ open -a "Phux Cockpit"</code></pre>
         cols={100}
         rows={24}
         poster="/demo-poster.png"
-        posterAlt="a live phux session: the demo shell MOTD, osc 8 hyperlinks, and 24-bit color rendered by the phux-web client"
+        posterAlt="a live phux session: the demo shell MOTD, OSC 8 hyperlinks, and 24-bit color rendered by the phux-web client"
       />
-      <noscript>
-        <style>
-          .pterm-launch { display: none; }
-        </style>
-      </noscript>
-      <p class="term-cap">
-        A real phux terminal in your browser. Start on the instant edge, or
-        sign in for five disposable minutes in Linux and run the real TUI.
-        <span class="dim">
-          Inside <code>phux</code>: split panes, open windows, detach, and
-          reattach — the same bytes a GUI, headless tool, or agent consumes.
-        </span>
+      <p class="hero-cap">
+        A real phux terminal in the browser. The same bytes a GUI, headless
+        tool, or agent consumes.
       </p>
     </div>
   </section>
 
-  <!-- ── surfaces (CLI, Cockpit, web, agents) ───────────────────────────── -->
-  <section class="wrap section">
-    <h2>Apps</h2>
-    <p class="lede">
-      One server, four ways in. Pick the surface that matches the glass in
-      front of you — they all attach to the same terminals.
-    </p>
-    <div class="features apps">
-      <a class="f" href={docsHref("/consumers/tui")}>
-        <h3><span class="g">01 CLI</span></h3>
-        <p>The reference TUI. Attach, split, detach, copy-mode. Prefix keys, then work.</p>
-      </a>
-      <a class="f" href={docsHref("/consumers/cockpit")}>
-        <h3><span class="g">02 Cockpit</span></h3>
-        <p>Native macOS. Same objects as the TUI, on Apple silicon, without a tty in the way.</p>
-      </a>
-      <a class="f" href={docsHref("/consumers/web")}>
-        <h3><span class="g">03 Web</span></h3>
-        <p>The browser client you are looking at. Own engine, canvas projection, same wire.</p>
-      </a>
-      <a class="f" href={docsHref("/consumers/agents")}>
-        <h3><span class="g">04 Agents</span></h3>
-        <p>CLI, MCP, OpenCode, Pi, Claude. Read, act, wait on the terminals a person sees.</p>
-      </a>
-    </div>
-  </section>
-
-  <!-- ── a terminal is an object on a wire ──────────────────────────────── -->
-  <section class="wrap section">
-    <h2>Why the wire exists</h2>
-    <p class="lede">
-      phux is not another terminal emulator. It gives a real terminal a stable
-      identity so a person, GUI, or agent can <b>spawn</b>, <b>observe</b>, and
-      <b>drive</b> it without owning the only view.
-    </p>
-    <div class="features">
-      <div class="f">
-        <h3><span class="g">spawn</span></h3>
-        <p>open a terminal as an object with a stable id, independent of who's
-        watching it.</p>
+  <section class="wrap features-list">
+    <a class="feature" href={docsHref("/concepts")}>
+      <span>01</span>
+      <div>
+        <h2>Panes are a view.</h2>
+        <p>
+          The multiplexer chrome is one consumer. Underneath, each terminal
+          is an object with a stable id. Detach, reattach, share it.
+        </p>
       </div>
-      <div class="f">
-        <h3><span class="g">observe</span></h3>
-        <p>attach to its live byte stream — the same stream any other consumer
-        sees.</p>
+    </a>
+    <a class="feature" href={docsHref("/consumers")}>
+      <span>02</span>
+      <div>
+        <h2>Same objects, many consumers.</h2>
+        <p>
+          CLI, Cockpit, the browser, and agents attach to the same live
+          emulator. Nobody screen-scrapes. Nobody holds a second copy.
+        </p>
       </div>
-      <div class="f">
-        <h3><span class="g">drive</span></h3>
-        <p>write input to it, resize it, tag it — from a TUI, a GUI, or a
-        program.</p>
+    </a>
+    <a class="feature" href={docsHref("/consumers/agents")}>
+      <span>03</span>
+      <div>
+        <h2>Co-presence.</h2>
+        <p>
+          An agent reads, acts, and waits against the terminal you are
+          looking at. OpenCode, Pi, and Claude plug into that loop.
+        </p>
+      </div>
+    </a>
+    <a class="feature" href={docsHref("/wire")}>
+      <span>04</span>
+      <div>
+        <h2>Bytes stay bytes.</h2>
+        <p>
+          The same libghostty engine runs on both ends. Server sends VT;
+          client sends structured input. Nothing in the middle re-parses.
+        </p>
+      </div>
+    </a>
+  </section>
+
+  <section class="wrap install" id="install">
+    <h2>Install the CLI, or Cockpit on macOS.</h2>
+    <p class="lede">
+      One command, then <code>phux</code>. Cockpit is the native app for the
+      same terminals.
+    </p>
+    <div class="install-row">
+      <div class="install-cmd">
+        <span>CLI {release.tag && <em>{release.tag}</em>}</span>
+        <code>{cliInstall}</code>
+        <button type="button" data-copy={cliInstall}>Copy</button>
+      </div>
+      <div class="install-cmd">
+        <span>Cockpit {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
+        <code>{cockpitInstall}</code>
+        <button type="button" data-copy={cockpitInstall}>Copy</button>
       </div>
     </div>
-    <p class="lede dim">
-      The TUI is one consumer, not the product boundary. A re-parsing
-      multiplexer has to implement every protocol by hand and always lags.
-      phux never re-parses: the same engine runs on both ends, so the bytes
-      on the wire are the bytes your program wrote.
-      <a href={docsHref("/concepts")}>See the model</a> or
-      <a href={docsHref("/wire")}>read the protocol</a>.
+    <p class="install-more">
+      Both scripts verify release checksums. Cockpit needs Apple silicon macOS
+      11+. Homebrew: <code>brew tap no-phux/tap && brew install no-phux/tap/phux</code>.
+      To track green <code>main</code>, add{" "}
+      <code>--channel next</code>{" "}
+      (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
+      {" "}
+      <a href={docsHref("/quickstart/install")}>All install methods</a>
     </p>
   </section>
-
-  <!-- ── built for agents (honest) ──────────────────────────────────────── -->
-  <section class="wrap section">
-    <h2>Built for agents</h2>
-    <p class="lede">
-      The CLI and MCP adapter let an agent read, act, and wait against the same
-      terminals a person sees. Rich clients can carry the engine and project
-      structure locally, as <span class="mark">phux-web</span> does.
-      <a href={docsHref("/consumers/agents")}>Use the agent guide</a>.
-    </p>
-  </section>
-
-  <!-- ── status (the three-tier line, mirrors the README) ───────────────── -->
-  <section class="wrap section">
-    <h2>Status</h2>
-    <p class="lede">
-      The TUI, Cockpit, headless CLI, MCP adapter, and hub-and-spoke
-      federation are here. Agent sessions exist in this tree; older brew/curl
-      releases may not advertise them — check
-      <code>phux status --json</code>. No crates.io SDK.
-      Gaps: <a href={docsHref("/concepts")}>concepts</a>.
-    </p>
-    <ul class="status-tiers">
-      <li>
-        <b>try it</b> — attach, detach, splits, modern-terminal passthrough,
-        and the version-negotiated wire.
-      </li>
-      <li>
-        <b>real, APIs may move</b> — the headless CLI, <code>phux-mcp</code>,
-        Cockpit, WSS/QUIC attach, and <code>host/@N</code> satellite routing.
-      </li>
-      <li>
-        <b>not yet</b> — a typed public SDK crate, and a durable on-disk
-        journal.
-      </li>
-      <li>
-        <b>experimental</b> — predictive local echo is implemented and opt-in,
-        with conservative prediction and authoritative reconciliation.
-      </li>
-    </ul>
-    <p class="lede dim">
-      mit/apache-2.0 ·
-      <a href={SITE.github} target="_blank" rel="noopener">github.com/no-phux/phux</a>
-    </p>
-  </section>
-
-  <!-- ── get going ──────────────────────────────────────────────────────── -->
-  <section class="wrap section">
-    <h2>Get going</h2>
-    <div class="router">
-      <a class="route" href={docsHref("/quickstart")}>
-        <span class="route-k">quickstart</span>
-        <span class="route-t">Install it, attach, and share a live terminal.</span>
-      </a>
-      <a class="route" href={docsHref("/overview")}>
-        <span class="route-k">docs</span>
-        <span class="route-t">Guided paths for users, agents, and implementers.</span>
-      </a>
-      <a class="route" href={docsHref("/wire")}>
-        <span class="route-k">the wire</span>
-        <span class="route-t">The protocol — L1 bytes, L3 metadata and links.</span>
-      </a>
-      <a class="route" href={docsHref("/consumers")}>
-        <span class="route-k">apps</span>
-        <span class="route-t">The TUI, Cockpit, web client, agent CLI, and MCP.</span>
-      </a>
-      <a class="route" href={SITE.github} target="_blank" rel="noopener">
-        <span class="route-k">github</span>
-        <span class="route-t">The source, the ADRs, the open work.</span>
-      </a>
-    </div>
-  </section>
-
-  <style>
-    /* hero — narrative landing, terminal island as live proof */
-    .landing-hero {
-      padding-block: clamp(72px, 9vw, 112px) 64px;
-    }
-    .hero-copy {
-      max-width: 980px;
-      margin: 0 auto 52px;
-    }
-    .eyebrow {
-      margin: 0 0 12px;
-      color: var(--color-signal);
-      font-family: var(--font-code);
-      font-size: 11px;
-      letter-spacing: 0.04em;
-    }
-    .landing-hero h1 {
-      font-size: clamp(44px, 6.2vw, 72px);
-      line-height: 1.02;
-      margin: 0 0 24px;
-      font-weight: 680;
-      letter-spacing: -0.045em;
-      max-width: 13ch;
-    }
-    .landing-hero .tagline {
-      font-size: clamp(17px, 2vw, 20px);
-      line-height: 1.6;
-      color: #b8b8c0;
-      max-width: 68ch;
-      margin: 0 0 30px;
-    }
-    .landing-hero .mark {
-      color: var(--color-accent);
-      font-weight: 700;
-      font-family: var(--font-code);
-    }
-    .hero-ctas {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin: 0 0 40px;
-    }
-    .hero-points {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1px;
-      border: 1px solid var(--color-rule);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: var(--color-rule);
-    }
-    .hero-points > div {
-      background: var(--color-surface);
-      padding: 20px;
-      min-width: 0;
-    }
-    .hero-points span {
-      display: block;
-      margin-bottom: 8px;
-      color: var(--color-accent);
-      font-family: var(--font-code);
-      font-size: 11px;
-    }
-    .hero-points b {
-      display: block;
-      margin-bottom: 6px;
-      color: var(--color-fg);
-      font-size: 15px;
-    }
-    .hero-points p {
-      margin: 0;
-      color: var(--color-dim);
-      font-size: 14px;
-      line-height: 1.6;
-    }
-
-    .terminal-stage {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 12px;
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 16px;
-      border: 1px solid var(--color-rule);
-      border-radius: var(--radius-lg);
-      background: var(--color-surface);
-      box-shadow: 0 30px 90px -64px rgba(157, 139, 255, 0.8);
-    }
-    .terminal-heading {
-      width: 100%;
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 16px;
-      color: var(--color-dim);
-      font-family: var(--font-code);
-      font-size: 12px;
-    }
-    .terminal-heading b {
-      color: var(--color-accent);
-      font-weight: 700;
-    }
-    .term-cap {
-      max-width: 62ch;
-      margin: 0;
-      text-align: center;
-      font-size: 14px;
-      line-height: 1.6;
-      color: #c5c5cc;
-    }
-    .term-cap .dim {
-      display: block;
-      margin-top: 4px;
-      font-size: 12px;
-    }
-
-    /* install band — both copy-paste paths, front and center above the demo */
-    .hero-install-band {
-      grid-column: 1 / -1;
-      margin-bottom: 44px;
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      border: 1px solid var(--color-rule);
-      background: var(--color-surface);
-    }
-    .install-band-label {
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--color-rule);
-      color: var(--color-warn);
-      font-size: 10px;
-      font-family: var(--font-code);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    .install-options {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-    }
-    .install-option {
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    .install-option + .install-option {
-      border-left: 1px solid var(--color-rule);
-    }
-    .install-label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--color-rule);
-      color: var(--color-dim);
-      font-size: 11.5px;
-      font-family: var(--font-code);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    .hero-install-band pre {
-      background: var(--color-bg-soft);
-      margin: 0;
-      padding: 12px 14px;
-      font-size: 12.5px;
-      font-family: var(--font-code);
-      line-height: 1.6;
-      white-space: pre;
-      overflow-x: auto;
-      max-width: 100%;
-    }
-    .install-cap {
-      font-size: 12px;
-      margin: 0;
-      padding: 8px 14px;
-      border-top: 1px solid var(--color-rule);
-      max-width: none;
-    }
-
-    @media (max-width: 780px) {
-      .landing-hero {
-        padding-block: 52px 36px;
-      }
-      .landing-hero h1 {
-        font-size: 42px;
-        max-width: 10ch;
-      }
-      .landing-hero .tagline {
-        font-size: 17px;
-        line-height: 1.65;
-      }
-      .hero-points {
-        grid-template-columns: 1fr;
-      }
-      .terminal-stage {
-        padding: 12px;
-        border-radius: 8px;
-      }
-      .terminal-heading {
-        flex-direction: column;
-        gap: 2px;
-        align-items: flex-start;
-      }
-    }
-
-    /* status tiers */
-    .status-tiers {
-      margin: 0 0 14px;
-      padding: 0;
-      list-style: none;
-      max-width: 900px;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .status-tiers li {
-      margin: 0;
-      padding: 18px 18px 18px 38px;
-      position: relative;
-      font-size: 15px;
-      line-height: 1.6;
-      color: #c8c8d0;
-      border: 1px solid var(--color-rule);
-      border-radius: var(--radius-md);
-      background: var(--color-surface);
-    }
-    .status-tiers li::before {
-      content: "→";
-      position: absolute;
-      left: 16px;
-      top: 18px;
-      color: var(--color-signal);
-    }
-    .status-tiers b {
-      color: var(--color-fg);
-    }
-    .status-tiers code {
-      color: var(--color-signal);
-      font-size: 0.95em;
-    }
-
-    /* shared narrative copy */
-    .lede {
-      font-size: 17px;
-      line-height: 1.72;
-      color: #c2c2c9;
-      max-width: var(--reading-width);
-      margin: 0 0 18px;
-    }
-    .lede b {
-      color: var(--color-fg);
-      font-weight: 700;
-    }
-    .lede .mark {
-      color: var(--color-accent);
-      font-weight: 700;
-    }
-    .lede a {
-      color: var(--color-accent);
-    }
-    .lede a:hover {
-      text-decoration: underline;
-    }
-
-    /* get-going router cards */
-    .router {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
-    }
-    .route {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      border: 1px solid var(--color-rule);
-      border-radius: 6px;
-      padding: 20px;
-      text-decoration: none;
-      color: var(--color-fg);
-      transition: border-color 0.12s ease, background 0.12s ease;
-    }
-    .route:hover {
-      background: var(--color-bg-soft);
-      border-color: var(--color-accent-soft);
-      color: var(--color-fg);
-    }
-    .route-k {
-      font-size: 15px;
-      color: var(--color-accent);
-      font-weight: 700;
-    }
-    .route-t {
-      font-size: 14px;
-      line-height: 1.55;
-      color: var(--color-dim);
-    }
-    @media (max-width: 680px) {
-      .status-tiers,
-      .router {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    /* Exact allocation, not cards. The landing page is one composed frame. */
-    .landing-hero {
-      display: grid;
-      grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
-      gap: 0;
-      padding-block: clamp(48px, 7vw, 88px);
-    }
-    .hero-copy {
-      max-width: none;
-      margin: 0;
-      padding: 8px clamp(24px, 4vw, 52px) 8px 0;
-      border-right: 1px solid var(--color-rule);
-    }
-    .eyebrow {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      margin-bottom: 24px;
-      color: var(--color-dim);
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-    .eyebrow span {
-      background: var(--color-accent);
-      color: var(--color-bg);
-      padding: 2px 5px;
-      font-weight: 800;
-    }
-    .landing-hero h1 {
-      max-width: 10ch;
-      margin-bottom: 26px;
-      color: var(--color-fg);
-      font-size: clamp(42px, 5vw, 70px);
-      font-weight: 800;
-      letter-spacing: -0.075em;
-      line-height: 0.96;
-    }
-    .hero-cursor {
-      color: var(--color-accent);
-      font-weight: 400;
-    }
-    .landing-hero .tagline {
-      max-width: 48ch;
-      margin-bottom: 28px;
-      color: #a9b1d6;
-      font-size: 14px;
-      line-height: 1.72;
-    }
-    .landing-hero .mark {
-      color: var(--color-accent);
-    }
-    .hero-ctas {
-      gap: 0;
-      margin-bottom: 36px;
-    }
-    .hero-ctas .cta + .cta {
-      border-left: 0;
-    }
-    .hero-points {
-      display: block;
-      border: 0;
-      border-top: 1px solid var(--color-rule);
-      border-radius: 0;
-      background: transparent;
-    }
-    .hero-points > div {
-      display: grid;
-      grid-template-columns: 30px minmax(100px, 0.7fr) 1fr;
-      align-items: baseline;
-      gap: 10px;
-      min-height: 48px;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--color-rule);
-      background: transparent;
-    }
-    .hero-points span,
-    .hero-points b,
-    .hero-points p {
-      margin: 0;
-    }
-    .hero-points span {
-      color: var(--color-subtle);
-      font-size: 10px;
-    }
-    .hero-points span::before {
-      content: "";
-      display: inline-block;
-      width: 5px;
-      height: 5px;
-      margin-right: 6px;
-      border: 1px solid var(--color-subtle);
-      transform: rotate(45deg);
-    }
-    .hero-points b {
-      color: var(--color-signal);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .hero-points p {
-      color: var(--color-dim);
-      font-size: 11px;
-      line-height: 1.45;
-    }
-
-    .terminal-stage {
-      align-self: start;
-      align-items: stretch;
-      gap: 0;
-      max-width: 100%;
-      min-width: 0;
-      margin: 0;
-      padding: 0 0 0 clamp(24px, 4vw, 52px);
-      border: 0;
-      border-radius: 0;
-      background: transparent;
-      box-shadow: none;
-    }
-    .terminal-heading {
-      min-height: 34px;
-      align-items: center;
-      padding: 0 10px;
-      border: 1px solid var(--color-rule);
-      border-bottom: 0;
-      color: var(--color-dim);
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .terminal-heading span {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-    }
-    .terminal-heading i {
-      width: 6px;
-      height: 6px;
-      background: var(--color-signal);
-    }
-    .terminal-heading b {
-      color: var(--color-cyan);
-      font-weight: 500;
-    }
-    .term-cap {
-      max-width: none;
-      padding: 10px 12px;
-      border: 1px solid var(--color-rule);
-      border-top: 0;
-      text-align: left;
-      color: var(--color-muted);
-      font-size: 11px;
-      line-height: 1.55;
-    }
-    .term-cap::before {
-      content: "INFO  ";
-      color: var(--color-cyan);
-    }
-    .term-cap .dim {
-      display: inline;
-      margin: 0;
-      font-size: inherit;
-    }
-    .hero-install-band pre {
-      border: 0;
-      border-radius: 0;
-      background: var(--color-surface);
-      color: var(--color-signal);
-    }
-    .version-badge {
-      color: var(--color-accent, currentColor);
-      border: 1px solid var(--color-rule);
-      padding: 1px 6px;
-      font-size: 9px;
-      text-decoration: none;
-    }
-    .version-badge:hover {
-      border-color: currentColor;
-    }
-    .hero-install-band .install-cap {
-      text-align: left;
-      font-size: 10px;
-    }
-
-    .section {
-      display: grid;
-      grid-template-columns: minmax(180px, 0.28fr) minmax(0, 0.72fr);
-      column-gap: clamp(24px, 5vw, 72px);
-      padding-block: clamp(52px, 7vw, 84px);
-    }
-    .section > h2 {
-      grid-column: 1;
-      grid-row: 1 / span 20;
-      align-self: start;
-      margin: 0;
-      color: var(--color-fg);
-      font-size: clamp(22px, 2.3vw, 30px);
-      line-height: 1.08;
-    }
-    .section > :not(h2) {
-      grid-column: 2;
-    }
-    .lede {
-      max-width: 76ch;
-      color: #a9b1d6;
-      font-size: 14px;
-      line-height: 1.72;
-    }
-    .features {
-      display: block;
-      border-top: 1px solid var(--color-rule);
-      margin-bottom: 18px;
-    }
-    .features .f {
-      display: grid;
-      grid-template-columns: minmax(120px, 0.25fr) 1fr;
-      gap: 20px;
-      padding: 14px 0;
-      border-bottom: 1px solid var(--color-rule);
-    }
-    .features .f h3,
-    .features .f p {
-      margin: 0;
-      font-size: 13px;
-    }
-    .features .f h3::before {
-      content: "● ";
-      color: var(--color-signal);
-      font-size: 8px;
-    }
-    .features .f h3 .g {
-      color: var(--color-signal);
-    }
-    .features.apps {
-      display: block;
-    }
-    .features.apps .f {
-      text-decoration: none;
-      color: inherit;
-    }
-    .features.apps .f:hover {
-      background: var(--color-surface-raised);
-    }
-    .features.apps .f p {
-      color: var(--color-dim);
-    }
-
-    .status-tiers {
-      display: block;
-      max-width: none;
-      border-top: 1px solid var(--color-rule);
-    }
-    .status-tiers li {
-      min-height: 50px;
-      padding: 13px 12px 13px 42px;
-      border: 0;
-      border-bottom: 1px solid var(--color-rule);
-      border-radius: 0;
-      background: transparent;
-      color: #a9b1d6;
-      font-size: 13px;
-    }
-    .status-tiers li::before {
-      content: "";
-      top: 13px;
-      width: 7px;
-      height: 7px;
-      border: 1px solid var(--color-attention);
-      background: linear-gradient(90deg, var(--color-attention) 50%, transparent 50%);
-      transform: rotate(45deg);
-      color: var(--color-attention);
-    }
-    .status-tiers li:first-child::before {
-      border-color: var(--color-signal);
-      background: var(--color-signal);
-    }
-    .status-tiers li:nth-child(2)::before {
-      border-color: var(--color-cyan);
-      background: var(--color-cyan);
-    }
-    .status-tiers li:nth-child(3)::before {
-      border-color: var(--color-subtle);
-      background: transparent;
-    }
-
-    .router {
-      display: block;
-      border-top: 1px solid var(--color-rule);
-    }
-    .route {
-      display: grid;
-      grid-template-columns: minmax(120px, 0.25fr) 1fr auto;
-      align-items: baseline;
-      gap: 20px;
-      min-height: 52px;
-      padding: 14px 0;
-      border: 0;
-      border-bottom: 1px solid var(--color-rule);
-      border-radius: 0;
-    }
-    .route:hover {
-      border-color: var(--color-accent);
-      background: var(--color-surface-raised);
-    }
-    .route-k {
-      color: var(--color-accent);
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-    .route-t {
-      color: var(--color-dim);
-      font-size: 12px;
-    }
-
-    @media (max-width: 900px) {
-      .landing-hero {
-        grid-template-columns: 1fr;
-      }
-      .hero-copy {
-        padding: 0 0 40px;
-        border-right: 0;
-      }
-      .terminal-stage {
-        padding: 40px 0 0;
-        border-top: 1px solid var(--color-rule);
-      }
-    }
-
-    @media (max-width: 680px) {
-      .landing-hero {
-        padding-block: 40px;
-      }
-      .landing-hero h1 {
-        max-width: 11ch;
-        font-size: clamp(38px, 12vw, 52px);
-      }
-      .hero-points > div {
-        grid-template-columns: 24px 1fr;
-      }
-      .hero-points p {
-        grid-column: 2;
-      }
-      .terminal-heading {
-        flex-direction: row;
-        align-items: center;
-      }
-      .install-options {
-        grid-template-columns: 1fr;
-      }
-      .install-option + .install-option {
-        border-left: 0;
-        border-top: 1px solid var(--color-rule);
-      }
-      .section {
-        grid-template-columns: 1fr;
-        gap: 28px;
-      }
-      .section > h2,
-      .section > :not(h2) {
-        grid-column: 1;
-        grid-row: auto;
-      }
-      .features .f,
-      .route {
-        grid-template-columns: 1fr auto;
-        gap: 6px 12px;
-      }
-      .features .f p,
-      .route-t {
-        grid-column: 1;
-      }
-    }
-  </style>
 </BaseLayout>
+
+<script is:inline>
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const value = btn.getAttribute("data-copy");
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        const previous = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => {
+          btn.textContent = previous;
+        }, 1400);
+      } catch {
+        btn.textContent = "Copy failed";
+      }
+    });
+  });
+</script>
+
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.2fr);
+    gap: clamp(32px, 5vw, 64px);
+    padding-block: clamp(48px, 8vw, 96px);
+    align-items: start;
+  }
+  .hero h1 {
+    margin: 0 0 20px;
+    max-width: 12ch;
+    font-size: clamp(40px, 5.4vw, 68px);
+    font-weight: 700;
+    letter-spacing: -0.055em;
+    line-height: 0.98;
+  }
+  .hero .lede,
+  .install .lede {
+    max-width: 46ch;
+    margin: 0 0 28px;
+    color: var(--color-muted);
+    font-size: 17px;
+    line-height: 1.65;
+  }
+  .hero-ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .hero-stage {
+    min-width: 0;
+  }
+  .hero-cap {
+    margin: 12px 0 0;
+    color: var(--color-dim);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .features-list {
+    border-top: 1px solid var(--color-rule);
+  }
+  .feature {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 20px;
+    padding: 36px 0;
+    border-bottom: 1px solid var(--color-rule);
+    text-decoration: none;
+    color: inherit;
+  }
+  .feature:hover h2 {
+    color: var(--color-accent);
+  }
+  .feature span {
+    color: var(--color-subtle);
+    font-family: var(--font-code);
+    font-size: 13px;
+    padding-top: 6px;
+  }
+  .feature h2 {
+    margin: 0 0 8px;
+    font-size: clamp(22px, 2.4vw, 30px);
+    letter-spacing: -0.03em;
+  }
+  .feature p {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--color-muted);
+    font-size: 16px;
+    line-height: 1.65;
+  }
+
+  .install {
+    padding-block: clamp(56px, 8vw, 96px);
+  }
+  .install h2 {
+    margin: 0 0 16px;
+    max-width: 18ch;
+    font-size: clamp(28px, 3.4vw, 42px);
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+  }
+  .install-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .install-cmd {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 14px 16px;
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+  }
+  .install-cmd span {
+    grid-column: 1 / -1;
+    color: var(--color-dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .install-cmd em {
+    font-style: normal;
+    color: var(--color-accent);
+  }
+  .install-cmd code {
+    min-width: 0;
+    overflow-x: auto;
+    color: var(--color-signal);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .install-cmd button {
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-fg);
+    background: transparent;
+    border: 1px solid var(--color-rule);
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .install-cmd button:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .install-more {
+    margin: 0;
+    max-width: 78ch;
+    color: var(--color-dim);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .install-more a {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: 1fr;
+      padding-block: 40px 48px;
+    }
+    .hero h1 {
+      max-width: 14ch;
+    }
+    .install-row {
+      grid-template-columns: 1fr;
+    }
+  }
+  @media (max-width: 640px) {
+    .feature {
+      grid-template-columns: 32px 1fr;
+      padding: 28px 0;
+    }
+    .install-cmd code {
+      grid-column: 1 / -1;
+    }
+    .install-cmd button {
+      justify-self: start;
+    }
+  }
+</style>

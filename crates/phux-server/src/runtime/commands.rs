@@ -3303,11 +3303,19 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
                 let focus = s
                     .most_recently_touched_session()
                     .or_else(|| s.registry().sessions().next().map(|(id, _)| id));
-                focus.and_then(|sid| s.build_session_snapshot(sid))
+                let mut snapshot = focus
+                    .and_then(|sid| s.build_session_snapshot(sid))
+                    .unwrap_or_else(empty_session_snapshot);
+                // `build_session_snapshot` already attaches the report when the
+                // registry has a focus session; an empty registry still needs
+                // the listener table so `phux doctor` can see a boot-time
+                // disable with no panes (phux-kyna).
+                if snapshot.listeners().is_none() && s.has_remote_listener_report() {
+                    snapshot = snapshot.with_listeners(s.remote_listeners().clone());
+                }
+                snapshot
             });
-            CommandResult::OkWith(CommandValue::State(
-                snapshot.unwrap_or_else(empty_session_snapshot),
-            ))
+            CommandResult::OkWith(CommandValue::State(snapshot))
         }
         // `StateScope` is `#[non_exhaustive]`; a narrower scope a newer
         // peer requests is not yet supported.

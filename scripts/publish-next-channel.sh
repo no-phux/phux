@@ -65,7 +65,10 @@ else
 fi
 
 published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-channel_json="$(mktemp)"
+# The asset name is the basename. `gh release upload file#label` sets a
+# label, not the filename, so a mktemp path uploaded as `tmp.XXXX`.
+pointer_dir="$(mktemp -d)"
+channel_json="$pointer_dir/channel.json"
 cat > "$channel_json" <<EOF
 {
   "schema_version": 1,
@@ -75,8 +78,8 @@ cat > "$channel_json" <<EOF
   "published_at": "${published_at}"
 }
 EOF
-gh release upload next "$channel_json#channel.json" --clobber
-rm -f "$channel_json"
+gh release upload next "$channel_json" --clobber
+rm -rf "$pointer_dir"
 
 names="$(gh release view next --json assets --jq '.assets[].name')"
 keep_prefix="phux-next.${sha}-"
@@ -89,6 +92,10 @@ while IFS= read -r name; do
   case "$name" in
     channel.json) continue ;;
     "${keep_prefix}"*) continue ;;
+    tmp.*)
+      gh release delete-asset next "$name" --yes
+      continue
+      ;;
   esac
   if [[ -n "$prev_prefix" && "$name" == "${prev_prefix}"* ]]; then
     continue

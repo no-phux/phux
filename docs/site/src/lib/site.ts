@@ -34,19 +34,15 @@ export function docsHref(path: string): string {
 }
 
 export const MARKETING_NAV = [
-  { href: docsHref("/overview"), label: "docs" },
-  { href: docsHref("/consumers"), label: "apps" },
-  { href: docsHref("/consumers/agents"), label: "agents" },
-  { href: SITE.github, label: "github", external: true },
+  { href: docsHref("/overview"), label: "Docs" },
+  { href: docsHref("/consumers"), label: "Apps" },
+  { href: docsHref("/consumers/agents"), label: "Agents" },
+  { href: SITE.github, label: "GitHub", external: true },
 ] as const;
 
 export const DOCS_NAV = [
-  { href: "/overview", label: "overview" },
-  { href: "/quickstart", label: "quickstart" },
-  { href: "/consumers", label: "apps" },
-  { href: "/wire", label: "protocol" },
-  { href: SITE.url, label: "phux.sh", external: true },
-  { href: SITE.github, label: "github", external: true },
+  { href: SITE.url, label: "Site" },
+  { href: SITE.github, label: "GitHub", external: true },
 ] as const;
 
 export const NAV = MARKETING_NAV;

@@ -637,15 +637,23 @@ impl HostInventory {
 /// session_row = id: SessionId (u32) || flags: u8   // bit 0 = keep_empty
 /// ```
 ///
+/// # The trailing remote-listeners report
+///
+/// After the session facets an encoder appends an optional length-prefixed
+/// JSON object, [`Self::listeners`] (phux-kyna): the server's remote
+/// listener bind outcomes (`wss` / `quic` / `wt`). Absent means the serving
+/// peer did not fill the report (an older server, or nothing to say yet).
+///
 /// # Order of the trailing lists
 ///
-/// The order is fixed: resource facets, then hosts, then session facets.
-/// Each list is written only when it or a later list is non-empty, and every
-/// earlier list is then written explicitly, with a zero count when it has no
-/// rows, so a later list never aliases an earlier one. A decoder reads each
-/// list only while bytes remain. A snapshot with no later list is therefore
-/// byte-identical to one encoded before that list existed, and an older
-/// decoder that stops after the facets or after the hosts is still correct.
+/// The order is fixed: resource facets, then hosts, then session facets,
+/// then the optional listeners JSON. Each list is written only when it or a
+/// later list is non-empty, and every earlier list is then written
+/// explicitly, with a zero count when it has no rows, so a later list never
+/// aliases an earlier one. A decoder reads each list only while bytes remain.
+/// A snapshot with no later list is therefore byte-identical to one encoded
+/// before that list existed, and an older decoder that stops after the
+/// facets, after the hosts, or after the session facets is still correct.
 /// Unknown session-facet flag bits and rows naming no session are ignored.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
@@ -686,21 +694,23 @@ pub struct SessionSnapshot {
     pub focused_window: WindowId,
     /// The attaching client's initial focused pane.
     pub focused_resource: ResourceId,
-    /// The host-session inventory: one row per federation satellite, filled
-    /// by a hub's `GET_STATE` and empty everywhere else. Satellite sessions
-    /// never enter [`Self::sessions`]; their ids are satellite-local.
+    /// Host-session inventory and remote-listener report, boxed together.
     ///
-    /// Read it through [`Self::hosts`]; `None` is the empty inventory, and
-    /// [`Self::with_hosts`] and the decoder never store `Some` of an empty
-    /// slice, so two equal inventories compare equal.
-    ///
-    /// An optional boxed slice rather than a `Vec`: it is empty in every
-    /// snapshot but a hub's `GET_STATE` reply, the empty case does not
-    /// allocate and stays `const`-constructible, and the eight bytes it
-    /// saves keep `CommandResult` (which carries this snapshot inline) under
-    /// the large-`Err` size the server's `Result<_, CommandResult>` helpers
-    /// are held to.
-    pub hosts: Option<Box<[HostInventory]>>,
+    /// Read hosts through [`Self::hosts`] and listeners through
+    /// [`Self::listeners`]. Absent when both are empty, so a Terminal-only
+    /// snapshot stays byte-identical to one encoded before either trailing
+    /// field existed. Boxing them together (rather than as two `Option`s)
+    /// keeps `CommandResult` under the large-`Err` size the server's
+    /// `Result<_, CommandResult>` helpers are held to.
+    trail: Option<Box<SessionSnapshotTrail>>,
+}
+
+/// Trailing additive payload for [`SessionSnapshot`]: hosts inventory plus
+/// the remote-listeners report, sharing one optional allocation.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionSnapshotTrail {
+    hosts: Box<[HostInventory]>,
+    listeners: Option<crate::wire::listeners::RemoteListenersReport>,
 }
 
 impl SessionSnapshot {
@@ -720,7 +730,7 @@ impl SessionSnapshot {
             focused_session,
             focused_window,
             focused_resource,
-            hosts: None,
+            trail: None,
         }
     }
 
@@ -728,14 +738,62 @@ impl SessionSnapshot {
     /// federation satellite, empty unless a hub filled it.
     #[must_use]
     pub fn hosts(&self) -> &[HostInventory] {
-        self.hosts.as_deref().unwrap_or(&[])
+        self.trail
+            .as_ref()
+            .map_or(&[], |trail| trail.hosts.as_ref())
     }
 
-    /// Builder setter for [`Self::hosts`]. An empty list stores `None`.
+    /// Builder setter for the hosts inventory. An empty list with no
+    /// listeners clears the trail.
     #[must_use]
     pub fn with_hosts(mut self, hosts: Vec<HostInventory>) -> Self {
-        self.hosts = boxed_hosts(hosts);
+        self.set_hosts(hosts);
         self
+    }
+
+    /// Remote listener bind report, when the serving peer filled it.
+    #[must_use]
+    pub fn listeners(&self) -> Option<&crate::wire::listeners::RemoteListenersReport> {
+        self.trail
+            .as_ref()
+            .and_then(|trail| trail.listeners.as_ref())
+    }
+
+    /// Builder setter for the remote-listeners report.
+    #[must_use]
+    pub fn with_listeners(
+        mut self,
+        listeners: crate::wire::listeners::RemoteListenersReport,
+    ) -> Self {
+        self.set_listeners(Some(listeners));
+        self
+    }
+
+    fn set_hosts(&mut self, hosts: Vec<HostInventory>) {
+        let listeners = self
+            .trail
+            .as_ref()
+            .and_then(|trail| trail.listeners.clone());
+        self.trail = match (boxed_hosts(hosts), listeners) {
+            (None, None) => None,
+            (hosts, listeners) => Some(Box::new(SessionSnapshotTrail {
+                hosts: hosts.unwrap_or_default(),
+                listeners,
+            })),
+        };
+    }
+
+    fn set_listeners(&mut self, listeners: Option<crate::wire::listeners::RemoteListenersReport>) {
+        let hosts = self
+            .trail
+            .as_ref()
+            .map(|trail| trail.hosts.clone())
+            .unwrap_or_default();
+        self.trail = if hosts.is_empty() && listeners.is_none() {
+            None
+        } else {
+            Some(Box::new(SessionSnapshotTrail { hosts, listeners }))
+        };
     }
 
     /// Builder setter for [`Self::sessions`].
@@ -1055,11 +1113,13 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
     let session_rows = snap.sessions.iter().filter(|s| s.keep_empty).count();
-    let session_facets_follow = session_rows > 0;
+    let listeners_follow = snap.listeners().is_some();
+    let session_facets_follow = session_rows > 0 || listeners_follow;
     let hosts_follow = !snap.hosts().is_empty() || session_facets_follow;
     encode_resource_facets(&snap.resources, hosts_follow, enc);
     encode_host_inventory(snap.hosts(), session_facets_follow, enc);
-    encode_session_facets(&snap.sessions, session_rows, enc);
+    encode_session_facets(&snap.sessions, session_rows, listeners_follow, enc);
+    encode_listeners(snap.listeners(), enc);
 }
 
 /// Store an inventory canonically: `None` when empty, so a snapshot built
@@ -1141,9 +1201,15 @@ fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeE
 }
 
 /// Write the trailing session-facet list (see [`SessionSnapshot`]), or
-/// nothing when no session carries a facet.
-fn encode_session_facets(sessions: &[SessionInfo], rows: usize, enc: &mut Encoder<'_>) {
-    if rows == 0 {
+/// nothing when no session carries a facet and no later trailing field
+/// (`more_follow`) needs its count as a positional anchor.
+fn encode_session_facets(
+    sessions: &[SessionInfo],
+    rows: usize,
+    more_follow: bool,
+    enc: &mut Encoder<'_>,
+) {
+    if rows == 0 && !more_follow {
         return;
     }
     encode_list_len(rows, enc);
@@ -1151,6 +1217,29 @@ fn encode_session_facets(sessions: &[SessionInfo], rows: usize, enc: &mut Encode
         enc.write_u32_be(session.id.get());
         enc.write_u8(SESSION_FACET_KEEP_EMPTY);
     }
+}
+
+/// Write the trailing remote-listeners JSON (see [`SessionSnapshot`]), or
+/// nothing when the serving peer left the report unset.
+fn encode_listeners(
+    report: Option<&crate::wire::listeners::RemoteListenersReport>,
+    enc: &mut Encoder<'_>,
+) {
+    let Some(report) = report else {
+        return;
+    };
+    let json = report.to_json();
+    encode_option_str(Some(json.as_str()), enc);
+}
+
+/// Read the trailing remote-listeners JSON if bytes remain.
+fn decode_listeners(
+    dec: &mut Decoder<'_>,
+) -> Result<Option<crate::wire::listeners::RemoteListenersReport>, DecodeError> {
+    if dec.at_body_end() {
+        return Ok(None);
+    }
+    Ok(decode_option_str(dec)?.and_then(crate::wire::listeners::RemoteListenersReport::from_json))
 }
 
 /// Read the trailing session-facet list if bytes remain, joining each row
@@ -1200,17 +1289,25 @@ pub(super) fn decode_session_snapshot(
     let focused_window = WindowId::new(dec.read_u32_be()?);
     let focused_resource = decode_terminal_id(dec)?;
     decode_resource_facets(dec, &mut resources)?;
-    let hosts = boxed_hosts(decode_host_inventory(dec)?);
+    let hosts = decode_host_inventory(dec)?;
     decode_session_facets(dec, &mut sessions)?;
-    Ok(SessionSnapshot {
+    let listeners = decode_listeners(dec)?;
+    let mut snapshot = SessionSnapshot {
         sessions,
         windows,
         resources,
         focused_session,
         focused_window,
         focused_resource,
-        hosts,
-    })
+        trail: None,
+    };
+    if !hosts.is_empty() {
+        snapshot.set_hosts(hosts);
+    }
+    if let Some(listeners) = listeners {
+        snapshot.set_listeners(Some(listeners));
+    }
+    Ok(snapshot)
 }
 
 // -----------------------------------------------------------------------------
