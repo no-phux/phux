@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-11
 ---
 
 # Install
@@ -71,9 +71,9 @@ it before you pipe it anywhere, the way you should with any installer.
 
 It verifies the release `.sha256` sidecar before unpacking and transactionally
 installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
-The previous pair is restored if publication is interrupted or either binary
-cannot be published. Set `PHUX_INSTALL_DIR` to choose a different bin
-directory. With no `--version`, it uses the latest GitHub release. On success,
+The installer rolls back failed publication and handles INT/TERM during
+publication. Set `PHUX_INSTALL_DIR` to choose a different bin
+directory. With no `--version`, it uses the latest stable core release. On success,
 the installer prints the exact command to run next. It prints a copy-paste
 `PATH` remedy only when that directory is not already on `PATH`.
 Every portable tarball and installer path includes `phux-mcp`; there is no
@@ -85,6 +85,30 @@ To pin a specific release, pass any tag from the
 ```sh
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
+
+### Release discovery and pins
+
+The CLI installer and `phux update` select only stable `vX.Y.Z` releases;
+Cockpit selects only stable `cockpit-vX.Y.Z` releases. Drafts and prereleases
+are excluded using the release metadata, even when their tags look stable.
+Discovery searches up to **10 pages of 30 releases**, with a **1 MiB response
+limit per page**. Malformed metadata, oversized responses, network errors, and
+search exhaustion fail explicitly and suggest `--version` with a known tag.
+The index requests use curl connection/total timeouts or wget connection/read
+timeouts, so an unavailable index does not silently hang the install.
+
+An explicit `--version` validates the tag locally and **bypasses release-index
+requests** in both installers and `phux update`. It downloads only that
+release's artifacts; `phux update --check --version vX.Y.Z` needs no network.
+Tags use canonical numeric `MAJOR.MINOR.PATCH` components (no leading zeros,
+suffixes, or extra components). Cockpit also accepts bare `X.Y.Z` as shorthand.
+
+The standalone installers require POSIX awk and standard Unix utilities in
+addition to curl or wget; they do not require jq or Python. Maintainers edit
+`scripts/lib/install-release.sh` and run
+`bash scripts/sync-install-resolver.sh --write` to embed the shared parser and
+discovery loop in both served scripts. The install-surface gate verifies these
+copies and runs hermetic release-selection tests.
 
 ## Phux Cockpit (native macOS)
 
@@ -295,7 +319,7 @@ the re-exec mechanism replays the *same* path.
 
 ```sh
 phux update --check              # report only; never downloads an archive
-phux update --check --json       # the stable document (schema_version 1)
+phux update --check --json       # the versioned document (schema_version 2)
 phux update --dry-run            # download and verify, install nothing
 phux update --version vX.Y.Z     # install a specific release (downgrades too)
 phux update --no-restart         # replace binaries, leave the server alone
@@ -306,6 +330,12 @@ the JSON document rather than the exit status. A refusal (package-managed,
 immutable store, unknown location) exits 2 with the remedy; a failure to fetch,
 verify, or install exits 1. Under `--json`, stdout carries only the document
 and a failure puts one JSON object on stderr.
+
+Document schema 2 makes `latest_version` nullable. When `--version` is supplied,
+`target_version` names that pin and `latest_version` is `null`: discovery was
+intentionally skipped. The human
+output labels it as a selected target rather than claiming it is the latest
+release. Rollback likewise reports no discovered latest version.
 
 ### Rolling back
 

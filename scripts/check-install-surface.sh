@@ -120,12 +120,10 @@ require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/p
 require_fixed scripts/install.sh 'echo "next: phux"'
 require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
 require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
-# The repo publishes several release streams and only bare vX.Y.Z tags carry
-# the CLI tarballs. The redirect fast path must stay core-only, with a
-# filtered list as the fallback for when another stream ships newer.
-require_fixed scripts/install.sh 'v[0-9]*)'
-require_fixed scripts/install.sh 'releases?per_page=30'
-require_fixed scripts/install.sh 'no core phux release found in recent GitHub releases'
+# Both standalone scripts embed the same bounded structural JSON resolver.
+# The executable tests cover mixed streams, pagination and metadata filtering.
+require_fixed scripts/install.sh 'resolve_latest_version v'
+require_fixed scripts/install-cockpit.sh 'resolve_latest_version cockpit-v'
 require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
 # --- The Cockpit installer ---------------------------------------------------
@@ -435,4 +433,6 @@ if [ "$failures" -ne 0 ]; then
 fi
 
 bash "$ROOT/scripts/test-install.sh"
+bash "$ROOT/scripts/sync-install-resolver.sh" --check
+bash "$ROOT/scripts/test-install-resolution.sh"
 echo "install surface check passed"

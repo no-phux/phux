@@ -125,6 +125,34 @@ fn a_tag_that_is_not_a_release_tag_is_refused_without_network() {
     }
 }
 
+/// A selected pin must not depend on latest-release discovery. Exercise the
+/// real CLI with no downloader available and an isolated, disposable HOME.
+#[test]
+fn checking_a_pin_needs_no_downloader_and_reports_latest_as_unknown() {
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(PHUX)
+        .env_clear()
+        .env("HOME", home.path())
+        // An empty PATH cannot accidentally reach a real curl/wget or network.
+        .env("PATH", home.path())
+        .args(["update", "--check", "--version", "v9.8.7", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stderr.is_empty());
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["schema_version"], 2);
+    assert_eq!(doc["action"], "checked");
+    assert_eq!(doc["target_version"], "v9.8.7");
+    assert!(doc["latest_version"].is_null());
+    assert!(doc["artifact"].is_null());
+    assert!(doc["server_handoff"].is_null());
+}
+
 /// `--check` reports; `--dry-run` and `--rollback` act. Combining them is a
 /// usage error caught by clap rather than a silently-ignored flag.
 #[test]
