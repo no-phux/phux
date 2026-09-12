@@ -481,14 +481,24 @@ pub const Host = struct {
     /// `cwd` empty inherits the server's default; otherwise the shell starts
     /// there. Copied by the queue call.
     pub fn requestSpawnIn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
-        return host.spawnWith(owner_ref, viewport, cwd, false);
+        return host.spawnWith(owner_ref, viewport, cwd, false, &.{});
     }
 
     /// A spawn bound to the server's instance token (ADR-0109), so a later
     /// conditional kill can name exactly this terminal. Refused by a server
     /// without CONDITIONAL_KILL; ask `conditionalKillSupported` first.
     pub fn requestSpawnBound(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
-        return host.spawnWith(owner_ref, viewport, cwd, true);
+        return host.spawnWith(owner_ref, viewport, cwd, true, &.{});
+    }
+
+    /// Dedicated tool process, copied by FFI before return. The bound spawn
+    /// retains conditional-cleanup evidence if placement later fails.
+    pub fn requestSpawnArgvBound(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, argv: []const []const u8) !u32 {
+        if (argv.len == 0) return error.InvalidArgument;
+        if (try host.spawnOwner(owner_ref)) |owner_id| {
+            if (owner_id.host().len != 0) return error.InvalidIdentity;
+        }
+        return host.spawnWith(owner_ref, viewport, cwd, true, argv);
     }
 
     pub fn conditionalKillSupported(host: *const Host) bool {
@@ -515,7 +525,10 @@ pub const Host = struct {
         return request_id;
     }
 
-    fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool) !u32 {
+    fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool, argv: []const []const u8) !u32 {
+        var raw_argv: [64]c.PhuxBytes = undefined;
+        if (argv.len > raw_argv.len) return error.InvalidArgument;
+        for (argv, 0..) |arg, index| raw_argv[index] = bytes(arg);
         const request_id = try host.preflightOperation();
         try host.reserveTerminalSlot(null);
         const owner_id = try host.spawnOwner(owner_ref);
@@ -527,8 +540,8 @@ pub const Host = struct {
             .request_id = request_id,
             .owner_terminal = if (raw_owner) |*id| id else null,
             .satellite = bytes(satellite),
-            .argv = null,
-            .argc = 0,
+            .argv = if (argv.len == 0) null else &raw_argv,
+            .argc = argv.len,
             .cwd = bytes(cwd),
             .cols = viewport.cols,
             .rows = viewport.rows,
@@ -2837,6 +2850,30 @@ test "queued spawn keeps its request id when transport staging fails" {
     try std.testing.expectEqual(@as(usize, 0), c.phux_client_outgoing_count(host.client));
     try std.testing.expect(!bridge.outgoing.hasPending());
     try std.testing.expectError(error.InvalidState, host.drainReadiness());
+}
+
+test "dedicated local argv spawn is copied into one bound FFI operation" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHostWith(host, "hello_conditional_kill.bin");
+    try std.testing.expectError(error.InvalidArgument, host.requestSpawnArgvBound(null, .{ .cols = 80, .rows = 24 }, "", &.{}));
+    var argument = "config with spaces".*;
+    const request = try host.requestSpawnArgvBound(null, .{ .cols = 80, .rows = 24 }, "/fixture", &.{ "/usr/bin/true", "--wait", &argument });
+    @memset(&argument, 'x');
+    const frame = bridge.outgoing.take() orelse return error.MissingFrame;
+    defer bridge.outgoing.release(frame);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "/usr/bin/true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "--wait") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "config with spaces") != null);
+    try std.testing.expect(bridge.outgoing.take() == null);
+    // An accepted operation becomes uncertain on loss, never resubmitted to a
+    // shell or silently reported as a completed editor launch.
+    host.disconnect();
+    const receipt = host.takeOperationResult().?;
+    try std.testing.expectEqual(request, receipt.request_id);
+    try std.testing.expectEqual(operations.types.Status.unknown_outcome, receipt.status);
 }
 
 test "resize viewport follows identity when effects remove an earlier terminal" {

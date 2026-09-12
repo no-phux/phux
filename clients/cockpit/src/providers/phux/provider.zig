@@ -92,6 +92,7 @@ pub const PhuxProvider = struct {
     attach_queued: bool = false,
     /// Failure record shared with each socket worker of a remote endpoint.
     remote_status: extension.remote.Status = .{},
+    local_status: extension.startup.Status = .{},
     /// What the catalog and status line call a remote endpoint: the registry
     /// entry's name when Connect to Host resolved one, else the target.
     remote_label: ?[]u8 = null,
@@ -168,7 +169,7 @@ pub const PhuxProvider = struct {
         if (self.worker != null) return error.InvalidState;
         self.applyPendingRetarget();
         if (self.host.state() == .new) try self.host.start(self.client_name);
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
+        self.worker = try extension.Worker.startWithOptions(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), .{ .status = &self.local_status });
     }
 
     pub fn stop(self: *PhuxProvider) void {
@@ -214,7 +215,7 @@ pub const PhuxProvider = struct {
         self.prepareSessionSwitch();
         try self.host.reconnect(self.client_name);
         self.attach_queued = false;
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
+        self.worker = try extension.Worker.startWithOptions(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), .{ .status = &self.local_status });
     }
 
     /// Point the next connection at a different coordinator: a registered
@@ -414,7 +415,13 @@ pub const PhuxProvider = struct {
 
     /// The last recorded connection failure, copied into `out`.
     pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
+        if (self.endpoint == .unix) return self.local_status.failureInto(out);
         return self.remote_status.failureInto(out);
+    }
+
+    pub fn localToolCli(self: *const PhuxProvider, out: []u8) ?[]const u8 {
+        if (self.endpoint != .unix) return null;
+        return self.local_status.cliInto(out);
     }
 
     /// Whether this host has connected since it was selected, which is what
@@ -534,6 +541,12 @@ pub const PhuxProvider = struct {
 
     pub fn requestSpawnBound(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
         return self.host.requestSpawnBound(owner_ref, viewport, cwd);
+    }
+
+    /// Dedicated LOCAL tool creation never inherits the focused remote owner.
+    pub fn requestSpawnArgvBound(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, argv: []const []const u8) !u32 {
+        if (self.endpoint != .unix) return error.InvalidState;
+        return self.host.requestSpawnArgvBound(owner_ref, viewport, cwd, argv);
     }
 
     /// A conditional kill of this coordinator's own bound spawn, on this

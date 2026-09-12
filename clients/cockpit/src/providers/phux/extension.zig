@@ -8,7 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const transport = @import("phux_transport");
-const startup = @import("startup.zig");
+pub const startup = @import("startup.zig");
 /// phux-client-ffi's remote-host tunnel. The provider reaches it through this
 /// re-export so the file belongs to exactly one build module.
 pub const remote = @import("remote_tunnel.zig");
@@ -165,9 +165,30 @@ pub const Worker = struct {
 
     fn ensureCoordinator(worker: *Worker) !void {
         switch (worker.endpoint) {
-            .unix => |path| try startup.ensure(worker.gpa, worker.io, path, &worker.stopping, worker.startup_options),
+            .unix => |path| try worker.ensureLocal(path),
             // A remote coordinator is the remote host's to supervise.
             .tcp, .remote => {},
+        }
+    }
+
+    fn ensureLocal(worker: *Worker, path: []const u8) !void {
+        var evidence: startup.Evidence = .{};
+        var options = worker.startup_options;
+        options.evidence = &evidence;
+        startup.ensure(worker.gpa, worker.io, path, &worker.stopping, options) catch |err| {
+            if (options.status) |status| status.record(evidence, path, err);
+            return err;
+        };
+        // A running server bypasses ensure and remains authoritative. Discover
+        // its setup CLI read-only on this worker, never on the UI thread.
+        if (options.status) |status| {
+            if (evidence.executable_len == 0) {
+                const cli = try startup.discoverRuntime(worker.gpa, worker.io, &worker.stopping);
+                defer worker.gpa.free(cli);
+                evidence.executable_len = @min(cli.len, evidence.executable.len);
+                @memcpy(evidence.executable[0..evidence.executable_len], cli[0..evidence.executable_len]);
+            }
+            status.record(evidence, path, null);
         }
     }
 
