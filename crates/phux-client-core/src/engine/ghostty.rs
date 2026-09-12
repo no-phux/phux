@@ -2,7 +2,8 @@
 //!
 //! Native bootstrap is the official GHOSTSNP snapshot codec: the server sends
 //! the READY prefix, this adapter reconstructs a live terminal, then history
-//! suffix bytes are pulled and applied with [`IncrementalDecoder::next`].
+//! suffix bytes are pulled and applied with
+//! [`libghostty_vt::snapshot::IncrementalDecoder::next`].
 
 use std::{
     cell::{Cell, RefCell},
