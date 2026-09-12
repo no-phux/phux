@@ -29,26 +29,28 @@
             <scroll grow="1">
               <column gap="16">
                 <if test="{settingsSection == 2}">
-                  <text wrap="true" foreground="text_muted">Use chords such as super+shift+p. Enter none to remove a shortcut.</text>
-                  <if test="{noBindingRows}"><text foreground="text_muted">No matching keyboard shortcuts</text></if>
-                  <for each="bindingRows" key="index" as="binding">
-                    <column gap="8">
-                      <row gap="8" cross="center">
-                        <text grow="1">{binding.label}</text>
-                        <text foreground="text_muted">{binding.binding}</text>
-                        <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
-                        <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
-                      </row>
-                      <text foreground="text_muted">Default: {binding.defaultBinding}</text>
-                      <if test="{bindingEditIndex == binding.index}">
-                        <row gap="8">
-                          <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
-                          <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
+                  <column gap="16">
+                    <text wrap="true" foreground="text_muted">Use chords such as super+shift+p. Enter none to remove a shortcut.</text>
+                    <if test="{noBindingRows}"><text foreground="text_muted">No matching keyboard shortcuts</text></if>
+                    <for each="bindingRows" key="index" as="binding">
+                      <column gap="8">
+                        <row gap="8" cross="center">
+                          <text grow="1">{binding.label}</text>
+                          <text foreground="text_muted">{binding.binding}</text>
+                          <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
+                          <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
                         </row>
-                      </if>
-                      <separator />
-                    </column>
-                  </for>
+                        <text foreground="text_muted">Default: {binding.defaultBinding}</text>
+                        <if test="{bindingEditIndex == binding.index}">
+                          <row gap="8">
+                            <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
+                            <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
+                          </row>
+                        </if>
+                        <separator />
+                      </column>
+                    </for>
+                  </column>
                 </if>
                 <else><if test="{noSettingRows}"><text foreground="text_muted">No matching settings in this group</text></if></else>
                 <for each="settingRows" key="id" as="setting">
