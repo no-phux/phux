@@ -301,5 +301,5 @@ publish_complete=1
 xattr -d com.apple.quarantine "$installed_path" 2>/dev/null || true
 
 echo "installed Phux Cockpit ${version} to ${applications_dir}"
-installed_app="$(cd "$applications_dir" && pwd -P)/Phux Cockpit.app"
+installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux Cockpit.app"
 printf 'next: open %s\n' "$(shell_quote "$installed_app")"

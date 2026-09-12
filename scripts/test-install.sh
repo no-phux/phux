@@ -259,6 +259,16 @@ PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
 printf '%s/Phux Cockpit.app\n' "$(cd "$CUSTOM_APPS" && pwd -P)" > "$TMP/expected-open-arguments"
 cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
 
+# Relative destinations are resolved from the install working directory, never
+# from a competing CDPATH entry (whose cd also prints unsolicited stdout).
+mkdir -p "$TMP/relative-cwd" "$TMP/cdpath/apps"
+output="$(cd "$TMP/relative-cwd" && CDPATH="$TMP/cdpath" run_cockpit_install apps)"
+next_command="$(sed -n 's/^next: //p' <<<"$output")"
+PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
+  "$INSTALLER_SH" -c "$next_command"
+printf '%s/Phux Cockpit.app\n' "$(cd "$TMP/relative-cwd/apps" && pwd -P)" > "$TMP/expected-open-arguments"
+cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
+
 # The active publisher owns its lock, even when another installer refuses it.
 COCKPIT_LOCKED="$TMP/cockpit-locked"
 mkdir -p "$COCKPIT_LOCKED/.phux-cockpit-install.lock"
