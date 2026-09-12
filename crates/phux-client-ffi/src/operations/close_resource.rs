@@ -18,6 +18,8 @@ use super::{
 /// queued bytes, and calls on it then fail. A host must retain this exact client
 /// for a captured action, never replay it on a replacement connection. Bound
 /// spawn evidence adds an instance-only server precondition when available.
+/// Satellite resources require that evidence: a hub connection alone cannot
+/// fence a restarted satellite's recycled numeric resource IDs.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread. The ID and its
@@ -38,17 +40,19 @@ pub unsafe extern "C" fn phux_client_queue_close_resource(
         ensure_close_owner(client, &id)?;
         client.queue_frame(&FrameKind::Command {
             request_id,
-            command: close_command(client, &id),
+            command: close_command(client, &id)?,
         })?;
         client.operations.insert(request_id, Pending::Close(id));
         Ok(())
     })
 }
 
-/// Queue one all-or-nothing `KILL_RESOURCES` after validating every owner.
+/// Queue one all-or-nothing local `KILL_RESOURCES` after validating every owner.
 ///
 /// The batch result (kind 6) has no single terminal. No instance-conditional
 /// batch exists on the wire; the captured connection fence is mandatory.
+/// Satellite IDs are refused even when bound: the batch relay does not provide
+/// correlated atomic teardown, so no local prefix may be submitted either.
 ///
 /// # Safety
 /// As for `phux_client_queue_close_resource`. `terminal_ids` contains `count`
@@ -93,6 +97,7 @@ unsafe fn close_ids_in(
         // SAFETY: each record and its host span obey the array contract.
         let id = unsafe { terminal_id_in(ptr::from_ref(record)) }?;
         valid_terminal(&id)?;
+        ensure_local_batch_target(&id)?;
         ensure_close_owner(client, &id)?;
         if ids.contains(&id) {
             return Err(BridgeError::invalid("close batch repeats a terminal ID"));
@@ -108,6 +113,15 @@ fn close_pending(operations: &Operations, id: &ResourceId) -> bool {
         Pending::CloseMany(targets) => targets.contains(id),
         _ => false,
     })
+}
+
+fn ensure_local_batch_target(id: &ResourceId) -> Result<(), BridgeError> {
+    if matches!(id, ResourceId::Satellite { .. }) {
+        return Err(BridgeError::state(
+            "atomic close is unavailable for satellite resources; batch was not queued",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_close_owner(client: &Client, id: &ResourceId) -> Result<(), BridgeError> {
@@ -135,17 +149,20 @@ fn ensure_close_owner(client: &Client, id: &ResourceId) -> Result<(), BridgeErro
     Ok(())
 }
 
-fn close_command(client: &Client, id: &ResourceId) -> Command {
-    client.operations.instances.get(id).map_or_else(
-        || Command::KillResource {
-            terminal_id: id.clone(),
-        },
-        |instance| Command::KillResourceIf {
+fn close_command(client: &Client, id: &ResourceId) -> Result<Command, BridgeError> {
+    match (id, client.operations.instances.get(id)) {
+        (_, Some(instance)) => Ok(Command::KillResourceIf {
             terminal_id: id.clone(),
             precondition: KillPrecondition {
                 instance: Some(*instance),
                 conditions: KillConditions::NONE,
             },
-        },
-    )
+        }),
+        (ResourceId::Local { .. }, None) => Ok(Command::KillResource {
+            terminal_id: id.clone(),
+        }),
+        (ResourceId::Satellite { .. }, None) => Err(BridgeError::state(
+            "satellite close requires an instance-bound resource; no safe incarnation fence",
+        )),
+    }
 }

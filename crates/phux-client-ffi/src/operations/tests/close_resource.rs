@@ -1,5 +1,157 @@
 use super::*;
 
+fn satellite_attachment(bound: bool) -> (Harness, ResourceId) {
+    let mut h = Harness::attached();
+    h.0.inner.conditional_kill = true;
+    let options = PhuxSpawnOptions {
+        request_id: 1,
+        satellite: bytes_out(b"sat"),
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: harness owns client; options and its static host span are readable.
+    unsafe {
+        let queued = if bound {
+            phux_client_queue_spawn_bound(h.ptr(), &raw const options)
+        } else {
+            phux_client_queue_spawn(h.ptr(), &raw const options)
+        };
+        assert_eq!(queued, PhuxClientResult::Ok);
+    }
+    let id = ResourceId::satellite(SatelliteHost::new("sat"), 9);
+    let spawned = if bound {
+        SpawnResult::OkBound {
+            id: id.clone(),
+            instance: ServerInstance::new([7; 16]),
+        }
+    } else {
+        SpawnResult::Ok(id.clone())
+    };
+    assert_eq!(
+        h.feed(FrameKind::ResourceSpawned {
+            request_id: 1,
+            result: spawned
+        }),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(h.attach(2, &id), PhuxClientResult::Ok);
+    h.bootstrap(id.clone());
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 2,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    // SAFETY: harness owns client; clear prior receipts before testing refusal.
+    unsafe {
+        assert_eq!(phux_client_operation_clear(h.ptr()), PhuxClientResult::Ok);
+    }
+    h.0.inner.outgoing.clear();
+    (h, id)
+}
+
+#[test]
+fn satellite_close_without_instance_is_refused_despite_current_hub_attachment() {
+    let (mut h, id) = satellite_attachment(false);
+    let raw = terminal_id_out(&id);
+    assert!(h.0.inner.operations.admitted(&id));
+    assert!(h.0.inner.session.published(&id).is_some());
+    // SAFETY: live owned client and readable satellite ID.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_close_resource(h.ptr(), 3, &raw const raw),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert_eq!(
+        h.0.inner.last_error,
+        b"satellite close requires an instance-bound resource; no safe incarnation fence"
+    );
+    assert!(h.0.inner.outgoing.is_empty());
+    assert!(h.0.inner.operations.pending.is_empty());
+    assert!(h.0.inner.operations.completed.is_empty());
+    assert!(h.0.inner.session.published(&id).is_some());
+    assert_eq!(
+        close(&mut h, 3, 1),
+        PhuxClientResult::Ok,
+        "refusal did not consume request ID"
+    );
+}
+
+#[test]
+fn satellite_close_preserves_bound_instance_and_authoritative_refusal() {
+    let (mut h, id) = satellite_attachment(true);
+    let raw = terminal_id_out(&id);
+    // SAFETY: live owned client and readable satellite ID.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_close_resource(h.ptr(), 3, &raw const raw),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        FrameKind::decode(&h.0.inner.outgoing[0]).unwrap().0,
+        FrameKind::Command {
+            request_id: 3,
+            command: Command::KillResourceIf {
+                terminal_id: id.clone(),
+                precondition: KillPrecondition {
+                    instance: Some(ServerInstance::new([7; 16])),
+                    conditions: phux_protocol::wire::frame::KillConditions::NONE
+                }
+            }
+        }
+    );
+    h.0.inner.outgoing.clear();
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 3,
+            result: CommandResult::Error {
+                code: ErrorCode::PreconditionFailed,
+                message: "the instance token no longer names this server's id space".into()
+            }
+        }),
+        PhuxClientResult::Ok
+    );
+    let out = result(&mut h, 0);
+    assert_eq!(
+        (out.kind, out.status, out.error_code),
+        (5, 2, u32::from(ErrorCode::PreconditionFailed.as_wire()))
+    );
+    assert!(h.0.inner.session.published(&id).is_some());
+}
+
+#[test]
+fn satellite_and_mixed_batches_are_refused_without_closing_local_prefix() {
+    // Even a bound satellite cannot join the wire's uncorrelated batch relay.
+    let (mut h, satellite) = satellite_attachment(true);
+    let local = ResourceId::local(1);
+    let ids = [terminal_id_out(&local), terminal_id_out(&satellite)];
+    for batch in [&ids[..], &ids[1..]] {
+        // SAFETY: owned client and readable ID records/host spans.
+        unsafe {
+            assert_eq!(
+                phux_client_queue_close_resources(h.ptr(), 3, batch.as_ptr(), batch.len()),
+                PhuxClientResult::InvalidState
+            );
+        }
+        assert_eq!(
+            h.0.inner.last_error,
+            b"atomic close is unavailable for satellite resources; batch was not queued"
+        );
+        assert!(h.0.inner.outgoing.is_empty());
+        assert!(h.0.inner.operations.pending.is_empty());
+        assert!(h.0.inner.operations.completed.is_empty());
+        assert!(h.0.inner.session.published(&local).is_some());
+        assert!(h.0.inner.session.published(&satellite).is_some());
+    }
+    assert_eq!(
+        close_many(&mut h, 3, &[1]),
+        PhuxClientResult::Ok,
+        "whole-batch refusal consumed no request ID"
+    );
+}
+
 fn close_many(h: &mut Harness, request: u32, ids: &[u32]) -> PhuxClientResult {
     let ids: Vec<_> = ids
         .iter()

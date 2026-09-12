@@ -1161,7 +1161,11 @@ PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_
 
 /* Intentional termination of a current, live terminal owned by this ATTACH.
  * KILL_RESOURCE, or instance-only KILL_RESOURCE_IF when a bound spawn supplied
- * evidence. This does not weaken abandoned-spawn cleanup above. Result kind 5
+ * evidence. Satellite IDs REQUIRE bound-spawn instance evidence: otherwise
+ * INVALID_STATE with last_error is returned before enqueue/ID consumption.
+ * A hub connection alone cannot fence a satellite restart. The satellite must
+ * evaluate the unchanged instance precondition or the relay returns refusal.
+ * This does not weaken abandoned-spawn cleanup above. Result kind 5
  * reports correlated success/refusal/unknown outcome. Enqueue and receipt leave
  * admission intact: authoritative RESOURCE_CLOSED ends the view.
  * The exact client is the connection fence. It cannot reconnect; disconnect
@@ -1169,8 +1173,11 @@ PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_
  * replayed on a replacement connection or retargeted by numeric terminal ID. */
 PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id);
 
-/* Atomic batch on the owning coordinator via KILL_RESOURCES. All 1..256 IDs
- * must be distinct current live owners of this attachment; validation failure
+/* Atomic LOCAL batch on the owning coordinator via KILL_RESOURCES. All 1..256 IDs
+ * must be distinct current live owners of this attachment; ANY satellite ID
+ * (even bound) returns INVALID_STATE/last_error for the entire batch, because
+ * satellite batch forwarding provides no atomic correlated teardown. Never
+ * fall back to closing only the local subset. Validation failure
  * queues nothing and consumes no request ID. Same connection fence/no replay
  * contract as close_resource. Result kind 6 has no single returned terminal;
  * individual RESOURCE_CLOSED publications carry per-terminal truth. The wire
