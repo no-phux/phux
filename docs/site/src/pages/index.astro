@@ -103,6 +103,9 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     <p class="install-more">
       Both scripts verify release checksums. Cockpit needs Apple silicon macOS
       11+. Homebrew: <code>brew tap no-phux/tap && brew install no-phux/tap/phux</code>.
+      To track green <code>main</code>, add{" "}
+      <code>--channel next</code>{" "}
+      (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
       {" "}
       <a href={docsHref("/quickstart/install")}>All install methods</a>
     </p>
