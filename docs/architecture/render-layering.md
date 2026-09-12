@@ -69,3 +69,12 @@ kitty graphics replayed over the pane. An invalidated row is repainted
 whole the next time it is dirty, exactly as before the diff, so a
 missing invalidation shows up as stale cells and an extra one only
 costs bytes.
+
+## Status
+
+No remaining target-versus-shipped gaps in the render split this document
+owns. `ratatui` is fenced to `phux-tui`; pane interiors live in
+`phux-client-core`; cell-diff painting is the hot path.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-16
+last-reviewed: 2026-09-12
 ---
 
 # Predictive local echo
@@ -16,7 +16,7 @@ display is confirmation-gated: nothing paints until the app proves it echoes
 
 ---
 
-## Status and configuration
+## Configuration
 
 Predictive echo ships in the attach client and is off by default. Enable it in
 the user config:
@@ -108,3 +108,12 @@ unconfirmed overlay on either screen.
 - `crates/phux-client-core/src/predict/overlay.rs` paints the underlined layer.
 - `crates/phux-client-core/src/predict/reconcile.rs` classifies authoritative output.
 - `crates/phux-tui/src/attach/` connects prediction to input, rendering, and server frames.
+
+## Status
+
+No remaining target-versus-shipped gaps in the prediction loop this
+document owns. The feature is experimental: its config key and policy may
+change before 1.0.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|

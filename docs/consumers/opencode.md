@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-12
 ---
 
 # OpenCode integration

@@ -1,15 +1,16 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-01
+last-reviewed: 2026-09-12
 ---
 
 # Ways to use phux
 
-**TL;DR.** Choose the interface that fits the job: the reference TUI for a
-person, the CLI, OpenCode, Pi, or MCP adapter for an agent, the browser client
-for the web, or the in-tree Rust client functions when working inside this
-workspace. They are peer consumers of one wire and one terminal model.
+**TL;DR.** Pick the interface that matches the job: the TUI or Cockpit for a
+person, the CLI and MCP for a script or agent, OpenCode, Pi, or Claude when
+those hosts already run the work, the browser or iOS client when the glass
+is not a tty, and recording when you want a cast. They are peers of one
+server and one terminal model.
 
 ---
 
@@ -17,47 +18,37 @@ workspace. They are peer consumers of one wire and one terminal model.
 
 | You want to | Start with |
 |---|---|
-| Work interactively with persistent sessions and splits | [The reference TUI](./tui.md) |
+| Work interactively in a terminal | [The reference TUI](./tui.md) |
 | Read and drive terminals from a script or coding agent | [Agents and the CLI](./agents.md) |
-| Give OpenCode terminal tools, lifecycle metadata, and fleet awareness | [The OpenCode integration](./opencode.md) |
-| Give Pi target persistence, lifecycle metadata, and fleet awareness | [The Pi integration](./pi.md) |
 | Connect a tool client over MCP | [The MCP adapter](./mcp.md) |
+| Give OpenCode terminal tools and fleet awareness | [The OpenCode integration](./opencode.md) |
+| Give Pi target persistence and fleet awareness | [The Pi integration](./pi.md) |
+| Run Claude Code against the same terminals | [The Claude Code plugin](./claude.md) |
 | Run the terminal client in a browser | [The web client](./web.md) |
-| Study the in-tree Rust free-function API | [The internal client library](./sdk.md) |
+| Use the native macOS app | [Cockpit](./cockpit.md) |
+| Record a pane or an attached session | [Recording](./recording.md) |
+| Pair a phone over `wss://` (contract) | [The iOS client](./ios.md) |
 
-## The peer principle
+Every interface here is a peer of the others; the TUI has no protocol-level
+standing ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)).
 
-No consumer is protocol-privileged. The TUI, web client, and agent surface are
-peers over one wire. Rendering clients project structured views from a local
-engine; the CLI and MCP adapter also consume server-derived convenience
-snapshots. In neither case is structured screen state the canonical wire tier.
-See
-[ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md) (the TUI gets no
-protocol-level standing) and
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
-(structured views are projections rather than a second synchronization model).
-
-If a consumer needs behavior the wire does not provide, the answer is to
-extend the spec with an ADR, not to add a consumer-shaped hook. The reference
-pattern for a consumer that wants structure is to carry its own engine and
-project locally, the way the web client does.
+phux is pre-alpha. [`../CONCEPTS.md`](../CONCEPTS.md) owns the Status table.
 
 ## Files
 
 | File | Owns |
 |---|---|
-| [tui.md](./tui.md) | Reference TUI, the adoption wedge: CLI, keybinds, status bar, layout, hooks, recording. |
-| [web.md](./web.md) | Reference projection consumer: Rust-to-WASM browser client that carries its own engine over the WebSocket wire codec. |
-| [ios.md](./ios.md) | Native projection consumer: the Swift/UniFFI iOS client, its `wss://` + pinned-certificate transport, and the normative `phux pair` connect-link contract. |
-| [agents.md](./agents.md) | Agent surface: the CLI verb set, public agent state, asks, workspace save/restore, and versioned JSON contracts. (See [`../../AGENTS.md`](../../AGENTS.md) for universal agent substrate instructions.) |
-| [opencode.md](./opencode.md) | OpenCode package: loading, six tools, cache-preserving fleet context, target precedence, lifecycle metadata, shared adapter boundary, and safety. |
-| [pi.md](./pi.md) | Pi package: local installation, nineteen terminal tools, cache-preserving fleet context, target persistence, lifecycle metadata, human handoff, and safety. |
-| [mcp.md](./mcp.md) | MCP adapter: a JSON-RPC stdio tool surface over the agent verbs, `phux_ask`, and plugin workspace profile discovery. |
-| [sdk.md](./sdk.md) | The workspace-internal `phux-client` free-function surface over the `phux-protocol` wire codec. |
-| [recording.md](./recording.md) | Session recording: the two capture surfaces, asciicast and the self-contained GIF/APNG renderer, tuning, and the limits. |
+| [tui.md](./tui.md) | Reference TUI: prefix keys, layout, chrome, copy-mode, fleet overlay. |
+| [cockpit.md](./cockpit.md) | Native macOS client over `phux-client-ffi`. |
+| [web.md](./web.md) | Browser client that carries its own engine over the WebSocket wire codec. |
+| [ios.md](./ios.md) | Swift/UniFFI iOS client and the `phux pair` connect-link contract. |
+| [agents.md](./agents.md) | Agent surface: CLI verbs, JSON contracts, asks, workspace save/restore. |
+| [opencode.md](./opencode.md) | OpenCode package: tools, fleet context, target precedence, safety. |
+| [pi.md](./pi.md) | Pi package: tools, fleet context, target persistence, safety. |
+| [claude.md](./claude.md) | Claude Code plugin: MCP tools plus lifecycle identity. |
+| [mcp.md](./mcp.md) | MCP adapter over the agent verbs. |
+| [sdk.md](./sdk.md) | Workspace-internal `phux-client` free-function surface. |
+| [recording.md](./recording.md) | Session recording: observer capture, interactive tee, playback as a pane. |
 
-Future consumers — a desktop GUI, a tmux-CC adapter — get their
-own files here when they materialize. Each file's frontmatter declares its
-own `stability`; a shipped surface is `stable`, a forward-looking sketch is
-`evolving`. Today the consumer surfaces are real but still pre-1.0, so most
-files remain marked `evolving`.
+Each file's frontmatter declares its own `stability`. A shipped surface is
+`stable`; a surface still settling is `evolving`.

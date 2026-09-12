@@ -1,16 +1,16 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-12
 ---
 
 # Install
 
-**TL;DR.** Homebrew is the recommended install on supported macOS and Linux
-machines. The verified curl installer and release tarballs install the same
-`phux` and `phux-mcp` binaries. Source builds use native tools or the Nix shell
-with the same Rust and Zig requirements. `phux update` maintains a direct-release install in place and prints
-the exact native command for a Homebrew, Cargo, or Nix one. Windows and
+**TL;DR.** The curl installer is the universal one-liner. Homebrew is the
+recommended day-to-day path on supported macOS and Linux. Both install the
+same `phux` and `phux-mcp` binaries as the release tarballs. Source builds
+use native tools or Nix. `phux update` maintains a direct-release install
+and prints the native command for Homebrew, Cargo, or Nix. Windows and
 `cargo install phux` are not supported.
 
 ---
@@ -19,8 +19,8 @@ the exact native command for a Homebrew, Cargo, or Nix one. Windows and
 
 | Channel | Best for | Status |
 |---|---|---|
-| Homebrew | Day-to-day binary install on supported Homebrew platforms | Primary binary path where the tap has an artifact |
-| Curl installer | Scripted install from GitHub release tarballs | Installs the latest GitHub release by default |
+| Curl installer | Universal one-liner from GitHub release tarballs | Latest GitHub release by default |
+| Homebrew | Recommended day-to-day on supported Homebrew platforms | Primary binary path where the tap has an artifact |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 
@@ -86,7 +86,7 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
-## Phux Cockpit (native macOS)
+## Cockpit (native macOS)
 
 Cockpit is versioned and released independently (`cockpit-vX.Y.Z` tags on a
 separate cadence from the CLI above). Install it with its own curl installer:
@@ -193,18 +193,9 @@ phux update --check     # what is installed, what is published, how it got there
 phux update             # install it, then hand a running server off to it
 ```
 
-### Why phux ships an update command
-
-A phux deployment is a lockstep set. [ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md)
-freezes the consumer surface at 1.0 but deliberately leaves the **wire** on its
-own `0.x` line under [ADR-0061](../ADR/0061-capabilities-add-versions-break.md),
-where a minor protocol bump is a fleet-wide break with no grace window:
-mismatched peers refuse each other at HELLO rather than half-working. The
-compatibility unit is therefore the **release**, not the frame — a server, the
-clients attached to it, its satellites, and its relays must all run the same
-one. That is why a one-command update path is 1.0 scope rather than a
-convenience: a fleet that is hard to move between releases is a fleet that will
-sit on a mismatch.
+`phux update` exists because a deployment is a lockstep set: mismatched peers
+refuse each other at HELLO. See
+[ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md).
 
 ### What `phux update` does
 
@@ -342,53 +333,10 @@ cargo add phux-protocol
 workspace crates are `publish = false`; install the CLI through Homebrew,
 the curl installer, release tarballs, or a source build.
 
-## First run: persistent session + agent loop
+## After install
 
-After install, run:
-
-```sh
-phux
-```
-
-`phux` with no arguments auto-spawns a server and attaches to a shell-backed
-session. Detach with `Ctrl-A d`; the server keeps the shell alive. Run `phux`
-again to re-attach.
-
-From a second terminal, drive the same persistent pane through the agent loop:
-
-```sh
-phux ls --json
-phux send-keys . "printf '%s\n' phux-ready | tr a-z A-Z" Enter
-phux wait --until "PHUX-READY" --timeout 10 .
-phux snapshot --json --scrollback 50 . > phux-screen.json
-```
-
-That is the read -> act -> wait -> read pattern from
-[`consumers/agents.md`](./consumers/agents.md): read state, send or run work in
-the pane, wait for observable output, then snapshot again. It uses the same
-server and PTY as the interactive TUI. phux does not promise live PTY
-resurrection; workspace restore starts new processes instead of reviving an old
-PTY.
-
-## Drive it from an agent
-
-The agent surface ships with the same release artifact — nothing extra to
-install. The MCP adapter is its own bundled binary:
-
-```sh
-phux --skill=quick          # installed CLI guide
-phux --capabilities --json # build, command, schema, and MCP discovery
-phux mcp --skill            # installed MCP guide
-phux mcp --schema           # exact tools/list input schemas
-phux mcp                    # JSON-RPC over stdio; wire it into your MCP client
-```
-
-`phux mcp` replaces itself with the separately packaged `phux-mcp` companion,
-preferring the executable beside `phux` and then searching `PATH`. Existing
-host configurations that invoke `phux-mcp` directly remain supported.
-
-Tool catalog and JSON contracts: [`consumers/mcp.md`](./consumers/mcp.md). The
-plain-CLI version of the same surface: [`consumers/agents.md`](./consumers/agents.md).
+[Quickstart](./QUICKSTART.md) is the first run.
+[Agents](./consumers/agents.md) is the headless contract.
 
 ## Shell completions
 

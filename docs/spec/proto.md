@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -10,8 +10,9 @@ last-reviewed: 2026-09-11
 HELLO speaks this surface: transport assumptions, length-prefixed
 framing, version and capability negotiation, lifecycle frames
 (DETACH / SUBSCRIBE / PING), per-Terminal flow control, structured
-errors, transport security plus optional workload proof, and the per-tier
-conformance contract.
+errors, transport security plus optional workload proof, and the
+conformance contract that distinguishes the paper protocol from the
+reference server.
 
 ---
 
@@ -49,100 +50,27 @@ document are to be interpreted as described in [RFC 2119].
 
 ---
 
-## 1. Introduction
+## 1. Scope
 
-phux is a terminal multiplexer. A long-lived server owns **Terminals**:
-each Terminal backs one PTY and one libghostty grid. Clients attach to
-the server over a reliable byte stream and present Terminals to users —
-as a TUI inside another terminal, as a native GUI, as an agent harness,
-or as something else entirely. The Terminal is the wire's primary
-primitive; everything else is an optional layered service on top of it.
-
-The terminal protocol described here is the contract between server and client.
-The wire is **asymmetric**:
-
-- **Server → Client (Terminal content):** VT bytes. The server
-  forwards the byte stream produced by each Terminal's PTY (after
-  canonical parsing into the server's `libghostty_vt::Terminal` for
-  state ownership, and after per-client capability downsampling — see
-  §6 Version negotiation and [L1.md](./L1.md)).
-- **Client → Server (input events):** structured `KeyEvent`,
-  `MouseEvent`, `FocusEvent`, paste, and viewport messages — never raw
-  VT bytes ([input.md](./input.md)).
-
-A `libghostty_vt::Terminal` runs on **both** ends. The server's
-Terminal is the canonical state (authoritative grid, scrollback,
-cursor, modes). The client parses the received VT bytes into its own
-local Terminal for rendering. Cell data, cursor position, and Terminal
-modes are queried out of libghostty's `Terminal` API on each end; they
-are not separate wire concepts.
-
-This is the protocol's defining trait. Everything else follows from
-it. See [ADR-0013] for the design rationale.
-
-The protocol is organized in tiers per
-[ADR-0015](../../ADR/0015-protocol-layering.md): **L1** (Terminal substrate,
-MUST) and **L3** (Metadata storage, OPTIONAL service). The **L2** range is
-reserved but carries no messages — there is no collection tier
-([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md);
-see [L2.md](./L2.md)). The Terminal is the wire's
-primary identity ([ADR-0016](../../ADR/0016-terminal-id-as-wire-primary.md));
-session-window-pane-layout-focus vocabulary is a convention of the
-reference TUI consumer, not a wire concept
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)). See those
-ADRs for the rationale that shapes this document.
-
-Durable work coordination is a separate application-protocol endpoint with its
-own framing, HELLO, version, capabilities, and authenticated scopes. It is
-specified in [coordinator.md](./coordinator.md); coordinator frames are never
-legal on this terminal connection.
-
-[ADR-0013]: ../../ADR/0013-libghostty-bytes-on-wire.md
-
----
-
-## 2. Terminology
+This document is the protocol-meta tier: transport, framing, version
+and capability negotiation, lifecycle frames, flow control, errors, and
+transport security. The product model — what a Terminal is, why the
+wire is asymmetric, why both ends run libghostty — lives in
+[CONCEPTS.md](../CONCEPTS.md). L1 is required, L3 is optional, and L2
+is a reserved hole with no messages ([L2.md](./L2.md)). Durable work
+is a different endpoint ([coordinator.md](./coordinator.md)), not a
+second step of terminal onboarding; coordinator frames are never legal
+on this connection.
 
 | Term | Definition |
 |------|------------|
 | **Server** | A long-lived process owning all multiplexer state for one operating-system user. |
 | **Client** | A process that attaches to a server, presenting Terminals to a user. |
-| **Terminal** | A managed terminal: one PTY, one `libghostty_vt::Terminal` parsing its bytes, one stable `ResourceId`. The L1 substrate primitive (ADR-0015, ADR-0016). |
-| **Group** | A named set of Terminals. Not a wire tier: membership and names are L3 metadata plus client logic, and atomic teardown is the L1 `KILL_RESOURCES` op (ADR-0030; see [L2.md](./L2.md)). `GroupId` survives only as an opaque grouping key. |
-| **Metadata** | An L3 optional service: a typed key-value store the server hosts but does not interpret (ADR-0015 §"L3"). |
-| **Frame** | A server-emitted `RESOURCE_OUTPUT` carrying a contiguous batch of VT bytes for one Terminal, identified by a monotonically increasing per-Terminal `seq`. |
-| **Grid** | The two-dimensional cell matrix that is a Terminal's visible viewport. |
-| **Scrollback** | Lines that have scrolled out of the grid but are retained for review. |
-| **Cell** | One character position in a grid: a grapheme cluster plus rendering attributes. |
-| **Tier** | A conformance layer: L1 or L3 (message catalog and §11 Conformance below). The L2 range is reserved but unused (see [L2.md](./L2.md)). |
-| **Substrate consumer** | A consumer that speaks only L1: an agent, a recorder, a CI orchestrator. Sees Terminals; never sees Metadata. |
-| **Reference TUI** | The first-party tmux-shaped consumer. Speaks L1+L3. Session, window, pane, layout, and focus are this consumer's conventions, implemented as L3 metadata; they are not wire concepts (ADR-0017). |
-
----
-
-## 3. Architecture overview
-
-```
-┌────────────────────────────┐                  ┌─────────────────────────┐
-│        phux server         │ ◄─── transport ►│      phux client        │
-│                            │                  │                         │
-│  L1: Terminals             │ RESOURCE_OUTPUT  │  Renderer               │
-│  ├─ PTY                    │  (VT bytes, S→C) │  ├─ Terminal            │
-│  └─ libghostty Terminal    │  ───────────────►│  │   (libghostty-vt;    │
-│     (canonical)            │                  │  │    local parse for   │
-│                            │     INPUT_KEY    │  │    rendering)        │
-│  L3: Metadata    (opt)     │  ◄───────────────│  └─ Render loop         │
-│  (L2 reserved, unused)     │                  │     (per-row dirty)     │
-└────────────────────────────┘                  └─────────────────────────┘
-```
-
-The server is authoritative for all state. L1 (Terminal substrate) is
-always on; L3 (Metadata) is an optional service the server may or may
-not mount, and consumers opt in via `HELLO.layers`. The L2 range is
-reserved but unused (no collection tier; see [L2.md](./L2.md)). The client's local libghostty `Terminal` is a mirror,
-fed by the server's downsampled VT byte stream; the client's renderer
-uses libghostty's `RenderState` per-row dirty tracking for efficient
-redraw. The server is the only source of truth.
+| **Terminal** | One PTY, one `libghostty_vt::Terminal`, one stable `ResourceId`. The first L1 kind. |
+| **Group** | A named set of Terminals. Not a wire tier: membership and names are L3 metadata plus client logic; atomic teardown is `KILL_RESOURCES`. `GroupId` is an opaque grouping key. |
+| **Metadata** | The L3 optional service: a typed key-value store the server hosts but does not interpret. |
+| **Frame** | A length-prefixed message, or (in flow-control prose) a `RESOURCE_OUTPUT` carrying a contiguous batch of VT bytes for one Terminal. |
+| **Tier** | A conformance layer: L1 or L3. The L2 range is reserved but unused. |
 
 ---
 
@@ -168,10 +96,8 @@ oriented byte stream. This version defines these concrete transports:
   `phux-quic/1` (`QUIC_ALPN` in `phux-protocol`) or the TLS handshake
   fails — a stray non-phux QUIC client never reaches the frame layer.
 
-Future protocol versions MAY define additional transports (for example,
-a UDP-based resilient transport in the style of Mosh). Such transports
-MUST satisfy the reliable/ordered/bidirectional property; if they do
-not, they require a new major protocol version.
+Additional transports MUST satisfy the reliable/ordered/bidirectional
+property; if they do not, they require a new major protocol version.
 
 [ADR-0007]: ../../ADR/0007-mosh-class-transport-and-satellites.md
 
@@ -263,9 +189,9 @@ receives the same treatment: `ERROR { code: FRAME_TOO_LARGE }`, then close.
 
 This document specifies protocol `0.9.0`. Major/minor identify the wire
 contract and MUST match exactly; patch differences are allowed and never change
-encoded bytes. Protocol `0.7.x` and `0.8.x` reject each other. Every stateful
-connection, including same-UID Unix sockets, performs HELLO. `PING` is the only
-frame permitted before HELLO.
+encoded bytes. A `0.9` peer rejects `0.8` and `0.7` (and any other minor)
+before session state. Every stateful connection, including same-UID Unix
+sockets, performs HELLO. `PING` is the only frame permitted before HELLO.
 
 ### 6.1 HELLO / HELLO_OK
 
@@ -313,13 +239,13 @@ restart/re-exec that loses that state. Consumers compare bytes only.
 The server accepts HELLO only when `major.minor` matches, then returns its
 current patch. Otherwise it sends fatal `VERSION_INCOMPATIBLE` and closes before
 state. It intersects `layers`, selects exactly one profile by §6.2, and selects
-each byte bound as `min(client, server)`. Missing required 0.7 fields, zero
+each byte bound as `min(client, server)`. Missing required HELLO fields, zero
 bounds, or bounds over their hard caps are `MALFORMED_MESSAGE`. No profile is
 `CODEC_UNAVAILABLE`.
 
 Unknown top-level field ids are skipped by declared length. Required known
 fields do not acquire legacy defaults: the clean cutover relies on the
-major/minor admission gate rather than decoding a 0.6 HELLO shape as 0.7.
+major/minor admission gate rather than decoding an older HELLO shape as 0.9.
 HELLO twice is a protocol error.
 
 ### 6.1.1 phux-workload/v1 authentication
@@ -441,8 +367,8 @@ profile or fail with `CODEC_UNAVAILABLE` before attach. Otherwise the selected
 synthesized variant must be in both advertised sets. No fallback occurs after
 HELLO_OK.
 
-`ClientCapabilities` is one positional sub-record inside HELLO field 5. Protocol
-0.8 fixes this exact order:
+`ClientCapabilities` is one positional sub-record inside HELLO field 5. The
+positional order is frozen:
 
 ```
 color: u8
@@ -679,16 +605,13 @@ Within each half:
 - `0x40 – 0x4F` / `0xB0 – 0xBF`: events and signals.
 - `0x7F` / `0xFF`: PING / PONG.
 
-The catalog is organized by **tier** per
-[ADR-0015](../../ADR/0015-protocol-layering.md):
+The catalog is organized by **tier**:
 
 - **proto** — protocol meta (lifecycle, flow control, errors).
   Required of every consumer that completes a HELLO. Not tier-
   specific. Defined here.
 - **L1** — Terminal substrate. Every conforming consumer speaks L1
-  (§11). Carries `ResourceId` per
-  [ADR-0016](../../ADR/0016-terminal-id-as-wire-primary.md). See
-  [L1.md](./L1.md).
+  (§11). Carries `ResourceId`. See [L1.md](./L1.md).
 - **L2** — reserved, no messages. There is no collection tier. See
   [L2.md](./L2.md).
 - **L3** — Metadata storage. Optional service. See [L3.md](./L3.md).
@@ -714,9 +637,8 @@ have no catalog row; the mechanism is defined in
   `VIEWPORT_RESIZE` even though the frame round-trips).
 - `spec-only` — defined here, no codec entry yet.
 - `TBD` — message family is reserved at this tier but not yet
-  wire-allocated. Discriminant byte will be assigned if and when the
-  message ships. Decoders MUST NOT speculatively assume any particular
-  discriminant slot.
+  wire-allocated. No discriminant is assigned. Decoders MUST NOT
+  speculatively assume any particular discriminant slot.
 
 [`phux_protocol::wire::frame::FrameKind`]: ../../crates/phux-protocol/src/wire/frame/kind.rs
 
@@ -1119,46 +1041,71 @@ policy modes and secret boundaries are in
 
 ## 11. Conformance
 
-Conformance is **per-tier** per
-[ADR-0015](../../ADR/0015-protocol-layering.md). An implementation
-declares the tiers it speaks via `HELLO.layers` (§6.1) and must
-satisfy the conformance requirements for each declared tier, plus
-the protocol-meta requirements common to all consumers.
+An implementation declares the tiers it speaks via `HELLO.layers`
+(§6.1). Two bars apply, and they are not the same list:
+
+- **Talks to the reference server today** — the frames and commands
+  `phux-server` 0.9 produces and consumes. Spec-only catalog rows are
+  not required.
+- **Paper protocol** — the full catalogs in this directory, including
+  spec-only frames. A consumer that implements a spec-only frame is
+  not wrong; a consumer that requires one to attach is.
 
 ### 11.1 Common requirements (all consumers)
 
-Every conforming consumer:
+Every consumer that completes a HELLO:
 
 1. Frames every message per §5.
-2. Performs the §6.1 HELLO handshake for protocol 0.7, including explicit
+2. Performs the §6.1 HELLO handshake for protocol 0.9, including explicit
    profile/codec/features and nonzero negotiated bounds.
-3. Rejects 0.6 shapes rather than applying compatibility defaults.
+3. Rejects other `major.minor` values rather than applying compatibility
+   defaults.
 4. Skips unknown top-level TLV fields by declared length.
 5. Implements `HELLO`, `HELLO_OK`, `ATTACH`, `ATTACHED`, `ATTACH_READY`,
    `DETACH`, `DETACHED`, `PING`, `PONG`, `ERROR`, `COMMAND`, and
    `COMMAND_RESULT`.
 
-### 11.2 L1 conformance (REQUIRED — Terminal substrate)
+### 11.2 L1 — talks to the reference server today
 
-Every conforming consumer additionally implements:
+A consumer that attaches to `phux-server` 0.9 implements:
 
 - **Terminal content:** generation-bound `RESOURCE_OUTPUT`,
   `BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`, `BOOTSTRAP_READY`,
   `BOOTSTRAP_TOMBSTONE`, NativeState-only `HISTORY_REQUEST`, `HISTORY_PAGE`,
   `HISTORY_TOMBSTONE`, `HISTORY_REJECTED`, and StateSync-only `FRAME_ACK`.
-- **Terminal lifecycle:** `TERMINAL_OPENED`, `RESOURCE_CLOSED`.
-- **Structured events:** `TERMINAL_EVENT`, `BELL`; `ALERT` is recommended.
-- **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`;
-  `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, and `INPUT_RAW` are recommended.
-- **L1 commands:** `SPAWN`, `ATTACH_RESOURCE`, `DETACH_RESOURCE`,
-  `KILL_RESOURCE`, `RESIZE_TERMINAL`.
+- **Terminal lifecycle:** `SPAWN_RESOURCE` / `RESOURCE_SPAWNED`,
+  `RESOURCE_CLOSED`. There is no `TERMINAL_OPENED` on the wire; a
+  consumer learns about a Terminal it did not create from
+  `GET_STATE` / `ATTACHED` snapshots and `EVENT` (`pane_spawned`).
+- **Structured events:** `BELL`. `TERMINAL_EVENT` and `ALERT` are
+  spec-only; OSC title and cwd travel inside `RESOURCE_OUTPUT`.
+- **Input:** `INPUT_KEY`; `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_FOCUS`,
+  `INPUT_TERMINAL_REPLY`, and `VIEWPORT_RESIZE` as the consumer needs
+  them. `INPUT_RAW` is spec-only and MUST NOT be sent.
+- **L1 commands actually allocated:** `ATTACH_RESOURCE`,
+  `DETACH_RESOURCE`, `KILL_RESOURCE`, `KILL_RESOURCES`, `GET_STATE`,
+  and the rest of the [L1.md §5.1](./L1.md) tags that have a
+  `COMMAND_TAG_*` constant. The catalog names `SPAWN` and
+  `RESIZE_TERMINAL` as commands; those tags are unallocated. Spawning
+  and resizing ride the dedicated `SPAWN_RESOURCE` and
+  `RESIZE_TERMINAL` frames.
 
-A pure L1 consumer (an agent, a recorder, a CI orchestrator) sets
-`HELLO.layers = { L1 }`. The server MUST omit all L2 and L3 messages
-to that consumer. The consumer MUST NOT send L2 or L3 messages.
+A pure L1 consumer sets `HELLO.layers = { L1 }`. The server MUST omit
+all L3 messages to that consumer. The consumer MUST NOT send L3
+messages. No consumer declares L2.
 
 See [L1.md](./L1.md) and [input.md](./input.md) for the frame
 definitions.
+
+#### 11.2.0 Paper-protocol L1
+
+The L1 catalog also lists `TERMINAL_OPENED`, `TERMINAL_EVENT`,
+`ALERT`, `TERMINAL_RESIZED`, `INPUT_RAW`, subscription `SUBSCRIBE`
+(`0x40`), and the unallocated `SPAWN` / `RESIZE_TERMINAL` /
+`RUN_HOOK` command tags. Those are the paper protocol. They are not
+required to speak to `phux-server` 0.9, and a server that does not
+emit them is still an L1 server. Status cells and `impl-status`
+markers in [L1.md](./L1.md) are the index.
 
 #### 11.2.1 Resource kinds
 
@@ -1236,7 +1183,6 @@ optional tier allocates a new error code rather than reusing it.
 
 ### 11.6 Test suite
 
-The reference test suite for this specification will live at
-`crates/phux-protocol/tests/` and at `tests/conformance/` in the
-implementation repository. Per-tier conformance suites are tracked
-separately.
+There is no shared conformance suite. Codec round-trips and snapshot
+tests live in `crates/phux-protocol/tests/`; they pin bytes, not
+per-tier consumer behavior.

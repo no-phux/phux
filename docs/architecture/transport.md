@@ -224,3 +224,12 @@ disconnect. Normative routing semantics: `docs/spec/L1.md` §9.1.
 Every transport ADR-0007 designed exists. See ADR-0007 for the
 forward-compat constraints that still govern them (URI-shaped session IDs,
 hub-and-spoke satellite topology, per-pane encoder isolation).
+
+## Status
+
+All five byte streams exist: UDS, WebSocket, QUIC, WebTransport, and
+SSH-stdio. Relay and WebTransport writers share the QUIC send-window cap.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| Roaming-aware client that uses QUIC connection migration | The stack supports migration and 0-RTT; the attach client does not yet drive them. | [ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md) | not scheduled |

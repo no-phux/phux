@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-12
 ---
 
 # The phux iOS client

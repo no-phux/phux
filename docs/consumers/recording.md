@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-07-27
+last-reviewed: 2026-09-12
 ---
 
 # Recording a session
@@ -77,20 +77,15 @@ either surface, with no opt-in flag — passwords do not belong in a recording),
 and kitty-graphics images do not survive a re-render, because the replayer
 draws cells and an image is not one.
 
-<!-- impl-status: partial; probe: AgentEventsJsonlV1 -->
-> **Status: landing on the resource-model branch.** The decision below is
-> made in ADR-0103 and applies once a server serves agent sessions; a
-> released server has no agent-session stream to record or to skip.
-
-**Agent-session streams are not recorded**, by decision. A pane's agent
-session ([`agents.md`](./agents.md) §0.1) has its own output stream — JSON
-records, not VT bytes — and neither surface captures it: `phux rec` records
-the Terminal it was pointed at, and `phux --rec` records the glass. A cast is
-a terminal artifact, and folding a second stream into it would give asciinema
+**Agent-session streams are not recorded.** A pane's agent session
+([`agents.md`](./agents.md#this-tree-older-releases-two-agent-surfaces)) has its own output stream — JSON records,
+not VT bytes — and neither surface captures it: `phux rec` records the
+Terminal it was pointed at, and `phux --rec` records the glass. A cast is a
+terminal artifact, and folding a second stream into it would give asciinema
 a file it cannot play; the record stream is also where a prompt's length and
 a tool's name live, which a recording made to share should not carry by
-accident. Read or keep the log with `phux agent log`, which is the surface
-built for it. ADR-0103 owns the decision.
+accident. Read or keep the log with `phux agent log`. See
+[`../CONCEPTS.md`](../CONCEPTS.md) for maturity. ADR-0103 owns the decision.
 
 ## 3. Formats
 
@@ -164,7 +159,7 @@ phux: wrote demo.gif (184.3 KiB, 211 frames, 42.1s)
 ```
 
 With `--json`, one object on stdout and nothing else. The shape is documented
-in [`agents.md`](./agents.md) §4.14. Progress (`recording... 12s (340
+in [`agents.md`](./agents.md). Progress (`recording... 12s (340
 events)`) goes to stderr and only on the headless surface, and is suppressed
 under `--json`; the interactive surface says nothing at all while the session
 is up, because it owns the alt screen.
@@ -213,7 +208,7 @@ played into a narrower pane, wrapped lines wrap in the wrong places and
 absolute cursor addresses land somewhere else, and the result is not
 approximate but unreadable. When the resize does not hold — an attached
 client's viewport owns a pane's size under every `defaults.window-size` policy
-but `manual`, see [`tui.md`](./tui.md) §4.2 — playback says so in one line and
+but `manual`, see [`tui.md`](./tui.md#layout) — playback says so in one line and
 plays anyway. `--no-fit` suppresses the header fit and the recorded resizes
 alike.
 

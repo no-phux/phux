@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-07-10
+last-reviewed: 2026-09-12
 ---
 
 # The phux web client
@@ -98,7 +98,7 @@ the one documented in [`../spec/appendix-encoding.md`](../spec/appendix-encoding
    - **WebSocket** (`PHUX_WS_ADDR`): one binary message carries one encoded
      frame. The fallback (and the default when no WebTransport URL is
      given).
-4. Send protocol-0.7 `HELLO`, consume its selected bootstrap profile/bounds,
+4. Send protocol 0.9.0 `HELLO` (`protocol_minor: 9`), consume its selected bootstrap profile/bounds,
    then send `ATTACH` with a client correlation `attach_id`.
 5. Decode matching `BOOTSTRAP_BEGIN` / `BOOTSTRAP_CHUNK` into an invisible
    engine and publish at `BOOTSTRAP_READY`; consume generation-bound
@@ -179,21 +179,17 @@ can be launched with `--origin-to-force-quic-on` +
 
 ## Agent sessions
 
-<!-- impl-status: partial; probe: RESOURCE_KINDS -->
-> **Status: landing on the resource-model branch.** A released phux-web
-> predates resource kinds; it attaches to Terminal ids only and shows no
-> badge.
+This tree's phux-web draws an **agent badge** when the mirrored Terminal has
+a live AgentSession child ([`agents.md`](./agents.md)): the session's
+`provider` and stream-derived state beside the terminal heading, cleared when
+the session closes. An older released build attaches to Terminal ids only and
+shows no badge. Check `phux status --json` for `RESOURCE_KINDS`.
 
 phux-web mirrors Terminals and nothing else: a non-Terminal resource in the
-session snapshot is skipped, never attached, never given an engine. What it
-takes from the resource model is one bit of chrome, the **agent badge**: when
-the mirrored Terminal has a live agent-session child
-([`agents.md`](./agents.md) §0.1), the client draws the session's `provider`
-and stream-derived state beside the terminal heading, and clears it when the
-session closes. The badge is read from `ResourceInfo`'s additive agent facet
-in the snapshot and the lifecycle frames that follow; it adds nothing to the
-wire and reads no stream — the session log is `phux agent log`'s job, not a
-browser's.
+session snapshot is skipped, never attached, never given an engine. The badge
+is read from `ResourceInfo`'s additive agent facet in the snapshot and the
+lifecycle frames that follow; it adds nothing to the wire and reads no stream
+— the session log is `phux agent log`'s job, not a browser's.
 
 ## Verification
 
@@ -205,7 +201,7 @@ browser's.
 - Renderer and full client — `wasm-pack test --headless --chrome`:
   engine-to-grid-to-canvas pixel test, and a live connect-to-server-and-render
   end-to-end test against `ws_demo_server`.
-- Server side — `phux-server` attach tests: a real protocol-0.7 client receives
+- Server side — `phux-server` attach tests: a real protocol-0.9 client receives
   `ATTACHED`, per-pane BEGIN/CHUNK/READY, and aggregate `ATTACH_READY`.
 - WebTransport listener — `phux-server` `transport::webtransport` tests: a
   native WebTransport client (wtransport) performs the full HTTP/3 session

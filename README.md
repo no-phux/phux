@@ -1,7 +1,7 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-09-03
+last-reviewed: 2026-09-12
 -->
 
 <div align="center">
@@ -10,63 +10,66 @@ last-reviewed: 2026-09-03
 
 # phux
 
-**the tmux job, done - a terminal is an object on a wire**
+part of [no-phux](https://github.com/orgs/no-phux/repositories)
 
-part of [no-phux](https://github.com/orgs/no-phux/repositories) --
-cockpit, mobile, and the rest of the phux ecosystem
-
-[Discord link](https://discord.gg/dUv5rzdHp)
+[Discord](https://discord.gg/dUv5rzdHp)
 
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-
-[Install](#install-and-run) |
-[Keys](#keys-you-need-first) |
-[Config](#settings-and-config) |
-[Headless](#headless-and-agent-control) |
-[Agent Workbench](#agent-workbench) |
-[Troubleshooting](#troubleshooting) |
-[Status](#status) |
-[Docs](#where-to-go-from-here)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache-2.0-blue.svg)](#license)
 
 </div>
 
-phux is a terminal multiplexer, like tmux or screen: your shells live in a
-background server, you split them into panes, you detach, and everything is
-still running when you come back.
+phux is a terminal multiplexer. Your shells live in a background server. You
+split them into panes, detach, and they keep running. Each pane is a real
+terminal emulator living in the server, so the TUI, Cockpit, a script, and an
+agent can all attach to that same live terminal.
 
-The twist is what a "terminal" is. In phux, each pane is a real terminal
-emulator living inside the server, and anything can attach to it -- the
-bundled TUI, a shell script, an AI agent. They all hold the same live
-terminal at the same time, with the same authority. No screen-scraping, no
-"agent mode": to a program, a phux terminal is just an object it can type
-into, read from, and wait on. The terminal is the first kind of thing the
-server holds; a coding agent's session inside one of those terminals, with
-its own event log, is the second, and that one is landing now rather than
-shipped.
+## Install
 
-## Quick start
-
-```sh
-brew trust --tap no-phux/tap # Homebrew 6+
-brew tap no-phux/tap
-brew install no-phux/tap/phux
-phux
-```
-
-You're in a shell. `Ctrl-A d` detaches, `phux` brings you back, `Ctrl-A ?`
-shows every key. Prebuilt binaries cover macOS arm64, Linux x86_64, and Linux arm64;
-Windows is not supported. Other channels and source builds:
-[INSTALL](./docs/INSTALL.md).
-
-Without Homebrew, the curl installer takes the same binaries from the same
-release and verifies the checksum before unpacking:
+The universal one-liner:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
 ```
 
-Another machine works the same way, as long as it is reachable:
+Homebrew is the recommended day-to-day path on supported macOS and Linux:
+
+```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew tap no-phux/tap
+brew install no-phux/tap/phux
+```
+
+```sh
+phux
+```
+
+You're in a shell. `Ctrl-A d` detaches, `phux` brings you back. Prebuilt
+binaries cover macOS arm64, Linux x86_64, and Linux arm64; Windows is not
+supported. Other channels: [INSTALL](./docs/INSTALL.md).
+
+## First minutes
+
+The default prefix is `Ctrl-A`. Four continuations are enough for a first run:
+
+| Keys | Action |
+|---|---|
+| `Ctrl-A ?` | Open the complete keybinding help. |
+| `Ctrl-A %` | Split left and right. |
+| `Ctrl-A "` | Split top and bottom. |
+| `Ctrl-A d` | Detach without stopping the shell. |
+
+`phux` reattaches. Open a *second* terminal for the commands below; the
+attached session cannot run them in that TTY.
+
+```sh
+phux ls
+phux snapshot .
+phux send-keys . "printf '%s\n' phux-ready | tr a-z A-Z" Enter
+phux wait --until "PHUX-READY" --timeout 10 .
+```
+
+Another machine, as long as it is reachable:
 
 ```sh
 phux --remote me@mini
@@ -76,40 +79,13 @@ The first run pairs the host and remembers it; every run after that is a
 direct, encrypted QUIC dial with no ssh in the path. See
 [Remote access](./docs/remote-access.md).
 
-Interactive entry points require terminal stdin and stdout. For redirected
-work, use the headless commands below; they never need a TTY.
-
-The same terminals work without a TTY, from scripts, CI, or an agent:
+Cockpit is the native macOS client for the same terminals:
 
 ```sh
-phux send-keys . 'cargo test' Enter   # type into the focused pane
-phux wait --until "0 failed" .        # block until output appears
-phux snapshot .                       # read the screen
-phux agent explain .                  # what is the agent in this pane doing?
+curl -fsSL https://phux.sh/install-cockpit | sh
 ```
 
-There's an MCP server too (`phux mcp`), so agent hosts get the same verbs as
-tools. It transparently launches the bundled `phux-mcp` companion binary.
-Start at [Agents](./docs/consumers/agents.md).
-
-First-party, independently versioned host integrations are available for
-[OpenCode](./docs/consumers/opencode.md), [Pi](./docs/consumers/pi.md), and
-[Claude Code](./docs/consumers/claude.md). Their package, packed-artifact, and
-native host validation runs in the required CI gate.
-
-[Phux Cockpit](./clients/cockpit/README.md) is the independently versioned
-native macOS client. It keeps its own Zig build and `cockpit-vX.Y.Z` release
-cadence while compiling the stable `phux-client-ffi` C ABI from this same
-checkout. Install it with `curl -fsSL https://phux.sh/install-cockpit | sh`
-(or the Homebrew cask); use `just cockpit-build`, `just cockpit-test`, or
-`just cockpit-dev` to hack on it.
-
-```sh
-phux --skill=quick          # installed CLI operating guide
-phux --capabilities --json # versions, commands, schemas, MCP availability
-phux mcp --skill            # installed MCP operating guide
-phux mcp --schema           # exact live tools/list input schemas
-```
+Or the Homebrew cask. Details: [INSTALL](./docs/INSTALL.md#cockpit-native-macos).
 
 ## How it works
 
@@ -162,24 +138,14 @@ phux doctor   # checks config, socket, server, plugins, and log paths
 phux logs     # names every log file phux writes; tails any of them
 ```
 
-`phux status` reports the server behind the socket in one glance -- and with
-no server running says so, naming the command that starts one. `phux doctor`
-runs the checks a debugging session would otherwise discover one by one and
-prints one verdict per line. `phux logs` knows where every log lives, so you
-never have to.
-
 ## Status
 
-The TUI multiplexer and modern-protocol passthrough are stable enough to
-try. The headless verbs, the MCP server, workspace save/restore, and
-satellite federation are real and tested, still pre-1.0. Agent sessions as
-a second resource kind, with `phux agent log` over them, are on a branch
-and not in a release. A native GUI is designed but not wired. Anything else
-you've heard is a direction, not a feature.
-
-phux also deliberately has no scripting language, no in-process plugin
-host, and no homegrown crypto. The reasoning is in
-[CONTRIBUTING](./CONTRIBUTING.md).
+phux is pre-alpha. Cockpit ships. AgentSession exists in this tree
+(`phux agent session open|close`, `phux agent emit`, `phux agent log`); older
+brew and curl releases may not advertise it — `phux status --json` is the
+check. Federation is real and limited: hub-and-spoke, selectors `host/@N`,
+no merged remote session or window model. The gap table is in
+[Concepts](./docs/CONCEPTS.md#status).
 
 ## Learn more
 
@@ -188,7 +154,7 @@ host, and no homegrown crypto. The reasoning is in
 | Decide if phux fits | [When to use phux](./docs/when-to-use.md) |
 | The mental model | [Concepts](./docs/CONCEPTS.md) |
 | Keys and config | [Configuration](./docs/CONFIG.md) |
-| Drive it from an agent | [Agents](./docs/consumers/agents.md) · [MCP](./docs/consumers/mcp.md) |
+| Drive it from an agent | [Agents](./docs/consumers/agents.md) |
 | Record and replay sessions | [Recording](./docs/consumers/recording.md) |
 | Reach it over the network | [Remote access](./docs/remote-access.md) |
 | The wire protocol | [Spec](./docs/spec/) · [Architecture](./docs/architecture/) |
