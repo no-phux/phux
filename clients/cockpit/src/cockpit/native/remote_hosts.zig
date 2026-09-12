@@ -143,11 +143,8 @@ fn connect(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) 
     // The host becomes active and the coordinator it leaves stays listed
     // beside it: this Mac, or a host connected before. A host already listed
     // trades places with the active one; nothing else moves.
-    engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch |err| return switch (err) {
-        // Nothing changed: the connections held stay as they are.
-        error.PeerCapacity => .{ .phase = .refused, .host = target, .reason = capacity_reason },
-        else => .{ .phase = .failed, .host = target, .reason = "out of memory" },
-    };
+    engine.exchangeCoordinators(fx, endpoint, pinned, described.name.slice()) catch
+        return .{ .phase = .failed, .host = target, .reason = "Connection resources unavailable. Existing work is unchanged; retry this machine." };
     choose(target);
     return .{ .phase = .connecting, .host = copy(&scratch.host, described.name.slice()) };
 }
@@ -168,8 +165,6 @@ fn returnLocal(engine: anytype, fx: anytype) Reply {
     return .{ .phase = .local };
 }
 
-/// The refusal for a fifth coordinator (docs/REMOTE_HOSTS.md, Known limits).
-pub const capacity_reason = "Cockpit holds at most four coordinators: this Mac and three hosts. Disconnect a host first.";
 const unknown_host_reason = "Cockpit is not connected to that host";
 const forgotten_unheld_reason = "Not connected, so nothing was disconnected; it is no longer reattached at launch";
 
@@ -193,7 +188,7 @@ fn disconnectAll(engine: anytype, fx: anytype) Reply {
             return .{ .phase = .failed, .reason = "out of memory" };
         restart(engine, fx);
     }
-    for (0..model.phux_peers.len) |slot| engine.dropPeer(fx, slot);
+    for (0..model.peers.items.len) |slot| engine.dropPeer(fx, slot);
     choose(null);
     forgetEveryHost(model);
     return .{ .phase = .local };
@@ -217,7 +212,7 @@ fn disconnectHost(engine: anytype, fx: anytype, target: []const u8, scratch: *Sc
         .none => return forgetUnheld(model, target, scratch),
         .ambiguous => return .{ .phase = .refused, .host = copy(&scratch.host, target), .reason = ambiguousReason(model, target, scratch) },
         .active => active,
-        .peer => |slot| model.phux_peers[slot].?,
+        .peer => |slot| model.peers.items[slot].provider.?,
     };
     var removed_buffer: [config_module.max_phux_remote_bytes]u8 = undefined;
     // Copied before the provider it borrows from is retargeted or destroyed.
@@ -246,8 +241,8 @@ fn heldHost(model: *Model, target: []const u8) Held {
 fn matchHeld(model: *Model, target: []const u8, by: Match) Held {
     var found: Held = .none;
     if (matches(model.phux().?, target, by)) found = .active;
-    for (model.phux_peers, 0..) |value, slot| {
-        const peer = value orelse continue;
+    for (model.peers.items, 0..) |entry, slot| {
+        const peer = entry.provider orelse continue;
         if (!matches(peer, target, by)) continue;
         if (found != .none) return .ambiguous;
         found = .{ .peer = slot };
@@ -268,17 +263,20 @@ fn ambiguousReason(model: *Model, target: []const u8, scratch: *Scratch) []const
     var writer: std.Io.Writer = .fixed(&scratch.reason);
     writer.print("{s} matches ", .{target}) catch {};
     var count: usize = 0;
-    const active = model.phux().?;
-    const candidates = [_]?*support.PhuxProvider{active} ++ model.phux_peers;
-    for (candidates) |value| {
-        const provider = value orelse continue;
-        if (!matches(provider, target, .name)) continue;
-        if (count != 0) writer.writeAll(" and ") catch {};
-        writer.writeAll(provider.remoteTarget().?) catch {};
-        count += 1;
+    appendMatch(&writer, model.phux().?, target, &count);
+    for (model.peers.items) |entry| {
+        const provider = entry.provider orelse continue;
+        appendMatch(&writer, provider, target, &count);
     }
     writer.writeAll("; type the exact target") catch {};
     return writer.buffered();
+}
+
+fn appendMatch(writer: *std.Io.Writer, provider: anytype, target: []const u8, count: *usize) void {
+    if (!matches(provider, target, .name)) return;
+    if (count.* != 0) writer.writeAll(" and ") catch {};
+    writer.writeAll(provider.remoteTarget().?) catch {};
+    count.* += 1;
 }
 
 /// A host Cockpit does not hold, named by a remembered target or, if one
@@ -319,8 +317,8 @@ fn handOverToThisMac(engine: anytype, fx: anytype) bool {
     const socket = model.config.phux_socket.slice();
     const session = model.config.phux_session.slice();
     const next = active.prepareRetarget(.{ .unix = socket }, if (session.len == 0) null else session, null) catch return false;
-    for (model.phux_peers, 0..) |value, slot| {
-        const peer = value orelse continue;
+    for (model.peers.items, 0..) |entry, slot| {
+        const peer = entry.provider orelse continue;
         if (peer.remoteTarget() == null) engine.dropPeer(fx, slot);
     }
     active.commitRetarget(next);

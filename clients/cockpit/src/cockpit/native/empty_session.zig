@@ -114,14 +114,19 @@ pub fn newTab(engine: anytype, fx: anytype) Opened {
         if (!engine.openTabAt("", null)) return .{ .refused = "Cockpit could not open a new tab in that session." };
         return .{ .opened = current };
     }
+    return openPickedPeer(engine, fx, index, current);
+}
+
+fn openPickedPeer(engine: anytype, fx: anytype, index: usize, current: View) Opened {
+    const model = engine.model;
     const Fx = switch (@typeInfo(@TypeOf(fx))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(fx),
     };
     if (comptime !@hasDecl(Fx, "restartPeer")) return .{ .refused = "Cockpit could not show that session." };
     const slot = model.peerSlot(current.coordinator) orelse return .{ .refused = "That host is no longer connected." };
-    const peer = model.phux_peers[slot].?;
-    const state = &model.peer_workspaces[slot];
+    const peer = model.peers.items[slot].provider.?;
+    const state = &model.peers.items[slot].workspace;
     state.authority = peer.providerId();
     if (peer.showing()) state.leaveSession(model) catch return .{ .refused = "Cockpit could not show that session." };
     peer.show(current.session) catch return .{ .refused = "Cockpit could not show that session." };
@@ -153,7 +158,7 @@ pub fn pump(engine: anytype, slot: usize) bool {
     if (model.peerSlot(pick.coordinator) != slot) return false;
     const peer = model.phuxPeerAt(slot) orelse return false;
     if (peer.selectedSessionId() != pick.session) return false;
-    if (model.peer_workspaces[slot].session != pick.session) return false;
+    if (model.peers.items[slot].workspace.session != pick.session) return false;
     if (!peer_edits.editable(model, pick.coordinator)) return false;
     if (engine.openPeerTabAt(pick.coordinator, "", null)) {
         model.empty_pick.?.tab_queued = true;

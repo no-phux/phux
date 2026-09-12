@@ -168,13 +168,13 @@ fn peerSessionDetail(model: *const Model, target: model_module.PeerSession, out:
 
 fn peerProjectionRefused(model: *const Model, coordinator: support.ProviderId) bool {
     const slot = model.peerSlot(coordinator) orelse return false;
-    return model.peer_workspaces[slot].refused;
+    return model.peers.items[slot].workspace.refused;
 }
 
 /// A failed peer's row retries it; a connecting one has nothing to do.
 fn peerRetryable(model: *const Model, coordinator: support.ProviderId) bool {
     const slot = model.peerSlot(coordinator) orelse return false;
-    return model.peer_failed[slot];
+    return model.peers.items[slot].failed;
 }
 
 /// A peer that cannot list says why: the recorded failure (a remote host's
@@ -184,7 +184,7 @@ fn peerUnavailableDetail(model: *const Model, coordinator: support.ProviderId, o
     if (comptime !support.phux_enabled) return "Unavailable";
     const slot = model.peerSlot(coordinator) orelse return "Unavailable";
     const peer = model.phuxPeerAtConst(slot).?;
-    if (!model.peer_failed[slot]) return "Connecting…";
+    if (!model.peers.items[slot].failed) return "Connecting…";
     var reason_buffer: [max_detail_bytes]u8 = undefined;
     const recorded = peer.remoteFailure(&reason_buffer);
     const reason = if (recorded.len != 0) recorded else "the connection was lost";

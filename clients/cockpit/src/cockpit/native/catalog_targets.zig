@@ -176,7 +176,7 @@ fn resolvePeerSession(model: *const Model, coordinator: support.ProviderId, expe
     if (!std.meta.eql(current, expected)) return null;
     const slot = model.peerSlot(coordinator) orelse return null;
     // Session 0 is the group's unavailable row: it retries a failed peer.
-    if (id == 0) return if (model.peer_failed[slot]) .{ .peer_unavailable = coordinator } else null;
+    if (id == 0) return if (model.peers.items[slot].failed) .{ .peer_unavailable = coordinator } else null;
     const peer = model.phuxPeerAtConst(slot).?;
     // A peer that disconnected, is being retargeted, or listed on an older
     // connection offers nothing; forgetting also moved the context above.

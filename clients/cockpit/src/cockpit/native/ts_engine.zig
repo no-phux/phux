@@ -205,21 +205,6 @@ pub const Engine = struct {
     directory_origin: @import("directory_picker.zig").Origin = .{},
     /// Edits of a showing peer's tabs, queued to that coordinator alone.
     peer_edits: peer_edits.Edits = .{},
-    /// Each peer slot's channel occupancy. Its key carries this generation
-    /// (support.phuxPeerChannelKeyAt), and every close Cockpit asks for moves
-    /// it on, so a late event of a closed occupancy is recognized as stale.
-    peer_channel_generation: [model_module.max_phux_peers]u64 = @splat(0),
-    /// The occupancy whose close a restart waits for (Model.phux_peer_reopen).
-    peer_reopen_generation: [model_module.max_phux_peers]u64 = @splat(0),
-    /// A failed listing peer's next automatic redial wait; 0 is the first.
-    peer_retry_delay_ms: [model_module.max_phux_peers]u64 = @splat(0),
-    /// The channel generation a slot's retry timer was armed for; a timer
-    /// that fires for any other generation, or none, is stale.
-    peer_retry_generation: [model_module.max_phux_peers]?u64 = @splat(null),
-    /// When each peer began listing on its current connection; null while it
-    /// is not listing. A failure after it stayed listed `peer_retry_stable_ms`
-    /// starts its backoff over; an earlier one keeps it growing.
-    peer_listed_since: [model_module.max_phux_peers]?std.Io.Timestamp = @splat(null),
     /// Each coordinator's last Rename Session, and on which of its
     /// connections (session_commands.zig): one pending rename per
     /// coordinator, so a rename on one never refuses a rename on another.
@@ -317,6 +302,8 @@ pub const Engine = struct {
     }
 
     pub fn destroy(self: *Engine) void {
+        self.peer_edits.deinit();
+        self.rename_flights.deinit();
         model_module.deinitModel(self.model);
         std.heap.page_allocator.destroy(self.model);
         std.heap.page_allocator.destroy(self);
@@ -620,14 +607,14 @@ pub const Engine = struct {
         // A listing peer's list is refreshed with the switcher's; it
         // announces only when the list actually changed, so this cannot feed
         // itself.
-        for (self.model.phux_peers) |value| if (value) |peer| peer.refreshStandby();
+        for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.refreshStandby();
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         if (self.last_workspace_refresh) |last| {
             if (last.durationTo(now).toMilliseconds() < 1000) return;
         }
         var requested = refreshAttached(self.model.phux());
-        for (self.model.phux_peers) |value| {
-            const peer = value orelse continue;
+        for (self.model.peers.items) |entry| {
+            const peer = entry.provider orelse continue;
             if (peer.showing()) requested = refreshAttached(peer) or requested;
         }
         if (requested) self.last_workspace_refresh = now;
@@ -689,9 +676,9 @@ pub const Engine = struct {
     pub fn stopProviderChannels(self: *Engine, fx: anytype) void {
         if (self.model.phux()) |remote| remote.stop();
         fx.closeChannel(support.phux_channel_key);
-        for (self.model.phux_peers, 0..) |value, slot| {
-            if (value) |peer| peer.stop();
-            self.model.phux_peer_reopen[slot] = false;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.provider) |peer| peer.stop();
+            entry.reopen = false;
             self.retirePeerChannel(fx, slot);
         }
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
@@ -1152,17 +1139,19 @@ pub const Engine = struct {
     }
 
     fn supersedeSelection(self: *Engine) void {
+        self.cancelPendingSelection();
+        peer_restore.cancelFront(self.model);
+    }
+
+    fn cancelPendingSelection(self: *Engine) void {
         self.model.shared_workspace.desired_terminal = null;
         self.creation.supersedeFocus();
         // A peer's pending placement must not take focus back either.
-        for (&self.model.peer_workspaces) |*state| state.desired_terminal = null;
+        for (self.model.peers.items) |entry| entry.workspace.desired_terminal = null;
         self.peer_edits.supersedeFocus();
         // A picked empty session's state gives way too, unless its first tab
         // is already opening.
         empty_session.dismiss(self.model);
-        // So does a front record still waiting for its host's list: the user
-        // chose what to show (ADR-0110).
-        peer_restore.cancelFront(self.model);
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -1229,7 +1218,7 @@ pub const Engine = struct {
 
     // ------------------------------------ coordinators beside the active one
     //
-    // The model holds the active Phux provider and up to max_phux_peers more:
+    // The model holds the active Phux provider and dynamically owned peers:
     // this Mac's coordinator while a registered remote host is active, and
     // registered hosts. Each runs its own worker on its own channel
     // (support.phuxPeerChannelKey), so any one restarts or fails alone. A peer
@@ -1243,7 +1232,7 @@ pub const Engine = struct {
 
     /// Open every peer's channel at launch.
     pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
-        for (0..model_module.max_phux_peers) |slot| self.openPeerChannel(fx, slot, on_event);
+        for (0..self.model.peers.items.len) |slot| self.openPeerChannel(fx, slot, on_event);
     }
 
     /// Open one peer's channel and start (or restart) its worker. A peer that
@@ -1252,9 +1241,13 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
         const key = self.peerChannelKey(slot);
+        if (key == 0) {
+            self.model.peers.items[slot].failed = true;
+            return;
+        }
         const handle = fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
         if (!handle.live()) {
-            self.model.peer_failed[slot] = true;
+            self.model.peers.items[slot].failed = true;
             return;
         }
         if (peer.state() == .new) {
@@ -1265,7 +1258,7 @@ pub const Engine = struct {
     }
 
     fn peerOpenFailed(self: *Engine, fx: anytype, slot: usize) void {
-        self.model.peer_failed[slot] = true;
+        self.model.peers.items[slot].failed = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
     }
@@ -1279,36 +1272,39 @@ pub const Engine = struct {
     /// back to listing (`settlePeers`).
     fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
         // This connection's listing, if any, ends with this failure.
-        if (self.peerListedStably(slot)) self.peer_retry_delay_ms[slot] = 0;
-        self.peer_listed_since[slot] = null;
+        const entry = self.model.peers.items[slot];
+        if (self.peerListedStably(slot)) entry.retry_delay_ms = 0;
+        entry.listed_since = null;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "schedulePeerRetry")) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
         if (peer.showing()) return;
-        const delay = if (self.peer_retry_delay_ms[slot] == 0) peer_retry_initial_ms else self.peer_retry_delay_ms[slot];
-        self.peer_retry_delay_ms[slot] = @min(delay * 2, peer_retry_max_ms);
-        self.peer_retry_generation[slot] = self.peer_channel_generation[slot];
-        fx.schedulePeerRetry(peer_retry_timer_key + slot, delay);
+        const delay = if (entry.retry_delay_ms == 0) peer_retry_initial_ms else entry.retry_delay_ms;
+        entry.retry_delay_ms = @min(delay * 2, peer_retry_max_ms);
+        entry.retry_key = support.allocatePeerHandle() catch return;
+        fx.schedulePeerRetry(entry.retry_key.?, delay);
     }
 
     /// The slot now holds another coordinator (or none): the next failure
     /// waits 1 s again, and a timer already armed is stale.
     fn resetPeerRetry(self: *Engine, slot: usize) void {
-        self.peer_retry_delay_ms[slot] = 0;
-        self.peer_retry_generation[slot] = null;
-        self.peer_listed_since[slot] = null;
+        const entry = self.model.peers.items[slot];
+        entry.retry_delay_ms = 0;
+        entry.retry_key = null;
+        entry.listed_since = null;
     }
 
     /// The slot listed on this connection: a timer already armed is stale.
     /// The backoff itself is not reset here; the next failure decides, by how
     /// long the peer stayed listed (`peerListedStably`).
     fn notePeerListed(self: *Engine, slot: usize) void {
-        self.peer_retry_generation[slot] = null;
-        if (self.peer_listed_since[slot] == null) self.peer_listed_since[slot] = std.Io.Clock.awake.now(self.model.provider.io);
+        const entry = self.model.peers.items[slot];
+        entry.retry_key = null;
+        if (entry.listed_since == null) entry.listed_since = std.Io.Clock.awake.now(self.model.provider.io);
     }
 
     fn peerListedStably(self: *const Engine, slot: usize) bool {
-        const since = self.peer_listed_since[slot] orelse return false;
+        const since = self.model.peers.items[slot].listed_since orelse return false;
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         return since.durationTo(now).toMilliseconds() >= peer_retry_stable_ms;
     }
@@ -1320,32 +1316,34 @@ pub const Engine = struct {
     /// showing meanwhile, the timer is stale and does nothing.
     pub fn onPeerRetryTimer(self: *Engine, fx: anytype, key: u64) bool {
         if (comptime !support.phux_enabled) return false;
-        const slot = peerRetrySlot(key) orelse return false;
+        const slot = self.peerRetrySlot(key) orelse return false;
         if (!self.peerRetryDue(slot)) return false;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
-        self.model.peer_failed[slot] = false;
+        self.model.peers.items[slot].failed = false;
         _ = fx.restartPeer(self, slot);
         return self.commitProviderChange(true);
     }
 
-    fn peerRetrySlot(key: u64) ?usize {
-        if (key < peer_retry_timer_key or key >= peer_retry_timer_key + model_module.max_phux_peers) return null;
-        return @intCast(key - peer_retry_timer_key);
+    fn peerRetrySlot(self: *const Engine, key: u64) ?usize {
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.retry_key == key) return slot;
+        }
+        return null;
     }
 
     /// Consumes the slot's armed timer; true when it may redial now.
     fn peerRetryDue(self: *Engine, slot: usize) bool {
-        const armed = self.peer_retry_generation[slot] orelse return false;
-        self.peer_retry_generation[slot] = null;
-        if (armed != self.peer_channel_generation[slot]) return false;
+        const entry = self.model.peers.items[slot];
+        if (entry.retry_key == null) return false;
+        entry.retry_key = null;
         const peer = self.model.phuxPeerAt(slot) orelse return false;
-        return self.model.peer_failed[slot] and !peer.showing();
+        return entry.failed and !peer.showing();
     }
 
     /// Peer `slot`'s current channel key.
     pub fn peerChannelKey(self: *const Engine, slot: usize) u64 {
-        return support.phuxPeerChannelKeyAt(slot, self.peer_channel_generation[slot]);
+        return self.model.peers.items[slot].channel_key;
     }
 
     /// Close the slot's current channel and move its key to the next
@@ -1353,7 +1351,9 @@ pub const Engine = struct {
     fn retirePeerChannel(self: *Engine, fx: anytype, slot: usize) void {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
-        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
+        const entry = self.model.peers.items[slot];
+        entry.channel_key = support.allocatePeerHandle() catch 0;
+        entry.retry_key = null;
     }
 
     /// Drain one peer's wake. A listing peer can only move the switcher's
@@ -1364,10 +1364,10 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return false;
         // A showing peer's focused pane may have just become live.
         defer self.syncRemoteFocus();
-        const channel = support.peerChannelForKey(event.key, model_module.max_phux_peers) orelse return false;
-        const slot = channel.slot;
-        if (self.model.phuxPeerAt(slot) == null) return false;
-        if (channel.generation != self.peer_channel_generation[slot]) return self.peerStaleEvent(fx, channel, event.kind, on_event);
+        const slot = self.peerSlotForHandle(event.key) orelse return false;
+        const entry = self.model.peers.items[slot];
+        if (entry.provider == null) return false;
+        if (event.key != entry.channel_key) return self.peerStaleEvent(fx, slot, event.kind, on_event);
         return switch (event.kind) {
             .data => self.drainPeer(fx, slot),
             .closed, .rejected => self.peerClosed(fx, slot),
@@ -1378,11 +1378,19 @@ pub const Engine = struct {
     /// one from before a Disconnect and a new Connect reused the slot. Only
     /// the close a restart waits for does anything: it opens the slot's next
     /// channel. Anything else is ignored, so it can stop no other connection.
-    fn peerStaleEvent(self: *Engine, fx: anytype, channel: support.PeerChannel, kind: native_sdk.EffectChannelEventKind, on_event: anytype) bool {
-        const slot = channel.slot;
-        if (kind != .closed or !self.model.phux_peer_reopen[slot]) return false;
-        if (self.peer_reopen_generation[slot] != channel.generation) return false;
-        self.model.phux_peer_reopen[slot] = false;
+    fn peerSlotForHandle(self: *const Engine, key: u64) ?usize {
+        if (key == 0) return null;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.channel_key == key or entry.closing_key == key) return slot;
+        }
+        return null;
+    }
+
+    fn peerStaleEvent(self: *Engine, fx: anytype, slot: usize, kind: native_sdk.EffectChannelEventKind, on_event: anytype) bool {
+        const entry = self.model.peers.items[slot];
+        if (kind != .closed or !entry.reopen) return false;
+        entry.reopen = false;
+        entry.closing_key = null;
         self.openPeerChannel(fx, slot, on_event);
         return self.commitProviderChange(true);
     }
@@ -1391,10 +1399,15 @@ pub const Engine = struct {
         const peer = self.model.phuxPeerAt(slot).?;
         const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
         if (delta.sessions_listed or delta.ready_published) {
-            self.model.peer_failed[slot] = false;
+            self.model.peers.items[slot].failed = false;
             self.notePeerListed(slot);
         }
         if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
+        return self.drainListingPeerWake(fx, slot, delta);
+    }
+
+    fn drainListingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
+        const peer = self.model.phuxPeerAt(slot).?;
         // Nothing presents a listing peer's terminals, so nothing rings for
         // them; its list settling is what moves.
         while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
@@ -1434,8 +1447,8 @@ pub const Engine = struct {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const slot = self.model.peerSlot(coordinator) orelse return false;
-        if (!self.model.peer_failed[slot]) return false;
-        self.model.peer_failed[slot] = false;
+        if (!self.model.peers.items[slot].failed) return false;
+        self.model.peers.items[slot].failed = false;
         return fx.restartPeer(self, slot);
     }
 
@@ -1455,8 +1468,8 @@ pub const Engine = struct {
         empty_session.forgetPeer(model, model.phuxPeerAt(slot).?.providerId(), false);
         peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
-        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
-        model.peer_failed[slot] = true;
+        model.peers.items[slot].channel_key = support.allocatePeerHandle() catch 0;
+        model.peers.items[slot].failed = true;
         self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
     }
@@ -1469,7 +1482,7 @@ pub const Engine = struct {
         self.peer_edits.forget(slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
         peer_restore.failed(self.model, slot);
-        self.model.peer_failed[slot] = true;
+        self.model.peers.items[slot].failed = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
@@ -1481,7 +1494,7 @@ pub const Engine = struct {
     fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const model = self.model;
         const peer = model.phuxPeerAt(slot).?;
-        const state = &model.peer_workspaces[slot];
+        const state = &model.peers.items[slot].workspace;
         var changed = false;
         while (peer.takeOperationResult()) |result| {
             _ = state.completeSubscription(result, peer.workspaceSnapshot().request_id);
@@ -1575,7 +1588,7 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         // A peer's New Window whose tab never landed leaves no empty window.
         var changed = self.peer_edits.retireOrphans(self.model);
-        for (0..model_module.max_phux_peers) |slot| {
+        for (0..self.model.peers.items.len) |slot| {
             if (self.emptyTabHolds(slot)) continue;
             if (!self.peerHidden(slot)) continue;
             self.unshowPeer(fx, slot);
@@ -1596,7 +1609,7 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAtConst(slot) orelse return false;
         if (!peer.showing()) return false;
-        if (model.peer_workspaces[slot].session == 0) return false;
+        if (model.peers.items[slot].workspace.session == 0) return false;
         return !authorityVisible(model, peer.providerId());
     }
 
@@ -1660,10 +1673,11 @@ pub const Engine = struct {
         // may reach it.
         self.peer_edits.forget(slot);
         // A reopen already waits for its close; that close opens it.
-        if (self.model.phux_peer_reopen[slot]) return true;
+        const entry = self.model.peers.items[slot];
+        if (entry.reopen) return true;
         if (fx.peerChannelLive(self.peerChannelKey(slot))) {
-            self.model.phux_peer_reopen[slot] = true;
-            self.peer_reopen_generation[slot] = self.peer_channel_generation[slot];
+            entry.reopen = true;
+            entry.closing_key = entry.channel_key;
             self.retirePeerChannel(fx, slot);
         } else {
             self.openPeerChannel(fx, slot, on_event);
@@ -1680,10 +1694,12 @@ pub const Engine = struct {
         self.stopShowingPeer(slot);
         empty_session.forgetPeer(model, peer.providerId(), true);
         self.peer_edits.dropStrays(slot);
-        model.peer_restore[slot] = null;
-        model.phux_peers[slot] = null;
-        model.phux_peer_reopen[slot] = false;
-        model.peer_failed[slot] = false;
+        const entry = model.peers.items[slot];
+        entry.restore = null;
+        entry.provider = null;
+        entry.reopen = false;
+        entry.closing_key = null;
+        entry.failed = false;
         self.resetPeerRetry(slot);
         peer.stop();
         // Its close event may arrive after another peer takes the slot; the
@@ -1698,7 +1714,7 @@ pub const Engine = struct {
     fn stopShowingPeer(self: *Engine, slot: usize) void {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
-        const state = &model.peer_workspaces[slot];
+        const state = &model.peers.items[slot].workspace;
         self.peer_edits.forget(slot);
         if (peer.showing()) {
             // Its own tabs, by the id they carry; never another's.
@@ -1729,7 +1745,7 @@ pub const Engine = struct {
             if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
             return;
         }
-        const slot = self.peerSlotForEndpoint(endpoint) orelse self.freePeerSlot() orelse return error.PeerCapacity;
+        const slot = self.peerSlotForEndpoint(endpoint) orelse try model.freePeerSlot();
         const gpa = std.heap.page_allocator;
         // Copied: the active retarget below frees a pending target these
         // slices would otherwise point into.
@@ -1739,7 +1755,7 @@ pub const Engine = struct {
         // committed, so a failure leaves both providers as they were.
         const next_active = try active.prepareRetarget(endpoint, session, label);
         errdefer active.discardRetarget(next_active);
-        if (model.phux_peers[slot]) |peer| {
+        if (model.peers.items[slot].provider) |peer| {
             const next_peer = try peer.prepareRetarget(leaving.descriptor(), leaving.session, leaving.label);
             // Its tabs carry the identity it is about to give up.
             self.stopShowingPeer(slot);
@@ -1753,31 +1769,26 @@ pub const Engine = struct {
             // Lists sessions only; never attaches, so it sizes nobody's panes.
             peer.standBy();
             active.commitRetarget(next_active);
-            model.phux_peers[slot] = peer;
+            model.peers.items[slot].provider = peer;
         }
-        model.peer_failed[slot] = false;
+        model.peers.items[slot].failed = false;
         self.resetPeerRetry(slot);
         // The slot now names another coordinator: strays of the one it
         // held are not this one's to kill.
         self.peer_edits.dropStrays(slot);
         // Nor is its restore state; and the user chose which coordinator to
         // show, so no front record waiting for its list is shown (ADR-0110).
-        model.peer_restore[slot] = null;
+        model.peers.items[slot].restore = null;
         peer_restore.cancelFront(model);
         self.restartCoordinators(fx, slot);
     }
 
     fn peerSlotForEndpoint(self: *const Engine, endpoint: support.PhuxEndpoint) ?usize {
         const wanted = support.PhuxProvider.coordinatorId(endpoint);
-        for (self.model.phux_peers, 0..) |value, slot| {
-            const peer = value orelse continue;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            const peer = entry.provider orelse continue;
             if (peer.effectiveProviderId() == wanted) return slot;
         }
-        return null;
-    }
-
-    fn freePeerSlot(self: *const Engine) ?usize {
-        for (self.model.phux_peers, 0..) |value, slot| if (value == null) return slot;
         return null;
     }
 
@@ -1805,8 +1816,8 @@ pub const Engine = struct {
             self.supersedeSelection();
             return empty_session.pickPeer(model, coordinator, session);
         }
-        const peer = model.phux_peers[slot].?;
-        const state = &model.peer_workspaces[slot];
+        const peer = model.peers.items[slot].provider.?;
+        const state = &model.peers.items[slot].workspace;
         state.authority = peer.providerId();
         if (peer.showing()) {
             if (peer.selectedSessionId() == session and peer.state() == .attached) {
@@ -1827,7 +1838,7 @@ pub const Engine = struct {
         // Mid-exchange two providers can briefly hold one coordinator id.
         if (model.phuxConst()) |active| if (active.pending_retarget != null) return null;
         const slot = model.peerSlot(coordinator) orelse return null;
-        if (!peerListsSession(model.phux_peers[slot].?, session)) return null;
+        if (!peerListsSession(model.peers.items[slot].provider.?, session)) return null;
         return slot;
     }
 
@@ -2880,9 +2891,7 @@ pub const Engine = struct {
         if (suspended) {
             // Suspending input chooses nothing to show: a front record still
             // waiting for its host's list survives it (ADR-0110).
-            const kept = self.model.peer_restore;
-            self.supersedeSelection();
-            self.model.peer_restore = kept;
+            self.cancelPendingSelection();
             self.remote_pointer.cancelAll(self.model);
             self.cancelSplitDrag();
             self.last_click_count = 0;

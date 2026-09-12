@@ -1303,23 +1303,43 @@ pub const Group = union(enum) { active, peer: usize };
 
 /// The host groups in switcher order: this Mac's coordinator first, then
 /// registered hosts, each pass in active-then-slot order.
-pub fn coordinatorGroups(model: *const Model, out: *[1 + model_module.max_phux_peers]Group) usize {
-    if (comptime !support.phux_enabled) return 0;
-    var count: usize = 0;
-    for ([_]bool{ false, true }) |remote_pass| {
-        if (model.phuxConst()) |active| if ((active.remoteTarget() != null) == remote_pass) {
-            out[count] = .active;
-            count += 1;
-        };
-        for (0..model_module.max_phux_peers) |slot| {
-            const peer = model.phuxPeerAtConst(slot) orelse continue;
-            if ((peer.remoteTarget() != null) != remote_pass) continue;
-            out[count] = .{ .peer = slot };
-            count += 1;
+pub const CoordinatorGroups = struct {
+    model: *const Model,
+    remote_pass: bool = false,
+    active_seen: bool = false,
+    slot: usize = 0,
+    done: bool = false,
+
+    pub fn next(self: *CoordinatorGroups) ?Group {
+        if (comptime !support.phux_enabled) return null;
+        if (self.done) return null;
+        if (self.nextInPass()) |group| return group;
+        if (self.remote_pass) {
+            self.done = true;
+            return null;
         }
+        self.remote_pass = true;
+        self.active_seen = false;
+        self.slot = 0;
+        return self.nextInPass();
     }
-    return count;
-}
+
+    fn nextInPass(self: *CoordinatorGroups) ?Group {
+        if (!self.active_seen) {
+            self.active_seen = true;
+            if (self.model.phuxConst()) |active| {
+                if ((active.remoteTarget() != null) == self.remote_pass) return .active;
+            }
+        }
+        while (self.slot < self.model.peers.items.len) {
+            const slot = self.slot;
+            self.slot += 1;
+            const peer = self.model.phuxPeerAtConst(slot) orelse continue;
+            if ((peer.remoteTarget() != null) == self.remote_pass) return .{ .peer = slot };
+        }
+        return null;
+    }
+};
 
 /// What a peer's group is called: its registered host's label, else This Mac.
 pub fn peerHostLabel(model: *const Model, coordinator: support.ProviderId) []const u8 {
@@ -1346,7 +1366,7 @@ fn inventoryPeer(model: *const Model) ?*const support.PhuxProvider {
 fn peerDegraded(model: *const Model, slot: usize) bool {
     if (comptime !support.phux_enabled) return false;
     const peer = model.phuxPeerAtConst(slot) orelse return false;
-    if (model.peer_failed[slot]) return true;
+    if (model.peers.items[slot].failed) return true;
     const state = peer.state();
     return state != .negotiated and state != .attached;
 }
@@ -1360,10 +1380,11 @@ pub const PaletteIterator = struct {
     pane_index: usize = 0,
     remote_index: usize = 0,
     session_index: usize = 0,
-    group: usize = 0,
+    group: ?Group = null,
+    groups: CoordinatorGroups,
 
     pub fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
-        return .{ .model = model, .needle = workspace.palette.needle() };
+        return .{ .model = model, .needle = workspace.palette.needle(), .groups = .{ .model = model } };
     }
 
     fn accepts(iterator: *const PaletteIterator, entry: PaletteEntry) bool {
@@ -1475,18 +1496,17 @@ pub const PaletteIterator = struct {
     }
 
     fn nextGrouped(iterator: *PaletteIterator) ?PaletteEntry {
-        var order: [1 + model_module.max_phux_peers]Group = undefined;
-        const count = coordinatorGroups(iterator.model, &order);
-        while (iterator.group < count) {
-            const found = switch (order[iterator.group]) {
+        while (true) {
+            if (iterator.group == null) iterator.group = iterator.groups.next();
+            const group = iterator.group orelse return null;
+            const found = switch (group) {
                 .active => iterator.nextSession(),
                 .peer => |slot| iterator.nextPeerSession(slot),
             };
             if (found) |entry| return entry;
-            iterator.group += 1;
+            iterator.group = null;
             iterator.session_index = 0;
         }
-        return null;
     }
 
     pub fn next(iterator: *PaletteIterator) ?PaletteEntry {

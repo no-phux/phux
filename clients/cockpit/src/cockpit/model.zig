@@ -722,8 +722,21 @@ pub const EmptyPick = struct {
     }
 };
 
-/// Coordinators beside the active one: this Mac's plus registered hosts.
-pub const max_phux_peers: usize = 3;
+/// Heap-stable ownership for a coordinator attachment. Collection growth never
+/// moves its projection or pending lifecycle state. Empty entries may be reused,
+/// but their retired channel handles are never reused.
+pub const Peer = struct {
+    provider: ?*PhuxProvider = null,
+    workspace: @import("shared_workspace.zig").State = .{},
+    reopen: bool = false,
+    failed: bool = false,
+    restore: ?PeerRestore = null,
+    channel_key: u64 = 0,
+    closing_key: ?u64 = null,
+    retry_key: ?u64 = null,
+    retry_delay_ms: u64 = 0,
+    listed_since: ?std.Io.Timestamp = null,
+};
 
 /// What a peer's remembered host showed at the last quit (ADR-0110), keyed
 /// by that peer's own coordinator id (native/peer_restore.zig).
@@ -783,21 +796,9 @@ pub const Model = struct {
     /// (`TerminalRef.provider_id`), so every ref routes to exactly the
     /// provider that minted it (`phuxForRef`), never to another server that
     /// happens to use the same numeric id.
-    phux_peers: [max_phux_peers]?*PhuxProvider = @splat(null),
-    /// A peer's channel is closing for a restart; reopen on its close event
-    /// (the occupancy's generation is Engine.peer_reopen_generation).
-    phux_peer_reopen: [max_phux_peers]bool = @splat(false),
-    /// A peer's connection failed or was lost, and it has not listed since.
-    /// Its group then shows why, instead of disappearing.
-    peer_failed: [max_phux_peers]bool = @splat(false),
-    /// Each showing peer's projection, as `shared_workspace` is the active
-    /// coordinator's. A listing peer's is empty.
-    peer_workspaces: [max_phux_peers]@import("shared_workspace.zig").State = [_]@import("shared_workspace.zig").State{.{}} ** max_phux_peers,
+    peers: std.ArrayList(*Peer) = .empty,
     /// A peer's empty session picked in the switcher (EmptyPick).
     empty_pick: ?EmptyPick = null,
-    /// What each peer's remembered host was showing at the last quit
-    /// (ADR-0110, native/peer_restore.zig), until its list judges it.
-    peer_restore: [max_phux_peers]?PeerRestore = @splat(null),
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
@@ -1139,34 +1140,34 @@ pub const Model = struct {
     /// The first peer: the one a single remote host stands beside.
     pub fn phuxPeer(model: *Model) ?*PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        for (model.peers.items) |entry| if (entry.provider) |peer| return peer;
         return null;
     }
 
     pub fn phuxPeerConst(model: *const Model) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        for (model.peers.items) |entry| if (entry.provider) |peer| return peer;
         return null;
     }
 
     pub fn phuxPeerAt(model: *Model, slot: usize) ?*PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        if (slot >= max_phux_peers) return null;
-        return model.phux_peers[slot];
+        if (slot >= model.peers.items.len) return null;
+        return model.peers.items[slot].provider;
     }
 
     pub fn phuxPeerAtConst(model: *const Model, slot: usize) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        if (slot >= max_phux_peers) return null;
-        return model.phux_peers[slot];
+        if (slot >= model.peers.items.len) return null;
+        return model.peers.items[slot].provider;
     }
 
     /// The slot of the peer connected to coordinator `id`.
     pub fn peerSlot(model: *const Model, id: support.ProviderId) ?usize {
         if (comptime !support.phux_enabled) return null;
         if (id == .local) return null;
-        for (model.phux_peers, 0..) |slot, index| {
-            const peer = slot orelse continue;
+        for (model.peers.items, 0..) |entry, index| {
+            const peer = entry.provider orelse continue;
             if (peer.providerId() == id) return index;
         }
         return null;
@@ -1179,7 +1180,7 @@ pub const Model = struct {
         if (id == .local) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return active;
         const slot = model.peerSlot(id) orelse return null;
-        return model.phux_peers[slot];
+        return model.peers.items[slot].provider;
     }
 
     pub fn phuxForConst(model: *const Model, id: support.ProviderId) ?*const PhuxProvider {
@@ -1187,7 +1188,7 @@ pub const Model = struct {
         if (id == .local) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return active;
         const slot = model.peerSlot(id) orelse return null;
-        return model.phux_peers[slot];
+        return model.peers.items[slot].provider;
     }
 
     /// Where a ref's input, sizing and presentation go: the coordinator
@@ -1207,7 +1208,7 @@ pub const Model = struct {
         if (comptime !support.phux_enabled) return false;
         if (model.phux_provider) |active| if (active.providerId() == id) return true;
         const slot = model.peerSlot(id) orelse return false;
-        return model.phux_peers[slot].?.showing();
+        return model.peers.items[slot].provider.?.showing();
     }
 
     /// The projection state for coordinator `id`'s shared workspace.
@@ -1215,7 +1216,29 @@ pub const Model = struct {
         if (comptime !support.phux_enabled) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return &model.shared_workspace;
         const slot = model.peerSlot(id) orelse return null;
-        return &model.peer_workspaces[slot];
+        return &model.peers.items[slot].workspace;
+    }
+
+    /// Reserve owned entries before mutating any provider. Callers report
+    /// allocation failure without disturbing existing visible work.
+    pub fn ensurePeerSlots(model: *Model, count: usize) !void {
+        const gpa = std.heap.page_allocator;
+        try model.peers.ensureTotalCapacity(gpa, count);
+        while (model.peers.items.len < count) {
+            const entry = try gpa.create(Peer);
+            errdefer gpa.destroy(entry);
+            entry.* = .{ .channel_key = try support.allocatePeerHandle() };
+            model.peers.appendAssumeCapacity(entry);
+        }
+    }
+
+    pub fn freePeerSlot(model: *Model) !usize {
+        for (model.peers.items, 0..) |entry, slot| {
+            if (entry.provider == null) return slot;
+        }
+        const slot = model.peers.items.len;
+        try model.ensurePeerSlots(slot + 1);
+        return slot;
     }
 
     /// The coordinator whose placements carry saved attachment evidence:
@@ -2252,7 +2275,6 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalResourceId) !void {
 
 pub fn deinitModel(model: *Model) void {
     model.shared_workspace.deinit();
-    for (&model.peer_workspaces) |*state| state.deinit();
     model.clearRemotePaint();
     if (comptime support.phux_enabled) {
         if (model.pointer_state) |pointer_state| {
@@ -2262,14 +2284,20 @@ pub fn deinitModel(model: *Model) void {
         }
         if (model.phux_provider) |remote| remote.destroy();
         model.phux_provider = null;
-        for (&model.phux_peers) |*slot| {
-            if (slot.*) |peer| peer.destroy();
-            slot.* = null;
-        }
     }
+    deinitPeers(model);
     for (&model.secondary) |*slot| {
         if (slot.*) |workspace| std.heap.page_allocator.destroy(workspace);
         slot.* = null;
     }
     model.provider.destroy();
+}
+
+fn deinitPeers(model: *Model) void {
+    for (model.peers.items) |entry| {
+        entry.workspace.deinit();
+        if (comptime support.phux_enabled) if (entry.provider) |peer| peer.destroy();
+        std.heap.page_allocator.destroy(entry);
+    }
+    model.peers.deinit(std.heap.page_allocator);
 }

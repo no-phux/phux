@@ -1,5 +1,5 @@
 //! Side by side: the active Phux provider plus one standby coordinator
-//! (`Model.phux_peers`), listed as host groups in one switcher. This Mac's
+//! (`Model.peers`), listed as host groups in one switcher. This Mac's
 //! group comes first whichever coordinator is active; selecting the other
 //! group's session exchanges the two; Use this Mac keeps the remote host
 //! listed; Disconnect removes only its group; relaunch reattaches the
@@ -82,7 +82,8 @@ const Pair = struct {
         const active = try support.PhuxProvider.create(testing.allocator, testing.io, if (remote_active) remote else local, null, "side-by-side");
         engine.model.phux_provider = active;
         const peer = try support.PhuxProvider.create(testing.allocator, testing.io, if (remote_active) local else remote, null, "side-by-side");
-        engine.model.phux_peers[0] = peer;
+        try engine.model.ensurePeerSlots(1);
+        engine.model.peers.items[0].provider = peer;
         try addSessions(active, &.{"home"});
         try connectStandby(peer);
         return .{ .engine = engine, .active = active, .peer = peer };
@@ -231,7 +232,7 @@ test "selecting a peer session shows it beside the active coordinator: only the 
 
     // Removing the peer withdraws its group entirely.
     pair.engine.dropPeer(&fx, 0);
-    try testing.expect(model.phux_peers[0] == null);
+    try testing.expect(model.phuxPeerAt(0) == null);
     try testing.expect(decoded.resolve(model) == null);
 }
 
@@ -277,8 +278,8 @@ test "a peer that disconnects stops listing, refuses its old sessions, and says 
     // from before cannot be activated, and its group says why instead of
     // disappearing.
     var fx: RestartCounter = .{};
-    try testing.expect(pair.engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null));
-    try testing.expect(model.peer_failed[0]);
+    try testing.expect(pair.engine.onPeerChannel(&fx, .{ .key = pair.engine.peerChannelKey(0), .kind = .closed }, null));
+    try testing.expect(model.peers.items[0].failed);
     try testing.expectEqual(@as(usize, 0), peerEntries(model));
     try testing.expectEqual(@as(usize, 0), pair.peer.host.sessionCatalog().len);
     try testing.expect(held.resolve(model) == null);
@@ -304,7 +305,7 @@ test "a peer that disconnects stops listing, refuses its old sessions, and says 
     try testing.expect(pair.engine.retryPeer(mini, &fx));
     try testing.expectEqual(@as(usize, 1), fx.peer);
     try testing.expectEqual(@as(usize, 0), fx.active);
-    try testing.expect(!model.peer_failed[0]);
+    try testing.expect(!model.peers.items[0].failed);
     try testing.expect(std.mem.indexOf(u8, try sessionsPage(model, &page), "Connecting") != null);
     // Retrying is only for a failed peer; the held row stops resolving.
     try testing.expect(!pair.engine.retryPeer(mini, &fx));
@@ -362,12 +363,12 @@ test "Connect to Host keeps this Mac beside the host; Use this Mac keeps the hos
     const fx = ts_engine.NoShells{};
     var out: [remote_hosts.max_bytes]u8 = undefined;
 
-    try testing.expect(engine.model.phux_peers[0] == null);
+    try testing.expect(engine.model.phuxPeerAt(0) == null);
     const connecting = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
     try testing.expectEqual(@intFromEnum(remote_hosts.Phase.connecting), connecting[1]);
     try testing.expectEqualStrings("me@mini", local.remoteTarget().?);
     // The coordinator it left is listed beside it, as a standby.
-    const peer = engine.model.phux_peers[0].?;
+    const peer = engine.model.phuxPeerAt(0).?;
     try testing.expect(peer.standby);
     try testing.expect(peer.remoteTarget() == null);
     try testing.expectEqualStrings("/side-by-side-unused", peer.endpointDescriptor().unix);
@@ -375,13 +376,13 @@ test "Connect to Host keeps this Mac beside the host; Use this Mac keeps the hos
     // Use this Mac: this Mac active again, the host still beside it.
     try testing.expectEqualSlices(u8, "\x01\x00\x00\x00", try remote_hosts.handle(engine, &fx, "\x01\x03\x00", &out));
     try testing.expect(local.remoteTarget() == null);
-    try testing.expect(engine.model.phux_peers[0] == peer);
+    try testing.expect(engine.model.phuxPeerAt(0) == peer);
     try testing.expectEqualStrings("me@mini", peer.remoteTarget().?);
     try testing.expectEqualStrings("work", peer.pending_retarget.?.session.?);
 
     // Disconnect: the host's group goes.
     try testing.expectEqualSlices(u8, "\x01\x00\x00\x00", try remote_hosts.handle(engine, &fx, "\x01\x04\x00", &out));
-    try testing.expect(engine.model.phux_peers[0] == null);
+    try testing.expect(engine.model.phuxPeerAt(0) == null);
     try testing.expect(local.remoteTarget() == null);
 }
 
@@ -399,37 +400,37 @@ test "a second host keeps the first listed beside it, and Use this Mac keeps bot
     engine.model.phux_provider = local;
     const fx = ts_engine.NoShells{};
     var out: [remote_hosts.max_bytes]u8 = undefined;
-    const peers = &engine.model.phux_peers;
+    const peers = &engine.model.peers;
 
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
     // studio is active; this Mac and mini are both listed, each in its slot.
     try testing.expectEqualStrings("studio", local.remoteTarget().?);
-    try testing.expect(peers[0].?.remoteTarget() == null);
-    try testing.expectEqualStrings("mini", peers[1].?.remoteTarget().?);
-    try testing.expect(peers[0].?.standby and peers[1].?.standby);
+    try testing.expect(peers.items[0].provider.?.remoteTarget() == null);
+    try testing.expectEqualStrings("mini", peers.items[1].provider.?.remoteTarget().?);
+    try testing.expect(peers.items[0].provider.?.standby and peers.items[1].provider.?.standby);
     // Three coordinators, three identities.
-    try testing.expect(local.effectiveProviderId() != peers[0].?.effectiveProviderId());
-    try testing.expect(local.effectiveProviderId() != peers[1].?.effectiveProviderId());
-    try testing.expect(peers[0].?.effectiveProviderId() != peers[1].?.effectiveProviderId());
+    try testing.expect(local.effectiveProviderId() != peers.items[0].provider.?.effectiveProviderId());
+    try testing.expect(local.effectiveProviderId() != peers.items[1].provider.?.effectiveProviderId());
+    try testing.expect(peers.items[0].provider.?.effectiveProviderId() != peers.items[1].provider.?.effectiveProviderId());
 
     // Use this Mac trades places with this Mac's slot; mini is untouched.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x03\x00", &out);
     try testing.expect(local.remoteTarget() == null);
-    try testing.expectEqualStrings("studio", peers[0].?.remoteTarget().?);
-    try testing.expectEqualStrings("mini", peers[1].?.remoteTarget().?);
-    try testing.expect(peers[1].?.pending_retarget == null);
+    try testing.expectEqualStrings("studio", peers.items[0].provider.?.remoteTarget().?);
+    try testing.expectEqualStrings("mini", peers.items[1].provider.?.remoteTarget().?);
+    try testing.expect(peers.items[1].provider.?.pending_retarget == null);
 
     // Reconnecting to a listed host trades places with it, never copies it.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
     try testing.expectEqualStrings("mini", local.remoteTarget().?);
-    try testing.expect(peers[1].?.remoteTarget() == null);
-    try testing.expect(peers[2] == null);
+    try testing.expect(peers.items[1].provider.?.remoteTarget() == null);
+    try testing.expect(engine.model.phuxPeerAt(2) == null);
 
     // Disconnect removes every host; this Mac is active alone.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x00", &out);
     try testing.expect(local.remoteTarget() == null);
-    for (peers) |slot| try testing.expect(slot == null);
+    for (peers.items) |entry| try testing.expect(entry.provider == null);
 }
 
 test "relaunch reattaches a remembered host beside this Mac; a configured host keeps this Mac beside it" {
@@ -477,20 +478,20 @@ test "Disconnect names one host: a listed host leaves alone, and the active host
     engine.model.phux_provider = local;
     const fx = ts_engine.NoShells{};
     var out: [remote_hosts.max_bytes]u8 = undefined;
-    const peers = &engine.model.phux_peers;
+    const peers = &engine.model.peers;
 
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
     // studio is active; this Mac stands by in slot 0 and mini in slot 1.
     try testing.expectEqualStrings("studio", local.remoteTarget().?);
-    try testing.expect(peers[0].?.remoteTarget() == null);
-    const mini = peers[1].?;
+    try testing.expect(peers.items[0].provider.?.remoteTarget() == null);
+    const mini = peers.items[1].provider.?;
     try testing.expectEqualStrings("me@mini", mini.remoteTarget().?);
 
     // A host Cockpit does not hold is refused, and nothing moves.
     const refused = try remote_hosts.handle(engine, &fx, "\x01\x04\x06nosuch", &out);
     try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), refused[1]);
-    try testing.expect(peers[0] != null and peers[1] == mini);
+    try testing.expect(peers.items[0].provider != null and peers.items[1].provider == mini);
     try testing.expectEqualStrings("studio", local.remoteTarget().?);
 
     // The active studio goes: this Mac is active again, its standby slot is
@@ -498,14 +499,14 @@ test "Disconnect names one host: a listed host leaves alone, and the active host
     // connection.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x06studio", &out);
     try testing.expect(local.remoteTarget() == null);
-    try testing.expect(peers[0] == null);
-    try testing.expect(peers[1] == mini);
+    try testing.expect(peers.items[0].provider == null);
+    try testing.expect(peers.items[1].provider == mini);
     try testing.expectEqualStrings("me@mini", mini.remoteTarget().?);
     try testing.expect(mini.pending_retarget == null);
 
     // mini, named by its registry name: only its slot goes.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
-    for (peers) |slot| try testing.expect(slot == null);
+    for (peers.items) |entry| try testing.expect(entry.provider == null);
     try testing.expect(local.remoteTarget() == null);
 }
 
@@ -521,37 +522,37 @@ test "Disconnect matches an exact target before a registry name, the active host
     engine.model.phux_provider = local;
     const fx = ts_engine.NoShells{};
     var out: [remote_hosts.max_bytes]u8 = undefined;
-    const peers = &engine.model.phux_peers;
+    const peers = &engine.model.peers;
 
     // me@mini, then mini: the one registry entry held twice. mini is active,
     // me@mini listed in slot 1 (this Mac in slot 0); both are named "mini".
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x07me@mini", &out);
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
     try testing.expectEqualStrings("mini", local.remoteTarget().?);
-    const me = peers[1].?;
+    const me = peers.items[1].provider.?;
     try testing.expectEqualStrings("me@mini", me.remoteTarget().?);
     try testing.expectEqualStrings("mini", me.remoteLabel().?);
     // "mini" is the active host's exact target: it goes, me@mini stays.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
     try testing.expect(local.remoteTarget() == null);
-    try testing.expect(peers[1] == me);
-    try testing.expect(peers[0] == null);
+    try testing.expect(peers.items[1].provider == me);
+    try testing.expect(peers.items[0].provider == null);
 
     // you@mini joins: now "mini" names you@mini (active) and me@mini, and is
     // the exact target of neither. It is refused, naming both; nothing moves.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x08you@mini", &out);
     try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
-    const before = peers.*;
+    const before = [_]?*support.PhuxProvider{ peers.items[0].provider, peers.items[1].provider };
     const refused = try remote_hosts.handle(engine, &fx, "\x01\x04\x04mini", &out);
     try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), refused[1]);
     try testing.expect(std.mem.indexOf(u8, refused, "me@mini") != null);
     try testing.expect(std.mem.indexOf(u8, refused, "you@mini") != null);
     try testing.expect(std.mem.indexOf(u8, refused, "exact target") != null);
-    try testing.expectEqualSlices(?*support.PhuxProvider, &before, peers);
+    for (before, 0..) |provider, slot| try testing.expect(provider == peers.items[slot].provider);
     try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
     // The exact target removes only that one.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x07me@mini", &out);
-    try testing.expect(peers[1] == null);
+    try testing.expect(peers.items[1].provider == null);
     try testing.expectEqualStrings("you@mini", local.remoteTarget().?);
 }
 
@@ -606,7 +607,7 @@ test "a remembered first host that cannot be set up is skipped, not the launch" 
     try testing.expect((try startup.createPhuxPeerFromConfig(failing.allocator(), testing.io, &remembered)) == null);
 }
 
-test "a fifth coordinator is refused with the reason, and nothing changes" {
+test "a fifth coordinator connects while existing providers remain owned" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var registry = try IsolatedRegistry.init(two_host_registry ++ "[[remote]]\nname = \"lab\"\nendpoint = \"ws://127.0.0.1:3\"\n[[remote]]\nname = \"rack\"\nendpoint = \"ws://127.0.0.1:4\"\n");
     defer registry.deinit();
@@ -621,14 +622,52 @@ test "a fifth coordinator is refused with the reason, and nothing changes" {
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x03lab", &out);
-    // lab active; this Mac, mini and studio fill the three peer slots.
-    for (engine.model.phux_peers) |slot| try testing.expect(slot != null);
-    const before = engine.model.phux_peers;
+    const first = engine.model.phuxPeerAt(0).?;
     const reply = try remote_hosts.handle(engine, &fx, "\x01\x02\x04rack", &out);
-    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.refused), reply[1]);
-    try testing.expect(std.mem.indexOf(u8, reply, "at most four coordinators") != null);
-    try testing.expectEqualStrings("lab", local.remoteTarget().?);
-    try testing.expectEqualSlices(?*support.PhuxProvider, &before, &engine.model.phux_peers);
+    try testing.expectEqual(@intFromEnum(remote_hosts.Phase.connecting), reply[1]);
+    try testing.expectEqualStrings("rack", local.remoteTarget().?);
+    try testing.expect(first == engine.model.phuxPeerAt(0).?);
+    try testing.expect(engine.model.phuxPeerAt(3) != null);
+}
+
+test "six independent standby FFI catalogs preserve stable ownership and never attach" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const names = [_][]const u8{ "one", "two", "three", "four", "five", "six" };
+    var providers: [names.len]*support.PhuxProvider = undefined;
+    var entries: [names.len]*model_module.Peer = undefined;
+    for (names, 0..) |name, slot| {
+        try model.ensurePeerSlots(slot + 1);
+        entries[slot] = model.peers.items[slot];
+        const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = name } }, null, "six-hosts");
+        entries[slot].provider = peer;
+        providers[slot] = peer;
+        try connectStandby(peer);
+        const frames = countFrames(peer);
+        try testing.expectEqual(@as(usize, 0), frames.attach);
+        try testing.expectEqual(@as(usize, 1), frames.command);
+        try testing.expectEqual(@as(usize, 2), peer.standbyCatalog().len);
+        for (0..slot) |previous| {
+            try testing.expect(entries[previous] == model.peers.items[previous]);
+            try testing.expect(providers[previous] == model.phuxPeerAt(previous).?);
+            try testing.expect(providers[previous].providerId() != peer.providerId());
+            try testing.expect(entries[previous].channel_key != entries[slot].channel_key);
+        }
+    }
+    var destinations: [names.len * 2]model_module.PaletteDestination = undefined;
+    try testing.expectEqual(@as(usize, names.len * 2), sessionEntries(model, &destinations).len);
+    // One failed catalog cannot retire another provider or its published list.
+    providers[4].stop();
+    for (providers, 0..) |peer, slot| {
+        if (slot == 4) continue;
+        try testing.expectEqual(.negotiated, peer.state());
+        try testing.expectEqual(@as(usize, 2), peer.standbyCatalog().len);
+    }
+    std.debug.print("owned coordinator bytes: peer={d} provider={d} host={d} bridge={d}; six standby catalogs=12 sessions\n", .{
+        @sizeOf(model_module.Peer), @sizeOf(support.PhuxProvider), @sizeOf(@TypeOf(providers[0].host.*)), @sizeOf(@TypeOf(providers[0].bridge.*)),
+    });
 }
 
 test "relaunch reattaches every remembered host beside the coordinators held, each listing and never attached" {
@@ -656,17 +695,18 @@ test "relaunch reattaches every remembered host beside the coordinators held, ea
     defer engine.destroy();
     const model = engine.model;
     model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &remembered)).?;
-    model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
+    try model.ensurePeerSlots(1);
+    model.peers.items[0].provider = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
     try startup.attachRememberedPeers(gpa, io, model);
     try testing.expect(model.phux_provider.?.remoteTarget() == null);
-    try testing.expectEqualStrings("me@mini", model.phux_peers[0].?.remoteTarget().?);
-    try testing.expectEqualStrings("studio", model.phux_peers[1].?.remoteTarget().?);
-    try testing.expectEqualStrings("studio", model.phux_peers[1].?.remoteLabel().?);
-    try testing.expect(model.phux_peers[2] == null);
-    for (model.phux_peers[0..2]) |slot| try testing.expect(slot.?.standby);
+    try testing.expectEqualStrings("me@mini", model.peers.items[0].provider.?.remoteTarget().?);
+    try testing.expectEqualStrings("studio", model.peers.items[1].provider.?.remoteTarget().?);
+    try testing.expectEqualStrings("studio", model.peers.items[1].provider.?.remoteLabel().?);
+    try testing.expect(model.phuxPeerAt(2) == null);
+    for (model.peers.items[0..2]) |entry| try testing.expect(entry.provider.?.standby);
     // Listing only: after HELLO_OK the restored studio asks GET_STATE, never
     // ATTACH, so it holds no viewport on anyone's session.
-    const studio = model.phux_peers[1].?;
+    const studio = model.peers.items[1].provider.?;
     try studio.host.start("side-by-side");
     try fixture.stageFixture(studio.bridge, "hello.bin");
     _ = try studio.drainReadiness();
@@ -681,13 +721,14 @@ test "relaunch reattaches every remembered host beside the coordinators held, ea
     const second = try ts_engine.Engine.create(gpa, io);
     defer second.destroy();
     second.model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &configured)).?;
-    second.model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &configured);
+    try second.model.ensurePeerSlots(1);
+    second.model.peers.items[0].provider = try startup.createPhuxPeerFromConfig(gpa, io, &configured);
     try startup.attachRememberedPeers(gpa, io, second.model);
     try testing.expectEqualStrings("studio", second.model.phux_provider.?.remoteTarget().?);
-    try testing.expect(second.model.phux_peers[0].?.remoteTarget() == null);
-    try testing.expectEqualStrings("me@mini", second.model.phux_peers[1].?.remoteTarget().?);
-    try testing.expect(second.model.phux_peers[1].?.standby);
-    try testing.expect(second.model.phux_peers[2] == null);
+    try testing.expect(second.model.peers.items[0].provider.?.remoteTarget() == null);
+    try testing.expectEqualStrings("me@mini", second.model.peers.items[1].provider.?.remoteTarget().?);
+    try testing.expect(second.model.peers.items[1].provider.?.standby);
+    try testing.expect(second.model.phuxPeerAt(2) == null);
 }
 
 /// A launch as initializeModel composes it: this Mac active, the first
@@ -699,7 +740,8 @@ fn launchRemembered(gpa: std.mem.Allocator, io: std.Io, state_path: []const u8) 
     errdefer engine.destroy();
     const model = engine.model;
     model.phux_provider = (try startup.createPhuxProviderFromConfig(gpa, io, &remembered)).?;
-    model.phux_peers[0] = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
+    try model.ensurePeerSlots(1);
+    model.peers.items[0].provider = try startup.createPhuxPeerFromConfig(gpa, io, &remembered);
     try startup.attachRememberedPeers(gpa, io, model);
     return engine;
 }
@@ -734,16 +776,16 @@ test "relaunch hands each remembered host its own record, and a removed host's r
         const model = engine.model;
         // mini stands beside this Mac first (createPhuxPeerFromConfig), and
         // still receives its own record; studio joins with its own.
-        try testing.expectEqual(mini_id, model.phux_peers[0].?.providerId());
-        try testing.expectEqual(studio_id, model.phux_peers[1].?.providerId());
-        const mini_record = model.peer_restore[0].?;
+        try testing.expectEqual(mini_id, model.peers.items[0].provider.?.providerId());
+        try testing.expectEqual(studio_id, model.peers.items[1].provider.?.providerId());
+        const mini_record = model.peers.items[0].restore.?;
         try testing.expectEqual(mini_id, mini_record.coordinator);
         try testing.expect(mini_record.pending);
         try testing.expectEqual(@as(u32, 1), mini_record.shown.session);
-        const studio_record = model.peer_restore[1].?;
+        const studio_record = model.peers.items[1].restore.?;
         try testing.expectEqual(studio_id, studio_record.coordinator);
         try testing.expect(!studio_record.pending);
-        for (model.phux_peers[0..2]) |slot| try testing.expect(slot.?.standby);
+        for (model.peers.items[0..2]) |entry| try testing.expect(entry.provider.?.standby);
     }
 
     // Disconnect forgets mini (remote_hosts.forgetHost removes it from the
@@ -754,10 +796,11 @@ test "relaunch hands each remembered host its own record, and a removed host's r
         const engine = try launchRemembered(gpa, io, state_path);
         defer engine.destroy();
         const model = engine.model;
-        try testing.expectEqual(studio_id, model.phux_peers[0].?.providerId());
-        for (model.phux_peers) |value| if (value) |peer| try testing.expect(peer.providerId() != mini_id);
+        try testing.expectEqual(studio_id, model.peers.items[0].provider.?.providerId());
+        for (model.peers.items) |entry| if (entry.provider) |peer| try testing.expect(peer.providerId() != mini_id);
         var records: usize = 0;
-        for (model.peer_restore) |value| {
+        for (model.peers.items) |entry| {
+            const value = entry.restore;
             const record = value orelse continue;
             records += 1;
             try testing.expect(record.coordinator != mini_id);
@@ -834,26 +877,21 @@ const ChannelLog = struct {
     pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
 
-test "a peer channel key carries its slot and generation, and never names another slot" {
+test "allocated peer handles stay unique beyond sixteen entries and across growth" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
-    const slots = model_module.max_phux_peers;
-    for (0..slots) |slot| {
-        const first = support.peerChannelForKey(support.phuxPeerChannelKey(slot), slots).?;
-        try testing.expectEqual(slot, first.slot);
-        try testing.expectEqual(@as(u64, 0), first.generation);
-        var generation: u64 = 0;
-        for (0..4) |_| {
-            generation = support.nextPeerChannelGeneration(generation);
-            const key = support.phuxPeerChannelKeyAt(slot, generation);
-            try testing.expect(key != support.phuxPeerChannelKey(slot));
-            const decoded = support.peerChannelForKey(key, slots).?;
-            try testing.expectEqual(slot, decoded.slot);
-            try testing.expectEqual(generation, decoded.generation);
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    try engine.model.ensurePeerSlots(1);
+    const first = engine.model.peers.items[0];
+    const first_key = engine.peerChannelKey(0);
+    try engine.model.ensurePeerSlots(65);
+    try testing.expect(first == engine.model.peers.items[0]);
+    try testing.expectEqual(first_key, engine.peerChannelKey(0));
+    for (engine.model.peers.items, 0..) |entry, index| {
+        for (engine.model.peers.items[0..index]) |previous| {
+            try testing.expect(entry.channel_key != previous.channel_key);
         }
     }
-    try testing.expectEqual(@as(u64, 1), support.nextPeerChannelGeneration(support.peer_channel_generations - 1));
-    try testing.expect(support.peerChannelForKey(support.phux_channel_key, slots) == null);
-    try testing.expect(support.peerChannelForKey(support.phuxPeerChannelKeyAt(slots, 1), slots) == null);
 }
 
 test "a close from before Disconnect and a new Connect reused the slot is ignored; the new peer's own close is not" {
@@ -872,26 +910,26 @@ test "a close from before Disconnect and a new Connect reused the slot is ignore
     // Connect to mini: this Mac stands by in slot 0, on its first channel.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x04mini", &out);
     const first_key = engine.peerChannelKey(0);
-    try testing.expectEqual(support.phuxPeerChannelKey(0), first_key);
+    try testing.expect(first_key != support.phux_channel_key);
     // Disconnect closes that channel; its close event is still on its way.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x04\x00", &out);
-    try testing.expect(engine.model.phux_peers[0] == null);
+    try testing.expect(engine.model.peers.items[0].provider == null);
     try testing.expectEqual(first_key, fx.closed[fx.closes - 1]);
     // Connect to studio: this Mac takes slot 0 again, under a new key.
     _ = try remote_hosts.handle(engine, &fx, "\x01\x02\x06studio", &out);
-    const again = engine.model.phux_peers[0].?;
+    const again = engine.model.peers.items[0].provider.?;
     try testing.expect(engine.peerChannelKey(0) != first_key);
 
     // The old channel's close and a late post arrive now: neither is the new
     // peer's, so neither stops it or marks it failed.
     try testing.expect(!engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .closed }, null));
     try testing.expect(!engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .data }, null));
-    try testing.expect(!engine.model.peer_failed[0]);
-    try testing.expect(engine.model.phux_peers[0] == again);
+    try testing.expect(!engine.model.peers.items[0].failed);
+    try testing.expect(engine.model.peers.items[0].provider == again);
     try testing.expectEqual(@as(usize, 0), fx.opens);
     // The new channel's own close is the new peer's: it failed, and says so.
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
-    try testing.expect(engine.model.peer_failed[0]);
+    try testing.expect(engine.model.peers.items[0].failed);
 }
 
 test "a restart reopens a peer on its own close, under the next key, and never before" {
@@ -907,7 +945,7 @@ test "a restart reopens a peer on its own close, under the next key, and never b
     try testing.expectEqual(@as(usize, 1), fx.closes);
     try testing.expectEqual(first_key, fx.closed[0]);
     try testing.expectEqual(@as(usize, 0), fx.opens);
-    try testing.expect(engine.model.phux_peer_reopen[0]);
+    try testing.expect(engine.model.peers.items[0].reopen);
     // A second restart while that close is pending opens nothing more.
     try testing.expect(engine.restartPeerConnection(&fx, 0, null));
     try testing.expectEqual(@as(usize, 1), fx.closes);
@@ -917,7 +955,7 @@ test "a restart reopens a peer on its own close, under the next key, and never b
     try testing.expectEqual(@as(usize, 0), fx.opens);
     // Its close opens the next channel, under the next key.
     _ = engine.onPeerChannel(&fx, .{ .key = first_key, .kind = .closed }, null);
-    try testing.expect(!engine.model.phux_peer_reopen[0]);
+    try testing.expect(!engine.model.peers.items[0].reopen);
     try testing.expectEqual(@as(usize, 1), fx.opens);
     try testing.expectEqual(engine.peerChannelKey(0), fx.opened[0]);
     try testing.expect(fx.opened[0] != first_key);
@@ -958,7 +996,7 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
 
     // mini's connection closes: its group says so, and a redial is armed.
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
-    try testing.expect(model.peer_failed[0]);
+    try testing.expect(model.peers.items[0].failed);
     try testing.expectEqual(@as(usize, 1), fx.count);
     try testing.expectEqual(@as(u64, 1000), fx.delays[0]);
     try testing.expectEqual(@as(usize, 0), fx.restarts);
@@ -967,7 +1005,7 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
     // connection asks GET_STATE and never ATTACH.
     try testing.expect(engine.onPeerRetryTimer(&fx, fx.keys[0]));
     try testing.expectEqual(@as(usize, 1), fx.restarts);
-    try testing.expect(!model.peer_failed[0]);
+    try testing.expect(!model.peers.items[0].failed);
     try testing.expect(pair.peer.standby);
     pair.peer.stop();
     try pair.peer.host.reconnect("side-by-side");
@@ -997,11 +1035,11 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
     _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
     try fixture.stageFixture(pair.peer.bridge, "standby_state.bin");
     _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
-    try testing.expect(!model.peer_failed[0]);
-    try testing.expect(engine.peer_listed_since[0] != null);
+    try testing.expect(!model.peers.items[0].failed);
+    try testing.expect(engine.model.peers.items[0].listed_since != null);
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
     try testing.expectEqual(@as(u64, 60_000), fx.delays[fx.count - 1]);
-    try testing.expect(engine.peer_listed_since[0] == null);
+    try testing.expect(engine.model.peers.items[0].listed_since == null);
 
     // One that stayed listed for the stable window before failing starts
     // over at 1 s.
@@ -1012,8 +1050,8 @@ test "a failed listing peer is redialed as a lister after 1 s, twice as long aft
     _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
     try fixture.stageFixture(pair.peer.bridge, "standby_state.bin");
     _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
-    const listed = engine.peer_listed_since[0].?;
-    engine.peer_listed_since[0] = listed.subDuration(std.Io.Duration.fromMilliseconds(ts_engine.Engine.peer_retry_stable_ms));
+    const listed = engine.model.peers.items[0].listed_since.?;
+    engine.model.peers.items[0].listed_since = listed.subDuration(std.Io.Duration.fromMilliseconds(ts_engine.Engine.peer_retry_stable_ms));
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
     try testing.expectEqual(@as(u64, 1000), fx.delays[fx.count - 1]);
 }
@@ -1031,7 +1069,7 @@ test "a showing peer is not redialed automatically, and a timer from before a pi
     // a timer for its slot does nothing.
     try pair.peer.show(2);
     try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null));
-    try testing.expect(model.peer_failed[0]);
+    try testing.expect(model.peers.items[0].failed);
     try testing.expectEqual(@as(usize, 0), fx.count);
     try testing.expect(!engine.onPeerRetryTimer(&fx, key));
     try testing.expectEqual(@as(usize, 0), fx.restarts);
@@ -1051,6 +1089,6 @@ test "a showing peer is not redialed automatically, and a timer from before a pi
     try testing.expectEqual(@as(usize, 2), fx.count);
     engine.dropPeer(&fx, 0);
     try testing.expect(!engine.onPeerRetryTimer(&fx, fx.keys[1]));
-    try testing.expect(!engine.onPeerRetryTimer(&fx, key + model_module.max_phux_peers));
+    try testing.expect(!engine.onPeerRetryTimer(&fx, std.math.maxInt(u64)));
     try testing.expectEqual(@as(usize, 1), fx.restarts);
 }

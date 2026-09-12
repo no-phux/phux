@@ -178,13 +178,13 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
             continue;
         }
         if (coordinatorHeld(model, id)) continue;
-        const slot = freePeerSlot(model) orelse return;
+        const slot = try model.freePeerSlot();
         // One host that cannot be built never costs the launch; it stays
         // remembered for the next one.
         const peer = createRemotePhuxProvider(gpa, io, target, null) catch continue;
         // Lists sessions only; never attaches, so it sizes nobody's panes.
         peer.standBy();
-        model.phux_peers[slot] = peer;
+        model.peers.items[slot].provider = peer;
         noteRestore(model, slot, hosts.shown[index]);
     }
 }
@@ -195,13 +195,13 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
 /// listing until then.
 fn noteRestore(model: *model_module.Model, slot: usize, shown: ?remote_memory.Shown) void {
     const value = shown orelse return;
-    const peer = model.phux_peers[slot] orelse return;
-    model.peer_restore[slot] = .{ .coordinator = peer.providerId(), .shown = value, .pending = value.front };
+    const peer = model.peers.items[slot].provider orelse return;
+    model.peers.items[slot].restore = .{ .coordinator = peer.providerId(), .shown = value, .pending = value.front };
 }
 
 fn heldPeerSlot(model: *const model_module.Model, id: anytype) ?usize {
-    for (model.phux_peers, 0..) |value, slot| {
-        const peer = value orelse continue;
+    for (model.peers.items, 0..) |entry, slot| {
+        const peer = entry.provider orelse continue;
         if (peer.effectiveProviderId() == id) return slot;
     }
     return null;
@@ -209,16 +209,11 @@ fn heldPeerSlot(model: *const model_module.Model, id: anytype) ?usize {
 
 fn coordinatorHeld(model: *const model_module.Model, id: anytype) bool {
     if (model.phux_provider) |active| if (active.effectiveProviderId() == id) return true;
-    for (model.phux_peers) |value| {
-        const peer = value orelse continue;
+    for (model.peers.items) |entry| {
+        const peer = entry.provider orelse continue;
         if (peer.effectiveProviderId() == id) return true;
     }
     return false;
-}
-
-fn freePeerSlot(model: *const model_module.Model) ?usize {
-    for (model.phux_peers, 0..) |value, slot| if (value == null) return slot;
-    return null;
 }
 
 /// A host selected at launch (the config, `PHUX_REMOTE`, or the remembered
@@ -722,7 +717,11 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
     attachPhuxProvider(initialized.model, remote_provider);
     if (remote_provider != null) {
-        initialized.model.phux_peers[0] = try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config);
+        if (try createPhuxPeerFromConfig(std.heap.page_allocator, init.io, &user_config)) |peer| {
+            errdefer peer.destroy();
+            const slot = try initialized.model.freePeerSlot();
+            initialized.model.peers.items[slot].provider = peer;
+        }
         try attachRememberedPeers(std.heap.page_allocator, init.io, initialized.model);
     }
     return initialized;

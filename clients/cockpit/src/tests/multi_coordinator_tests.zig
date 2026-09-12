@@ -76,7 +76,8 @@ const Pair = struct {
         const here = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/multi-coordinator-unused" }, null, "multi");
         engine.model.phux_provider = here;
         const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
-        engine.model.phux_peers[0] = mini;
+        try engine.model.ensurePeerSlots(1);
+        engine.model.peers.items[0].provider = mini;
         try mini.show(1);
         if (hello) |name| {
             try fixture.attachHostWith(here.host, name);
@@ -90,12 +91,12 @@ const Pair = struct {
     fn projectBoth(self: *Pair) !void {
         const model = self.engine.model;
         model.shared_workspace.authority = self.here.providerId();
-        model.peer_workspaces[0].authority = self.mini.providerId();
+        model.peers.items[0].workspace.authority = self.mini.providerId();
         const one = [_]shared.Window{.{ .id = @splat(1), .root = 0 }};
         const here_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = try refOn(self.here, 7) }};
         const mini_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = try refOn(self.mini, 7) }};
         _ = try model.shared_workspace.apply(model, leafSnapshot(1, 1, &one, &here_nodes), self.here.connectionEpoch());
-        _ = try model.peer_workspaces[0].apply(model, leafSnapshot(1, 1, &one, &mini_nodes), self.mini.connectionEpoch());
+        _ = try model.peers.items[0].workspace.apply(model, leafSnapshot(1, 1, &one, &mini_nodes), self.mini.connectionEpoch());
         try testing.expect(model.selectTerminal(try refOn(self.mini, 7)));
         _ = countFrames(self.here);
         _ = countFrames(self.mini);
@@ -175,7 +176,7 @@ test "two coordinators project side by side; each publication replaces only its 
     defer pair.engine.destroy();
     const model = pair.engine.model;
     const here = &model.shared_workspace;
-    const mini = &model.peer_workspaces[0];
+    const mini = &model.peers.items[0].workspace;
     here.authority = pair.here.providerId();
     mini.authority = pair.mini.providerId();
     const here11 = try refOn(pair.here, 11);
@@ -313,7 +314,7 @@ test "keys, text, focus, pointer, selection, search and bells on a peer's pane r
     // A bell on mini's terminal 7 rings mini's, never this Mac's.
     model.focused = false;
     try fixture.stageFixture(pair.mini.bridge, "remote-bell-1.bin");
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
     try testing.expect(pair.mini.bellRung(mini7));
     try testing.expect(!pair.here.bellRung(here7));
     try testing.expectEqual(@as(usize, 1), fx.notifications);
@@ -366,7 +367,7 @@ test "Go to Directory over a peer's satellite pane asks that peer, even when bot
     // mini's answer settles and announces through mini's own channel.
     try fixture.stageFixture(pair.mini.bridge, "directory_listing.bin");
     var fx: PeerFx = .{};
-    try testing.expect(engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null));
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null));
     const page = try picker.handle(engine, pickerRequest(.page, 1, &request), &out);
     try testing.expect(std.mem.indexOf(u8, page, "devbox") != null);
     try testing.expect(std.mem.endsWith(u8, page, "\x04mini"));
@@ -413,7 +414,7 @@ test "a shown peer none of whose tabs is on screen returns to listing and holds 
     try testing.expect(!pair.mini.showing());
     try testing.expectEqual(@as(usize, 1), fx.restarts);
     try testing.expect(model.locateTerminal(try refOn(pair.mini, 7)) == null);
-    try testing.expectEqual(@as(u32, 0), model.peer_workspaces[0].session);
+    try testing.expectEqual(@as(u32, 0), model.peers.items[0].workspace.session);
     try testing.expect(model.locateTerminal(try refOn(pair.here, 7)) != null);
     // The reconnection asks GET_STATE and never ATTACH: no viewport is held.
     pair.mini.stop();
@@ -437,8 +438,8 @@ test "closing a peer's tab closes it on that coordinator, and its last tab closi
     // one it knows.
     const published = pair.mini.workspaceSnapshot();
     try testing.expect(published.windows.len != 0);
-    model.peer_workspaces[0].authority = pair.mini.providerId();
-    _ = try model.peer_workspaces[0].apply(model, published, pair.mini.connectionEpoch());
+    model.peers.items[0].workspace.authority = pair.mini.providerId();
+    _ = try model.peers.items[0].workspace.apply(model, published, pair.mini.connectionEpoch());
     var mini_tab: ?u8 = null;
     for (0..model.primary.tab_count) |tab| {
         if (@import("../cockpit/shared_workspace.zig").tabAuthority(&model.primary.tabs[tab]) == pair.mini.providerId()) mini_tab = @intCast(tab);
@@ -455,7 +456,7 @@ test "closing a peer's tab closes it on that coordinator, and its last tab closi
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
     try testing.expect(!model.shared_workspace.refused);
     // mini republishes without the window: its last tab is gone.
-    _ = try model.peer_workspaces[0].apply(model, leafSnapshot(published.session_id, published.revision + 1, &.{}, &.{}), pair.mini.connectionEpoch());
+    _ = try model.peers.items[0].workspace.apply(model, leafSnapshot(published.session_id, published.revision + 1, &.{}, &.{}), pair.mini.connectionEpoch());
     try testing.expect(model.locateTerminal(try refOn(pair.mini, 7)) == null);
     try testing.expect(engine.settlePeers(&fx));
     try testing.expect(!pair.mini.showing());
@@ -468,14 +469,14 @@ test "a catalog target resolves only against the coordinator that minted it" {
     defer pair.engine.destroy();
     const model = pair.engine.model;
     model.shared_workspace.authority = pair.here.providerId();
-    model.peer_workspaces[0].authority = pair.mini.providerId();
+    model.peers.items[0].workspace.authority = pair.mini.providerId();
     const here7 = try refOn(pair.here, 7);
     const mini7 = try refOn(pair.mini, 7);
     const one = [_]shared.Window{.{ .id = @splat(1), .root = 0 }};
     const here_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = here7 }};
     const mini_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = mini7 }};
     _ = try model.shared_workspace.apply(model, leafSnapshot(1, 1, &one, &here_nodes), pair.here.connectionEpoch());
-    _ = try model.peer_workspaces[0].apply(model, leafSnapshot(1, 1, &one, &mini_nodes), pair.mini.connectionEpoch());
+    _ = try model.peers.items[0].workspace.apply(model, leafSnapshot(1, 1, &one, &mini_nodes), pair.mini.connectionEpoch());
 
     const here_place = model.locateTerminal(here7).?;
     const mini_place = model.locateTerminal(mini7).?;
@@ -509,15 +510,15 @@ fn intent(engine: *ts_engine.Engine, kind: protocol.IntentKind, argument: u8) bo
 /// selected, so mini's terminal 7 is the focused pane.
 fn showMini(pair: *Pair) !void {
     const model = pair.engine.model;
-    model.peer_workspaces[0].authority = pair.mini.providerId();
-    _ = try model.peer_workspaces[0].apply(model, pair.mini.workspaceSnapshot(), pair.mini.connectionEpoch());
+    model.peers.items[0].workspace.authority = pair.mini.providerId();
+    _ = try model.peers.items[0].workspace.apply(model, pair.mini.workspaceSnapshot(), pair.mini.connectionEpoch());
     try testing.expect(model.selectTerminal(try refOn(pair.mini, 7)));
     _ = countFrames(pair.here);
     _ = countFrames(pair.mini);
 }
 
 fn drainMini(pair: *Pair, fx: *PeerFx) void {
-    _ = pair.engine.onPeerChannel(fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null);
+    _ = pair.engine.onPeerChannel(fx, .{ .key = pair.engine.peerChannelKey(0), .kind = .data }, null);
 }
 
 fn feedMini(pair: *Pair, fx: *PeerFx, name: []const u8) !void {
@@ -542,7 +543,8 @@ fn miniWorkspaceReply(pair: *Pair, name: []const u8, expected: u32, request: u32
 /// Whether mini's own edit queue holds a mutation of `kind` it has sent.
 /// Frame totals are not the measure: focus follows the focused pane.
 fn miniSent(engine: *ts_engine.Engine, kind: @FieldType(shared.Mutation, "kind")) bool {
-    for (engine.peer_edits.mutations[0].pending) |slot| {
+    if (engine.peer_edits.states.items.len == 0) return false;
+    for (engine.peer_edits.states.items[0].mutations.pending) |slot| {
         const entry = slot orelse continue;
         if (entry.mutation.kind == kind and entry.mutation_request != 0) return true;
     }
@@ -591,7 +593,7 @@ test "New Tab, reorder and split with a peer's pane focused go to that peer and 
     try testing.expectEqual(pair.mini.providerId(), tabOwner(model, mini8).?);
     try testing.expect(model.focusedTerminalRef().?.eql(mini8));
     try testing.expect(!model.shared_workspace.refused);
-    try testing.expect(!model.peer_workspaces[0].refused);
+    try testing.expect(!model.peers.items[0].workspace.refused);
     _ = countFrames(pair.mini);
 
     // Reorder: mini's first window moves right in mini's own order.
@@ -662,7 +664,7 @@ test "a split of a peer's pane lands on that peer, and dragging its divider resi
     try testing.expect(countFrames(pair.mini).command >= 1);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
     try testing.expect(!model.shared_workspace.refused);
-    try testing.expect(!model.peer_workspaces[0].refused);
+    try testing.expect(!model.peers.items[0].workspace.refused);
 }
 
 test "Open Here on a peer's listing opens the tab on that peer" {
@@ -678,7 +680,7 @@ test "Open Here on a peer's listing opens the tab on that peer" {
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
     try fixture.stageFixture(pair.mini.bridge, "directory_listing.bin");
     var fx: PeerFx = .{};
-    try testing.expect(engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null));
+    try testing.expect(engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null));
     const page = try picker.handle(engine, pickerRequest(.page, 1, &request), &out);
     try testing.expect(std.mem.indexOf(u8, page, "\xff\xff") != null);
     try testing.expectEqual(@as(u8, 0), page[6] & picker.flag_open_here_unavailable);
@@ -900,7 +902,8 @@ fn listingPair() !Pair {
     engine.model.phux_provider = here;
     try fixture.attachHostWith(here.host, "hello.bin");
     const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
-    engine.model.phux_peers[0] = mini;
+    try engine.model.ensurePeerSlots(1);
+    engine.model.peers.items[0].provider = mini;
     mini.standBy();
     try mini.host.start("multi");
     try fixture.stageFixture(mini.bridge, "hello.bin");
@@ -1091,7 +1094,7 @@ test "Rename on a switcher row goes to the coordinator that listed it and to no 
 
     // mini's connection ends: its row, captured on that connection, names
     // nothing, and nothing reaches either coordinator.
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     try testing.expectEqual(session_commands.Phase.unavailable, (try rowCommand(engine, 7, "x", build, &out)).phase);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
@@ -1103,7 +1106,7 @@ const empty_session = @import("../cockpit/native/empty_session.zig");
 const ts_snapshot = @import("../cockpit/native/ts_snapshot.zig");
 
 fn wakeMini(engine: *ts_engine.Engine, fx: *PeerFx) void {
-    _ = engine.onPeerChannel(fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .data }, null);
+    _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(0), .kind = .data }, null);
 }
 
 test "a peer's empty session is listed as empty, and picking it attaches nothing until New Tab shows it there" {
@@ -1116,7 +1119,8 @@ test "a peer's empty session is listed as empty, and picking it attaches nothing
     try fixture.attachHostWith(here.host, "hello.bin");
     // mini lists without attaching: `build` and the keep-empty `scratch` (3).
     const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
-    model.phux_peers[0] = mini;
+    try model.ensurePeerSlots(1);
+    model.peers.items[0].provider = mini;
     mini.standBy();
     try mini.host.start("multi");
     try fixture.stageFixture(mini.bridge, "hello_keep_empty.bin");
@@ -1181,7 +1185,7 @@ test "a peer's empty session is listed as empty, and picking it attaches nothing
 
     // mini's connection fails before the tab lands: the hold ends, and a
     // hidden mini goes back to listing.
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     try testing.expect(model.empty_pick == null);
 }
 
@@ -1205,7 +1209,8 @@ test "New Tab in the active coordinator's empty session opens there, and on no p
     here.bridge.outgoing.reset();
     // mini is shown beside it, attached to its own session.
     const mini = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = "mini" } }, null, "multi");
-    model.phux_peers[0] = mini;
+    try model.ensurePeerSlots(1);
+    model.peers.items[0].provider = mini;
     try mini.show(1);
     try fixture.attachHostWith(mini.host, "hello.bin");
     // The engine projects This Mac's empty workspace: no tab anywhere.
@@ -1284,7 +1289,7 @@ test "a peer's New Window that never lands leaves no empty window behind" {
     try testing.expectEqual(windows + 1, model.openWindowCount());
     // mini's connection closes before the tab is placed: the spawn is
     // forgotten, and settling closes the window it would have landed in.
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
     _ = engine.settlePeers(&fx);
     try testing.expectEqual(windows, model.openWindowCount());
@@ -1377,7 +1382,7 @@ test "a peer's spawn whose placement was never sent is killed there, conditional
     try testing.expect(intent(engine, .new_terminal, 0));
     try feedMini(&pair, &fx, "spawn-bound.bin");
     try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
     try testing.expectEqual(@as(usize, 1), engine.peer_edits.strayCount(0));
     _ = countFrames(pair.here);
@@ -1401,7 +1406,7 @@ test "without CONDITIONAL_KILL a peer's unplaced spawn is left running and nothi
     try testing.expect(!pair.mini.conditionalKillSupported());
     try testing.expect(intent(engine, .new_terminal, 0));
     try feedMini(&pair, &fx, "spawn-local.bin");
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     // Unbound, it is no stray: nothing could kill it safely.
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
     _ = countFrames(pair.here);
@@ -1433,7 +1438,7 @@ test "a peer's spawn whose placement was already sent is never killed" {
     try testing.expect(miniSent(engine, .add));
     // The connection ends before the add is confirmed: the add may still
     // land there, so the terminal is no stray, and nothing is killed.
-    _ = engine.onPeerChannel(&fx, .{ .key = support.phuxPeerChannelKey(0), .kind = .closed }, null);
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.strayCount(0));
     try relistMini(&pair, &fx, "hello_conditional_kill.bin");
     try testing.expect(!contains(pair.mini, &fixture_instance).found);
