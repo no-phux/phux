@@ -9,6 +9,16 @@ const phux_options = @import("phux_options");
 const api = @import("phux_provider").machines;
 const Registry = if (phux_options.enabled) api.Registry else DisabledRegistry;
 pub const Tunnel = if (phux_options.enabled) api.Tunnel else struct {};
+// Graphs without the Phux provider still analyze row decoding through the
+// disabled registry, so its record type must not name the provider module.
+const Record = if (phux_options.enabled) api.Record else struct {
+    role: u8 = 0,
+    route: u8 = 0,
+    name: []const u8 = "",
+    endpoint: []const u8 = "",
+    session: []const u8 = "",
+    message: []const u8 = "",
+};
 pub const request_name = "cockpit.machines";
 pub const max_bytes = 65536;
 // Four text fields per row plus one receipt diagnostic remain comfortably below
@@ -272,7 +282,7 @@ const DisabledRegistry = struct {
         return .{};
     }
     fn close(_: DisabledRegistry) void {}
-    fn get(_: DisabledRegistry, _: usize) error{InvalidRow}!api.Record {
+    fn get(_: DisabledRegistry, _: usize) error{InvalidRow}!Record {
         return error.InvalidRow;
     }
     fn validate(_: DisabledRegistry, _: usize) error{StaleRegistry}!void {
