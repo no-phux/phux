@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -60,6 +61,32 @@ const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
+
+/// Per-stream receive window the relay grants each sender, in bytes.
+///
+/// The relay is a pipe, and everything it has been granted but not yet
+/// forwarded is lag. When a consumer's link is the slow hop, the splice
+/// blocks on that consumer's congestion-tracked send, stops reading the
+/// tunnel stream, and the server may keep sending until this credit is
+/// spent. At quinn's 1.25 MB default that credit held seconds of output on a
+/// slow link, so chunks left the server's output pump fresh and its
+/// staleness resync never fired. Held to this size, the server's writer
+/// blocks within a fraction of a second and the pump skips the consumer to a
+/// fresh checkpoint instead.
+///
+/// What it still holds is lag a relayed consumer carries on top of a direct
+/// one, so smaller is better for a slow consumer — but the window also caps
+/// throughput on the server-to-relay hop, at most one window per round trip
+/// on each stream and in practice noticeably less. Measured with 50 ms on
+/// that hop and a fast consumer, 64 KiB carried a ~3.5 Mbit/s flood without
+/// resyncs, while 32 KiB and 16 KiB throttled it and resynced a healthy
+/// consumer; on a 300 kbit/s consumer they saved about 1 s of lag. 64 KiB
+/// keeps a healthy relay out of the way.
+///
+/// It is set for the whole endpoint, because both legs share it: on the
+/// tunnel leg it bounds server output, and on the consumer leg it only paces
+/// input, which is keystrokes and pastes.
+const STREAM_RECEIVE_WINDOW: u32 = 64 * 1024;
 
 /// Everything the relay needs to run.
 #[derive(Debug, Clone)]
@@ -167,6 +194,7 @@ impl RelayRuntime {
             transport.max_idle_timeout(Some(idle));
         }
         transport.keep_alive_interval(Some(KEEP_ALIVE));
+        transport.stream_receive_window(quinn::VarInt::from_u32(STREAM_RECEIVE_WINDOW));
         server_config.transport_config(Arc::new(transport));
 
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
@@ -430,6 +458,11 @@ async fn bridge_consumer(
         return;
     };
     tracing::info!(route = %route, %remote, "consumer bridged");
+    // The consumer-facing send tracks this connection's congestion window
+    // (one consumer per connection), so the splice blocks when the consumer's
+    // link is the slow hop instead of queueing megabytes here; the stall then
+    // reaches the server through STREAM_RECEIVE_WINDOW.
+    let cons_send = TrackedSend::new(cons_send, SendWindow::new(conn.clone()));
     splice(cons_recv, tun_send, tun_recv, cons_send).await;
     tracing::debug!(route = %route, %remote, "consumer bridge ended");
 }
