@@ -486,7 +486,7 @@ pub const Engine = struct {
         while (remote.takeNotice()) |notice| {
             defer remote.releaseNotice(notice);
             if (!notice.isBell()) continue;
-            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation };
+            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation, .source_context = remote.host.context_id };
             if (!self.model.ownerIsCurrent(owner)) continue;
             if (!remote.ringBell(owner)) continue;
             changed = true;
@@ -1494,7 +1494,8 @@ pub const Engine = struct {
 
     fn drainPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot).?;
-        const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
+        const limit = if (self.peer_wake_key != 0 and !peer.showing()) 1 else peer.bridge.incoming.pendingCount();
+        const delta = peer.drainReadinessBudget(limit) catch return self.failPeer(fx, slot);
         if (delta.sessions_listed or delta.ready_published) {
             self.model.peers.items[slot].failed = false;
             self.notePeerListed(slot);

@@ -57,6 +57,27 @@ fn refOn(provider: *const support.PhuxProvider, id: u32) !TerminalRef {
     return .{ .provider_id = provider.providerId(), .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, id, "") } };
 }
 
+test "independent clients on one coordinator reject each others replica owners" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const first = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/same-coordinator" }, null, "first");
+    defer first.destroy();
+    const second = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/same-coordinator" }, null, "second");
+    defer second.destroy();
+    try fixture.attachHostWith(first.host, "hello.bin");
+    try fixture.attachHostWith(second.host, "hello.bin");
+    const ref = try refOn(first, 7);
+    const first_owner = first.owner(ref).?;
+    const second_owner = second.owner(ref).?;
+    try testing.expect(first_owner.generation.sameReplica(second_owner.generation));
+    try testing.expect(first_owner.terminal_ref.eql(second_owner.terminal_ref));
+    try testing.expect(!first_owner.eql(second_owner));
+    try testing.expect(first.ownerIsCurrent(first_owner));
+    try testing.expect(second.ownerIsCurrent(second_owner));
+    try testing.expect(!first.ownerIsCurrent(second_owner));
+    try testing.expect(!second.ownerIsCurrent(first_owner));
+    try testing.expectError(error.InvalidState, second.sendFocus(first_owner, true));
+}
+
 /// This Mac's coordinator active and the registered host `mini` beside it,
 /// showing a session. Both are attached through real frames, so both
 /// publish their own terminal 7.

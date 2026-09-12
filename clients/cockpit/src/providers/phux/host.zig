@@ -122,6 +122,7 @@ pub const FrozenPresentation = @import("frozen_presentation.zig").FrozenPresenta
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
+    source_context: u64 = 0,
     generation: provider.Generation = .{},
     phase: provider.Phase = .attaching,
     dirty: bool = false,
@@ -158,7 +159,7 @@ const Terminal = struct {
     }
 
     fn owner(terminal: *const Terminal) provider.ReplicaOwner {
-        return .{ .terminal_ref = terminal.terminalRef(), .generation = terminal.generation };
+        return .{ .terminal_ref = terminal.terminalRef(), .generation = terminal.generation, .source_context = terminal.source_context };
     }
 
     fn presentation(terminal: *const Terminal) ?provider.Presentation {
@@ -667,7 +668,7 @@ pub const Host = struct {
     fn admitOperationTerminal(host: *Host, remote: RemoteId) void {
         for (host.terminals.items) |*terminal| if (terminal.id.eql(remote)) return;
         std.debug.assert(host.terminals.items.len < max_terminals);
-        host.terminals.appendAssumeCapacity(.{ .id = remote, .provider_id = host.provider_id });
+        host.terminals.appendAssumeCapacity(.{ .id = remote, .provider_id = host.provider_id, .source_context = host.context_id });
     }
 
     fn spawnOwner(host: *const Host, terminal_ref: ?provider.TerminalRef) !?*const RemoteId {
@@ -776,15 +777,18 @@ pub const Host = struct {
 
     /// UI-thread wake handler. The worker never calls the C client.
     pub fn drainReadiness(host: *Host) !SyncDelta {
+        return host.drainReadinessBudget(host.bridge.incoming.pendingCount());
+    }
+
+    /// Snapshot admission before feeding: a producer replenishing its queue
+    /// cannot extend this UI turn indefinitely.
+    pub fn drainReadinessBudget(host: *Host, frame_limit: usize) !SyncDelta {
         if (host.disconnected) return error.InvalidState;
         errdefer host.disconnect();
         var delta: SyncDelta = .{};
         const directory_before = host.directoryStatusRaw();
         const query_before = host.sessionQueryStatus();
-        while (host.bridge.incoming.take()) |frame| {
-            defer host.bridge.incoming.release(frame);
-            try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
-        }
+        try host.feedReadinessFrames(frame_limit);
         delta.directory_changed = host.directoryStatusRaw() != directory_before;
         if (query_before == session_query_pending and host.sessionQueryStatus() == session_query_ok)
             delta.sessions_listed = try host.adoptListedSessions();
@@ -806,12 +810,24 @@ pub const Host = struct {
             delta.removed_count += host.pruneRemoved(false);
             try host.publishDirty(&delta);
         }
-        try host.stageOutgoing();
+        // A bounded drain leaves its suffix for the next wake, including
+        // already-received final frames when EOF races this turn. Do not
+        // consume that disconnect (which clears the queue) ahead of them.
+        if (!host.bridge.incoming.hasPending()) try host.stageOutgoing();
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
         host.workspace_changed = false;
         return delta;
+    }
+
+    fn feedReadinessFrames(host: *Host, frame_limit: usize) !void {
+        const count = host.bridge.incoming.drainCount(frame_limit);
+        for (0..count) |_| {
+            const frame = host.bridge.incoming.take() orelse break;
+            defer host.bridge.incoming.release(frame);
+            try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
+        }
     }
 
     pub fn terminalRefs(host: *const Host, out: []provider.TerminalRef) usize {
@@ -1740,7 +1756,7 @@ pub const Host = struct {
         // pane and route keystrokes at a resource that cannot take them.
         if (host.agents.findConst(id) != null) return error.Protocol;
         if (host.terminals.items.len == max_terminals) return error.OutOfMemory;
-        try host.terminals.append(host.gpa, .{ .id = id, .provider_id = host.provider_id });
+        try host.terminals.append(host.gpa, .{ .id = id, .provider_id = host.provider_id, .source_context = host.context_id });
         return &host.terminals.items[host.terminals.items.len - 1];
     }
 

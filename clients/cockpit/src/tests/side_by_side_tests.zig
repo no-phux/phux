@@ -897,6 +897,7 @@ test "twelve FFI catalog wakes share one real SDK channel and advance round robi
         peer.standBy();
         try peer.host.start("multiplexed");
         try fixture.stageFixture(peer.bridge, "hello.bin");
+        try fixture.stageFixture(peer.bridge, "standby_state.bin");
     }
     // Real SDK still admits seven other channels: peer count did not spend
     // its eight-channel table, and this test does not raise the SDK limit.
@@ -910,8 +911,8 @@ test "twelve FFI catalog wakes share one real SDK channel and advance round robi
         const message = fx.takeMsg() orelse return error.ExpectedWake;
         _ = engine.onPeerChannel(&fx, message.event, Effects.channelMsg(.event));
         try testing.expectEqual(.negotiated, entry.provider.?.state());
+        try testing.expectEqual(@as(usize, 0), entry.provider.?.standbyCatalog().len);
         if (index + 1 < engine.model.peers.items.len) try testing.expectEqual(.hello_queued, engine.model.peers.items[index + 1].provider.?.state());
-        try fixture.stageFixture(entry.provider.?.bridge, "standby_state.bin");
     }
     // Each next turn consumes exactly one published catalog, including the
     // last host beyond the former application and SDK channel limits.

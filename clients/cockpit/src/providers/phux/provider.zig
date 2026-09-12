@@ -529,7 +529,11 @@ pub const PhuxProvider = struct {
     /// ATTACH is queued once after negotiation. The host still withholds every
     /// first presentation until the ATTACHED/READY barrier completes.
     pub fn drainReadiness(self: *PhuxProvider) !SyncDelta {
-        const delta = try self.host.drainReadiness();
+        return self.drainReadinessBudget(self.bridge.incoming.pendingCount());
+    }
+
+    pub fn drainReadinessBudget(self: *PhuxProvider, frame_limit: usize) !SyncDelta {
+        const delta = try self.host.drainReadinessBudget(frame_limit);
         if (self.host.state() == .detached) {
             self.attach_queued = false;
             return delta;
