@@ -1265,9 +1265,9 @@ fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
     );
 }
 
-/// A real active-area checkpoint record is hundreds of kilobytes, far past the
-/// seed window, so this only reaches `READY` if the `OutOfSpace` retry widens
-/// the scratch to the exact `required_bytes` libghostty reported.
+/// Official GHOSTSNP of an empty 200×50 grid is ~1 KiB. Fill unique
+/// scrollback so the prefix exceeds the 64 KiB seed window and the
+/// `OutOfSpace` retry widens scratch to the exact `required_bytes`.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
@@ -1278,6 +1278,12 @@ async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             let actor = bundle.actor;
+            {
+                let mut terminal = actor.terminal.borrow_mut();
+                for row in 0..2_000 {
+                    terminal.vt_write(format!("scratch-row-{row:05} {:<180}\r\n", row).as_bytes());
+                }
+            }
             let (reply, replied) = oneshot::channel();
             handle
                 .terminal()
