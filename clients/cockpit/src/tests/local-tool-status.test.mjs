@@ -86,3 +86,9 @@ test('placed status does not erase a newer independent command notice', () => {
   [model] = step({ ...model, commandNotice: notice }, { kind: 'local_tool_status_loaded', body: reply(4) });
   assert.deepEqual(model.commandNotice, notice);
 });
+
+test('Edit Configuration does not carry retained Add Machine fields into the editor request', () => {
+  let [model] = step({ ...initialModel()[0], hostFriendlyName: bytes('Build machine') }, { kind: 'config_edit' });
+  const [, cmd] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
+  assert.deepEqual(request(cmd).payload.slice(10), new Uint8Array([0, 0]));
+});

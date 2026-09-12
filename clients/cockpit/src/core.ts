@@ -2770,7 +2770,12 @@ function launchLocalTool(model: Model): NavigatorDecision {
   if (model.hostBusy || model.toolToken.length !== 8) return navigatorDecision(model, 0, NO_BYTES);
   if (model.toolPurpose === 1 && model.hostQuery.length === 0) return navigatorDecision({ ...model, hostNotice: asciiBytes("Enter a hostname or SSH destination.") }, 0, NO_BYTES);
   return navigatorDecision({ ...model, hostBusy: true }, 6,
-    localToolRequest(model.toolPurpose === 1 ? 3 : 2, model.toolToken, model.hostQuery, model.hostFriendlyName));
+    localToolLaunchRequest(model));
+}
+
+function localToolLaunchRequest(model: Model): Uint8Array {
+  if (model.toolPurpose === 1) return localToolRequest(3, model.toolToken, model.hostQuery, model.hostFriendlyName);
+  return localToolRequest(2, model.toolToken, NO_BYTES, NO_BYTES);
 }
 
 function receiveLocalTool(model: Model, body: Uint8Array): NavigatorDecision {
