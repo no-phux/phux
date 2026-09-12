@@ -14,6 +14,16 @@ require_fixed() {
   fi
 }
 
+# Prose may wrap across lines without changing the install contract.
+require_prose() {
+  local file="$1"
+  local needle="$2"
+  if ! tr '\n' ' ' < "$ROOT/$file" | tr -s '[:space:]' | grep -F -- "$needle" > /dev/null; then
+    printf 'missing: %s: %s\n' "$file" "$needle" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 forbid_fixed() {
   local file="$1"
   local needle="$2"
@@ -44,13 +54,13 @@ require_regex() {
 # The README is a landing page: it carries the brew one-liner, the platform
 # truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
 # and cargo-install caveats are gated on docs/INSTALL.md below.
-require_fixed README.md "Quick start"
+require_fixed README.md "## Install"
 require_fixed README.md "brew trust --tap no-phux/tap"
 require_fixed README.md "brew install no-phux/tap/phux"
 forbid_fixed README.md "brew install phall1/phux/phux"
 forbid_fixed README.md "brew install phall1/tap/phux"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
-require_fixed README.md "Windows is not supported"
+require_prose README.md "Windows is not supported"
 require_fixed README.md "docs/INSTALL.md"
 forbid_fixed README.md "macOS x86_64"
 # Version literals in the README rot; forbid the one that already did
@@ -61,7 +71,7 @@ forbid_fixed README.md "v0.0.3"
 # version is stale by the next release; point at "the latest release" instead.
 forbid_fixed docs/RELEASING.md "v0.0.3"
 
-require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
+require_prose docs/INSTALL.md "Homebrew is the recommended day-to-day path on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
 require_fixed docs/INSTALL.md "Homebrew"
 require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
@@ -81,7 +91,9 @@ require_fixed docs/INSTALL.md '`cargo install phux` is unsupported'
 # lives instead of being resurrected in INSTALL.md.
 require_fixed docs/RELEASING.md 'do not point installers or the tap at it'
 require_fixed docs/INSTALL.md "Windows is not supported"
-require_fixed docs/INSTALL.md "First run: persistent session + agent loop"
+# First-run and headless guidance live in their canonical guides.
+require_fixed docs/INSTALL.md '[Quickstart](./QUICKSTART.md)'
+require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
 require_fixed docs/INSTALL.md 'prints the exact command to run next'
 require_fixed docs/INSTALL.md 'only when that directory is not already on `PATH`'
@@ -201,7 +213,7 @@ require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
-require_fixed docs/INSTALL.md '## Phux Cockpit (native macOS)'
+require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
 require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/site/DEPLOY.md '/install-cockpit'
 require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'
