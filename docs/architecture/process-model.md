@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-06
+last-reviewed: 2026-09-12
 ---
 
 # Process model
@@ -48,10 +48,6 @@ through `telemetry::server_log_path()` so writers and readers
 (`phux service logs`) can never disagree. The startup line carries
 pid + version + socket to attribute interleaved writers.
 
-Still **design intent, not yet implemented**: a `server.pid` file and a
-`journal/` directory of per-pane PTY output for crash recovery. Today
-the server keeps session state only in memory.
-
 The single `phux` binary contains both server and client logic; the
 subcommand dispatches. `phux server` runs the daemon in the foreground;
 `phux` (no args) becomes a client and lazily spawns a server if none is
@@ -67,36 +63,12 @@ entering the TUI:
 phux --socket /absolute/path/to/phux.sock server --ensure
 ```
 
-Pass the consumer's selected socket explicitly so a development binary's
-profile default cannot select a different coordinator. With `--socket` omitted,
-the normal `PHUX_SOCKET` override and profile-scoped default apply;
-`PHUX_PROFILE` selects the profile. Run this subprocess asynchronously in a GUI.
-
-The helper reuses `ensure_server`: live-server reuse, spawn locking,
-stale-socket recovery, pending service adoption, and detached
-auto-spawn. A fresh daemon uses the same `defaults.session-name-template` and
-`defaults.spawn-on-attach` policy as naked `phux`, including its working-directory
-template expansion. `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` retains its existing
-opt-in meaning. An existing coordinator receives no new session or attachment.
-Ensure is availability-only: it does not reconcile a running coordinator's
-binary version. A separately packaged CLI must not repeatedly re-execute
-another installation's daemon when its consumer reconnects.
-
-Exit `0` means a Unix socket connection succeeded after startup; it does not
-mean a protocol handshake, pane bootstrap, or seed command has completed.
-Stdout stays empty, routine startup banners are suppressed, and failures are
-reported on stderr. Startup/connection failures
-and the overall 10-second startup deadline exit `1`; invalid flag combinations
-exit `2`. The deadline includes tracing initialization, lock contention, and
-synchronous startup work. SIGTERM or SIGINT cancels startup and exits `1`.
-On cancellation or timeout, the helper kills its temporary init-system command
-group and allows up to one additional second to reap the command. If the kernel
-cannot finish the kill in that interval, stderr names the unreaped PID and the
-helper still exits. It does not stop services through
-the init system. A coordinator that has already detached keeps its independent
-lifecycle.
-Foreground-only flags such as `--session`, `--hub`, and `--listen` conflict
-with `--ensure`, rather than being silently ignored. Full parser reference:
+`--ensure` is availability-only: reuse a live server or auto-spawn one
+with the same session-name template and spawn-on-attach policy as naked
+`phux`, then exit. It does not attach, handshake, or reconcile a running
+coordinator's binary version. Pass the consumer's selected socket
+explicitly so a development binary's profile default cannot select a
+different coordinator. Flag contract, exits, and the 10-second deadline:
 [`phux server`](../reference/cli.md#phux-server).
 
 ## Terminal engine timers
@@ -109,8 +81,16 @@ consumers, and a second, slower agent-state detector tick
 re-derives the pane's `phux.agent/v1` record from the PTY's foreground process,
 the OSC title, and the live screen, and publishes the privacy-bounded
 `phux.pane-occupant/v1` foreground basename/shell answer from the same process
-query. The detector timer is the sole driver of
+query. The detector is a different surface from an AgentSession resource: it
+runs on the Terminal, and a live AgentSession child outranks it on the
+evidence ladder. The detector timer is the sole driver of
 that work — PTY bytes never wake it — so a chatty pane costs no extra
 detection. It is constructed only for a PTY-backed engine, only when a rule set
 loaded, and it publishes through its own `mpsc` channel to a per-terminal drain
 task that owns the metadata write. No new process, no new thread.
+
+## Status
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | The server keeps session state only in memory. Those paths are not written. | [ADR-0003](../../ADR/0003-server-process-model.md), [ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md) | phux-p91i |

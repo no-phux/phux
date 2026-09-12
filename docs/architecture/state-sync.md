@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-12
 ---
 
 # State synchronization
@@ -35,6 +35,10 @@ both ends advertise a compatible engine codec; otherwise a synthesized
 profile is selected only if both advertised that exact combination, and no
 shared profile is a fatal `CODEC_UNAVAILABLE` at HELLO
 ([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
+
+An AgentSession stream uses `AgentEventsJsonlV1` only: bootstrap is the
+retained JSONL ring, live `RESOURCE_OUTPUT.bytes` are complete records,
+raw-only, no `FRAME_ACK`. Profile negotiation does not constrain it.
 
 ## Native bootstrap (built, preferred)
 
@@ -96,6 +100,4 @@ equivalence is a property test, not an assumption
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Per-kind codecs beyond the Terminal: an AgentSession stream that bootstraps from its retained JSONL records under `AgentEventsJsonlV1`, raw-only, no `FRAME_ACK` | `BootstrapCodec` has `SynthesizedVtV1` and `Native`; no engine serves another kind. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6, phux-am9y.9 |
-| On-disk output journal and crash recovery | Nothing in the server writes to disk; `server.pid`, per-resource journals, and a `--recover` flag do not exist. | [ADR-0003](../../ADR/0003-server-process-model.md), [ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md) | phux-p91i |
 | Loss-tolerant re-diff against an older reference on a lossy transport | Every shipped transport is reliable and ordered; the reference advances on emit and no re-diff path is wired. | [ADR-0018](../../ADR/0018-lazy-state-synchronization.md) | not scheduled; revisit with a datagram lane |

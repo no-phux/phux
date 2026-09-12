@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-08-14
+last-reviewed: 2026-09-12
 ---
 
 # Pi integration
@@ -236,10 +236,9 @@ lock; it does not prevent the interleaved-input case above.
 
 ## Current boundaries and security
 
-- There is no paste tool. The current canonical CLI ships no headless paste
-  verb, so the adapter does not synthesize paste from `send-keys` or bypass the
-  CLI. `phux_send_keys` remains key input only; dedicated paste is tracked by
-  bead `phux-foir`.
+- There is no paste tool. The CLI has `phux paste` and MCP has `phux_paste`;
+  Pi does not wrap either. `phux_send_keys` remains key input only and must
+  not be presented as clipboard or bracketed-paste support.
 - `phux_rendered_snapshot` follows the CLI's `snapshot --rendered` contract:
   unlike ordinary snapshot it attaches a headless client and establishes that
   client's bounded viewport. Use `phux_snapshot` for a side-effect-free pane

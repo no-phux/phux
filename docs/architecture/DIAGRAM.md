@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
-stability: scratch
-last-reviewed: 2026-09-09
+stability: evolving
+last-reviewed: 2026-09-12
 ---
 
 # System shape diagram
@@ -29,7 +29,7 @@ last-reviewed: 2026-09-09
 │   │ Terminal engine              │   │ AgentSession engine      │  │
 │   │ (resource::terminal,         │◄──│ (record ring; parent =   │  │
 │   │  ADR-0014)                   │   │  the Terminal)           │  │
-│   │  - libghostty Terminal       │   │  see Status              │  │
+│   │  - libghostty Terminal       │   │  append + JSONL bootstrap│  │
 │   │  - PTY reader/writer threads │   └──────────────────────────┘  │
 │   │  - input encoders            │                                 │
 │   │  - bootstrap cuts (ADR-0070) │                                 │
@@ -110,7 +110,7 @@ type. Details in [transport.md](./transport.md).
   focus, paste), encoded to PTY bytes on the server's input lane.
 - **Producer -> wire -> server -> subscribers**: for a producer-fed kind,
   appended records fan out as opaque output bytes under that kind's codec
-  (ADR-0103; see Status).
+  (ADR-0103).
 
 The wire is asymmetric: one direction is bytes, the other is structured
 events. That is the core invariant from ADR-0013.
@@ -147,10 +147,13 @@ consumer speaks L1 plus whatever L3 keys it chooses.
 
 ## Status
 
+No remaining target-versus-shipped gaps in the sketched shape. The
+AgentSession engine, `APPEND_RESOURCE_OUTPUT`, and parent-cascade
+`CloseReason::ParentClosed` all run in this tree. Product-wide gaps live
+in [`../CONCEPTS.md`](../CONCEPTS.md).
+
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| AgentSession engine and `APPEND_RESOURCE_OUTPUT` | `ResourceFacetHandle` has only the `Terminal` variant; nothing in `phux-server` accepts appended records, and agent state comes from hooks and screen scraping. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |
-| Server-side cascade close with `CloseReason::ParentClosed` | Parent bindings and their cascade exist in the `phux-core` registry; the runtime spawns no child resources and `RESOURCE_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
 
 ## See also
 

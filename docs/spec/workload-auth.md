@@ -1,12 +1,12 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # phux-workload/v1 — workload authentication and scoped authority
 
-**TL;DR.** The reusable workload-authentication profile for Phux endpoints.
+**TL;DR.** The reusable workload-authentication profile for phux endpoints.
 Mutually signed, nonce-fresh, incarnation- and channel-bound evidence identifies
 a persistent server authority and a registered workload key. A canonical closed
 scope set is intersected with the live registry and enforced before dispatch;
@@ -21,7 +21,7 @@ expiry and revocation terminate active connections.
 ## 1. Profile boundary
 
 `phux-workload/v1` is an authentication profile reusable by independently
-versioned Phux services. It is not a terminal tier, coordinator tier, transport
+versioned phux services. It is not a terminal tier, coordinator tier, transport
 preamble, or shared frame namespace. Each endpoint SHALL define:
 
 - its own HELLO and HELLO_OK carriers;
@@ -43,7 +43,7 @@ strict RFC 8032: reject non-canonical encodings of public point `A` or signature
 point `R`, small-order `A` or `R`, and scalar `S >= L`. The reference API is
 `ed25519_dalek::VerifyingKey::from_bytes`, an explicit `is_weak()` rejection,
 then `verify_strict`; a different vetted library is conforming only if it
-enforces the same acceptance set. Phux SHALL NOT implement the primitives.
+enforces the same acceptance set. phux SHALL NOT implement the primitives.
 
 ## 2. Identities and persisted material
 
@@ -93,7 +93,7 @@ atomic-replacement rules. Public keys and fingerprints are not secrets. A
 malformed, replaced, or unstable read is an empty authority snapshot, never
 permission to use a cached generation.
 
-Registry generations are live (§8). The registry is local Phux authority; no UI,
+Registry generations are live (§8). The registry is local phux authority; no UI,
 peer ledger, or coordinator is queried during admission.
 
 ## 3. Handshake state machine
@@ -536,9 +536,9 @@ point before any handler or satellite branch:
 
 <!-- impl-status: partial; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
 > **Status: partial.** The kind-bearing spawn rows and the
-> `APPEND_RESOURCE_OUTPUT` row classify frames the codec decodes but no
-> server serves; they bind the classifier the day the `AGENT_SESSION` kind
-> lands ([L1.md §1.1](./L1.md)).
+> `APPEND_RESOURCE_OUTPUT` row classify frames the reference server now
+> serves. The classifier that would enforce them is still spec-only; see
+> the document-level `WORKLOAD_AUTH` marker.
 
 A resource bound to a parent ([L1.md §1.2](./L1.md)) is admitted through
 that parent: for every row above whose subject is "named Terminal", a child
