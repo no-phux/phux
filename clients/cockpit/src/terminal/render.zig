@@ -2,12 +2,17 @@
 
 const native_sdk = @import("native_sdk");
 const session_module = @import("session.zig");
+const Palette = @import("palette.zig").Palette;
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const Session = session_module.Session;
 
 const grid_id_base: u64 = 0x7e21;
+
+test {
+    _ = @import("appearance_tests.zig");
+}
 
 /// The caller id for pane `index`. The framework applies its own retained-ID
 /// stride, so each pane needs only a distinct small caller id.
@@ -67,10 +72,9 @@ pub const PaintOptions = struct {
     /// the glass — the command envelope only prices box geometry and
     /// selection washes. Zero leaves it unbounded.
     cell_reserve: usize = 0,
-    /// The user's `minimum-contrast`. Applies to LOCAL sessions only: a
-    /// provider-projected grid arrives with its foregrounds already resolved
-    /// by whoever produced it, and second-guessing a colour this process never
-    /// chose is not a floor, it is a repaint. See `paintTerminalGrid`.
+    /// The user's client-side `minimum-contrast`, for every provider. Resolve
+    /// terminal defaults, application colors, inverse and faint first; apply
+    /// the floor to those final colors without changing the source grid.
     ///
     /// Defaults to 1 (no floor) rather than to the config default, so the
     /// value can only ever come from a caller that actually holds the user's
@@ -106,6 +110,8 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
 /// Paint an already-projected provider grid with the same budgets and retained
 /// identity behavior as a local session.
 pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Builder, options: PaintOptions) !void {
+    const first_command = builder.len;
+    const first_cell = builder.cell_len;
     try canvas.terminal_grid.paint(terminal_grid, builder, .{
         .frame = options.frame,
         .tokens = options.tokens,
@@ -118,4 +124,33 @@ pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Bu
         .glyph_budget = options.glyph_budget,
         .cell_reserve = options.cell_reserve,
     });
+    applyContrast(terminal_grid, builder, options.minimum_contrast, first_command, first_cell);
+}
+
+/// The SDK stages contiguous, row-atomic cells in builder-owned storage. Apply
+/// presentation policy there, before retained fingerprints/packets are made.
+/// This touches only emitted rows, allocates nothing, preserves row IDs and
+/// interned text, and never writes through a provider's borrowed grid slices.
+/// Cursor/selection overlays and graphics geometry remain the SDK's paint.
+fn applyContrast(grid: canvas.TerminalGrid, builder: *canvas.Builder, floor: f32, first_command: usize, first_cell: usize) void {
+    if (!(floor > 1)) return;
+    var row_index: usize = 0;
+    var cell_offset = first_cell;
+    for (builder.commands[first_command..builder.len]) |command| {
+        if (command != .cell_grid) continue;
+        const count = command.cell_grid.cells.len;
+        contrastRow(grid.rows[row_index], grid.background, builder.cells[cell_offset..][0..count], floor);
+        cell_offset += count;
+        row_index += 1;
+    }
+}
+
+fn contrastRow(row: canvas.TerminalRow, background: canvas.Color, cells: []canvas.Cell, floor: f32) void {
+    const count = @min(row.cells.len, cells.len);
+    for (row.cells[0..count], cells[0..count]) |source, *cell| {
+        // Use the original float colors, rather than quantized packed bytes,
+        // so local faint blends and provider-resolved colors share the exact
+        // existing WCAG algorithm and its graphics exclusions.
+        cell.fg = canvas.CellColor.fromColor(Palette.contrasted(floor, source.fg, source.bg orelse background, source.cp));
+    }
 }
