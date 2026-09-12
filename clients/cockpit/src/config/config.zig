@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const theme_module = @import("theme.zig");
+pub const keybindings_module = @import("keybindings.zig");
 
 pub const Theme = theme_module.Theme;
 pub const builtin_themes = theme_module.builtins;
@@ -374,6 +375,9 @@ pub const Config = struct {
 
     /// Empty means "the user's login shell", resolved at spawn time.
     shell: Shell = Shell.init(""),
+    /// Local configuration editor command; empty delegates to VISUAL / EDITOR.
+    editor: Shell = Shell.init(""),
+    keybindings: keybindings_module.Overrides = .{},
 
     /// Absolute local-domain socket selected by `phux-socket`. Empty only
     /// before startup resolution supplies the platform default.
@@ -401,9 +405,15 @@ pub const Config = struct {
 
     diagnostics: [max_diagnostics]Diagnostic = [_]Diagnostic{.{}} ** max_diagnostics,
     diagnostic_count: usize = 0,
+    /// Validation is not capped when the display diagnostic buffer is full.
+    has_errors: bool = false,
 
     pub fn fontSize(config: *const Config) f32 {
         return std.math.clamp(config.font_size, min_font_size, max_font_size);
+    }
+
+    pub fn editorCommand(config: *const Config) []const u8 {
+        return config.editor.slice();
     }
 
     /// The built-in theme this config names, or null when it names none.
@@ -517,6 +527,7 @@ pub const Config = struct {
     }
 
     fn note(config: *Config, line: u32, kind: Diagnostic.Kind, text: []const u8) void {
+        if (kind == .bad_value or kind == .missing_separator or kind == .too_long) config.has_errors = true;
         if (config.diagnostic_count >= max_diagnostics) return;
         var entry: Diagnostic = .{ .line = line, .kind = kind };
         // Truncating rather than refusing: the text is context, and a
@@ -586,6 +597,13 @@ pub fn parse(source: []const u8) Config {
 }
 
 fn applyPair(config: *Config, line: u32, key: []const u8, value: []const u8) void {
+    if (std.mem.startsWith(u8, key, "keybind.")) return applyKeybinding(config, line, key[8..], value);
+    if (applyTextPair(config, line, key, value)) return;
+    if (applyNumericPair(config, line, key, value)) return;
+    if (applyColorPair(config, line, key, value)) return;
+    if (applyBehaviorPair(config, line, key, value)) return;
+    if (applyPhuxPair(config, line, key, value)) return;
+    if (eq(key, "theme")) return applyTheme(config, line, value);
     // `palette = N=#rrggbb` is the one compound key, and it is the shape
     // Ghostty themes are written in, so it is worth the special case.
     if (eq(key, "palette")) {
@@ -593,61 +611,110 @@ fn applyPair(config: *Config, line: u32, key: []const u8, value: []const u8) voi
         return;
     }
 
+    config.note(line, .unknown_key, key);
+}
+
+fn applyKeybinding(config: *Config, line: u32, id: []const u8, value: []const u8) void {
+    config.keybindings.set(id, value) catch |err| {
+        config.note(line, if (err == error.TooLong) .too_long else .bad_value, id);
+    };
+}
+
+fn applyTextPair(config: *Config, line: u32, key: []const u8, value: []const u8) bool {
+    if (eq(key, "editor")) {
+        config.editor.set(value) catch config.note(line, .too_long, value);
+        return true;
+    }
+    if (eq(key, "shell") or eq(key, "command")) {
+        config.shell.set(value) catch config.note(line, .too_long, value);
+        return true;
+    }
     if (eq(key, "font-family")) {
-        // Parsed and STORED, but it cannot take effect: the SDK selects faces
-        // from a fixed set registered at boot by FontId, and mono_font_family
-        // is a 4-value enum rather than a family name. There is no runtime
-        // load-family-by-name to call. Kept in the struct so the value is
-        // still readable (and so this becomes a one-line change the day the
-        // SDK grows the capability), but the user is told it did nothing.
+        // The native host registers the supported family choices by FontId.
+        // Unknown names remain readable, with an explicit unsupported warning.
         config.font_family.set(value) catch {
             config.note(line, .too_long, value);
-            return;
+            return true;
         };
-        config.note(line, .unsupported_key, key);
-        return;
+        if (fontChoice(value) == null) config.note(line, .unsupported_key, key);
+        return true;
     }
+    return false;
+}
+
+fn applyNumericPair(config: *Config, line: u32, key: []const u8, value: []const u8) bool {
     if (eq(key, "font-size")) {
-        const parsed = std.fmt.parseFloat(f32, value) catch {
+        setNumber(config, line, &config.font_size, value, min_font_size, max_font_size, true);
+        return true;
+    }
+    if (eq(key, "minimum-contrast")) {
+        setNumber(config, line, &config.minimum_contrast, value, min_minimum_contrast, max_minimum_contrast, true);
+        return true;
+    }
+    if (eq(key, "window-padding")) {
+        setNumber(config, line, &config.window_padding, value, 0, 64, false);
+        return true;
+    }
+    if (eq(key, "scrollback-limit")) {
+        const parsed = std.fmt.parseInt(u64, value, 10) catch {
             config.note(line, .bad_value, value);
-            return;
+            return true;
         };
-        if (!std.math.isFinite(parsed)) {
-            config.note(line, .bad_value, value);
-            return;
-        }
-        // Out-of-range is clamped rather than refused: the intent is clear.
-        config.font_size = std.math.clamp(parsed, min_font_size, max_font_size);
+        config.scrollback_bytes = @min(parsed, max_scrollback_bytes);
+        return true;
+    }
+    return false;
+}
+
+fn setNumber(config: *Config, line: u32, field: *f32, value: []const u8, min: f32, max: f32, clamp: bool) void {
+    const parsed = std.fmt.parseFloat(f32, value) catch {
+        config.note(line, .bad_value, value);
+        return;
+    };
+    if (std.math.isNan(parsed)) return config.note(line, .bad_value, value);
+    if (!clamp and (parsed < min or parsed > max)) return config.note(line, .bad_value, value);
+    if (field == &config.font_size and !std.math.isFinite(parsed)) return config.note(line, .bad_value, value);
+    field.* = std.math.clamp(parsed, min, max);
+}
+
+fn applyTheme(config: *Config, line: u32, value: []const u8) void {
+    if (value.len == 0) {
+        config.theme = .{};
+        config.follow_system_theme = false;
         return;
     }
-    if (eq(key, "theme")) {
-        // `auto` is not a theme, it is a SUBSCRIPTION: the app adopts the
-        // light or dark member of the pair as the system reports it, and
-        // re-adopts on every flip. The name written here is the one that is in
-        // effect until the first appearance event lands — which the host emits
-        // before the run loop arms, so in practice it is only ever the value
-        // in the very first painted frame.
-        if (theme_module.isAutoName(value)) {
-            config.follow_system_theme = true;
-            config.theme.set(theme_module.auto_dark) catch config.note(line, .too_long, value);
-            return;
-        }
-        // A name this build does not ship is a `bad_value` and is NOT stored.
-        // Storing it would leave `Config.theme` holding a string that resolves
-        // to nothing, so every reader downstream would have to re-check
-        // whether the name means anything — and the settings surface would
-        // show a theme that does not exist as the one in effect.
-        if (theme_module.byName(value) == null) {
-            config.note(line, .bad_value, value);
-            return;
-        }
-        config.theme.set(value) catch config.note(line, .too_long, value);
+    // `auto` is not a theme, it is a SUBSCRIPTION: the app adopts the
+    // light or dark member of the pair as the system reports it, and
+    // re-adopts on every flip. The name written here is the one that is in
+    // effect until the first appearance event lands — which the host emits
+    // before the run loop arms, so in practice it is only ever the value
+    // in the very first painted frame.
+    if (theme_module.isAutoName(value)) {
+        config.follow_system_theme = true;
+        config.theme.set(theme_module.auto_dark) catch config.note(line, .too_long, value);
         return;
     }
-    if (eq(key, "background")) return setColor(config, line, &config.background, value);
-    if (eq(key, "foreground")) return setColor(config, line, &config.foreground, value);
-    if (eq(key, "cursor-color")) return setColor(config, line, &config.cursor_color, value);
-    if (eq(key, "selection-background")) return setColor(config, line, &config.selection_background, value);
+    // A name this build does not ship is a `bad_value` and is NOT stored.
+    // Storing it would leave `Config.theme` holding a string that resolves
+    // to nothing, so every reader downstream would have to re-check
+    // whether the name means anything — and the settings surface would
+    // show a theme that does not exist as the one in effect.
+    if (theme_module.byName(value) == null) {
+        config.note(line, .bad_value, value);
+        return;
+    }
+    config.theme.set(value) catch config.note(line, .too_long, value);
+    config.follow_system_theme = false;
+    return;
+}
+
+fn applyColorPair(config: *Config, line: u32, key: []const u8, value: []const u8) bool {
+    inline for (.{ .{ "background", "background" }, .{ "foreground", "foreground" }, .{ "cursor-color", "cursor_color" }, .{ "selection-background", "selection_background" } }) |pair| {
+        if (eq(key, pair[0])) {
+            setColor(config, line, &@field(config, pair[1]), value);
+            return true;
+        }
+    }
     if (eq(key, "selection-foreground")) {
         // Parsed, but inert: canvas.TerminalGrid carries ONE selection_color
         // and the painter draws a WASH over the cell rather than overriding
@@ -658,70 +725,42 @@ fn applyPair(config: *Config, line: u32, key: []const u8, value: []const u8) voi
         // added only when the value itself was fine.
         setColor(config, line, &config.selection_foreground, value);
         if (config.selection_foreground != null) config.note(line, .unsupported_key, key);
-        return;
+        return true;
     }
+    return false;
+}
 
+fn applyBehaviorPair(config: *Config, line: u32, key: []const u8, value: []const u8) bool {
     if (eq(key, "cursor-style")) {
         config.cursor_style = CursorStyle.parse(value) orelse {
             config.note(line, .bad_value, value);
-            return;
+            return true;
         };
-        return;
+        return true;
     }
-    if (eq(key, "minimum-contrast")) {
-        const parsed = std.fmt.parseFloat(f32, value) catch {
-            config.note(line, .bad_value, value);
-            return;
-        };
-        // NaN is refused rather than clamped. `std.math.clamp` of a NaN is a
-        // NaN, and a NaN floor compares false against every ratio, so it would
-        // silently disable the floor while the config file says otherwise —
-        // the worst of the three outcomes.
-        if (std.math.isNan(parsed)) {
-            config.note(line, .bad_value, value);
-            return;
+    inline for (.{ .{ "cursor-style-blink", "cursor_style_blink" }, .{ "inherit-working-directory", "inherit_working_directory" }, .{ "hide-chrome-when-single", "hide_chrome_when_single" } }) |pair| {
+        if (eq(key, pair[0])) {
+            setBool(config, line, &@field(config, pair[1]), value);
+            return true;
         }
-        config.minimum_contrast = std.math.clamp(parsed, min_minimum_contrast, max_minimum_contrast);
-        return;
-    }
-    if (eq(key, "cursor-style-blink")) return setBool(config, line, &config.cursor_style_blink, value);
-    if (eq(key, "inherit-working-directory")) return setBool(config, line, &config.inherit_working_directory, value);
-    if (eq(key, "hide-chrome-when-single")) return setBool(config, line, &config.hide_chrome_when_single, value);
-    if (applyPhuxPair(config, line, key, value)) return;
-
-    if (eq(key, "scrollback-limit")) {
-        const parsed = std.fmt.parseInt(u64, value, 10) catch {
-            config.note(line, .bad_value, value);
-            return;
-        };
-        config.scrollback_bytes = @min(parsed, max_scrollback_bytes);
-        return;
-    }
-    if (eq(key, "shell") or eq(key, "command")) {
-        config.shell.set(value) catch config.note(line, .too_long, value);
-        return;
     }
     if (eq(key, "tab-placement")) {
         config.tab_placement = TabPlacement.parse(value) orelse {
             config.note(line, .bad_value, value);
-            return;
+            return true;
         };
-        return;
+        return true;
     }
-    if (eq(key, "window-padding")) {
-        const parsed = std.fmt.parseFloat(f32, value) catch {
-            config.note(line, .bad_value, value);
-            return;
-        };
-        if (!std.math.isFinite(parsed) or parsed < 0 or parsed > 64) {
-            config.note(line, .bad_value, value);
-            return;
-        }
-        config.window_padding = parsed;
-        return;
-    }
+    return false;
+}
 
-    config.note(line, .unknown_key, key);
+/// Registered native monospace families; arbitrary names remain diagnostic.
+pub const FontChoice = enum { bundled, geist };
+pub fn fontChoice(value: []const u8) ?FontChoice {
+    if (value.len == 0) return .bundled;
+    if (eq(value, "JetBrains Mono NL Nerd Font Mono")) return .bundled;
+    if (eq(value, "Geist Mono")) return .geist;
+    return null;
 }
 
 fn applyPalette(config: *Config, line: u32, value: []const u8) void {
@@ -868,6 +907,53 @@ pub fn loadOrDefault(bytes: ?[]const u8) Config {
     return parse(bytes orelse return .{});
 }
 
+test "last explicit theme assignment ends system following" {
+    const parsed = parse("theme = auto\ntheme = nord\n");
+    try std.testing.expectEqualStrings("nord", parsed.theme.slice());
+    try std.testing.expect(!parsed.follow_system_theme);
+}
+
+test "supported font choices and editor preference are real typed values" {
+    const parsed = parse("font-family = Geist Mono\neditor = nvim --wait\n");
+    try std.testing.expectEqual(@as(usize, 0), parsed.diagnostic_count);
+    try std.testing.expectEqual(FontChoice.geist, fontChoice(parsed.font_family.slice()).?);
+    try std.testing.expectEqualStrings("nvim --wait", parsed.editorCommand());
+    try std.testing.expectEqual(FontChoice.bundled, fontChoice("").?);
+    const unsupported = parse("font-family = Unregistered Face\n");
+    try std.testing.expectEqual(Diagnostic.Kind.unsupported_key, unsupported.diagnostics[0].kind);
+}
+
+test "binding config parses canonical values and retains syntax diagnostics" {
+    const parsed = parse("keybind.view.settings = Cmd+Alt+s\nkeybind.view.clear = none\n");
+    try std.testing.expectEqual(@as(usize, 0), parsed.diagnostic_count);
+    try std.testing.expectEqual(@as(usize, 2), parsed.keybindings.count);
+    const reset = parse("keybind.view.settings = Cmd+Alt+s\nkeybind.view.settings = default\n");
+    try std.testing.expectEqual(@as(usize, 0), reset.keybindings.count);
+    const invalid = parse("keybind.view.settings = Ctrl+s\n");
+    try std.testing.expectEqual(Diagnostic.Kind.bad_value, invalid.diagnostics[0].kind);
+}
+
+test "reset removes only live assignments and preserves comment bytes" {
+    const original = "# keybind.view.settings = Cmd+,\r\nkeybind.view.settings=Cmd+Alt+s\r\nfuture = keep\r\nkeybind.view.settings = none";
+    var buffer: [512]u8 = undefined;
+    const result = try removeKey(original, "keybind.view.settings", &buffer);
+    try std.testing.expectEqualStrings("# keybind.view.settings = Cmd+,\r\nfuture = keep\r\n", result);
+}
+
+test "validation retains errors beyond the visible diagnostic cap and binding capacity" {
+    const saturated = parse("future-key = keep\n" ** max_diagnostics ++ "font-size = broken\n");
+    try std.testing.expectEqual(max_diagnostics, saturated.diagnostic_count);
+    try std.testing.expect(saturated.has_errors);
+    var buffer: [8192]u8 = undefined;
+    var length: usize = 0;
+    for (0..keybindings_module.max_overrides + 1) |id| {
+        const line = try std.fmt.bufPrint(buffer[length..], "keybind.command{d} = none\n", .{id});
+        length += line.len;
+    }
+    const over_capacity = parse(buffer[0..length]);
+    try std.testing.expect(over_capacity.has_errors);
+}
+
 // ------------------------------------------------------------------ writing
 
 /// Rewrite a config file's bytes so that `key` reads `value`, touching as
@@ -954,6 +1040,20 @@ fn lineNamesKey(raw_line: []const u8, key: []const u8) bool {
     if (line.len == 0) return false;
     const separator = std.mem.indexOfScalar(u8, line, '=') orelse return false;
     return eq(trim(line[0..separator]), key);
+}
+
+/// Remove only live assignments; comments and all unrelated bytes survive.
+pub fn removeKey(source: []const u8, key: []const u8, output: []u8) error{NoSpaceLeft}![]const u8 {
+    var writer = Writer{ .buffer = output };
+    var cursor: usize = 0;
+    while (cursor < source.len) {
+        const newline = std.mem.indexOfScalarPos(u8, source, cursor, '\n');
+        const end = if (newline) |index| index + 1 else source.len;
+        const whole = source[cursor..end];
+        cursor = end;
+        if (!lineNamesKey(whole, key)) try writer.write(whole);
+    }
+    return output[0..writer.len];
 }
 
 /// A bounds-checked append into a caller-owned buffer. The whole rewriter is
