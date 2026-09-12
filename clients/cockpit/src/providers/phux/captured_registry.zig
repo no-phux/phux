@@ -8,11 +8,12 @@ pub const Identity = struct {
     endpoint: []const u8,
     session: []const u8 = "",
 
-    /// An alias retargeted in the registry is a different machine connection.
+    /// A retargeted alias or changed default session is a different capture.
     pub fn matches(self: Identity, other: Identity) bool {
         if (self.role != other.role) return false;
         if (!std.mem.eql(u8, self.name, other.name)) return false;
-        return std.mem.eql(u8, self.endpoint, other.endpoint);
+        if (!std.mem.eql(u8, self.endpoint, other.endpoint)) return false;
+        return std.mem.eql(u8, self.session, other.session);
     }
 
     fn copy(self: Identity, gpa: std.mem.Allocator) !Identity {
@@ -79,7 +80,7 @@ fn OwnedCapture(comptime Tunnel: type) type {
             return self.template.cloneResolved();
         }
 
-        /// Consumes on every return, including a changed alias or wrong role.
+        /// Consumes on every return, including a changed alias, role or session.
         pub fn replace(self: *Self, tunnel: Tunnel, identity: Identity) !void {
             errdefer tunnel.close();
             if (!self.identity.matches(identity)) return error.InvalidRegistryIdentity;
@@ -173,5 +174,41 @@ test "capture initialization consumes tunnel on invalid identity and allocation 
     try state.expectAllClosed();
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
     try std.testing.expectError(error.OutOfMemory, CaptureTest.init(failing.allocator(), state.make(), .{ .role = 1, .name = "mini", .endpoint = "endpoint" }));
+    try state.expectAllClosed();
+}
+
+test "capture replacement rejects changed session without replacing retained capability" {
+    const gpa = std.testing.allocator;
+    const identity: Identity = .{ .role = 1, .name = "mini", .endpoint = "wss://endpointA", .session = "work" };
+    var state: FakeState = .{};
+    {
+        const original = state.make();
+        var capture = try OwnedCapture(FakeTunnel).init(gpa, original, identity);
+        defer capture.deinit(gpa);
+        const template = capture.template.id;
+        var changed = identity;
+        changed.session = "other";
+        const rejected = state.make();
+        const created = state.created;
+
+        // Previously replace accepted the new tunnel but retained identity.session
+        // and the provider's selected default from "work", yielding a mixed capture.
+        try std.testing.expectError(error.InvalidRegistryIdentity, capture.replace(rejected, changed));
+        try std.testing.expect(state.closed[rejected.id]);
+        try std.testing.expectEqual(created, state.created);
+        try std.testing.expectEqual(template, capture.template.id);
+        try std.testing.expectEqual(original.id, capture.pending.?.id);
+        try std.testing.expect(!state.closed[template]);
+        try std.testing.expect(!state.closed[original.id]);
+        try std.testing.expectEqualStrings("work", capture.identity.session);
+
+        const replacement = state.make();
+        try capture.replace(replacement, identity);
+        try std.testing.expect(state.closed[template]);
+        try std.testing.expect(state.closed[original.id]);
+        try std.testing.expectEqual(replacement.id, capture.pending.?.id);
+        try std.testing.expectEqualStrings("work", capture.identity.session);
+    }
+    // FakeTunnel.close rejects double-free, and every original/clone must close.
     try state.expectAllClosed();
 }
