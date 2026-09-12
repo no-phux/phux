@@ -7,6 +7,7 @@ import {
   recoveryFor,
 } from "./release-drift-policy.mjs";
 
+assert.deepEqual(recoveryFor("next"), { workflow: "next-release.yml", extraArgs: "" });
 assert.deepEqual(recoveryFor("v0.27.0"), { workflow: "release.yml", extraArgs: "" });
 assert.deepEqual(recoveryFor("cockpit-v0.16.2"), {
   workflow: "cockpit-release.yml",

@@ -31,7 +31,7 @@ ATTACH / SERVE
   mcp        Run the bundled MCP stdio adapter
   host       Register the machines phux talks to: remotes and satellites
   service    Keep a server running across logout and reboot
-  update     Update phux to the latest release, keeping sessions alive
+  update     Update phux to the latest stable or next release, keeping sessions alive
   upgrade    Hot-swap the running server binary, keeping sessions alive
 
 INSPECT
@@ -2872,9 +2872,9 @@ Options:
 ## `phux update`
 
 ```text
-Update phux to the latest release, keeping sessions alive.
+Update phux to the latest stable or next release, keeping sessions alive.
 
-Checks the published release, downloads the archive for this platform, verifies it against the checksum published beside it, replaces the binaries atomically, and asks a running server to re-exec so live panes survive. A server, its local clients, its satellites, and its relays must all run the same release, so this is the command that moves a whole deployment in one step.
+Checks the published release, downloads the archive for this platform, verifies it against the checksum published beside it, replaces the binaries atomically, and asks a running server to re-exec so live panes survive. `--channel next` follows green `main` instead of the latest `vX.Y.Z`. A server, its local clients, its satellites, and its relays must all run the same release, so this is the command that moves a whole deployment in one step.
 
 phux updates only installs it maintains: a release archive unpacked into $PHUX_INSTALL_DIR, ~/.local/bin, ~/bin, /usr/local/bin, or /opt/phux/bin. A Homebrew, Cargo, or Nix install is never modified — the exact native command is printed instead — and an unrecognized location is refused rather than overwritten.
 
@@ -2884,6 +2884,7 @@ Examples:
   phux update --check
   phux update --check --json
   phux update
+  phux update --channel next
   phux update --dry-run --version v1.2.3
   phux update --rollback
 
@@ -2900,7 +2901,14 @@ Options:
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --version <TAG>
-          Install this release tag instead of the latest one. Accepts any tag from the releases page, including an older one (a downgrade)
+          Install this release tag instead of the latest one. Accepts any tag from the releases page, including an older one (a downgrade). Stable-only: omit this when following `--channel next`
+
+      --channel <CHANNEL>
+          Release channel to follow. `stable` is the default (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease
+
+          Possible values:
+          - stable: `vX.Y.Z` GitHub releases and `releases/latest`
+          - next:   Moving prerelease of green `main`
 
       --rollback
           Restore the binaries saved by the previous `phux update`

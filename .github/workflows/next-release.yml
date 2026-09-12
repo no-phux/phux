@@ -1,0 +1,235 @@
+# next channel — coalesced release-profile builds of green main.
+#
+# Trigger: ci.yml succeeded on a push to main, or a manual dispatch.
+# Ownership: this workflow owns the moving `next` prerelease only. It never
+# creates a vX.Y.Z tag, never touches Homebrew, and never publishes Cockpit.
+# release-please remains the sole owner of stable tags (ADR-0113).
+#
+# Cost: one 3-target from-scratch build per burst of product commits, cancelled
+# when a newer SHA lands. Docs-only and already-published SHAs produce nothing.
+# Registry cache is shared with release.yml; target/ is never saved.
+
+name: next-release
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to publish (default: the SHA that triggered this run, or github.sha)."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mini-v1-next-release
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate next channel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    outputs:
+      sha: ${{ steps.select.outputs.sha }}
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: Select SHA
+        id: select
+        env:
+          DISPATCH_SHA: ${{ github.event.inputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="${DISPATCH_SHA:-${RUN_SHA:-$FALLBACK_SHA}}"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::not a git SHA: ${sha}"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.select.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Decide whether to build
+        id: decide
+        env:
+          SHA: ${{ steps.select.outputs.sha }}
+        run: |
+          set -euo pipefail
+          pointer="https://github.com/${GITHUB_REPOSITORY}/releases/download/next/channel.json"
+          prev=""
+          if body="$(curl -fsSL "$pointer" 2>/dev/null)"; then
+            prev="$(printf '%s\n' "$body" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -n 1)"
+          fi
+          if [ "$prev" = "$SHA" ]; then
+            echo "next already published for ${SHA}"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$prev" ] || ! git cat-file -e "${prev}^{commit}" 2>/dev/null; then
+            echo "first next publish or previous SHA not in history; building"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t outputs < <(git diff --name-only "$prev" "$SHA" -- | python3 scripts/ci/classify-changes.py)
+          phux_needed=false
+          native_needed=false
+          for line in "${outputs[@]}"; do
+            case "$line" in
+              phux_needed=true) phux_needed=true ;;
+              native_needed=true) native_needed=true ;;
+            esac
+          done
+          if [ "$phux_needed" = true ] || [ "$native_needed" = true ]; then
+            echo "product inputs moved since ${prev}; building"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no product inputs since ${prev}; skipping"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: gate
+    if: needs.gate.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: Verify native release platform and Linux baseline
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$TARGET" in
+            aarch64-apple-darwin) test "$(uname -s)/$(uname -m)" = Darwin/arm64 ;;
+            x86_64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/x86_64 ;;
+            aarch64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/aarch64 ;;
+            *) exit 1 ;;
+          esac
+          if [[ "$TARGET" == *-linux-gnu ]]; then
+            . /etc/os-release
+            test "$ID/$VERSION_ID" = ubuntu/22.04
+            test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Install Zig
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-deps
+          cache-targets: "false"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential mold
+
+      - name: Build release binaries
+        env:
+          PHUX_BUILD_CHANNEL: next
+          PHUX_BUILD_SHA: ${{ needs.gate.outputs.sha }}
+        run: cargo build --locked --release --bin phux --bin phux-mcp
+
+      - name: Check binary portability
+        run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
+
+      - name: Package tarball
+        id: package
+        env:
+          SHA: ${{ needs.gate.outputs.sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          id="next.${SHA}"
+          target="${TARGET}"
+          stage="phux-${id}-${target}"
+          mkdir -p "${stage}"
+          cp -f target/release/phux target/release/phux-mcp "${stage}/"
+          cp -f README.md LICENSE-MIT LICENSE-APACHE "${stage}/"
+          test -x "${stage}/phux"
+          test -x "${stage}/phux-mcp"
+          "${stage}/phux" --version
+          "${stage}/phux" --skill=quick > /dev/null
+          "${stage}/phux" --capabilities --json | jq -e '.schema_version == 1' > /dev/null
+          "${stage}/phux" mcp --skill > /dev/null
+          "${stage}/phux" mcp --schema | jq -e 'length > 0' > /dev/null
+          "${stage}/phux-mcp" --skill > /dev/null
+          "${stage}/phux-mcp" --schema | jq -e 'length > 0' > /dev/null
+          "${stage}/phux-mcp" < /dev/null
+          tar -czf "${stage}.tar.gz" "${stage}"
+          if command -v sha256sum >/dev/null; then
+            sha=$(sha256sum "${stage}.tar.gz" | cut -d' ' -f1)
+          else
+            sha=$(shasum -a 256 "${stage}.tar.gz" | cut -d' ' -f1)
+          fi
+          echo "${sha}  ${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          echo "artifact=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            phux-*.tar.gz
+            phux-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish next channel
+    needs: [gate, build]
+    if: ${{ !cancelled() && needs.gate.outputs.should_build == 'true' && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish moving next prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: bash scripts/publish-next-channel.sh "$SHA" dist

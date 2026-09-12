@@ -29,6 +29,15 @@ pub(crate) const REPO: &str = "no-phux/phux";
 /// trusted and parsed.
 const LATEST_REDIRECT: &str = "https://github.com/no-phux/phux/releases/latest";
 
+/// Pointer file for the moving `next` prerelease (ADR-0113).
+///
+/// Hardcoded: a network-supplied tag is never interpolated into a URL.
+pub(crate) const NEXT_CHANNEL_URL: &str =
+    "https://github.com/no-phux/phux/releases/download/next/channel.json";
+
+/// GitHub release tag the next channel publishes onto.
+pub(crate) const NEXT_RELEASE_TAG: &str = "next";
+
 /// A parsed `MAJOR.MINOR.PATCH`.
 ///
 /// Release tags are strictly `vX.Y.Z` (release-please owns them; see
@@ -147,6 +156,77 @@ impl Artifact {
             checksum_url,
         }
     }
+
+    /// Next-channel artifact. The GitHub tag is always `next`; the SHA
+    /// lives only in the filename, after [`validate_next_sha`] has accepted it.
+    pub(crate) fn next(sha: &str, target: &str) -> Self {
+        let stage = format!("phux-next.{sha}-{target}");
+        let archive = format!("{stage}.tar.gz");
+        let archive_url =
+            format!("https://github.com/{REPO}/releases/download/{NEXT_RELEASE_TAG}/{archive}");
+        let checksum_url = format!("{archive_url}.sha256");
+        Self {
+            archive,
+            stage,
+            archive_url,
+            checksum_url,
+        }
+    }
+}
+
+/// Head of the `next` channel, parsed from `channel.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NextHead {
+    /// Full git SHA the artifacts were built from.
+    pub(crate) sha: String,
+    /// Cargo version baked into that build, informational.
+    pub(crate) version: Option<String>,
+}
+
+/// A SHA interpolated into an artifact filename must be exactly 40 hex.
+pub(crate) fn validate_next_sha(sha: &str) -> Result<(), UpdateError> {
+    if sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(UpdateError::Fetch(
+            "the next channel pointer named a SHA that is not 40 hex characters".to_owned(),
+        ))
+    }
+}
+
+/// Parse `channel.json`. Archive names in the document are ignored: URLs
+/// are derived from the SHA so a poisoned pointer cannot steer the
+/// download at an arbitrary path.
+pub(crate) fn parse_next_channel(body: &str) -> Result<NextHead, UpdateError> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| {
+        UpdateError::Fetch(format!("the next channel pointer was not JSON: {err}"))
+    })?;
+    let schema = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64);
+    if schema != Some(1) {
+        return Err(UpdateError::Fetch(
+            "the next channel pointer has an unsupported schema_version".to_owned(),
+        ));
+    }
+    let channel = value.get("channel").and_then(serde_json::Value::as_str);
+    if channel != Some("next") {
+        return Err(UpdateError::Fetch(
+            "the next channel pointer did not name channel `next`".to_owned(),
+        ));
+    }
+    let sha = value
+        .get("sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| UpdateError::Fetch("the next channel pointer named no sha".to_owned()))?
+        .to_owned();
+    validate_next_sha(&sha)?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Version::parse)
+        .map(|version| version.to_string());
+    Ok(NextHead { sha, version })
 }
 
 /// The one boundary that talks to the network.
@@ -158,6 +238,9 @@ impl Artifact {
 pub(crate) trait ReleaseSource: std::fmt::Debug {
     /// The tag of the current stable release (`vX.Y.Z`).
     fn latest_tag(&self) -> Result<String, UpdateError>;
+
+    /// Head of the moving `next` prerelease.
+    fn next_head(&self) -> Result<NextHead, UpdateError>;
 
     /// Download `url` into `dest`, replacing whatever is there.
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
@@ -241,6 +324,15 @@ impl ReleaseSource for NetworkReleaseSource {
         })
     }
 
+    fn next_head(&self) -> Result<NextHead, UpdateError> {
+        let downloader = Downloader::detect()?;
+        let body = match downloader {
+            Downloader::Curl => run("curl", &["-fsSL", NEXT_CHANNEL_URL])?,
+            Downloader::Wget => run("wget", &["-q", "-O", "-", NEXT_CHANNEL_URL])?,
+        };
+        parse_next_channel(&body)
+    }
+
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
         let downloader = Downloader::detect()?;
         let dest_arg = dest.to_string_lossy().into_owned();
@@ -305,7 +397,10 @@ fn latest_core_tag_from_list(body: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Artifact, Version, latest_core_tag_from_list, validate_tag};
+    use super::{
+        Artifact, Version, latest_core_tag_from_list, parse_next_channel, validate_next_sha,
+        validate_tag,
+    };
 
     #[test]
     fn versions_parse_with_and_without_the_v_prefix_and_order_correctly() {
@@ -374,6 +469,44 @@ mod tests {
         assert_eq!(
             artifact.checksum_url,
             format!("{}.sha256", artifact.archive_url)
+        );
+    }
+
+    #[test]
+    fn next_artifact_urls_use_the_next_tag_and_the_sha_in_the_filename() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let artifact = Artifact::next(sha, "aarch64-apple-darwin");
+        assert_eq!(
+            artifact.stage,
+            format!("phux-next.{sha}-aarch64-apple-darwin")
+        );
+        assert_eq!(
+            artifact.archive_url,
+            format!(
+                "https://github.com/no-phux/phux/releases/download/next/\
+                 phux-next.{sha}-aarch64-apple-darwin.tar.gz"
+            )
+        );
+        assert_eq!(
+            artifact.checksum_url,
+            format!("{}.sha256", artifact.archive_url)
+        );
+    }
+
+    #[test]
+    fn next_channel_pointer_is_accepted_only_when_the_sha_is_40_hex() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let body =
+            format!(r#"{{"schema_version":1,"channel":"next","sha":"{sha}","version":"0.32.0"}}"#);
+        let head = parse_next_channel(&body).expect("valid pointer");
+        assert_eq!(head.sha, sha);
+        assert_eq!(head.version.as_deref(), Some("0.32.0"));
+        assert!(validate_next_sha(sha).is_ok());
+        assert!(validate_next_sha("abc").is_err());
+        assert!(parse_next_channel(r#"{"schema_version":2,"channel":"next","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
+        assert!(parse_next_channel(r#"{"schema_version":1,"channel":"stable","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
+        assert!(
+            parse_next_channel(r#"{"schema_version":1,"channel":"next","sha":"../evil"}"#).is_err()
         );
     }
 
