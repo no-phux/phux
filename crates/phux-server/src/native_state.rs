@@ -24,7 +24,7 @@ use thiserror::Error;
 /// Opaque generation identity: SHA-256 of the encoded snapshot.
 pub const TOKEN_LEN: usize = 32;
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u16;
-/// Continuation tracking limit so encode_snapshot can capture mid-sequence VT.
+/// Continuation tracking limit so `encode_snapshot` can capture mid-sequence VT.
 const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Greatest number of opaque codec records retained before READY publication.
@@ -222,10 +222,8 @@ fn prefix_record_bound(
     if prefix_len > MAX_NATIVE_PREFIX_BYTES {
         return Err(NativeStateError::LimitExceeded);
     }
-    Ok(chunk
-        .min(MAX_NATIVE_PREFIX_BYTES)
-        .max(1)
-        .min(prefix_len.max(1)))
+    let bound = chunk.clamp(1, MAX_NATIVE_PREFIX_BYTES);
+    Ok(bound.min(prefix_len.max(1)))
 }
 
 /// RAII host for the bounded checkpoint prefix ending at READY.
@@ -286,6 +284,10 @@ impl NativeCheckpointCapture<'_> {
     }
 
     /// Release without installing history. The snapshot bytes are dropped.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers match Result with other capture APIs"
+    )]
     pub fn abort(self) -> Result<(), NativeStateError> {
         let _ = (self.suffix, self.cursor);
         Ok(())
@@ -379,19 +381,19 @@ impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
 
     /// Opaque checkpoint authenticating this cursor's exact terminal cut.
     #[must_use]
-    pub fn checkpoint(&self) -> &OpaqueHistoryCursor {
+    pub const fn checkpoint(&self) -> &OpaqueHistoryCursor {
         &self.cursor
     }
 
     /// Opaque capability advertised as `BOOTSTRAP_READY.history_cursor`.
     #[must_use]
-    pub fn cursor(&self) -> &OpaqueHistoryCursor {
+    pub const fn cursor(&self) -> &OpaqueHistoryCursor {
         &self.cursor
     }
 
     /// Borrow the live canonical terminal for read-only engine queries.
     #[must_use]
-    pub fn terminal(&self) -> &GhosttyTerminal<'terminal_alloc, 'cb> {
+    pub const fn terminal(&self) -> &GhosttyTerminal<'terminal_alloc, 'cb> {
         &self.terminal
     }
 
@@ -429,7 +431,7 @@ impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
         max_bytes: u32,
         buffer: &'buffer mut [u8],
     ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
-        if let Some(error) = self.invalidated.clone() {
+        if let Some(error) = self.invalidated {
             return Err(error);
         }
         let requested = usize::try_from(max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
@@ -734,6 +736,10 @@ impl NativeTerminalManager {
     }
 
     #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "kept for capture-budget tests that are not yet ported"
+    )]
     pub(crate) fn capture(
         &mut self,
         limits: BootstrapLimits,
@@ -800,6 +806,10 @@ impl NativeTerminalManager {
         self.generations.contains_key(cursor)
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "seed is the owned generation payload"
+    )]
     pub(crate) fn install_generation(
         &mut self,
         cursor: OpaqueHistoryCursor,

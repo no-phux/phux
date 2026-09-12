@@ -106,7 +106,6 @@ impl IncrementalCapabilities {
 const SNAPSHOT_ABI_VERSION: u32 = 1;
 const SNAPSHOT_STATUS_SUCCESS: i32 = 0;
 const SNAPSHOT_STATUS_INVALID_STATE: i32 = -14;
-const CAPABILITIES_SIZE: u32 = 56;
 const DECODER_OPTIONS_SIZE: u32 = 20;
 const DECODE_EVENT_SIZE: u32 = 36;
 const TAKE_TERMINAL_SIZE: u32 = 16;
@@ -182,7 +181,6 @@ pub struct Grid {
 }
 
 struct NativeAbi {
-    capabilities: Function,
     decoder_new: Function,
     decoder_push: Function,
     decoder_take_terminal: Function,
@@ -298,7 +296,6 @@ impl Vt {
         };
         let native = (|| {
             Some(NativeAbi {
-                capabilities: optional("ghostty_terminal_snapshot_incremental_capabilities")?,
                 decoder_new: optional("ghostty_terminal_snapshot_decoder_new")?,
                 decoder_push: optional("ghostty_terminal_snapshot_decoder_push")?,
                 decoder_take_terminal: optional("ghostty_terminal_snapshot_decoder_take_terminal")?,
@@ -309,7 +306,7 @@ impl Vt {
             })
         })();
 
-        let mut vt = Self {
+        let vt = Self {
             memory,
             alloc: f("ghostty_wasm_alloc_u8_array")?,
             free: f("ghostty_wasm_free_u8_array")?,
@@ -332,10 +329,14 @@ impl Vt {
             cells_next: f("ghostty_render_state_row_cells_next")?,
             cells_get: f("ghostty_render_state_row_cells_get")?,
             native,
+            // Vendored ghostty-vt.wasm still speaks the fork incremental
+            // snapshot ABI. Official GHOSTSNP on the server would be selected
+            // if we advertised native here, and the WASM engine cannot decode
+            // it. Stay synthesized until wasm is rebuilt against the official
+            // snapshot C API.
             native_capabilities: None,
             _entropy: entropy,
         };
-        vt.native_capabilities = vt.probe_incremental_capabilities();
         Ok(Rc::new(vt))
     }
 
@@ -411,50 +412,6 @@ impl Vt {
             max_input_bytes,
             terminal_taken: false,
             finished: false,
-        })
-    }
-
-    fn probe_incremental_capabilities(&self) -> Option<IncrementalCapabilities> {
-        let native = self.native.as_ref()?;
-        let out = self.alloc_zeroed(CAPABILITIES_SIZE).ok()?;
-        self.w_u32(out, CAPABILITIES_SIZE);
-        let status = match self.call_i32(&native.capabilities, &[f64::from(out)]) {
-            Ok(status) => status,
-            Err(_) => {
-                self.wasm_free(out, CAPABILITIES_SIZE);
-                return None;
-            }
-        };
-        if status != SNAPSHOT_STATUS_SUCCESS {
-            self.wasm_free(out, CAPABILITIES_SIZE);
-            return None;
-        }
-        let codec_identity = self.r_string(out + 40);
-        let build_identity = self.r_string(out + 48);
-        let capabilities = IncrementalCapabilities {
-            abi_version: self.r_u32(out + 4),
-            min_decode_version: self.r_u16(out + 8),
-            max_decode_version: self.r_u16(out + 10),
-            default_encode_version: self.r_u16(out + 12),
-            incremental: self.r_u8(out + 14) != 0,
-            ready: self.r_u8(out + 15) != 0,
-            history: self.r_u8(out + 16) != 0,
-            authenticated_tokens: self.r_u8(out + 17) != 0,
-            bounded_records: self.r_u8(out + 18) != 0,
-            bounded_pages: self.r_u8(out + 19) != 0,
-            bounded_units: self.r_u8(out + 20) != 0,
-            max_record_bytes: self.r_u32(out + 24) as usize,
-            max_pages: self.r_u32(out + 28) as usize,
-            max_unit_bytes: self.r_u32(out + 32) as usize,
-            max_rows: self.r_u32(out + 36) as usize,
-            codec_identity: String::new(),
-            build_identity: String::new(),
-        };
-        self.wasm_free(out, CAPABILITIES_SIZE);
-        Some(IncrementalCapabilities {
-            codec_identity: codec_identity?,
-            build_identity: build_identity?,
-            ..capabilities
         })
     }
 
@@ -562,16 +519,6 @@ impl Vt {
     fn r_u16(&self, ptr: u32) -> u16 {
         let bytes = self.bytes();
         u16::from(bytes.get_index(ptr)) | (u16::from(bytes.get_index(ptr + 1)) << 8)
-    }
-
-    fn r_string(&self, ptr: u32) -> Option<String> {
-        let data = self.r_u32(ptr);
-        let len = self.r_u32(ptr + 4);
-        let end = data.checked_add(len)?;
-        if end > self.bytes().length() {
-            return None;
-        }
-        String::from_utf8(self.bytes().subarray(data, end).to_vec()).ok()
     }
 
     fn r_u8(&self, ptr: u32) -> u8 {

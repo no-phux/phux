@@ -92,7 +92,7 @@ pub enum RenderError {
 /// Per-cell snapshot of one row, filled from libghostty's cell iterator.
 ///
 /// Upstream no longer ships a batched `read_row` C crossing. This local
-/// buffer keeps the paint loop's RowCells shape while walking cells with
+/// buffer keeps the paint loop's [`RowCells`] shape while walking cells with
 /// the official iterator.
 #[derive(Debug, Default)]
 struct RowBuf {
@@ -106,8 +106,6 @@ struct OwnedRowCell {
     style_index: u32,
     fg: Option<RgbColor>,
     bg: Option<RgbColor>,
-    has_styling: bool,
-    selected: bool,
     wide: CellWide,
 }
 
@@ -125,18 +123,7 @@ struct RowCell<'buf> {
     style_index: u32,
     fg: Option<RgbColor>,
     bg: Option<RgbColor>,
-    has_styling: bool,
-    selected: bool,
     wide: CellWide,
-}
-
-impl RowBuf {
-    fn with_cols(cols: usize) -> Self {
-        Self {
-            cells: Vec::with_capacity(cols),
-            styles: Vec::with_capacity(8),
-        }
-    }
 }
 
 impl<'buf> RowCells<'buf> {
@@ -151,8 +138,6 @@ impl<'buf> RowCells<'buf> {
             style_index: cell.style_index,
             fg: cell.fg,
             bg: cell.bg,
-            has_styling: cell.has_styling,
-            selected: cell.selected,
             wide: cell.wide,
         })
     }
@@ -165,9 +150,9 @@ impl<'buf> RowCells<'buf> {
     }
 }
 
-fn read_row<'alloc, 's, 'buf>(
+fn read_row<'alloc, 'buf>(
     cells: &mut CellIterator<'alloc>,
-    row: &RowIteration<'alloc, 's>,
+    row: &RowIteration<'alloc, '_>,
     buf: &'buf mut RowBuf,
 ) -> Result<RowCells<'buf>, RenderError> {
     buf.cells.clear();
@@ -184,8 +169,6 @@ fn read_row<'alloc, 's, 'buf>(
             style_index,
             fg: cell.fg_color()?,
             bg: cell.bg_color()?,
-            has_styling: cell.has_styling()?,
-            selected: cell.is_selected()?,
             wide: cell.raw_cell()?.wide()?,
         });
     }
@@ -3701,8 +3684,6 @@ mod tests {
                 style_index: 0,
                 fg: None,
                 bg: None,
-                has_styling: false,
-                selected: false,
                 wide: CellWide::Narrow,
             })
         }

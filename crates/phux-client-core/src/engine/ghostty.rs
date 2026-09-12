@@ -206,7 +206,7 @@ impl GhosttyReplica {
     /// Native replicas intentionally return `None` until authenticated READY
     /// has transferred the terminal and replayed its parser continuation.
     #[must_use]
-    pub fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
+    pub const fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match &self.state {
             ReplicaState::Synthesized { terminal, .. } => Some(terminal),
             ReplicaState::Native(native) => native.terminal(),
@@ -219,14 +219,10 @@ impl GhosttyReplica {
                 terminal.set_scrollback_max_bytes(max)?;
             }
             ReplicaState::Native(native) => match &mut native.decoder {
-                NativeDecoderState::AfterReady(stream) => {
-                    stream.set_scrollback_max_bytes(max)?;
-                }
-                NativeDecoderState::Finished(terminal)
-                | NativeDecoderState::Failed(Some(terminal)) => {
+                NativeDecoderState::Finished(terminal) => {
                     terminal.set_scrollback_max_bytes(max)?;
                 }
-                NativeDecoderState::Collecting | NativeDecoderState::Failed(None) => {}
+                NativeDecoderState::Collecting => {}
             },
         }
         Ok(())
@@ -238,14 +234,10 @@ impl GhosttyReplica {
                 terminal.set_scrollback_max_lines(max)?;
             }
             ReplicaState::Native(native) => match &mut native.decoder {
-                NativeDecoderState::AfterReady(stream) => {
-                    stream.set_scrollback_max_lines(max)?;
-                }
-                NativeDecoderState::Finished(terminal)
-                | NativeDecoderState::Failed(Some(terminal)) => {
+                NativeDecoderState::Finished(terminal) => {
                     terminal.set_scrollback_max_lines(max)?;
                 }
-                NativeDecoderState::Collecting | NativeDecoderState::Failed(None) => {}
+                NativeDecoderState::Collecting => {}
             },
         }
         Ok(())
@@ -256,16 +248,9 @@ impl GhosttyReplica {
         match &mut self.state {
             ReplicaState::Synthesized { terminal, .. } => terminal.scroll_viewport(scroll),
             ReplicaState::Native(native) => match &mut native.decoder {
-                NativeDecoderState::AfterReady(stream) => {
-                    stream.scroll_viewport(scroll);
-                }
-                NativeDecoderState::Finished(terminal)
-                | NativeDecoderState::Failed(Some(terminal)) => terminal.scroll_viewport(scroll),
+                NativeDecoderState::Finished(terminal) => terminal.scroll_viewport(scroll),
                 NativeDecoderState::Collecting => {
                     return Err(GhosttyEngineError::LiveOutputBeforeReady);
-                }
-                NativeDecoderState::Failed(None) => {
-                    return Err(GhosttyEngineError::DecoderFailed);
                 }
             },
         }
@@ -292,10 +277,11 @@ impl GhosttyReplica {
 }
 
 fn clear_terminal_presentation(terminal: &mut GhosttyTerminal<'_, '_>) {
-    // Presentation-only: erase scrollback, erase display, home cursor.
-    // After READY the parser is at a reconstructable state; this must not
-    // write to the PTY.
-    terminal.vt_write(b"\x1b[3J\x1b[2J\x1b[H");
+    // Drive CUP/ED/selection on the grid directly. vt_write of those
+    // sequences would complete a pending CSI/OSC/DCS or flush U+FFFD for
+    // unfinished UTF-8; decoded snapshots also disable continuation tracking
+    // so those bytes cannot be extracted and replayed after RIS.
+    terminal.clear_presentation();
 }
 
 type PtyResponses = Rc<RefCell<Vec<Vec<u8>>>>;
@@ -337,25 +323,20 @@ impl NativeReplica {
             return Err(GhosttyEngineError::LiveOutputBeforeReady);
         }
         match &mut self.decoder {
-            NativeDecoderState::AfterReady(terminal)
-            | NativeDecoderState::Finished(terminal)
-            | NativeDecoderState::Failed(Some(terminal)) => {
+            NativeDecoderState::Finished(terminal) => {
                 clear_terminal_presentation(terminal);
             }
             NativeDecoderState::Collecting => {
                 return Err(GhosttyEngineError::LiveOutputBeforeReady);
             }
-            NativeDecoderState::Failed(None) => return Err(GhosttyEngineError::DecoderFailed),
         }
         Ok(())
     }
 
-    fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
+    const fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match &self.decoder {
-            NativeDecoderState::Collecting | NativeDecoderState::Failed(None) => None,
-            NativeDecoderState::AfterReady(terminal)
-            | NativeDecoderState::Finished(terminal)
-            | NativeDecoderState::Failed(Some(terminal)) => Some(terminal),
+            NativeDecoderState::Collecting => None,
+            NativeDecoderState::Finished(terminal) => Some(terminal),
         }
     }
 }
@@ -364,9 +345,7 @@ impl NativeReplica {
 #[derive(Debug)]
 enum NativeDecoderState {
     Collecting,
-    AfterReady(GhosttyTerminal<'static, 'static>),
     Finished(GhosttyTerminal<'static, 'static>),
-    Failed(Option<GhosttyTerminal<'static, 'static>>),
 }
 
 /// Typed failures from the concrete libghostty engine host.
@@ -658,12 +637,7 @@ impl EngineAdapter for GhosttyAdapter {
                     NativeDecoderState::Collecting => {
                         return Err(GhosttyEngineError::LiveOutputBeforeReady);
                     }
-                    NativeDecoderState::AfterReady(terminal) => terminal.vt_write(payload),
-                    NativeDecoderState::Finished(terminal)
-                    | NativeDecoderState::Failed(Some(terminal)) => terminal.vt_write(payload),
-                    NativeDecoderState::Failed(None) => {
-                        return Err(GhosttyEngineError::DecoderFailed);
-                    }
+                    NativeDecoderState::Finished(terminal) => terminal.vt_write(payload),
                 }
                 &native.pty_responses
             }
@@ -1221,16 +1195,14 @@ fn push_native(
     }
     match native.decoder {
         NativeDecoderState::Collecting => {}
-        NativeDecoderState::AfterReady(_) => return Err(GhosttyEngineError::InputAfterReady),
         NativeDecoderState::Finished(_) => return Err(GhosttyEngineError::InputAfterFinish),
-        NativeDecoderState::Failed(_) => return Err(GhosttyEngineError::DecoderFailed),
     }
     native.feed.data.extend_from_slice(input);
     Ok(BootstrapProgress::Pending)
 }
 
 fn attach_native_callbacks(
-    native: &mut NativeReplica,
+    native: &NativeReplica,
     terminal: &mut GhosttyTerminal<'static, 'static>,
 ) -> Result<(), GhosttyEngineError> {
     terminal.on_pty_write({
@@ -1245,7 +1217,7 @@ fn attach_native_callbacks(
 }
 
 fn decode_collected_snapshot(
-    native: &mut NativeReplica,
+    native: &NativeReplica,
 ) -> Result<GhosttyTerminal<'static, 'static>, GhosttyEngineError> {
     let decoder = Decoder::new_buf(&native.feed.data)
         .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
@@ -1255,8 +1227,7 @@ fn decode_collected_snapshot(
     loop {
         match inc.next() {
             Ok(Some(_)) => {}
-            Ok(None) => break,
-            Err(libghostty_vt::Error::InvalidValue) => break,
+            Ok(None) | Err(libghostty_vt::Error::InvalidValue) => break,
             Err(error) => {
                 return Err(GhosttyEngineError::checkpoint(
                     error,
@@ -1274,22 +1245,22 @@ fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, Ghostt
     }
     match native.decoder {
         NativeDecoderState::Collecting => {}
-        NativeDecoderState::AfterReady(_) | NativeDecoderState::Finished(_) => {
+        NativeDecoderState::Finished(_) => {
             native.protocol_finished = true;
             return Ok(BootstrapProgress::Finished);
         }
-        NativeDecoderState::Failed(_) => return Err(GhosttyEngineError::DecoderFailed),
     }
     let mut terminal = decode_collected_snapshot(native)?;
+    let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
     attach_native_callbacks(native, &mut terminal)?;
     native.decoder = NativeDecoderState::Finished(terminal);
     native.protocol_finished = true;
     Ok(BootstrapProgress::Finished)
 }
 
-fn push_history(
-    native: &mut NativeReplica,
-    input: &[u8],
+const fn push_history(
+    native: &NativeReplica,
+    _input: &[u8],
 ) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
