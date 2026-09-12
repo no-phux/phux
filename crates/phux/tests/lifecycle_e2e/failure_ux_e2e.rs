@@ -129,7 +129,11 @@ impl Isolation {
     fn apply(&self, cmd: &mut Command) {
         cmd.env("XDG_CONFIG_HOME", self.config.path())
             .env("XDG_STATE_HOME", self.state.path())
-            .env("PHUX_PROFILE", "default");
+            .env("PHUX_PROFILE", "default")
+            // Default profile would auto-bind overlay WSS/QUIC (ADR-0081).
+            // That races the host's real server for 8787/8788 and leaves
+            // bind_failed slots that doctor (phux-kyna) correctly fails on.
+            .env("PHUX_NO_AUTO_LISTEN", "1");
     }
 
     /// The canonical server-log path `phux_server::telemetry` resolves

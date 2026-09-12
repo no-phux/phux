@@ -61,6 +61,7 @@ mod lifecycle_state;
 mod metadata;
 mod policy;
 mod reap;
+mod remote_listeners;
 mod resolve;
 mod resource_table;
 mod satellite_spawns;
@@ -262,6 +263,12 @@ pub struct ServerState {
         phux_core::ids::ResourceId,
         phux_protocol::wire::frame::CloseReason,
     >,
+    /// Remote listener bind outcomes for `GET_STATE` / `phux doctor` (phux-kyna).
+    ///
+    /// Written as each configured or auto-bound transport finishes its bind
+    /// attempt; read by [`Self::build_session_snapshot`]. Absent from the
+    /// wire until at least one slot has been recorded.
+    remote_listeners: phux_protocol::wire::RemoteListenersReport,
 }
 
 impl Default for ServerState {

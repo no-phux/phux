@@ -118,7 +118,8 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_agent_shim(),
         check_remote_cert(),
         check_token_store(),
-        check_remote_reachable(),
+        check_remote_listeners(&socket_path),
+        check_remote_reachable(&socket_path),
         check_logs(),
     ]);
 
@@ -894,6 +895,118 @@ enum Reachability {
     Unreachable,
 }
 
+/// Did every remote listener the *running server* expected actually bind?
+///
+/// [`check_token_store`] reads the file on disk right now. That is the right
+/// check when the file is still broken, and the wrong one when the file was
+/// fixed after a failed boot, or when the listeners died for a cert/TLS/bind
+/// reason that has nothing to do with the store. This check asks the serving
+/// process over UDS what it recorded at bind time (phux-kyna), so a green
+/// local store cannot hide a dead remote surface.
+fn check_remote_listeners(socket_path: &std::path::Path) -> Check {
+    if !socket_path.exists() {
+        return Check::warn(
+            "remote-listeners",
+            "no server to ask about remote listeners",
+            "start one with `phux` (auto-spawns) or `phux server`",
+        );
+    }
+    let Ok(rt) = cli_runtime() else {
+        return Check::warn(
+            "remote-listeners",
+            "could not build a runtime to ask the server about remote listeners",
+            "retry; if this persists it is a bug worth filing",
+        );
+    };
+    let report = match rt.block_on(phux_client::state::get_state(socket_path)) {
+        Ok(view) => view.snapshot().listeners().cloned(),
+        Err(err) => {
+            return Check::warn(
+                "remote-listeners",
+                format!("could not ask the server about remote listeners: {err}"),
+                "the socket may be stale — remove it and start a fresh server",
+            );
+        }
+    };
+    let token_store_ok = phux_server::auth::ReloadingTokenStore::load(
+        std::env::var_os("PHUX_WS_TOKENS")
+            .map_or_else(phux_server::auth::default_token_store_path, PathBuf::from),
+    )
+    .is_ok();
+    remote_listeners_check(report.as_ref(), token_store_ok)
+}
+
+/// The pure half of [`check_remote_listeners`].
+fn remote_listeners_check(
+    report: Option<&phux_protocol::wire::RemoteListenersReport>,
+    token_store_ok: bool,
+) -> Check {
+    let Some(report) = report else {
+        return Check::pass(
+            "remote-listeners",
+            "server did not publish a remote-listener report (no remote transport configured, \
+             or an older server)",
+        );
+    };
+    if report.listeners.is_empty() {
+        return Check::pass(
+            "remote-listeners",
+            "no remote listeners were configured or auto-bound",
+        );
+    }
+    let unhealthy: Vec<_> = report.unhealthy().collect();
+    if unhealthy.is_empty() {
+        let bound = report
+            .listeners
+            .iter()
+            .filter(|slot| slot.bound)
+            .map(|slot| slot.transport.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Check::pass(
+            "remote-listeners",
+            format!("remote listeners bound ({bound})"),
+        );
+    }
+    let detail = unhealthy
+        .iter()
+        .map(|slot| {
+            let reason = slot.disabled_reason.map_or(
+                "unknown",
+                phux_protocol::wire::ListenerDisabledReason::as_str,
+            );
+            let addr = slot.addr.as_deref().unwrap_or("?");
+            format!("{} at {addr} disabled ({reason})", slot.transport)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let needs_restart = token_store_ok
+        && unhealthy.iter().any(|slot| {
+            slot.disabled_reason
+                == Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed)
+        });
+    let hint = if needs_restart {
+        "the credential store loads now, but this server disabled the listeners at boot — \
+         restart or `phux upgrade` so they re-bind"
+            .to_owned()
+    } else if unhealthy.iter().any(|slot| {
+        slot.disabled_reason
+            == Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed)
+    }) {
+        "fix the credential store (`phux pair --migrate-legacy` for a pre-versioned file), \
+         then restart or `phux upgrade` the server"
+            .to_owned()
+    } else {
+        "check the server log for the bind error, then restart or `phux upgrade` after fixing it"
+            .to_owned()
+    };
+    Check::fail(
+        "remote-listeners",
+        format!("remote surface down: {detail}"),
+        hint,
+    )
+}
+
 /// Does traffic to the routable listener actually reach the server?
 ///
 /// Every other check here reads local state — a bound socket, a parsed
@@ -906,7 +1019,7 @@ enum Reachability {
 /// the same stack a real client uses, and reports what came back. Skipped
 /// when there is no overlay address to dial, which is the common local-only
 /// case and not a fault.
-fn check_remote_reachable() -> Check {
+fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
     let advertised = phux_config::overlay::detect();
     let Some(addr) = advertised.first().copied() else {
         return Check::pass(
@@ -919,7 +1032,31 @@ fn check_remote_reachable() -> Check {
         phux_server::transport::tls::san_name(addr),
         phux_server::runtime::DEFAULT_WS_PORT
     );
-    remote_reachable_check(&url, probe_remote_listener(&url))
+    let server_disabled = server_wss_disabled_reason(socket_path);
+    remote_reachable_check(&url, probe_remote_listener(&url), server_disabled)
+}
+
+/// Ask the running server whether its wss listener is known-disabled.
+fn server_wss_disabled_reason(
+    socket_path: &std::path::Path,
+) -> Option<phux_protocol::wire::ListenerDisabledReason> {
+    if !socket_path.exists() {
+        return None;
+    }
+    let Ok(rt) = cli_runtime() else {
+        return None;
+    };
+    let Ok(view) = rt.block_on(phux_client::state::get_state(socket_path)) else {
+        return None;
+    };
+    view.snapshot().listeners().and_then(|report| {
+        report.listeners.iter().find_map(|slot| {
+            (slot.transport == phux_protocol::wire::RemoteListenerTransport::Wss
+                && slot.is_unhealthy())
+            .then_some(slot.disabled_reason)
+            .flatten()
+        })
+    })
 }
 
 /// Dial `url` and classify the answer.
@@ -967,7 +1104,11 @@ fn probe_remote_listener(url: &str) -> Reachability {
 
 /// The pure half of [`check_remote_reachable`], so every verdict is testable
 /// without a tailnet, a listener, or a firewall.
-fn remote_reachable_check(url: &str, reachability: Reachability) -> Check {
+fn remote_reachable_check(
+    url: &str,
+    reachability: Reachability,
+    server_disabled: Option<phux_protocol::wire::ListenerDisabledReason>,
+) -> Check {
     match reachability {
         Reachability::Answered => Check::pass(
             "remote-reachable",
@@ -982,12 +1123,30 @@ fn remote_reachable_check(url: &str, reachability: Reachability) -> Check {
             ),
             FIREWALL_REMEDY,
         ),
-        Reachability::NoListener => Check::warn(
-            "remote-reachable",
-            format!("nothing is listening on {url}"),
-            "expected remote access? run `phux pair` — the listener only auto-binds \
-             once a device credential exists",
-        ),
+        Reachability::NoListener => {
+            let hint = match server_disabled {
+                Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed) => {
+                    "the running server disabled wss because the credential store failed to \
+                     load at boot — fix the store, then restart or `phux upgrade`"
+                        .to_owned()
+                }
+                Some(reason) => {
+                    format!(
+                        "the running server reports wss disabled ({}) — check the server log, \
+                         then restart or `phux upgrade` after fixing it",
+                        reason.as_str()
+                    )
+                }
+                None => "expected remote access? run `phux pair` — the listener only auto-binds \
+                     once a device credential exists"
+                    .to_owned(),
+            };
+            Check::warn(
+                "remote-reachable",
+                format!("nothing is listening on {url}"),
+                hint,
+            )
+        }
         Reachability::Unreachable => Check::warn(
             "remote-reachable",
             format!("could not reach {url} from this host"),
@@ -1270,7 +1429,7 @@ mod tests {
     fn a_bound_but_silent_listener_fails_with_an_actionable_remedy() {
         let url = "wss://100.64.0.2:8787";
 
-        let check = remote_reachable_check(url, Reachability::Silent);
+        let check = remote_reachable_check(url, Reachability::Silent, None);
         assert_eq!(
             check.status,
             Status::Fail,
@@ -1286,7 +1445,7 @@ mod tests {
         // An answer of any kind proves packets land, which is all this asks —
         // an auth refusal counts, so a probe that sends no token still passes.
         assert_eq!(
-            remote_reachable_check(url, Reachability::Answered).status,
+            remote_reachable_check(url, Reachability::Answered, None).status,
             Status::Pass
         );
 
@@ -1294,11 +1453,74 @@ mod tests {
         // Neither may fail the run and strand someone with exit 1.
         for benign in [Reachability::NoListener, Reachability::Unreachable] {
             assert_eq!(
-                remote_reachable_check(url, benign).status,
+                remote_reachable_check(url, benign, None).status,
                 Status::Warn,
                 "{benign:?} is a normal local-only state, not a broken install"
             );
         }
+
+        // When the server itself says wss is disabled, do not send the
+        // operator to `phux pair` — that cannot revive a boot-time disable.
+        let check = remote_reachable_check(
+            url,
+            Reachability::NoListener,
+            Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed),
+        );
+        let hint = check.hint.expect("hint");
+        assert!(
+            hint.contains("restart") || hint.contains("upgrade"),
+            "server-disabled wss must name restart, not pair: {hint}"
+        );
+        assert!(
+            !hint.contains("phux pair"),
+            "must not blame pairing when the server already explained the disable: {hint}"
+        );
+    }
+
+    /// The running server's listener table is what closes the gap between a
+    /// fixed-on-disk store and a process that still has no remote surface.
+    #[test]
+    fn server_reported_disabled_listeners_fail_with_a_restart_hint_when_the_store_is_fine() {
+        use phux_protocol::wire::{
+            ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport,
+            RemoteListenersReport,
+        };
+
+        let report = RemoteListenersReport::new().with_listeners(vec![
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Wss,
+                Some("100.64.0.2:8787".into()),
+                ListenerDisabledReason::TokenStoreLoadFailed,
+            ),
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Quic,
+                Some("100.64.0.2:8788".into()),
+                ListenerDisabledReason::TokenStoreLoadFailed,
+            ),
+        ]);
+
+        let check = remote_listeners_check(Some(&report), true);
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("wss") && check.detail.contains("quic"),
+            "detail must name every disabled transport: {}",
+            check.detail
+        );
+        let hint = check.hint.expect("hint");
+        assert!(
+            hint.contains("loads now") && (hint.contains("restart") || hint.contains("upgrade")),
+            "a healthy store against a disabled server must say restart: {hint}"
+        );
+
+        let bound = RemoteListenersReport::new().with_listeners(vec![RemoteListenerSlot::bound(
+            RemoteListenerTransport::Wss,
+            "127.0.0.1:8787",
+        )]);
+        assert_eq!(
+            remote_listeners_check(Some(&bound), true).status,
+            Status::Pass
+        );
+        assert_eq!(remote_listeners_check(None, true).status, Status::Pass);
     }
 
     /// The `remote-cert` check is the durable surface for a certificate that
