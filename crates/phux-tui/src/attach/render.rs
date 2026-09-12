@@ -835,6 +835,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             origin,
             extent,
             self.selection,
+            !force_full,
         )?;
 
         let _ = replay_kitty(
@@ -914,9 +915,13 @@ fn clipped_extent(
 /// per-row dirty bit is clear. Which rows are VISITED is unchanged by the
 /// front buffer (`phux-esge`); what a visited row EMITS is decided against it
 /// in [`paint_row`].
+///
+/// `record` is `false` for a forced paint: every row is then emitted straight
+/// from its batched read and left unknown, and the next incremental paint of
+/// the row records it (see [`emit_and_record`]).
 #[allow(
     clippy::too_many_arguments,
-    reason = "one row-walk context: sink, scratch, front buffer, the libghostty trio, and the clip/selection policy"
+    reason = "one row-walk context: sink, scratch, front buffer, the libghostty trio, and the clip/selection/record policy"
 )]
 fn paint_dirty_rows<'alloc>(
     out: &mut impl Write,
@@ -928,8 +933,18 @@ fn paint_dirty_rows<'alloc>(
     origin: (u16, u16),
     extent: (u16, u16),
     selection: Option<SelectionRect>,
+    record: bool,
 ) -> Result<(), RenderError> {
     let (cols_total, rows_total) = extent;
+    // The outer pen is unknown at the start of every pane paint: chrome,
+    // another pane, or an overlay may have written anything since this pane
+    // last emitted. From here on nothing else writes until the paint ends, so
+    // the pen each span leaves carries to the next, across jumps and rows.
+    let mut pass = PaintPass {
+        selection,
+        record,
+        pen: SpanPen::UNKNOWN,
+    };
     let mut row_index: u16 = 0;
     while let Some(row) = row_iter.next() {
         if row_index >= rows_total {
@@ -944,11 +959,21 @@ fn paint_dirty_rows<'alloc>(
                 origin,
                 cols_total,
             };
-            paint_row(out, scratch, front_row, row, cells, at, selection)?;
+            paint_row(out, scratch, front_row, row, cells, at, &mut pass)?;
         }
         row_index += 1;
     }
     Ok(())
+}
+
+/// What one pane paint threads across its rows: the copy-mode selection,
+/// whether rows are recorded into the front buffer, and the outer terminal's
+/// pen as the paint has left it so far.
+#[derive(Debug)]
+struct PaintPass {
+    selection: Option<SelectionRect>,
+    record: bool,
+    pen: SpanPen,
 }
 
 /// Where one painted row lands: its pane-local index, the pane's
@@ -976,15 +1001,9 @@ impl RowAt {
 
 /// Paint one row, then clear its dirty bit.
 ///
-/// The row is first recorded into [`CellScratch::next`] from a single batched
-/// read. If the pane's front row for it is KNOWN, only the cells that differ
-/// from it are emitted ([`emit_row_diff`]); otherwise the whole row is
-/// ([`emit_full_row`], byte-identical to the pre-front-buffer paint). Either
-/// way the recording then becomes the front row.
-///
 /// The emission is composed into [`CellScratch::row`] and handed to `out` in
 /// a single `write_all`, and a known row that did not change at all emits
-/// nothing.
+/// nothing. See [`emit_and_record`] for what is emitted.
 fn paint_row<'alloc>(
     out: &mut impl Write,
     scratch: &mut CellScratch,
@@ -992,7 +1011,7 @@ fn paint_row<'alloc>(
     row: &RowIteration<'alloc, '_>,
     cells: &mut CellIterator<'alloc>,
     at: RowAt,
-    selection: Option<SelectionRect>,
+    pass: &mut PaintPass,
 ) -> Result<(), RenderError> {
     let CellScratch {
         row: buf,
@@ -1007,8 +1026,7 @@ fn paint_row<'alloc>(
     // so walking the columns in step with the cells clips at `cols_total`
     // exactly as the old per-cell walk did.
     let batch = cells.update(row)?.read_row(rowbuf)?;
-    record_row(next, &batch, at, selection)?;
-    emit_and_record(buf, front_row, next, at)?;
+    emit_and_record(buf, front_row, next, &batch, at, pass)?;
 
     if !buf.is_empty() {
         out.write_all(buf)?;
@@ -1019,24 +1037,77 @@ fn paint_row<'alloc>(
     Ok(())
 }
 
-/// Emit the recorded row `next` into `buf` — only the spans that differ from
-/// `front_row` when that row is known, the whole row otherwise — and then
-/// make `next` the front row. The old front row's buffers are swapped into
-/// `next`, to be reused as scratch by the next row painted.
+/// Emit one row into `buf` and make its recording the front row.
+///
+/// If the pane's front row is KNOWN, the row is recorded into `next` and only
+/// the cells that differ are emitted ([`emit_row_diff`]). Otherwise the whole
+/// row is emitted WHILE it is recorded, in the one walk ([`begin_full_row`]
+/// then [`record_row`]), byte-identical to the pre-front-buffer paint. The
+/// old front row's buffers are then swapped into `next`, to be reused as
+/// scratch by the next row painted.
 fn emit_and_record(
     buf: &mut Vec<u8>,
     front_row: &mut FrontRow,
     next: &mut FrontRow,
+    batch: &RowCells<'_>,
     at: RowAt,
-) -> io::Result<()> {
-    if front_row.known && front_row.cells.len() == next.cells.len() {
-        emit_row_diff(buf, front_row, next, at)?;
+    pass: &mut PaintPass,
+) -> Result<(), RenderError> {
+    // Run indices belong to one row read, so the run memory starts empty on
+    // every row; the outer pen itself carries over.
+    pass.pen.last_pen = None;
+    if !pass.record {
+        // A forced paint rewrites every row onto a cleared screen, the path
+        // that can least use a recording: emit straight from the batch and
+        // leave the row unknown, to be recorded by its next incremental paint.
+        begin_full_row(buf, at, &mut pass.pen)?;
+        front_row.known = false;
+        return emit_unrecorded_row(buf, batch, at, pass);
+    }
+    let painted = batch.len().min(usize::from(at.cols_total));
+    if front_row.known && front_row.cells.len() == painted {
+        record_row(next, batch, at, pass.selection, None)?;
+        emit_row_diff(buf, front_row, next, at, &mut pass.pen)?;
     } else {
-        emit_full_row(buf, next, at)?;
+        begin_full_row(buf, at, &mut pass.pen)?;
+        record_row(next, batch, at, pass.selection, Some((buf, &mut pass.pen)))?;
     }
     std::mem::swap(front_row, next);
     front_row.known = true;
     Ok(())
+}
+
+/// Emit a whole row straight from its batched read, recording nothing — the
+/// forced-paint path, and the pre-`phux-esge` cell loop exactly: a cell whose
+/// pen identity ([`PenKey`]) matches its predecessor's skips straight to its
+/// glyphs, and a spacer tail writes nothing.
+fn emit_unrecorded_row(
+    buf: &mut Vec<u8>,
+    batch: &RowCells<'_>,
+    at: RowAt,
+    pass: &mut PaintPass,
+) -> Result<(), RenderError> {
+    let mut prev: Option<PenKey> = None;
+    walk_row_cells(batch, at.cols_total, |col, cell| {
+        if matches!(cell.wide, CellWide::SpacerTail) {
+            return Ok(());
+        }
+        let inverted = selection_covers_cell(pass.selection, at.row_index, col, cell.wide);
+        let key = PenKey {
+            style_index: cell.style_index,
+            fg: cell.fg,
+            bg: cell.bg,
+            inverted,
+        };
+        if prev != Some(key) {
+            let mut style = batch.style(cell.style_index)?;
+            style.inverse ^= inverted;
+            emit_sgr_if_changed(buf, &mut pass.pen.emitted, style, cell.fg, cell.bg);
+            prev = Some(key);
+        }
+        emit_cell_glyphs(buf, cell.text.as_bytes());
+        Ok(())
+    })
 }
 
 /// Record one row's cells into `next`, clipped to `at.cols_total`.
@@ -1055,63 +1126,107 @@ fn emit_and_record(
 /// default style-table entry anyway. The byte-identity gate
 /// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`) holds this
 /// path to the old one, flag and all.
+///
+/// With `emit`, the row is also written to the sink as it is recorded — the
+/// whole-row paint, fused into the same walk so an unknown row costs one pass
+/// rather than a recording pass plus an emitting one. The caller has already
+/// written the row prologue ([`begin_full_row`]), so the pen is known.
 fn record_row(
     next: &mut FrontRow,
     batch: &RowCells<'_>,
     at: RowAt,
     selection: Option<SelectionRect>,
+    mut emit: Option<(&mut Vec<u8>, &mut SpanPen)>,
 ) -> Result<(), RenderError> {
     next.clear();
     let mut prev_pen: Option<PenKey> = None;
     walk_row_cells(batch, at.cols_total, |col, cell| {
+        let run = record_pen(
+            next,
+            batch,
+            cell,
+            (at.row_index, col),
+            selection,
+            &mut prev_pen,
+        )?;
         let tail = matches!(cell.wide, CellWide::SpacerTail);
-        // A spacer tail emits nothing, so its style never reaches the
-        // terminal: it borrows the base's pen (a row that somehow opens on a
-        // tail records its own) and leaves the run identity untouched.
-        if !tail || next.pens.is_empty() {
-            let inverted = !tail && selection_covers_cell(selection, at.row_index, col, cell.wide);
-            let pen = PenKey {
-                style_index: cell.style_index,
-                fg: cell.fg,
-                bg: cell.bg,
-                inverted,
-            };
-            if prev_pen != Some(pen) || next.pens.is_empty() {
-                let mut style = batch.style(cell.style_index)?;
-                style.inverse ^= inverted;
-                next.pens.push((style, cell.fg, cell.bg));
+        if !tail && let Some((buf, pen)) = &mut emit {
+            if let Some((style, fg, bg)) = run {
+                emit_sgr_if_changed(buf, &mut pen.emitted, style, fg, bg);
             }
-            if !tail {
-                prev_pen = Some(pen);
-            }
+            emit_cell_glyphs(buf, cell.text.as_bytes());
         }
-        let text_start = u32::try_from(next.text.len()).unwrap_or(u32::MAX);
-        next.text.extend_from_slice(cell.text.as_bytes());
-        next.cells.push(FrontCell {
-            text_start,
-            text_len: u32::try_from(cell.text.len()).unwrap_or(u32::MAX),
-            pen: u16::try_from(next.pens.len().saturating_sub(1)).unwrap_or(u16::MAX),
-            wide: cell.wide,
-        });
+        record_cell(next, cell);
         Ok(())
     })
 }
 
-/// Emit a whole recorded row: position the cursor at its start, reset the
-/// pen, and write every cell.
+/// Settle `cell`'s pen entry in `next`, returning the pen when the cell opens
+/// a new style run (the only point at which the emitted SGR can change).
 ///
-/// This is the pre-`phux-esge` row paint, byte for byte — the path an unknown
-/// front row (first paint, forced paint, any invalidation) takes, and the one
-/// `batched_row_read_emits_the_same_bytes_as_the_per_cell_walk` holds to the
-/// per-cell walk it descends from.
-fn emit_full_row(buf: &mut Vec<u8>, next: &FrontRow, at: RowAt) -> io::Result<()> {
+/// A spacer tail emits nothing, so its style never reaches the terminal: it
+/// borrows the base's pen (a row that somehow opens on a tail records its
+/// own) and leaves the run identity untouched.
+fn record_pen(
+    next: &mut FrontRow,
+    batch: &RowCells<'_>,
+    cell: &RowCell<'_>,
+    at: (u16, u16),
+    selection: Option<SelectionRect>,
+    prev: &mut Option<PenKey>,
+) -> Result<Option<EmittedStyle>, RenderError> {
+    let tail = matches!(cell.wide, CellWide::SpacerTail);
+    if tail && !next.pens.is_empty() {
+        return Ok(None);
+    }
+    let inverted = !tail && selection_covers_cell(selection, at.0, at.1, cell.wide);
+    let key = PenKey {
+        style_index: cell.style_index,
+        fg: cell.fg,
+        bg: cell.bg,
+        inverted,
+    };
+    let opens_run = *prev != Some(key) || next.pens.is_empty();
+    if !tail {
+        *prev = Some(key);
+    }
+    if !opens_run {
+        return Ok(None);
+    }
+    let mut style = batch.style(cell.style_index)?;
+    style.inverse ^= inverted;
+    let pen = (style, cell.fg, cell.bg);
+    next.pens.push(pen);
+    Ok(Some(pen))
+}
+
+/// Append `cell`'s cluster and record to `next`, under the pen entry
+/// [`record_pen`] just settled.
+fn record_cell(next: &mut FrontRow, cell: &RowCell<'_>) {
+    let text_start = u32::try_from(next.text.len()).unwrap_or(u32::MAX);
+    next.text.extend_from_slice(cell.text.as_bytes());
+    next.cells.push(FrontCell {
+        text_start,
+        text_len: u32::try_from(cell.text.len()).unwrap_or(u32::MAX),
+        pen: u16::try_from(next.pens.len().saturating_sub(1)).unwrap_or(u16::MAX),
+        wide: cell.wide,
+    });
+}
+
+/// Open a whole-row paint: position the cursor at the row's start and reset
+/// the pen. [`record_row`] then writes every cell.
+///
+/// Together they are the pre-`phux-esge` row paint, byte for byte — the path
+/// an unknown front row (first paint, forced paint, any invalidation) takes,
+/// and the one `batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`
+/// holds to the per-cell walk it descends from.
+fn begin_full_row(buf: &mut Vec<u8>, at: RowAt, pen: &mut SpanPen) -> io::Result<()> {
     write_cup(buf, at.outer_row(), at.origin.0)?;
     // Force a reset at row start so the previous row's tail style can't leak
     // into the current row. After this the active outer-terminal SGR state is
     // the default style.
     buf.extend_from_slice(b"\x1b[0m");
-    let mut pen = SpanPen::DEFAULT;
-    emit_cells(buf, next, 0..next.cells.len(), &mut pen);
+    *pen = SpanPen::DEFAULT;
     Ok(())
 }
 
@@ -1125,18 +1240,20 @@ fn emit_full_row(buf: &mut Vec<u8>, next: &FrontRow, at: RowAt) -> io::Result<()
 /// (`CUP`) or the unchanged cells between them are simply rewritten, whichever
 /// is fewer bytes ([`bridge_gap`]).
 ///
-/// A jump forgets the outer pen: the first cell after one always emits a
-/// complete SGR (a reset included), so no span inherits state from anything
-/// written before it.
+/// A jump does not touch the outer pen — a `CUP` changes no SGR state, and
+/// nothing else writes between the spans of one pane paint — so `pen`, the
+/// pen the paint has left so far, carries across it and the next span emits
+/// only the SGR it actually needs. The pen is unknown only at the start of a
+/// pane paint, where the first cell emits a complete SGR (a reset included).
 fn emit_row_diff(
     buf: &mut Vec<u8>,
     front: &FrontRow,
     next: &FrontRow,
     at: RowAt,
+    pen: &mut SpanPen,
 ) -> io::Result<()> {
     let len = next.cells.len();
     let mut memo = PenMemo::default();
-    let mut pen = SpanPen::UNKNOWN;
     // Pane-local column the outer cursor sits at after the last span, or
     // `None` before the first span on this row.
     let mut cursor: Option<usize> = None;
@@ -1144,12 +1261,11 @@ fn emit_row_diff(
     while let Some(changed) = (col..len).find(|&c| cell_changed(front, next, c, &mut memo)) {
         let start = span_start(front, next, changed).max(col);
         let end = span_end(front, next, changed, &mut memo);
-        let bridged = cursor.is_some_and(|from| bridge_gap(buf, next, from, start, at, &mut pen));
+        let bridged = cursor.is_some_and(|from| bridge_gap(buf, next, from, start, at, pen));
         if !bridged {
             write_cup(buf, at.outer_row(), at.outer_col(start))?;
-            pen = SpanPen::UNKNOWN;
         }
-        emit_cells(buf, next, start..end, &mut pen);
+        emit_cells(buf, next, start..end, pen);
         cursor = Some(end);
         col = end;
     }
@@ -1262,11 +1378,12 @@ impl PenMemo {
     }
 }
 
-/// The outer terminal's pen as a row's emission has left it.
+/// The outer terminal's pen as a pane paint's emission has left it.
 #[derive(Clone, Copy, Debug)]
 struct SpanPen {
-    /// Whether the outer pen is known at all. `false` after every jump: a
-    /// span never trusts state from before its `CUP`.
+    /// Whether the outer pen is known at all. `false` at the start of a pane
+    /// paint, until the paint emits its first SGR or row prologue: no paint
+    /// trusts state another writer left.
     known: bool,
     /// The active pen when `known`; `None` is the default style. This is the
     /// coalescing state [`emit_sgr_if_changed`] maintains.
@@ -1284,7 +1401,7 @@ impl SpanPen {
         emitted: None,
         last_pen: None,
     };
-    /// Just after a jump: nothing is assumed.
+    /// At the start of a pane paint: nothing is assumed.
     const UNKNOWN: Self = Self {
         known: false,
         emitted: None,
@@ -3652,10 +3769,30 @@ mod tests {
     /// The row payload the PRODUCTION path emits for a full-dirty frame —
     /// `paint_dirty_rows` alone, with no prologue, cursor or epilogue, so the
     /// comparison isolates the cell loop.
+    ///
+    /// Both whole-row paths are held to it: the one that records the row as
+    /// it emits (an incremental paint of an unknown row) and the one that
+    /// records nothing (a forced paint). They must agree byte for byte.
     fn production_row_bytes(
         terminal: &GhosttyTerminal<'_, '_>,
         extent: (u16, u16),
         selection: Option<SelectionRect>,
+    ) -> Vec<u8> {
+        let recorded = production_row_bytes_with(terminal, extent, selection, true);
+        let unrecorded = production_row_bytes_with(terminal, extent, selection, false);
+        assert_same_bytes(
+            "recording vs forced whole-row paint",
+            &recorded,
+            &unrecorded,
+        );
+        recorded
+    }
+
+    fn production_row_bytes_with(
+        terminal: &GhosttyTerminal<'_, '_>,
+        extent: (u16, u16),
+        selection: Option<SelectionRect>,
+        record: bool,
     ) -> Vec<u8> {
         let mut state = RenderState::new().expect("RenderState");
         let mut rows_it = RowIterator::new().expect("RowIterator");
@@ -3686,6 +3823,7 @@ mod tests {
             (0, 0),
             extent,
             selection,
+            record,
         )
         .expect("paint");
         out
@@ -4053,34 +4191,53 @@ mod tests {
     }
 
     /// The printable text in `bytes`, every escape sequence removed.
+    ///
+    /// Written over raw bytes with numeric constants: bracket character
+    /// literals throw the project's `lizard` complexity report off its parse.
     fn printed(bytes: &[u8]) -> String {
-        let s = String::from_utf8_lossy(bytes);
-        let mut out = String::new();
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c != '\x1b' {
-                out.push(c);
+        const ESC: u8 = 0x1b;
+        const CSI: u8 = 0x5b;
+        const STRING_OPENERS: [u8; 3] = [0x5f, 0x5d, 0x50];
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            i += 1;
+            if byte != ESC {
+                out.push(byte);
                 continue;
             }
-            match chars.next() {
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('\x40'..='\x7e').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                Some('_' | ']' | 'P') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
-                            break;
-                        }
-                    }
-                }
-                _ => {}
+            let kind = bytes.get(i).copied().unwrap_or(0);
+            i += 1;
+            if kind == CSI {
+                i = csi_end(bytes, i);
+            } else if STRING_OPENERS.contains(&kind) {
+                i = string_end(bytes, i);
             }
         }
-        out
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// One past the final byte of the CSI whose parameters start at `i`.
+    fn csi_end(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+            i += 1;
+        }
+        i + 1
+    }
+
+    /// One past the BEL or ST that ends the control string starting at `i`.
+    fn string_end(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() {
+            if bytes[i] == 0x07 {
+                return i + 1;
+            }
+            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&0x5c) {
+                return i + 2;
+            }
+            i += 1;
+        }
+        i
     }
 
     /// The acceptance case: one changed cell on an otherwise steady screen
@@ -4108,10 +4265,40 @@ mod tests {
         assert_glass_shows(&glass, &pane, (0, 0), "single-cell change");
     }
 
-    /// A styled change after a jump carries its own complete SGR: no span may
-    /// inherit the pen of whatever was written before its `CUP`.
+    /// Within one pane paint the pen a span leaves is still active after the
+    /// next jump, on the same row and on the next one: three same-pen changes
+    /// cost one SGR and no reset between them, and replay to the same grid.
     #[test]
-    fn a_span_after_a_jump_sets_its_pen_from_scratch() {
+    fn the_pen_carries_across_jumps_within_a_paint() {
+        let mut pane = fresh(30, 3);
+        pane.vt_write(b"abcdefghijklmnopqrstuvwxyz\r\nabcdefghijklmnopqrstuvwxyz");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(30, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        pane.vt_write(b"\x1b[1;38;2;0;200;0m\x1b[1;3HX\x1b[1;20HY\x1b[2;7HZ\x1b[0m");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let s = String::from_utf8_lossy(&frame);
+        assert_eq!(
+            count(&frame, b"38;2;0;200;0"),
+            1,
+            "one SGR for three spans; {s:?}"
+        );
+        assert_eq!(
+            count(&frame, b"\x1b[0m"),
+            2,
+            "only the first span's reset-and-set and the epilogue reset; {s:?}"
+        );
+        assert!(
+            s.contains("\x1b[1;20HY") && s.contains("\x1b[2;7HZ"),
+            "later spans jump straight to their glyph; {s:?}"
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "pen carried across jumps");
+    }
+
+    /// The FIRST span of a pane paint carries its own complete SGR: it may not
+    /// inherit the pen of whatever another writer left before it.
+    #[test]
+    fn the_first_span_of_a_paint_sets_its_pen_from_scratch() {
         let mut pane = fresh(30, 2);
         pane.vt_write(b"\x1b[1;31mred bold text\x1b[0m and plain");
         let mut renderer = TerminalRenderer::new().expect("renderer");
