@@ -187,13 +187,15 @@ fn encode_cut(terminal: &mut GhosttyTerminal<'_, '_>) -> Result<SnapshotCut, Nat
         return Err(NativeStateError::InvalidState);
     }
     let cursor = cursor_for(&encoded);
-    // Keep the full GHOSTSNP blob in the bootstrap prefix so the client can
-    // `Decoder::new_buf` locally at READY without retaining a borrowed decoder.
-    // History pages stay available as an empty suffix finish record.
-    let _ = ready_at;
+    // Prefix is the full GHOSTSNP blob so a `#![forbid(unsafe_code)]` client
+    // can `Decoder::new_buf` at READY without holding IncrementalDecoder.
+    // Suffix is the post-READY tail of the same buffer, served as history
+    // pages to pullers. `Bytes::slice` shares the allocation.
+    let encoded = Bytes::from(encoded);
+    let suffix = encoded.slice(ready_at..);
     Ok(SnapshotCut {
-        prefix: Bytes::from(encoded),
-        suffix: Bytes::new(),
+        prefix: encoded,
+        suffix,
         cursor,
     })
 }
@@ -646,7 +648,10 @@ fn chunk_suffix(
         let payload = ChargedNativePayload::new(suffix[offset..end].into(), Arc::clone(charge));
         table.slots[index] = Some(CachedNativeHistoryRecord {
             bytes: Bytes::from_owner(payload),
-            rows: 0,
+            // Official GHOSTSNP pages are opaque byte cuts, not VT rows.
+            // Report a nonzero row count so pullers can distinguish a real
+            // page from the empty finish record of a ground-state snapshot.
+            rows: 1,
             finish,
         });
         table.len = index + 1;
@@ -1035,6 +1040,19 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn snapshot_split_leaves_history_suffix() {
+        let mut source = history_terminal();
+        let mut encoded = Vec::new();
+        source.encode_snapshot(&mut encoded).expect("encode");
+        let ready_at = snapshot_ready_offset(&encoded).expect("ready");
+        assert!(
+            ready_at < encoded.len(),
+            "READY offset {ready_at} consumed the whole {}-byte snapshot; history suffix is empty",
+            encoded.len()
+        );
     }
 
     #[test]
