@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
-stability: scratch
-last-reviewed: 2026-09-11
+stability: evolving
+last-reviewed: 2026-09-12
 ---
 
 # Cockpit everyday UX: implementation design
@@ -15,7 +15,7 @@ its user-facing claim is accepted.
 
 ## Context
 
-This proposal implements [PRODUCT.md](PRODUCT.md), tracked by `phux-2jza` and
+This approved design implements [PRODUCT.md](PRODUCT.md), tracked by `phux-2jza` and
 its children. Source baseline: `d5e2977c1e327c84fe20b1f8192589be693008c1`.
 The source findings below are not live-app reproduction evidence.
 

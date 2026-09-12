@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
-stability: scratch
-last-reviewed: 2026-09-11
+stability: evolving
+last-reviewed: 2026-09-12
 ---
 
 # Cockpit: an excellent everyday terminal
@@ -9,8 +9,8 @@ last-reviewed: 2026-09-11
 **TL;DR.** Make Cockpit understandable from its first window and dependable
 through a full working day. Machines are easy to find and connect to; sessions,
 tabs and windows have clear jobs; commands are discoverable; settings are useful;
-and returning to work preserves context. This is the proposed product contract
-for the usability recovery, not a claim about the current app.
+and returning to work preserves context. This is the approved product contract
+for the usability recovery. Implementation acceptance requires observed behavior.
 
 ## Summary
 
@@ -24,7 +24,9 @@ and recovery for each ordinary task.
 
 Tracking: Beads `phux-2jza`. The user delegates product judgment and explicitly
 rejects treating closed implementation tickets as proof of a finished experience.
-This proposal extends the earlier [canvas slice](../phux-dhcb/PRODUCT.md), whose
+The user approved implementation of this contract on 2026-09-11 and requested
+parallel agents, with the parent responsible for integration and product quality.
+This contract extends the earlier [canvas slice](../phux-dhcb/PRODUCT.md), whose
 bounded terminal-host filtering and appearance page do not meet that broader goal.
 
 The supplied visual reference is the
