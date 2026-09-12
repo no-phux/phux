@@ -21,13 +21,23 @@
 //! ahead of any phux frame. On a loopback listener no preamble is sent and
 //! frames start immediately.
 //!
+//! **Tunnel tag.** A dial offering [`QUIC_RELAY_ALPN`] — a connector's
+//! tunnel to a relay — uses an initial destination connection ID that starts
+//! with [`TUNNEL_CID_PREFIX`] and carries 16 random bytes after it. A relay
+//! reads that ID off the first packet, before it accepts, and gives the
+//! tunnel its bounded flow-control config there: quinn fixes a connection's
+//! per-stream windows at accept time, while the ALPN that decides the
+//! connection's role is only known after the handshake. The tag selects a
+//! config, never a role — the relay still admits by ALPN, so a consumer that
+//! copies the tag only shrinks its own receive window.
+//!
 //! [ADR-0007]: ../../../ADR/0007-mosh-class-transport-and-satellites.md
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use phux_protocol::policy::QUIC_ALPN;
+use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 
 use crate::DialError;
 use crate::tls::CertTrust;
@@ -39,6 +49,33 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Keep-alive interval, comfortably under [`IDLE_TIMEOUT`] so a quiet consumer
 /// (no keystrokes, no output) holds its connection open across NATs.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
+
+/// First bytes of the initial destination connection ID a tunnel dial uses
+/// (see the module docs): ASCII `phxT`.
+pub const TUNNEL_CID_PREFIX: [u8; 4] = *b"phxT";
+
+/// Length of a tagged connection ID: QUIC's maximum, 20 bytes — the prefix
+/// plus 16 random bytes, twice the 8 unpredictable bytes RFC 9000 §7.2
+/// requires of a client's initial destination connection ID.
+const TUNNEL_CID_LEN: usize = 20;
+
+/// Whether an initial destination connection ID carries the tunnel tag.
+#[must_use]
+pub fn is_tunnel_cid(cid: &[u8]) -> bool {
+    cid.len() == TUNNEL_CID_LEN && cid.starts_with(&TUNNEL_CID_PREFIX)
+}
+
+/// A fresh tagged connection ID: [`TUNNEL_CID_PREFIX`] followed by 16 bytes
+/// from rustls' `ring` CSPRNG (the provider this crate's TLS already uses).
+fn tunnel_cid() -> Result<quinn::ConnectionId, DialError> {
+    let mut bytes = [0_u8; TUNNEL_CID_LEN];
+    bytes[..TUNNEL_CID_PREFIX.len()].copy_from_slice(&TUNNEL_CID_PREFIX);
+    rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut bytes[TUNNEL_CID_PREFIX.len()..])
+        .map_err(|_| DialError::Connect("no randomness for the tunnel connection ID".to_owned()))?;
+    Ok(quinn::ConnectionId::new(&bytes))
+}
 
 /// Everything the dialer needs to reach a `phux server --quic` listener.
 #[derive(Debug, Clone)]
@@ -143,7 +180,14 @@ pub async fn dial_with_alpn(
     };
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|err| DialError::Connect(format!("bind QUIC client socket: {err}")))?;
-    endpoint.set_default_client_config(client_config(&d.trust, alpn)?);
+    let mut config = client_config(&d.trust, alpn)?;
+    if alpn == QUIC_RELAY_ALPN {
+        // One endpoint and config per dial, so one tagged ID serves the one
+        // connection this endpoint makes.
+        let cid = tunnel_cid()?;
+        config.initial_dst_cid_provider(Arc::new(move || cid));
+    }
+    endpoint.set_default_client_config(config);
 
     let conn = endpoint
         .connect(d.addr, &d.server_name)
@@ -240,6 +284,31 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:4433".parse().expect("addr");
         let err = handshake_error(addr, &quinn::ConnectionError::VersionMismatch);
         assert!(matches!(err, DialError::Connect(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn tunnel_cids_are_tagged_full_length_and_random() {
+        let first = tunnel_cid().expect("tagged cid");
+        let second = tunnel_cid().expect("tagged cid");
+        assert_eq!(first.len(), TUNNEL_CID_LEN);
+        assert!(is_tunnel_cid(&first) && is_tunnel_cid(&second));
+        assert_ne!(
+            first[TUNNEL_CID_PREFIX.len()..],
+            second[TUNNEL_CID_PREFIX.len()..],
+            "the 16 bytes after the prefix are fresh per dial"
+        );
+    }
+
+    #[test]
+    fn only_a_full_length_prefixed_cid_is_a_tunnel() {
+        let mut tagged = [0x42_u8; TUNNEL_CID_LEN];
+        tagged[..4].copy_from_slice(&TUNNEL_CID_PREFIX);
+        assert!(is_tunnel_cid(&tagged));
+        // quinn's own default: 20 random bytes, untagged.
+        assert!(!is_tunnel_cid(&[0x42_u8; TUNNEL_CID_LEN]));
+        // The prefix alone, or at another length, is not the tag.
+        assert!(!is_tunnel_cid(&TUNNEL_CID_PREFIX));
+        assert!(!is_tunnel_cid(&tagged[..8]));
     }
 
     #[test]
