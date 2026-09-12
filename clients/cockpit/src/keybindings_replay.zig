@@ -12,10 +12,19 @@ pub fn Journal(comptime sdk: type) type {
     return struct {
         const Self = @This();
         const Fx = sdk.Effects(Delivery);
+        pub const Origin = struct {
+            window_id: sdk.platform.WindowId,
+            view_label: []const u8,
+        };
         // SDK session_journal.encodeEvent(.shortcut): tag, two length-prefixed
         // strings, five modifier booleans, and window ID. Reuse that encoding.
-        const max_input = 1 + 4 + sdk.platform.max_shortcut_id_bytes + 4 + sdk.platform.max_shortcut_key_bytes + 5 + 8;
-        const max_payload = 2 + bindings.max_id_bytes + max_input;
+        const max_shortcut_input = 1 + 4 + sdk.platform.max_shortcut_id_bytes + 4 + sdk.platform.max_shortcut_key_bytes + 5 + 8;
+        // session_journal.encodeEvent(.gpu_surface_input), key_down subset:
+        // tag/window/label/kind/time/pointer, six 32-bit fields, key/text,
+        // absent composition cursor, five modifiers, and scale. Text is empty.
+        const max_fallback_input = 1 + 8 + 4 + sdk.platform.max_view_label_bytes + 1 + 8 + 8 + 6 * 4 + 4 + sdk.platform.max_shortcut_key_bytes + 4 + 1 + 5 + 4;
+        const max_input = @max(max_shortcut_input, max_fallback_input);
+        const max_payload: usize = 2 + @as(usize, bindings.max_id_bytes) + max_input;
         const Delivery = struct {
             bytes: [max_payload]u8 = @splat(0),
             len: usize = 0,
@@ -86,31 +95,39 @@ pub fn Journal(comptime sdk: type) type {
         /// Rejections are recorded too, so missing decisions fail explicitly.
         pub fn shortcut(self: *Self, keys: anytype, event: sdk.platform.ShortcutEvent) !?[]const u8 {
             const candidate = if (self.replaying) null else keys.commandForShortcut(event);
-            return self.exchange(&keys.registry, event, candidate);
+            return self.exchange(&keys.registry, .{ .shortcut = event }, candidate);
         }
 
         /// Call at the same onKey fallback boundary on live and replay paths.
-        /// The original UiApp callback still dispatches the returned Msg against
-        /// its invoking window; this helper never dispatches or changes focus.
-        pub fn fallback(self: *Self, keys: anytype, event: sdk.canvas.WidgetKeyboardEvent) !?[]const u8 {
-            if (event.phase != .key_down or !event.modifiers.super) return null;
-            if (event.key.len > sdk.platform.max_shortcut_key_bytes) return null;
+        /// Scope origin from the enclosing canvas_widget_keyboard event around
+        /// UiApp.event and restore it on return. on_key alone omits the origin;
+        /// replay must prove the callback still belongs to BOTH its window/view.
+        pub fn fallback(self: *Self, keys: anytype, event: sdk.canvas.WidgetKeyboardEvent, origin: Origin) !?[]const u8 {
+            if (!isFallbackKey(event)) return null;
+            if (!validOrigin(origin)) return self.refuse();
             const candidate = if (self.replaying) null else keys.commandForEvent(event);
-            return self.exchange(&keys.registry, .{
-                .id = "cockpit.canvas-fallback",
+            return self.exchange(&keys.registry, .{ .gpu_surface_input = .{
+                .window_id = origin.window_id,
+                .label = origin.view_label,
+                .kind = .key_down,
                 .key = event.key,
                 .modifiers = .{ .command = event.modifiers.super, .control = event.modifiers.control, .option = event.modifiers.alt, .shift = event.modifiers.shift },
-                // The SDK outer event carries the actual window/view identity.
-                // This is an identity for the callback, not a synthetic event.
-                .window_id = 0,
-            }, candidate);
+            } }, candidate);
         }
 
-        fn exchange(self: *Self, registry: *const bindings.Registry, event: sdk.platform.ShortcutEvent, candidate: ?[]const u8) !?[]const u8 {
+        fn isFallbackKey(event: sdk.canvas.WidgetKeyboardEvent) bool {
+            return event.phase == .key_down and event.modifiers.super and event.key.len <= sdk.platform.max_shortcut_key_bytes;
+        }
+
+        fn validOrigin(origin: Origin) bool {
+            return origin.window_id != 0 and origin.view_label.len > 0 and origin.view_label.len <= sdk.platform.max_view_label_bytes;
+        }
+
+        fn exchange(self: *Self, registry: *const bindings.Registry, event: sdk.platform.Event, candidate: ?[]const u8) !?[]const u8 {
             if (self.diverged) return error.ReplayAdmissionMismatch;
             const effects = self.effects orelse return error.AdmissionNotStarted;
             var input_buffer: [max_input]u8 = undefined;
-            const input = try sdk.runtime.session_journal.encodeEvent(.{ .shortcut = event }, &input_buffer);
+            const input = try sdk.runtime.session_journal.encodeEvent(event, &input_buffer);
             if (!self.replaying) try self.post(input, candidate);
             return self.takeDecision(effects, registry, input);
         }
