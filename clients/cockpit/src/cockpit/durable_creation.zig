@@ -271,7 +271,7 @@ pub const Creation = struct {
         entry.command_id = command_id;
         slot.* = entry;
         errdefer slot.* = null;
-        try allocateDestination(model, entry);
+        try allocateDestination(model, remote, entry);
         errdefer retireEmptyDestination(model, entry);
         slot.*.?.request = try remote.requestSpawnIn(owner, spawnViewport(remote, owner), cwd);
         slot.*.?.operation_request = slot.*.?.request;
@@ -767,10 +767,15 @@ fn prepareDestination(model: *Model, kind: Kind, reserved: usize, requires_capac
     return entry;
 }
 
-fn allocateDestination(model: *Model, entry: Pending) !void {
+fn allocateDestination(model: *Model, remote: *const support.PhuxProvider, entry: Pending) !void {
     // Result storage is already reserved; no fallible allocation follows spawn.
     if (entry.kind != .window) return;
     _ = model.openWindow(entry.window) orelse return error.WindowCapacity;
+    // Bound before it is selected, as a peer's New Window is (peer_edits):
+    // until its tab lands, New Session from this empty window must reach the
+    // coordinator creating it, not the canonical local default. The errdefer
+    // that retires it closes the window, and closing clears the binding.
+    model.bindWindowAttachment(entry.window, remote.context_id);
 }
 
 fn validateDestinationCapacity(workspace: *const model_module.Workspace, kind: Kind, reserved: usize, requires_capacity: bool) !void {

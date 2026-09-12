@@ -374,7 +374,7 @@ pub const Edits = struct {
         const owner = try spawnOwner(model, coordinator, kind, owner_choice);
         // New Window: the native window its tab will land in, opened now as
         // the active coordinator's New Window opens one.
-        try prepareCreationWindow(model, &entry);
+        try prepareCreationWindow(model, peer, &entry);
         entry.request = requestCreationSpawn(peer, owner, cwd) catch |err| {
             if (entry.window) |index| model.closeWindow(index);
             return err;
@@ -384,10 +384,18 @@ pub const Edits = struct {
         return &free.*.?;
     }
 
-    fn prepareCreationWindow(model: *Model, entry: *Creation) !void {
+    /// New Window's native window, bound to the peer's exact attachment the
+    /// moment it opens. It is selected before its tab exists, and an unbound
+    /// empty window resolves to the canonical local provider
+    /// (`Model.phuxForWindowConst`), so New Session from it asked This Mac
+    /// instead of the machine the window was opened for. Every failure path
+    /// closes the window (`create`, `retireOrphans`), and closing clears the
+    /// binding.
+    fn prepareCreationWindow(model: *Model, peer: *const support.PhuxProvider, entry: *Creation) !void {
         if (entry.kind != .window) return;
         const index = model.freeWindowIndex() orelse return error.WindowCapacity;
         _ = model.openWindow(index) orelse return error.WindowCapacity;
+        model.bindWindowAttachment(index, peer.context_id);
         entry.window = index;
         entry.window_epoch = model.window_epochs[index];
     }
@@ -584,17 +592,27 @@ fn spawnOwner(model: *Model, coordinator: support.ProviderId, kind: Kind, choice
     return ref;
 }
 
+/// The slot of the peer an edit addresses. When the active window's selected
+/// tab is `coordinator`'s and names its exact attachment, that attachment
+/// decides. Sibling attachments of one coordinator share its ID but show other
+/// sessions, so an attachment that is not a peer (the primary, or one since
+/// removed) refuses rather than falling back to whichever peer shares the ID:
+/// that fallback once spawned a New Window in another session.
 fn slotOf(model: *const Model, coordinator: support.ProviderId) !usize {
-    if (selectedAttachmentSlot(model, coordinator)) |slot| return slot;
+    if (selectedAttachment(model, coordinator)) |attachment| {
+        return model.peerSlotForAttachment(attachment) orelse error.NotPeerAttachment;
+    }
     return model.peerSlot(coordinator) orelse error.NoCoordinator;
 }
 
-fn selectedAttachmentSlot(model: *const Model, coordinator: support.ProviderId) ?usize {
+/// The exact attachment the active window's selected tab names, when that tab
+/// is `coordinator`'s. Null for a tab without one: the coordinator ID is then
+/// the only identity there is.
+fn selectedAttachment(model: *const Model, coordinator: support.ProviderId) ?u64 {
     const workspace = model.wsAtConst(model.active_window) orelse return null;
     const tree = workspace.treeConst(workspace.selected_tab) orelse return null;
     if (shared_workspace.tabAuthority(tree) != coordinator) return null;
-    const attachment = tree.attachment_id orelse return null;
-    return model.peerSlotForAttachment(attachment);
+    return tree.attachment_id;
 }
 
 /// A showing, attached peer whose workspace is projected for this

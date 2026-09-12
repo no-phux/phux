@@ -10,6 +10,7 @@ const layout = @import("../layout.zig");
 const scene = @import("scene.zig");
 const config_module = @import("../../config/config.zig");
 const theme_module = @import("../../config/theme.zig");
+const fonts = @import("../../terminal/fonts.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -482,6 +483,9 @@ pub fn terminalTokens(model: *const Model) canvas.DesignTokens {
 pub fn terminalTokensFrom(base: canvas.DesignTokens, model: *const Model) canvas.DesignTokens {
     var tokens = base;
     const cfg = &model.config;
+    // `fontChoice` owns which family names are supported. An unsupported name
+    // is already a config warning; it paints the bundled face, never none.
+    fonts.apply(&tokens, config_module.fontChoice(cfg.font_family.slice()) orelse .bundled);
     tokens.typography.label_size = model.fontSize();
     // Background/foreground land in the emulator's own DEFAULTS through
     // `Session.snapshot`, so an application's OSC 10/11 still wins over them.
@@ -1148,7 +1152,21 @@ pub fn chromeRevealedIn(model: *const Model, workspace: *const Workspace) bool {
 /// the per-window painter and view need it over the window they are drawing.
 pub fn workspaceTerminalRef(model: *const Model, workspace: *const Workspace) ?TerminalRef {
     const id = workspace.focusedTerminalRef() orelse return null;
-    return if (model.containsTerminal(id)) id else null;
+    if (model.attachmentPending(id)) return null;
+    if (support.providerKind(id) == .local) return if (model.provider.contains(id)) id else null;
+    // Presence, as `Model.containsTerminal` asks it, not owner currency: a
+    // frozen publication keeps its pane, and its retained Find band, on
+    // screen while refusing commands.
+    const remote = workspaceRemote(model, workspace) orelse return null;
+    return if (remote.contains(id)) id else null;
+}
+
+/// The connection `workspace`'s focused pane belongs to: its selected tree's
+/// exact attachment. The global ref lookup is ambiguous once two attachments
+/// of one coordinator are on screen, and then neither window found its pane.
+fn workspaceRemote(model: *const Model, workspace: *const Workspace) ?*const support.PhuxProvider {
+    const tree = workspace.selectedTreeConst() orelse return null;
+    return model.phuxForTreeConst(tree);
 }
 
 /// The scrollback-search band's height: one band (`chrome_band_height`), like
@@ -1175,7 +1193,9 @@ pub fn searchRevealed(model: *const Model) bool {
 pub fn searchRevealedIn(model: *const Model, workspace: *const Workspace) bool {
     const terminal_ref = workspaceTerminalRef(model, workspace) orelse return false;
     if (model.provider.terminalConst(terminal_ref)) |pane| return pane.session.search.open;
-    const state = model.remoteUiConst(terminal_ref) orelse return false;
+    const remote = workspaceRemote(model, workspace) orelse return false;
+    const owner = remote.owner(terminal_ref) orelse return false;
+    const state = model.remoteUiForOwnerConst(owner) orelse return false;
     return state.search.open;
 }
 

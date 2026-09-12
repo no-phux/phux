@@ -1099,7 +1099,14 @@ pub const Model = struct {
     /// every close path drains them through the ordinary pane-close cascade
     /// first, so this only releases storage the model no longer names.
     pub fn closeWindow(model: *Model, index: usize) void {
-        if (index < max_windows) model.window_epochs[index] +|= 1;
+        if (index < max_windows) {
+            model.window_epochs[index] +|= 1;
+            // The epoch already makes the old binding stale, but a stale
+            // binding resolves to NO provider (`phuxForWindowConst`), so a
+            // window opened later at this index would reach no coordinator
+            // instead of the default one. A closed window has no attachment.
+            model.window_attachments[index] = null;
+        }
         if (index == 0) {
             model.primary_open = false;
             model.primary = .{};
@@ -1413,9 +1420,23 @@ pub const Model = struct {
         return .phux;
     }
 
-    /// Whether a ref is the active coordinator's own terminal.
+    /// Whether a ref is the active coordinator's own terminal, as the active
+    /// window shows it. Independent attachments of one coordinator (two
+    /// sessions of one machine) project refs that compare equal, and the
+    /// global lookup then refuses to choose (`phuxForRefConst`). The active
+    /// window's selected tree names its exact attachment, so a pane it holds
+    /// resolves through that attachment; only a ref outside that tree falls
+    /// back to the global lookup. Without this, window 0's own pane read as a
+    /// peer's and New Window or a split spawned in the other session.
     pub fn activeOwnsRef(model: *const Model, ref: TerminalRef) bool {
-        return model.phuxForRefConst(ref) == model.phuxConst();
+        return model.phuxForActiveRefConst(ref) == model.phuxConst();
+    }
+
+    fn phuxForActiveRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        const pane_tree = model.selectedTreeConst() orelse return model.phuxForRefConst(ref);
+        if (pane_tree.find(ref) == null) return model.phuxForRefConst(ref);
+        const remote = model.phuxForTreeConst(pane_tree) orelse return null;
+        return if (remote.providerId() == ref.provider_id) remote else null;
     }
 
     /// A tab another coordinator projected. Cockpit's tab and split commands

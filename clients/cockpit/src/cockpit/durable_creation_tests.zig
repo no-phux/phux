@@ -818,6 +818,23 @@ test "correlated destination reuse preserves success without acquiring a new win
     try testing.expect(model.phux().?.terminalKnown(refFor(8)));
 }
 
+// The active coordinator's half of phux-2jza P2: its pending New Window was
+// unbound too, so New Session from it before the tab landed resolved to the
+// canonical local provider, or, with none configured, to nothing at all.
+test "a pending New Window already belongs to the active coordinator's attachment" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    try engine.creation.requestCorrelated(model, .window, result_command);
+    const window = model.active_window;
+    try testing.expect(window != 0);
+    try testing.expectEqual(@as(usize, 0), model.wsAtConst(window).?.tab_count);
+    const destination = engine.captureNewSessionDestination();
+    try testing.expect(destination != null);
+    try testing.expectEqual(model.phux().?.context_id, destination.?.provider_context);
+}
+
 test "correlated competing shared topology cannot turn successful execution into refusal" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try start();

@@ -253,12 +253,43 @@ fn restart(engine: anytype, remote: *Remote, fx: anytype) !void {
     }
 }
 
-test "selecting another same-machine session preserves the first window connection and subscriptions" {
-    if (comptime !support.phux_enabled) return error.SkipZigTest;
+/// Restart effects for the session tests, recorded; nothing real restarts.
+const SessionFx = struct {
+    restarted: ?usize = null,
+    pub fn restartPeer(self: *@This(), _: anytype, slot: usize) bool {
+        self.restarted = slot;
+        return true;
+    }
+    pub fn restartPhux(_: *@This(), _: anytype) bool {
+        return false;
+    }
+    pub fn openChannel(_: *@This(), _: anytype) @import("native_sdk").ChannelHandle {
+        return .{};
+    }
+    pub fn closeChannel(_: *@This(), _: u64) void {}
+    pub fn showNotification(_: *@This(), _: anytype) void {}
+};
+
+/// One same-machine coordinator shown twice: the primary attachment holds
+/// session 1 in window 0, and a sibling attachment made for window 1 holds
+/// session 2. Both sessions publish terminal refs that compare equal, so only
+/// a tree's attachment says which connection a pane belongs to. The global
+/// ref lookup (`Model.phuxForRefConst`) is ambiguous here by design, which is
+/// exactly what the routing tests below lean on.
+const Collision = struct {
+    engine: *@import("ts_engine.zig").Engine,
+    remote: *Remote,
+    second: *Remote,
+    slot: usize,
+    original_owner: support.ReplicaOwner,
+    second_owner: support.ReplicaOwner,
+};
+
+fn startCollision(fx: *SessionFx) !Collision {
     const Engine = @import("ts_engine.zig").Engine;
     const fixture = Remote.test_support;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
+    errdefer engine.destroy();
     const model = engine.model;
     const remote = try Remote.create(std.testing.allocator, std.testing.io, .{ .unix = "/session-attachments-unused" }, null, "sessions");
     model.phux_provider = remote;
@@ -285,23 +316,7 @@ test "selecting another same-machine session preserves the first window connecti
     const original_epoch = remote.connectionEpoch();
     const original_owner = remote.owner(model.primary.focusedTerminalRef().?).?;
     remote.bridge.outgoing.reset();
-    const Fx = struct {
-        restarted: ?usize = null,
-        pub fn restartPeer(self: *@This(), _: *Engine, slot: usize) bool {
-            self.restarted = slot;
-            return true;
-        }
-        pub fn restartPhux(_: *@This(), _: *Engine) bool {
-            return false;
-        }
-        pub fn openChannel(_: *@This(), _: anytype) @import("native_sdk").ChannelHandle {
-            return .{};
-        }
-        pub fn closeChannel(_: *@This(), _: u64) void {}
-        pub fn showNotification(_: *@This(), _: anytype) void {}
-    };
-    var fx: Fx = .{};
-    try engine.showSessionFromInWindow(remote, 2, 1, model.window_epochs[1], &fx);
+    try engine.showSessionFromInWindow(remote, 2, 1, model.window_epochs[1], fx);
     const second = model.phuxPeerAt(fx.restarted.?).?;
     try std.testing.expect(second != remote);
     try std.testing.expectEqual(original_epoch, remote.connectionEpoch());
@@ -312,20 +327,34 @@ test "selecting another same-machine session preserves the first window connecti
     try std.testing.expect(model.phuxForWindowConst(1) == second);
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
     const held = model.peers.items.len;
-    try engine.showSessionFromInWindow(remote, 2, 1, model.window_epochs[1], &fx);
+    try engine.showSessionFromInWindow(remote, 2, 1, model.window_epochs[1], fx);
     try std.testing.expectEqual(held, model.peers.items.len);
     try second.host.start("independent");
     try fixture.stageFixture(second.bridge, "hello.bin");
-    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
+    _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
     try fixture.stageFixture(second.bridge, "attached_session_b.bin");
-    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
+    _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
     try fixture.stageWorkspaceFixture(second.bridge, "workspace_initial_metadata.bin");
     try fixture.stageFixture(second.bridge, "workspace_session_b_state.bin");
-    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
+    _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
     try std.testing.expectEqual(@as(u32, 2), model.peers.items[fx.restarted.?].workspace.session);
     try std.testing.expectEqual(@as(u32, 1), model.shared_workspace.session);
     const second_owner = second.owner(original_owner.terminal_ref).?;
     try std.testing.expect(!second_owner.eql(original_owner));
+    return .{ .engine = engine, .remote = remote, .second = second, .slot = fx.restarted.?, .original_owner = original_owner, .second_owner = second_owner };
+}
+
+test "selecting another same-machine session preserves the first window connection and subscriptions" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var fx: SessionFx = .{};
+    const collision = try startCollision(&fx);
+    const engine = collision.engine;
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = collision.remote;
+    const second = collision.second;
+    const original_owner = collision.original_owner;
+    const second_owner = collision.second_owner;
     try std.testing.expect(model.phuxForWindowConst(0) == remote);
     try std.testing.expect(model.phuxForWindowConst(1) == second);
     try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
@@ -357,4 +386,95 @@ test "selecting another same-machine session preserves the first window connecti
     try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
     _ = model.openWindow(1) orelse return error.NoWindow;
     try std.testing.expectError(error.StalePresentationWindow, engine.showSessionFromInWindow(remote, 2, 1, old_window, &fx));
+}
+
+/// SPAWN frames only. Focus and presentation traffic follow the selected
+/// pane, so a raw frame total would move for reasons unrelated to creation.
+fn spawnFrames(remote: *Remote) usize {
+    // Wire type byte after the 4-byte length prefix (phux-protocol frame/mod.rs).
+    const type_spawn: u8 = 0x22;
+    var count: usize = 0;
+    while (remote.bridge.outgoing.take()) |frame| {
+        defer remote.bridge.outgoing.release(frame);
+        if (frame[4] == type_spawn) count += 1;
+    }
+    return count;
+}
+
+/// Invoke one creation command from window 0 and require its SPAWN on the
+/// primary attachment and nothing on the session-2 sibling.
+fn expectPrimarySpawn(collision: Collision, kind: @import("ts_protocol.zig").IntentKind, argument: u8) !void {
+    const engine = collision.engine;
+    _ = spawnFrames(collision.remote);
+    _ = spawnFrames(collision.second);
+    const bytes = @import("ts_protocol.zig").encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .window = 0, .argument = argument });
+    try std.testing.expect(engine.applyIntent(&bytes, &@import("ts_engine.zig").NoShells{}));
+    try std.testing.expectEqual(@as(usize, 0), spawnFrames(collision.second));
+    try std.testing.expectEqual(@as(usize, 1), spawnFrames(collision.remote));
+}
+
+// Review finding (phux-2jza P1): with both sessions on screen, window 0's own
+// pane was classified as a peer's, because the global ref lookup is ambiguous
+// across the two attachments. New Window and splits then took the peer path,
+// whose coordinator-ID fallback found the session-2 sibling, and the new
+// terminal spawned in the other session.
+test "New Window and a split from the primary session's window spawn on the primary, never its sibling" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var fx: SessionFx = .{};
+    const collision = try startCollision(&fx);
+    defer collision.engine.destroy();
+    const model = collision.engine.model;
+    const ref = collision.original_owner.terminal_ref;
+    // The before-half: the ref alone cannot name its connection.
+    try std.testing.expect(model.phuxForRefConst(ref) == null);
+    try expectPrimarySpawn(collision, .native_command, 4);
+    try expectPrimarySpawn(collision, .new_window, 0);
+    // Ownership follows the window: the same ref is the primary's in window
+    // 0 and a peer's in window 1.
+    model.active_window = 0;
+    try std.testing.expect(model.activeOwnsRef(ref));
+    model.active_window = 1;
+    try std.testing.expect(!model.activeOwnsRef(ref));
+}
+
+// The same finding's second half: a peer edit must never resolve a tab that
+// names the primary attachment to a sibling that merely shares its
+// coordinator ID. Refusing is correct; guessing spawned in the wrong session.
+test "a peer edit refuses rather than guess a sibling for a tab naming the primary attachment" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var fx: SessionFx = .{};
+    const collision = try startCollision(&fx);
+    defer collision.engine.destroy();
+    const model = collision.engine.model;
+    model.active_window = 0;
+    const windows = model.openWindowCount();
+    _ = spawnFrames(collision.second);
+    try std.testing.expectError(error.NotPeerAttachment, collision.engine.peer_edits.create(model, collision.remote.providerId(), .window, "", .focused));
+    try std.testing.expectEqual(@as(usize, 0), spawnFrames(collision.second));
+    try std.testing.expectEqual(windows, model.openWindowCount());
+}
+
+// Each native window paints and searches its own tree. Resolving the focused
+// pane through the global ref lookup found nothing once both sessions were on
+// screen, so neither window had a terminal and window 1's search never showed.
+test "each window's projection resolves its focused pane through its own tree's attachment" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var fx: SessionFx = .{};
+    const collision = try startCollision(&fx);
+    defer collision.engine.destroy();
+    const model = collision.engine.model;
+    const projection = @import("workspace_projection.zig");
+    const ref = collision.original_owner.terminal_ref;
+    model.active_window = 1;
+    const ui = model.remoteUi(ref).?;
+    try std.testing.expect(ui.owner.eql(collision.second_owner));
+    ui.search.open = true;
+    // Window 0 is active while window 1 is drawn, as the per-window painter
+    // draws every window each frame.
+    model.active_window = 0;
+    const second_window = model.wsAtConst(1).?;
+    try std.testing.expect(projection.workspaceTerminalRef(model, second_window) != null);
+    try std.testing.expect(projection.workspaceTerminalRef(model, &model.primary) != null);
+    try std.testing.expect(projection.searchRevealedIn(model, second_window));
+    try std.testing.expect(!projection.searchRevealedIn(model, &model.primary));
 }

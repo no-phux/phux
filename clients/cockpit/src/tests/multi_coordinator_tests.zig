@@ -1398,6 +1398,40 @@ test "a peer's New Window that never lands leaves no empty window behind" {
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
 }
 
+// Review finding (phux-2jza P2): a peer's New Window opened and selected its
+// native window before its tab existed, and nothing bound that window to the
+// peer's attachment. Until the placement landed the empty window resolved to
+// the canonical local provider, so New Session from it captured This Mac.
+test "a peer's pending New Window already belongs to that peer's attachment" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    // This Mac is the canonical local coordinator: the provider an unbound
+    // empty window falls back to.
+    try model.config.phux_socket.set("/multi-coordinator-unused");
+    try testing.expect(model.localPhuxProviderConst() == pair.here);
+    try showMini(&pair);
+    try testing.expect(intent(engine, .new_window, 0));
+    const opened = model.active_window;
+    try testing.expect(opened != 0);
+    // mini has not answered the spawn: nothing has landed in the window.
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
+    try testing.expectEqual(@as(usize, 0), model.wsAtConst(opened).?.tab_count);
+    const destination = engine.captureNewSessionDestination();
+    try testing.expect(destination != null);
+    try testing.expectEqual(pair.mini.context_id, destination.?.provider_context);
+    // A New Window that never lands closes its window, and its binding goes
+    // with it: a window opened later at that index starts unbound.
+    var fx: PeerFx = .{};
+    _ = engine.onPeerChannel(&fx, .{ .key = engine.peerChannelKey(0), .kind = .closed }, null);
+    _ = engine.settlePeers(&fx);
+    try testing.expect(!model.windowOpen(opened));
+    _ = model.openWindow(opened) orelse return error.NoWindow;
+    try testing.expect(model.phuxForWindowConst(opened) == pair.here);
+}
+
 test "the available inventory follows the focused pane's coordinator, and a peer's terminal is placed on that peer" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);
