@@ -8,7 +8,7 @@ const text = value => new TextDecoder().decode(value);
 
 test('settings search finds meaningful ownership across groups', () => {
   const rows = settingsRows(initialAppearance(), bytes('scratch'), 0);
-  assert.deepEqual(rows.map(row => row.id), [3, 4, 5, 6, 7]);
+  assert.deepEqual(rows.map(row => row.id), [4, 5, 6, 7]);
   assert.equal(settingsRows(initialAppearance(), bytes('EDITOR'), 0)[0].id, 10);
   assert.equal(settingsRows(initialAppearance(), bytes('no such setting'), 0).length, 0);
   assert.deepEqual(settingsRows(initialAppearance(), bytes(''), 3).map(row => row.id), [9]);
@@ -21,7 +21,8 @@ test('catalog names actual timing, defaults, and remote owner route', () => {
     assert.ok(row.applicability.length > 0);
     assert.ok(row.timing.length > 0);
   }
-  assert.match(text(rows[3].applicability), /Scratch.*Phux/);
+  assert.match(text(rows[3].applicability), /All Cockpit.*Phux/);
+  assert.match(text(rows[4].applicability), /Scratch.*Phux/);
   assert.match(text(rows[6].timing), /New scratch/);
   assert.equal(rows[12].editable, false);
   assert.match(text(rows[13].applicability), /phux config path/);

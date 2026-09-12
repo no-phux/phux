@@ -26,7 +26,7 @@ export function settingsCatalog(): readonly Setting[] {
     setting(0, 0, "Font family", "JetBrains Mono NL Nerd Font Mono (bundled)", "All terminal views. Blank restores the bundled face; Geist Mono selects the other shipped face. Other fonts are unsupported.", "Live preview", true),
     setting(1, 0, "Font size", "13 pt", "All terminal views. 4 to 72 points.", "Live preview", true),
     setting(2, 0, "Theme / follow system", "Cockpit default", "Use auto to follow macOS. Explicit foreground/background take precedence.", "Live preview", true),
-    setting(3, 0, "Minimum contrast", "3", "Scratch cell rendering only. Phux provides resolved colors. 1 disables the floor; 21 is maximum.", "Live scratch preview", true),
+    setting(3, 0, "Minimum contrast", "3", "All Cockpit terminal views, including Phux. Changes presentation without changing source colors. 1 disables the floor; 21 is maximum.", "Live preview", true),
     setting(4, 1, "Cursor style", "block", "Scratch terminal default: block, bar, underline. Phux and terminal applications own their cursors.", "Live scratch preview", true),
     setting(5, 1, "Cursor blink", "true", "Scratch terminal default. Phux and terminal applications own their cursors.", "Live scratch preview", true),
     setting(6, 1, "Scrollback retention (bytes)", "52428800 (50 MiB)", "New scratch terminals only. Phux history is owned by the serving machine.", "New scratch terminals", true),
