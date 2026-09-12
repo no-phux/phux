@@ -1281,7 +1281,7 @@ async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
             {
                 let mut terminal = actor.terminal.borrow_mut();
                 for row in 0..2_000 {
-                    terminal.vt_write(format!("scratch-row-{row:05} {:<180}\r\n", row).as_bytes());
+                    terminal.vt_write(format!("scratch-row-{row:05} {row:<180}\r\n").as_bytes());
                 }
             }
             let (reply, replied) = oneshot::channel();
