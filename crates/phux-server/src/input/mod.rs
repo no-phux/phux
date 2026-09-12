@@ -95,7 +95,7 @@ impl InputEncoderSnapshot {
 #[allow(clippy::expect_used, reason = "tests")]
 mod snapshot_tests {
     use super::*;
-    use libghostty_vt::{TerminalOptions, terminal::Mode};
+    use libghostty_vt::terminal::Mode;
     use phux_protocol::input::{
         focus::FocusEvent,
         key::{KeyAction, KeyEvent, ModSet, PhysicalKey},
@@ -104,12 +104,13 @@ mod snapshot_tests {
     };
 
     fn terminal(modes: &[u8]) -> GhosttyTerminal<'static, 'static> {
-        let mut terminal = GhosttyTerminal::new(TerminalOptions {
-            cols: 91,
-            rows: 37,
-            max_scrollback: 0,
-        })
-        .expect("terminal");
+        let mut terminal = {
+            let mut terminal = GhosttyTerminal::new(91, 37).expect("terminal");
+            terminal
+                .set_scrollback_max_lines(Some(0))
+                .expect("terminal");
+            terminal
+        };
         terminal.vt_write(modes);
         terminal
     }

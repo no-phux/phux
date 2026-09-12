@@ -94,17 +94,17 @@ impl PerTerminalKeyEncoder {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use libghostty_vt::TerminalOptions;
     use libghostty_vt::key::{Action, Key, Mods};
     use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 
     fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols: 80,
-            rows: 24,
-            max_scrollback: 1000,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(1000))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     #[test]

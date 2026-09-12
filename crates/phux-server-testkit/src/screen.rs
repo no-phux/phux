@@ -34,7 +34,7 @@
 
 use libghostty_vt::screen::CellWide;
 use libghostty_vt::{
-    Terminal as GhosttyTerminal, TerminalOptions,
+    Terminal as GhosttyTerminal,
     render::{CellIterator, RenderState, RowIterator},
 };
 
@@ -70,11 +70,11 @@ impl Screen {
     /// attach (`render.rs` uses `100`; we match it so behaviour is
     /// representative).
     pub fn new(cols: u16, rows: u16) -> Result<Self, ScreenError> {
-        let terminal = GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })?;
+        let terminal = {
+            let mut terminal = GhosttyTerminal::new(cols, rows)?;
+            terminal.set_scrollback_max_lines(Some(100))?;
+            terminal
+        };
         Ok(Self {
             terminal,
             state: RenderState::new()?,

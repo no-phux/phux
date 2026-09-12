@@ -1861,12 +1861,10 @@ mod tests {
 
     #[test]
     fn mouse_tracking_follows_decset_1000() {
-        let mut terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-            cols: 80,
-            rows: 24,
-            max_scrollback: 100,
-        })
-        .expect("terminal");
+        let mut terminal = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("scrollback");
         assert!(!terminal_wants_mouse_tracking(&terminal));
         terminal.vt_write(b"\x1b[?1000h");
         assert!(terminal_wants_mouse_tracking(&terminal));

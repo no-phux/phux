@@ -213,17 +213,18 @@ impl<'alloc> RenderPool<'alloc> {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use libghostty_vt::{Terminal, TerminalOptions, render::Dirty};
+    use libghostty_vt::{Terminal, render::Dirty};
 
     use super::*;
 
     fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
-        Terminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = Terminal::new(cols, rows).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     /// One pooled walk under the "clear everything drawn" dirty policy:

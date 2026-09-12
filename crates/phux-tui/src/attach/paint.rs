@@ -2675,8 +2675,6 @@ mod tests {
     /// fallback, so the rect width (M) differs from the mirror width (N).
     #[test]
     fn paint_focused_pane_does_not_resize_server_authoritative_mirror() {
-        use libghostty_vt::TerminalOptions;
-
         let id = ResourceId::local(1);
         // Single-pane: no layout tree ⇒ compute_layout yields no rect, so
         // paint_focused_pane falls back to the full pane viewport.
@@ -2737,12 +2735,13 @@ mod tests {
 
         // A no-grow probe via an explicit alt-screen reference: a 20-wide
         // mirror written the same way, never resized, has the identical grid.
-        let mut reference = GhosttyTerminal::new(TerminalOptions {
-            cols: mirror_cols,
-            rows: mirror_rows,
-            max_scrollback: 10_000,
-        })
-        .expect("reference");
+        let mut reference = {
+            let mut terminal = GhosttyTerminal::new(mirror_cols, mirror_rows).expect("reference");
+            terminal
+                .set_scrollback_max_lines(Some(10_000))
+                .expect("reference");
+            terminal
+        };
         reference.vt_write(b"\x1b[?1049h");
         reference.vt_write(b"ABCDEFGHIJKLMNOPQRST\r\nABCDEFGHIJKLMNOPQRST");
         assert_eq!(

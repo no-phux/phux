@@ -848,12 +848,11 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
 /// a regression aborts THIS test, not a flaky e2e teardown.)
 #[test]
 fn resize_desync_then_both_shrink_does_not_overflow() {
-    let mut term = GhosttyTerminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 100,
-    })
-    .expect("term");
+    let mut term = {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("term");
+        terminal.set_scrollback_max_lines(Some(100)).expect("term");
+        terminal
+    };
     // Enough scrollback content that a cols-reflow actually walks rows
     // (the overflow needs real content to reflow). 50 lines of ~38 cols
     // is ample: at the storm's 1-col degenerate width every line reflows

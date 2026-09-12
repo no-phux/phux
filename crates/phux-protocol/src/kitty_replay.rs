@@ -217,7 +217,9 @@ fn write_image_apc(
         ImageAction::TransmitOnly => b't',
         ImageAction::TransmitAndDisplay => b'T',
     };
-    let data = image.data()?;
+    let Some(data) = image.data()? else {
+        return Ok(());
+    };
     if data.is_empty() {
         return Ok(());
     }
@@ -326,12 +328,10 @@ mod tests {
 
     #[test]
     fn replay_reemits_classic_rgba_placement() {
-        let mut terminal = GhosttyTerminal::new(libghostty_vt::TerminalOptions {
-            cols: 10,
-            rows: 5,
-            max_scrollback: 0,
-        })
-        .expect("terminal");
+        let mut terminal = GhosttyTerminal::new(10, 5).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(0))
+            .expect("scrollback");
         configure_terminal_for_kitty_graphics(&mut terminal).expect("kitty config");
         terminal.resize(10, 5, 8, 16).expect("cell geometry");
         terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=7,q=2;/wAA/w==\x1b\\");

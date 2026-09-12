@@ -501,15 +501,16 @@ fn grapheme_char_count(
 mod tests {
     use super::*;
     use crate::search::{Scope, SearchOptions, search_oneshot};
-    use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+    use libghostty_vt::Terminal as GhosttyTerminal;
 
     fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     fn vp() -> SearchOptions {

@@ -48,7 +48,7 @@ use libghostty_vt::render::{
 };
 use libghostty_vt::screen::CellWide;
 use libghostty_vt::style::{RgbColor, Style, StyleColor, Underline};
-use libghostty_vt::{RenderState, Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::{RenderState, Terminal as GhosttyTerminal};
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
 
 use crate::error::RecordError;
@@ -110,13 +110,12 @@ impl Replayer {
                 "terminal dimensions must be non-zero, got {cols}x{rows}"
             )));
         }
+        let mut term = GhosttyTerminal::new(cols, rows)
+            .map_err(|err| replay_err("terminal construction", &err))?;
+        term.set_scrollback_max_lines(Some(0))
+            .map_err(|err| replay_err("terminal construction", &err))?;
         Ok(Self {
-            term: GhosttyTerminal::new(TerminalOptions {
-                cols,
-                rows,
-                max_scrollback: 0,
-            })
-            .map_err(|err| replay_err("terminal construction", &err))?,
+            term,
             state: RenderState::new().map_err(|err| replay_err("render state", &err))?,
             rows: RowIterator::new().map_err(|err| replay_err("row iterator", &err))?,
             cells: CellIterator::new().map_err(|err| replay_err("cell iterator", &err))?,
