@@ -493,7 +493,14 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         session_name,
         theme,
     );
-    seal_frame(block, painted, composed, status_bar)
+    let (painted, shipped) = seal_frame(block, painted, composed, status_bar);
+    if !shipped {
+        // phux-esge: the renderers recorded cells the terminal may never
+        // have received, and cleared the dirty bits that would have repainted
+        // them. Forget the records so the next paint rewrites rows whole.
+        super::pane_state::invalidate_all_fronts(panes);
+    }
+    painted
 }
 
 /// ADR-0105: the empty state's title line.
@@ -550,7 +557,7 @@ pub(super) fn paint_empty_session<W: super::RenderSink>(
         true,
     );
     let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
-    seal_frame(block, painted, composed, status_bar)
+    seal_frame(block, painted, composed, status_bar).0
 }
 
 /// Write `lines` centered in `rect`, each clipped to the rect's width.
@@ -571,21 +578,24 @@ fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines:
 /// reached the sink: a frame whose composition or delivery failed reports
 /// `NotPublished` and invalidates the painter, so the bar re-emits next time
 /// rather than trusting a cache that describes bytes the terminal never got.
+///
+/// The second value is whether the frame shipped, so a caller that painted
+/// panes can forget their front buffers on the same failure (`phux-esge`).
 fn seal_frame<W: Write>(
     block: FrameBlock<'_, W>,
     painted: StatusBarPaint,
     composed: bool,
     status_bar: Option<&mut StatusBarPainter>,
-) -> StatusBarPaint {
+) -> (StatusBarPaint, bool) {
     if composed && block.end().is_ok() {
-        return painted;
+        return (painted, true);
     }
     if !matches!(painted, StatusBarPaint::NotPublished)
         && let Some(painter) = status_bar
     {
         painter.invalidate();
     }
-    StatusBarPaint::NotPublished
+    (StatusBarPaint::NotPublished, false)
 }
 
 /// [`paint_full_frame`]'s body, emitting into the frame block. Returns the
@@ -774,7 +784,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
         session_name,
         theme,
     );
-    seal_frame(block, painted, composed, status_bar)
+    seal_frame(block, painted, composed, status_bar).0
 }
 
 /// [`paint_chrome_in_place`]'s body, emitting into the frame block.
@@ -1005,6 +1015,38 @@ pub(super) fn paint_bar_row<W: Write>(
     reason = "the frame tail's context: block, painter, geometry, sidebar, session, cursor, compose policy; same arg-list refactor follow-up as paint_full_frame"
 )]
 pub(super) fn close_frame_with_chrome<W: Write>(
+    block: FrameBlock<'_, W>,
+    status_bar: Option<&mut StatusBarPainter>,
+    viewport_dims: (u16, u16),
+    sidebar: Option<SidebarReservation>,
+    session_name: &str,
+    cursor: Option<(u16, u16)>,
+    fallback_origin: Option<(u16, u16)>,
+    compose: ComposePolicy,
+) -> StatusBarPaint {
+    close_frame_reporting(
+        block,
+        status_bar,
+        viewport_dims,
+        sidebar,
+        session_name,
+        cursor,
+        fallback_origin,
+        compose,
+    )
+    .0
+}
+
+/// [`close_frame_with_chrome`], also reporting whether the frame shipped.
+///
+/// A frame that painted panes needs the second value: on a failed close the
+/// renderers have recorded cells the terminal may never have received, so
+/// their front buffers must be forgotten (`phux-esge`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same frame-tail context as close_frame_with_chrome, which wraps this"
+)]
+pub(super) fn close_frame_reporting<W: Write>(
     mut block: FrameBlock<'_, W>,
     mut status_bar: Option<&mut StatusBarPainter>,
     viewport_dims: (u16, u16),
@@ -1013,7 +1055,7 @@ pub(super) fn close_frame_with_chrome<W: Write>(
     cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     compose: ComposePolicy,
-) -> StatusBarPaint {
+) -> (StatusBarPaint, bool) {
     let painted = status_bar
         .as_deref_mut()
         .map_or(StatusBarPaint::NotPublished, |painter| {
@@ -1036,14 +1078,14 @@ pub(super) fn close_frame_with_chrome<W: Write>(
         true
     };
     if cursor_placed && block.end().is_ok() {
-        return painted;
+        return (painted, true);
     }
     if !matches!(painted, StatusBarPaint::NotPublished)
         && let Some(painter) = status_bar
     {
         painter.invalidate();
     }
-    StatusBarPaint::NotPublished
+    (StatusBarPaint::NotPublished, false)
 }
 
 /// Effective viewport available to pane rendering: outer dims with the

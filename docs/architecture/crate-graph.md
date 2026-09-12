@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
 # Crate dependency graph
@@ -82,7 +82,8 @@ also depend on `libghostty-vt` directly: the server's `Terminal` is the
 canonical state for each Terminal-kind resource and drives the
 structured-input encoders (ADR-0006, ADR-0008); the TUI's `Terminal` is a
 local replica fed by `RESOURCE_OUTPUT` bytes for the Terminals that client
-has attached, with `RenderState` providing per-row dirty tracking for
+has attached, with `RenderState` providing per-row dirty tracking and a
+per-pane front buffer narrowing each dirty row to its changed cells for
 efficient redraw. `client-core` links `libghostty-vt` only under its
 `native-engine` feature (the wasm client leaves it off); `client` names
 only libghostty's error type, for the shared exit vocabulary.

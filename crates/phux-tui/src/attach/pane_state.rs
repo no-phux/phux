@@ -286,6 +286,37 @@ pub(super) fn pane_label<'a>(
     })
 }
 
+/// Forget every pane's front buffer (`phux-esge`), so each pane's next paint
+/// rewrites its dirty rows whole instead of diffing them.
+///
+/// For any writer that puts bytes over pane interiors — a cleared screen, a
+/// modal, a status strip, a frame that may not have reached the terminal —
+/// see `render::FrontBuffer` for the invariant. Forgetting is always safe:
+/// it degrades a pane to the pre-diff dirty-row painter until it is next
+/// painted.
+pub(super) fn invalidate_all_fronts(panes: &mut HashMap<ResourceId, PaneSlot>) {
+    for slot in panes.values_mut() {
+        slot.renderer.invalidate_front();
+    }
+}
+
+/// Forget the front rows the predictive-echo overlay just painted over
+/// (`phux-esge`).
+///
+/// The overlay writes its underlined guesses straight onto the pane's cells
+/// and never erases them; the authoritative echo heals them only because the
+/// row it lands on is repainted. A diff against a front row that still
+/// claims the pre-guess cells would skip exactly those cells whenever the
+/// echo agrees with them, stranding the underline. Forgetting the rows puts
+/// them back on the whole-row path. Cursor-motion predictions paint nothing,
+/// so forgetting their rows too is merely conservative.
+pub(super) fn invalidate_predicted_rows(slot: &mut PaneSlot, predict: &PredictionState) {
+    for prediction in predict.pending() {
+        slot.renderer
+            .invalidate_front_rows(prediction.row..prediction.row.saturating_add(1));
+    }
+}
+
 /// Build a protocol-0.7 test session with atomically published synthesized replicas.
 ///
 /// Test helpers must seed terminal state through the same ATTACHED,

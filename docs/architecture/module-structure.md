@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # Module structure
@@ -303,7 +303,9 @@ src/
     server_frame/     — decodes server frames into client-side effects
     render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
                       — TerminalRenderer: feeds RESOURCE_OUTPUT bytes into
-                        the local Terminal and paints dirty rows + chrome
+                        the local Terminal and paints the changed cells of
+                        dirty rows (diffed against a per-pane front buffer,
+                        phux-esge) + chrome
     input_dispatch/, action_registry.rs, actions.rs
                       — the configurable keybinding-to-action pipeline
     fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking

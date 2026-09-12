@@ -1696,6 +1696,9 @@ impl SessionLoop {
         if !needs_resync.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)) {
             return;
         }
+        // phux-esge: the writer dropped bytes the renderers believe landed,
+        // so no front buffer describes the screen any more.
+        crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);
         } else {
@@ -3443,6 +3446,10 @@ impl SessionLoop {
         // resize-heavy shells. Clear immediately, then let the snapshot
         // repopulate the viewport at the new dimensions.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
+        // phux-esge: the clear wiped every pane's cells, and until the
+        // snapshot's forced repaint lands, pane output paints incrementally
+        // onto the blank screen. No front buffer may claim those cells.
+        crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
         // phux-fsb: an overlay that pinned its box to a pointer cell
         // (the context menu) is now addressing cells that may not
         // exist. Drop it BEFORE the repaint below, so this frame is
