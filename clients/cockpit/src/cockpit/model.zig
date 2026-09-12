@@ -689,7 +689,7 @@ pub const PaletteDestination = union(enum) {
     peer_unavailable: support.ProviderId,
 };
 
-pub const PeerSession = struct { coordinator: support.ProviderId, id: u32 };
+pub const PeerSession = struct { coordinator: support.ProviderId, id: u32, attachment_id: ?u64 = null };
 
 /// Bound on the session name an `EmptyPick` keeps for display.
 pub const max_empty_pick_name_bytes: usize = 64;
@@ -700,6 +700,9 @@ pub const max_empty_pick_name_bytes: usize = 64;
 /// `tab_requested`, which shows the session on that peer; `tab_queued` once
 /// its first tab's spawn is on its way there.
 pub const EmptyPick = struct {
+    attachment_id: u64 = 0,
+    window_epoch: u64 = 0,
+    created: bool = false,
     coordinator: support.ProviderId,
     session: u32,
     window: usize,
@@ -727,6 +730,9 @@ pub const EmptyPick = struct {
 /// but their retired channel handles are never reused.
 pub const Peer = struct {
     provider: ?*PhuxProvider = null,
+    coordinator_context: ?u64 = null,
+    session_created_at: ?i64 = null,
+    selection_epoch: ?u64 = null,
     workspace: @import("shared_workspace.zig").State = .{},
     reopen: bool = false,
     failed: bool = false,
@@ -797,8 +803,10 @@ pub const Model = struct {
     /// provider that minted it (`phuxForRef`), never to another server that
     /// happens to use the same numeric id.
     peers: std.ArrayList(*Peer) = .empty,
+    window_attachments: [max_windows]?struct { id: u64, epoch: u64 } = @splat(null),
     /// A peer's empty session picked in the switcher (EmptyPick).
     empty_pick: ?EmptyPick = null,
+    empty_picks: [max_windows]?EmptyPick = @splat(null),
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
@@ -1200,7 +1208,10 @@ pub const Model = struct {
     pub fn phuxForRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
         const projected = model.projectedAttachment(ref);
         if (projected.ambiguous) return null;
-        if (projected.id) |id| return model.phuxForAttachmentConst(id);
+        if (projected.id) |id| {
+            const remote = model.phuxForAttachmentConst(id) orelse return null;
+            return if (remote.providerId() == ref.provider_id) remote else null;
+        }
         return model.phuxForConst(ref.provider_id);
     }
 
@@ -1239,8 +1250,11 @@ pub const Model = struct {
     }
 
     pub fn phuxForTreeConst(model: *const Model, pane_tree: *const layout.Tree) ?*const PhuxProvider {
-        if (pane_tree.attachment_id) |id| return model.phuxForAttachmentConst(id);
         const authority = @import("shared_workspace.zig").tabAuthority(pane_tree) orelse return null;
+        if (pane_tree.attachment_id) |id| {
+            const remote = model.phuxForAttachmentConst(id) orelse return null;
+            return if (remote.providerId() == authority) remote else null;
+        }
         return model.phuxForConst(authority);
     }
 
@@ -1251,6 +1265,80 @@ pub const Model = struct {
             if (remote.context_id == id) return slot;
         }
         return null;
+    }
+
+    pub fn sharedWorkspaceForAttachment(model: *Model, id: u64) ?*@import("shared_workspace.zig").State {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phux()) |remote| if (remote.context_id == id) return &model.shared_workspace;
+        const slot = model.peerSlotForAttachment(id) orelse return null;
+        return &model.peers.items[slot].workspace;
+    }
+
+    pub fn bindWindowAttachment(model: *Model, window: usize, id: u64) void {
+        if (!model.windowOpen(window)) return;
+        model.window_attachments[window] = .{ .id = id, .epoch = model.window_epochs[window] };
+    }
+
+    pub fn bindSharedAttachment(model: *Model, remote: *PhuxProvider) void {
+        if (comptime !support.phux_enabled) return;
+        const state = model.sharedWorkspaceForAttachment(remote.context_id) orelse return;
+        if (state.attachment_id != null) return;
+        // Migrate only a projection confirmed by this State's connection and
+        // session before attachment tags existed.
+        if (state.epoch == remote.connectionEpoch() and state.session == remote.selectedSessionId()) model.tagLegacyProjection(remote);
+        state.attachment_id = remote.context_id;
+    }
+
+    fn tagLegacyProjection(model: *Model, remote: *const PhuxProvider) void {
+        for (0..max_windows) |window| {
+            const workspace = model.wsAt(window) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |*pane_tree| {
+                if (pane_tree.attachment_id != null) continue;
+                if (@import("shared_workspace.zig").tabAuthority(pane_tree) != remote.providerId()) continue;
+                pane_tree.attachment_id = remote.context_id;
+            }
+        }
+    }
+
+    pub fn phuxForWindow(model: *Model, window: usize) ?*PhuxProvider {
+        return @constCast(model.phuxForWindowConst(window));
+    }
+
+    pub fn phuxForWindowConst(model: *const Model, window: usize) ?*const PhuxProvider {
+        if (!model.windowOpen(window)) return null;
+        const workspace = model.wsAtConst(window) orelse return null;
+        if (workspace.treeConst(workspace.selected_tab)) |pane_tree| {
+            if (@import("shared_workspace.zig").tabAuthority(pane_tree)) |id| {
+                if (id != .local) return model.phuxForTreeConst(pane_tree);
+            }
+        }
+        if (model.window_attachments[window]) |binding| {
+            if (binding.epoch != model.window_epochs[window]) return null;
+            return model.phuxForAttachmentConst(binding.id);
+        }
+        return model.defaultWindowProvider(window, workspace.tab_count == 0);
+    }
+
+    fn defaultWindowProvider(model: *const Model, window: usize, empty: bool) ?*const PhuxProvider {
+        if (empty and window == model.firstOpenWindow()) return model.phuxConst();
+        return model.localPhuxProviderConst();
+    }
+
+    pub fn localPhuxProviderConst(model: *const Model) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phuxConst()) |remote| if (model.isCanonicalLocal(remote)) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (model.isCanonicalLocal(remote)) return remote;
+        }
+        return null;
+    }
+
+    fn isCanonicalLocal(model: *const Model, remote: *const PhuxProvider) bool {
+        if (comptime !support.phux_enabled) return false;
+        const endpoint = remote.endpointDescriptor();
+        if (endpoint != .unix) return false;
+        return std.mem.eql(u8, endpoint.unix, model.config.phux_socket.slice());
     }
 
     const ProjectedAttachment = struct {
@@ -1327,13 +1415,14 @@ pub const Model = struct {
 
     /// Whether a ref is the active coordinator's own terminal.
     pub fn activeOwnsRef(model: *const Model, ref: TerminalRef) bool {
-        return ref.provider_id == model.attachmentAuthority();
+        return model.phuxForRefConst(ref) == model.phuxConst();
     }
 
     /// A tab another coordinator projected. Cockpit's tab and split commands
     /// address the active coordinator, so they refuse such a tab rather than
     /// send one machine's window or terminal to another.
     pub fn foreignTree(model: *const Model, tab: *const layout.Tree) bool {
+        if (tab.attachment_id != null) return model.phuxForTreeConst(tab) != model.phuxConst();
         const owner = @import("shared_workspace.zig").tabAuthority(tab) orelse return false;
         return owner != .local and owner != model.attachmentAuthority();
     }

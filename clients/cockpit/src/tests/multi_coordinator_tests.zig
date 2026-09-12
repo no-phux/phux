@@ -112,7 +112,9 @@ const Pair = struct {
     fn projectBoth(self: *Pair) !void {
         const model = self.engine.model;
         model.shared_workspace.authority = self.here.providerId();
+        model.shared_workspace.attachment_id = self.here.context_id;
         model.peers.items[0].workspace.authority = self.mini.providerId();
+        model.peers.items[0].workspace.attachment_id = self.mini.context_id;
         const one = [_]shared.Window{.{ .id = @splat(1), .root = 0 }};
         const here_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = try refOn(self.here, 7) }};
         const mini_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = try refOn(self.mini, 7) }};
