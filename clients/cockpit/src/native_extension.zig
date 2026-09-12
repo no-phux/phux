@@ -3410,10 +3410,10 @@ test "first chord in another window obeys that window's search ownership" {
     try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
     const key: canvas.WidgetKeyboardEvent = .{ .phase = .key_down, .key = "t", .modifiers = .{ .super = true } };
     bridge.fallback_origin = .{ .window_id = 2, .view_label = cockpit.scene.canvasLabelFor(1) };
-    prepareInputAdmission(.{ .canvas_widget_keyboard = .{ .window_id = 2, .view_label = cockpit.scene.canvasLabelFor(1), .keyboard = key } });
+    prepareInputAdmission(&rig.harness.runtime, .{ .canvas_widget_keyboard = .{ .window_id = 2, .view_label = cockpit.scene.canvasLabelFor(1), .keyboard = key } });
     try std.testing.expect(primaryChord(key) == null);
     bridge.fallback_origin = .{ .window_id = 1, .view_label = canvas_label };
-    prepareInputAdmission(.{ .canvas_widget_keyboard = .{ .window_id = 1, .view_label = canvas_label, .keyboard = key } });
+    prepareInputAdmission(&rig.harness.runtime, .{ .canvas_widget_keyboard = .{ .window_id = 1, .view_label = canvas_label, .keyboard = key } });
     try std.testing.expect(primaryChord(key) != null);
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
 }
