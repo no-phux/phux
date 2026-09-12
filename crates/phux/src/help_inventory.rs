@@ -164,6 +164,7 @@ phux relay run
 phux rename
 phux resize
 phux run
+phux runtime-info
 phux send-keys
 phux server
 phux service

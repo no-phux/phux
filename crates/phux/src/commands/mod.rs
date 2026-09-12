@@ -215,6 +215,7 @@ pub(crate) mod remote_target;
 pub(crate) mod rename;
 pub(crate) mod resize;
 pub(crate) mod run;
+pub(crate) mod runtime_info;
 pub(crate) mod satellite;
 pub(crate) mod send_keys;
 pub(crate) mod server;
@@ -301,6 +302,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Mcp { .. } => Some("mcp"),
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
+        Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
     }
@@ -308,6 +310,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect this binary's runtime protocol and capabilities without connecting.
+    RuntimeInfo {
+        #[command(flatten)]
+        json: JsonOpt,
+    },
     /// Attach to a session (interactive).
     ///
     /// With no name, attaches to the most-recently-focused session,

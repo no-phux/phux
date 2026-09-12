@@ -29,6 +29,7 @@ fn command_paths(command: &Command) -> Vec<String> {
 fn schema_contracts() -> Value {
     json!([
         { "invocation": "phux --capabilities --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux runtime-info --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux ls --json", "schema_version": 3, "kind": "document" },
         { "invocation": "phux snapshot --json", "schema_version": 3, "kind": "document" },
         { "invocation": "phux snapshot --rendered --json", "schema_version": 1, "kind": "document" },

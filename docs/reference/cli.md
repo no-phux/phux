@@ -37,6 +37,7 @@ ATTACH / SERVE
 INSPECT
   ls         List sessions
   status     Report the running server: pid, uptime, version, clients, logs
+  runtime-info Inspect this binary's protocol and runtime capabilities
   whoami     Report who this connection is to the server, and whose server it is
   perf       Show the server's performance telemetry, live or as a snapshot
   snapshot   Capture a pane's screen as JSON or a boxed view
@@ -2304,6 +2305,24 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+## `phux runtime-info`
+
+```text
+Inspect this binary's runtime protocol and capabilities without connecting
+
+Usage: phux runtime-info [OPTIONS]
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help
 ```
 
 ## `phux send-keys`

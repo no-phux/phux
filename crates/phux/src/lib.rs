@@ -100,6 +100,7 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
         INSPECT\n  \
           ls         List sessions\n  \
           status     Report the running server: pid, uptime, version, clients, logs\n  \
+          runtime-info Inspect this binary's protocol and runtime capabilities\n  \
           whoami     Report who this connection is to the server, and whose server it is\n  \
           perf       Show the server's performance telemetry, live or as a snapshot\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
@@ -888,6 +889,7 @@ fn dispatch(
             commands::whoami::run_whoami(json.json, remote.with_socket(socket))
         }
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
+        Some(Command::RuntimeInfo { json }) => commands::runtime_info::run(json.json),
         Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
             commands::perf::PerfOptions {
                 json: json.json,
@@ -1226,6 +1228,12 @@ pub fn run() -> ExitCode {
     // config, socket, or TTY setup can alter the MCP stdio contract.
     if let Some(Command::Mcp { args }) = &cli.command {
         return commands::mcp::run(args);
+    }
+
+    // Runtime discovery must not open logs, load config, or contact a server.
+    // In particular a caller's PHUX_LOG may be a blocking FIFO.
+    if let Some(Command::RuntimeInfo { json }) = &cli.command {
+        return commands::runtime_info::run(json.json);
     }
 
     // The one-shot watchdog must precede any potentially blocking log open
