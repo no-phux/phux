@@ -3,6 +3,34 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/no-phux/phux/compare/cockpit-v0.22.0...cockpit-v0.23.0) (2026-09-12)
+
+
+### Features
+
+* **cockpit:** bind agent inspection to resource and parent identity ([156869d](https://github.com/no-phux/phux/commit/156869d8c03a8f17146ee00ba7782bcb3f98a96d))
+* **cockpit:** project readable latest agent evidence ([9516752](https://github.com/no-phux/phux/commit/95167525f49c13571ea14c98acf88d748597351f))
+* **cockpit:** retain generation-bound agent evidence ([aba595b](https://github.com/no-phux/phux/commit/aba595b413943121bf84ecbf917666be426a1bb7))
+* **cockpit:** retain identity-bound native dev diagnostics ([713b6d5](https://github.com/no-phux/phux/commit/713b6d588aa81c922e77997c4c94f6d3f99f2506))
+
+
+### Bug Fixes
+
+* **cockpit:** align burst and inspection tests with correlated upstream ([cfce400](https://github.com/no-phux/phux/commit/cfce40041824f316d2602ae31ecf8b29e4a49454))
+* **cockpit:** expose parent attention and preserve tab authority ([21fd4c2](https://github.com/no-phux/phux/commit/21fd4c2a2686931fcf9acba2ba18b68fd7edd810))
+* **cockpit:** fail closed on unframed diagnostics ([2d8756e](https://github.com/no-phux/phux/commit/2d8756ecfba5243a8ab865960b994cdf48bada00))
+* **cockpit:** harden input harness persistence and cleanup ([354448a](https://github.com/no-phux/phux/commit/354448a5e33b06a22d619a367b8696004288ee26))
+* **cockpit:** preserve native input and lifecycle ownership ([e6d45f4](https://github.com/no-phux/phux/commit/e6d45f4485cd1af7f63ff9a5eee9f754cd06909f))
+* **cockpit:** restore agent-row budget and inline agent submit effects ([67ac4cf](https://github.com/no-phux/phux/commit/67ac4cf22697458901b82d8f8dd03dc7b49bae4a))
+* **cockpit:** stub pointer gestures on the disabled provider ([fa21f5a](https://github.com/no-phux/phux/commit/fa21f5a0e2e17f8ac9fb99d26b2c1c1ac8ebb2f8))
+* **cockpit:** validate agent chrome and split attention ([15822c3](https://github.com/no-phux/phux/commit/15822c30b23127a94ec1f9180be9201c7b34ebf6))
+* **tui:** satisfy pedantic clippy in sidebar e2e vocabulary fix ([4746519](https://github.com/no-phux/phux/commit/4746519b65e6b773b7d3ad5fd62283ff3fcd13d2))
+
+
+### Documentation
+
+* **cockpit:** define agent evidence and terminal intervention ([7bb1c14](https://github.com/no-phux/phux/commit/7bb1c14dae17397336cf7bddb672c7b694de28cc))
+
 ## [0.22.0](https://github.com/no-phux/phux/compare/cockpit-v0.21.0...cockpit-v0.22.0) (2026-09-11)
 
 
