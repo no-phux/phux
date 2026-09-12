@@ -188,8 +188,16 @@ Help text owns the flags. The contract:
   silently dropped untrusted paste. Never split one logical payload
   across calls. See [`../spec/input.md`](../spec/input.md) §5.1.
 - **`run TARGET CMD...`** — POSIX shell, sentinels, mirrors `$?`. Flags
-  must precede `TARGET`. `--timeout 0` waits indefinitely. On timeout
-  there is **no JSON**; the signal is exit 125 plus stderr.
+  must precede `TARGET`. `--timeout` (default 600s; `0` means none) is
+  one absolute budget started before `TARGET` is resolved: connect,
+  handshake, resolution, input submission, every screen read, and the
+  sleeps between reads all draw on it, and the last sleep is clipped to
+  what remains. A server that accepts the connection but never answers
+  still ends with exit 125 on time. Input is never started once the
+  budget has run out; once started it gets a short grace to finish, and
+  the timeout diagnostic says whether submission was not sent, partial,
+  or complete. On timeout there is **no JSON**; the signal is exit 125
+  plus stderr.
 
 Acknowledged agent writes (`agent send-keys`, `agent prompt`,
 `agent answer`) prove kernel tty-queue receipt, not consumption.
@@ -213,6 +221,13 @@ It never creates, splits, moves, or focuses layout.
   stderr. `--json` emits the final `ScreenState` as read — projections
   scope the match, not the document. `--until` and `--regex` are
   mutually exclusive; an invalid regex is exit 2 before any poll.
+  `--timeout` is one absolute budget started before `TARGET` is
+  resolved (connect, handshake, resolution, the `--output-only` probe,
+  every screen read, and poll sleeps); the last sleep is clipped to what
+  remains. The first screen read always gets at least 2 seconds from the
+  start, so `--timeout 0` means "check once, now". A wedged server still
+  ends the wait with exit 124; with `--json`, expiry before the first
+  completed read emits an empty default `ScreenState`.
 - **`watch`** — push events, neither attach nor resize. `--json` is
   NDJSON, **no `schema_version`**, versioned by the binary and the
   `event` name vocabulary (a follower may join mid-stream). `--until`
@@ -372,7 +387,7 @@ glyph is skipped.
 ```
 
 `exit_code` is the child's `$?` from the printed sentinel, not shell
-integration. `duration_ms` includes poll latency. `truncated` is true
+integration. `duration_ms` is wall-clock from the start of the `--timeout` budget (before `TARGET` is resolved), including connection, submission, and poll latency. `truncated` is true
 when the `BEGIN` marker scrolled out of the viewport. **On timeout,
 `--json` emits no JSON.** Do not expect `outcome: "timed_out"` here;
 that shape is MCP `phux_run`.

@@ -1,17 +1,23 @@
 {
-  // phux static site — Workers static assets (Pages is legacy; this replaces
-  // the old phux-site Pages project). Assets-only: no script, no bindings.
-  // `wrangler deploy` uploads docs/site/dist (built by `bun run build`) and
-  // serves it on the phux.sh custom domain. _headers / _redirects in dist/
-  // are honored. The live-demo backend is a SEPARATE worker: worker/wrangler.jsonc.
+  // phux static site. Assets live in dist/; host/index.ts splits them across
+  // phux.sh (product) and docs.phux.sh (documentation). The live-demo backend
+  // is a SEPARATE worker: worker/wrangler.jsonc.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "phux-site",
+  "main": "./host/index.ts",
   "compatibility_date": "2026-05-01",
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
+    // The worker must see every request so host-based redirects fire before
+    // the matching HTML asset is served on the wrong hostname.
+    "run_worker_first": true,
     // Bare canonical paths with no trailing slash; /foo resolves foo.html.
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "none"
   },
-  "routes": [{ "pattern": "phux.sh", "custom_domain": true }]
+  "routes": [
+    { "pattern": "phux.sh", "custom_domain": true },
+    { "pattern": "docs.phux.sh", "custom_domain": true }
+  ]
 }

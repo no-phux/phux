@@ -387,7 +387,8 @@ pub enum WaitOutcome {
 pub struct WaitResult {
     /// Why polling stopped.
     pub outcome: WaitOutcome,
-    /// The most recent screen read.
+    /// The most recent completed screen read, or an empty default screen if
+    /// the deadline expired before the first read completed.
     pub screen: ScreenState,
     /// Number of screen reads performed.
     pub polls: u32,
@@ -445,19 +446,66 @@ pub async fn poll_until_scoped(
     interval: Duration,
     scope: &MatchScope,
 ) -> Result<WaitResult, AttachError> {
+    poll_until_scoped_with_deadline(
+        socket,
+        terminal_id,
+        condition,
+        crate::deadline::Deadline::new(timeout),
+        interval,
+        scope,
+    )
+    .await
+}
+
+/// However short a wait's budget — even zero — its first screen read gets
+/// at least this long from the budget's start to land.
+///
+/// So a zero timeout means "check once, now", as it did before the budget
+/// covered connection setup: the condition is tested against one real read
+/// before an expired budget is honored. Against a server that never answers,
+/// the wait therefore ends at the later of its timeout and this floor.
+pub const FIRST_READ_FLOOR: Duration = Duration::from_secs(2);
+
+/// Like [`poll_until_scoped`], with a budget started before target resolution.
+///
+/// The deadline bounds connection setup, every request, and the final sleep.
+/// The first read is bounded by the deadline raised to [`FIRST_READ_FLOOR`]
+/// (see [`crate::deadline::Deadline::floored`]); every later one by the
+/// deadline itself.
+///
+/// # Errors
+///
+/// See [`poll_until`].
+pub async fn poll_until_scoped_with_deadline(
+    socket: &Path,
+    terminal_id: ResourceId,
+    condition: &Condition,
+    deadline: crate::deadline::Deadline,
+    interval: Duration,
+    scope: &MatchScope,
+) -> Result<WaitResult, AttachError> {
     let start = Instant::now();
     let mut polls: u32 = 0;
     let mut idle = IdleTracker::new(start);
     let interval = effective_interval(condition, interval);
+    let mut screen = ScreenState::default();
 
     loop {
-        let screen = get_screen_scrollback(
+        let read = get_screen_scrollback(
             socket,
             terminal_id.clone(),
             scope.history_request(),
             scope.wants_cells(),
-        )
-        .await?;
+        );
+        let budget = if polls == 0 {
+            deadline.floored(FIRST_READ_FLOOR)
+        } else {
+            deadline
+        };
+        let Some(read) = budget.run(read).await else {
+            break;
+        };
+        screen = read?;
         polls = polls.saturating_add(1);
         let lines = match_lines(&screen, scope);
         let met = condition_met(condition, &lines, &mut idle, Instant::now());
@@ -468,15 +516,15 @@ pub async fn poll_until_scoped(
                 polls,
             });
         }
-        if timeout.is_some_and(|t| start.elapsed() >= t) {
-            return Ok(WaitResult {
-                outcome: WaitOutcome::TimedOut,
-                screen,
-                polls,
-            });
+        if deadline.run(tokio::time::sleep(interval)).await.is_none() {
+            break;
         }
-        tokio::time::sleep(interval).await;
     }
+    Ok(WaitResult {
+        outcome: WaitOutcome::TimedOut,
+        screen,
+        polls,
+    })
 }
 
 #[cfg(test)]
@@ -966,5 +1014,144 @@ mod tests {
         assert!(!idle.observe(&lines(&["b"]), t0 + Duration::from_millis(560), dwell));
         // 110ms after the change: settled.
         assert!(idle.observe(&lines(&["b"]), t0 + Duration::from_millis(610), dwell));
+    }
+}
+
+/// phux-69pq.10: a stalled peer ends the wait at the deadline, not never.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod deadline_tests {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use phux_protocol::ResourceId;
+    use tokio::net::UnixListener;
+    use tokio::time::Instant;
+
+    use phux_core::screen::{SCHEMA_VERSION, ScreenState};
+
+    use super::{
+        Condition, DEFAULT_POLL_INTERVAL, FIRST_READ_FLOOR, MatchScope, WaitOutcome, WaitResult,
+        poll_until_scoped_with_deadline,
+    };
+    use crate::deadline::Deadline;
+    use crate::testkit::{self, ScriptSpec};
+
+    const BUDGET: Duration = Duration::from_millis(300);
+    /// Slack for a loaded machine; a regression overruns by far more.
+    const TOLERANCE: Duration = Duration::from_secs(3);
+    /// A regression fails here instead of hanging the test run.
+    const WEDGE: Duration = Duration::from_secs(10);
+
+    async fn wait_for(socket: &Path, budget: Duration, needle: &str) -> (WaitResult, Duration) {
+        let condition = Condition::Contains(needle.to_owned());
+        let scope = MatchScope::default();
+        let start = Instant::now();
+        let poll = poll_until_scoped_with_deadline(
+            socket,
+            ResourceId::local(1),
+            &condition,
+            Deadline::new(Some(budget)),
+            DEFAULT_POLL_INTERVAL,
+            &scope,
+        );
+        let result = tokio::time::timeout(WEDGE, poll)
+            .await
+            .expect("the wait must return; a timeout here is the wedge itself")
+            .expect("a stalled peer is a timeout, not an error");
+        (result, start.elapsed())
+    }
+
+    fn assert_timed_out_on_time(result: &WaitResult, elapsed: Duration) {
+        assert!(
+            matches!(result.outcome, WaitOutcome::TimedOut),
+            "expected a timeout"
+        );
+        assert_eq!(result.polls, 0, "no read ever completed");
+        // The first read is always given the floor, so a stall costs the
+        // later of the budget and the floor.
+        let min = BUDGET.max(FIRST_READ_FLOOR);
+        assert!(elapsed >= min, "gave up early after {elapsed:?}");
+        assert!(elapsed < min + TOLERANCE, "overran: {elapsed:?}");
+    }
+
+    fn showing(text: &str) -> ScreenState {
+        ScreenState {
+            schema_version: SCHEMA_VERSION,
+            pane: 1,
+            cols: 80,
+            rows: 1,
+            lines: vec![text.to_owned()],
+            ..ScreenState::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_never_answers_hello_ends_the_wait_on_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("silent.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(testkit::hold_silent(listener));
+
+        let (result, elapsed) = wait_for(&socket, BUDGET, "never printed").await;
+        assert_timed_out_on_time(&result, elapsed);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_never_answers_get_screen_ends_the_wait_on_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("wedged.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(testkit::serve_every(listener, || {
+            ScriptSpec::new().wedge_screen_reads()
+        }));
+
+        let (result, elapsed) = wait_for(&socket, BUDGET, "never printed").await;
+        assert_timed_out_on_time(&result, elapsed);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_zero_budget_still_checks_once_and_is_met() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("ready.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let screen = showing("READY");
+        let peer = tokio::spawn(testkit::serve_every(listener, move || {
+            ScriptSpec::new().screen(&screen)
+        }));
+
+        let (result, _) = wait_for(&socket, Duration::ZERO, "READY").await;
+        assert!(
+            matches!(result.outcome, WaitOutcome::Met),
+            "zero means check now"
+        );
+        assert_eq!(result.polls, 1);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_zero_budget_checks_once_then_times_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("busy.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let screen = showing("still building");
+        let peer = tokio::spawn(testkit::serve_every(listener, move || {
+            ScriptSpec::new().screen(&screen)
+        }));
+
+        let (result, elapsed) = wait_for(&socket, Duration::ZERO, "READY").await;
+        assert!(matches!(result.outcome, WaitOutcome::TimedOut));
+        assert_eq!(
+            result.polls, 1,
+            "exactly one read, then the budget is honored"
+        );
+        assert_eq!(result.screen.lines, vec!["still building".to_owned()]);
+        assert!(
+            elapsed < TOLERANCE,
+            "no polling past the one read: {elapsed:?}"
+        );
+        peer.abort();
     }
 }

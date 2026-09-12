@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
+use phux_client::deadline::Deadline;
 use phux_client::wait::{Condition, MatchRegex, MatchScope};
 use phux_server::runtime::default_socket_path;
 
@@ -78,7 +79,7 @@ const NO_MARKS_NOTE: &str = "phux: wait --output-only: this pane reports no OSC-
 /// (`phux_client::wait::match_lines`) — so a needle that straddles the
 /// terminal's right edge is found instead of running the wait to timeout.
 pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
-    use phux_client::wait::{DEFAULT_POLL_INTERVAL, WaitOutcome};
+    use phux_client::wait::{DEFAULT_POLL_INTERVAL, WaitOutcome, WaitResult};
 
     let selector = match parse_selector(args.session) {
         Ok(sel) => sel,
@@ -98,32 +99,34 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
     };
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "wait", json).await {
-            Ok(id) => id,
-            Err(code) => return code,
+        let deadline = Deadline::new(timeout);
+        let preparation = async {
+            let terminal_id = resolve_target(&socket_path, &selector, "wait", json).await?;
+            probe_output_marks(&socket_path, &terminal_id, &scope).await;
+            Ok(terminal_id)
         };
-        // One pre-flight read, only under `--output-only`, so the "nothing to
-        // filter on" note lands NOW rather than after an unbounded wait — or
-        // never, if the wait never returns. A failed probe is not reported
-        // here; the poll loop hits the same failure a moment later and owns
-        // the diagnostic.
-        if scope.output_only
-            && let Ok(screen) = phux_client::snapshot::get_screen_scrollback(
-                &socket_path,
-                terminal_id.clone(),
-                scope.history_request(),
-                true,
-            )
-            .await
-            && !phux_client::wait::has_semantic_marks(&screen)
-        {
-            eprintln!("{NO_MARKS_NOTE}");
-        }
-        let result = match phux_client::wait::poll_until_scoped(
+        // Resolution and the probe share the first read's floor, so
+        // `--timeout 0` still gets one real check of the condition.
+        let first_read = deadline.floored(phux_client::wait::FIRST_READ_FLOOR);
+        let terminal_id = match first_read.run(preparation).await {
+            Some(Ok(id)) => id,
+            Some(Err(code)) => return code,
+            None => {
+                return report_result(
+                    &WaitResult {
+                        outcome: WaitOutcome::TimedOut,
+                        screen: phux_core::screen::ScreenState::default(),
+                        polls: 0,
+                    },
+                    json,
+                );
+            }
+        };
+        let result = match phux_client::wait::poll_until_scoped_with_deadline(
             &socket_path,
             terminal_id,
             &condition,
-            timeout,
+            deadline,
             DEFAULT_POLL_INTERVAL,
             &scope,
         )
@@ -138,17 +141,44 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        if json && let Ok(s) = serde_json::to_string_pretty(&result.screen) {
-            outln!("{s}");
-        }
-        match result.outcome {
-            WaitOutcome::Met => ExitCode::SUCCESS,
-            WaitOutcome::TimedOut => {
-                eprintln!("phux: wait timed out after {} polls", result.polls);
-                ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
-            }
-        }
+        report_result(&result, json)
     })
+}
+
+// Probe only for --output-only. The caller bounds this with the same deadline
+// as resolution and polling. A failed probe leaves diagnostics to the poll.
+async fn probe_output_marks(
+    socket: &std::path::Path,
+    terminal_id: &phux_protocol::ResourceId,
+    scope: &MatchScope,
+) {
+    if scope.output_only
+        && let Ok(screen) = phux_client::snapshot::get_screen_scrollback(
+            socket,
+            terminal_id.clone(),
+            scope.history_request(),
+            true,
+        )
+        .await
+        && !phux_client::wait::has_semantic_marks(&screen)
+    {
+        eprintln!("{NO_MARKS_NOTE}");
+    }
+}
+
+fn report_result(result: &phux_client::wait::WaitResult, json: bool) -> ExitCode {
+    use phux_client::wait::WaitOutcome;
+
+    if json && let Ok(s) = serde_json::to_string_pretty(&result.screen) {
+        outln!("{s}");
+    }
+    match result.outcome {
+        WaitOutcome::Met => ExitCode::SUCCESS,
+        WaitOutcome::TimedOut => {
+            eprintln!("phux: wait timed out after {} polls", result.polls);
+            ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +355,90 @@ mod tests {
     fn the_no_marks_note_names_the_flag_and_the_remedy() {
         assert!(NO_MARKS_NOTE.contains("--output-only"));
         assert!(NO_MARKS_NOTE.contains("shell integration"));
+    }
+}
+
+/// phux-69pq.10: `--timeout` bounds the whole wait, including a server that
+/// accepts the connection and then never answers.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod deadline_tests {
+    use std::path::PathBuf;
+    use std::process::ExitCode;
+
+    use phux_client::wait::FIRST_READ_FLOOR;
+
+    use super::{WaitArgs, run_wait};
+    use crate::commands::stall_peer::{self, BUDGET, BUDGET_SECS, PANE_SELECTOR, Peer};
+
+    fn wait_args(
+        socket: PathBuf,
+        timeout: u64,
+        until: &str,
+        output_only: bool,
+    ) -> WaitArgs<'static> {
+        WaitArgs {
+            session: Some(PANE_SELECTOR),
+            until: Some(until.to_owned()),
+            regex: None,
+            idle: None,
+            tail: None,
+            output_only,
+            timeout: Some(timeout),
+            json: false,
+            socket: Some(socket),
+        }
+    }
+
+    fn assert_wait_times_out_against(peer: Peer, output_only: bool) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let socket = dir.path().join("stalled.sock");
+        stall_peer::serve(peer, &socket);
+        stall_peer::assert_times_out(
+            move || run_wait(wait_args(socket, BUDGET_SECS, "never printed", output_only)),
+            crate::exit_codes::EXIT_WAIT_TIMEOUT,
+            // The first read always gets the floor, so a stall costs the
+            // later of the budget and the floor.
+            BUDGET.max(FIRST_READ_FLOOR),
+        );
+    }
+
+    /// `wait --timeout 0 --until NEEDLE` against a pane showing `shown`.
+    fn zero_timeout_wait(shown: &'static str, needle: &str) -> ExitCode {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let socket = dir.path().join("showing.sock");
+        stall_peer::serve(Peer::Showing(shown), &socket);
+        let needle = needle.to_owned();
+        stall_peer::run_verb(move || run_wait(wait_args(socket, 0, &needle, false))).0
+    }
+
+    #[test]
+    fn a_zero_timeout_exits_0_when_the_condition_already_holds() {
+        assert_eq!(zero_timeout_wait("READY", "READY"), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn a_zero_timeout_checks_once_and_times_out_when_it_does_not() {
+        assert_eq!(
+            zero_timeout_wait("still building", "READY"),
+            ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn wait_gives_up_on_a_server_that_never_answers_hello() {
+        assert_wait_times_out_against(Peer::Silent, false);
+    }
+
+    #[test]
+    fn wait_gives_up_on_a_server_that_never_answers_get_screen() {
+        assert_wait_times_out_against(Peer::WedgedScreen, false);
+    }
+
+    #[test]
+    fn the_output_only_probe_shares_the_budget() {
+        // The pre-flight `--output-only` read is the first GET_SCREEN, so a
+        // wedged server stalls it; it must not get a budget of its own.
+        assert_wait_times_out_against(Peer::WedgedScreen, true);
     }
 }

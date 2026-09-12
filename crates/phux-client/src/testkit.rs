@@ -168,6 +168,14 @@ pub struct ScriptSpec {
     /// Empty by default, so a client's feature gate is exercised by
     /// omission: a verb that needs a bit must refuse against `new()`.
     server_features: ServerFeatureSet,
+    /// When set, `GET_SCREEN` is never answered: the connection stays open
+    /// and silent. See [`ScriptSpec::wedge_screen_reads`].
+    wedge_screen_reads: bool,
+    /// The serialized `ScreenState` a `GET_SCREEN` is answered with.
+    screen: Option<String>,
+    /// How many more `ROUTE_INPUT`s to acknowledge before going silent;
+    /// `None` acknowledges every one. See [`ScriptSpec::wedge_input_after`].
+    input_acks_left: Option<usize>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
     /// phux-k0cw: frames released only when the client subscribes to that
@@ -193,6 +201,9 @@ impl fmt::Debug for ScriptSpec {
             .field("detach_result", &self.detach_result)
             .field("append_result", &self.append_result)
             .field("server_features", &self.server_features)
+            .field("wedge_screen_reads", &self.wedge_screen_reads)
+            .field("screen", &self.screen)
+            .field("input_acks_left", &self.input_acks_left)
             .field("script", &self.script)
             .field("end", &self.end)
             .finish()
@@ -422,6 +433,47 @@ impl ScriptSpec {
         self
     }
 
+    /// Never answer `GET_SCREEN`: the connection stays open and silent.
+    ///
+    /// This deliberately models a server that does *not* behave like the
+    /// reference one — a wedged pane actor or a stuck hub relay — because
+    /// that is exactly the peer a deadline has to survive. Everything else
+    /// (`HELLO`, `GET_STATE`, the `ROUTE_INPUT` acks) is still answered in
+    /// reference order, so a client reaches the read before it stalls.
+    #[must_use]
+    pub const fn wedge_screen_reads(mut self) -> Self {
+        self.wedge_screen_reads = true;
+        self
+    }
+
+    /// The screen a `GET_SCREEN` is answered with.
+    ///
+    /// `handle_get_screen` answers `OK_WITH(JSON(ScreenState))` and pushes
+    /// nothing ahead of the ack (see `crate::snapshot`). Without this the
+    /// harness answers a bare `Ok`, which the client rightly refuses.
+    ///
+    /// # Panics
+    ///
+    /// If `screen` does not serialize.
+    #[must_use]
+    pub fn screen(mut self, screen: &phux_core::screen::ScreenState) -> Self {
+        self.screen = Some(serde_json::to_string(screen).expect("ScreenState serializes"));
+        self
+    }
+
+    /// Acknowledge the first `acked` `ROUTE_INPUT`s, then never answer
+    /// another.
+    ///
+    /// Like [`Self::wedge_screen_reads`] this deliberately models a wedged
+    /// server rather than the reference one: the case where a command line
+    /// lands but its Enter never does, which a client deadline must report
+    /// as partial input instead of a command that ran.
+    #[must_use]
+    pub const fn wedge_input_after(mut self, acked: usize) -> Self {
+        self.input_acks_left = Some(acked);
+        self
+    }
+
     /// Append one frame to the stream pushed after `SUBSCRIBE_EVENTS`.
     #[must_use]
     pub fn push(mut self, frame: FrameKind) -> Self {
@@ -609,6 +661,46 @@ impl ScriptedServer {
     }
 }
 
+/// Serve every connection `listener` accepts with a fresh spec from
+/// `make_spec`, until the task is dropped.
+///
+/// For clients that dial more than once in one operation — `phux run`
+/// resolves its target, submits input, and reads the screen over separate
+/// connections.
+///
+/// # Panics
+///
+/// If an accept fails.
+pub async fn serve_every(
+    listener: UnixListener,
+    make_spec: impl Fn() -> ScriptSpec + Send + 'static,
+) {
+    loop {
+        let (stream, _) = listener.accept().await.expect("accept scripted client");
+        tokio::spawn(ScriptedServer::on_stream(stream, make_spec()).run());
+    }
+}
+
+/// Accept every connection and never read from or write to it: a peer that
+/// is listening but never answers `HELLO`.
+///
+/// Not a model of the reference server; it is the stalled peer a client
+/// deadline must survive. Each accepted stream is parked in its own task that
+/// never finishes, so the client sees silence rather than EOF.
+///
+/// # Panics
+///
+/// If an accept fails.
+pub async fn hold_silent(listener: UnixListener) {
+    loop {
+        let (stream, _) = listener.accept().await.expect("accept stalled client");
+        tokio::spawn(async move {
+            let _held_open = stream;
+            std::future::pending::<()>().await;
+        });
+    }
+}
+
 /// The frames the reference server emits in response to one client frame,
 /// **in the exact order it emits them**.
 ///
@@ -783,6 +875,27 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
         Command::AppendResourceOutput { .. } => {
             let result = spec.append_result.clone().unwrap_or(CommandResult::Ok);
             out.push(FrameKind::CommandResult { request_id, result });
+        }
+        // A wedged server, on purpose: see `ScriptSpec::wedge_screen_reads`.
+        Command::GetScreen { .. } if spec.wedge_screen_reads => {}
+        // `handle_get_screen` answers `OK_WITH(JSON(ScreenState))`.
+        Command::GetScreen { .. } if spec.screen.is_some() => {
+            let json = spec.screen.clone().unwrap_or_default();
+            out.push(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::OkWith(CommandValue::Json(json)),
+            });
+        }
+        // A wedged server, on purpose: see `ScriptSpec::wedge_input_after`.
+        Command::RouteInput { .. } if spec.input_acks_left == Some(0) => {}
+        Command::RouteInput { .. } => {
+            if let Some(left) = spec.input_acks_left.as_mut() {
+                *left -= 1;
+            }
+            out.push(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Ok,
+            });
         }
         _ => out.push(FrameKind::CommandResult {
             request_id,

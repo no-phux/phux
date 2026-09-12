@@ -39,6 +39,8 @@ use serde::Serialize;
 use tokio::time::Instant;
 
 use crate::attach::AttachError;
+use crate::attach::connection::Connection;
+use crate::deadline::Deadline;
 use crate::send_keys;
 use crate::snapshot::get_screen;
 use crate::wait::DEFAULT_POLL_INTERVAL;
@@ -54,9 +56,11 @@ pub struct RunResult {
     /// Captured stdout/stderr as it appeared on screen, between the
     /// `BEGIN` and `RC` markers. See `truncated`.
     pub output: String,
-    /// Wall-clock from submit to sentinel-seen, in milliseconds. Includes
-    /// poll latency, so it is an upper bound on the child's own runtime,
-    /// not a precise measurement.
+    /// Wall-clock from the start of the run's time budget (before target
+    /// resolution, when the caller started it there) to sentinel-seen, in
+    /// milliseconds. Includes connection, submission, and poll latency, so it
+    /// is an upper bound on the child's own runtime, not a precise
+    /// measurement.
     pub duration_ms: u64,
     /// `true` when the `BEGIN` marker had scrolled out of the viewport, so
     /// `output` is best-effort visible context rather than a clean capture.
@@ -74,12 +78,38 @@ pub enum RunOutcome {
     TimedOut {
         /// The command line as submitted.
         command: String,
-        /// Wall-clock waited before giving up, in milliseconds.
+        /// Wall-clock from the start of the budget to giving up, in
+        /// milliseconds.
         duration_ms: u64,
-        /// The last screen observed.
+        /// How much of the command line reached the pane.
+        submission: Submission,
+        /// The last completed screen read, or an empty default screen if
+        /// the deadline expired during submission or the first read.
         screen: ScreenState,
     },
 }
+
+/// How much of a run's command line reached the pane before it gave up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submission {
+    /// Nothing was sent: the budget ran out while connecting, resolving, or
+    /// before the first input event.
+    NotSent,
+    /// Sending began but did not finish, even with [`SUBMIT_GRACE`]: the pane
+    /// may hold part of the command line, unsubmitted, and the next input
+    /// typed into it would be appended to that line.
+    Partial,
+    /// The whole command line and its Enter were acknowledged.
+    Complete,
+}
+
+/// Extra time a submission that has already started gets past the deadline.
+///
+/// The command line and its Enter are separate `ROUTE_INPUT`s; cutting
+/// between them would leave a typed but unsubmitted line at the prompt. So
+/// input is never *started* after the deadline, but once started it gets
+/// this long to finish before the run reports [`Submission::Partial`].
+pub const SUBMIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The printed `BEGIN` marker for `nonce` (own row, short, never wraps).
 fn begin_marker(nonce: &str) -> String {
@@ -161,12 +191,24 @@ pub async fn run(
     nonce: &str,
     timeout: Option<Duration>,
 ) -> Result<RunOutcome, AttachError> {
-    let line = command_line(cmd, nonce);
-    let start = Instant::now();
-    // Submit the command; learn the exact pane it landed in so we poll the
-    // same one we wrote to.
-    let pane = send_keys::send(socket, target, &[line, "Enter".to_owned()]).await?;
-    poll_for_rc(socket, pane, cmd, nonce, timeout, start).await
+    let deadline = Deadline::new(timeout);
+    // Learn the exact pane the command will land in so we poll the same one
+    // we write to, on the connection that then carries the input.
+    let Some(connected) = deadline.run(connect_focused(socket, &target)).await else {
+        return Ok(not_sent(cmd, deadline));
+    };
+    let (conn, pane) = connected?;
+    submit_and_poll(conn, socket, pane, cmd, nonce, deadline).await
+}
+
+/// Connect and resolve `target`'s focused pane on that connection.
+async fn connect_focused(
+    socket: &Path,
+    target: &AttachTarget,
+) -> Result<(Connection, ResourceId), AttachError> {
+    let mut conn = Connection::connect(socket).await?;
+    let pane = send_keys::focused_pane(&mut conn, target).await?;
+    Ok((conn, pane))
 }
 
 /// Run `cmd` in a pre-resolved `pane`, capturing its exit code.
@@ -188,25 +230,92 @@ pub async fn run_in(
     nonce: &str,
     timeout: Option<Duration>,
 ) -> Result<RunOutcome, AttachError> {
-    let line = command_line(cmd, nonce);
-    let start = Instant::now();
-    send_keys::send_to(socket, pane.clone(), &[line, "Enter".to_owned()]).await?;
-    poll_for_rc(socket, pane, cmd, nonce, timeout, start).await
+    run_in_with_deadline(socket, pane, cmd, nonce, Deadline::new(timeout)).await
+}
+
+/// Like [`run_in`], with a budget started before target resolution.
+///
+/// The deadline bounds the connection and handshake, every screen read, and
+/// the final sleep. Input is never started after it expires; once started,
+/// the rest of the command line gets [`SUBMIT_GRACE`] to finish (see
+/// [`Submission`]). Expiry does not kill the command or retract input
+/// already delivered to the pane. Durations count from
+/// [`Deadline::started_at`].
+///
+/// # Errors
+///
+/// See [`run_in`].
+pub async fn run_in_with_deadline(
+    socket: &Path,
+    pane: ResourceId,
+    cmd: &str,
+    nonce: &str,
+    deadline: Deadline,
+) -> Result<RunOutcome, AttachError> {
+    let Some(conn) = deadline.run(Connection::connect(socket)).await else {
+        return Ok(not_sent(cmd, deadline));
+    };
+    submit_and_poll(conn?, socket, pane, cmd, nonce, deadline).await
+}
+
+/// Submit the sentinel-bracketed command over `conn`, then poll for its
+/// `RC` sentinel. Shared tail of [`run`] and [`run_in_with_deadline`].
+async fn submit_and_poll(
+    mut conn: Connection,
+    socket: &Path,
+    pane: ResourceId,
+    cmd: &str,
+    nonce: &str,
+    deadline: Deadline,
+) -> Result<RunOutcome, AttachError> {
+    let keys = [command_line(cmd, nonce), "Enter".to_owned()];
+    let submission = submit(&mut conn, &pane, &keys, deadline).await?;
+    drop(conn);
+    if submission != Submission::Complete {
+        return Ok(timed_out(cmd, deadline, submission, ScreenState::default()));
+    }
+    poll_for_rc(socket, pane, cmd, nonce, deadline).await
+}
+
+/// Deliver `keys` unless the budget has already run out; once delivery has
+/// started, let it finish within [`SUBMIT_GRACE`] past the deadline.
+async fn submit(
+    conn: &mut Connection,
+    pane: &ResourceId,
+    keys: &[String],
+    deadline: Deadline,
+) -> Result<Submission, AttachError> {
+    if deadline.expired() {
+        return Ok(Submission::NotSent);
+    }
+    let delivery = send_keys::route_keys(conn, pane, keys);
+    // `None` is the grace running out mid-delivery: part of the line may be
+    // at the prompt, unsubmitted.
+    deadline
+        .extended(SUBMIT_GRACE)
+        .run(delivery)
+        .await
+        .map_or(Ok(Submission::Partial), |delivered| {
+            delivered.map(|()| Submission::Complete)
+        })
 }
 
 /// Poll `pane`'s screen until the `RC` sentinel for `nonce` appears or
-/// `timeout` (measured from `start`) elapses. Shared tail of [`run`] and
-/// [`run_in`].
+/// the absolute deadline elapses.
 async fn poll_for_rc(
     socket: &Path,
     pane: ResourceId,
     cmd: &str,
     nonce: &str,
-    timeout: Option<Duration>,
-    start: Instant,
+    deadline: Deadline,
 ) -> Result<RunOutcome, AttachError> {
+    let start = deadline.started_at();
+    let mut screen = ScreenState::default();
     loop {
-        let screen = get_screen(socket, pane.clone()).await?;
+        let Some(read) = deadline.run(get_screen(socket, pane.clone())).await else {
+            break;
+        };
+        screen = read?;
         if let Some((idx, code)) = parse_rc(&screen.lines, nonce) {
             let (output, truncated) = extract_output(&screen.lines, idx, nonce);
             return Ok(RunOutcome::Completed(RunResult {
@@ -217,14 +326,33 @@ async fn poll_for_rc(
                 truncated,
             }));
         }
-        if timeout.is_some_and(|t| start.elapsed() >= t) {
-            return Ok(RunOutcome::TimedOut {
-                command: cmd.to_owned(),
-                duration_ms: duration_ms(start),
-                screen,
-            });
+        if deadline
+            .run(tokio::time::sleep(DEFAULT_POLL_INTERVAL))
+            .await
+            .is_none()
+        {
+            break;
         }
-        tokio::time::sleep(DEFAULT_POLL_INTERVAL).await;
+    }
+    Ok(timed_out(cmd, deadline, Submission::Complete, screen))
+}
+
+/// The budget ran out before any input was sent.
+fn not_sent(cmd: &str, deadline: Deadline) -> RunOutcome {
+    timed_out(cmd, deadline, Submission::NotSent, ScreenState::default())
+}
+
+fn timed_out(
+    cmd: &str,
+    deadline: Deadline,
+    submission: Submission,
+    screen: ScreenState,
+) -> RunOutcome {
+    RunOutcome::TimedOut {
+        command: cmd.to_owned(),
+        duration_ms: duration_ms(deadline.started_at()),
+        submission,
+        screen,
     }
 }
 
@@ -305,5 +433,108 @@ mod tests {
         let (idx, _) = parse_rc(&lines, "7").unwrap();
         let (_output, truncated) = extract_output(&lines, idx, "7");
         assert!(truncated);
+    }
+}
+
+/// phux-69pq.10: a stalled peer ends the run at the deadline, not never.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod deadline_tests {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use phux_protocol::ResourceId;
+    use tokio::net::UnixListener;
+    use tokio::time::Instant;
+
+    use phux_core::screen::ScreenState;
+
+    use super::{RunOutcome, SUBMIT_GRACE, Submission, run_in_with_deadline};
+    use crate::deadline::Deadline;
+    use crate::testkit::{self, ScriptSpec};
+
+    const BUDGET: Duration = Duration::from_millis(300);
+    /// Slack for a loaded machine; a regression overruns by far more.
+    const TOLERANCE: Duration = Duration::from_secs(3);
+    /// A regression fails here instead of hanging the test run.
+    const WEDGE: Duration = Duration::from_secs(10);
+
+    async fn run_with_budget(socket: &Path) -> (RunOutcome, Duration) {
+        let start = Instant::now();
+        let deadline = Deadline::new(Some(BUDGET));
+        let run = run_in_with_deadline(socket, ResourceId::local(1), "true", "n1", deadline);
+        let outcome = tokio::time::timeout(WEDGE, run)
+            .await
+            .expect("the run must return; a timeout here is the wedge itself")
+            .expect("a stalled peer is a timeout, not an error");
+        (outcome, start.elapsed())
+    }
+
+    /// Assert a timeout no sooner than `min` that reports `expected`, and
+    /// hand back the screen it carried.
+    fn assert_timed_out(
+        outcome: RunOutcome,
+        elapsed: Duration,
+        min: Duration,
+        expected: Submission,
+    ) -> ScreenState {
+        let RunOutcome::TimedOut {
+            submission, screen, ..
+        } = outcome
+        else {
+            panic!("expected a timeout, got {outcome:?}");
+        };
+        assert_eq!(submission, expected);
+        assert!(elapsed >= min, "gave up early after {elapsed:?}");
+        assert!(elapsed < min + TOLERANCE, "overran: {elapsed:?}");
+        screen
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_never_answers_hello_ends_the_run_on_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("silent.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(testkit::hold_silent(listener));
+
+        let (outcome, elapsed) = run_with_budget(&socket).await;
+        assert_timed_out(outcome, elapsed, BUDGET, Submission::NotSent);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_never_answers_get_screen_ends_the_run_on_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("wedged.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(testkit::serve_every(listener, || {
+            ScriptSpec::new().wedge_screen_reads()
+        }));
+
+        let (outcome, elapsed) = run_with_budget(&socket).await;
+        let screen = assert_timed_out(outcome, elapsed, BUDGET, Submission::Complete);
+        assert!(
+            screen.lines.is_empty(),
+            "no read completed, so the reported screen is the empty default"
+        );
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_acks_the_line_but_never_the_enter_reports_partial_input() {
+        // The command line and its Enter are two acknowledged ROUTE_INPUTs.
+        // A server that swallows the second one leaves the line typed but
+        // unsubmitted; the run must say so rather than claim the command
+        // was running, and must still give up (after the grace).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("half.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(testkit::serve_every(listener, || {
+            ScriptSpec::new().wedge_input_after(1)
+        }));
+
+        let (outcome, elapsed) = run_with_budget(&socket).await;
+        assert_timed_out(outcome, elapsed, BUDGET + SUBMIT_GRACE, Submission::Partial);
+        peer.abort();
     }
 }

@@ -11,6 +11,8 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const DIST = resolve(import.meta.dir, "../dist");
+const SITE_ORIGIN = "https://phux.sh";
+const DOCS_ORIGIN = "https://docs.phux.sh";
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -41,8 +43,13 @@ for (const file of files) {
   const html = await readFile(file, "utf8");
   for (const m of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
     const href = m[1];
-    if (/^(https?:|mailto:|#|data:|\/\/)/.test(href)) continue;
-    const path = href.split(/[?#]/)[0];
+    if (/^(mailto:|#|data:|\/\/)/.test(href)) continue;
+    let path = href.split(/[?#]/)[0];
+    if (href.startsWith(DOCS_ORIGIN) || href.startsWith(SITE_ORIGIN)) {
+      path = path.replace(DOCS_ORIGIN, "").replace(SITE_ORIGIN, "") || "/";
+    } else if (/^https?:/.test(href)) {
+      continue;
+    }
     if (!path.startsWith("/")) continue; // no relative links emitted; skip if any
     const key = path;
     if (seen.has(`${key}|ok`)) continue;
