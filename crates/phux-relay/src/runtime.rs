@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use phux_dial::quic::is_tunnel_cid;
+use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -60,6 +62,66 @@ const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
+
+/// Per-stream receive window a connector tunnel grants the server, in bytes:
+/// one per bridged consumer.
+///
+/// The relay is a pipe, and everything it has been granted but not yet
+/// forwarded is lag. When a consumer's link is the slow hop, the splice
+/// blocks on that consumer's congestion-tracked send, stops reading its
+/// tunnel stream, and the server may keep sending until that stream's credit
+/// is spent. At quinn's 1.25 MB default that credit held seconds of output on
+/// a slow link, so chunks left the server's output pump fresh and its
+/// staleness resync never fired. Held to this size, the server's writer
+/// blocks and the pump skips the consumer to a fresh checkpoint instead.
+/// What the window still holds is lag a relayed consumer carries on top of a
+/// direct one.
+///
+/// **Only tunnels get it.** Consumer connections keep quinn's defaults, so a
+/// large paste still crosses the relay in about one round trip. quinn fixes a
+/// connection's per-stream window when it is accepted, but the ALPN that
+/// tells a tunnel from a consumer is only known after the handshake. So the
+/// connector's dialer tags its tunnel's initial destination connection ID
+/// (`phux_dial::quic::TUNNEL_CID_PREFIX`), which the relay can read off the
+/// first packet: a tagged connection is accepted with the tunnel config
+/// ([`BoundRelay`]), everything else with the defaults. The tag selects a
+/// config, never a role — admission is still by ALPN, and a consumer that
+/// copies the tag only shrinks its own receive window. Because the window is
+/// per stream, each bridged consumer is bounded on its own: one that stops
+/// reading never holds back another on the same route. A tunnel from a
+/// connector that predates the tag gets quinn's defaults, unbounded as before
+/// the bound existed, and is logged when admitted.
+///
+/// **Throughput ceiling.** Each bridged consumer moves at most this much per
+/// round trip on the server-to-relay hop: about 10.5 Mbit/s at a 50 ms RTT,
+/// 5.2 Mbit/s at 100 ms and 1.75 Mbit/s at 300 ms, and less in practice,
+/// because credit returns in eighth-of-a-window steps. Output faster than
+/// that makes the server's pump fall behind and resync even a healthy
+/// consumer. Measured with 50 ms on that hop and a fast consumer, 64 KiB
+/// carried a ~3.5 Mbit/s flood without resyncs where 32 KiB and 16 KiB did
+/// not; on a 300 kbit/s consumer the smaller windows saved about 1 s of lag.
+/// With a healthy consumer and a 100 ms server-to-relay RTT, floods of ~0.7
+/// and ~2.8 Mbit/s ran with no resyncs and near quinn's defaults (p50 71 and
+/// 86 ms against 71 and 72 ms); at 300 ms the faster flood hit the ceiling
+/// (about 1.4 Mbit/s delivered, one resync a second, p50 350 ms against
+/// 212 ms). A 300 kbit/s consumer went from 5.4 s p50 and climbing to a flat
+/// 3.4 s.
+const TUNNEL_STREAM_RECEIVE_WINDOW: u32 = 64 * 1024;
+
+/// The QUIC transport config for relay connections: the idle and keep-alive
+/// timings every connection shares, plus [`TUNNEL_STREAM_RECEIVE_WINDOW`] for
+/// a `tunnel`.
+fn transport_config(tunnel: bool) -> quinn::TransportConfig {
+    let mut transport = quinn::TransportConfig::default();
+    if let Ok(idle) = quinn::IdleTimeout::try_from(IDLE_TIMEOUT) {
+        transport.max_idle_timeout(Some(idle));
+    }
+    transport.keep_alive_interval(Some(KEEP_ALIVE));
+    if tunnel {
+        transport.stream_receive_window(quinn::VarInt::from_u32(TUNNEL_STREAM_RECEIVE_WINDOW));
+    }
+    transport
+}
 
 /// Everything the relay needs to run.
 #[derive(Debug, Clone)]
@@ -162,12 +224,11 @@ impl RelayRuntime {
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|err| RelayError::Rustls(rustls::Error::General(err.to_string())))?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        let mut transport = quinn::TransportConfig::default();
-        if let Ok(idle) = quinn::IdleTimeout::try_from(IDLE_TIMEOUT) {
-            transport.max_idle_timeout(Some(idle));
-        }
-        transport.keep_alive_interval(Some(KEEP_ALIVE));
-        server_config.transport_config(Arc::new(transport));
+        // Same crypto, bounded per-stream window: chosen per connection by
+        // `handle_connection` from the tagged connection ID.
+        let mut tunnel_config = server_config.clone();
+        server_config.transport_config(Arc::new(transport_config(false)));
+        tunnel_config.transport_config(Arc::new(transport_config(true)));
 
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
         // The RESOLVED address: `--listen 127.0.0.1:0` reports the
@@ -175,6 +236,7 @@ impl RelayRuntime {
         let local_addr = endpoint.local_addr()?;
         Ok(BoundRelay {
             endpoint,
+            tunnel_config: Arc::new(tunnel_config),
             local_addr,
             routes: store.len(),
             tokens_path: config.tokens_path,
@@ -189,6 +251,9 @@ impl RelayRuntime {
 #[derive(Debug)]
 pub struct BoundRelay {
     endpoint: quinn::Endpoint,
+    /// The server config a tagged tunnel is accepted with: the endpoint's
+    /// crypto plus [`TUNNEL_STREAM_RECEIVE_WINDOW`].
+    tunnel_config: Arc<quinn::ServerConfig>,
     local_addr: SocketAddr,
     routes: usize,
     tokens_path: PathBuf,
@@ -230,6 +295,7 @@ impl BoundRelay {
                         Ok(permit) => {
                             tokio::spawn(handle_connection(
                                 incoming,
+                                Arc::clone(&self.tunnel_config),
                                 registry.clone(),
                                 self.tokens_path.clone(),
                                 self.preamble_deadline,
@@ -260,15 +326,31 @@ async fn refuse_over_cap(incoming: quinn::Incoming) {
 /// Drive one accepted connection to its leg by negotiated ALPN — never by
 /// what it sends (ADR-0051 invariant 7). Holds its cap permit for the
 /// connection's lifetime.
+///
+/// The flow-control config is chosen before that, from the initial
+/// destination connection ID: a tunnel-tagged connection is accepted with
+/// `tunnel_config`, anything else with the endpoint's defaults (see
+/// [`TUNNEL_STREAM_RECEIVE_WINDOW`]). The tag never decides the role.
 async fn handle_connection(
     incoming: quinn::Incoming,
+    tunnel_config: Arc<quinn::ServerConfig>,
     registry: TunnelRegistry<quinn::Connection>,
     tokens_path: PathBuf,
     preamble_deadline: Duration,
     permit: OwnedSemaphorePermit,
 ) {
     let _permit = permit;
-    let conn = match incoming.await {
+    let tagged = is_tunnel_cid(&incoming.orig_dst_cid());
+    let connecting = if tagged {
+        incoming.accept_with(tunnel_config)
+    } else {
+        incoming.accept()
+    };
+    let handshake = match connecting {
+        Ok(connecting) => connecting.await,
+        Err(err) => Err(err),
+    };
+    let conn = match handshake {
         Ok(conn) => conn,
         Err(err) => {
             // Unknown/absent-SNI consumers land here too: the SniGate
@@ -282,7 +364,7 @@ async fn handle_connection(
         return;
     };
     if alpn == QUIC_RELAY_ALPN {
-        admit_tunnel(conn, &tokens_path, preamble_deadline, &registry).await;
+        admit_tunnel(conn, tagged, &tokens_path, preamble_deadline, &registry).await;
     } else if alpn == QUIC_ALPN {
         bridge_consumer(conn, server_name, &registry).await;
     } else {
@@ -303,9 +385,11 @@ fn handshake_identity(conn: &quinn::Connection) -> Option<(Vec<u8>, Option<Strin
 
 /// Admit (or refuse) a connector tunnel: read the stream-0 auth preamble,
 /// resolve it to its enrolled route, claim the route, then park as the
-/// stream-0 watchdog until the connection ends.
+/// stream-0 watchdog until the connection ends. `bounded` is whether it was
+/// accepted with the tunnel config (its connection ID carried the tag).
 async fn admit_tunnel(
     conn: quinn::Connection,
+    bounded: bool,
     tokens_path: &Path,
     preamble_deadline: Duration,
     registry: &TunnelRegistry<quinn::Connection>,
@@ -345,7 +429,15 @@ async fn admit_tunnel(
     };
 
     let epoch = registry.claim(&route, conn.clone());
-    tracing::info!(route = %route, %remote, "tunnel up");
+    tracing::info!(route = %route, %remote, bounded, "tunnel up");
+    if !bounded {
+        tracing::warn!(
+            route = %route,
+            %remote,
+            "tunnel dialed without the connection-ID tag (a connector that predates it): \
+             output toward its consumers is not bounded at the relay"
+        );
+    }
 
     // Stream-0 watchdog. `send0` is held, not dropped: dropping it would
     // FIN the reserved stream. Stream 0 carries ONLY the preamble; any
@@ -430,6 +522,12 @@ async fn bridge_consumer(
         return;
     };
     tracing::info!(route = %route, %remote, "consumer bridged");
+    // The consumer-facing send tracks this connection's congestion window
+    // (one consumer per connection), so the splice blocks when the consumer's
+    // link is the slow hop instead of queueing megabytes here; the stall then
+    // reaches the server through this consumer's own tunnel stream, held to
+    // TUNNEL_STREAM_RECEIVE_WINDOW.
+    let cons_send = TrackedSend::new(cons_send, SendWindow::new(conn.clone()));
     splice(cons_recv, tun_send, tun_recv, cons_send).await;
     tracing::debug!(route = %route, %remote, "consumer bridge ended");
 }

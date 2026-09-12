@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-12
 ---
 
 # Transport abstraction
@@ -85,7 +85,60 @@ seam changes.
   reusing the same persisted self-signed cert and token store. Opt-in via
   `phux server --quic <HOST:PORT>`; connection migration and 0-RTT
   resumption are inherent to the stack, with a roaming-aware client the
-  follow-up.
+  follow-up. **Backpressure:** every QUIC writer whose output can outrun its
+  path — the server's QUIC and WebTransport writers, and `phux-relay`'s
+  consumer-facing leg — holds quinn's send window to the congestion window
+  plus 16 KiB of unsent slack (TCP's `NOTSENT_LOWAT` rule) rather than
+  quinn's 10 MB default, re-reading the window before every partial write.
+  That policy lives once, in `phux_dial::window` (`SendWindow`, one per
+  connection and shared by every stream on it, and the `TrackedSend`
+  writer). A link slower than a pane's output therefore blocks the writer
+  within about a round trip. The stall backs up into the attach pump, which
+  measures lag in time rather than in broadcast slots: a live chunk older
+  than 250ms when the pump dequeues it (`runtime::pump::STALE_OUTPUT_BUDGET`,
+  measured from the later of the PTY read and the current generation's
+  publication, so a chunk that merely waited behind a draining bootstrap is
+  not counted as late) fences the generation and requests an in-band resync
+  to a fresh checkpoint — the same path a dropped broadcast window takes. A
+  slow remote consumer skips frames instead of queueing seconds of output in
+  front of its own keystroke echoes. That resync is addressed to the one
+  pump that fell behind (`ResyncAudience::Only`, keyed by client and
+  stream): every other consumer of the pane skips it and keeps its
+  generation, so a slow remote attach never re-bootstraps the local TUI, a
+  recorder, or a cockpit beside it. Only a reflow is still broadcast to
+  every consumer. **Through a relay**, the same stall has to cross the
+  relay: when the relay-to-consumer hop is the slow one, the relay's splice
+  blocks on its tracked consumer send and stops reading its tunnel stream,
+  and because each tunnel stream gets only 64 KiB of receive credit
+  (`TUNNEL_STREAM_RECEIVE_WINDOW`, against quinn's 1.25 MB default) the
+  server's writer blocks behind it and the pump goes stale just as it would
+  on a direct link. Only tunnels are bounded. quinn fixes a connection's
+  per-stream window when it is accepted, before the ALPN that tells a tunnel
+  from a consumer is known, so the connector's dialer tags its tunnel's
+  initial destination connection ID (`phux_dial::quic::TUNNEL_CID_PREFIX`:
+  `phxT` followed by 16 random bytes) and the relay, reading that ID off the
+  first packet, accepts a tagged connection with the bounded config and
+  everything else with quinn's defaults, so a large paste still crosses in
+  about a round trip. The tag selects a config, never a role: admission
+  stays with the ALPN, and a consumer that copies the tag only shrinks its
+  own window. The bound is per stream, so a consumer that stops reading
+  holds only its own window and never freezes another consumer on the same
+  route. A tunnel from a connector that predates the tag gets quinn's
+  defaults, unbounded as before the bound existed, and the relay logs it
+  when admitted. Lag through a relay is
+  therefore bounded, but a relayed consumer still sits behind up to that
+  window more backlog than a direct one (on a 300 kbit/s consumer, roughly
+  3 s of on-screen lag against 1.5 s direct). **Throughput ceiling:** each
+  bridged consumer moves at most 64 KiB per round trip on the
+  server-to-relay hop — about 5.2 Mbit/s at a 100 ms RTT and 1.75 Mbit/s at
+  300 ms, less in practice — and output faster than that makes the server
+  resync even a healthy consumer. Of 16, 32 and 64 KiB, only 64 KiB carried
+  a ~3.5 Mbit/s flood over a 50 ms server-to-relay hop without resyncs.
+  With a healthy consumer and a 100 ms server-to-relay RTT, floods of ~0.7
+  and ~2.8 Mbit/s ran with no resyncs and near quinn's defaults (p50 71 and
+  86 ms against 71 and 72 ms); at 300 ms the faster flood hit the ceiling
+  (about 1.4 Mbit/s delivered, one resync a second, p50 lag 350 ms against
+  212 ms).
 - **WebTransport** (via `wtransport`) — QUIC-class transport for browsers,
   which cannot open raw QUIC connections. An HTTP/3 `CONNECT` session whose
   single bidirectional stream carries the identical length-prefixed frames;
@@ -171,3 +224,12 @@ disconnect. Normative routing semantics: `docs/spec/L1.md` §9.1.
 Every transport ADR-0007 designed exists. See ADR-0007 for the
 forward-compat constraints that still govern them (URI-shaped session IDs,
 hub-and-spoke satellite topology, per-pane encoder isolation).
+
+## Status
+
+All five byte streams exist: UDS, WebSocket, QUIC, WebTransport, and
+SSH-stdio. Relay and WebTransport writers share the QUIC send-window cap.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| Roaming-aware client that uses QUIC connection migration | The stack supports migration and 0-RTT; the attach client does not yet drive them. | [ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md) | not scheduled |

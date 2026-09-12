@@ -3,7 +3,7 @@
 //! A real `phux server` runs on a private UDS, a second session is created
 //! headlessly beside the first with a persisted layout and a blocked agent
 //! record, and a real TUI client attaches through a pseudo-terminal. The
-//! assertion is that the attached client's `spaces` row for the peer carries
+//! assertion is that the attached client's Sessions row for the peer carries
 //! the peer's state histogram.
 //!
 //! phux-k0cw.10 is why this exists. The peer sweep that populates the roster
@@ -43,9 +43,11 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-/// The session the client attaches to — zone 2 (`here`).
+/// The session the client attaches to, listed in the Sessions panel like
+/// every other session since ADR-0112.
 const SESSION: &str = "work";
-/// The session it does NOT attach to, which must appear in zone 3 (`spaces`).
+/// The session it does NOT attach to, whose row must carry the swept
+/// histogram.
 const PEER: &str = "scratch";
 /// How many session ids to probe when locating the peer's persisted layout.
 /// This file's server holds two sessions; the margin covers id allocation that
@@ -218,9 +220,9 @@ impl AttachedClient {
     fn start_on(server: &ServerGuard, session: &str) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
-                // Tall and wide enough that zone 3 is not yielded away: the
-                // strip drops `spaces` first when the rows run out, and a
-                // narrow terminal yields the sidebar entirely.
+                // Tall and wide enough that the Sessions panel is not yielded
+                // away: the strip drops Sessions first when the rows run out,
+                // and a narrow terminal yields the sidebar entirely.
                 rows: 40,
                 cols: 120,
                 pixel_width: 0,
@@ -348,15 +350,39 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
 
     // `!1` is the whole point: one blocked pane in the peer session, a count
     // the client can only know by fetching that peer's layout and then that
-    // pane's agent record. `spaces` and the peer name come free with the
-    // session graph and are asserted only to keep a failure legible.
-    let painted = client.wait_for_all(&["spaces", PEER, "!1"]);
+    // pane's agent record. The Sessions header and the peer name come free
+    // with the session graph and are asserted only to keep a failure legible.
+    let painted = client.wait_for_all(&["Sessions", PEER, "!1"]);
 
-    // The attached session belongs to zone 2 (`here`), never the roster. This
-    // catches a sweep that stopped excluding the focused session — which would
-    // also double every local layout broadcast.
+    // ADR-0112 lists the attached session in the same panel, so the peer's
+    // histogram must land on the peer's OWN row: a sweep that leaked the
+    // peer's counts into the current session's row would also double every
+    // local layout broadcast. The stripped transcript concatenates each
+    // frame's cells with `│`, and the Agents panel carries its own
+    // "● scratch blocked - claude" row, so rows are matched as badge-plus-name
+    // cells AFTER the last "Sessions" header — never by whole lines.
+    let panel = painted
+        .rfind("Sessions")
+        .map_or(painted.as_str(), |index| &painted[index..]);
+    let roster_cell = |name: &str| {
+        for badge in ["● ", "○ ", "◆ ", "◐ "] {
+            let needle = format!("{badge}{name}");
+            if let Some(start) = panel.find(&needle) {
+                let rest = &panel[start..];
+                let end = rest.find('│').unwrap_or(rest.len());
+                return &rest[..end];
+            }
+        }
+        panic!("no Sessions row for {name}:\n{painted}");
+    };
+    let peer_row = roster_cell(PEER);
     assert!(
-        painted.contains("here"),
-        "zone 2's header must still paint alongside the roster:\n{painted}"
+        peer_row.contains("!1"),
+        "the peer's row carries its swept histogram:\n{painted}"
+    );
+    let session_row = roster_cell(SESSION);
+    assert!(
+        !session_row.contains('!'),
+        "the peer's histogram must not leak into the attached session's row:\n{painted}"
     );
 }

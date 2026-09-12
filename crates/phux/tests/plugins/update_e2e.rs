@@ -125,32 +125,30 @@ fn a_tag_that_is_not_a_release_tag_is_refused_without_network() {
     }
 }
 
-/// A selected pin must not depend on latest-release discovery. Exercise the
-/// real CLI with no downloader available and an isolated, disposable HOME.
+/// `--channel next` is a closed vocabulary; anything else is clap's problem,
+/// diagnosed offline, and must not look like a release-tag refusal.
 #[test]
-fn checking_a_pin_needs_no_downloader_and_reports_latest_as_unknown() {
-    let home = tempfile::tempdir().unwrap();
-    let out = Command::new(PHUX)
-        .env_clear()
-        .env("HOME", home.path())
-        // An empty PATH cannot accidentally reach a real curl/wget or network.
-        .env("PATH", home.path())
-        .args(["update", "--check", "--version", "v9.8.7", "--json"])
-        .output()
-        .unwrap();
+fn a_channel_that_is_not_stable_or_next_is_refused_without_network() {
+    let (code, stdout, stderr) = run(&["update", "--check", "--channel", "nightly", "--json"]);
+    assert_eq!(code, 2, "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
     assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        stderr.contains("invalid value 'nightly'") || stderr.contains("possible values"),
+        "clap must name the closed vocabulary:\n{stderr}"
     );
-    assert!(out.stderr.is_empty());
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(doc["schema_version"], 2);
-    assert_eq!(doc["action"], "checked");
-    assert_eq!(doc["target_version"], "v9.8.7");
-    assert!(doc["latest_version"].is_null());
-    assert!(doc["artifact"].is_null());
-    assert!(doc["server_handoff"].is_null());
+}
+
+/// `--channel next` on an unrecognized install is still a source refusal,
+/// before anything reaches the network.
+#[test]
+fn next_channel_does_not_bypass_the_unknown_source_refusal() {
+    let (code, stdout, stderr) = run(&["update", "--channel", "next", "--json"]);
+    assert_eq!(code, 2, "stderr:\n{stderr}");
+    assert!(stdout.is_empty());
+    assert_eq!(
+        json_error(&stderr)["error"]["code"],
+        "update_source_unsupported"
+    );
 }
 
 /// `--check` reports; `--dry-run` and `--rollback` act. Combining them is a

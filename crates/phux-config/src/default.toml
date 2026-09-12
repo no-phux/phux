@@ -406,16 +406,14 @@ which-key-delay-ms = 400
 #
 # The shipped lineup: padded window tabs left, contextual help hints
 # center, session name + clock right. The tab `format` carries a leading
-# and trailing space and `separator` is empty, so the active tab's fill
+# and trailing space with a one-cell separator, so the active tab's fill
 # reads as a padded chip rather than a highlight hugging the glyphs — and
 # because every cell of a segment (padding included) is a click target,
 # the padding also widens the mouse target by two columns per tab.
 #
-# The two colors below are the theme's `accent` (#7aa2f7) over the
-# tokyonight base, and the same muted blue-grey the `dim` /
-# `sidebar_section` theme slots use for recessive chrome. Both chips
-# clear 4.5:1 against their own background (the active chip 6.8:1, the
-# inactive 5.6:1), which is the palette-wide contrast floor documented in
+# The colors below follow the theme's lime `accent` over the selected
+# surface, and the slate `dim` text over the panel surface. Both chips
+# clear 4.5:1 against their own background, the contrast floor documented in
 # crates/phux-tui/src/render/theme.rs. They are spelled out rather
 # than named because widget styles are plain data — see `[theme]` in
 # docs/consumers/tui.md section 4.4 for the slot list.
@@ -438,8 +436,8 @@ right = [
   { kind = "time", format = " %a %H:%M", min-cols = 65 },
   { kind = "switch", max-cols = 64 },
 ]
-# Which outer-terminal row the bar reserves: "bottom" (default) or "top".
-# position = "bottom"
+# Which outer-terminal row the bar reserves: "top" (default) or "bottom".
+# position = "top"
 
 # Chrome + overlay palette. Every slot below is set to its shipped value
 # in code (crates/phux-tui/src/render/theme.rs); the block is commented
@@ -478,20 +476,16 @@ right = [
 # then lime focus plus BOLD. Retinting one slot is fine; dropping a
 # rung below the floor makes chrome that some people cannot see at all.
 
-# The window sidebar (prefix-b toggles it): a vertical strip in three
-# zones, ON by default.
+# The sidebar (prefix-b toggles it): two fixed panels, ON by default.
 #
-#   needs you   every agent wanting a human, ACROSS SESSIONS, worst first —
-#               and absent entirely when nothing does. The strip shrinks
-#               when you are calm; that is the point of it.
-#   here        this session's windows, each with its branch line.
-#   spaces      one rolled-up line per OTHER session: a status dot and a
-#               `!1 *2` count, so you can see what is on the line without
-#               opening anything.
+#   Agents      cross-session agents in stable session/window/pane order.
+#               State changes update badges without reordering rows.
+#   Sessions    session names and serving hosts, with the current session's
+#               windows nested below. Each panel keeps half the body height.
 #
-# Clicking a `needs you` row jumps to that agent, switching sessions if it
-# lives in another one; a `spaces` row switches to that session; the `+N
-# more` row opens the full fleet dashboard (prefix A).
+# Clicking an agent row navigates to its window, switching sessions if needed.
+# Session names and host rows switch to that session with its host qualifier.
+# Agents overflow opens the fleet dashboard; Sessions overflow opens the picker.
 #
 # Width 0 (the default) adapts to one quarter of the viewport, bounded to
 # 28–40 columns. A positive width reserves exactly that many columns.

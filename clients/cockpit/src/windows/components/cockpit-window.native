@@ -10,11 +10,16 @@
             <text foreground="text_muted" overflow="ellipsis">{detail}</text>
           </column>
         </list-item>
+        <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
+
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
               <column width="{width}" gap="4">
-                <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}">{tab.title}</toggle-button>
+                <row gap="4" cross="center">
+                  <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
+                  <if test="{tab.attention}"><text label="{tab.attentionLabel}">●</text></if>
+                </row>
                 <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
                 <else><spacer height="2" /></else>
               </column>
@@ -41,9 +46,9 @@
                   <if test="{row.agent}">
                     <row gap="8" padding="4" cross="center">
                       <spacer width="16" />
-                      <text foreground="text_muted">{row.label}</text>
-                      <text grow="1" foreground="text_muted">{row.state}</text>
-                      <text foreground="warning">{row.mark}</text>
+                      <text grow="1" foreground="text_muted" overflow="ellipsis">{row.label}</text>
+                      <text foreground="text_muted">{row.state}</text>
+                      <text foreground="warning" label="{row.attentionLabel}">{row.mark}</text>
                     </row>
                   </if>
                   <else>
@@ -51,6 +56,7 @@
                       <if test="{row.selected}"><spacer width="2" height="24" background="accent" /></if>
                       <else><spacer width="2" height="24" /></else>
                       <list-item grow="1" icon="terminal" role="tab" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">{row.label}</list-item>
+                      <if test="{row.mark}"><text label="{row.attentionLabel}">{row.mark}</text></if>
                     </row>
                   </else>
                 </for>
@@ -89,7 +95,9 @@
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
               <text grow="1" size="heading">{navigatorTitle}</text>
+              <button size="sm" variant="ghost" on-press="agents_open">Agents</button>
               <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
+
             </row>
             <row gap="4" cross="center" label="Navigator views">
               <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
@@ -259,6 +267,52 @@
     </if>
   </stack>
 </template>
+<template name="cockpit-agents" args="open rows notice previous next status">
+  <stack>
+    <if test="{open}">
+      <!-- Geist sm/md insets; detail viewport = four default 40pt bands. -->
+      <row main="center" cross="start" padding="8">
+        <panel width="520" padding="12">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <text>Agents</text>
+              <text grow="1" wrap="true" foreground="text_muted">{notice}</text>
+              <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
+            </row>
+            <scroll height="160" label="Agent inspection details">
+              <column gap="8">
+                <text wrap="true" foreground="text_muted">{status}</text>
+                <for each="rows" key="id" as="agent">
+                  <column gap="4">
+                    <text wrap="true">{agent.label}</text>
+                    <text foreground="text_muted">Resource</text>
+                    <text wrap="true" label="{agent.resource}">{agent.resource}</text>
+                    <text foreground="text_muted">Parent</text>
+                    <text wrap="true" label="{agent.parent}">{agent.parent}</text>
+                    <text foreground="text_muted">Native ID</text>
+                    <text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text>
+                    <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                  </column>
+                </for>
+              </column>
+            </scroll>
+            <for each="rows" key="id" as="agent">
+              <if test="{agent.index != 65535}"><button size="sm" autofocus="true" on-press="palette_submit">Jump to parent</button></if>
+              <else><text foreground="text_muted">Parent unavailable</text></else>
+            </for>
+            <row gap="8" cross="center">
+              <if test="{previous}"><button size="sm" variant="ghost" on-press="palette_previous">Previous agent</button></if>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
+              <if test="{next}"><button size="sm" variant="ghost" on-press="palette_next">Next agent</button></if>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 
 <!-- Rename Session, presented by whichever window invoked it. The engine
      names the session on screen and the coordinator that owns it; the new

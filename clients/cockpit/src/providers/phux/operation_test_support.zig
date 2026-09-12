@@ -5,8 +5,8 @@ const agent_sessions = @import("agent_sessions.zig");
 
 /// Rows one hand-built resource-catalog fixture may carry. Deliberately far
 /// below the roster ceiling: this array is a local, and a 256-row one would be
-/// 150 KB of stack for a fixture that never needs more than a handful.
-pub const max_agent_fixture_rows: usize = 16;
+/// 150 KB of stack. Thirty rows exercise overflow past the 24-row chrome cap.
+pub const max_agent_fixture_rows: usize = 30;
 
 /// One agent row of a hand-built resource catalog, in the terms the ABI
 /// publishes them (`PhuxResourceInfo`): a local resource id, its parent's, and

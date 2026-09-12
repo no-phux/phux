@@ -246,8 +246,8 @@ Asking saves us both time:
 
 - **An embedded scripting language.** Commands are typed IPC messages.
   If you want logic, write a script and shell out.
-- **A plugin system on day one.** Hooks are typed events. We may design a
-  proper plugin contract later, after we know what is actually pluggable.
+- **An in-process plugin host.** Plugins are external packages declared in
+  config, not code loaded into the server.
 - **A homegrown selection engine.** Selection and copy delegate: text
   selection (word/line/output boundaries, OSC-133-aware) and extraction
   (plain/VT/HTML) belong to the host terminal and to libghostty-vt's

@@ -57,5 +57,7 @@ getrandom = { version = "0.4", features = ["std"] }
 tempfile.workspace = true
 # The integration tests drive both relay legs through the production dialer:
 # consumers via `phux_dial::quic::dial` (pinned fingerprint, bearer preamble),
-# the stub connector via `dial_with_alpn` + `QUIC_RELAY_ALPN`. phux-dial is now
-# a regular dependency (see above), so it needs no entry here.
+# the stub connector via `dial_with_alpn` + `QUIC_RELAY_ALPN`. phux-dial is a
+# regular dependency (see above); this entry only adds its `testing` feature,
+# whose `DropProxy` blackholes the consumer leg in the backpressure test.
+phux-dial = { workspace = true, features = ["provision", "testing"] }

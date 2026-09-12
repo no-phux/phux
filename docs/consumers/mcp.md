@@ -1,42 +1,34 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
 # The phux MCP adapter
 
-**TL;DR.** This doc covers what is MCP-specific in `phux mcp`: the live
-JSON-RPC stdio tools spanning inspection, execution, session lifecycle,
-agent identity, existing-pane layout, and bounded plugin/workspace operations;
-the stdio transport and lifecycle; target resolution; and the `tools/call`
-envelope.
-The installed, binary-matched operating guide is `phux mcp --skill`; exact
-tool inputs come from live `tools/list` or the identical offline
-`phux mcp --schema` catalog. The structured shapes the tools return and the selector grammar are the
-shared agent surface and live in their owning docs; this file links them. The
-canonical orchestration loop and safety boundaries are compiled into the
-adapter rather than copied from a checkout example.
+**TL;DR.** What is MCP-specific in `phux mcp`: stdio JSON-RPC,
+registration, socket selection, and the tools the adapter deliberately
+omits. The installed catalog is `phux mcp --schema`; the operating guide
+is `phux mcp --skill`. Return shapes and selectors are the shared agent
+surface.
 
 ---
 
 ## Registering with a host
 
-Installing phux puts both release binaries on `PATH`, but does not register MCP
-with a host. Start phux first so the server is running (`phux` starts it when
-needed), then register the stdio adapter with Claude Code:
+Installing phux puts both release binaries on `PATH` but does not
+register MCP with a host. Start phux first so the server is running
+(`phux` starts it when needed), then register:
 
 ```sh
 claude mcp add phux -- phux mcp
 ```
 
-`phux mcp` does not auto-start the phux server, and neither does the
-`phux_new` tool. Leave the server running while the host calls tools such as
+`phux mcp` does not auto-start the phux server, and neither does
+`phux_new`. Leave the server running while the host calls tools such as
 `phux_ls`.
 
-For another MCP host, select its stdio transport and use `phux mcp` with no
-adapter arguments. Hosts that use the common MCP server configuration shape
-can use:
+For another MCP host, stdio with no adapter arguments:
 
 ```json
 {
@@ -49,32 +41,15 @@ can use:
 }
 ```
 
-The adapter connects to the default phux socket. For a non-default socket, set
-`PHUX_SOCKET` in the environment the host gives the MCP process:
+The adapter connects to the default phux socket. For a non-default
+socket, set `PHUX_SOCKET` in the environment the host gives the MCP
+process. An individual tool call can instead supply its optional
+`socket` argument; that argument takes precedence over `PHUX_SOCKET`.
+The adapter does not read credentials: access is the local Unix socket
+under the permissions of the user running the host.
 
-```json
-{
-  "mcpServers": {
-    "phux": {
-      "command": "phux",
-      "args": ["mcp"],
-      "env": {
-        "PHUX_SOCKET": "/absolute/path/to/phux.sock"
-      }
-    }
-  }
-}
-```
-
-An individual tool call can instead supply its optional `socket` argument;
-that argument takes precedence over `PHUX_SOCKET`. The adapter does not read
-credentials or require credentials in its host configuration: access is to
-the local Unix socket under the permissions of the user running the host.
-
-### Binary discovery
-
-Before registration, inspect the installed binary without a server, config
-read, or JSON-RPC handshake:
+Inspect the installed binary without a server, config read, or JSON-RPC
+handshake:
 
 ```sh
 phux mcp --skill
@@ -82,610 +57,147 @@ phux mcp --schema
 phux mcp --help
 ```
 
-`--skill` is the compiled operating guide. `--schema` is the exact MCP Tool
-descriptor array returned by live `tools/list`, including each `inputSchema`;
-it is not a catalog of tool output schemas. These are standalone modes and do
-not belong in the host's normal server command. `phux --capabilities --json`
-reports whether this companion is discoverable beside phux or on `PATH`.
-The launcher replaces itself with `phux-mcp`, preserving stdio, signals, and
-exit status. Direct `phux-mcp` registrations remain valid compatibility entry
-points; keeping the implementation separate avoids linking MCP server machinery
-into every CLI invocation.
+`--skill` is the compiled operating guide. `--schema` is the exact MCP
+Tool descriptor array returned by live `tools/list`, including each
+`inputSchema`; it is not a catalog of tool *output* schemas. These are
+standalone modes and do not belong in the host's normal server command.
+`phux --capabilities --json` reports whether this companion is
+discoverable beside phux or on `PATH`.
 
-## 0. What this is, what this isn't
+The launcher replaces itself with `phux-mcp`, preserving stdio, signals,
+and exit status. Direct `phux-mcp` registrations remain valid.
 
-This is the MCP adapter only. `phux-mcp` has no separate core: each tool
-is a thin wrapper over the same `phux-client` functions the agent CLI
-verbs use ([`agents.md`](./agents.md)). Like every consumer it holds no
-protocol-level privilege
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)); the
-structured agent surface is a local projection over the shared engine,
-exposed through the CLI and its versioned JSON schema, not a wire service
-([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)).
+## What this is
 
-Two things this file does not restate, by the "one fact, one home" rule:
+A thin adapter over the same `phux-client` functions the agent CLI uses
+([`agents.md`](./agents.md)). It holds no protocol-level privilege.
+Return shapes are the CLI `--json` documents; selectors are the CLI
+`TARGET` grammar ([`tui.md`](./tui.md#selectors)). Run `phux mcp --schema` for
+every current argument. Do not infer required fields from this page.
 
-- The structured return shapes — `ScreenState`, `RunResult`,
-  `SessionListJson` — are owned by [`agents.md`](./agents.md) §4. Each
-  tool below names the shape and links there.
-- The selector grammar is owned by [`tui.md`](./tui.md) §3. §2 below
-  links it.
+## Transport and lifecycle
 
----
-
-## 1. Transport and lifecycle
-
-`phux-mcp` speaks **JSON-RPC 2.0 over the MCP stdio transport**:
-newline-delimited JSON, one message per line on stdin and stdout. The
-JSON-RPC is hand-rolled over `serde_json` — no framework dependency.
-
-The MCP protocol version is pinned to the `2024-11-05` revision. Newer
-MCP revisions are additive; the pin is bumped when the adapter adopts
-one.
-
-The methods:
+JSON-RPC 2.0 over the MCP stdio transport: newline-delimited JSON, one
+message per line. The JSON-RPC is hand-rolled over `serde_json`. The MCP
+protocol version is pinned to `2024-11-05`.
 
 | Method | Reply |
 |---|---|
-| `initialize` | `protocolVersion`, `capabilities` (`{ "tools": {} }`), and `serverInfo` (`name` = `"phux"`, `version` = the crate version) |
-| `notifications/initialized` | none (it is a notification) |
+| `initialize` | `protocolVersion`, `capabilities` (`{ "tools": {} }`), `serverInfo` (`name` = `"phux"`, `version` = the crate version) |
+| `notifications/initialized` | none |
 | `notifications/cancelled` | none; aborts the in-flight `requestId` and returns error `-32800` for that original id |
-| `tools/list` | the tool catalog (see §3) |
-| `tools/call` | dispatch by tool name (see §3, §4) |
-| `ping` | an empty result (keepalive) |
+| `tools/list` | the tool catalog |
+| `tools/call` | dispatch by tool name |
+| `ping` | empty result |
 
-Robustness: a malformed line yields a JSON-RPC parse error with a null
-id; an unknown method on a request yields a method-not-found error (an
-unknown notification, having no id, is silently ignored). Tool calls run as
-independently abortable tasks while the server keeps reading requests. Replies are
-serialized through the transport loop and retain their original ids even when
-they complete out of order. `notifications/cancelled` aborts the matching task;
-stdin EOF aborts and drains every pending task. Dropping a CLI-backed task
-therefore triggers the subprocess adapter's `kill_on_drop` child cleanup.
+A malformed line yields a JSON-RPC parse error with a null id; an
+unknown method on a request yields method-not-found (an unknown
+notification is ignored). Tool calls run as independently abortable
+tasks. Replies retain their original ids when they complete out of
+order. stdin EOF aborts and drains every pending task; dropping a
+CLI-backed task triggers `kill_on_drop` child cleanup.
 
----
+## Target resolution
 
-## 2. How a tool resolves a target
+Every targeted tool takes a `target` selector string in the same grammar
+as the CLI. Resolution is client-side. `=` is unsupported: an MCP
+request has no attached-client focus history. Use `.` or an explicit
+target.
 
-Every targeted tool (`phux_snapshot`, `phux_send_keys`, `phux_paste`,
-`phux_run`, `phux_wait`, `phux_kill`, `phux_watch`, `phux_ask`, `phux_launch`,
-`phux_spawn`, `phux_signal`, `phux_tag`, and the three pane-layout tools)
-takes a `target` selector string in the **same grammar as the CLI's
-`TARGET`**, whose table and examples live in
-[`tui.md`](./tui.md) §3. In one line, the forms are: `.` (current), `=`
-(last), `name` (session), `name:N` / `name:tag` (window), `name:N.M`
-(pane), `@N` (local opaque id), `host/@N` (satellite terminal), and `#tag`
-(tag set, where the tool permits a set).
+This tree's adapter **resolves `%name`**. In-process tools parse it as
+`Selector::Agent` and resolve it to the named agent's Terminal (exactly
+one match, or a refusal). CLI-backed session tools pass the string
+through: `phux_agent_session_close`, `phux_agent_emit`, and
+`phux_agent_log` therefore hit the AgentSession, while Terminal-facet
+tools hit the parent pane. Two live sessions sharing a name refuse.
 
-Resolution is **client-side**, exactly as the CLI resolves it
-([ADR-0021](../../ADR/0021-control-plane-commands.md)): the adapter
-fetches a state snapshot, expands the selector to candidate
-`ResourceId`s, then narrows to a single pane — the focused pane if it is
-among the candidates, else the first in snapshot order. This is the same
-`pick_target_pane` tiebreak the CLI uses. The server never parses a
-selector. `=` is explicitly unsupported here because an MCP request has no
-attached-client focus history; callers must use `.` or an explicit target.
+`phux_snapshot` and `phux_wait` make `target` optional (default
+focused/last session). `phux_watch` may omit it to collect server-wide
+events (no `agent_state` items in that case). `phux_send_keys`,
+`phux_paste`, `phux_run`, `phux_ask`, `phux_kill`, `phux_signal`,
+`phux_tag`, and the spatial tools require an explicit target. Spatial
+selectors must each resolve to exactly one local same-session pane.
 
-`target` optionality differs per tool:
+Socket precedence: explicit `socket` argument, then `PHUX_SOCKET`, then
+the daemon default (`$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to
+`/tmp/phux-$UID/phux.sock`).
 
-- `phux_snapshot` and `phux_wait` make `target` **optional**; when absent
-  they default to the focused/last session (`Selector::Last`). `phux_watch`
-  also permits omission to collect server-wide events.
-- `phux_send_keys`, `phux_paste`, `phux_run`, `phux_ask`, `phux_kill`,
-  `phux_signal`, `phux_tag`, and the spatial tools require explicit targets. Spatial selectors
-  must each resolve to exactly one local same-session pane rather than applying
-  the focused-pane tiebreak.
-- `phux_launch` and `phux_spawn` use optional `target` only for explicit local
-  placement. The pane-specific `phux_agent_*` tools document optionality in
-  their schemas.
-
-`%name` is reserved for the proposed agent-name addressing contract in
-[ADR-0075](../../ADR/0075-agent-name-addressing.md), but no shipped MCP tool
-resolves it yet. It fails closed as a selector miss. Use a direct `@N` target
-until the ADR is accepted and implemented.
-
-Server-facing tools also take an optional `socket` string naming the
-Unix-domain socket to connect to. Precedence: an explicit `socket`
-argument, then the `PHUX_SOCKET` environment variable, then the daemon
-default (`$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to
-`/tmp/phux-$UID/phux.sock` — the segment is `$UID`, then `$USER`, then
-the literal `default`).
-
----
-
-## 3. The tool catalog
-
-The live tools are returned verbatim by `tools/list`. Each `inputSchema` is a
-JSON Schema `object`. Tools that take no required argument (e.g.
-`phux_ls`) work with no `arguments` at all. The return shapes are the
-shared agent shapes owned by [`agents.md`](./agents.md) §4; each tool
-names its shape and links there.
-
-### 3.0 Reading the catalog without a session
+## Catalog
 
 `phux mcp --schema` prints the same array `tools/list` returns, as a
-standalone pretty-printed JSON document, and exits:
+standalone pretty-printed JSON document, and exits. It needs neither a
+running phux server nor a JSON-RPC handshake: the catalog is compiled
+into the binary.
 
 ```sh
 phux mcp --schema | jq -r '.[].name'
-phux mcp --schema > phux-tools.json
 ```
 
-It needs neither a running phux server nor a JSON-RPC handshake: the
-catalog is a compile-time constant of the binary, so the tool surface is
-readable before anything is wired up. Useful for pinning the surface in a
-test, diffing it across releases, or generating a client.
-
-The flag is owned by the MCP companion and forwarded by `phux mcp`, rather
-than living at `phux api schema`, because this
-binary already owns the schemas. Exposing them from the main `phux` binary
-would mean either duplicating them — after which they drift — or linking
-the whole MCP stack into every `phux ls`.
-
-### 3.1 `phux_ls`
-
-Lists phux sessions on the running server. No target.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: the canonical versioned `phux ls --json` document:
-`{ "schema_version": 3, "sessions": [ { "name", "windows", "attached",
-"attached_clients" } ],
-"terminals": [...], "unreachable": [...] }`, sorted by name. MCP executes and
-parses that CLI surface, so one parser works for both — including
-`unreachable`, which is empty exactly when the listing covers the whole fleet
-([`agents.md`](./agents.md) §4.1). A non-empty `unreachable` makes `sessions`
-and `terminals` a lower bound, not an inventory. On a resource-model server
-the document also carries the additive `resources` array — one
-`{ id, kind, parent }` per resource, `kind` being `terminal` or
-`agent_session` — passed through unchanged; `terminals` stays the
-Terminal-kind inventory.
-
-### 3.2 `phux_snapshot`
-
-Captures a pane as structured screen data. Side-effect-free: it does not
-attach or resize.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | no | Selector (see §2). Defaults to focused. |
-| `scrollback` | number | no | Tri-state — see below. |
-| `cells` | boolean | no | When true, include per-cell OSC-133 marks and styles. Default `false`. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-`scrollback` is **tri-state**: **absent** captures the viewport only;
-**`0`** captures all retained history; **`N`** captures the most-recent
-`N` rows.
-
-Result: a serialized `ScreenState` — the same struct `phux snapshot`
-emits, with `cells` populated only when `cells` is true. The field
-catalog (schema version, `cursor`, `lines`, `scrollback`, the sparse
-`cells` array) is owned by [`agents.md`](./agents.md) §4.2.
-
-### 3.3 `phux_send_keys`
-
-Routes input to the resolved pane by id. No attach, no resize.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | yes | Selector (see §2). |
-| `keys` | array of string | yes | Keys to send; must be non-empty. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Each entry in `keys` is a named key (`Enter`, `Tab`, `C-c`, ...) or a
-literal string, tmux-style.
-
-Result: `{ "sent": true, "pane": "<pane>" }`. `pane` is the canonical
-direct selector (`@N` or `host/@N`) and can be passed back as `target`.
-
-### 3.4 `phux_run`
-
-Runs a command in the resolved pane and reports its result. Assumes a
-POSIX shell.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | yes | Selector (see §2). |
-| `command` | string | yes | The command line to run. |
-| `timeout_secs` | number | no | Default `600`; `0` waits indefinitely. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result on completion: a serialized `RunResult`
-(`{ command, exit_code, output, duration_ms, truncated }`), shape owned
-by [`agents.md`](./agents.md) §4.3.
-
-MCP executes the canonical `phux run --json` command. Completion returns the
-same `RunResult`; timeout emits no JSON and becomes an MCP tool error from the
-CLI's exit `125`, matching the CLI contract. MCP additionally bounds
-`timeout_secs` to `1..=3600` so a tool call cannot wait forever.
-
-### 3.5 `phux_wait`
-
-Polls the resolved pane until a condition holds.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | no | Selector (see §2). Defaults to focused. |
-| `until` | string | no | Succeed once a visible line contains this substring. |
-| `idle_ms` | number | no | Succeed once the screen holds still this long. |
-| `timeout_secs` | number | no | Give up after this many seconds. The API default is unbounded; orchestration callers must provide a finite value. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Condition precedence: `until` wins when present (succeed on a substring
-match); otherwise the tool settles on idle, using `idle_ms` or the
-default dwell when `idle_ms` is absent.
-
-Result: `{ "outcome": "met" | "timed_out", "polls": N }`.
-
-### 3.6 `phux_new`
-
-Creates a named session without attaching through canonical
-`phux new --json`; the CLI may start the local server when needed.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `name` | string | yes | Name for the new session. A name already in use is rejected. |
-| `command` | array | no | Initial command (argv) for the seed pane. Omit or pass `[]` for the server's default shell. |
-| `cwd` | string | no | Working directory for the seed pane. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: the canonical `phux new --json` document verbatim — `{
-"schema_version": 1, "session", "terminal_id" }`.
-
-### 3.7 `phux_kill`
-
-Tears down the Terminal(s) a selector resolves to — a whole session, a
-window, a pane, or `@id` — in one atomic `KILL_RESOURCES`.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | yes | Selector (§2). Resolves to its full id set. |
-| `confirm` | boolean (`true`) | yes | Explicit destructive-operation confirmation; false or absent is rejected before subprocess execution. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: `{ "schema_version": 1, "killed": true, "target": "..." }` after the
-canonical CLI exits successfully. A clean server disconnect after reaping its
-last session is already treated as success by that CLI path.
-
-### 3.8 `phux_detach`
-
-Force-detaches every client attached to a session — or every client attached
-anywhere on the server, with no `session` — from outside any attach UI. No
-`target`: this addresses a session by name, the same scope `phux detach`
-addresses, not a pane.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `session` | string | no | Session to detach clients from. Omit to detach every attached client on the server. |
-| `confirm` | boolean (`true`) | yes | Explicit confirmation; false or absent is rejected before any connection. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: `{ "schema_version": 1, "detached": N, "session": "..." | null }`.
-`detached` is the number of clients actually disconnected, read back from the
-server's reply rather than assumed — `0` means nobody was attached there,
-which is success, not a miss.
-
-This is the bounded, request/response half of "attach or detach": it never
-opens a live terminal stream, so — unlike `phux attach` — it fits the
-one-text-content-block `tools/call` envelope described in §4. It talks
-`DETACH_CLIENTS` directly over the wire (the `phux detach` CLI verb has no
-`--json` to execute instead) through the same `phux_client::attach::connection`
-primitives the CLI opens itself, rather than a subprocess — see §5 for the
-in-process/subprocess split. **There is deliberately no MCP `phux_attach`.**
-The CLI's `attach` starts a full TUI renderer over a live ANSI stream, which
-has no request/response shape and cannot ride the single text content block a
-`tools/call` result carries — the same reasoning
-[`agent_tools.rs`](../../crates/phux-mcp/src/agent_tools.rs) already gives
-for declining `phux_agent_attach`/`observe`. A headless host that wants the
-live stream shells out to `phux attach` itself; MCP exposes only the
-lifecycle edge (force-ending someone else's attachment), never the stream.
-
-### 3.9 `phux_watch`
-
-The push half of the agent surface — tagged lifecycle/activity events
-(`command_started`/`finished`, `title_changed`, `bell`,
-`pane_spawned`/`closed`, `dirty`, `idle`, `asked`) — exposed as a **bounded
-one-shot** tool. MCP `tools/call` is request/response while the underlying
-stream is long-lived, so the tool collects events until a bound is reached,
-then returns the batch; an MCP host that wants a truly live stream still
-shells out to `phux watch --json`.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | no | Pane selector to watch. Omit for server-wide events. |
-| `max_events` | number | no | Return after collecting this many events. |
-| `timeout_secs` | number | no | Return after this many seconds. Canonical orchestration always supplies this and/or `max_events`; without either the call blocks until the server exits. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: `{ schema_version: 1, events: [ { event, terminal?, ...payload } ],
-count: N }`, the same per-event JSON shape as `phux watch --json`, including
-`asked` payloads with `id`, `question`, `suggestions`, and nullable
-`elapsed_seconds`. The envelope is versioned here even though the CLI's
-`phux watch --json` is not: that surface is an unbounded NDJSON stream a
-consumer may join mid-flight, so it is versioned by the binary, while this
-one is an ordinary bounded document. It is an
-accelerator of `phux_wait`'s poll floor, not a replacement: `phux_wait` is
-still the way to block on a specific screen condition.
-
-### 3.10 `phux_plugin_action`
-
-Executes one action declared by an enabled configured plugin manifest.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `plugin_id` | string | yes | Configured plugin id. |
-| `action_id` | string | yes | Plugin-local action id. |
-| `timeout_secs` | number | no | Give up after this many seconds. Omit to wait indefinitely. |
-| `cwd` | string | no | Override cwd. Relative paths resolve under the plugin root. |
-| `config` | string | no | Override `config.toml` path; defaults to the normal phux config path. |
-
-Result: the same `schema_version = 1` action result as
-`phux config run --json`: `plugin_id`, `action_id`, `command`, `cwd`,
-`outcome`, `exit_code`, `stdout`, `stderr`, and `duration_ms`. The runtime
-executes argv directly from the plugin root; there is no hidden shell
-expansion.
-
-### 3.11 `phux_ask`
-
-Reports that an agent in a pane is asking for human input. This is the
-MCP twin of `phux ask`: it emits the same `asked` event that
-`phux_watch` / `phux watch --json` observe, without writing a sentinel to
-the target PTY.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | yes | Selector (see §2). |
-| `id` | string | yes | Stable question id for answer correlation. |
-| `question` | string | yes | Human-facing question text. |
-| `suggestions` | array of string | no | Suggested answers in display order. |
-| `elapsed_seconds` | number | no | Seconds the agent has already been waiting. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: `{ schema_version: 1, event: "asked", terminal: "@N", id, question,
-suggestions, elapsed_seconds }`, matching the CLI's `phux ask --json`
-projection. This is
-advisory attention, not focus authority: present the payload to the human and
-point them to TUI `C-a q` (next ask) / `C-a Q` (return); do not synthesize those
-keys from MCP.
-
-### 3.12 `phux_plugin_workspace`
-
-Lists configured plugin workspace profiles. This is the workspace
-composition/read half of the plugin surface: it returns the manifest-level
-agents, actions, events, and pane roles that describe an agent bench. It
-does not create panes by itself; agents compose the returned profile with
-the existing `phux_new`, `phux_send_keys`, `phux_run`, `phux_wait`, and
-`phux_plugin_action` tools.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `plugin_id` | string | no | Optional configured plugin id filter. |
-| `workspace_id` | string | no | Optional plugin-local workspace id filter. |
-| `config` | string | no | Override `config.toml` path; defaults to the normal phux config path. |
-
-Result: `{ workspaces, count }`, where each item contains
-`plugin_id`, `plugin_name`, `enabled`, and the serialized plugin
-`workspace` profile. A filtered miss is an MCP tool error.
-
-### 3.13 `phux_paste`
-
-Pastes a payload into the resolved pane as one paste event. No attach, no
-resize. The server picks the delivery form from the pane's live terminal
-state: with bracketed paste (DEC mode 2004) on, the payload arrives wrapped
-in `ESC[200~` / `ESC[201~` as a single block; otherwise the raw bytes are
-delivered as if typed. A paste inserts without submitting — paste-aware
-programs buffer the block until a real Enter, so follow with
-`phux_send_keys` sending `Enter` to run it. Prefer this over
-`phux_send_keys` for multiline or indented text, which per-character typing
-would corrupt through the target's auto-indent. The CLI contract (trust
-default, `--untrusted` gate) is owned by [`agents.md`](./agents.md) §2.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `target` | string | yes | Selector (see §2). |
-| `text` | string | yes | The payload to paste, verbatim (newlines included). |
-| `untrusted` | boolean | no | Mark the payload untrusted; the pane's untrusted-paste policy (reject by default) may silently drop an unsafe payload. Default `false` — the caller vouches for content it composed. |
-| `socket` | string | no | Override the UDS path (see §2). |
-
-Result: `{ "sent": true, "pane": "<pane>", "untrusted": <bool> }`. `pane`
-is the canonical direct selector (`@N` or `host/@N`). A dropped untrusted
-payload still reports `sent: true` — the route was accepted; the drop is
-the pane's policy.
-
-### 3.14–3.32 Orchestration parity tools
-
-The remaining strict-schema tools execute the canonical `phux` CLI with
-argv (never a shell), parse its JSON or small documented text shape, cap each
-string at 4096 bytes and arrays at 64 entries, cap stdout/stderr at 1 MiB/64
-KiB, and kill the child on cancellation or deadline.
-
-| Tool | CLI mapping | Required safety/shape notes |
-|---|---|---|
-| `phux_launch` | `phux launch --json` | Integration or `list: true`; optional exact local `target`, split, ratio, cwd, and bounded extra argv. |
-| `phux_spawn` | `phux spawn --json` | Optional explicit placement (`target`, split, ratio) or satellite; target and satellite conflict. Command is argv, not shell text. |
-| `phux_signal` | `phux signal` | Explicit target and signal; `interrupt`, `terminate`, and `kill` require `confirm: true`. |
-| `phux_tag` | `phux tag` | `ls`/`add`/`rm`; returns a versioned projection of the CLI's tab-separated confirmation. |
-| `phux_rename` | `phux rename` | Explicit current and new session names. |
-| `phux_agent_list`, `phux_agent_show`, `phux_agent_explain` | matching `phux agent` read | Distinct schemas; level reads and detector provenance. No action multiplexer. |
-| `phux_agent_set`, `phux_agent_clear` | matching `phux agent` identity write | Declare or delete the exact L3 record; a declared state outranks detection. |
-| `phux_agent_wait` | `phux agent wait --json` | Edge-triggered and always bounded. Exit 124 returns as `satisfied: false`, not a tool failure. Do not compose it after a separate write to infer completion. |
-| `phux_agent_send_keys` | `phux agent send-keys --json` | Identity-checked acknowledged input. OK is a kernel tty-queue receipt; `delivery_unknown` is terminal. |
-| `phux_agent_prompt` | `phux agent prompt --wait --json` | Fused acknowledged submit-and-wait on one process, always bounded. Serialize fleet prompts because the acknowledged lane is per server. |
-| `phux_agent_answer` | `phux agent answer --json` | Requires the exact live ask id and exactly one choice or text answer; unlisted text needs an explicit override. |
-| `phux_agent_start` | `phux agent start --json` | Existing shell pane only; creates no layout. Waits for detector-backed readiness under a finite deadline. |
-| `phux_insert_pane` | `phux insert-pane --json` | Existing pane only; no implicit spawn and no focus operation. |
-| `phux_move_pane` | `phux move-pane --json` | Exact local panes, including cross-session moves; bounded ratio. |
-| `phux_swap_pane` | `phux swap-pane --json` | Exact local same-session panes; preserves client-local focus. |
-| `phux_workspace` | `phux workspace` | `inspect`, `save`, or `restore`; bounded local paths and canonical JSON where the CLI provides it. |
-
-Every schema in this parity table sets `additionalProperties: false`, and
-handlers enforce that again before side effects. Before `phux_kill`, a caller
-must display the resolved target and obtain explicit human confirmation; the
-tool does not add an implicit confirmation protocol. `phux_signal` enforces
-`confirm: true` for interrupt/terminate/kill in addition to that human step,
-and §3.8's `phux_detach` enforces it unconditionally. There are deliberately
-no MCP `take`/`give` tools:
-the CLI lease belongs to the short-lived subprocess connection, so advertising
-a persistent lease would be dishonest. There is no headless focus tool because
-focus is client-local. `attach` itself — opening a live rendering
-connection — stays excluded for the reason §3.8 gives (no request/response
-shape for an ANSI stream); its non-streaming lifecycle half, forcibly ending
-*someone else's* attachment, is `phux_detach`. `server`, `stdio-bridge`, and
-`upgrade` are interactive/daemon/operator lifecycles; `pair` and satellite
-registry mutation handle credentials; plugin installation and config editing
-mutate local trust configuration. Those remain intentionally outside the
-model-facing tool set.
-
-### 3.33 `phux_status`
-
-Reports the server behind one socket. Read-only, and it never auto-starts a
-server — asking whether a server is running may not create one.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `socket` | string | no | Override the UDS path of the server to diagnose (see §2). |
-
-Result: the canonical versioned `phux status --json` document:
-`{ "schema_version": 1, "running", "pid", "socket", "since_unix_secs",
-"protocol": { "major", "minor", "patch" }, "clients", "sessions": [ { "name",
-"windows", "attached_clients" } ], "satellite_terminals", "unreachable",
-"logs": { "server", "client_dir" } }`.
-
-**A stopped server is an answer, not an error.** `phux status --json` exits
-non-zero with no server running and still prints
-`{ "running": false, ... }` on stdout, embedding `error` (`code`, `message`)
-and `remedy` from the shared error vocabulary of
-[`agents.md`](./agents.md) §5.3. The tool returns that document rather than
-failing, so branch on `running`, never on whether the call succeeded. The
-`isError` path is reserved for a real failure — the server hung up mid-probe
-— where the CLI leaves stdout empty and puts one JSON error object on stderr.
-
-**A null `pid` is not "no server".** The pid comes from the socket's peer
-credentials, not from the server, so a platform that exposes none reports
-`running: true` with `pid: null`. `running` is the only field that answers
-the liveness question.
-
-`unreachable` is always present; empty means the fleet view is complete.
-
-### 3.34 `phux_doctor`
-
-Runs every phux health check and returns the whole verdict. This executes
-`phux doctor --json`, so the tool and the command can never disagree about
-whether an install is healthy — there is one implementation of each check,
-not two.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `socket` | string | no | Override the UDS path of the server to diagnose (see §2). Only the socket and server checks follow it; the rest describe the machine the adapter runs on. |
-
-Result: the canonical versioned `phux doctor --json` document:
-`{ "schema_version": 1, "ok", "failed", "checks": [ { "name", "status",
-"detail", "hint" } ] }`, where `status` is `pass`, `warn`, or `fail` and
-`hint` is present exactly when there is something to do.
-
-**A failing check is an answer, not an error.** The CLI exits non-zero when
-any check failed and the tool still returns the document, so branch on `ok`
-and on each check's `status`.
-
-**Check names are not unique — read every row.** `server-health` reports one
-row per condition that holds: a crash-loop (the server restarted repeatedly
-inside the start-history window of
-[ADR-0080](../../ADR/0080-socket-lifecycle-and-instance-isolation.md)), a
-legacy supervisor unit that restarts on every exit unthrottled, and version
-skew between the running server and this binary. Those co-occur more than
-they don't, because a legacy unit is exactly what turns a dying server into a
-crash-loop, so a consumer that reads only the first `server-health` row
-reports a misleadingly clean bill of health.
-
-**`warn` is not `pass`.** A check that could not run is not a check that
-passed; a stopped server warns rather than failing, because that is a normal
-state and not a broken install.
-
-The tool is read-only and starts nothing — a diagnostic that repairs things
-is a diagnostic nobody can trust to describe the system. The remedies a
-`hint` names (`phux service reconcile`, `phux upgrade`) rewrite supervisor
-units and hand over a running server on the human's machine, so a hint is
-something to relay, not something the adapter runs. There is deliberately no
-repair tool and no log-*reading* tool: both documents report the log paths,
-and turning an MCP tool into a file reader is the surface
-[ADR-0077](../../ADR/0077-agent-read-surface.md) point 1 already declined.
-
-### Composing the tools safely
-
-The canonical sequence is `phux_ls` → `phux_new` → placed `phux_launch`,
-`phux_spawn`, or existing-pane `phux_agent_start` → optional exact spatial
-edits → `phux_run`/`phux_send_keys` or fused `phux_agent_prompt` → bounded
-`phux_wait` plus bounded `phux_watch` → surface `phux_ask` events and answer
-an exact one with `phux_agent_answer` → re-read state. Serialize topology writes because layout metadata is
-last-write-wins. No tool in this sequence moves a human's local focus, stores
-remote credentials, grants a persistent input lease, or schedules future work.
-
-When a step in that sequence fails in a way the tool's own result does not
-explain — a connection that will not open, a pane that never appears, a
-server that answers one call and not the next — `phux_status` and
-`phux_doctor` are the reads that answer why, and neither of them changes
-anything. When the question is which credential or user a call ran as,
-`phux_whoami` (§3.36) answers it, also without changing anything.
-
----
-
-### 3.35 Agent session tools
-
-<!-- impl-status: partial; probe: phux_agent_log,phux_agent_emit -->
-> **Status: landing on the resource-model branch.** Four tools over the
-> agent-session verbs of [`agents.md`](./agents.md) §2. A released `phux-mcp`
-> lists none of them; against a server without `RESOURCE_KINDS` each returns
-> the CLI's `unsupported_server` error document.
-
-Each is a strict-schema CLI-subprocess tool on the §3.14–3.32 terms (argv,
-never a shell; `additionalProperties: false`; canonical CLI JSON back).
-
-| Tool | CLI mapping | Arguments and shape |
-|---|---|---|
-| `phux_agent_session_open` | `phux agent session open --json` | `target` (a Terminal selector, required), `provider` (required), `native_id`, `socket`. Returns the §4.19 open document; the caller becomes the session's producer. |
-| `phux_agent_session_close` | `phux agent session close` | `target` (an agent-session selector, required), `socket`. Returns `{ "resource": "@N", "closed": true }`, a small projection of the CLI's tab-separated line. The parent pane is untouched. |
-| `phux_agent_emit` | `phux agent emit --json` | `target` (required), `type` (one of the closed v1 set), `data` (a JSON object; default `{}`), `socket`. Returns the stamped header. `not_producer`, `record_invalid`, `overflow`, and `wrong_resource_kind` come back as error documents with nothing written. |
-| `phux_agent_log` | `phux agent log --json` | `target` (required), `tail` (last N records), `socket`. Returns the §4.19 log envelope. There is no `follow` argument: a following read is a stream, and this adapter has no streaming result shape (the `phux_watch` bound of `timeout_secs` / `max_events` is the closest analogue and is not offered here). |
-
-The adapter adds no producer of its own: an MCP host that wants a session
-log of its agent opens the session and emits into it through these tools,
-exactly as the Claude shim does through the CLI.
-
-### 3.36 `phux_whoami`
-
-Reports who this connection is to the server behind one socket, as that
-server sees it. This executes `phux whoami --json` and returns its document
-unchanged, so the tool and the command read the same `phux.whoami/v1` key
-([L3.md](../spec/L3.md) §3.9) through the same code path.
-
-| Param | Type | Required | Meaning |
-|---|---|---|---|
-| `socket` | string | no | Override the UDS path of the server to ask (see §2). |
-
-Result: the `WhoamiJson` record of [`agents.md`](./agents.md) §4.20:
-`{ "schema_version": 1, "principal", "credential_id", "auth_route",
-"peer_uid", "serving_user": { "uid", "name" }, "host", "server_version",
-"ssh_client": { "addr", "port" } | null }`. `ssh_client` is set only on an
-`ssh-stdio` route, a connection that `phux stdio-bridge` announced as arriving
-over ssh. Fields a newer server adds pass through; ignore the ones you do not
-know.
-
-The tool is read-only and idempotent: it reads one server-owned key, never
-changes identity, and never starts a server. It takes no `remote` argument.
-`phux whoami --remote HOST` stays a CLI verb, like every other remote dial.
-
-**An older server is refused, not guessed.** Against a server that does not
-advertise the `whoami` feature, the CLI exits `1` before reading the key and
-the tool returns `isError: true` carrying the CLI's `server_too_old` error
-document, including its remedy. Unlike `phux_status` and `phux_doctor`, no
-answer rides out under a non-zero exit here. Every failure, including
-`transport` for a malformed record or an unreachable server, is a tool error.
-
-## 4. A worked `tools/call` example
-
-A `phux_run` against an explicit pane, target `work:1.0`:
+The flag lives on the MCP companion rather than `phux api schema` so
+the schemas cannot drift and the main binary does not link the MCP
+stack.
+
+Name-for-name mapping onto the CLI. CLI-subprocess tools execute argv
+(never a shell), parse the canonical JSON, cap each string at 4096 bytes
+and arrays at 64 entries, cap stdout/stderr at 1 MiB / 64 KiB, and kill
+the child on cancellation or deadline. Every strict schema sets
+`additionalProperties: false`. In-process tools reuse `phux-client`
+directly.
+
+Contract facts `--schema` descriptions do not collect:
+
+- **`phux_wait`** is a bounded `{ "outcome": "met"|"timed_out", "polls": N }`
+  gate, not the CLI's `ScreenState` document. It exposes `until` /
+  `idle_ms` / `timeout_secs`; it does not expose `--regex`, `--tail`, or
+  `--output-only`.
+- **`phux_run`** bounds `timeout_secs` to `1..=3600` so a tool call
+  cannot wait forever. Timeout is a tool error from the CLI's exit 125;
+  there is no `outcome: "timed_out"` JSON from the CLI either.
+- **`phux_watch`** is a bounded one-shot (`max_events` and/or
+  `timeout_secs`). The result envelope is versioned even though CLI
+  `phux watch --json` is unmarked NDJSON. A host that wants a live stream
+  shells out.
+- **`phux_paste`** is one paste event. A paste inserts without
+  submitting; follow with `phux_send_keys` sending `Enter`. A dropped
+  untrusted payload still reports `sent: true`.
+- **`phux_detach`** talks `DETACH_CLIENTS` in-process (`phux detach` has
+  no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
+  stream has no request/response shape for the one-text-content-block
+  `tools/call` envelope.
+- **`phux_status`**: a stopped server is an answer, not an error. Branch
+  on `running`. A null `pid` is a peer-credential gap, not "no server".
+- **`phux_doctor`**: a failing check is an answer; branch on `ok` and
+  each check's `status`. Check names are not unique — read every
+  `server-health` row. `warn` is not `pass`. There is no repair tool and
+  no log-reading tool.
+- **`phux_whoami`**: executes `phux whoami --json`. An older server is
+  refused (`server_too_old`), not guessed. No `remote` argument.
+- **`phux_agent_wait`**: exit 124 returns as `satisfied: false`, not a
+  tool failure. Edge-triggered and always bounded.
+- **`phux_agent_log`**: no `follow` argument. A following read is a
+  stream, and this adapter has no streaming result shape.
+- **Agent session tools** (`phux_agent_session_open` / `close`,
+  `phux_agent_emit`, `phux_agent_log`): on a server without
+  `resource_kinds` in `phux_status`'s `features`, each returns
+  `unsupported_server`. The adapter adds no producer of its own.
+
+**Deliberate exclusions.** No MCP `take` / `give`: the CLI lease belongs
+to the short-lived subprocess connection, so advertising a persistent
+lease would be dishonest. No headless focus tool: focus is client-local.
+No `attach`. `server`, `stdio-bridge`, and `upgrade` are
+interactive/daemon/operator lifecycles; `pair` and satellite registry
+mutation handle credentials; plugin installation and config editing
+mutate local trust. Those stay outside the model-facing set.
+
+`phux_kill` and `phux_detach` require `confirm: true`. `phux_signal`
+requires it for interrupt/terminate/kill. Before `phux_kill`, a caller
+must display the resolved target and obtain explicit human confirmation.
+
+No tool in the orchestration sequence moves a human's local focus,
+stores remote credentials, grants a persistent input lease, or schedules
+future work. Serialize topology writes.
+
+## A `tools/call` example
 
 Request (one line on stdin):
 
@@ -693,53 +205,14 @@ Request (one line on stdin):
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"phux_run","arguments":{"target":"work:1.0","command":"cargo test"}}}
 ```
 
-Success response:
+Success:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\n  \"command\": \"cargo test\",\n  \"exit_code\": 0,\n  \"output\": \"...\",\n  \"duration_ms\": 8123,\n  \"truncated\": false\n}"}],"isError":false}}
 ```
 
-The result is a **single text content block**. A structured result is
-pretty-printed JSON (here, the serialized `RunResult`); a bare error
-string is shown verbatim.
-
-A **tool** failure — no such target, no running server, a malformed
-argument — is a *successful* JSON-RPC response carrying `isError: true`,
-never a JSON-RPC error and never a crash. Contrast this with
-**protocol-level** errors (a parse error, an unknown method, missing
-`tools/call` params), which *are* JSON-RPC `error` responses.
-
-A second example, `phux_snapshot` of a pane by opaque id with scrollback
-and per-cell data:
-
-```json
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"phux_snapshot","arguments":{"target":"@42","scrollback":200,"cells":true}}}
-```
-
-This returns the last 200 scrollback rows plus the viewport, with the
-sparse per-cell `cells` array populated.
-
----
-
-## 5. Relationship to the CLI
-
-The MCP tools are name-for-name adapters over the CLI agent surface. The base
-set maps `phux_ls`, `snapshot`, `send_keys`, `run`, `wait`, `new`, `kill`,
-`watch`, and `ask` to their hyphenated CLI verbs. The parity table in §3 maps
-launch/spawn/signal/tag/rename/agent/layout/workspace name-for-name, and
-`phux_status` / `phux_doctor` (§3.33–3.34) map to `phux status --json` and
-`phux doctor --json`.
-`phux_plugin_action` maps to `phux config run`; `phux_plugin_workspace` reads
-the same plugin manifest workspace profile. The four agent-session tools of
-§3.35 map to `phux agent session open` / `close`, `agent emit`, and `agent
-log`. CLI-subprocess tools consume the
-canonical JSON directly; in-process tools reuse the same `phux-client` or
-`phux-plugin` implementation as the CLI. `phux_detach` (§3.8) is one of the
-in-process tools, but with no CLI counterpart it reuses: `phux detach` has no
-`--json`, so the tool opens `phux_client::attach::connection::Connection`
-itself and sends `Command::DetachClients` directly, the same primitive the
-CLI's `detach.rs` opens.
-
-Per [ADR-0022](../../ADR/0022-tool-for-agents.md), the CLI and its JSON
-schema are the stable agent contract; the wire underneath stays additive
-and versioned, and MCP is one thin adapter over it among several.
+The result is a **single text content block**. A tool failure — no such
+target, no running server, a malformed argument — is a *successful*
+JSON-RPC response carrying `isError: true`, never a JSON-RPC error and
+never a crash. Protocol-level errors (parse, unknown method, missing
+params) *are* JSON-RPC `error` responses.

@@ -248,8 +248,8 @@ pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
         .owner => |value| value,
         else => return,
     };
+    if (!terminalAcceptsKeys(model, owner.terminal_ref)) return;
     if (model.provider.terminal(owner.terminal_ref)) |pane| {
-        if (pane.selecting or pane.session.search.open) return;
         runtime.encodeKeyEvent(pane, fx, event, .release);
         return;
     }

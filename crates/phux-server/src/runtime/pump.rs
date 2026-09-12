@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::BootstrapId;
 
-use crate::terminal_actor::PaneOutput;
+use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
 
 /// Spawn an owned output task from any subscription path. Completion guards
 /// are captured before spawning, so even abort-before-first-poll resolves the
@@ -87,6 +87,28 @@ const GAP_RESYNC_MAX_BACKOFF: Duration = Duration::from_secs(4);
 /// merely busy actor is never mistaken for a dead one.
 const GAP_RESYNC_MAX_ATTEMPTS: u32 = 5;
 
+/// How long after the pane read a chunk an interactive pump may still forward
+/// it.
+///
+/// The broadcast holds 256 chunks, so its own `Lagged` signal fires only once
+/// a consumer is hundreds of kilobytes behind — on a remote link slower than
+/// the pane's output, that is ten seconds of screen in front of every
+/// keystroke echo. On a local socket a chunk reaches the pump within
+/// milliseconds; one that is older than this is a consumer draining slower
+/// than the pane talks, and it gets one fresh screen instead of the backlog.
+///
+/// The clock starts at the later of the PTY read and the current
+/// generation's publication ([`PumpGeneration::chunk_age`]). A pump is
+/// blocked while its bootstrap drains, so without that anchor the first live
+/// chunk after a slow-but-healthy republish would already look stale and
+/// start another resync — a consumer that only ever sees checkpoints.
+pub(super) const STALE_OUTPUT_BUDGET: Duration = Duration::from_millis(250);
+
+/// Has a chunk read `age` ago fallen past [`STALE_OUTPUT_BUDGET`]?
+pub(super) fn is_stale(age: Duration) -> bool {
+    age > STALE_OUTPUT_BUDGET
+}
+
 /// Where one pump has got to inside the generation it is publishing, and
 /// whether that generation may still carry live output.
 #[derive(Debug)]
@@ -120,11 +142,14 @@ pub(super) struct PumpGeneration {
     /// Resync requests already spent on the current gap; reset when a
     /// replacement generation lands. Bounded by [`GAP_RESYNC_MAX_ATTEMPTS`].
     gap_attempts: u32,
+    /// When the current generation was published (opened or republished):
+    /// the earliest instant [`Self::chunk_age`] measures from.
+    published_at: std::time::Instant,
 }
 
 impl PumpGeneration {
     /// Start at the cut the publication gate handed over.
-    pub(super) const fn opened_at(published_cut: u64, bootstrap_id: BootstrapId) -> Self {
+    pub(super) fn opened_at(published_cut: u64, bootstrap_id: BootstrapId) -> Self {
         Self {
             published_cut,
             last_forwarded_seq: published_cut,
@@ -132,7 +157,18 @@ impl PumpGeneration {
             generation_active: true,
             gap_pending: false,
             gap_attempts: 0,
+            published_at: std::time::Instant::now(),
         }
+    }
+
+    /// How stale a live chunk read at `read_at` is for this consumer: the time
+    /// since the later of that read and this generation's publication.
+    ///
+    /// A chunk read before the generation was published waited behind the
+    /// bootstrap, not behind a slow consumer; counting that wait would resync
+    /// a healthy consumer again the moment its republish finished draining.
+    pub(super) fn chunk_age(&self, read_at: std::time::Instant) -> Duration {
+        std::time::Instant::now().saturating_duration_since(read_at.max(self.published_at))
     }
 
     /// The generation label every frame this pump emits carries.
@@ -220,14 +256,56 @@ impl PumpGeneration {
         self.gap_attempts
     }
 
+    /// Does a [`PaneOutput::Resync`] addressed to `audience` replace this
+    /// pump's generation?
+    ///
+    /// The single gate both pumps' resync arms pass through, for the same
+    /// reason [`Self::forwards`] is the single live gate. A resync addressed
+    /// to everyone (a reflow) always does. One addressed to named pumps is a
+    /// gap resync some pump asked for: it replaces this generation only if
+    /// this pump is named *and still fenced*. Every other pump on the pane —
+    /// the local TUI beside a slow remote attach, a recorder, a cockpit —
+    /// keeps its generation and pays no tombstone, no bootstrap, and no
+    /// native checkpoint capture (phux-auqy). A named pump that is no longer
+    /// fenced already took an everyone-resync that healed its gap, so a second
+    /// republish would be exactly that churn again.
+    ///
+    /// Taking an addressed resync only while fenced loses nothing: a pump
+    /// asks for one only after fencing itself, and only a republish unfences.
+    ///
+    /// A named pump that is *retired* — a forwarded `BootstrapTombstone`
+    /// voided its generation without a gap fence — takes it too. That is how
+    /// the actor revives the native pumps a reflow tombstoned when no
+    /// everyone-resync follows (an attach-time viewport change): it names
+    /// them (phux-p5bo). A retired pump is never revived by a resync naming
+    /// someone else. A native pump retired by its own client's reattach must
+    /// stay retired, or its capture races the live stream's for the
+    /// owner-keyed native binding and the loser detaches the client.
+    pub(super) fn takes_resync(&self, audience: &ResyncAudience, pump: ResyncTarget) -> bool {
+        match audience {
+            ResyncAudience::Everyone => true,
+            ResyncAudience::Only(_) => {
+                (self.gap_pending || !self.generation_active) && audience.includes(pump)
+            }
+        }
+    }
+
+    /// Restart the staleness clock once a published generation's bootstrap
+    /// and replay are handed off, so a chunk that waited behind them is aged
+    /// from here rather than from its PTY read. See [`Self::chunk_age`].
+    pub(super) fn restart_staleness_clock(&mut self) {
+        self.published_at = std::time::Instant::now();
+    }
+
     /// A replacement generation is published at `base_seq`: unfence, reactivate
     /// and re-anchor the sequence expectation.
-    pub(super) const fn republished_at(&mut self, base_seq: u64) {
+    pub(super) fn republished_at(&mut self, base_seq: u64) {
         self.published_cut = base_seq;
         self.last_forwarded_seq = base_seq;
         self.generation_active = true;
         self.gap_pending = false;
         self.gap_attempts = 0;
+        self.published_at = std::time::Instant::now();
     }
 }
 
@@ -276,8 +354,120 @@ pub(super) async fn next_event(
 mod tests {
     use std::time::Duration;
 
-    use super::{GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, next_event};
-    use crate::terminal_actor::PaneOutput;
+    use super::{
+        GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, STALE_OUTPUT_BUDGET,
+        is_stale, next_event,
+    };
+
+    use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
+
+    fn pump_on(owner: u64, stream: u64) -> ResyncTarget {
+        ResyncTarget {
+            owner,
+            stream_id: phux_protocol::ids::StreamId::new(stream).expect("non-zero stream id"),
+            bootstrap_id: bootstrap(7),
+        }
+    }
+
+    /// phux-auqy: an addressed gap resync replaces only the fenced pump it
+    /// names. A fresh pump beside it — or the same client on another stream —
+    /// keeps its generation; a reflow still replaces everyone's.
+    #[test]
+    fn an_addressed_resync_is_taken_only_by_the_fenced_pump_it_names() {
+        let stale = pump_on(1, 1);
+        let addressed = ResyncAudience::Only(vec![stale].into());
+
+        let mut fenced = opened();
+        fenced.fence_for_gap();
+        assert!(fenced.takes_resync(&addressed, stale));
+        assert!(
+            !fenced.takes_resync(&addressed, pump_on(1, 2)),
+            "another stream of the same client is a different pump",
+        );
+
+        let fresh = opened();
+        assert!(
+            !fresh.takes_resync(&addressed, pump_on(2, 1)),
+            "a fresh pump must not be re-bootstrapped for someone else's gap",
+        );
+        assert!(
+            !fresh.takes_resync(&addressed, stale),
+            "a named pump whose gap an earlier resync already healed skips it",
+        );
+
+        assert!(fresh.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
+        assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
+    }
+
+    /// Owner and stream can collide across pump kinds (an `ATTACH` pump's
+    /// stream comes from its attach id, an `ATTACH_RESOURCE` pump's from its
+    /// client id),
+    /// so a target names the generation too: a resync owed to one generation
+    /// is not taken by another pump that happens to share owner and stream.
+    #[test]
+    fn a_resync_for_another_generation_of_the_same_stream_is_not_taken() {
+        let mut retired = opened();
+        retired.retire();
+        let same_stream_other_generation = ResyncTarget {
+            bootstrap_id: bootstrap(8),
+            ..pump_on(2, 1)
+        };
+        let audience = ResyncAudience::Only(vec![same_stream_other_generation].into());
+        assert!(!retired.takes_resync(&audience, pump_on(2, 1)));
+        assert!(retired.takes_resync(&audience, same_stream_other_generation));
+    }
+
+    /// A retired generation takes a resync that names it, and only that.
+    ///
+    /// The actor names the native pumps a reflow tombstoned (phux-p5bo); a
+    /// resync naming another pump must not revive a retired one, because a
+    /// pump retired by its own client's reattach must stay retired.
+    #[test]
+    fn a_retired_generation_takes_only_a_resync_that_names_it() {
+        let me = pump_on(2, 1);
+        let mut retired = opened();
+        retired.retire();
+        assert!(!retired.is_fenced(), "retirement alone sets no gap fence");
+        assert!(retired.takes_resync(&ResyncAudience::Only(vec![me].into()), me));
+        assert!(
+            !retired.takes_resync(&ResyncAudience::Only(vec![pump_on(1, 1)].into()), me),
+            "another pump's resync must not revive a retired pump",
+        );
+        assert!(retired.takes_resync(&ResyncAudience::Everyone, me));
+
+        retired.republished_at(100);
+        assert!(
+            !retired.takes_resync(&ResyncAudience::Only(vec![me].into()), me),
+            "once republished and unfenced it is an ordinary fresh pump again",
+        );
+    }
+
+    /// A chunk that waited behind a republish is measured from the republish.
+    ///
+    /// Read two seconds ago but dequeued straight after its generation was
+    /// published, it is fresh: the wait was the bootstrap draining, not the
+    /// consumer falling behind. Without the anchor a slow-but-healthy link
+    /// would resync on every republish and never show live output.
+    #[test]
+    fn chunk_age_starts_no_earlier_than_the_generation_publication() {
+        let read_long_ago = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("monotonic clock has run for two seconds");
+        let mut generation = opened();
+        generation.republished_at(100);
+        assert!(!is_stale(generation.chunk_age(read_long_ago)));
+        assert!(
+            generation.chunk_age(std::time::Instant::now()) < STALE_OUTPUT_BUDGET,
+            "a chunk read after publication is aged from its own read",
+        );
+    }
+
+    #[test]
+    fn output_is_stale_only_past_the_budget() {
+        assert!(!is_stale(Duration::ZERO));
+        assert!(!is_stale(STALE_OUTPUT_BUDGET));
+        assert!(is_stale(STALE_OUTPUT_BUDGET + Duration::from_millis(1)));
+    }
 
     #[test]
     fn tracked_pump_abort_fences_blocked_send_and_reclaims_churn() {
@@ -518,6 +708,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 reason: crate::terminal_actor::ResyncReason::OutboundGap,
+                audience: ResyncAudience::Everyone,
                 base_seq: 9_000,
                 bytes: bytes::Bytes::new(),
             });

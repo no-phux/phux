@@ -1,17 +1,16 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # Install
 
-**TL;DR.** Homebrew is the recommended install on supported macOS and Linux
-machines. The verified curl installer and release tarballs install the same
-`phux` and `phux-mcp` binaries. Source builds use native tools or the Nix shell
-with the same Rust and Zig requirements. `phux update` maintains a direct-release install in place and prints
-the exact native command for a Homebrew, Cargo, or Nix one. Windows and
-`cargo install phux` are not supported.
+**TL;DR.** The curl installer is the universal one-liner. Homebrew is the
+recommended day-to-day path on supported macOS and Linux. Source builds
+use native tools or Nix. `phux update` maintains a direct-release install;
+`--channel next` tracks green `main`. Windows and `cargo install phux` are
+not supported.
 
 ---
 
@@ -19,8 +18,8 @@ the exact native command for a Homebrew, Cargo, or Nix one. Windows and
 
 | Channel | Best for | Status |
 |---|---|---|
-| Homebrew | Day-to-day binary install on supported Homebrew platforms | Primary binary path where the tap has an artifact |
-| Curl installer | Scripted install from GitHub release tarballs | Installs the latest GitHub release by default |
+| Curl installer | Universal one-liner from GitHub release tarballs | Latest GitHub release by default |
+| Homebrew | Recommended day-to-day on supported Homebrew platforms | Primary binary path where the tap has an artifact |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 
@@ -71,11 +70,17 @@ it before you pipe it anywhere, the way you should with any installer.
 
 It verifies the release `.sha256` sidecar before unpacking and transactionally
 installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
-The installer rolls back failed publication and handles INT/TERM during
-publication. Set `PHUX_INSTALL_DIR` to choose a different bin
-directory. With no `--version`, it uses the latest stable core release. On success,
-the installer prints the exact command to run next. It prints a copy-paste
-`PATH` remedy only when that directory is not already on `PATH`.
+The previous pair is restored if publication is interrupted or either binary
+cannot be published. Set `PHUX_INSTALL_DIR` to choose a different bin
+directory. With no `--version`, it uses the latest GitHub release. Pass
+`--channel next` (or set `PHUX_CHANNEL=next`) to install the moving
+prerelease of green `main` instead:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --channel next
+```
+
+Homebrew stays on stable. On success, the installer prints the exact command to run next. It prints a copy-paste `PATH` remedy only when that directory is not already on `PATH`.
 Every portable tarball and installer path includes `phux-mcp`; there is no
 separate MCP package to install.
 
@@ -86,38 +91,7 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
-### Release discovery and pins
-
-The CLI installer and `phux update` select only stable `vX.Y.Z` releases;
-Cockpit selects only stable `cockpit-vX.Y.Z` releases. Drafts and prereleases
-are excluded using the release metadata, even when their tags look stable.
-Discovery searches up to **10 pages of 30 releases**, with a **1 MiB response
-limit per page**. Malformed metadata, oversized responses, network errors, and
-search exhaustion fail explicitly and suggest `--version` with a known tag.
-The index requests use curl connection/total timeouts or wget connection/read
-timeouts, so an unavailable index does not silently hang the install.
-
-An explicit `--version` validates the tag locally and **bypasses release-index
-requests** in both installers and `phux update`. It downloads only that
-release's artifacts; `phux update --check --version vX.Y.Z` needs no network.
-Tags use canonical numeric `MAJOR.MINOR.PATCH` components (no leading zeros,
-suffixes, or extra components). Cockpit also accepts bare `X.Y.Z` as shorthand.
-
-The standalone installers require POSIX awk and standard Unix utilities in
-addition to curl or wget; they do not require jq or Python. Maintainers edit
-`scripts/lib/install-release.sh` and run
-`bash scripts/sync-install-resolver.sh --write` to embed the shared parser and
-discovery loop in both served scripts. The install-surface gate verifies these
-copies and runs hermetic release-selection tests.
-
-Parsing has its own bounds: the response limit above and a nesting limit of
-128 levels. The tokenizer buffers input in 1 KiB chunks to avoid copying an
-entire page for every small token; tokens spanning chunks are carried intact.
-Network timeouts do not apply to parsing. The POSIX parser validates JSON
-structure and ASCII release metadata, but does not validate UTF-8 encoding in
-ignored string contents.
-
-## Phux Cockpit (native macOS)
+## Cockpit (native macOS)
 
 Cockpit is versioned and released independently (`cockpit-vX.Y.Z` tags on a
 separate cadence from the CLI above). Install it with its own curl installer:
@@ -222,24 +196,21 @@ subsequent `just rebuild` invocations stay entirely on the developer binary.
 ```sh
 phux update --check     # what is installed, what is published, how it got there
 phux update             # install it, then hand a running server off to it
+phux update --channel next   # follow green main instead of the latest vX.Y.Z
 ```
 
-### Why phux ships an update command
-
-A phux deployment is a lockstep set. [ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md)
-freezes the consumer surface at 1.0 but deliberately leaves the **wire** on its
-own `0.x` line under [ADR-0061](../ADR/0061-capabilities-add-versions-break.md),
-where a minor protocol bump is a fleet-wide break with no grace window:
-mismatched peers refuse each other at HELLO rather than half-working. The
-compatibility unit is therefore the **release**, not the frame — a server, the
-clients attached to it, its satellites, and its relays must all run the same
-one. That is why a one-command update path is 1.0 scope rather than a
-convenience: a fleet that is hard to move between releases is a fleet that will
-sit on a mismatch.
+`phux update` exists because a deployment is a lockstep set: mismatched peers
+refuse each other at HELLO. See
+[ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md). Default is the latest
+numbered GitHub release. `--channel next` is the opt-in rail that tracks
+green `main` ([ADR-0113](../ADR/0113-next-release-channel.md)); the choice is
+remembered in `<bindir>/.phux-channel` so later `phux update` stays on that
+rail. Homebrew stays on stable.
 
 ### What `phux update` does
 
-1. Resolves the current GitHub release (or the tag you pass to `--version`).
+1. Resolves the current GitHub release (the latest `vX.Y.Z`, `--channel next`,
+   or the tag you pass to `--version`).
 2. Downloads `phux-<tag>-<target>.tar.gz` and its `.sha256` sidecar.
 3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
    names both digests, and installs nothing.
@@ -294,10 +265,11 @@ re-execs its own path, so the two steps together preserve live panes.
 If you installed with the curl installer or by unpacking a tarball,
 `phux update` is the supported path — it repeats exactly what you did by hand,
 with the checksum verified for you. Re-running the curl installer also works
-and is equivalent:
+and is equivalent (add `--channel next` if that is the rail you are on):
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
+curl -fsSL https://phux.sh/install | sh -s -- --channel next
 ```
 
 ### NixOS and Nix profiles
@@ -326,9 +298,10 @@ the re-exec mechanism replays the *same* path.
 
 ```sh
 phux update --check              # report only; never downloads an archive
-phux update --check --json       # the versioned document (schema_version 2)
+phux update --check --json       # the stable document (schema_version 1)
 phux update --dry-run            # download and verify, install nothing
-phux update --version vX.Y.Z     # install a specific release (downgrades too)
+phux update --channel next       # follow the moving next prerelease
+phux update --version vX.Y.Z     # install a specific stable release (downgrades too)
 phux update --no-restart         # replace binaries, leave the server alone
 ```
 
@@ -337,12 +310,6 @@ the JSON document rather than the exit status. A refusal (package-managed,
 immutable store, unknown location) exits 2 with the remedy; a failure to fetch,
 verify, or install exits 1. Under `--json`, stdout carries only the document
 and a failure puts one JSON object on stderr.
-
-Document schema 2 makes `latest_version` nullable. When `--version` is supplied,
-`target_version` names that pin and `latest_version` is `null`: discovery was
-intentionally skipped. The human
-output labels it as a selected target rather than claiming it is the latest
-release. Rollback likewise reports no discovered latest version.
 
 ### Rolling back
 
@@ -379,53 +346,10 @@ cargo add phux-protocol
 workspace crates are `publish = false`; install the CLI through Homebrew,
 the curl installer, release tarballs, or a source build.
 
-## First run: persistent session + agent loop
+## After install
 
-After install, run:
-
-```sh
-phux
-```
-
-`phux` with no arguments auto-spawns a server and attaches to a shell-backed
-session. Detach with `Ctrl-A d`; the server keeps the shell alive. Run `phux`
-again to re-attach.
-
-From a second terminal, drive the same persistent pane through the agent loop:
-
-```sh
-phux ls --json
-phux send-keys . "printf '%s\n' phux-ready | tr a-z A-Z" Enter
-phux wait --until "PHUX-READY" --timeout 10 .
-phux snapshot --json --scrollback 50 . > phux-screen.json
-```
-
-That is the read -> act -> wait -> read pattern from
-[`consumers/agents.md`](./consumers/agents.md): read state, send or run work in
-the pane, wait for observable output, then snapshot again. It uses the same
-server and PTY as the interactive TUI. phux does not promise live PTY
-resurrection; workspace restore starts new processes instead of reviving an old
-PTY.
-
-## Drive it from an agent
-
-The agent surface ships with the same release artifact — nothing extra to
-install. The MCP adapter is its own bundled binary:
-
-```sh
-phux --skill=quick          # installed CLI guide
-phux --capabilities --json # build, command, schema, and MCP discovery
-phux mcp --skill            # installed MCP guide
-phux mcp --schema           # exact tools/list input schemas
-phux mcp                    # JSON-RPC over stdio; wire it into your MCP client
-```
-
-`phux mcp` replaces itself with the separately packaged `phux-mcp` companion,
-preferring the executable beside `phux` and then searching `PATH`. Existing
-host configurations that invoke `phux-mcp` directly remain supported.
-
-Tool catalog and JSON contracts: [`consumers/mcp.md`](./consumers/mcp.md). The
-plain-CLI version of the same surface: [`consumers/agents.md`](./consumers/agents.md).
+[Quickstart](./QUICKSTART.md) is the first run.
+[Agents](./consumers/agents.md) is the headless contract.
 
 ## Shell completions
 

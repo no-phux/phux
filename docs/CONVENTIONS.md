@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-12
 ---
 
 # Doc conventions
@@ -27,9 +27,9 @@ Orientation (cold-open, ~5 files, stable, ruthlessly small)
   AGENTS.md, CLAUDE.md ──► agent shell hygiene, loaded every turn
 
 Reference (one source of truth per concept, addressable)
-  docs/spec/ ────────────► normative wire (proto / L1 / L2 / L3 / appendices)
+  docs/spec/ ────────────► normative wire (proto / L1 / L3 / appendices; L2 reserved)
   docs/architecture/ ────► process model, threading, transport, etc.
-  docs/consumers/ ───────► tui.md, sdk.md (per consumer surface)
+  docs/consumers/ ───────► tui, agents, mcp, web, cockpit, recording, integrations
   docs/operations.md ────► errors, logging, telemetry, security
   docs/reference/ ───────► GENERATED from the binary (just docs-gen; no hand edits)
 
@@ -60,6 +60,7 @@ has a **single owner** for each kind of content:
 | How does the server process model work? | `docs/architecture/process-model.md` | SPEC, READMEs |
 | Which tools do I need to build/test this area? | `docs/SETUP.md` | Agent instructions, client READMEs (link instead) |
 | What does the TUI's keybind syntax look like? | `docs/consumers/tui.md` | SPEC, README |
+| What does a consumer surface look like? | `docs/consumers/` (tui, agents, mcp, web, cockpit, recording, integrations) | CONCEPTS, README |
 | Why did we pick X over Y? | `ADR/NNNN-*.md` | Anywhere else |
 | What's the long arc? | `docs/vision.md` | README, CONCEPTS (link only) |
 
@@ -410,15 +411,15 @@ scope.
   superlatives ("killer feature," "centerpiece," "blazing,"
   "revolutionary"). No curt one-word fragments standing in for an
   argument. No "load-bearing" as a filler intensifier.
-- **No hype absolutes about a pre-alpha system** ("cannot degrade,"
-  "phux will not," "tmux structurally cannot"). Argue the architecture,
-  not the slogan; don't repeat coined taglines verbatim.
+- **No hype absolutes** ("cannot degrade," "phux will not," "tmux
+  structurally cannot"). Argue the architecture, not the slogan; don't
+  repeat coined taglines verbatim.
 
 ### Honest maturity
 
-- **phux is pre-alpha and spec-first.** State what works *today* versus
-  what is a direction. Never write unbuilt behavior in present tense in a
-  `stable` doc.
+- **State what works today versus a gap.** Never write unbuilt behavior
+  in present tense in a `stable` doc. Don't decorate every page with a
+  maturity apology. CONCEPTS owns the Status table; other docs link it.
 - **Divergence honesty.** When the code and the target shape disagree,
   state the current code reality in prose and list every target-versus-
   shipped gap in the doc's single `Status` table: one table per doc, the

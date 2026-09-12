@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use phux_dial::{CertTrust, QuicDial};
+use phux_dial::{CertTrust, QuicDial, SendWindow};
 use phux_protocol::policy::{PeerIdentity, QUIC_RELAY_ALPN, TransportType};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -195,6 +195,10 @@ async fn resolve(spec: &ConnectorSpec) -> Result<SocketAddr, String> {
 /// One established relay connection exposed as an `Incoming` source.
 struct ConnectorIncoming {
     connection: quinn::Connection,
+    /// The tunnel's one send window, shared by every bridged consumer's
+    /// writer: quinn's window is per connection, and all of them ride this
+    /// one.
+    window: SendWindow,
     consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
 }
 
@@ -249,7 +253,7 @@ impl Incoming for ConnectorIncoming {
             };
             return Ok((
                 QuicReader::from_stream(recv),
-                QuicWriter::from_stream(send),
+                QuicWriter::from_stream(send, self.window.clone()),
                 crate::auth::ConnectionIdentity {
                     peer: PeerIdentity {
                         uid: 0,
@@ -329,6 +333,7 @@ async fn supervise(
                 info!(relay = %spec, attempt, "outbound connector established");
                 let established_at = tokio::time::Instant::now();
                 let incoming = ConnectorIncoming {
+                    window: SendWindow::new(connection.clone()),
                     connection,
                     consumer_tokens: Arc::clone(&consumer_tokens),
                 };

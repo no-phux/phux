@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-09-11
 ---
 
-# 0112 — Cockpit closes terminals and detaches windows
+# 0114 — Cockpit closes terminals and detaches windows
 
 **TL;DR.** Close Pane and Close Tab end the selected work. Close Window and
 Quit detach Phux-backed views without ending work or removing shared layout.

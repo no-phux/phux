@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-12
 ---
 
 # Threading and I/O
@@ -54,7 +54,9 @@ the task that owns the core. The placement rule is the engine's to keep: an
 engine that owns `!Send` state runs as that one task and is the sole
 borrower of the state. The Terminal engine (`resource::terminal::
 TerminalActor`) is why the rule exists; it holds the `Terminal` in a
-`RefCell` that no other task ever touches.
+`RefCell` that no other task ever touches. The AgentSession engine
+(`resource::agent_session`) is the second engine on the same LocalSet
+and cancellation tree; it owns no `!Send` state.
 
 What crosses tasks is the `ResourceHandle`: `Send + Clone`, built by the
 engine's constructor, stored in the `ResourceTable`, and cloned freely by
@@ -138,6 +140,9 @@ sufficient for the rest at the current scale.
 
 ## Status
 
+No remaining target-versus-shipped gaps in the threading model this
+document owns. Both engines share the LocalSet and cancellation tree;
+`ResourceFacetHandle` has `Terminal` and `AgentSession` variants.
+
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| A second engine with no `!Send` state (the AgentSession record ring) on the same LocalSet and cancellation tree | Only the Terminal engine exists; `ResourceFacetHandle` has one variant. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |

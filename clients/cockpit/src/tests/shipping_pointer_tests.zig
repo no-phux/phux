@@ -15,6 +15,8 @@ const Fixture = struct {
         errdefer engine.destroy();
         const local_ref = engine.model.tabTerminal(0).?;
         engine.model.ws().surface_size = .{ .width = 1100, .height = 640 };
+        // The production wrapper binds the native incarnation before input.
+        engine.model.ws().window_id = 1;
         var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/unused-pointer-fixture.sock", .session = "fixture" });
         const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
         cockpit.attachPhuxProvider(engine.model, remote);

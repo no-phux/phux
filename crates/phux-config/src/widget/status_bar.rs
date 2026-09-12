@@ -27,9 +27,7 @@ use std::collections::BTreeMap;
 
 use crate::plugin::{PluginManifest, PluginWidgetSlot};
 use crate::schema::{StatusCfg, Widget, WidgetSpec};
-use crate::widget::{
-    Cell, ExecFeed, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetRegistry,
-};
+use crate::widget::{Cell, ExecFeed, StatusWidget, WidgetContext, WidgetError, WidgetRegistry};
 
 /// One composed slot's worth of widgets.
 struct Slot {
@@ -52,6 +50,24 @@ impl Slot {
         Ok(Self { widgets })
     }
 
+    /// Measure once, retaining the rendered cells for the fitting pass.
+    fn measure<'a>(&'a self, ctx: &WidgetContext<'_>) -> MeasuredSlot<'a> {
+        MeasuredSlot {
+            widgets: &self.widgets,
+            cells: self.widgets.iter().map(|w| w.render(ctx).cells).collect(),
+        }
+    }
+}
+
+/// One frame's natural widget output. Measurement and painting use the same
+/// cells, so clocks and asynchronous feeds cannot change between those passes.
+/// Elastic widgets and the constrained path retain their budget-aware render.
+struct MeasuredSlot<'a> {
+    widgets: &'a [Box<dyn StatusWidget>],
+    cells: Vec<Vec<Cell>>,
+}
+
+impl MeasuredSlot<'_> {
     /// Render the slot at its natural width, paying each elastic widget
     /// out of `slack` (phux-be1m).
     ///
@@ -59,13 +75,13 @@ impl Slot {
     /// therefore content-sized) whenever the bar declares no `spacer`, so
     /// this is byte-identical to the pre-spacer composer for every existing
     /// config.
-    fn render(&self, ctx: &WidgetContext<'_>, slack: &mut Slack) -> Vec<Cell> {
+    fn render(self, ctx: &WidgetContext<'_>, slack: &mut Slack) -> Vec<Cell> {
         let mut out: Vec<Cell> = Vec::new();
-        for w in &self.widgets {
-            let WidgetCells { cells } = if w.elastic(ctx) {
-                w.render_within(ctx, slack.take())
+        for (w, natural) in self.widgets.iter().zip(self.cells) {
+            let cells = if w.elastic(ctx) {
+                w.render_within(ctx, slack.take()).cells
             } else {
-                w.render(ctx)
+                natural
             };
             out.extend(cells);
         }
@@ -78,8 +94,8 @@ impl Slot {
     /// it contributes zero here by construction — which is exactly the
     /// property that lets the fitting pass measure the row *before* the
     /// spacers are paid.
-    fn natural_width(&self, ctx: &WidgetContext<'_>) -> usize {
-        self.widgets.iter().map(|w| w.render(ctx).len()).sum()
+    fn natural_width(&self) -> usize {
+        self.cells.iter().map(Vec::len).sum()
     }
 
     /// How many elastic widgets this slot has on this row.
@@ -96,11 +112,11 @@ impl Slot {
     /// costs you the answer to "which of my sessions am I looking at".
     /// Each widget then decides *how* to spend what it is given via
     /// [`StatusWidget::render_within`].
-    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> Vec<Cell> {
+    fn render_within(self, ctx: &WidgetContext<'_>, budget: usize) -> Vec<Cell> {
         if budget == 0 {
             return Vec::new();
         }
-        let mut budgets: Vec<usize> = self.widgets.iter().map(|w| w.render(ctx).len()).collect();
+        let mut budgets: Vec<usize> = self.cells.iter().map(Vec::len).collect();
         let natural: usize = budgets.iter().sum();
         // Charge the whole shortfall to the trailing widgets, in reverse
         // order, until it is paid off.
@@ -368,10 +384,13 @@ impl StatusBar {
         ctx: &WidgetContext<'_>,
         width: usize,
     ) -> (Vec<Cell>, Vec<Cell>, Vec<Cell>) {
+        let left = self.left.measure(ctx);
+        let center = self.center.measure(ctx);
+        let right = self.right.measure(ctx);
         let (ln, cn, rn) = (
-            self.left.natural_width(ctx),
-            self.center.natural_width(ctx),
-            self.right.natural_width(ctx),
+            left.natural_width(),
+            center.natural_width(),
+            right.natural_width(),
         );
 
         // Everything fits with a blank column either side of the center:
@@ -383,28 +402,24 @@ impl StatusBar {
         if claimed <= width {
             let mut slack = Slack::split(
                 width - claimed,
-                self.left.elastic_count(ctx)
-                    + self.center.elastic_count(ctx)
-                    + self.right.elastic_count(ctx),
+                left.elastic_count(ctx) + center.elastic_count(ctx) + right.elastic_count(ctx),
             );
             return (
-                self.left.render(ctx, &mut slack),
-                self.center.render(ctx, &mut slack),
-                self.right.render(ctx, &mut slack),
+                left.render(ctx, &mut slack),
+                center.render(ctx, &mut slack),
+                right.render(ctx, &mut slack),
             );
         }
 
-        let right = self.right.render_within(ctx, rn.min(width / 2));
-        let left = self
-            .left
-            .render_within(ctx, width.saturating_sub(right.len()));
+        let right = right.render_within(ctx, rn.min(width / 2));
+        let left = left.render_within(ctx, width.saturating_sub(right.len()));
 
         // Whatever is genuinely left over, less the breathing room.
         let gap = width
             .saturating_sub(left.len() + right.len())
             .saturating_sub(CENTER_GUTTER * 2);
         let center = if gap >= CENTER_SLOT_MIN {
-            self.center.render_within(ctx, gap)
+            center.render_within(ctx, gap)
         } else {
             Vec::new()
         };
@@ -495,6 +510,11 @@ pub fn merge_widget_contributions(
 mod tests {
     use super::*;
     use crate::schema::{StatusCfg, StatusPosition, Widget, WidgetSpec};
+    use crate::widget::WidgetCells;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::{Duration, UNIX_EPOCH};
 
     fn ctx_with(session: &str) -> WidgetContext<'_> {
@@ -795,8 +815,8 @@ mod tests {
                 Some(0),
                 Some(0),
                 Some(0),
-                // The overflow mark is chrome, not a window: inert.
-                None,
+                // The arrow selects the nearest hidden window.
+                Some(1),
                 None,
                 None
             ]
@@ -852,6 +872,47 @@ mod tests {
         let bar = StatusBar::build(&cfg, &reg).unwrap();
         let row = bar.render(&ctx_with(""), 0);
         assert!(row.is_empty());
+    }
+
+    #[derive(Debug)]
+    struct CountingWidget(Arc<AtomicUsize>);
+
+    impl StatusWidget for CountingWidget {
+        fn render(&self, _ctx: &WidgetContext<'_>) -> WidgetCells {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            WidgetCells::from_text("context")
+        }
+    }
+
+    /// A fitting frame must paint the cells it measured, not sample the feed
+    /// again. A narrow frame still delegates to the widget's responsive API.
+    #[test]
+    fn fitting_widgets_are_sampled_once_per_frame() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bar = StatusBar {
+            left: Slot {
+                widgets: vec![Box::new(CountingWidget(calls.clone()))],
+            },
+            center: Slot {
+                widgets: Vec::new(),
+            },
+            right: Slot {
+                widgets: Vec::new(),
+            },
+        };
+        let ctx = ctx_with("work");
+        assert_eq!(row_to_string(&bar.render(&ctx, 20)), "context             ");
+        assert_eq!(
+            calls.swap(0, Ordering::Relaxed),
+            1,
+            "natural render is reused"
+        );
+        assert_eq!(row_to_string(&bar.render(&ctx, 4)), "con…");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "one measure, one constrained render"
+        );
     }
 
     #[test]

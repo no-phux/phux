@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
 # Coordinator — durable work endpoint
@@ -15,10 +15,14 @@ terminal input, output, bootstrap, or history.
 
 ---
 
+<!-- impl-status: spec-only; probe: COORD_HELLO,CoordHello -->
+> **Status: spec-only.** No codec, server, or client in this tree implements
+> the coordinator endpoint. The terminal protocol is independent of it.
+
 ## 1. Scope and status
 
 This document specifies coordinator protocol `0.1.0`. The endpoint is
-**spec-only** until its codec and server exist. The key words `MUST`, `MUST NOT`,
+spec-only: no codec or server exists in this tree. The key words `MUST`, `MUST NOT`,
 `REQUIRED`, `SHALL`, `SHALL NOT`, `SHOULD`, `SHOULD NOT`, `MAY`, and `OPTIONAL`
 are interpreted as RFC 2119 requirements.
 

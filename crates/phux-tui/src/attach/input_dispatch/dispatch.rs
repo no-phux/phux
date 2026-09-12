@@ -1192,14 +1192,20 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if !self.predict.should_display(predict_now_ms()) {
             return;
         }
-        let origin = self
+        let focused = self
             .ctx
             .workspace
             .active_window()
-            .and_then(|w| w.focus.as_ref())
+            .and_then(|w| w.focus.as_ref());
+        let origin = focused
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
         let _ = overlay.render(self.predict, origin, self.out);
+        // phux-esge: the guesses now sit over the focused pane's cells; its
+        // front buffer must not keep claiming what was there before them.
+        if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {
+            crate::attach::pane_state::invalidate_predicted_rows(slot, self.predict);
+        }
     }
 }
 
@@ -1511,15 +1517,14 @@ pub(super) const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) ->
 /// exactly what a keybinding, palette row, or overlay commit would — one
 /// dispatch path, no bespoke click semantics:
 ///
-/// * a window block (name or branch row) commits `select-window { index }`;
-/// * a zone-1 `needs you` row (phux-k0cw) commits `select-window` when the
+/// * a nested window row commits `select-window { index }`;
+/// * an agent row commits `select-window` when the
 ///   agent is in this session, and `switch-session { name, window, pane }`
 ///   when it is in another one — the row resolves through `targets`, which
 ///   carries the NAME the frame was painted with rather than re-deriving it
-///   from a queue that may have reordered since;
-/// * a zone-3 roster row commits `switch-session { name }`;
-/// * either zone's overflow row commits `agent-fleet` — the strip drops
-///   rows, the dashboard is where they all still are;
+///   from a live model;
+/// * a session name or host row commits `switch-session { name, host? }`;
+/// * Agents overflow opens `agent-fleet`; Sessions overflow opens `session-picker`;
 /// * `+ new` commits `new-window` (the strip lists windows, so its create
 ///   affordance creates one);
 /// * `= menu` commits `command-palette` — the menu covering window,
@@ -1533,41 +1538,14 @@ pub(super) fn sidebar_click_action(
     x: u16,
     y: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
-    use crate::render::chrome::sidebar::{SidebarHit, SidebarTarget, hit_test};
-    let select_window = |i: usize| {
-        let mut args = std::collections::BTreeMap::new();
-        args.insert(
-            "index".to_owned(),
-            toml::Value::Integer(i64::try_from(i).ok()?),
-        );
-        Some(("select-window", args))
-    };
+    use crate::render::chrome::sidebar::{SidebarHit, hit_test};
     let (action, args) = match hit_test(strip, targets.counts, x, y)? {
-        SidebarHit::Window(i) => select_window(i)?,
-        SidebarHit::NeedsYou(j) => match targets.needs_you.get(j)? {
-            SidebarTarget::Window(i) => select_window(*i)?,
-            SidebarTarget::Session { name, window, pane } => {
-                let mut args = std::collections::BTreeMap::new();
-                args.insert("name".to_owned(), toml::Value::String(name.clone()));
-                args.insert(
-                    "window".to_owned(),
-                    toml::Value::Integer(i64::try_from(*window).ok()?),
-                );
-                args.insert(
-                    "pane".to_owned(),
-                    toml::Value::Integer(i64::try_from(*pane).ok()?),
-                );
-                ("switch-session", args)
-            }
-        },
+        SidebarHit::Window(i) => return sidebar_window_action(i),
+        SidebarHit::NeedsYou(j) => return sidebar_agent_action(targets.needs_you.get(j)?),
         SidebarHit::Roster(j) => {
-            let mut args = std::collections::BTreeMap::new();
-            args.insert(
-                "name".to_owned(),
-                toml::Value::String(targets.roster.get(j)?.clone()),
-            );
-            ("switch-session", args)
+            return Some(sidebar_session_action(targets.roster.get(j)?.as_ref()?));
         }
+        SidebarHit::Sessions => ("session-picker", std::collections::BTreeMap::new()),
         SidebarHit::Fleet => ("agent-fleet", std::collections::BTreeMap::new()),
         SidebarHit::NewWindow => ("new-window", std::collections::BTreeMap::new()),
         SidebarHit::Menu => ("command-palette", std::collections::BTreeMap::new()),
@@ -1577,6 +1555,59 @@ pub(super) fn sidebar_click_action(
         action: action.to_owned(),
         args,
     })
+}
+
+/// Build a window selection through the registry's index argument.
+fn sidebar_window_action(index: usize) -> Option<phux_config::keybind::ResolvedAction> {
+    Some(phux_config::keybind::ResolvedAction {
+        action: "select-window".to_owned(),
+        args: std::collections::BTreeMap::from([(
+            "index".to_owned(),
+            toml::Value::Integer(i64::try_from(index).ok()?),
+        )]),
+    })
+}
+
+/// Agent targets distinguish client-local focus from a cross-session attach.
+fn sidebar_agent_action(
+    target: &crate::render::chrome::sidebar::SidebarTarget,
+) -> Option<phux_config::keybind::ResolvedAction> {
+    use crate::render::chrome::sidebar::SidebarTarget;
+    let (name, window, pane) = match target {
+        SidebarTarget::Window(index) => return sidebar_window_action(*index),
+        SidebarTarget::Session { name, window, pane } => (name, window, pane),
+    };
+    Some(phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args: std::collections::BTreeMap::from([
+            ("name".to_owned(), toml::Value::String(name.clone())),
+            (
+                "window".to_owned(),
+                toml::Value::Integer(i64::try_from(*window).ok()?),
+            ),
+            (
+                "pane".to_owned(),
+                toml::Value::Integer(i64::try_from(*pane).ok()?),
+            ),
+        ]),
+    })
+}
+
+/// Preserve host qualification even when two hosts use the same session name.
+fn sidebar_session_action(
+    target: &crate::render::chrome::sidebar::SessionRosterTarget,
+) -> phux_config::keybind::ResolvedAction {
+    let mut args = std::collections::BTreeMap::from([(
+        "name".to_owned(),
+        toml::Value::String(target.name.clone()),
+    )]);
+    if let Some(host) = &target.host {
+        args.insert("host".to_owned(), toml::Value::String(host.clone()));
+    }
+    phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    }
 }
 
 /// phux-foz.12: map a left press on the status-bar row to the action it

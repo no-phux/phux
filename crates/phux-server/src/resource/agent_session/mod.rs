@@ -333,6 +333,7 @@ impl AgentSessionActor {
         let _ = self.core.output_tx.send(PaneOutput::Live {
             seq: last_seq,
             bytes: Bytes::from(payload),
+            at: std::time::Instant::now(),
         });
         let _ = reply.send(Ok(AppendAccepted {
             first_seq,
@@ -493,7 +494,7 @@ mod tests {
         let accepted =
             append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
         match subscriber.try_recv().expect("one live frame") {
-            PaneOutput::Live { seq, bytes } => {
+            PaneOutput::Live { seq, bytes, .. } => {
                 assert_eq!(seq, accepted.last_seq);
                 let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
                 assert_eq!(text.lines().count(), 2);

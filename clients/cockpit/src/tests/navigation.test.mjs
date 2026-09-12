@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialModel, update } from '../core.ts';
-import { navigationRequest, navigationPage, snapshot } from '../protocol.ts';
+import { navigationRequest, navigationAgentsRequest, navigationIntent, navigationPage, snapshot } from '../protocol.ts';
 
 const bytes = text => new TextEncoder().encode(text);
 const text = value => new TextDecoder().decode(value);
@@ -231,7 +231,8 @@ test('agent rows decode from the extension record and hang under their tab', () 
   const body = tabbedSnapshotBytes('Terminal 1', extensionRecord(1, payload));
   const decoded = snapshot(body);
   assert.equal(decoded.agents.length, 2);
-  assert.deepEqual(decoded.agents[0], { window: 0, tab: 0, state: 1, attention: false, provider: decoded.agents[0].provider });
+  assert.deepEqual(decoded.agents[0], { window: 0, tab: 0, state: 1, attention: false, provider: decoded.agents[0].provider,
+    resource: bytes(''), parent: bytes(''), parentIndex: 65535 });
   assert.equal(text(decoded.agents[0].provider), 'claude');
 
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
@@ -261,6 +262,149 @@ test('an agent row is gone from the view the moment the next snapshot omits it',
   assert.equal(model.visibleTabs[0].agents.length, 0);
   assert.deepEqual(model.railRows.map(row => row.agent), [false]);
   assert.equal(text(model.status), 'READY');
+});
+
+test('offline and delayed snapshots cannot leave an agent claiming current blocked attention', () => {
+  const body = tabbedSnapshotBytes('Terminal 1', extensionRecord(1, [1, ...agentRow(0, 0, 2, true, 'claude')]));
+  body[23] = 3;
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  assert.equal(model.visibleTabs[0].agents[0].attention, false);
+  assert.match(text(model.visibleTabs[0].agents[0].state), /offline/);
+  [model] = step(model, { kind: 'snapshot_failed', error: bytes('unavailable') });
+  assert.equal(model.railRows.some(row => row.agent), false);
+});
+
+const u16 = value => [value % 256, Math.floor(value / 256)];
+function boundAgent(resource, parent, parentIndex, window = 0, tab = 0) {
+  const provider = bytes('claude');
+  return [window, tab, ...u16(parentIndex), 2, 1, provider.length, ...u16(bytes(resource).length),
+    ...u16(bytes(parent).length), ...provider, ...bytes(resource), ...bytes(parent)];
+}
+function inspectedAgent(offset = 0, total = 30, parentIndex = 300, rev = revision, details = {}) {
+  const head = navigationAgentsRequest(rev, offset);
+  const label = bytes('claude · blocked');
+  const fields = [details.resource ?? `phux:0:${9000 + offset}@`, details.parent ?? 'phux:0:42@',
+    details.nativeId ?? `producer-session-${offset}`, details.evidence ?? 'Catalog: working; records: blocked'];
+  return new Uint8Array([...head, ...u16(total), 1, ...u16(parentIndex), label.length, ...label,
+    ...fields.flatMap(value => [...u16(bytes(value).length), ...bytes(value)])]);
+}
+
+test('agent inspection retains a full bounded latest reason beyond the identity budget', () => {
+  const reason = '界'.repeat(340) + 'end!'; // 1024 UTF-8 bytes, including a recognizable tail.
+  const evidence = `Catalog: working; records: blocked\nLatest record: ask\nSequence: 18446744073709551615\nCoordinator-stamped record time (ts_ms): 18446744073709551615\nReason: ${reason}`;
+  const body = inspectedAgent(0, 1, 300, revision, { evidence });
+  assert.ok(body.length < 4096);
+  const decoded = navigationPage(body);
+  assert.notEqual(decoded, null);
+  assert.equal(text(decoded.rows[0].evidence), evidence);
+  let model = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'agents_open' })[0];
+  [model] = step(model, { kind: 'navigation_loaded', body });
+  assert.equal(text(model.paletteRows[0].evidence), evidence);
+});
+
+test('inspection field budgets are independent and preserve page and single-row bounds', () => {
+  const limits = { resource: 288, parent: 288, nativeId: 256, evidence: 1792 };
+  const details = Object.fromEntries(Object.entries(limits).map(([key, limit]) => [key, 'x'.repeat(limit)]));
+  const full = inspectedAgent(0, 1, 300, revision, details);
+  assert.ok(full.length < 4096);
+  assert.equal(navigationPage(full).rows.length, 1);
+  for (const [key, limit] of Object.entries(limits)) {
+    assert.equal(navigationPage(inspectedAgent(0, 1, 300, revision, { ...details, [key]: 'x'.repeat(limit + 1) })), null, key);
+  }
+  for (let end = 0; end < full.length; end++) assert.equal(navigationPage(full.subarray(0, end)), null);
+  const twoRows = new Uint8Array(full); twoRows[13] = 2; twoRows[15] = 2;
+  assert.equal(navigationPage(twoRows), null);
+  assert.equal(navigationPage(new Uint8Array([...full, ...new Uint8Array(4097 - full.length)])), null);
+});
+
+test('authoritative revision refresh replaces the reason while the inspected agent stays blocked', () => {
+  let model = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'agents_open' })[0];
+  const first = inspectedAgent(0, 1, 300, revision, { evidence: 'Catalog: working; records: blocked\nReason: first question?' });
+  [model] = step(model, { kind: 'navigation_loaded', body: first });
+  const identity = text(model.inspectedResource);
+  const event = new Uint8Array(18); event[0] = 1; event[1] = 1; event[2] = 2; event[10] = 8;
+  [model] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: event, droppedPending: 0, droppedTotal: 0 });
+  assert.equal(model.paletteRows.length, 0);
+  const snapshot = snapshotBytes(2); snapshot[10] = 8; snapshot[2] = 2;
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshot });
+  const evidence = 'Catalog: working; records: blocked\nLatest record: ask\nSequence: unknown\nCoordinator-stamped record time (ts_ms): unknown\nReason: a different question?';
+  [model] = step(model, { kind: 'navigation_loaded', body: inspectedAgent(0, 1, 300, { hi: 0, lo: 8 }, { evidence }) });
+  assert.equal(text(model.inspectedResource), identity);
+  assert.equal(text(model.paletteRows[0].label), 'claude · blocked');
+  assert.equal(text(model.paletteRows[0].evidence), evidence);
+  assert.equal(step(model, { kind: 'navigation_loaded', body: first })[0], model);
+});
+
+test('identity rows distinguish split parents and jump using the exact fenced parent target', () => {
+  const extension = extensionRecord(5, [...u16(30), 2,
+    ...boundAgent('phux:0:9001@', 'phux:0:42@', 300),
+    ...boundAgent('phux:0:9002@', 'phux:0:43@', 301)]);
+  const body = tabbedSnapshotBytes('Split', extension);
+  const decoded = snapshot(body);
+  assert.equal(decoded.agentTotal, 30);
+  assert.deepEqual(decoded.agents.map(row => text(row.parent)), ['phux:0:42@', 'phux:0:43@']);
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  assert.equal(text(model.agentCountLabel), 'Agents 30');
+  assert.match(text(model.railRows[2].label), /phux:0:9002@ under phux:0:43@/);
+  assert.deepEqual(step(model, { kind: 'agent_parent', index: 301 })[1].payload, navigationIntent(revision, 301));
+  const event = new Uint8Array(18); event[0] = 1; event[1] = 1; event[10] = 8;
+  [model] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: event, droppedPending: 0, droppedTotal: 0 });
+  assert.equal(model.railRows.some(row => row.agent), false);
+  assert.equal(step(model, { kind: 'agent_parent', index: 301 })[1], null);
+  assert.equal(snapshot(tabbedSnapshotBytes('Split', extensionRecord(5, [...u16(30), 0]))).agentTotal, 30);
+  for (let end = body.length - extension.length + 1; end < body.length; end++) {
+    assert.equal(snapshot(body.subarray(0, end)), null);
+  }
+});
+
+test('complete agent inspector pages beyond snapshot cap with real identity and evidence in every window', () => {
+  for (let window = 0; window < 5; window++) {
+    let model = { ...initialModel()[0], engineRevision: revision, engineConnected: true, activeWindow: window };
+    let cmd;
+    [model, cmd] = step(model, { kind: 'agents_open' });
+    assert.equal(model[window === 0 ? 'mainAgentsOpen' : `window${window}AgentsOpen`], true);
+    assert.equal(model.mainPaletteOpen, false);
+    assert.deepEqual(committedCommand(cmd).payload, navigationAgentsRequest(revision, 0));
+    for (let offset = 0; offset < 30; offset++) {
+      [model] = step(model, { kind: 'navigation_loaded', body: inspectedAgent(offset) });
+      assert.equal(text(model.paletteRows[0].resource), `phux:0:${9000 + offset}@`);
+      assert.equal(text(model.paletteRows[0].parent), 'phux:0:42@');
+      assert.equal(text(model.paletteRows[0].nativeId), `producer-session-${offset}`);
+      assert.equal(text(model.paletteRows[0].evidence), 'Catalog: working; records: blocked');
+      assert.match(text(model.paletteNotice), new RegExp(`Agent ${offset + 1} of 30`));
+      if (offset < 29) [model] = step(model, { kind: 'palette_move', delta: 1 });
+    }
+    assert.equal(model.paletteNext, false);
+    assert.deepEqual(committedCommand(step(model, { kind: 'palette_submit' })[1]).payload, navigationIntent(revision, 300));
+  }
+});
+
+test('agent inspector rejects delayed pages and cannot jump an absent parent', () => {
+  let model = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'agents_open' })[0];
+  assert.equal(step(model, { kind: 'navigation_loaded', body: page() })[0], model);
+  assert.equal(step(model, { kind: 'navigation_loaded', body: inspectedAgent(0, 30, 300, { hi: 0, lo: 6 }) })[0], model);
+  [model] = step(model, { kind: 'navigation_loaded', body: inspectedAgent(0, 30, 65535) });
+  assert.equal(step(model, { kind: 'palette_submit' })[1], null);
+  const body = inspectedAgent();
+  for (let end = 0; end < body.length; end++) assert.equal(navigationPage(body.subarray(0, end)), null);
+});
+
+test('automatic agent refresh never retargets inspection after catalog replacement', () => {
+  let model = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'agents_open' })[0];
+  [model] = step(model, { kind: 'navigation_loaded', body: inspectedAgent() });
+  assert.equal(text(model.inspectedResource), 'phux:0:9000@');
+  const replacement = new Uint8Array(inspectedAgent());
+  const at = Buffer.from(replacement).indexOf(Buffer.from('phux:0:9000@'));
+  assert.ok(at > 0);
+  replacement[at + 10] = '1'.charCodeAt(0);
+  [model] = step(model, { kind: 'navigation_loaded', body: replacement });
+  assert.equal(model.paletteRows.length, 0);
+  assert.match(text(model.paletteNotice), /changed or closed/);
+  assert.equal(step(model, { kind: 'palette_submit' })[1], null);
+  [model] = step(model, { kind: 'palette_retry' });
+  [model] = step(model, { kind: 'navigation_loaded', body: replacement });
+  assert.equal(model.paletteRows.length, 1);
+  assert.equal(text(model.inspectedResource), 'phux:0:9001@');
 });
 
 test('an unknown extension kind is stepped over, and a malformed known one is refused', () => {

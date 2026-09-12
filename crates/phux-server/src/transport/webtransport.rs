@@ -33,8 +33,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
+use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 use wtransport::endpoint::{IncomingSession, SessionRequest};
 use wtransport::error::StreamReadExactError;
@@ -173,8 +175,10 @@ impl WtListener {
                 header: [0u8; LENGTH_PREFIX],
             },
             WtWriter {
+                // wtransport rides quinn, so the session's quinn connection
+                // carries the same congestion-tracked window as raw QUIC.
+                send: TrackedSend::new(send, SendWindow::new(connection.quic_connection().clone())),
                 _connection: connection,
-                send,
             },
             crate::auth::ConnectionIdentity {
                 peer: peer_identity,
@@ -220,28 +224,34 @@ impl FrameReader for WtReader {
 }
 
 /// WebTransport write half.
+///
+/// Writes go through [`TrackedSend`] on the session's quinn connection, the
+/// same congestion-tracked send window `QuicWriter` uses: a browser on a
+/// link slower than the output blocks this writer within about a round trip
+/// instead of queueing megabytes in quinn's default window, so the output
+/// pump's staleness resync can skip it to a fresh checkpoint.
 pub(crate) struct WtWriter {
+    send: TrackedSend<SendStream>,
     /// Keeps the WebTransport session alive for the stream's lifetime.
     _connection: wtransport::Connection,
-    send: SendStream,
 }
 
 impl FrameWriter for WtWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.send.write_all(frame).await.map_err(io::Error::other)
+        self.send.write_all(frame).await
     }
 
     /// One `write_all` for the whole batch — the same reasoning as
     /// `QuicWriter::write_frames`. A WebTransport bidi stream is a reliable
     /// ordered byte stream and `WtReader` reassembles it by length prefix, so
     /// merging a coalesced burst into one write changes the poll count, not
-    /// the bytes.
+    /// the bytes. The window is re-tracked before every partial write.
     async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
-        self.send.write_all(batch).await.map_err(io::Error::other)
+        self.send.write_all(batch).await
     }
 
     async fn close(&mut self) -> io::Result<()> {
-        self.send.finish().await.map_err(io::Error::other)
+        self.send.get_mut().finish().await.map_err(io::Error::other)
     }
 }
 
@@ -416,6 +426,48 @@ mod tests {
         assert!(
             peer.mcp_host_key.is_none(),
             "an unauthenticated loopback peer carries no device id"
+        );
+    }
+
+    /// phux-byyu: with the browser's acks cut off, the writer stops at about
+    /// one congestion window plus the unsent slack rather than buffering up to
+    /// the client's 1.25 MB stream credit.
+    #[tokio::test]
+    async fn writer_blocks_near_the_congestion_window_when_the_path_stalls() {
+        let (_dir, listener) = listener(None);
+        let addr = listener.local_addr().unwrap();
+        let proxy = phux_dial::testing::DropProxy::start(addr).await.unwrap();
+        let url = format!("https://127.0.0.1:{}/session", proxy.addr().port());
+
+        let client = async {
+            let conn = client_endpoint().connect(url).await.unwrap();
+            let (mut send, recv) = conn.open_bi().await.unwrap().await.unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            (conn, send, recv)
+        };
+        let server = async {
+            let (mut reader, writer, _peer) = listener.accept().await.unwrap();
+            reader.read_frame().await.unwrap();
+            (reader, writer)
+        };
+        let (_client, (_reader, mut writer)) = tokio::join!(client, server);
+
+        proxy.blackhole_downstream();
+        let chunk = vec![0x5a_u8; 64 * 1024];
+        let mut accepted = 0_usize;
+        while accepted < 8 * 1024 * 1024 {
+            match tokio::time::timeout(Duration::from_millis(300), writer.send.write(&chunk)).await
+            {
+                Ok(Ok(written)) => accepted += written,
+                Ok(Err(err)) => panic!("write failed: {err}"),
+                Err(_) => break,
+            }
+        }
+        let cwnd = writer.send.window().connection().stats().path.cwnd;
+        let bound = phux_dial::window::send_window_for(cwnd).max(64 * 1024);
+        assert!(
+            accepted as u64 <= bound,
+            "WtWriter accepted {accepted} bytes against a {cwnd}-byte congestion window"
         );
     }
 

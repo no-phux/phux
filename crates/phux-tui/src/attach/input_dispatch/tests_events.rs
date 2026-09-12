@@ -534,23 +534,17 @@ fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String
 /// header/blank/separator cells nothing.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
-    // Left-docked 20-column strip over a 24-row viewport with a status
-    // bar: rows 0..=22, footer on rows 21 (new) and 22 (menu). With a
-    // quiet queue row 0 is the `here` header (phux-k0cw), so window 1's
-    // block sits on rows 3-4.
+    // Body has 21 rows: Agents starts at 0, Sessions at 10, footer at 21.
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
         w: 20,
         h: 23,
     };
-    let quiet = targets(0, 2, 0);
-    // Window 1's name row (y = 3) and branch row (y = 4) both select it.
-    for y in [3, 4] {
-        let resolved = sidebar_click_action(strip, &quiet, 4, y).expect("window row hits");
-        assert_eq!(resolved.action, "select-window");
-        assert_eq!(index_arg(&resolved), Some(1));
-    }
+    let quiet = targets(0, 2, 1);
+    let resolved = sidebar_click_action(strip, &quiet, 4, 14).expect("window row hits");
+    assert_eq!(resolved.action, "select-window");
+    assert_eq!(index_arg(&resolved), Some(1));
     let new = sidebar_click_action(strip, &quiet, 4, 21).expect("new row hits");
     assert_eq!(new.action, "new-window");
     assert!(new.args.is_empty());
@@ -579,7 +573,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         w: 20,
         h: 23,
     };
-    // 2 queued + 2 windows: rows 0 header, 1-2 queue, 3 gap, 4 `here`.
+    // Agent activity never moves Sessions from row 10.
     let t = targets(2, 2, 0);
     let local = sidebar_click_action(strip, &t, 4, 1).expect("queue row 0 hits");
     assert_eq!(local.action, "select-window", "a local row stays local");
@@ -595,23 +589,30 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         "the queue header is inert"
     );
 
-    // 2 windows + 2 peers: rows 0 `here`, 1-4 blocks, 5 gap,
-    // 6 `spaces`, 7-8 roster.
-    let t = targets(0, 2, 2);
+    let mut t = targets(0, 2, 2);
     assert!(
-        sidebar_click_action(strip, &t, 4, 6).is_none(),
-        "the spaces header is inert"
+        sidebar_click_action(strip, &t, 4, 10).is_none(),
+        "the sessions header is inert"
     );
-    let space = sidebar_click_action(strip, &t, 4, 7).expect("roster row hits");
+    let space = sidebar_click_action(strip, &t, 4, 11).expect("roster row hits");
     assert_eq!(space.action, "switch-session");
     assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
     assert!(
         !space.args.contains_key("pane"),
         "a roster click names a session, not a pane"
     );
+    t.roster[0].as_mut().unwrap().host = Some("devbox".to_owned());
+    let host = sidebar_click_action(strip, &t, 4, 12).expect("host row hits");
+    assert_eq!(str_arg(&host, "name").as_deref(), Some("space-0"));
+    assert_eq!(str_arg(&host, "host").as_deref(), Some("devbox"));
+    t.roster[0] = None;
+    assert!(
+        sidebar_click_action(strip, &t, 4, 12).is_none(),
+        "unreachable host is inert"
+    );
 
     // The overflow row hands off to the dashboard.
-    let t = targets(9, 1, 0);
+    let t = targets(12, 1, 1);
     let overflow = (0..strip.h)
         .filter_map(|y| sidebar_click_action(strip, &t, 4, y))
         .find(|r| r.action == "agent-fleet");
@@ -678,6 +679,18 @@ fn right_press_at(x: u16, y: u16) -> InputEvent {
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
+    dispatch_sidebar_click_with(ev, 24, targets(0, 2, 1)).await
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "test-owned native terminal is !Send"
+)]
+async fn dispatch_sidebar_click_with(
+    ev: InputEvent,
+    height: u16,
+    sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
+) -> (usize, bool, usize) {
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
@@ -707,7 +720,6 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
     // phux-k0cw: the strip's shape comes from the painted target
     // table now, not from the workspace, so a fixture that wants
     // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
         layout_read_complete: true,
@@ -715,7 +727,7 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
         resolver: None,
         focus_history: FocusHistory::default(),
         workspace: &mut workspace,
-        viewport: (80, 24),
+        viewport: (80, height),
         cell_px: (1, 1),
         next_request_id: &mut next_request_id,
         input_replay: None,
@@ -781,13 +793,30 @@ async fn dispatch_sidebar_click(ev: InputEvent) -> (usize, bool, usize) {
 /// mouse route runs the same `select-window` a keybinding would.
 #[tokio::test]
 async fn sidebar_click_on_window_block_selects_it() {
-    // phux-qtw8: the strip is full-height (h = 24 in a 24-row viewport)
-    // even with a bar docked. Row 0 is the spaces header (phux-foz.9), so
-    // window 1's name row is y=3.
-    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 3)).await;
+    // Full-height strip: Sessions at 11, name/host at 12/13, windows at 14/15.
+    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 15)).await;
     assert_eq!(active, 1, "clicking window 1's block must select it");
     assert!(!overlay_active);
     assert_eq!(pending, 0);
+}
+
+#[tokio::test]
+async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
+    let strip = crate::layout::Rect {
+        x: 0,
+        y: 0,
+        w: 20,
+        h: 7,
+    };
+    let table = targets(3, 2, 2);
+    for (y, action) in [(1, "agent-fleet"), (3, "session-picker")] {
+        let resolved = sidebar_click_action(strip, &table, 4, y).unwrap();
+        assert_eq!(resolved.action, action);
+        let (_, opened, pending) =
+            dispatch_sidebar_click_with(left_press_at(4, y), 7, table.clone()).await;
+        assert!(opened, "{action} must open an overlay, not ring the bell");
+        assert_eq!(pending, 0);
+    }
 }
 
 /// A left press on `+ new` parks a `new-window` spawn (the reply opens
@@ -830,7 +859,7 @@ async fn sidebar_consumes_clicks_on_blank_rows() {
 /// menu acts on what you pointed at) and then opens its window menu.
 #[tokio::test]
 async fn sidebar_right_press_on_a_window_block_selects_it_and_opens_its_menu() {
-    let (active, overlay_active, pending) = dispatch_sidebar_click(right_press_at(3, 3)).await;
+    let (active, overlay_active, pending) = dispatch_sidebar_click(right_press_at(3, 15)).await;
     assert_eq!(active, 1, "right-clicking window 1's block selects it");
     assert!(overlay_active, "and opens the window menu for it");
     assert_eq!(pending, 0);

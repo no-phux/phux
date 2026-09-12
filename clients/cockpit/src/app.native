@@ -5,4 +5,5 @@
   <use template="cockpit-directory" diropen="{mainDirOpen}" />
   <use template="cockpit-rename" renameopen="{mainRenameOpen}" />
   <use template="cockpit-empty" emptyopen="{mainEmptyOpen}" name="{mainContext.emptyName}" detail="{mainContext.emptyDetail}" picked="{mainContext.emptyPicked}" />
+  <use template="cockpit-agents" open="{mainAgentsOpen}" rows="{paletteRows}" notice="{paletteNotice}" previous="{palettePrevious}" next="{paletteNext}" status="{connectionStatus}" />
 </use>

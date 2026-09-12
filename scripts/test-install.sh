@@ -344,3 +344,78 @@ for action in publish-fail publish-term; do
 done
 
 echo "cockpit installer transaction tests passed"
+
+# The rollback tests leave a wrapping `mv` in FAKE_BIN. The next-channel
+# path uses a real rename and must not inherit that harness.
+rm -f "$FAKE_BIN/mv"
+
+NEXT_SHA=0123456789abcdef0123456789abcdef01234567
+NEXT_STAGE="phux-next.${NEXT_SHA}-${TARGET}"
+NEXT_FIXTURE="$TMP/next-fixture"
+mkdir -p "$NEXT_FIXTURE/$NEXT_STAGE" "$NEXT_FIXTURE"
+printf 'next phux\n' > "$NEXT_FIXTURE/$NEXT_STAGE/phux"
+printf 'next phux-mcp\n' > "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp"
+chmod 755 "$NEXT_FIXTURE/$NEXT_STAGE/phux" "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp"
+tar -czf "$NEXT_FIXTURE/${NEXT_STAGE}.tar.gz" -C "$NEXT_FIXTURE" "$NEXT_STAGE"
+(
+  cd "$NEXT_FIXTURE"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${NEXT_STAGE}.tar.gz" > "${NEXT_STAGE}.tar.gz.sha256"
+  else
+    shasum -a 256 "${NEXT_STAGE}.tar.gz" > "${NEXT_STAGE}.tar.gz.sha256"
+  fi
+)
+cat > "$NEXT_FIXTURE/channel.json" <<EOF
+{"schema_version":1,"channel":"next","sha":"${NEXT_SHA}","version":"9.8.7"}
+EOF
+
+cat > "$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+url=""
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    -fsSL|-fsSLI|-f|-s|-S|-L|-I|-q) shift ;;
+    -w) shift 2 ;;
+    http*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+payload() {
+  case "$url" in
+    *channel.json) cat "$INSTALL_FIXTURE/channel.json" ;;
+    *.sha256) cat "$INSTALL_FIXTURE/phux-next.0123456789abcdef0123456789abcdef01234567-x86_64-unknown-linux-gnu.tar.gz.sha256" ;;
+    *next.*) cat "$INSTALL_FIXTURE/phux-next.0123456789abcdef0123456789abcdef01234567-x86_64-unknown-linux-gnu.tar.gz" ;;
+    *) echo "unexpected url: $url" >&2; exit 1 ;;
+  esac
+}
+if [[ -n "$out" ]]; then
+  payload > "$out"
+else
+  payload
+fi
+EOF
+chmod 755 "$FAKE_BIN/curl"
+
+NEXT_DIR="$TMP/next-install"
+mkdir "$NEXT_DIR"
+PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --os linux --arch x86_64 \
+    --install-dir "$NEXT_DIR" >"$TMP/next.out"
+grep -Fq "installed phux next.${NEXT_SHA}" "$TMP/next.out"
+grep -Fxq next "$NEXT_DIR/.phux-channel"
+cmp "$NEXT_FIXTURE/$NEXT_STAGE/phux" "$NEXT_DIR/phux"
+cmp "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp" "$NEXT_DIR/phux-mcp"
+
+if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --version "$VERSION" \
+    --os linux --arch x86_64 --install-dir "$NEXT_DIR" \
+    >"$TMP/next-conflict.out" 2>"$TMP/next-conflict.err"; then
+  echo "installer accepted --channel next with --version" >&2
+  exit 1
+fi
+grep -Fq -- '--version pins a stable tag' "$TMP/next-conflict.err"
+
+echo "next-channel installer tests passed"

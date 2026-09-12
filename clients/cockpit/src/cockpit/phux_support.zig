@@ -51,6 +51,21 @@ const DisabledAgentSession = struct {
     parent: ?RemoteResourceId = null,
     provider_name: []const u8 = "",
     native_id: []const u8 = "",
+    catalog_state: DisabledAgentState = .unknown,
+    stream_state: ?DisabledAgentState = null,
+    generation: ?Generation = null,
+    latest_evidence: ?struct {
+        seq: ?u64 = null,
+        ts_ms: ?u64 = null,
+        record_type: []const u8 = "",
+        reason: struct {
+            truncated: bool = false,
+
+            pub fn slice(_: *const @This()) []const u8 {
+                return "";
+            }
+        } = .{},
+    } = null,
 
     pub fn state(_: *const DisabledAgentSession) DisabledAgentState {
         return .unknown;
@@ -211,6 +226,18 @@ const DisabledPhuxProvider = struct {
         return error.Disabled;
     }
     pub fn requestWorkspaceMutation(_: *DisabledPhuxProvider, _: provider_contract.workspace.Mutation) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn mouseMode(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!provider_contract.MouseMode {
+        return error.Disabled;
+    }
+    pub fn mouseTracking(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!bool {
+        return error.Disabled;
+    }
+    pub fn sendMouse(_: *DisabledPhuxProvider, _: ReplicaOwner, _: *const MouseInput) error{Disabled}!void {
+        return error.Disabled;
+    }
+    pub fn selectionGesture(_: *DisabledPhuxProvider, _: ReplicaOwner, _: provider_contract.SelectionGesture) error{Disabled}!provider_contract.SelectionGestureResult {
         return error.Disabled;
     }
     pub fn takeOperationResult(_: *DisabledPhuxProvider) ?@This().OperationResult {

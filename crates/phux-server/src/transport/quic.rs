@@ -33,8 +33,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
+use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 use super::tls::quic_server_config;
@@ -174,19 +176,34 @@ impl FrameReader for QuicReader {
 }
 
 /// QUIC write half.
+///
+/// Writes go through [`TrackedSend`], which holds quinn's send window to the
+/// congestion window plus a small unsent slack (`phux_dial::window`) rather
+/// than quinn's 10 MB default. A write that finds the window full blocks, the
+/// per-client mailbox fills behind it, and the output pump falls behind the
+/// pane's broadcast — which is the lag the pump already answers with an
+/// in-band resync, skipping the client to a fresh checkpoint rather than
+/// replaying a backlog it cannot drain.
 pub(crate) struct QuicWriter {
-    send: quinn::SendStream,
+    send: TrackedSend<quinn::SendStream>,
 }
 impl QuicWriter {
     /// Wrap one already-authenticated QUIC send stream in phux framing.
-    pub(crate) const fn from_stream(send: quinn::SendStream) -> Self {
-        Self { send }
+    ///
+    /// `window` tracks the connection `send` rides. Build it once per
+    /// connection and clone it for each stream on that connection (a relay
+    /// tunnel carries one stream per bridged consumer): the window belongs
+    /// to the connection, not to the stream.
+    pub(crate) const fn from_stream(send: quinn::SendStream, window: SendWindow) -> Self {
+        Self {
+            send: TrackedSend::new(send, window),
+        }
     }
 }
 
 impl FrameWriter for QuicWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.send.write_all(frame).await.map_err(io::Error::other)
+        self.send.write_all(frame).await
     }
 
     /// One `write_all` for the whole batch, exactly as `UdsWriter` does.
@@ -198,9 +215,11 @@ impl FrameWriter for QuicWriter {
     /// costs — a coalesced PTY burst of up to `MAX_WRITE_COALESCE` frames now
     /// pays one poll and one copy into quinn's stream buffer instead of 32,
     /// and quinn packs the result into full packets rather than being woken
-    /// per frame. `ends` is unused for exactly that reason.
+    /// per frame. `ends` is unused for exactly that reason. The window is
+    /// still re-tracked before every partial write inside that one
+    /// `write_all` (see [`TrackedSend`]).
     async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
-        self.send.write_all(batch).await.map_err(io::Error::other)
+        self.send.write_all(batch).await
     }
 
     #[allow(
@@ -208,7 +227,7 @@ impl FrameWriter for QuicWriter {
         reason = "FrameWriter requires an async close operation, while Quinn's finish is synchronous"
     )]
     async fn close(&mut self) -> io::Result<()> {
-        self.send.finish().map_err(io::Error::other)
+        self.send.get_mut().finish().map_err(io::Error::other)
     }
 }
 
@@ -291,7 +310,7 @@ impl Incoming for QuicListener {
 
             return Ok((
                 QuicReader::from_stream(recv),
-                QuicWriter::from_stream(send),
+                QuicWriter::from_stream(send, SendWindow::new(conn)),
                 crate::auth::ConnectionIdentity {
                     peer: peer_identity,
                     credential,

@@ -14,6 +14,9 @@ const EXTENSION_NAVIGATION_CONTEXT = 3;
 const EXTENSION_EMPTY_SESSION = 4;
 /// Per-window header context (window_contexts.zig).
 const EXTENSION_WINDOW_CONTEXTS = 5;
+/// Identity-bound agent inspection rows (ts_agents.zig). Kind 5 is already
+/// window_contexts, so parent-agent rows take the next free value.
+const EXTENSION_PARENT_AGENT_ROWS = 6;
 const WINDOW_CONTEXTS_VERSION = 1;
 /// The primary window and four secondary slots (`model.max_windows`).
 export const MAX_WINDOWS = 5;
@@ -220,6 +223,11 @@ export interface SnapshotAgentRow {
   readonly state: number;
   readonly attention: boolean;
   readonly provider: Uint8Array;
+  /// Resource identity is display/inspection data, never a terminal surface.
+  /// The parent index is actionable only at this snapshot's native revision.
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly parentIndex: number;
 }
 
 export interface SnapshotTab {
@@ -277,6 +285,9 @@ export interface EngineSnapshot extends Invalidation {
   /// The agent rows the `agent_rows` extension record carried, empty when the
   /// snapshot carried none (which is also what an absent record means).
   readonly agents: readonly SnapshotAgentRow[];
+  /// The complete identity-bound roster size the `parent_agent_rows` record
+  /// carried, or the drawn row count when it carried none.
+  readonly agentTotal: number;
   readonly emptySession: SnapshotEmptySession;
   /// Per-window header context; preferred over the navigation context and
   /// `emptySession` for every window whenever `present`.
@@ -454,6 +465,9 @@ function readAgentRows(bytes: Uint8Array, start: number, length: number): readon
       state: Math.trunc(state),
       attention: flags !== 0,
       provider: bytes.subarray(at + 5, at + 5 + providerLength),
+      resource: new Uint8Array(0),
+      parent: new Uint8Array(0),
+      parentIndex: 65535,
     });
     at += 5 + providerLength;
   }
@@ -470,10 +484,11 @@ interface SnapshotExtensions {
   readonly navigation: NavigationSnapshotContext;
   readonly empty: SnapshotEmptySession;
   readonly windowContexts: WindowContexts;
+  readonly total: number;
 }
 
 function noExtensions(): SnapshotExtensions {
-  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), windowContexts: absentWindowContexts() };
+  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), windowContexts: absentWindowContexts(), total: 0 };
 }
 
 interface NavigationSnapshotContext {
@@ -503,7 +518,7 @@ function readNavigationSnapshotContext(bytes: Uint8Array): NavigationSnapshotCon
 function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: Uint8Array): SnapshotExtensions | null {
   if (kind === EXTENSION_AGENT_ROWS) {
     const agents = readAgentRows(payload, 0, payload.length);
-    return agents === null ? null : { ...previous, agents };
+    return agents === null ? null : { ...previous, agents, total: agents.length };
   }
   if (kind === EXTENSION_TAB_CONTEXTS) {
     return payload.length === 80 ? { ...previous, contexts: payload } : null;
@@ -516,7 +531,13 @@ function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: 
     const empty = readEmptySession(payload);
     return empty === null ? null : { ...previous, empty };
   }
-  if (kind === EXTENSION_WINDOW_CONTEXTS) return withWindowContexts(previous, payload);
+  if (kind === EXTENSION_WINDOW_CONTEXTS) {
+    return withWindowContexts(previous, payload);
+  }
+  if (kind === EXTENSION_PARENT_AGENT_ROWS) {
+    const record = readParentAgents(payload, 0, payload.length);
+    return record === null ? null : { ...previous, agents: record.rows, total: record.total };
+  }
   return previous;
 }
 
@@ -525,6 +546,53 @@ function withWindowContexts(previous: SnapshotExtensions, payload: Uint8Array): 
   if (previous.windowContexts.present) return null;
   const records = windowContexts(payload);
   return records === null ? null : { ...previous, windowContexts: { present: true, records } };
+}
+
+function agentPlacementValid(window: number, tab: number, state: number, flags: number): boolean {
+  return window <= 4 && tab <= 31 && state <= 4 && flags <= 1;
+}
+
+// Restate the integer proof at the compiled-core record boundary. The SDK's
+// ahead-of-time subset does not carry a predicate's range proof to its caller.
+function wireIndex(value: number): number {
+  return value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
+}
+
+interface AgentRecords { readonly rows: readonly SnapshotAgentRow[]; readonly total: number; }
+
+function parentAgentRow(bytes: Uint8Array, at: number, end: number): SnapshotAgentRow | null {
+  if (at + 11 > end) return null;
+  if (!agentPlacementValid(bytes[at], bytes[at + 1], bytes[at + 4], bytes[at + 5])) return null;
+  const providerLength = bytes[at + 6];
+  const resourceLength = bytes[at + 7] + bytes[at + 8] * 256;
+  const parentLength = bytes[at + 9] + bytes[at + 10] * 256;
+  if (resourceLength === 0 || parentLength === 0) return null;
+  if (resourceLength > 288 || parentLength > 288 || providerLength > 12) return null;
+  const providerAt = at + 11;
+  const resourceAt = providerAt + providerLength;
+  const parentAt = resourceAt + resourceLength;
+  if (parentAt + parentLength > end) return null;
+  return { window: wireIndex(bytes[at]), tab: wireIndex(bytes[at + 1]), parentIndex: wireIndex(bytes[at + 2] + bytes[at + 3] * 256),
+    state: wireIndex(bytes[at + 4]), attention: bytes[at + 5] !== 0,
+    provider: bytes.subarray(providerAt, resourceAt), resource: bytes.subarray(resourceAt, parentAt),
+    parent: bytes.subarray(parentAt, parentAt + parentLength) };
+}
+
+function readParentAgents(bytes: Uint8Array, start: number, length: number): AgentRecords | null {
+  const end = start + length;
+  if (length < 3 || end > bytes.length) return null;
+  const total = bytes[start] + bytes[start + 1] * 256;
+  const count = bytes[start + 2];
+  if (count > 24 || count > total) return null;
+  const rows: SnapshotAgentRow[] = [];
+  let at = start + 3;
+  for (let i = 0; i < count; i += 1) {
+    const row = parentAgentRow(bytes, at, end);
+    if (row === null) return null;
+    rows.push(row);
+    at += 11 + row.provider.length + row.resource.length + row.parent.length;
+  }
+  return at === end ? { rows, total } : null;
 }
 
 function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
@@ -630,6 +698,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     tabWidth: bytes[26] + bytes[27] * 256,
     tabs: targetTabs(main.tabs, extensions.contexts, 0),
     agents: extensions.agents,
+    agentTotal: extensions.total,
     emptySession: extensions.empty,
     windowContexts: extensions.windowContexts,
   };
@@ -666,6 +735,12 @@ export interface NavigationRow {
   readonly host: Uint8Array;
   readonly selectable: boolean;
   readonly current: boolean;
+  /// Identity-bound inspection data; empty on ordinary catalog rows. The
+  /// parent index is actionable only at this page's native revision.
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly nativeId: Uint8Array;
+  readonly evidence: Uint8Array;
 }
 
 /// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows,
@@ -673,6 +748,7 @@ export interface NavigationRow {
 export type NavigationScope = number;
 
 export interface NavigationPage {
+  readonly agents: boolean;
   readonly revision: WireU64;
   readonly offset: number;
   readonly total: number;
@@ -680,6 +756,18 @@ export interface NavigationPage {
   readonly scope: NavigationScope;
   readonly host: Uint8Array;
   readonly rows: readonly NavigationRow[];
+}
+
+export function navigationAgentsRequest(revision: WireU64, offset: number): Uint8Array {
+  const out = new Uint8Array(13);
+  out[0] = PROTOCOL_VERSION;
+  out[1] = 5;
+  writeU32(out, 2, revision.lo);
+  writeU32(out, 6, revision.hi);
+  out[10] = offset % 256;
+  out[11] = Math.floor(offset / 256);
+  out[12] = 0;
+  return out;
 }
 
 /// The native compiler requires fixed arity; retain the original caller API.
@@ -761,7 +849,8 @@ function navigationRecord(bytes: Uint8Array, at: number, highlighted: boolean): 
   if (!validNavigationTarget(target)) return null;
   const index = Math.trunc(rawIndex);
   const row: NavigationRow = { id: index, index, target, label: bytes.subarray(labelAt, labelAt + length), highlighted,
-    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true, current: false };
+    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true, current: false,
+    resource: new Uint8Array(0), parent: new Uint8Array(0), nativeId: new Uint8Array(0), evidence: new Uint8Array(0) };
   return { row, end: labelAt + length };
 }
 
@@ -815,9 +904,60 @@ function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly Nav
 function navigationHeaderValid(bytes: Uint8Array): boolean {
   if (bytes.length < 16 || bytes.length > 8192) return false;
   if (bytes[0] !== PROTOCOL_VERSION) return false;
-  if (bytes[1] !== 3 && bytes[1] !== 4) return false;
+  if (bytes[1] !== 3 && bytes[1] !== 4 && bytes[1] !== 5) return false;
   const queryLength = bytes[12];
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
+}
+
+/// One identity-bound inspection row: the old catalog index/label framing,
+/// then the four length-delimited identity fields. A single row fills the
+/// page; the revision fence still rejects delayed replies.
+// ts_agents.max_evidence_bytes: provider 256 + reason 1024 + metadata 512.
+// Identities retain their independent bounds; the page is still at most 4096.
+function inspectionFieldLimit(index: number): number {
+  if (index === 3) return 1792;
+  if (index === 2) return 256;
+  return 288;
+}
+
+function inspectionFields(bytes: Uint8Array, start: number): readonly Uint8Array[] | null {
+  const fields: Uint8Array[] = [];
+  let at = start;
+  for (let i = 0; i < 4; i += 1) {
+    if (at + 2 > bytes.length) return null;
+    const length = bytes[at] + bytes[at + 1] * 256;
+    if (length > inspectionFieldLimit(i) || at + 2 + length > bytes.length) return null;
+    fields.push(bytes.subarray(at + 2, at + 2 + length));
+    at += 2 + length;
+  }
+  return at === bytes.length ? fields : null;
+}
+
+function inspectionRow(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRow | null {
+  if (at + 3 > bytes.length) return null;
+  const rawIndex = bytes[at] + bytes[at + 1] * 256;
+  const length = bytes[at + 2];
+  if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
+  if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
+  const fields = inspectionFields(bytes, at + 3 + length);
+  if (fields === null) return null;
+  const index = Math.trunc(rawIndex);
+  const empty = new Uint8Array(0);
+  return { id: index, index, label: bytes.subarray(at + 3, at + 3 + length), target: empty, highlighted,
+    detail: empty, kind: 0, host: empty, selectable: true, current: false,
+    resource: fields[0], parent: fields[1], nativeId: fields[2], evidence: fields[3] };
+}
+
+function inspectionRows(bytes: Uint8Array, start: number, count: number): readonly NavigationRow[] | null {
+  const rows: NavigationRow[] = [];
+  let at = start;
+  for (let i = 0; i < count; i += 1) {
+    const row = inspectionRow(bytes, at, i === 0);
+    if (row === null) return null;
+    rows.push(row);
+    at = bytes.length;
+  }
+  return at === bytes.length ? rows : null;
 }
 
 export function navigationPage(bytes: Uint8Array): NavigationPage | null {
@@ -829,12 +969,20 @@ export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   const offset = bytes[10] + bytes[11] * 256;
   const total = bytes[at] + bytes[at + 1] * 256;
   const count = bytes[at + 2];
+  if (bytes[1] === 5) {
+    if (!(count >= 0 && count <= 1) || offset + count > total) return null;
+    if (count !== Math.min(1, total - offset)) return null;
+    const rows = inspectionRows(bytes, at + 3, count);
+    if (rows === null) return null;
+    return { agents: true, revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength),
+      scope: 0, host: new Uint8Array(0), rows };
+  }
   const capacity = context.scope === 4 ? 16 : 4;
   if (context.scope !== 4 && bytes.length > 4096) return null;
   if (!validNavigationCount(count, offset, total, capacity)) return null;
   const rows = navigationRows(bytes, at + 3, count);
   if (rows === null) return null;
-  return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
+  return { agents: false, revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
 }
 
 function validNavigationCount(count: number, offset: number, total: number, capacity: number): boolean {
@@ -846,7 +994,7 @@ function validNavigationCount(count: number, offset: number, total: number, capa
 interface NavigationContext { readonly scope: number; readonly host: Uint8Array; readonly at: number; }
 
 function navigationContext(bytes: Uint8Array, at: number): NavigationContext | null {
-  if (bytes[1] === 3) return { scope: 0, host: new Uint8Array(0), at };
+  if (bytes[1] === 3 || bytes[1] === 5) return { scope: 0, host: new Uint8Array(0), at };
   if (at + 2 > bytes.length) return null;
   const scope = bytes[at];
   const length = bytes[at + 1];

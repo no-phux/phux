@@ -44,20 +44,20 @@ open -a "Phux Cockpit"</code></pre>
         then <code>brew install no-phux/tap/phux</code> or
         <code>brew install --cask no-phux/tap/phux-cockpit</code>.
         The <a href="/quickstart/install">install guide</a> also covers release
-        tarballs and source builds.
+        tarballs, source builds, and <code>--channel next</code> for green
+        <code>main</code>
+        (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
       </p>
     </div>
 
     <div class="hero-copy">
-      <p class="eyebrow"><span>SYS</span> terminal control plane / multi-consumer stream</p>
-      <h1>Share real terminals with your agents.<span class="hero-cursor" aria-hidden="true">_</span></h1>
+      <p class="eyebrow"><span>SYS</span> terminal multiplexer / same objects, many consumers</p>
+      <h1>You and your agents share the same terminals.<span class="hero-cursor" aria-hidden="true">_</span></h1>
       <p class="tagline">
-        <span class="mark">phux</span> makes a terminal an addressable object on
-        a wire. Humans, GUIs, and agents can observe or drive the same live
-        terminal without screen scraping, rebuilt chat views, or a second
-        terminal model in the middle. The terminal is the first kind of
-        thing the server holds; an agent's session inside it is the second,
-        and that one is still landing.
+        <span class="mark">phux</span> is a terminal multiplexer whose panes
+        are a view. Underneath, each terminal is an addressable object on a
+        wire: you, Cockpit, a script, or an agent attach to the same live
+        emulator. Nobody screen-scrapes. Nobody holds a second copy.
       </p>
       <div class="hero-ctas">
         <a class="cta" href="/quickstart">quickstart</a>
@@ -67,17 +67,17 @@ open -a "Phux Cockpit"</code></pre>
         <div>
           <span>01</span>
           <b>real terminal bytes</b>
-          <p>libghostty-backed rendering on both ends of the wire.</p>
+          <p>the same libghostty engine on both ends; nobody re-parses.</p>
         </div>
         <div>
           <span>02</span>
           <b>many consumers</b>
-          <p>the TUI, browser client, GUI, and agents share one model.</p>
+          <p>the TUI, Cockpit, browser, and agents share one model.</p>
         </div>
         <div>
           <span>03</span>
-          <b>agent-ready</b>
-          <p>state is projected locally from the same stream a person sees.</p>
+          <b>same objects</b>
+          <p>a script reads and types the terminal you are looking at.</p>
         </div>
       </div>
     </div>
@@ -116,7 +116,7 @@ open -a "Phux Cockpit"</code></pre>
   <section class="wrap section">
     <h2>Why the wire exists</h2>
     <p class="lede">
-      Phux is not another terminal emulator. It gives a real terminal a stable
+      phux is not another terminal emulator. It gives a real terminal a stable
       identity so a person, GUI, or agent can <b>spawn</b>, <b>observe</b>, and
       <b>drive</b> it without owning the only view.
     </p>
@@ -138,9 +138,11 @@ open -a "Phux Cockpit"</code></pre>
       </div>
     </div>
     <p class="lede dim">
-      The TUI is one consumer, not the product boundary. Native consumers keep
-      terminal bytes intact; compatibility profiles preserve semantics through
-      negotiated synthesis. <a href="/concepts">See the model</a> or
+      The TUI is one consumer, not the product boundary. A re-parsing
+      multiplexer has to implement every protocol by hand and always lags.
+      phux never re-parses: the same engine runs on both ends, so the bytes
+      on the wire are the bytes your program wrote.
+      <a href="/concepts">See the model</a> or
       <a href="/wire">read the protocol</a>.
     </p>
   </section>
@@ -151,9 +153,8 @@ open -a "Phux Cockpit"</code></pre>
     <p class="lede">
       The CLI and MCP adapter let an agent read, act, and wait against the same
       terminals a person sees. Rich clients can carry the engine and project
-      structure locally, as <span class="mark">phux-web</span> does. The control
-      loop works today; the APIs are pre-1.0. <a href="/consumers/agents">Use
-      the agent guide</a>.
+      structure locally, as <span class="mark">phux-web</span> does.
+      <a href="/consumers/agents">Use the agent guide</a>.
     </p>
   </section>
 
@@ -161,22 +162,24 @@ open -a "Phux Cockpit"</code></pre>
   <section class="wrap section">
     <h2>Status</h2>
     <p class="lede">
-      Phux is v0.0.x, pre-alpha. The line between what is solid and what is still
-      a promise:
+      The TUI, Cockpit, headless CLI, MCP adapter, and hub-and-spoke
+      federation are here. Agent sessions exist in this tree; older brew/curl
+      releases may not advertise them — check
+      <code>phux status --json</code>. No crates.io SDK.
+      Gaps: <a href="/concepts">concepts</a>.
     </p>
     <ul class="status-tiers">
       <li>
-        <b>stable enough to try</b> — the tui (attach, detach, splits, status bar,
-        multiple clients on one session), native modern-terminal passthrough,
+        <b>try it</b> — attach, detach, splits, modern-terminal passthrough,
         and the version-negotiated wire.
       </li>
       <li>
-        <b>real and tested, API may move</b> — the headless CLI,
-        <code>phux-mcp</code>, and direct authenticated WSS/QUIC attach.
+        <b>real, APIs may move</b> — the headless CLI, <code>phux-mcp</code>,
+        Cockpit, WSS/QUIC attach, and <code>host/@N</code> satellite routing.
       </li>
       <li>
-        <b>designed, not wired</b> — hub-to-satellite federation, a native GUI,
-        and the typed public SDK crate.
+        <b>not yet</b> — a typed public SDK crate, and a durable on-disk
+        journal.
       </li>
       <li>
         <b>experimental</b> — predictive local echo is implemented and opt-in,
@@ -207,7 +210,7 @@ open -a "Phux Cockpit"</code></pre>
       </a>
       <a class="route" href="/consumers">
         <span class="route-k">consumers</span>
-        <span class="route-t">The TUI, web client, agent CLI, and MCP adapter.</span>
+        <span class="route-t">The TUI, Cockpit, web client, agent CLI, and MCP.</span>
       </a>
       <a class="route" href={SITE.github} target="_blank" rel="noopener">
         <span class="route-k">github</span>

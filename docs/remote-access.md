@@ -1,43 +1,17 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
-# Remote access over an overlay network
+# Remote access
 
-**TL;DR.** Run `phux --remote user@host` and you are done: it resolves an
-already-registered host, or pairs one first (from a pasted connect code, or
-over your existing ssh trust) and remembers it, so every later attach is a
-direct QUIC dial with no ssh in the path. `phux host enroll HOST` is the
-same setup plus a service unit on the far end. The manual path — put both ends on a WireGuard-class overlay,
-mint credentials with phux pair, attach to the overlay address over QUIC or TLS
-WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
-plus troubleshooting for routing, auth, and fingerprint failures. A fourth
-path uses the self-hosted reference relay when the server cannot accept an
-inbound connection.
+**TL;DR.** Attach to a phux server on another machine with one command. The
+first run pairs the host; every later run is a direct encrypted QUIC dial
+with no ssh in the path. Manual overlay, enroll, and relay paths are below
+for when that command cannot.
 
 ---
-
-## Why an overlay
-
-phux already ships everything a remote attach needs except reachability: wss://
-(TLS 1.3) and QUIC transports, `phux pair` to mint a bearer token plus a
-certificate fingerprint, and a non-loopback bind that engages TLS and token
-auth automatically
-([ADR-0031](../ADR/0031-remote-consumer-auth-and-encryption.md)). What remains
-is purely packet reachability — a self-hosted server behind NAT or CGNAT has no
-inbound-reachable address. The sanctioned answer is a WireGuard-class overlay
-network ([ADR-0037](../ADR/0037-overlay-network-reachability.md)): an L3
-substrate that hands the client a routable address (a `100.x` IP or a MagicDNS
-`*.ts.net` name) which phux dials exactly like a LAN address, with zero new
-code. Cert pinning is on the fingerprint, not the hostname, so overlay DNS
-names work unchanged. phux is overlay-agnostic, and the fully-OSS
-Headscale/WireGuard path is first-class, not a downgrade. Hosted relays,
-rendezvous servers, and hole-punching are deliberately out of scope. The trust
-model and environment knobs live in
-[operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
-this page owns the step-by-step task.
 
 ## The short way: `phux --remote`
 
@@ -122,7 +96,7 @@ machine-readable call must do neither. Three limits are deliberate:
 like the local form. With no `--cwd`, a remote session starts in the far
 server's default directory: a path on this machine names nothing there.
 
-### From Phux Cockpit
+### From Cockpit
 
 Cockpit's Connect to Host (`cmd+shift+O`) reads this same `[[remote]]`
 registry and dials through the same QUIC/WSS stack, so a host that
@@ -169,6 +143,26 @@ the transport.
 
 The rest of this page is the manual path: what `enroll` automates, and what
 to do when it cannot reach the host.
+
+## Why an overlay
+
+phux already ships everything a remote attach needs except reachability: wss://
+(TLS 1.3) and QUIC transports, `phux pair` to mint a bearer token plus a
+certificate fingerprint, and a non-loopback bind that engages TLS and token
+auth automatically
+([ADR-0031](../ADR/0031-remote-consumer-auth-and-encryption.md)). What remains
+is purely packet reachability — a self-hosted server behind NAT or CGNAT has no
+inbound-reachable address. The sanctioned answer is a WireGuard-class overlay
+network ([ADR-0037](../ADR/0037-overlay-network-reachability.md)): an L3
+substrate that hands the client a routable address (a `100.x` IP or a MagicDNS
+`*.ts.net` name) which phux dials exactly like a LAN address, with zero new
+code. Cert pinning is on the fingerprint, not the hostname, so overlay DNS
+names work unchanged. phux is overlay-agnostic, and the fully-OSS
+Headscale/WireGuard path is first-class, not a downgrade. Hosted relays,
+rendezvous servers, and hole-punching are deliberately out of scope. The trust
+model and environment knobs live in
+[operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
+this page owns the step-by-step task.
 
 ## Common steps: pair, then listen
 

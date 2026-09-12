@@ -859,7 +859,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
             paint_background_interior(&mut block, rect, panes, terminal_id, walk);
         }
     }
-    finish_output_frame(
+    let (painted, shipped) = finish_output_frame(
         block,
         status_bar,
         &FrameTail {
@@ -871,7 +871,13 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
             sidebar,
             session_name,
         },
-    )
+    );
+    if !shipped {
+        // phux-esge: the panes recorded cells the terminal may never have
+        // received, and their dirty bits are already cleared.
+        crate::attach::pane_state::invalidate_all_fronts(panes);
+    }
+    painted
 }
 
 /// The chrome-and-cursor tail of a composited frame.
@@ -886,12 +892,13 @@ struct FrameTail<'a> {
 }
 
 /// Close a composited frame: status bar, then the one cursor placement, then
-/// the block epilogue and its single flush.
+/// the block epilogue and its single flush. The second value is whether the
+/// frame shipped.
 fn finish_output_frame<W: crate::attach::RenderSink>(
     block: crate::attach::paint::FrameBlock<'_, W>,
     status_bar: Option<&mut StatusBarPainter>,
     tail: &FrameTail<'_>,
-) -> StatusBarPaint {
+) -> (StatusBarPaint, bool) {
     let focused_cursor = tail
         .focused_resource
         .and_then(|fid| tail.panes.get(fid))
@@ -905,7 +912,7 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
             crate::attach::paint::tiled_rect(tail.active_ls, tail.content, tail.viewport_dims, fid)
         })
         .map_or(Some((0, 0)), |r| Some((r.x, r.y)));
-    crate::attach::paint::close_frame_with_chrome(
+    crate::attach::paint::close_frame_reporting(
         block,
         status_bar,
         tail.viewport_dims,
@@ -986,6 +993,11 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // silently instead of painting.
     if predict.should_display(crate::attach::input_dispatch::predict_now_ms()) {
         let _ = overlay.render(predict, pane_origin, out);
+        // phux-esge: the guesses now sit over the pane's cells; the front
+        // buffer must not keep claiming what was there before them.
+        if let Some(slot) = panes.get_mut(fid) {
+            crate::attach::pane_state::invalidate_predicted_rows(slot, predict);
+        }
     }
 }
 
@@ -1201,13 +1213,10 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     let Scope::Resource(terminal) = scope else {
         return FrameOutcome::default();
     };
-    // phux-k0cw: a record for a pane THIS client does not
-    // hold belongs to a peer session. It must not enter the
-    // local `AgentMetaIndex`, because
-    // `sync_agent_meta_subscriptions` retains that index
-    // against the local pane set and would evict it on the
-    // next sweep — the record would flicker in and vanish.
-    if !ctx.panes.contains_key(terminal) {
+    // A mirror slot can come from the server-wide ATTACHED graph. Only
+    // workspace membership makes this a local agent; peer broadcasts must
+    // update the cache that the cross-session sidebar actually projects.
+    if window_holding_pane(ctx.workspace, terminal).is_none() {
         return FrameOutcome {
             foreign_agent: Some((terminal.clone(), value)),
             ..FrameOutcome::default()
@@ -1761,26 +1770,21 @@ fn fold_agent_ask<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal: ResourceId,
 ) -> FrameOutcome {
+    let local = window_holding_pane(ctx.workspace, &terminal).is_some();
     let Some(slot) = ctx.panes.get_mut(&terminal) else {
-        // phux-k0cw: no slot means either a pane whose snapshot has
-        // not landed yet, or — now that this client subscribes
-        // server-wide — a pane in ANOTHER session whose agent is
-        // blocked on a human. Both route out as `foreign_attention`:
-        // the roster and queue want it, and the local pane map has
-        // nowhere to put it. The ADR-0036 detector coalesces repeated
-        // markers, so a genuinely-early local ask still re-raises
-        // once the slot exists.
         return FrameOutcome {
             foreign_attention: Some(terminal),
             ..FrameOutcome::default()
         };
     };
-    if slot.attention {
-        return FrameOutcome::default();
-    }
+    // Preserve early local asks before the persisted layout arrives, while
+    // also forwarding peers to the cache used by cross-session chrome.
+    // Asked events are coalesced server-side; no repeat is guaranteed.
+    let changed = !slot.attention;
     slot.attention = true;
     FrameOutcome {
-        chrome_dirty: true,
+        chrome_dirty: local && changed,
+        foreign_attention: (!local).then_some(terminal),
         ..FrameOutcome::default()
     }
 }

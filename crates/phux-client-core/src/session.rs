@@ -765,6 +765,9 @@ pub enum KernelError<E> {
     /// No live sequence remains representable.
     #[error("live sequence exhausted")]
     SequenceExhausted,
+    /// A live `AgentSession` frame did not contain any records.
+    #[error("empty live agent record batch")]
+    EmptyAgentBatch,
     /// The frontend attempted input while its target was ineligible.
     #[error("input is not eligible for {terminal_id}: {reason:?}")]
     InputIneligible {
@@ -1794,12 +1797,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 actual: seq,
             });
         }
-        if seq > expected {
-            return Err(KernelError::SequenceGap {
-                expected,
-                actual: seq,
-            });
-        }
         let last_valid_seq = published.last_seq;
         let records = match parse_records(payload) {
             Ok(records) => records,
@@ -1814,6 +1811,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 return Err(KernelError::AgentRecord(error));
             }
         };
+        Self::validate_agent_batch(&records, expected, seq)?;
         published.last_seq = seq;
         published.next_seq = seq.checked_add(1);
         for record in &records {
@@ -1824,6 +1822,37 @@ impl<E: EngineAdapter> SessionKernel<E> {
             terminal_id: terminal_id.clone(),
             records,
         });
+        Ok(())
+    }
+
+    /// Agent envelopes carry the final record sequence, not a frame counter.
+    /// Validate the whole run before mutating the log, derived state, or cursor.
+    fn validate_agent_batch(
+        records: &[AgentEventRecord],
+        mut expected: u64,
+        envelope_seq: u64,
+    ) -> Result<(), KernelError<E::Error>> {
+        let (last, preceding) = records.split_last().ok_or(KernelError::EmptyAgentBatch)?;
+        for record in preceding {
+            Self::require_agent_sequence(expected, record.seq)?;
+            expected = expected
+                .checked_add(1)
+                .ok_or(KernelError::SequenceExhausted)?;
+        }
+        Self::require_agent_sequence(expected, last.seq)?;
+        Self::require_agent_sequence(last.seq, envelope_seq)
+    }
+
+    const fn require_agent_sequence(
+        expected: u64,
+        actual: u64,
+    ) -> Result<(), KernelError<E::Error>> {
+        if actual < expected {
+            return Err(KernelError::DuplicateSequence { expected, actual });
+        }
+        if actual > expected {
+            return Err(KernelError::SequenceGap { expected, actual });
+        }
         Ok(())
     }
 

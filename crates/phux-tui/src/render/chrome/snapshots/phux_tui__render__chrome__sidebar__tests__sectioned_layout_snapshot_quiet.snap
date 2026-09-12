@@ -1,22 +1,22 @@
 ---
-source: crates/phux-client/src/render/chrome/sidebar.rs
+source: crates/phux-tui/src/render/chrome/sidebar.rs
 expression: "strip_text(&p, rect)"
 ---
- here                    │
- ● phux                  │
-   main                  │
- ○ scratch               │
+ Agents                  │
+   no agents             │
                          │
                          │
- spaces                  │
+                         │
+                         │
+                         │
+                         │
+ Sessions                │
+ ○ development           │
+   on mini               │
+   ● phux main           │
  ◐ feat-auth          *1 │
+   on mini               │
  ○ prod-3             ?2 │
-                         │
-                         │
-                         │
-                         │
-                         │
-                         │
-                         │
- + new                   │
- = menu                  ‹
+   on devbox             │
+ + new window            │
+ = commands              ‹

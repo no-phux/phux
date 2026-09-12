@@ -1,10 +1,10 @@
 ---
-source: crates/phux-client/src/attach/driver/tests.rs
+source: crates/phux-tui/src/attach/driver/tests.rs
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
- here              │────────────────────────────────────────────────────────────
- ● w1-agent        │PANE-BASE
-   foz10-br        │
+ Agents            │────────────────────────────────────────────────────────────
+   no agents       │PANE-BASE
+                   │
                    │
                    │
                    │
@@ -13,10 +13,10 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    ││                                                          │
                    ││detach                                                    │
                    ││new-window                                                │
-                   ││                                                          │
-                   ││Enter select  ·  Esc cancel  ·  type to filter            │
-                   ││                                                          │
-                   ││                                                          │
+ Sessions          ││                                                          │
+ ○ probe           ││Enter select  ·  Esc cancel  ·  type to filter            │
+   on probe-host   ││                                                          │
+   ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
                    ││                                                          │
@@ -24,5 +24,5 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │
- + new             │
- = menu            ‹
+ + new window      │
+ = commands        ‹

@@ -40,6 +40,7 @@
 //! primitive so live panes survive the swap.
 
 pub(crate) mod apply;
+pub(crate) mod channel;
 pub(crate) mod release;
 pub(crate) mod source;
 
@@ -48,14 +49,15 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use self::release::{Artifact, ReleaseSource, Version};
+use self::channel::Channel;
+use self::release::{Artifact, NextHead, ReleaseSource, Version};
 use self::source::{Install, InstallSource, UnknownReason};
 use super::json_err::{self, CliError, codes};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 
-/// Version 2 permits `latest_version=null` when discovery is bypassed. Additive
-/// fields do not bump this, but changing a field from string to nullable does.
-pub(crate) const DOCUMENT_SCHEMA_VERSION: u8 = 2;
+/// Version of the `phux update --json` document. Additive fields do not bump
+/// it (ADR-0071 freezes the shape at 1.0).
+const DOCUMENT_SCHEMA_VERSION: u8 = 1;
 
 /// Everything that can go wrong between "there is a newer release" and "it is
 /// installed", with the failure kept separate from how it is reported.
@@ -193,8 +195,14 @@ pub(crate) struct UpdateOpts {
 
     /// Install this release tag instead of the latest one. Accepts any tag
     /// from the releases page, including an older one (a downgrade).
+    /// Stable-only: omit this when following `--channel next`.
     #[arg(long = "version", value_name = "TAG", conflicts_with = "rollback")]
     pub(crate) tag: Option<String>,
+
+    /// Release channel to follow. `stable` is the default (`vX.Y.Z`).
+    /// `next` tracks green `main` via the moving prerelease.
+    #[arg(long, value_enum, value_name = "CHANNEL", conflicts_with = "rollback")]
+    pub(crate) channel: Option<Channel>,
 
     /// Restore the binaries saved by the previous `phux update`.
     #[arg(long)]
@@ -220,8 +228,14 @@ pub(crate) struct Plan {
     pub(crate) install: Install,
     /// The version this binary was built as.
     pub(crate) current: Version,
-    /// The newest published release, or None when discovery was skipped.
-    pub(crate) latest_tag: Option<String>,
+    /// Channel this run will follow.
+    pub(crate) channel: Channel,
+    /// Git SHA baked into this binary, when it is a next build.
+    pub(crate) current_sha: Option<String>,
+    /// Git SHA at the head of `next`, when following that channel.
+    pub(crate) latest_sha: Option<String>,
+    /// The newest published release on this channel.
+    pub(crate) latest_tag: String,
     /// The release that would be installed — `latest_tag` unless `--version`
     /// named another.
     pub(crate) target_tag: String,
@@ -426,8 +440,11 @@ impl Outcome {
         serde_json::json!({
             "schema_version": DOCUMENT_SCHEMA_VERSION,
             "action": self.action.as_str(),
+            "channel": self.plan.channel.as_str(),
             "current_version": self.plan.current.to_string(),
+            "current_sha": self.plan.current_sha,
             "latest_version": self.plan.latest_tag,
+            "latest_sha": self.plan.latest_sha,
             "target_version": self.plan.target_tag,
             "update_available": self.plan.update_available,
             "install": {
@@ -458,149 +475,188 @@ impl Outcome {
     pub(crate) fn lines(&self) -> Vec<String> {
         let install = &self.plan.install;
         let mut lines = vec![
-            format!("current:  {}", self.plan.current),
-            self.release_heading(),
+            format!("current:  {}", self.current_label()),
+            format!("latest:   {}", self.latest_label()),
+            format!("channel:  {}", self.plan.channel.as_str()),
             format!(
                 "source:   {} ({})",
                 install.source.as_str(),
                 install.executable.display()
             ),
         ];
-        match self.action {
-            Action::Checked => self.check_lines(&mut lines),
-            Action::UpToDate => lines.push(format!("already on {}", self.plan.target_tag)),
-            Action::Planned => self.planned_lines(&mut lines),
-            Action::Installed => self.installed_lines(&mut lines),
-            Action::RolledBack => lines.push(format!(
-                "restored {}: {}",
-                self.plan.target_tag,
-                self.binaries.join(", ")
-            )),
-        }
+        lines.extend(self.action_lines());
         if let Some(handoff) = self.handoff.as_ref() {
-            lines.push(Self::handoff_line(handoff));
+            lines.push(handoff_line(handoff));
         }
         lines
     }
 
-    fn release_heading(&self) -> String {
-        self.plan.latest_tag.as_ref().map_or_else(
-            || {
-                format!(
-                    "target:   {} (selected; latest not queried)",
-                    self.plan.target_tag
-                )
-            },
-            |tag| format!("latest:   {tag}"),
+    fn current_label(&self) -> String {
+        channel::display(
+            &self.plan.current.to_string(),
+            Channel::from_build(),
+            self.plan.current_sha.as_deref(),
         )
     }
 
-    fn check_lines(&self, lines: &mut Vec<String>) {
-        lines.push(if self.plan.update_available {
-            format!(
-                "an update is available: {} -> {}",
-                self.plan.current, self.plan.target_tag
-            )
-        } else {
-            format!("selected release: {}", self.plan.target_tag)
-        });
-        // Report ownership even when no update exists. Preserve a caller pin
-        // in the suggested command instead of silently selecting latest.
+    fn latest_label(&self) -> String {
+        match self.plan.channel {
+            Channel::Stable => self.plan.latest_tag.clone(),
+            Channel::Next => channel::display(
+                &self.plan.current.to_string(),
+                Channel::Next,
+                self.plan.latest_sha.as_deref(),
+            ),
+        }
+    }
+
+    fn action_lines(&self) -> Vec<String> {
         let install = &self.plan.install;
-        if let Some(refusal) = Refusal::of(install.source) {
-            lines.push(refusal.message(install));
-            lines.extend(
-                Refusal::remedy(install)
-                    .lines()
-                    .map(|line| format!("  {line}")),
-            );
-        } else if self.plan.update_available {
-            let command = self.plan.latest_tag.as_ref().map_or_else(
-                || format!("phux update --version {}", self.plan.target_tag),
-                |_| "phux update".to_owned(),
-            );
-            lines.push(format!("run `{command}` to install it"));
-        }
-    }
-
-    fn planned_lines(&self, lines: &mut Vec<String>) {
-        if let Some(artifact) = self.artifact.as_ref() {
-            lines.push(format!("verified: {}", artifact.archive));
-        }
-        if let Some(digest) = self.digest.as_ref() {
-            lines.push(format!("sha256:   {digest}"));
-        }
-        lines.push(format!(
-            "dry run: would install {} and replace {}",
-            self.plan.target_tag,
-            self.binaries.join(", ")
-        ));
-    }
-
-    fn installed_lines(&self, lines: &mut Vec<String>) {
-        if let Some(digest) = self.digest.as_ref() {
-            lines.push(format!("sha256:   {digest} (verified)"));
-        }
-        lines.push(format!(
-            "installed {}: {}",
-            self.plan.target_tag,
-            self.binaries.join(", ")
-        ));
-        if let Some(backup) = self.backup.as_ref() {
-            lines.push(format!(
-                "previous binaries saved in {} (`phux update --rollback` restores them)",
-                backup.display()
-            ));
-        }
-    }
-
-    fn handoff_line(handoff: &Handoff) -> String {
-        match handoff {
-            Handoff::Upgrading => "server upgrading in place; sessions preserved".to_owned(),
-            Handoff::NoServer => {
-                "no server was running; the next `phux` starts the new binary".to_owned()
+        match self.action {
+            Action::Checked => checked_lines(install, &self.plan),
+            Action::UpToDate => vec![format!("already on {}", self.plan.target_tag)],
+            Action::Planned => {
+                let mut lines = Vec::new();
+                if let Some(artifact) = self.artifact.as_ref() {
+                    lines.push(format!("verified: {}", artifact.archive));
+                }
+                if let Some(digest) = self.digest.as_ref() {
+                    lines.push(format!("sha256:   {digest}"));
+                }
+                lines.push(format!(
+                    "dry run: would install {} and replace {}",
+                    self.plan.target_tag,
+                    self.binaries.join(", ")
+                ));
+                lines
             }
-            Handoff::Skipped => {
-                "server left alone (--no-restart); run `phux upgrade` when ready".to_owned()
-            }
-            Handoff::Refused(message) => format!(
-                "the running server refused the handoff: {message}\n  \
-                     it keeps serving the old image; run `phux upgrade` to retry"
-            ),
-            Handoff::Failed(message) => format!(
-                "the handoff could not be delivered: {message}\n  \
-                     the new binary is installed; run `phux upgrade` to retry"
-            ),
+            Action::Installed => installed_lines(self),
+            Action::RolledBack => vec![format!(
+                "restored {}: {}",
+                self.plan.target_tag,
+                self.binaries.join(", ")
+            )],
         }
     }
 }
 
-/// Build the plan: what is installed, what is published, and what would
-/// change. Pure given the resolved inputs.
-pub(crate) fn plan(
+fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
+    let mut lines = vec![if plan.update_available {
+        format!(
+            "an update is available: {} -> {}",
+            plan.current, plan.target_tag
+        )
+    } else {
+        "already on the latest release".to_owned()
+    }];
+    // The install source is always spoken to, update available or not:
+    // "phux will not maintain this install" is exactly the fact a user
+    // checking for updates needs, and learning it only at the moment of
+    // failure is what this verb exists to avoid.
+    if let Some(refusal) = Refusal::of(install.source) {
+        lines.push(refusal.message(install));
+        lines.extend(
+            Refusal::remedy(install)
+                .lines()
+                .map(|line| format!("  {line}")),
+        );
+    } else if plan.update_available {
+        lines.push("run `phux update` to install it".to_owned());
+    }
+    lines
+}
+
+fn installed_lines(outcome: &Outcome) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(digest) = outcome.digest.as_ref() {
+        lines.push(format!("sha256:   {digest} (verified)"));
+    }
+    lines.push(format!(
+        "installed {}: {}",
+        outcome.plan.target_tag,
+        outcome.binaries.join(", ")
+    ));
+    if let Some(backup) = outcome.backup.as_ref() {
+        lines.push(format!(
+            "previous binaries saved in {} (`phux update --rollback` restores them)",
+            backup.display()
+        ));
+    }
+    lines
+}
+
+fn handoff_line(handoff: &Handoff) -> String {
+    match handoff {
+        Handoff::Upgrading => "server upgrading in place; sessions preserved".to_owned(),
+        Handoff::NoServer => {
+            "no server was running; the next `phux` starts the new binary".to_owned()
+        }
+        Handoff::Skipped => {
+            "server left alone (--no-restart); run `phux upgrade` when ready".to_owned()
+        }
+        Handoff::Refused(message) => format!(
+            "the running server refused the handoff: {message}\n  \
+             it keeps serving the old image; run `phux upgrade` to retry"
+        ),
+        Handoff::Failed(message) => format!(
+            "the handoff could not be delivered: {message}\n  \
+             the new binary is installed; run `phux upgrade` to retry"
+        ),
+    }
+}
+
+/// Build the stable-channel plan: what is installed, what is published,
+/// and what would change. Pure given the resolved inputs.
+fn plan_stable(
     install: Install,
     current: Version,
-    latest_tag: Option<&str>,
+    installed_channel: Channel,
+    current_sha: Option<&str>,
+    latest_tag: &str,
     requested: Option<&str>,
     host_target: &'static str,
 ) -> Result<Plan, UpdateError> {
-    if let Some(tag) = latest_tag {
-        release::validate_tag(tag)?;
-    }
-    let target_tag = requested
-        .or(latest_tag)
-        .ok_or_else(|| UpdateError::InvalidTag("no release selected".to_owned()))?
-        .to_owned();
+    release::validate_tag(latest_tag)?;
+    let target_tag = requested.unwrap_or(latest_tag).to_owned();
     let target = release::validate_tag(&target_tag)?;
+    let switching = installed_channel != Channel::Stable;
     Ok(Plan {
         install,
         current,
-        latest_tag: latest_tag.map(str::to_owned),
+        channel: Channel::Stable,
+        current_sha: current_sha.map(str::to_owned),
+        latest_sha: None,
+        latest_tag: latest_tag.to_owned(),
         target_tag,
-        changes_version: target != current,
-        update_available: target > current,
+        changes_version: target != current || switching,
+        update_available: target > current || switching,
         host_target,
     })
+}
+
+fn plan_next(
+    install: Install,
+    current: Version,
+    installed_channel: Channel,
+    current_sha: Option<&str>,
+    head: &NextHead,
+    host_target: &'static str,
+) -> Plan {
+    let tag = format!("next.{}", head.sha);
+    let same_sha = current_sha == Some(head.sha.as_str());
+    let changes = installed_channel != Channel::Next || !same_sha;
+    Plan {
+        install,
+        current,
+        channel: Channel::Next,
+        current_sha: current_sha.map(str::to_owned),
+        latest_sha: Some(head.sha.clone()),
+        latest_tag: tag.clone(),
+        target_tag: tag,
+        changes_version: changes,
+        update_available: changes,
+        host_target,
+    }
 }
 
 /// Run one `phux update` against injected effects.
@@ -609,6 +665,7 @@ pub(crate) fn plan(
 /// verify, stage, replace, hand off — is reachable from a test with a fake
 /// [`ReleaseSource`] and a scratch bin directory.
 pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome, UpdateError> {
+    let install = env.install.clone();
     let current = Version::current().ok_or_else(|| {
         UpdateError::InvalidTag(format!(
             "this build's version (`{}`) is not a release version",
@@ -617,10 +674,52 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     })?;
 
     if opts.rollback {
-        return rollback(opts, env.install.clone(), current, env);
+        return rollback(opts, install, current, env);
     }
 
-    let plan = resolve_plan(opts, env, current)?;
+    let host_target = release::host_target()?;
+    // A caller-supplied tag is validated before anything reaches the network:
+    // a typo should cost a millisecond and one clear message, not a round
+    // trip, and `--check --version <typo>` must be diagnosable offline.
+    if let Some(tag) = opts.tag.as_deref() {
+        release::validate_tag(tag)?;
+    }
+    let target_channel = channel::resolve(opts.channel, &install);
+    if target_channel == Channel::Next && opts.tag.is_some() {
+        return Err(UpdateError::InvalidTag(
+            "`--version` pins a stable tag; omit it when using `--channel next`".to_owned(),
+        ));
+    }
+    let installed_channel = install
+        .bin_dir()
+        .and_then(channel::read_file)
+        .unwrap_or_else(Channel::from_build);
+    let current_sha = channel::build_sha().map(str::to_owned);
+    let plan = match target_channel {
+        Channel::Stable => {
+            let latest_tag = env.releases.latest_tag()?;
+            plan_stable(
+                install,
+                current,
+                installed_channel,
+                current_sha.as_deref(),
+                &latest_tag,
+                opts.tag.as_deref(),
+                host_target,
+            )?
+        }
+        Channel::Next => {
+            let head = env.releases.next_head()?;
+            plan_next(
+                install,
+                current,
+                installed_channel,
+                current_sha.as_deref(),
+                &head,
+                host_target,
+            )
+        }
+    };
 
     if opts.check {
         return Ok(Outcome {
@@ -649,29 +748,6 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     install_release(opts, env, plan)
 }
 
-/// A pin is validated locally and never invokes latest-release discovery.
-fn resolve_plan(
-    opts: &UpdateOpts,
-    env: &UpdateEnv<'_>,
-    current: Version,
-) -> Result<Plan, UpdateError> {
-    let host_target = release::host_target()?;
-    if let Some(tag) = opts.tag.as_deref() {
-        release::validate_tag(tag)?;
-    }
-    let latest_tag = match opts.tag {
-        Some(_) => None,
-        None => Some(env.releases.latest_tag()?),
-    };
-    plan(
-        env.install.clone(),
-        current,
-        latest_tag.as_deref(),
-        opts.tag.as_deref(),
-        host_target,
-    )
-}
-
 /// Download, verify, and (unless `--dry-run`) replace.
 fn install_release(
     opts: &UpdateOpts,
@@ -689,7 +765,15 @@ fn install_release(
         })?
         .to_path_buf();
 
-    let artifact = Artifact::new(&plan.target_tag, plan.host_target);
+    let artifact = match plan.channel {
+        Channel::Stable => Artifact::new(&plan.target_tag, plan.host_target),
+        Channel::Next => {
+            let sha = plan.latest_sha.as_deref().ok_or_else(|| {
+                UpdateError::Fetch("the next channel plan named no sha".to_owned())
+            })?;
+            Artifact::next(sha, plan.host_target)
+        }
+    };
     let staging = apply::Staging::create(&bin_dir)?;
 
     // Both downloads land in the staging directory, which is removed on every
@@ -729,6 +813,7 @@ fn install_release(
     }
 
     let replaced = apply::replace_binaries(&bin_dir, &staged, &plan.current.to_string())?;
+    channel::persist(&bin_dir, plan.channel)?;
     let handoff = if opts.no_restart {
         Handoff::Skipped
     } else {
@@ -773,7 +858,10 @@ fn rollback(
     let plan = Plan {
         install,
         current,
-        latest_tag: None,
+        channel: Channel::Stable,
+        current_sha: None,
+        latest_sha: None,
+        latest_tag: restored_tag.clone(),
         target_tag: restored_tag,
         changes_version: target != current,
         update_available: false,
@@ -906,11 +994,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::apply::BACKUP_DIR;
-    use super::release::{Artifact, ReleaseSource, Version, host_target};
+    use super::channel::{self, Channel};
+    use super::release::{Artifact, NextHead, ReleaseSource, Version, host_target};
     use super::source::{Install, InstallSource};
     use super::{
-        Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan,
-        reconcile_installed,
+        Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan_next,
+        plan_stable, reconcile_installed,
     };
 
     #[test]
@@ -940,6 +1029,7 @@ mod tests {
     #[derive(Debug)]
     struct FakeReleases {
         latest: String,
+        next: Option<NextHead>,
         files: HashMap<String, Vec<u8>>,
         downloads: RefCell<Vec<String>>,
     }
@@ -948,6 +1038,7 @@ mod tests {
         fn new(latest: &str) -> Self {
             Self {
                 latest: latest.to_owned(),
+                next: None,
                 files: HashMap::new(),
                 downloads: RefCell::new(Vec::new()),
             }
@@ -960,12 +1051,13 @@ mod tests {
 
     impl ReleaseSource for FakeReleases {
         fn latest_tag(&self) -> Result<String, UpdateError> {
-            if self.latest.is_empty() {
-                return Err(UpdateError::Fetch(
-                    "release discovery unavailable".to_owned(),
-                ));
-            }
             Ok(self.latest.clone())
+        }
+
+        fn next_head(&self) -> Result<NextHead, UpdateError> {
+            self.next
+                .clone()
+                .ok_or_else(|| UpdateError::Fetch("the next channel pointer is missing".to_owned()))
         }
 
         fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
@@ -1014,6 +1106,7 @@ mod tests {
             check: false,
             dry_run: false,
             tag: None,
+            channel: None,
             rollback: false,
             no_restart: true,
             json: false,
@@ -1036,12 +1129,28 @@ mod tests {
     /// Build a release tarball plus its sidecar and serve both at the URLs
     /// the real artifact naming would use.
     fn publish(fake: &mut FakeReleases, workdir: &Path, tag: &str) -> Artifact {
-        let artifact = Artifact::new(tag, target());
+        publish_artifact(fake, workdir, Artifact::new(tag, target()), tag)
+    }
+
+    fn publish_next(fake: &mut FakeReleases, workdir: &Path, sha: &str) -> Artifact {
+        fake.next = Some(NextHead {
+            sha: sha.to_owned(),
+            version: Some("9.9.9".to_owned()),
+        });
+        publish_artifact(fake, workdir, Artifact::next(sha, target()), sha)
+    }
+
+    fn publish_artifact(
+        fake: &mut FakeReleases,
+        workdir: &Path,
+        artifact: Artifact,
+        label: &str,
+    ) -> Artifact {
         let build = workdir.join("build").join(&artifact.stage);
         fs::create_dir_all(&build).unwrap();
-        fs::write(build.join("phux"), format!("phux {tag}")).unwrap();
+        fs::write(build.join("phux"), format!("phux {label}")).unwrap();
         fs::set_permissions(build.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(build.join("phux-mcp"), format!("phux-mcp {tag}")).unwrap();
+        fs::write(build.join("phux-mcp"), format!("phux-mcp {label}")).unwrap();
         fs::set_permissions(build.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(build.join("README.md"), b"readme").unwrap();
         fs::write(build.join("LICENSE-MIT"), b"mit").unwrap();
@@ -1085,7 +1194,16 @@ mod tests {
             Path::new("/home/ada/.local/bin/phux"),
             InstallSource::DirectRelease,
         );
-        let plan = plan(install, version("0.12.1"), Some("v0.13.0"), None, target()).unwrap();
+        let plan = plan_stable(
+            install,
+            version("0.12.1"),
+            Channel::Stable,
+            None,
+            "v0.13.0",
+            None,
+            target(),
+        )
+        .unwrap();
         assert!(plan.update_available);
         assert!(plan.changes_version);
         assert_eq!(plan.target_tag, "v0.13.0");
@@ -1097,10 +1215,12 @@ mod tests {
             Path::new("/home/ada/.local/bin/phux"),
             InstallSource::DirectRelease,
         );
-        let plan = plan(
+        let plan = plan_stable(
             install,
             version("0.12.1"),
-            Some("v0.13.0"),
+            Channel::Stable,
+            None,
+            "v0.13.0",
             Some("v0.11.0"),
             target(),
         )
@@ -1116,10 +1236,12 @@ mod tests {
             Path::new("/home/ada/.local/bin/phux"),
             InstallSource::DirectRelease,
         );
-        let err = plan(
+        let err = plan_stable(
             install,
             version("0.12.1"),
-            Some("v0.13.0"),
+            Channel::Stable,
+            None,
+            "v0.13.0",
             Some("nightly"),
             target(),
         )
@@ -1145,49 +1267,6 @@ mod tests {
     }
 
     #[test]
-    fn pinned_release_does_not_require_latest_discovery() {
-        for (check, dry_run) in [(true, false), (false, true), (false, false)] {
-            let scratch = Scratch::new("pinned-offline-index");
-            let bin = seed_bin(&scratch);
-            let mut fake = FakeReleases::new("");
-            let artifact = publish(&mut fake, scratch.path(), "v9.8.7");
-            let handoff = || Handoff::Skipped;
-            let env = UpdateEnv {
-                releases: &fake,
-                handoff: &handoff,
-                install: install_at(&bin.join("phux"), InstallSource::DirectRelease),
-            };
-            let outcome = execute(
-                &UpdateOpts {
-                    check,
-                    dry_run,
-                    tag: Some("v9.8.7".to_owned()),
-                    ..opts()
-                },
-                &env,
-            )
-            .expect("an explicit tag must bypass unavailable release discovery");
-            assert_eq!(outcome.plan.target_tag, "v9.8.7");
-            assert!(outcome.document()["latest_version"].is_null());
-            assert!(!outcome.lines().iter().any(|line| line.contains("latest:")));
-            if check {
-                assert!(fake.downloads.borrow().is_empty());
-                assert!(
-                    outcome
-                        .lines()
-                        .iter()
-                        .any(|line| line.contains("phux update --version v9.8.7"))
-                );
-            } else {
-                assert_eq!(
-                    *fake.downloads.borrow(),
-                    [artifact.archive_url, artifact.checksum_url]
-                );
-            }
-        }
-    }
-
-    #[test]
     fn check_reports_without_downloading_anything() {
         let fake = FakeReleases::new("v0.13.0");
         let install = install_at(
@@ -1209,7 +1288,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.action, Action::Checked);
-        assert_eq!(outcome.plan.latest_tag.as_deref(), Some("v0.13.0"));
+        assert_eq!(outcome.plan.latest_tag, "v0.13.0");
         assert!(outcome.artifact.is_none());
         assert!(
             fake.downloads.borrow().is_empty(),
@@ -1217,7 +1296,7 @@ mod tests {
         );
 
         let doc = outcome.document();
-        assert_eq!(doc["schema_version"], 2);
+        assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["action"], "checked");
         assert_eq!(doc["install"]["source"], "direct-release");
         assert_eq!(doc["install"]["mutable"], true);
@@ -1440,7 +1519,6 @@ mod tests {
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
         assert_eq!(fs::read(bin.join("phux-mcp")).unwrap(), b"old phux-mcp");
         assert_eq!(outcome.document()["action"], "rolled-back");
-        assert!(outcome.document()["latest_version"].is_null());
         // `opts()` sets --no-restart, so the running server is left alone on
         // the way back exactly as it is on the way forward.
         assert_eq!(outcome.handoff, Some(Handoff::Skipped));
@@ -1471,6 +1549,133 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, UpdateError::NoBackup(_)), "{err:?}");
         assert_eq!(err.code(), "update_no_backup");
+    }
+
+    const NEXT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn next_channel_and_a_stable_tag_are_refused_together() {
+        let fake = FakeReleases::new("v0.13.0");
+        let install = install_at(
+            Path::new("/home/ada/.local/bin/phux"),
+            InstallSource::DirectRelease,
+        );
+        let handoff = || Handoff::Skipped;
+        let env = UpdateEnv {
+            releases: &fake,
+            handoff: &handoff,
+            install,
+        };
+        let err = execute(
+            &UpdateOpts {
+                check: true,
+                channel: Some(Channel::Next),
+                tag: Some("v0.13.0".to_owned()),
+                ..opts()
+            },
+            &env,
+        )
+        .unwrap_err();
+        assert!(matches!(err, UpdateError::InvalidTag(_)), "{err:?}");
+    }
+
+    #[test]
+    fn check_on_next_does_not_download_an_archive() {
+        let mut fake = FakeReleases::new("v0.13.0");
+        fake.next = Some(NextHead {
+            sha: NEXT_SHA.to_owned(),
+            version: Some("0.13.0".to_owned()),
+        });
+        let install = install_at(
+            Path::new("/home/ada/.local/bin/phux"),
+            InstallSource::DirectRelease,
+        );
+        let handoff = || Handoff::Skipped;
+        let env = UpdateEnv {
+            releases: &fake,
+            handoff: &handoff,
+            install,
+        };
+        let outcome = execute(
+            &UpdateOpts {
+                check: true,
+                channel: Some(Channel::Next),
+                ..opts()
+            },
+            &env,
+        )
+        .unwrap();
+        assert_eq!(outcome.action, Action::Checked);
+        assert_eq!(outcome.plan.channel, Channel::Next);
+        assert_eq!(outcome.plan.latest_sha.as_deref(), Some(NEXT_SHA));
+        assert!(outcome.plan.update_available);
+        assert!(fake.downloads.borrow().is_empty());
+        assert_eq!(outcome.document()["channel"], "next");
+        assert_eq!(outcome.document()["latest_sha"], NEXT_SHA);
+    }
+
+    #[test]
+    fn a_next_update_installs_and_persists_the_channel() {
+        let scratch = Scratch::new("next");
+        let bin = seed_bin(&scratch);
+        let mut fake = FakeReleases::new("v0.13.0");
+        let artifact = publish_next(&mut fake, scratch.path(), NEXT_SHA);
+        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
+        let handoff = || Handoff::Skipped;
+        let env = UpdateEnv {
+            releases: &fake,
+            handoff: &handoff,
+            install,
+        };
+        let outcome = execute(
+            &UpdateOpts {
+                channel: Some(Channel::Next),
+                ..opts()
+            },
+            &env,
+        )
+        .unwrap();
+        assert_eq!(outcome.action, Action::Installed);
+        assert_eq!(
+            fs::read(bin.join("phux")).unwrap(),
+            format!("phux {NEXT_SHA}").as_bytes()
+        );
+        assert_eq!(channel::read_file(&bin), Some(Channel::Next));
+        let fetched = fake.downloads.borrow().clone();
+        assert!(fetched.contains(&artifact.archive_url));
+        assert!(fetched.contains(&artifact.checksum_url));
+        assert!(!fetched.iter().any(|url| url.contains("/v0.13.0/")));
+    }
+
+    #[test]
+    fn plan_next_is_up_to_date_only_on_the_same_sha() {
+        let install = install_at(
+            Path::new("/home/ada/.local/bin/phux"),
+            InstallSource::DirectRelease,
+        );
+        let head = NextHead {
+            sha: NEXT_SHA.to_owned(),
+            version: Some("0.13.0".to_owned()),
+        };
+        let current = plan_next(
+            install.clone(),
+            version("0.13.0"),
+            Channel::Next,
+            Some(NEXT_SHA),
+            &head,
+            target(),
+        );
+        assert!(!current.update_available);
+        assert!(!current.changes_version);
+        let other = plan_next(
+            install,
+            version("0.13.0"),
+            Channel::Next,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            &head,
+            target(),
+        );
+        assert!(other.update_available);
     }
 
     /// Every failure carries a code from the closed vocabulary, a non-empty

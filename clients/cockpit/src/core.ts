@@ -72,6 +72,8 @@ import {
   sameU64,
   snapshot,
   navigationScopedRequest,
+  navigationAgentsRequest,
+  navigationIntent,
   type NavigationRow,
   type NavigationPage,
   navigationPage,
@@ -88,11 +90,15 @@ export interface AgentRow {
   readonly provider: Uint8Array;
   readonly state: Uint8Array;
   readonly attention: boolean;
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly parentIndex: number;
 }
 
 /// One drawn row of the side rail: a terminal tab, or an agent session
 /// indented under the tab above it. `agent` picks the shape. A terminal row
-/// captures its tab target; an agent summary has no selection handler.
+/// captures its tab target; an agent press uses `parentIndex` to focus the
+/// exact parent split.
 export interface RailRow {
   readonly id: number;
   readonly index: number;
@@ -102,6 +108,8 @@ export interface RailRow {
   readonly selected: boolean;
   readonly agent: boolean;
   readonly target: Uint8Array;
+  readonly parentIndex: number;
+  readonly attentionLabel: Uint8Array;
 }
 
 export interface Tab {
@@ -112,6 +120,7 @@ export interface Tab {
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
+  readonly attentionLabel: Uint8Array;
   /// Live, never persisted: the rows come from the snapshot the engine just
   /// sent, so a session that closed is simply absent from the next one.
   readonly agents: readonly AgentRow[];
@@ -134,6 +143,11 @@ export interface SwitcherRow {
   readonly disabled: boolean;
   /// A listed session (this Mac's or a peer's): its context menu offers Rename.
   readonly renamable: boolean;
+  /// Identity-bound inspection data; empty on ordinary catalog rows.
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly nativeId: Uint8Array;
+  readonly evidence: Uint8Array;
 }
 
 export interface ThemeRow {
@@ -211,6 +225,14 @@ export interface Model {
   /// Platform ids never cross the seam; the snapshot carries only 0..4.
   readonly activeWindow: number;
   readonly paletteOpen: boolean;
+  readonly agentsMode: boolean;
+  readonly inspectedResource: Uint8Array;
+  readonly agentCountLabel: Uint8Array;
+  readonly mainAgentsOpen: boolean;
+  readonly window1AgentsOpen: boolean;
+  readonly window2AgentsOpen: boolean;
+  readonly window3AgentsOpen: boolean;
+  readonly window4AgentsOpen: boolean;
   /// One navigator, including the action palette, shares the native input gate.
   /// 0 terminals, 1 sessions, 2 machines, 3 windows, 4 commands.
   readonly navigatorView: number;
@@ -454,6 +476,8 @@ export type Msg =
   | { readonly kind: "close_selected_tab" }
   | { readonly kind: "toggle_tab_placement" }
   | { readonly kind: "palette_open" }
+  | { readonly kind: "agents_open" }
+  | { readonly kind: "agent_parent"; readonly index: number }
   | { readonly kind: "navigator_open"; readonly view: number }
   | { readonly kind: "commands_open" }
   | { readonly kind: "commands_pick"; readonly index: number }
@@ -725,6 +749,32 @@ function overflowLabel(hidden: number): Uint8Array {
   return out;
 }
 
+function decimalPlace(index: number): number {
+  if (index === 0) return 10000;
+  if (index === 1) return 1000;
+  if (index === 2) return 100;
+  if (index === 3) return 10;
+  return 1;
+}
+
+function decimalBytes(value: number): Uint8Array {
+  const out = new Uint8Array(5);
+  let rest = value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
+  let first = 4;
+  for (let i = 0; i < 5; i += 1) {
+    const place = decimalPlace(i);
+    let digit = 0;
+    // Division would taint the caller's navigation indices as AOT floats.
+    while (rest >= place) {
+      rest -= place;
+      digit += 1;
+    }
+    out[i] = digit + 48;
+    if (digit > 0 && first === 4) first = i;
+  }
+  return out.subarray(first);
+}
+
 function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
   const out = new Uint8Array(head.length + mid.length + tail.length);
   let at = 0;
@@ -771,18 +821,26 @@ function paletteState(model: Model): TextEditState {
 
 function requestNavigation(model: Model, offset: number): Model {
   const at = offset >= 0 && offset <= 65535 ? Math.trunc(offset) : 0;
+  if (model.agentsMode) {
+    return { ...model, inspectedResource: NO_BYTES, paletteOffset: at, paletteRows: NO_ROWS, paletteCursor: 0, paletteLoading: true,
+      palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Loading workspace...") };
+  }
   const append = at > model.paletteOffset;
-  return { ...model, paletteOffset: at, paletteRows: append ? model.paletteRows : NO_ROWS,
+  return { ...model, inspectedResource: NO_BYTES, paletteOffset: at, paletteRows: append ? model.paletteRows : NO_ROWS,
     paletteSelection: append ? model.paletteSelection : NO_BYTES, paletteCursor: append ? model.paletteCursor : 0,
     paletteLoading: true, paletteRefreshing: append ? model.paletteRefreshing : false,
     palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Loading work...") };
 }
 
 function closePalette(model: Model): Model {
-  return scopeOverlays({ ...model, paletteOpen: false, paletteQuery: NO_BYTES, paletteRows: NO_ROWS, paletteCursor: 0 });
+  return scopeOverlays({ ...model, agentsMode: false, inspectedResource: NO_BYTES, paletteOpen: false, paletteQuery: NO_BYTES, paletteRows: NO_ROWS, paletteCursor: 0 });
 }
 
 function refreshNavigation(model: Model): Model {
+  if (model.agentsMode) {
+    const refreshed = requestNavigation(model, model.paletteOffset);
+    return { ...refreshed, inspectedResource: model.inspectedResource, paletteCursor: model.paletteCursor };
+  }
   const wanted = Math.max(24, model.paletteRows.length);
   return { ...model, paletteOffset: 0, paletteLoading: true, paletteRefreshing: true,
     paletteFill: wanted >= 24 && wanted <= 65535 ? Math.trunc(wanted) : 24 };
@@ -806,16 +864,64 @@ function currentRowRefuses(model: Model, target: Uint8Array): boolean {
   return false;
 }
 
+function navigationRequestFor(model: Model): Uint8Array {
+  return model.agentsMode
+    ? navigationAgentsRequest(model.engineRevision, model.paletteOffset)
+    : scopedNavigationRequest(model);
+}
+
+function validAgentParent(model: Model, index: number): boolean {
+  if (!model.engineConnected || index === 65535) return false;
+  for (const row of model.railRows) {
+    if (row.agent && row.parentIndex === index) return true;
+  }
+  return false;
+}
+
+function failedAgentNavigation(model: Model): Model {
+  if (model.agentsMode) return { ...model, paletteRows: NO_ROWS, paletteLoading: false,
+    palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Agent catalog unavailable. Refresh to inspect again.") };
+  if (model.paletteOffset > 0) return requestNavigation(model, 0);
+  return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
+}
+
+function navigationPageMatches(model: Model, page: NavigationPage): boolean {
+  if (!sameU64(page.revision, model.engineRevision)) return false;
+  if (page.agents !== model.agentsMode) return false;
+  if (page.offset !== model.paletteOffset) return false;
+  if (!sameBytes(page.query, model.paletteQuery)) return false;
+  if (model.agentsMode) return true;
+  return page.scope === model.paletteScope && sameBytes(page.host, model.paletteHost);
+}
+
+function inspectionIdentity(rows: readonly NavigationRow[]): Uint8Array {
+  return rows.length === 0 ? NO_BYTES : rows[0].resource;
+}
+
+function inspectionRetargeted(model: Model, rows: readonly NavigationRow[]): boolean {
+  if (!model.agentsMode || model.inspectedResource.length === 0) return false;
+  return !sameBytes(model.inspectedResource, inspectionIdentity(rows));
+}
+
 function loadedNavigation(model: Model, body: Uint8Array): Model {
   if (!model.paletteOpen || !model.engineConnected) return model;
   const page = navigationPage(body);
   if (page === null) return { ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") };
-  if (!currentNavigationPage(model, page)) return model;
+  if (!navigationPageMatches(model, page)) return model;
+  if (inspectionRetargeted(model, page.rows)) return { ...model, paletteRows: NO_ROWS, paletteLoading: false,
+    palettePrevious: false, paletteNext: false, paletteNotice: asciiBytes("Agent changed or closed. Refresh to inspect the current catalog.") };
   const total = page.total >= 0 && page.total <= 65535 ? Math.trunc(page.total) : 0;
+  if (model.agentsMode) {
+    const loaded: Model = { ...model, inspectedResource: inspectionIdentity(page.rows), paletteRows: switcherRows(page.rows), paletteTotal: total, paletteLoading: false,
+      palettePrevious: page.offset > 0, paletteNext: page.offset + page.rows.length < total,
+      paletteNotice: navigationNotice(true, model.paletteScope, total, page.offset) };
+    if (page.rows.length === 0) return loaded;
+    return highlightNavigation(loaded, Math.min(model.paletteCursor, page.rows.length - 1));
+  }
   const rows = navigationRowsForPage(model, page);
   const loaded: Model = { ...model, paletteRows: rows, paletteTotal: total, paletteLoading: false,
     palettePrevious: false, paletteNext: page.offset + page.rows.length < total,
-    paletteNotice: navigationNotice(model.paletteScope, total) };
+    paletteNotice: navigationNotice(false, model.paletteScope, total, page.offset) };
   return reconcileNavigationSelection(loaded);
 }
 
@@ -842,7 +948,9 @@ function receiveNavigation(model: Model, body: Uint8Array): Model {
   if (model.navigatorView === 2 || model.navigatorView === 4) return model;
   const loaded = loadedNavigation(model, body);
   if (loaded === model || loaded.paletteLoading) return loaded;
-  if (loaded.paletteNext && loaded.paletteRows.length < loaded.paletteFill) {
+  // Agent inspection pages one resource at a time; never auto-fill like the
+  // everyday navigator's append-until-viewport path.
+  if (!loaded.agentsMode && loaded.paletteNext && loaded.paletteRows.length < loaded.paletteFill) {
     return requestNavigation(loaded, loaded.paletteOffset + navigationPageSize(loaded));
   }
   return { ...loaded, paletteRefreshing: false };
@@ -860,12 +968,17 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
     const kind = row.kind >= 0 && row.kind <= 5 ? Math.trunc(row.kind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
       highlighted: row.highlighted, current: row.current && row.kind !== 5, selectable: row.selectable, disabled: !row.selectable, target: row.target,
-      renamable: kind === 2 && row.selectable && sessionRowTarget(row.target) });
+      renamable: kind === 2 && row.selectable && sessionRowTarget(row.target),
+      resource: row.resource, parent: row.parent, nativeId: row.nativeId, evidence: row.evidence });
   }
   return result;
 }
 
-function navigationNotice(scope: number, total: number): Uint8Array {
+function navigationNotice(agents: boolean, scope: number, total: number, offset: number): Uint8Array {
+  if (agents) {
+    if (total === 0) return asciiBytes("No agent resources in the attached catalog");
+    return joinBytes(asciiBytes("Agent "), decimalBytes(offset + 1), joinBytes(asciiBytes(" of "), decimalBytes(total), asciiBytes(" / Last reported state")));
+  }
   if (scope === 4) return total === 0 ? asciiBytes("No matching windows") : asciiBytes("Choose a window or tab to bring existing work forward");
   if (scope === 2) return total === 0 ? asciiBytes("No known terminal hosts on this connection") : asciiBytes("Hosts represented by known terminals");
   if (scope === 1) return total === 0 ? asciiBytes("No matching Phux sessions") : asciiBytes("Select a session to open its workspace");
@@ -936,15 +1049,17 @@ function browseNavigation(model: Model, msg: Msg): Model {
 }
 
 function navigationPageSize(model: Model): number {
+  if (model.agentsMode) return 1;
   return model.paletteScope === 4 ? 16 : 4;
 }
 
 function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
-      if (model.paletteOpen) return model;
-      return requestNavigation(scopeOverlays({ ...model, paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
-        navigatorView: 0, navigatorTitle: asciiBytes("Go to Terminal"),
+    case "agents_open":
+      if (model.paletteOpen && model.agentsMode === (msg.kind === "agents_open")) return model;
+      return requestNavigation(scopeOverlays({ ...model, agentsMode: msg.kind === "agents_open", paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
+        navigatorView: 0, navigatorTitle: asciiBytes(msg.kind === "agents_open" ? "Inspect agents" : "Go to Terminal"),
         paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
     case "palette_scope": return chooseNavigationScope(model, msg.scope);
     case "palette_edit": return editNavigation(model, msg.edit);
@@ -1527,13 +1642,21 @@ function windowConnectionStatus(
 }
 
 function engineUnavailable(model: Model, status: Uint8Array): Model {
-  return { ...model, engineConnected: false, status, canReconnect: false,
+  return { ...withdrawAgentRows(model), engineConnected: false, status, canReconnect: false,
     connectionStatus: asciiBytes("Connection status unavailable"), paletteRows: NO_ROWS,
     window1Status: asciiBytes("Connection status unavailable"),
     window2Status: asciiBytes("Connection status unavailable"),
     window3Status: asciiBytes("Connection status unavailable"),
     window4Status: asciiBytes("Connection status unavailable"),
+    paletteNotice: asciiBytes("Agent state unavailable. Refresh when the engine returns."),
     paletteLoading: false, palettePrevious: false, paletteNext: false };
+}
+
+function withdrawAgentRows(model: Model): Model {
+  return { ...model, railRows: railRows(stampSlots(model.visibleTabs, 0, NO_AGENTS, 2)),
+    tabs: stampSlots(model.tabs, 0, NO_AGENTS, 2), visibleTabs: stampSlots(model.visibleTabs, 0, NO_AGENTS, 2),
+    window1Tabs: stampSlots(model.window1Tabs, 1, NO_AGENTS, 2), window2Tabs: stampSlots(model.window2Tabs, 2, NO_AGENTS, 2),
+    window3Tabs: stampSlots(model.window3Tabs, 3, NO_AGENTS, 2), window4Tabs: stampSlots(model.window4Tabs, 4, NO_AGENTS, 2) };
 }
 
 /// Only the active native window presents the global core-owned modal. The
@@ -1580,13 +1703,20 @@ function scopeDirectoryOverlays(model: Model, active: number): Model {
 }
 
 function scopePaletteOverlays(model: Model, active: number): Model {
+  const palette = model.paletteOpen && !model.agentsMode;
+  const agents = model.paletteOpen && model.agentsMode;
   return {
     ...model,
-    mainPaletteOpen: model.paletteOpen && active === 0,
-    window1PaletteOpen: model.paletteOpen && active === 1,
-    window2PaletteOpen: model.paletteOpen && active === 2,
-    window3PaletteOpen: model.paletteOpen && active === 3,
-    window4PaletteOpen: model.paletteOpen && active === 4,
+    mainPaletteOpen: palette && active === 0,
+    window1PaletteOpen: palette && active === 1,
+    window2PaletteOpen: palette && active === 2,
+    window3PaletteOpen: palette && active === 3,
+    window4PaletteOpen: palette && active === 4,
+    mainAgentsOpen: agents && active === 0,
+    window1AgentsOpen: agents && active === 1,
+    window2AgentsOpen: agents && active === 2,
+    window3AgentsOpen: agents && active === 3,
+    window4AgentsOpen: agents && active === 4,
   };
 }
 
@@ -1661,32 +1791,50 @@ const AGENT_STATE_WORDS: readonly Uint8Array[] = [
 ];
 
 const NO_AGENT_ROWS: readonly AgentRow[] = [];
+const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 const NO_RAIL_ROWS: readonly RailRow[] = [];
 
 /// The agent rows this window's tab owns, in the order the snapshot listed
 /// them. A row whose state ordinal is outside the closed vocabulary is
 /// dropped rather than shown as a word the engine never said.
-function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number): readonly AgentRow[] {
+function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number, connection: number): readonly AgentRow[] {
   const out: AgentRow[] = [];
   let ordinal = 0;
   for (let i = 0; i < agents.length; i += 1) {
     const row = agents[i];
     if (row.window !== window || row.tab !== tab) continue;
-    const state = row.state;
-    if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) continue;
-    if (!(ordinal >= 0 && ordinal <= 255)) continue;
-    out.push({
-      id: Math.trunc(ordinal),
-      provider: row.provider,
-      state: AGENT_STATE_WORDS[Math.trunc(state)],
-      attention: row.attention,
-    });
+    const projected = projectAgentRow(row, ordinal, connection);
+    if (projected === null) continue;
+    out.push(projected);
     ordinal += 1;
   }
   return out.length === 0 ? NO_AGENT_ROWS : out;
 }
 
-function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readonly SnapshotAgentRow[]): readonly Tab[] {
+function projectAgentRow(row: SnapshotAgentRow, ordinal: number, connection: number): AgentRow | null {
+  const state = row.state;
+  if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) return null;
+  if (!(ordinal >= 0 && ordinal <= 255)) return null;
+  const parentIndex = row.parentIndex;
+  return {
+    id: Math.trunc(ordinal), provider: row.provider,
+    state: reportedAgentState(AGENT_STATE_WORDS[Math.trunc(state)], connection),
+    attention: row.attention && connection === 2,
+    resource: row.resource, parent: row.parent,
+    parentIndex: parentIndex >= 0 && parentIndex < 65535 ? Math.trunc(parentIndex) : 65535,
+  };
+}
+
+function reportedAgentState(state: Uint8Array, connection: number): Uint8Array {
+  if (connection === 2) return state;
+  return joinBytes(connection === 3 ? asciiBytes("offline / ") : asciiBytes("stale / "), state, NO_BYTES);
+}
+
+function attentionLabel(title: Uint8Array, attention: boolean): Uint8Array {
+  return attention ? joinBytes(asciiBytes("Needs attention: "), title, NO_BYTES) : NO_BYTES;
+}
+
+function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readonly SnapshotAgentRow[], connection: number): readonly Tab[] {
   const out: Tab[] = [];
   const w = window >= 0 && window <= 4 ? Math.trunc(window) : 0;
   for (let i = 0; i < tabs.length; i += 1) {
@@ -1696,7 +1844,7 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, agents: agentRowsFor(agents, w, index), target: t.target });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target });
   }
   return out;
 }
@@ -1710,13 +1858,14 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
   for (let i = 0; i < tabs.length; i += 1) {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
-    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: NO_BYTES, selected: tab.selected, agent: false, target: tab.target });
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label: row.provider, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, target: NO_BYTES });
+      const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: NO_BYTES });
       ordinal += 1;
     }
   }
@@ -1739,10 +1888,10 @@ function closedWindow(index: number): WindowState {
   return { ...CLOSED_WINDOW, index: at };
 }
 
-function windowState(index: number, section: SecondaryWindow | null, agents: readonly SnapshotAgentRow[]): WindowState {
+function windowState(index: number, section: SecondaryWindow | null, agents: readonly SnapshotAgentRow[], connection: number): WindowState {
   if (section === null) return closedWindow(index);
   const at = index >= 0 && index <= 4 ? Math.trunc(index) : 0;
-  const tabs = stampSlots(section.tabs, at, agents);
+  const tabs = stampSlots(section.tabs, at, agents, connection);
   const hidden = tabs.length - section.runCount;
   const selected = section.selectedTab >= 0 && section.selectedTab <= 255 ? Math.trunc(section.selectedTab) : 0;
   const width = section.tabWidth >= 0 && section.tabWidth <= 65535 ? Math.trunc(section.tabWidth) : 168;
@@ -1952,8 +2101,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -1979,6 +2128,14 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window4RailRows: NO_RAIL_ROWS,
       activeWindow: 0,
       paletteOpen: false,
+      agentsMode: false,
+      inspectedResource: NO_BYTES,
+      agentCountLabel: asciiBytes("Agents..."),
+      mainAgentsOpen: false,
+      window1AgentsOpen: false,
+      window2AgentsOpen: false,
+      window3AgentsOpen: false,
+      window4AgentsOpen: false,
       navigatorView: 0,
       navigatorTitle: asciiBytes("Go to Terminal"),
       actionRows: NO_ACTION_ROWS,
@@ -2709,6 +2866,7 @@ function creationSurfaceTransition(model: Model, msg: Msg): NavigatorDecision | 
 function navigationInputTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
     case "palette_open":
+    case "agents_open":
     case "palette_edit":
     case "palette_scope":
     case "palette_move":
@@ -2723,7 +2881,7 @@ function requestCatalogNavigation(previous: Model, next: Model, commit: boolean)
   if (next === previous) return { model: previous, effect: 0, request: NO_BYTES };
   if (!next.paletteLoading) return navigatorDecision(next, 0, NO_BYTES);
   const requesting: Model = commit ? { ...next, windowActionPending: false } : next;
-  return navigatorDecision(requesting, commit ? 3 : 12, scopedNavigationRequest(requesting));
+  return navigatorDecision(requesting, commit ? 3 : 12, navigationRequestFor(requesting));
 }
 
 function pickWindowNavigation(model: Model, target: Uint8Array): NavigatorDecision {
@@ -2734,6 +2892,12 @@ function pickWindowNavigation(model: Model, target: Uint8Array): NavigatorDecisi
 }
 
 function pickCatalogNavigation(model: Model, msg: Msg): NavigatorDecision {
+  if (model.agentsMode) {
+    if (msg.kind === "palette_pick" || model.paletteRows.length === 0) return navigatorDecision(model, 0, NO_BYTES);
+    const parent = model.paletteRows[model.paletteCursor].index;
+    if (parent === 65535) return navigatorDecision(model, 0, NO_BYTES);
+    return navigatorDecision(closePalette(model), 21, navigationIntent(model.engineRevision, parent));
+  }
   const target = navigationTarget(model, msg);
   if (target.length === 0) return navigatorDecision(model, 0, NO_BYTES);
   if (windowTarget(target)) return pickWindowNavigation(model, target);
@@ -2764,8 +2928,9 @@ function navigationReplyTransition(model: Model, msg: Msg): NavigatorDecision | 
     case "window_action_loaded": return receivedWindowAction(model, msg.body);
     case "window_action_failed": return failedWindowAction(model);
     case "navigation_failed": {
-      if (model.paletteOffset > 0) return requestCatalogNavigation(model, requestNavigation(model, 0), false);
-      return navigatorDecision({ ...model, paletteLoading: false, paletteNotice: asciiBytes("Workspace unavailable. Retry to refresh.") }, 0, NO_BYTES);
+      const next = failedAgentNavigation(model);
+      if (next.paletteLoading) return requestCatalogNavigation(model, next, false);
+      return navigatorDecision(next, 0, NO_BYTES);
     }
     default: return null;
   }
@@ -2776,6 +2941,10 @@ function catalogNavigationTransition(incoming: Model, msg: Msg): NavigatorDecisi
   if (incoming.settingsOpen) return null;
   const model = displaceRename(displaceDirectory(incoming, msg), msg);
   if (model.dirOpen || model.renameOpen) return null;
+  if (msg.kind === "agent_parent") {
+    if (!validAgentParent(model, msg.index)) return navigatorDecision(model, 0, NO_BYTES);
+    return navigatorDecision(model, 20, navigationIntent(model.engineRevision, msg.index));
+  }
   if (msg.kind === "palette_submit" || msg.kind === "palette_pick") return pickCatalogNavigation(model, msg);
   if (msg.kind === "palette_close") return navigatorDecision(closePalette({ ...model, hostOpen: false, hostAwaiting: false }), 14, NO_BYTES);
   const input = navigationInputTransition(model, msg);
@@ -3444,6 +3613,11 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       Cmd.host("cockpit.committed", NO_BYTES),
       Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-launch", ok: "local_tool_launch_loaded", err: "local_tool_launch_failed" }),
     ])];
+    if (navigator.effect === 20) return [navigator.model, Cmd.host("cockpit.intent", navigator.request)];
+    if (navigator.effect === 21) return [navigator.model, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.host("cockpit.intent", navigator.request),
+    ])];
     return navigator.model;
   }
   // Go to Directory first: while it is open it owns Escape and the arrows.
@@ -3499,7 +3673,7 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     ])];
     if (appearance.navigate) return [next, Cmd.batch([
       Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.navigation", scopedNavigationRequest(next), {
+      Cmd.request("cockpit.navigation", navigationRequestFor(next), {
         key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
       }),
     ])];
@@ -3605,12 +3779,13 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const active = projected.activeTheme;
       const cursor = model.settingsOpen ? model.settingsCursor : active >= 0 && active <= 32 && active < projected.themes.length ? Math.trunc(active) : 0;
       const refused = (projected.flags & 8) !== 0;
-      const mainTabs = stampSlots(projected.tabs, 0, projected.agents);
+      const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
+      const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
       const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
-      const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents);
-      const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents);
-      const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents);
-      const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents);
+      const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
+      const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
+      const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
+      const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents, connection);
       // The width crosses a record into an integer slot; the proof is
       // restated at the boundary, once per slot.
       const width1 = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
@@ -3669,6 +3844,7 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         tabs: mainTabs,
         visibleTabs: mainVisible,
         railRows: railRows(mainTabs),
+        agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
         workspaceLabel: mainContext.title,
         mainContext,
         window1Context,
@@ -3748,12 +3924,12 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       if (!askRemote) {
         const refreshed = refreshNavigation(scoped);
-        return [refreshed, Cmd.request("cockpit.navigation", scopedNavigationRequest(refreshed), {
+        return [refreshed, Cmd.request("cockpit.navigation", navigationRequestFor(refreshed), {
           key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
         })];
       }
       return [refreshNavigation(scoped), Cmd.batch([
-        Cmd.request("cockpit.navigation", scopedNavigationRequest(refreshNavigation(scoped)), {
+        Cmd.request("cockpit.navigation", navigationRequestFor(refreshNavigation(scoped)), {
           key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
         }),
         Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
@@ -3770,12 +3946,18 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (event === null) return { ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") };
       const read = requestCommandResults(model.commandResults);
       const next = {
-        ...model,
+        ...withdrawAgentRows(model),
         commandResults: read.state,
         engineSequence: event.sequence,
         engineConnected: false,
         status: asciiBytes("SYNCING"),
-        paletteLoading: model.paletteOpen && model.navigatorView !== 2 && model.navigatorView !== 4,
+        // Agent inspection drops the prior page; everyday navigator keeps held
+        // painted targets across the fence until the refreshed page lands.
+        paletteRows: model.agentsMode ? NO_ROWS : model.paletteRows,
+        paletteLoading: model.paletteOpen && (model.agentsMode || (model.navigatorView !== 2 && model.navigatorView !== 4)),
+        palettePrevious: model.agentsMode ? false : model.palettePrevious,
+        paletteNext: model.agentsMode ? false : model.paletteNext,
+        paletteNotice: model.agentsMode ? asciiBytes("Updating workspace and agent state...") : model.paletteNotice,
       };
       // A listing Go to Directory waits on settles in the provider drain
       // that announced this invalidation; ask for its page with the snapshot.

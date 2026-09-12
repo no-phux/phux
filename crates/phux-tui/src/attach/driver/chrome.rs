@@ -12,7 +12,7 @@ use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
-use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter, attention_rank};
+use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord, agent_name_from_title};
 
@@ -74,23 +74,6 @@ fn format_attention_hint(asking: usize) -> Option<String> {
     }
 }
 
-/// Refresh the window strip AND the supervisory badge together (ADR-0033),
-/// plus the phux-foz.1 attention hint.
-///
-/// All three feed one status-bar paint, so they must stay in lockstep: a site
-/// that refreshed the window list on a focus/layout change but forgot the
-/// badge would silently desync them. This single chokepoint makes that
-/// impossible — every focus/layout-change site calls it instead of
-/// hand-rolling the trio.
-///
-/// Returns `true` when any painter input actually changed, so a caller that
-/// paints nothing else (the `chrome_dirty` event path) can gate its repaint
-/// on it instead of repainting the full frame for state the user already
-/// sees.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "arg list mirrors the driver's chrome state; the ADR-0040 agent index made it 8 and the phux-p4vp vcs index 9"
-)]
 /// An empty peer bundle for unit tests that exercise the chrome refresh
 /// without any cross-session state.
 #[cfg(test)]
@@ -103,6 +86,8 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
         LazyLock::new(std::collections::HashSet::new);
     crate::attach::sidebar_zones::PeerInputs {
+        serving_host: None,
+        hosts: &[],
         sessions: SESSIONS,
         focused_session: None,
         foreign_layouts: &LAYOUTS,
@@ -125,6 +110,8 @@ pub(super) const fn peer_inputs<'a>(
     foreign_attention: &'a std::collections::HashSet<ResourceId>,
 ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
     crate::attach::sidebar_zones::PeerInputs {
+        serving_host: None,
+        hosts: &[],
         sessions,
         focused_session,
         foreign_layouts,
@@ -133,6 +120,9 @@ pub(super) const fn peer_inputs<'a>(
     }
 }
 
+/// Refresh all chrome inputs from one coherent view: window tabs, supervisory
+/// badges, agent rows and host-qualified session navigation. Returns whether
+/// any painter input changed, so unchanged metadata bursts need no paint.
 #[allow(
     clippy::too_many_arguments,
     reason = "the chrome refresh is the single chokepoint every painter feeds \
@@ -149,9 +139,7 @@ pub(super) fn refresh_window_chrome(
     own_client_id: Option<ClientId>,
     // ADR-0040: structured `phux.agent/v1` records; a window whose focused
     // leaf carries one is labelled from it instead of the OSC title. The whole
-    // index (not just `records`) because the sidebar's agent rows are ORDERED
-    // by the attention ladder, whose tiebreak is the index's per-pane
-    // last-change clock.
+    // index (not just `records`) is shared with agent-entry projection.
     agent_meta: &AgentMetaIndex,
     // phux-p4vp: pane cwd + branch memo; each window's branch line derives
     // from its focused leaf's working directory.
@@ -181,15 +169,12 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
     changed |= sidebar_painter.set_windows(windows);
-    // phux-foz.9 / phux-k0cw: zone 1 is the attention queue — the local rows
-    // the ADR-0040 records produce, merged with every peer session's and
-    // ranked as one list, because urgency ignores locality.
-    changed |= sidebar_painter.set_needs_you(crate::attach::sidebar_zones::needs_you_queue(
-        agent_entries(workspace, panes, agent_meta, agent_sessions),
-        &peers,
-    ));
-    // phux-k0cw: zone 3 is the roster — one rolled-up line per other session.
-    changed |= sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers));
+    let local = agent_entries(workspace, panes, agent_meta, agent_sessions);
+    changed |=
+        sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
+    // Stable navigation order; lifecycle changes only restyle existing rows.
+    changed |=
+        sidebar_painter.set_needs_you(crate::attach::sidebar_zones::needs_you_queue(local, &peers));
     changed
 }
 
@@ -278,29 +263,15 @@ pub(super) fn window_infos(
 /// A pane matching none of these produces no row: the agents section lists
 /// agents, not shells.
 ///
-/// # Ordering — the attention ladder
-///
-/// Rows are NOT in layout order. They are sorted by
-/// [`attention_rank`](crate::render::chrome::sidebar::attention_rank)
-/// descending, then by most-recent state change descending (a pane that has
-/// never changed sorts last), with a STABLE sort so equal-rank, equal-clock
-/// rows keep window/leaf order.
-///
-/// This is the whole "which of my nine agents needs me?" feature. Nine panes
-/// tiling a screen is nine rows the user has to read; one row pinned to the
-/// top that they must act on is a glance. The rung that carries it is
-/// "finished but unreviewed" outranking "still working" — a `done` agent is
-/// holding a result hostage until a human reads it; a `working` agent wants
-/// nothing.
+/// Rows retain window/leaf order. Lifecycle and review changes update badges
+/// in place; they must never move a navigation target under the pointer.
 pub(super) fn agent_entries(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
     agent_sessions: &AgentSessionRows,
 ) -> Vec<AgentEntry> {
-    // (entry, rank, last-change) — rank and clock drive the sort but never
-    // enter `AgentEntry`, which is the sidebar painter's content-cache key.
-    let mut rows: Vec<(AgentEntry, u8, Option<std::time::Instant>)> = Vec::new();
+    let mut rows = Vec::new();
     for (i, w) in workspace.windows.iter().enumerate() {
         let leaves = w
             .state
@@ -309,73 +280,63 @@ pub(super) fn agent_entries(
             .map(crate::layout::leaves)
             .unwrap_or_default();
         for (leaf, id) in leaves.iter().enumerate() {
-            let asked = panes.get(id).is_some_and(|slot| slot.attention);
-            let seen = panes.get(id).is_some_and(|slot| slot.seen);
-            let change_at = agent_meta.change_at.get(id).copied();
-            let mut push = |entry: AgentEntry| {
-                let rank = attention_rank(entry.state, entry.attention, entry.seen);
-                rows.push((entry, rank, change_at));
+            let base = AgentEntry {
+                session: None,
+                window: i,
+                window_name: w.name.clone(),
+                pane: Some(leaf),
+                name: String::new(),
+                state: AgentMetaState::Unknown,
+                attention: panes.get(id).is_some_and(|slot| slot.attention),
+                seen: panes.get(id).is_some_and(|slot| slot.seen),
             };
+            let record = agent_meta.records.get(id);
             if let Some(sessions) = agent_sessions.get(id).filter(|rows| !rows.is_empty()) {
-                let record = agent_meta.records.get(id);
                 for session in sessions {
-                    push(AgentEntry {
-                        session: None,
-                        window: i,
-                        window_name: w.name.clone(),
-                        pane: Some(leaf),
+                    rows.push(AgentEntry {
                         name: record.map_or_else(|| session.name().to_owned(), |r| r.name.clone()),
                         state: session.state,
-                        attention: asked
+                        attention: base.attention
                             || session.state == AgentMetaState::Blocked
                             || record
                                 .is_some_and(|r| r.effective_attention() == AgentAttention::High),
-                        seen,
+                        ..base.clone()
                     });
                 }
                 continue;
             }
-            if let Some(record) = agent_meta.records.get(id) {
-                push(AgentEntry {
-                    // Local rows: `None` commits the cheap client-local
-                    // `select-window` rather than a re-attach (phux-k0cw).
-                    session: None,
-                    window: i,
-                    window_name: w.name.clone(),
-                    pane: Some(leaf),
-                    name: record.name.clone(),
-                    state: record.state,
-                    attention: asked || record.effective_attention() == AgentAttention::High,
-                    seen,
-                });
-                continue;
-            }
-            let title_name = panes
-                .get(id)
-                .map(|slot| slot.last_title.as_str())
-                .and_then(agent_name_from_title);
-            if let Some(name) = title_name {
-                push(AgentEntry {
-                    session: None,
-                    window: i,
-                    window_name: w.name.clone(),
-                    pane: Some(leaf),
-                    name: name.to_owned(),
-                    state: if asked {
-                        AgentMetaState::Blocked
-                    } else {
-                        AgentMetaState::Idle
-                    },
-                    attention: asked,
-                    seen,
-                });
+            if let Some(entry) = advisory_agent_entry(base, record, panes.get(id)) {
+                rows.push(entry);
             }
         }
     }
-    // Stable: rank desc, then last-change desc (`None` — never changed — sorts
-    // last, since `None < Some(_)`), then declaration (window/leaf) order.
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
-    rows.into_iter().map(|(entry, _, _)| entry).collect()
+    rows
+}
+
+/// Fill identity from advisory metadata, falling back to the pane title.
+fn advisory_agent_entry(
+    base: AgentEntry,
+    record: Option<&AgentRecord>,
+    pane: Option<&PaneSlot>,
+) -> Option<AgentEntry> {
+    if let Some(record) = record {
+        return Some(AgentEntry {
+            name: record.name.clone(),
+            state: record.state,
+            attention: base.attention || record.effective_attention() == AgentAttention::High,
+            ..base
+        });
+    }
+    let name = agent_name_from_title(&pane?.last_title)?;
+    Some(AgentEntry {
+        name: name.to_owned(),
+        state: if base.attention {
+            AgentMetaState::Blocked
+        } else {
+            AgentMetaState::Idle
+        },
+        ..base
+    })
 }
 
 /// Mark the focused pane as reviewed — the `seen` half of the attention ladder.
@@ -386,12 +347,11 @@ pub(super) fn agent_entries(
 ///
 /// The flip MUST be a repaint trigger. `seen` feeds both the sidebar's glyph
 /// (the filled `◆` of "finished, unread" vs the quiet `○` of a reviewed row)
-/// and its
-/// [`attention_rank`](crate::render::chrome::sidebar::attention_rank), and the
+/// and the
 /// focus action that made this pane focused recomputed the chrome one iteration
 /// EARLIER — while the bit was still `false`. Left as a silent side effect, the
-/// strip goes on claiming "finished, unreviewed", pinned above every working
-/// agent, about the very pane the user is looking at, until some unrelated
+/// strip goes on claiming "finished, unreviewed" about the very pane the user
+/// is looking at, until some unrelated
 /// chrome event happens to recompute [`agent_entries`].
 pub(super) fn mark_focused_seen(
     panes: &mut HashMap<ResourceId, PaneSlot>,
@@ -608,13 +568,9 @@ mod tests {
         }
     }
 
-    /// The attention ladder, end to end through `agent_entries`: an UNSEEN
-    /// `done` agent must sort ABOVE a `working` one, and a `blocked` one above
-    /// both. This is the "which of my agents needs me?" contract — a finished
-    /// agent is holding a result hostage until a human reads it, so it must
-    /// outrank one that is merely still busy.
+    /// Mixed lifecycle states and review changes never move navigation rows.
     #[test]
-    fn agent_entries_rank_unreviewed_done_above_working() {
+    fn agent_entries_keep_layout_order_across_review_changes() {
         let working = ResourceId::local(1);
         let done = ResourceId::local(2);
         let blocked = ResourceId::local(3);
@@ -642,7 +598,7 @@ mod tests {
             );
         }
 
-        // Layout order is working, done, blocked. The ladder must reorder.
+        // Status must not reorder the working, done, blocked layout.
         let entries = agent_entries(
             &workspace,
             &panes,
@@ -652,20 +608,15 @@ mod tests {
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["b", "d", "w"],
-            "blocked > unreviewed done > working"
+            vec!["w", "d", "b"],
+            "navigation follows layout, not urgency"
         );
 
-        // Visiting the finished pane demotes it below the working one: it has
-        // been reviewed, so it is no longer asking for anything.
+        // Visiting changes the badge in place.
         panes.get_mut(&done).expect("slot").seen = true;
         let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["b", "w", "d"],
-            "a reviewed done drops below working"
-        );
+        assert_eq!(names, vec!["w", "d", "b"], "review does not move the row");
     }
 
     /// The TRIGGER half of the ladder's central promise: focusing a pane must
@@ -707,13 +658,12 @@ mod tests {
         }
         let meta = meta_index(records);
 
-        // The background agent finished while another pane was focused, so its
-        // row is unreviewed: pinned to the top.
+        // Completion stays in its original row while unreviewed.
         let names: Vec<String> = agent_entries(&workspace, &panes, &meta, &HashMap::new())
             .into_iter()
             .map(|e| e.name)
             .collect();
-        assert_eq!(names, vec!["d", "w"], "unreviewed done pins to the top");
+        assert_eq!(names, vec!["w", "d"], "completion preserves row order");
 
         // Prime the painters against that (stale) view — this is the paint the
         // focus action itself produced, one iteration before the flip.
@@ -739,8 +689,7 @@ mod tests {
             "the first mark after a focus change must report the flip"
         );
 
-        // The flip must move the chrome: the row demotes below the working
-        // agent, and its glyph stops shouting.
+        // The flip must repaint the glyph without moving the row.
         let chrome_changed = refresh_window_chrome(
             None,
             &mut sidebar_painter,
@@ -760,11 +709,7 @@ mod tests {
         );
         let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["w", "d"],
-            "the reviewed row drops below working"
-        );
+        assert_eq!(names, vec!["w", "d"], "the reviewed row keeps its place");
         // Only the FOCUSED pane's row is reviewed — the background `working`
         // one is still unvisited, and the glyph derives from this bit.
         let reviewed: Vec<(&str, bool)> =
@@ -798,12 +743,9 @@ mod tests {
         );
     }
 
-    /// Equal-rank rows break the tie on the last-change clock: the agent that
-    /// JUST blocked sits above one that has been blocked for an hour. Rows with
-    /// no recorded change sort last, and the sort is stable, so a tie in both
-    /// keys preserves window/leaf order.
+    /// Last-change timestamps are not navigation-order inputs.
     #[test]
-    fn agent_entries_break_rank_ties_by_most_recent_change() {
+    fn agent_entries_ignore_change_timestamps_for_ordering() {
         let old = ResourceId::local(1);
         let fresh = ResourceId::local(2);
         let never = ResourceId::local(3);
@@ -837,7 +779,7 @@ mod tests {
 
         let entries = agent_entries(&workspace, &panes, &index, &HashMap::new());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["fresh", "old", "never"]);
+        assert_eq!(names, vec!["old", "fresh", "never"]);
     }
 
     /// phux-foz.9: a declared `phux.agent/v1` record produces an agents-row
@@ -1008,13 +950,12 @@ mod tests {
         let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default(), &sessions);
         let names: Vec<(&str, AgentMetaState)> =
             entries.iter().map(|e| (e.name.as_str(), e.state)).collect();
-        // Unreviewed `done` outranks `working`; the nameless session reads
-        // as a plain agent.
+        // Stream declaration order survives differing states.
         assert_eq!(
             names,
             vec![
-                ("agent", AgentMetaState::Done),
-                ("codex", AgentMetaState::Working)
+                ("codex", AgentMetaState::Working),
+                ("agent", AgentMetaState::Done)
             ]
         );
         assert!(!entries[1].attention);

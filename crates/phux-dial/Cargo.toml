@@ -52,6 +52,11 @@ rcgen = { version = "0.14", default-features = false, features = [
 # the dialer stays a dialer for consumers that only pin; enabled by the two
 # crates that terminate TLS (phux-server, phux-relay).
 provision = ["dep:rcgen"]
+# Test-only network impairment (`testing::DropProxy`): a loopback UDP
+# forwarder that can blackhole the server-to-client direction, which the send
+# window tests in this crate, phux-relay and phux-server share. No extra
+# dependencies; off in every shipped build.
+testing = []
 
 [dev-dependencies]
 # Provisioning tests write real cert/key pairs to a scratch directory.
@@ -62,4 +67,4 @@ tempfile.workspace = true
 # crate-scoped run and only reappear under `--workspace`, where phux-server
 # happens to turn the feature on -- exactly the kind of coverage that looks
 # green while testing nothing.
-phux-dial = { path = ".", features = ["provision"] }
+phux-dial = { path = ".", features = ["provision", "testing"] }

@@ -3385,6 +3385,7 @@ mod tests {
                     .send(PaneOutput::Live {
                         seq: 1,
                         bytes: bytes::Bytes::from_static(b"live"),
+                        at: std::time::Instant::now(),
                     })
                     .expect("live receiver");
                 assert!(matches!(
@@ -3401,6 +3402,7 @@ mod tests {
                         rows: 24,
                         bytes: bytes::Bytes::new(),
                         reason: ResyncReason::OutboundGap,
+                        audience: crate::terminal_actor::ResyncAudience::Everyone,
                         base_seq: 1,
                     })
                     .expect("resync receiver");

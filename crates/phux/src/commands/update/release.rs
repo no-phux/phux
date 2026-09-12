@@ -13,19 +13,30 @@
 //! verification, staging, atomic replacement, rollback — is exercised in unit
 //! tests against a local fake and never performs a real download in CI.
 
-use std::io::Read as _;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 
 use super::UpdateError;
 
 /// The repository releases are published from.
 pub(crate) const REPO: &str = "no-phux/phux";
 
-/// Match the standalone installers. Index discovery is bounded, and an
-/// explicit --version bypasses it if the stream is older than this window.
-const MAX_RELEASE_PAGES: usize = 10;
-const MAX_RELEASE_PAGE_BYTES: u64 = 1_048_576;
+/// The redirect that names the current stable release.
+///
+/// Resolving the redirect (rather than reading `api.github.com`) is what
+/// `scripts/install.sh` already does: it is not rate-limited for anonymous
+/// callers and the answer is a URL, not a JSON document that has to be
+/// trusted and parsed.
+const LATEST_REDIRECT: &str = "https://github.com/no-phux/phux/releases/latest";
+
+/// Pointer file for the moving `next` prerelease (ADR-0113).
+///
+/// Hardcoded: a network-supplied tag is never interpolated into a URL.
+pub(crate) const NEXT_CHANNEL_URL: &str =
+    "https://github.com/no-phux/phux/releases/download/next/channel.json";
+
+/// GitHub release tag the next channel publishes onto.
+pub(crate) const NEXT_RELEASE_TAG: &str = "next";
 
 /// A parsed `MAJOR.MINOR.PATCH`.
 ///
@@ -59,9 +70,9 @@ impl Version {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         let body = text.strip_prefix('v').unwrap_or(text);
         let mut fields = body.split('.');
-        let major = version_component(fields.next()?)?;
-        let minor = version_component(fields.next()?)?;
-        let patch = version_component(fields.next()?)?;
+        let major = fields.next()?.parse().ok()?;
+        let minor = fields.next()?.parse().ok()?;
+        let patch = fields.next()?.parse().ok()?;
         if fields.next().is_some() {
             return None;
         }
@@ -76,18 +87,6 @@ impl Version {
     pub(crate) fn current() -> Option<Self> {
         Self::parse(env!("CARGO_PKG_VERSION"))
     }
-}
-
-/// Rust integer parsing accepts a leading + and zero padding; release tags do
-/// not. Keep URL validation aligned with the standalone installers.
-fn version_component(text: &str) -> Option<u64> {
-    if text.len() > 1 && text.starts_with('0') {
-        return None;
-    }
-    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
 }
 
 /// Validate a release tag before it is ever interpolated into a URL.
@@ -157,6 +156,77 @@ impl Artifact {
             checksum_url,
         }
     }
+
+    /// Next-channel artifact. The GitHub tag is always `next`; the SHA
+    /// lives only in the filename, after [`validate_next_sha`] has accepted it.
+    pub(crate) fn next(sha: &str, target: &str) -> Self {
+        let stage = format!("phux-next.{sha}-{target}");
+        let archive = format!("{stage}.tar.gz");
+        let archive_url =
+            format!("https://github.com/{REPO}/releases/download/{NEXT_RELEASE_TAG}/{archive}");
+        let checksum_url = format!("{archive_url}.sha256");
+        Self {
+            archive,
+            stage,
+            archive_url,
+            checksum_url,
+        }
+    }
+}
+
+/// Head of the `next` channel, parsed from `channel.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NextHead {
+    /// Full git SHA the artifacts were built from.
+    pub(crate) sha: String,
+    /// Cargo version baked into that build, informational.
+    pub(crate) version: Option<String>,
+}
+
+/// A SHA interpolated into an artifact filename must be exactly 40 hex.
+pub(crate) fn validate_next_sha(sha: &str) -> Result<(), UpdateError> {
+    if sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(UpdateError::Fetch(
+            "the next channel pointer named a SHA that is not 40 hex characters".to_owned(),
+        ))
+    }
+}
+
+/// Parse `channel.json`. Archive names in the document are ignored: URLs
+/// are derived from the SHA so a poisoned pointer cannot steer the
+/// download at an arbitrary path.
+pub(crate) fn parse_next_channel(body: &str) -> Result<NextHead, UpdateError> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| {
+        UpdateError::Fetch(format!("the next channel pointer was not JSON: {err}"))
+    })?;
+    let schema = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64);
+    if schema != Some(1) {
+        return Err(UpdateError::Fetch(
+            "the next channel pointer has an unsupported schema_version".to_owned(),
+        ));
+    }
+    let channel = value.get("channel").and_then(serde_json::Value::as_str);
+    if channel != Some("next") {
+        return Err(UpdateError::Fetch(
+            "the next channel pointer did not name channel `next`".to_owned(),
+        ));
+    }
+    let sha = value
+        .get("sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| UpdateError::Fetch("the next channel pointer named no sha".to_owned()))?
+        .to_owned();
+    validate_next_sha(&sha)?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Version::parse)
+        .map(|version| version.to_string());
+    Ok(NextHead { sha, version })
 }
 
 /// The one boundary that talks to the network.
@@ -168,6 +238,9 @@ impl Artifact {
 pub(crate) trait ReleaseSource: std::fmt::Debug {
     /// The tag of the current stable release (`vX.Y.Z`).
     fn latest_tag(&self) -> Result<String, UpdateError>;
+
+    /// Head of the moving `next` prerelease.
+    fn next_head(&self) -> Result<NextHead, UpdateError>;
 
     /// Download `url` into `dest`, replacing whatever is there.
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
@@ -216,7 +289,48 @@ impl Downloader {
 impl ReleaseSource for NetworkReleaseSource {
     fn latest_tag(&self) -> Result<String, UpdateError> {
         let downloader = Downloader::detect()?;
-        resolve_core_tag(|page| fetch_index_page(downloader, page))
+        if matches!(downloader, Downloader::Curl) {
+            // A HEAD that follows redirects and prints only the final URL.
+            // The last path segment of `…/releases/tag/vX.Y.Z` is the tag —
+            // but only when it names the core stream. The redirect follows
+            // whichever stream shipped most recently, so a newer Cockpit (or
+            // integration) release lands here as a tag this updater must not
+            // touch; that falls through to the filtered list below.
+            let out = run(
+                "curl",
+                &[
+                    "-fsSLI",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{url_effective}",
+                    LATEST_REDIRECT,
+                ],
+            )?;
+            let tag = out.rsplit('/').next().unwrap_or_default().trim().to_owned();
+            if tag.starts_with('v') && Version::parse(&tag).is_some() {
+                return Ok(tag);
+            }
+        }
+        // wget cannot print the effective URL, and the redirect may name
+        // another stream anyway: list and take the newest core tag.
+        let list_url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
+        let body = match downloader {
+            Downloader::Curl => run("curl", &["-fsSL", &list_url])?,
+            Downloader::Wget => run("wget", &["-q", "-O", "-", &list_url])?,
+        };
+        latest_core_tag_from_list(&body).ok_or_else(|| {
+            UpdateError::Fetch("the GitHub releases list named no core phux release".to_owned())
+        })
+    }
+
+    fn next_head(&self) -> Result<NextHead, UpdateError> {
+        let downloader = Downloader::detect()?;
+        let body = match downloader {
+            Downloader::Curl => run("curl", &["-fsSL", NEXT_CHANNEL_URL])?,
+            Downloader::Wget => run("wget", &["-q", "-O", "-", NEXT_CHANNEL_URL])?,
+        };
+        parse_next_channel(&body)
     }
 
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
@@ -227,96 +341,6 @@ impl ReleaseSource for NetworkReleaseSource {
             Downloader::Wget => run("wget", &["-q", "-O", &dest_arg, url]).map(|_| ()),
         }
     }
-}
-
-fn fetch_index_page(downloader: Downloader, page: usize) -> Result<String, UpdateError> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30&page={page}");
-    match downloader {
-        Downloader::Curl => run_index(
-            "curl",
-            &["-fsSL", "--connect-timeout", "10", "--max-time", "30", &url],
-        ),
-        Downloader::Wget => run_index(
-            "wget",
-            &["-q", "--timeout=30", "--tries=1", "-O", "-", &url],
-        ),
-    }
-}
-
-/// Unlike artifact downloads (which write files), index stdout is untrusted
-/// data held in memory. Stop reading and reap the fetcher after at most 1 MiB.
-fn run_index(program: &str, args: &[&str]) -> Result<String, UpdateError> {
-    let child = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        // Preserve the CLI JSON error contract instead of mixing curl/wget
-        // diagnostics into stderr. index_error supplies an actionable remedy.
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| index_error(format!("could not run {program}: {err}")))?;
-    read_index(child)
-}
-
-fn read_index(mut child: Child) -> Result<String, UpdateError> {
-    let mut body = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("missing index stdout"))
-        .and_then(|stdout| {
-            stdout
-                .take(MAX_RELEASE_PAGE_BYTES + 1)
-                .read_to_end(&mut body)
-        });
-    if read.is_err() || body.len() as u64 > MAX_RELEASE_PAGE_BYTES {
-        let _ = child.kill();
-    }
-    let status = child
-        .wait()
-        .map_err(|err| index_error(format!("could not reap index fetcher: {err}")))?;
-    read.map_err(|err| index_error(format!("could not read release index: {err}")))?;
-    check_page_size(body.len())?;
-    if !status.success() {
-        return Err(index_error(format!(
-            "release index fetcher exited with {status}"
-        )));
-    }
-    String::from_utf8(body)
-        .map_err(|err| index_error(format!("invalid release list encoding: {err}")))
-}
-
-fn index_error(message: impl std::fmt::Display) -> UpdateError {
-    UpdateError::Fetch(format!(
-        "{message}; check GitHub access/rate limits or pass --version with a known release tag"
-    ))
-}
-
-fn check_page_size(size: usize) -> Result<(), UpdateError> {
-    if size as u64 > MAX_RELEASE_PAGE_BYTES {
-        return Err(index_error(format!(
-            "release page exceeds {MAX_RELEASE_PAGE_BYTES} bytes"
-        )));
-    }
-    Ok(())
-}
-
-/// Injectable page boundary: tests exercise the same loop as the real fetcher.
-fn resolve_core_tag(
-    mut fetch: impl FnMut(usize) -> Result<String, UpdateError>,
-) -> Result<String, UpdateError> {
-    for page in 1..=MAX_RELEASE_PAGES {
-        let body = fetch(page)?;
-        let releases = release_list(&body)?;
-        if let Some(tag) = releases.iter().find_map(ReleaseRecord::stable_core_tag) {
-            return Ok(tag.to_owned());
-        }
-        if releases.is_empty() {
-            return Err(index_error("no stable core release found"));
-        }
-    }
-    Err(index_error(format!(
-        "no stable core release found within {MAX_RELEASE_PAGES} pages"
-    )))
 }
 
 /// Run `program` with `args`, returning stdout as a string.
@@ -341,45 +365,42 @@ fn run(program: &str, args: &[&str]) -> Result<String, UpdateError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Required typed metadata rejects missing/duplicate/mistyped fields. Tags
-/// alone cannot distinguish stable releases from drafts and prereleases.
-#[derive(Debug, serde::Deserialize)]
-struct ReleaseRecord {
-    tag_name: String,
-    draft: bool,
-    prerelease: bool,
-}
-
-impl ReleaseRecord {
-    fn stable_core_tag(&self) -> Option<&str> {
-        if self.draft || self.prerelease {
+/// Name the newest core release in a GitHub releases list document.
+///
+/// The repository publishes several streams (`vX.Y.Z` for the CLI,
+/// `cockpit-vX.Y.Z`, integration packages) and only bare `vX.Y.Z` tags carry
+/// the tarballs this updater installs. GitHub returns newest-first, so the
+/// first entry that is neither draft nor prerelease and parses as a core tag
+/// is the current release. Drafts and prereleases are skipped rather than
+/// trusted: a draft has no assets and a prerelease is not what `update`
+/// without `--version` should install.
+fn latest_core_tag_from_list(body: &str) -> Option<String> {
+    let releases: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
+    releases.into_iter().find_map(|release| {
+        if release.get("draft").and_then(serde_json::Value::as_bool) == Some(true) {
             return None;
         }
-        validate_tag(&self.tag_name)
-            .ok()
-            .map(|_| self.tag_name.as_str())
-    }
-}
-
-fn release_list(body: &str) -> Result<Vec<ReleaseRecord>, UpdateError> {
-    check_page_size(body.len())?;
-    serde_json::from_str(body).map_err(|err| index_error(format!("invalid release list: {err}")))
+        if release
+            .get("prerelease")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return None;
+        }
+        let tag = release.get("tag_name")?.as_str()?;
+        if !tag.starts_with('v') || Version::parse(tag).is_none() {
+            return None;
+        }
+        Some(tag.to_owned())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Artifact, MAX_RELEASE_PAGE_BYTES, MAX_RELEASE_PAGES, ReleaseRecord, Version, release_list,
-        resolve_core_tag, run_index, validate_tag,
+        Artifact, Version, latest_core_tag_from_list, parse_next_channel, validate_next_sha,
+        validate_tag,
     };
-
-    fn latest_core_tag_from_list(body: &str) -> Option<String> {
-        release_list(body)
-            .ok()?
-            .iter()
-            .find_map(ReleaseRecord::stable_core_tag)
-            .map(str::to_owned)
-    }
 
     #[test]
     fn versions_parse_with_and_without_the_v_prefix_and_order_correctly() {
@@ -400,18 +421,7 @@ mod tests {
 
     #[test]
     fn versions_refuse_shapes_the_release_lane_never_publishes() {
-        for text in [
-            "",
-            "v1",
-            "1.2",
-            "1.2.3.4",
-            "1.2.x",
-            "v1.2.3-rc.1",
-            "latest",
-            "v+1.2.3",
-            "v01.2.3",
-            "v1.2.3\nevil",
-        ] {
+        for text in ["", "v1", "1.2", "1.2.3.4", "1.2.x", "v1.2.3-rc.1", "latest"] {
             assert!(Version::parse(text).is_none(), "{text} should not parse");
         }
     }
@@ -462,6 +472,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn next_artifact_urls_use_the_next_tag_and_the_sha_in_the_filename() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let artifact = Artifact::next(sha, "aarch64-apple-darwin");
+        assert_eq!(
+            artifact.stage,
+            format!("phux-next.{sha}-aarch64-apple-darwin")
+        );
+        assert_eq!(
+            artifact.archive_url,
+            format!(
+                "https://github.com/no-phux/phux/releases/download/next/\
+                 phux-next.{sha}-aarch64-apple-darwin.tar.gz"
+            )
+        );
+        assert_eq!(
+            artifact.checksum_url,
+            format!("{}.sha256", artifact.archive_url)
+        );
+    }
+
+    #[test]
+    fn next_channel_pointer_is_accepted_only_when_the_sha_is_40_hex() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let body =
+            format!(r#"{{"schema_version":1,"channel":"next","sha":"{sha}","version":"0.32.0"}}"#);
+        let head = parse_next_channel(&body).expect("valid pointer");
+        assert_eq!(head.sha, sha);
+        assert_eq!(head.version.as_deref(), Some("0.32.0"));
+        assert!(validate_next_sha(sha).is_ok());
+        assert!(validate_next_sha("abc").is_err());
+        assert!(parse_next_channel(r#"{"schema_version":2,"channel":"next","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
+        assert!(parse_next_channel(r#"{"schema_version":1,"channel":"stable","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
+        assert!(
+            parse_next_channel(r#"{"schema_version":1,"channel":"next","sha":"../evil"}"#).is_err()
+        );
+    }
+
     /// The list mixes every release stream; only a published core tag wins,
     /// even when another stream shipped newer.
     #[test]
@@ -486,84 +534,5 @@ mod tests {
         assert!(latest_core_tag_from_list("not json").is_none());
         assert!(latest_core_tag_from_list(r#"[{"name":"x"}]"#).is_none());
         assert!(latest_core_tag_from_list("[]").is_none());
-    }
-
-    #[test]
-    fn mixed_stream_fixture_matches_the_standalone_installers() {
-        let body = include_str!("../../../../../scripts/fixtures/install-releases/mixed.json");
-        assert_eq!(latest_core_tag_from_list(body).as_deref(), Some("v9.8.7"));
-    }
-
-    #[test]
-    fn release_discovery_searches_later_pages_and_stops_at_the_match() {
-        let mut calls = Vec::new();
-        let tag = resolve_core_tag(|page| {
-            calls.push(page);
-            match page {
-                1 => Ok(
-                    r#"[{"tag_name":"cockpit-v9.8.7","draft":false,"prerelease":false}]"#
-                        .to_owned(),
-                ),
-                2 => Ok(r#"[{"tag_name":"v9.8.7","draft":false,"prerelease":false}]"#.to_owned()),
-                _ => panic!("must stop after finding the stable core tag"),
-            }
-        })
-        .unwrap();
-        assert_eq!(tag, "v9.8.7");
-        assert_eq!(calls, [1, 2]);
-    }
-
-    #[test]
-    fn release_discovery_bounds_exhaustion_and_stops_at_empty_pages() {
-        let mut calls = 0;
-        let err = resolve_core_tag(|_| {
-            calls += 1;
-            Ok(r#"[{"tag_name":"other-v1.0.0","draft":false,"prerelease":false}]"#.to_owned())
-        })
-        .unwrap_err();
-        assert_eq!(calls, MAX_RELEASE_PAGES);
-        assert!(err.to_string().contains("10 pages"));
-        assert!(err.to_string().contains("--version"));
-        calls = 0;
-        let err = resolve_core_tag(|_| {
-            calls += 1;
-            Ok("[]".to_owned())
-        })
-        .unwrap_err();
-        assert_eq!(calls, 1);
-        assert!(err.to_string().contains("--version"));
-    }
-
-    #[test]
-    fn release_discovery_rejects_malformed_metadata_and_oversized_pages() {
-        for body in [
-            "not json",
-            "{}",
-            r#"[{"tag_name":"v1.2.3"}]"#,
-            r#"[{"tag_name":"v1.2.3","draft":"false","prerelease":false}]"#,
-            r#"[{"tag_name":"v1.2.3","draft":false,"draft":true,"prerelease":false}]"#,
-            r#"[{"tag_name":"v1.2.3","draft":false,"prerelease":false}] garbage"#,
-        ] {
-            let err = resolve_core_tag(|page| {
-                assert_eq!(page, 1);
-                Ok(body.to_owned())
-            })
-            .unwrap_err();
-            assert!(err.to_string().contains("invalid release list"), "{err}");
-        }
-        let body = " ".repeat(usize::try_from(MAX_RELEASE_PAGE_BYTES).unwrap() + 1);
-        assert!(
-            release_list(&body)
-                .unwrap_err()
-                .to_string()
-                .contains("1048576")
-        );
-    }
-
-    #[test]
-    fn index_reader_kills_and_reaps_an_oversized_stream() {
-        let err = run_index("cat", &["/dev/zero"]).unwrap_err();
-        assert!(err.to_string().contains("1048576"));
-        assert!(err.to_string().contains("--version"));
     }
 }

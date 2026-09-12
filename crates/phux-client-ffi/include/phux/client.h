@@ -341,8 +341,8 @@ typedef enum PhuxResourceKind {
 } PhuxResourceKind;
 
 /**
- * Borrowed resource summary from the latest ATTACHED snapshot. Initialize
- * size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION before
+ * Borrowed resource summary from the latest accepted ATTACHED or GET_STATE
+ * snapshot. Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION before
  * phux_client_resource_get. Every resource the snapshot listed appears, across
  * sessions and kinds, minus resources the server has since reported closed.
  * Only PHUX_RESOURCE_TERMINAL resources in the focused session take part in the
@@ -822,7 +822,9 @@ PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
-/* Read-only resource catalog from the latest ATTACHED (see PhuxResourceInfo).
+/* Read-only resource catalog from the latest accepted ATTACHED or workspace
+ * GET_STATE (see PhuxResourceInfo). Workspace refresh subscribes AgentSession
+ * streams independently of terminal replica admission.
  * Zero before ATTACHED or for an invalid client. Spans borrowed until the next
  * mutable call. */
 size_t phux_client_resource_count(const PhuxClient *client);

@@ -49,7 +49,7 @@ by a newer one, the newer line is the operative reading.
 ## Server process and actor model
 
 - [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
-- [0112](./0112-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
+- [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
 - [0083](./0083-in-place-supervisor-unit-reconcile.md) `service reconcile` patches only the installed unit's restart-policy keys and reloads nothing.
@@ -124,7 +124,8 @@ by a newer one, the newer line is the operative reading.
 ## TUI conventions
 
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
-- [0089](./0089-three-zone-attention-sidebar.md) The sidebar is a bounded attention inbox in three zones, projected client-side.
+- [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.
+- [0112](./0112-stable-split-sidebar-navigation.md) Fixed Agents and host-aware Sessions panels preserve navigation positions across state changes.
 - [0079](./0079-fatal-signal-terminal-restore.md) An async-signal-safe handler restores the outer terminal after a fatal client signal.
 - [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
 - [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
@@ -151,6 +152,7 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
+- [0113](./0113-next-release-channel.md) `next` is an opt-in moving prerelease of green `main`; stable stays `vX.Y.Z` and Homebrew.
 - [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
 - [0001](./0001-language-rust.md) phux is implemented in Rust.

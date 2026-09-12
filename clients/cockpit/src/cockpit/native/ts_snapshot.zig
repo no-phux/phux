@@ -34,7 +34,9 @@ pub const Error = error{BufferTooSmall};
 /// state, written only when one does. `window_contexts` (window_contexts.zig):
 /// each open window's own machine, session, connection and Empty session
 /// state; decoders that know it prefer it over kinds 3 and 4 for headers.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5 };
+/// `parent_agent_rows` (ts_agents.zig): identity-bound inspection rows. Kind 5
+/// is already window_contexts, so identity rows take the next free value.
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, parent_agent_rows = 6 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
@@ -111,6 +113,7 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeNavigationContext(model, out, written);
     written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
     written = try @import("window_contexts.zig").encode(model, @intFromEnum(ExtensionKind.window_contexts), out, written);
+    written = @import("ts_agents.zig").snapshot(model, out[0..@min(out.len, max_bytes)], written) catch return error.BufferTooSmall;
     return out[0..written];
 }
 
@@ -270,7 +273,7 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
         if (written + needed > out.len) return error.BufferTooSmall;
 
         std.mem.writeInt(u32, out[written..][0..4], workspace.tabId(index) orelse 0, .little);
-        out[written + 4] = if (projection.terminalNeedsAttention(model, terminal)) 1 else 0;
+        out[written + 4] = if (projection.tabNeedsAttention(model, workspace, index)) 1 else 0;
         out[written + 5] = @intCast(bounded.len);
         out[written + 6] = @intCast(cwd.len);
         @memcpy(out[written + 7 ..][0..bounded.len], bounded);

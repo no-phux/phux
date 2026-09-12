@@ -1,16 +1,7 @@
 ---
-source: crates/phux-client/src/attach/driver/tests.rs
+source: crates/phux-tui/src/attach/driver/tests.rs
 expression: "rows.join(\"\\n\")"
 ---
+ 0:zsh   1:nvim   2:server   3:logs    switch
 ──────────────────────────────────────────────
 PANE-BASE
-
-
-
-
-
-
-
-
-
- 0:zsh   1:nvim   2:server   3:logs    switch

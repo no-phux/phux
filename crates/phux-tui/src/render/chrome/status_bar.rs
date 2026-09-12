@@ -32,9 +32,9 @@
 //!
 //! ### Placement
 //!
-//! Defaults to [`Position::Bottom`] per `docs/consumers/tui.md` §8.5.
-//! `Position::Top` is surfaced by the `[status] position = "top"` config
-//! key (phux-foz.8); the pane content rect shifts down one row to match
+//! Defaults to [`Position::Top`] per `docs/consumers/tui.md` §8.5.
+//! `[status] position = "bottom"` restores bottom placement;
+//! the pane content rect shifts down one row for top placement
 //! (see `crate::attach::paint::content_rect`).
 
 use std::io::{self, Write};
@@ -48,14 +48,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 /// Where the status bar lives in the outer terminal. Defaults to
-/// [`Self::Bottom`] per `docs/consumers/tui.md` §8.5.
+/// [`Self::Top`] per `docs/consumers/tui.md` §8.5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Position {
     /// One row at the very bottom of the outer terminal.
-    #[default]
     Bottom,
     /// One row at the very top of the outer terminal. Surfaced by the
     /// `[status] position = "top"` config key (phux-foz.8).
+    #[default]
     Top,
 }
 
@@ -1627,7 +1627,7 @@ mod tests {
         p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
             .unwrap();
         let s = String::from_utf8_lossy(&buf);
-        assert!(s.contains("\x1b[24;1H"), "no CUP-to-bar-row: {s:?}");
+        assert!(s.contains("\x1b[1;1H"), "no CUP-to-top-bar-row: {s:?}");
         // The painter emits one SGR-wrapped cell per glyph, so the message
         // is not a contiguous substring of the raw VT. Strip the CSI escapes
         // to recover the printable text and assert on that.

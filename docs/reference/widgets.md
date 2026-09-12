@@ -92,7 +92,7 @@ Options:
 
 ## `windows`
 
-The tmux-style tab bar: one segment per window, the active one in the `active` style and the rest in `inactive`, joined by `separator`. A zoomed active window gets a ` Z` marker, a window waiting on a human answer a ` !` marker, and every tab is a click target committing `select-window` for its index — in any slot, top or bottom bar.
+The tmux-style tab bar: one segment per window, the active one in the `active` style and the rest in `inactive`, joined by `separator`. A zoomed active window gets a ` Z` marker, a window waiting on a human answer a ` !` marker, and every tab is a click target committing `select-window` for its index — in any slot, top or bottom bar. Overflow arrows select the nearest hidden window; long active labels keep these arrows when space permits.
 
 Options:
 

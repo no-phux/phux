@@ -331,20 +331,30 @@ impl HeadlessSession {
         // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
         let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
         sidebar_painter.set_windows(windows);
-        // phux-foz.9: and the attention queue, from the same record index +
-        // title fallback a live attach renders.
-        //
-        // phux-k0cw: LOCAL rows only, and no roster at all. A capture must be
-        // reproducible from one session's state; sweeping the server for peer
-        // layouts would make the same command emit different bytes depending on
-        // what else happened to be running at the time. The composite has no
-        // subscriptions and no event loop to keep such a sweep honest anyway.
-        sidebar_painter.set_needs_you(agent_entries(
+        let local = agent_entries(
             &self.workspace,
             &self.panes,
             &self.agent_meta,
             &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
-        ));
+        );
+        let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
+            name: self.session_name.clone(),
+            host: "this server".to_owned(),
+            active: true,
+            selectable: true,
+            ..Default::default()
+        };
+        crate::attach::sidebar_zones::summarize_local_agents(&mut session, &local);
+        sidebar_painter.set_roster(vec![session]);
+        // phux-foz.9: and the attention queue, from the same record index +
+        // title fallback a live attach renders.
+        //
+        // LOCAL rows and the current session only. A capture must be
+        // reproducible from one session's state; sweeping the server for peer
+        // layouts would make the same command emit different bytes depending on
+        // what else happened to be running at the time. The composite has no
+        // subscriptions and no event loop to keep such a sweep honest anyway.
+        sidebar_painter.set_needs_you(local);
 
         let layout_state = self
             .workspace
@@ -564,4 +574,55 @@ pub async fn run_headless_rendered(
     })??;
 
     Ok(session.compose())
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+
+    #[test]
+    fn headless_blocked_agent_has_matching_session_summary() {
+        use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+        let kernel = SessionKernel::new(
+            GhosttyAdapter::new(phux_protocol::BootstrapLimits::default()),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let chrome = HeadlessChrome {
+            sidebar: Some(SidebarReservation {
+                edge: crate::attach::paint::SidebarEdge::Left,
+                width: 32,
+            }),
+            sidebar_theme: crate::render::Theme::default(),
+            status_bar: None,
+        };
+        let mut session = HeadlessSession::new(kernel, chrome, (100, 24));
+        let id = ResourceId::local(1);
+        session.workspace = Workspace::single(id.clone());
+        session.session_name = "work".to_owned();
+        session.agent_meta.records.insert(
+            id,
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Blocked,
+                ..Default::default()
+            },
+        );
+        let frame = session.compose();
+        let rows: Vec<String> = frame
+            .cells
+            .chunks(100)
+            .map(|row| {
+                row[..32]
+                    .iter()
+                    .map(|cell| cell.grapheme.as_str())
+                    .collect()
+            })
+            .collect();
+        assert!(rows[1].contains("reviewer"), "{rows:?}");
+        assert!(
+            rows[12].contains("work") && rows[12].contains("!1"),
+            "{rows:?}"
+        );
+        assert!(rows[13].contains("this server"), "{rows:?}");
+    }
 }

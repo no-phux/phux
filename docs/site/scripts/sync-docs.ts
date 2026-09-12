@@ -199,7 +199,6 @@ const SECTION_ROOTS: { dir: string; group: Group; urlPrefix: string }[] = [
 const DENYLIST = new Set<string>([
   "docs/demo.md",
   "docs/CONVENTIONS.md",
-  "docs/architecture/DIAGRAM.md",
   "docs/architecture/l2-server-design.md",
 ]);
 
@@ -369,48 +368,11 @@ async function discover(): Promise<{ entries: Entry[]; excluded: string[] }> {
     });
   }
 
-  splitLongGuide(entries, "docs/consumers/agents.md", [
-    {
-      slug: "consumers/agents",
-      title: "Agents and automation",
-      sections: [0, 1, 5],
-      summary: "Use the read-act-wait loop to inspect and drive shared terminals, then go deeper only when you need exact CLI or JSON contracts.",
-    },
-    { slug: "consumers/agents/cli", title: "Agent CLI", sections: [2] },
-    { slug: "consumers/agents/targeting", title: "Agent targeting", sections: [3] },
-    { slug: "consumers/agents/json", title: "Agent JSON contracts", sections: [4] },
-    { slug: "consumers/agents/integrations", title: "Agent integrations", sections: [6] },
-  ]);
-  splitLongGuide(entries, "docs/consumers/tui.md", [
-    {
-      slug: "consumers/tui",
-      title: "Interactive TUI",
-      sections: [0, 2, 13],
-      summary: "Use phux interactively: understand the terminal model, navigate the first session, then open focused guides for commands and customization.",
-    },
-    { slug: "consumers/tui/commands", title: "TUI commands and selectors", sections: [1, 3] },
-    { slug: "consumers/tui/configuration", title: "TUI configuration and keybindings", sections: [4, 5] },
-    { slug: "consumers/tui/interface", title: "TUI layout, mouse, and status bar", sections: [6, 7, 8] },
-    { slug: "consumers/tui/automation", title: "TUI hooks and recording", sections: [9, 10] },
-    { slug: "consumers/tui/reference", title: "TUI defaults and scope", sections: [11, 12, 14] },
-  ]);
+  // tui.md and agents.md used to be sliced by numbered H2s. Both are now
+  // single product pages with a Fumadocs TOC; splitting them would 404 the
+  // old /commands /cli /json routes and throw on unnumbered headings.
 
   return { entries, excluded };
-}
-
-function splitLongGuide(
-  entries: Entry[],
-  repoPath: string,
-  pages: { slug: string; title: string; sections: number[]; summary?: string }[],
-) {
-  const index = entries.findIndex((entry) => entry.repoPath === repoPath);
-  if (index === -1) return;
-  const source = entries[index];
-  entries.splice(
-    index,
-    1,
-    ...pages.map((page, order) => ({ ...source, ...page, order: source.order + order / 10 })),
-  );
 }
 
 // ── routing tables (derived from DISCOVERED entries) ─────────────────────────
@@ -670,9 +632,11 @@ const REFERENCE_PAGES = [
 const GUIDE_PAGES = [
   "index",
   "tui",
+  "cockpit",
   "agents",
   "opencode",
   "pi",
+  "claude",
   "mcp",
   "recording",
   "web",

@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-08-14
+last-reviewed: 2026-09-12
 ---
 
 # Claude Code integration
@@ -55,19 +55,17 @@ integration for Claude sessions regardless of how they were started.
 
 ## What the hook shim emits
 
-<!-- impl-status: partial; probe: PHUX_AGENT_EMIT_RAW -->
-> **Status: landing on the resource-model branch.** The arms below are the
-> resource-model contract for the shim `phux agent install-claude` writes
-> (ADR-0103). The shim in this tree (schema 5) registers every arm and emits
-> the records; the `phux agent session` and `phux agent emit` verbs it calls
-> land with phux-am9y.12. The shim a released binary installs (schema 4)
-> registers every arm below except `PreToolUse` and `PostToolUse`, feeds the
-> detector with `phux agent report-state`, and emits no records.
+This tree's `phux agent install-claude` shim (schema 5) registers every arm
+below and emits AgentSession records through `phux agent session` /
+`phux agent emit`. An older released binary's shim (schema 4) registers every
+arm except `PreToolUse` and `PostToolUse`, feeds the detector with
+`phux agent report-state`, and emits no records. Check `phux status --json`
+for `RESOURCE_KINDS`.
 
 On a server that advertises `RESOURCE_KINDS`, the shim gives every Claude run
 inside a phux pane an **agent session**: a second resource, parented to the
 pane, whose stream is one JSON record per hook event
-([`agents.md`](./agents.md) §0.1, §4.19). Every `--phux-hook` arm reads the
+([`agents.md`](./agents.md)). Every `--phux-hook` arm reads the
 hook's stdin JSON and acts only when `PHUX_TERMINAL_ID` names Claude's own
 pane. What each arm does:
 
