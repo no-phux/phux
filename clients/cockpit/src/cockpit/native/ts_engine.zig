@@ -99,6 +99,27 @@ pub const NoShells = struct {
 
 pub const PointerOutcome = enum { ignored, consumed, geometry_changed };
 
+test "external keybindings retire legacy find and copy chords while search still owns input" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const pane = engine.focusedPane().?;
+    const find: canvas.WidgetKeyboardEvent = .{ .phase = .key_down, .key = "f", .modifiers = .{ .super = true } };
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+    engine.onKey(&NoShells{}, find);
+    try std.testing.expect(engine.textInputOwnsKeyboard());
+    pane.session.searchClose();
+    engine.external_keybindings = true;
+    engine.onKey(&NoShells{}, find);
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "c", .modifiers = .{ .super = true } }));
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "c", .modifiers = .{ .control = true } }));
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }));
+    _ = engine.nativeCommand(@intFromEnum(protocol.NativeCommand.find), &NoShells{});
+    try std.testing.expect(engine.textInputOwnsKeyboard());
+    engine.onKey(&NoShells{}, .{ .phase = .key_down, .key = "escape" });
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+}
+
 test "shared deferred selection is superseded by keyboard and routed window focus" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -205,6 +226,13 @@ pub const Engine = struct {
     directory_origin: @import("directory_picker.zig").Origin = .{},
     /// Edits of a showing peer's tabs, queued to that coordinator alone.
     peer_edits: peer_edits.Edits = .{},
+    /// Shipping startup shares one wake channel across dynamically owned
+    /// workers. Per-peer handles remain logical retirement/retry identities.
+    peer_wake_key: u64 = 0,
+    peer_wake_handle: native_sdk.ChannelHandle = .{},
+    peer_background_cursor: usize = 0,
+    /// The shipping native keybinding registry owns application chords.
+    external_keybindings: bool = false,
     /// Each coordinator's last Rename Session, and on which of its
     /// connections (session_commands.zig): one pending rename per
     /// coordinator, so a rename on one never refuses a rename on another.
@@ -681,6 +709,7 @@ pub const Engine = struct {
             entry.reopen = false;
             self.retirePeerChannel(fx, slot);
         }
+        if (self.peer_wake_key != 0) fx.closeChannel(self.peer_wake_key);
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();
             pointer_state.monitor = null;
@@ -1174,6 +1203,13 @@ pub const Engine = struct {
         if (comptime @hasDecl(Fx, "showWindow")) fx.showWindow(scene.windowLabelFor(window));
     }
 
+    pub fn didSelectNavigationWindow(self: *Engine, window: usize, fx: anytype) void {
+        self.supersedeSelection();
+        pointer_input.endHiddenCaptures(self.model, fx);
+        self.showNavigationWindow(fx, window);
+        self.syncRemoteFocus();
+    }
+
     fn selectAvailableNavigation(self: *Engine, ref: TerminalRef, fx: anytype) bool {
         const model = self.model;
         if (support.providerKind(ref) != .phux) return false;
@@ -1232,6 +1268,8 @@ pub const Engine = struct {
 
     /// Open every peer's channel at launch.
     pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
+        if (self.peer_wake_key == 0) self.peer_wake_key = support.allocatePeerHandle() catch return;
+        self.peer_wake_handle = fx.openChannel(.{ .key = self.peer_wake_key, .on_event = on_event, .max_pending = 1 });
         for (0..self.model.peers.items.len) |slot| self.openPeerChannel(fx, slot, on_event);
     }
 
@@ -1245,7 +1283,10 @@ pub const Engine = struct {
             self.model.peers.items[slot].failed = true;
             return;
         }
-        const handle = fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
+        const handle = if (self.peer_wake_key != 0)
+            self.peer_wake_handle
+        else
+            fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
         if (!handle.live()) {
             self.model.peers.items[slot].failed = true;
             return;
@@ -1350,7 +1391,9 @@ pub const Engine = struct {
     /// generation, so anything that occupancy still delivers is stale.
     fn retirePeerChannel(self: *Engine, fx: anytype, slot: usize) void {
         const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
+        if (self.peer_wake_key == 0) {
+            if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
+        }
         const entry = self.model.peers.items[slot];
         entry.channel_key = support.allocatePeerHandle() catch 0;
         entry.retry_key = null;
@@ -1362,6 +1405,7 @@ pub const Engine = struct {
     /// channel the slot has since closed is not this peer's (`peerStaleEvent`).
     pub fn onPeerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
+        if (self.peer_wake_key != 0 and event.key == self.peer_wake_key) return self.onPeerWake(fx, event.kind);
         // A showing peer's focused pane may have just become live.
         defer self.syncRemoteFocus();
         const slot = self.peerSlotForHandle(event.key) orelse return false;
@@ -1372,6 +1416,59 @@ pub const Engine = struct {
             .data => self.drainPeer(fx, slot),
             .closed, .rejected => self.peerClosed(fx, slot),
         };
+    }
+
+    fn onPeerWake(self: *Engine, fx: anytype, kind: native_sdk.EffectChannelEventKind) bool {
+        if (kind != .data) return self.peerWakeClosed(fx);
+        defer self.syncRemoteFocus();
+        var changed = false;
+        // Visible work always gets the first turn. Each provider already
+        // bounds its own FFI drain; a catalog flood never precedes input work.
+        for (self.model.peers.items, 0..) |entry, slot| {
+            const peer = entry.provider orelse continue;
+            if (!peer.showing() or !peerWakePending(peer)) continue;
+            changed = self.drainPeer(fx, slot) or changed;
+        }
+        // One background source per turn is the minimum useful progress;
+        // round-robin continuation prevents N catalogs multiplying a wake's
+        // drain budget. A coalesced post is only a hint, never identity.
+        if (self.nextBackgroundPeer()) |slot| changed = self.drainPeer(fx, slot) or changed;
+        self.continuePeerWake();
+        return changed;
+    }
+
+    fn peerWakePending(peer: *support.PhuxProvider) bool {
+        return peer.bridge.incoming.hasReadiness();
+    }
+
+    fn nextBackgroundPeer(self: *Engine) ?usize {
+        const peers = self.model.peers.items;
+        for (0..peers.len) |_| {
+            self.peer_background_cursor %= peers.len;
+            const slot = self.peer_background_cursor;
+            self.peer_background_cursor += 1;
+            const peer = peers[slot].provider orelse continue;
+            if (!peer.showing() and peerWakePending(peer)) return slot;
+        }
+        return null;
+    }
+
+    fn continuePeerWake(self: *Engine) void {
+        for (self.model.peers.items) |entry| {
+            const peer = entry.provider orelse continue;
+            if (!peerWakePending(peer)) continue;
+            _ = self.peer_wake_handle.post("");
+            return;
+        }
+    }
+
+    fn peerWakeClosed(self: *Engine, fx: anytype) bool {
+        var changed = false;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.provider == null) continue;
+            changed = self.peerClosed(fx, slot) or changed;
+        }
+        return changed;
     }
 
     /// An event of a channel occupancy the slot has since closed, including
@@ -1672,6 +1769,11 @@ pub const Engine = struct {
         // The next connection is a new epoch: nothing queued for this one
         // may reach it.
         self.peer_edits.forget(slot);
+        if (self.peer_wake_key != 0) {
+            self.retirePeerChannel(fx, slot);
+            self.openPeerChannel(fx, slot, on_event);
+            return true;
+        }
         // A reopen already waits for its close; that close opens it.
         const entry = self.model.peers.items[slot];
         if (entry.reopen) return true;
@@ -2390,6 +2492,7 @@ pub const Engine = struct {
 
     fn remoteShortcut(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         if (!event.modifiers.super or event.modifiers.control) return false;
+        if (self.external_keybindings) return self.remoteModeShortcut(ref, event);
         if (keyIs(event.key, "c")) {
             interaction.copy(self.model, fx, ref);
             return true;
@@ -2483,6 +2586,16 @@ pub const Engine = struct {
         terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
     }
 
+    pub fn textInputOwnsKeyboard(self: *const Engine) bool {
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        if (support.providerKind(ref) == .phux) {
+            const state = self.model.remoteUiConst(ref) orelse return false;
+            return state.search.open;
+        }
+        const pane = self.model.provider.terminalConst(ref) orelse return false;
+        return pane.session.search.open;
+    }
+
     fn releaseKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
         const mask = terminal_runtime.macosNaturalTextKeyMask(event.key);
         if (self.remote_natural_keys_held & mask != 0) {
@@ -2505,6 +2618,7 @@ pub const Engine = struct {
             }
             return true;
         }
+        if (self.external_keybindings) return false;
         const command = terminalShortcut(event) orelse return false;
         if (command == .copy and !pane.session.selectionActive()) return false;
         _ = self.nativeCommand(@intFromEnum(command), fx);

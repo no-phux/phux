@@ -225,6 +225,13 @@ pub const FrameQueue = struct {
         return queue.read_index != queue.frames.items.len;
     }
 
+    /// A multiplexed consumer must also drain a quiet source's disconnect.
+    pub fn hasReadiness(queue: *FrameQueue) bool {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        return queue.disconnect != null or queue.read_index != queue.frames.items.len;
+    }
+
     pub fn release(queue: *FrameQueue, frame: []u8) void {
         queue.gpa.free(frame);
     }

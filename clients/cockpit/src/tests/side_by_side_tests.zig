@@ -877,6 +877,56 @@ const ChannelLog = struct {
     pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
 
+test "twelve FFI catalog wakes share one real SDK channel and advance round robin" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const Message = union(enum) { event: native_sdk.EffectChannelEvent };
+    const Effects = native_sdk.Effects(Message);
+    var fx = Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    engine.openPeerChannels(&fx, Effects.channelMsg(.event));
+    try testing.expect(engine.peer_wake_handle.live());
+    try engine.model.ensurePeerSlots(12);
+    for (engine.model.peers.items, 0..) |entry, index| {
+        var name: [32]u8 = undefined;
+        const target = try std.fmt.bufPrint(&name, "mux-{d}", .{index});
+        const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .remote = .{ .target = target } }, null, "multiplexed");
+        entry.provider = peer;
+        peer.standBy();
+        try peer.host.start("multiplexed");
+        try fixture.stageFixture(peer.bridge, "hello.bin");
+    }
+    // Real SDK still admits seven other channels: peer count did not spend
+    // its eight-channel table, and this test does not raise the SDK limit.
+    for (0..7) |index| {
+        const spare = fx.openChannel(.{ .key = 500 + index, .on_event = Effects.channelMsg(.event) });
+        try testing.expect(spare.live());
+    }
+    _ = engine.peer_wake_handle.post("");
+    for (engine.model.peers.items, 0..) |entry, index| {
+        try testing.expectEqual(.hello_queued, entry.provider.?.state());
+        const message = fx.takeMsg() orelse return error.ExpectedWake;
+        _ = engine.onPeerChannel(&fx, message.event, Effects.channelMsg(.event));
+        try testing.expectEqual(.negotiated, entry.provider.?.state());
+        if (index + 1 < engine.model.peers.items.len) try testing.expectEqual(.hello_queued, engine.model.peers.items[index + 1].provider.?.state());
+        try fixture.stageFixture(entry.provider.?.bridge, "standby_state.bin");
+    }
+    // Each next turn consumes exactly one published catalog, including the
+    // last host beyond the former application and SDK channel limits.
+    for (engine.model.peers.items) |entry| {
+        const message = fx.takeMsg() orelse return error.ExpectedWake;
+        _ = engine.onPeerChannel(&fx, message.event, Effects.channelMsg(.event));
+        try testing.expectEqual(@as(usize, 2), entry.provider.?.standbyCatalog().len);
+        try testing.expectEqual(@as(usize, 0), countFrames(entry.provider.?).attach);
+    }
+    const retained = engine.peer_wake_handle;
+    engine.dropPeer(&fx, 5);
+    try testing.expect(retained.live());
+    try testing.expectEqual(.negotiated, engine.model.phuxPeerAt(11).?.state());
+}
+
 test "allocated peer handles stay unique beyond sixteen entries and across growth" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
