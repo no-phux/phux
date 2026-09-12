@@ -166,6 +166,7 @@ pub fn attachRememberedPeers(gpa: std.mem.Allocator, io: std.Io, model: *model_m
     if (comptime !phux_enabled) return;
     const path = remote_memory.path() orelse return;
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     remote_memory.loadAll(io, path, &hosts);
     for (0..hosts.count) |index| {
         const target = hosts.get(index);

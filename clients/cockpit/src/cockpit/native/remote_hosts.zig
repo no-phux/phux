@@ -400,7 +400,9 @@ fn forgetHost(model: *Model, target: []const u8) void {
 /// Disconnect All: no host is reattached at launch.
 fn forgetEveryHost(model: *Model) void {
     const hosts = rememberedHosts(model) orelse return;
-    hosts.* = .{};
+    const writable = hosts.writable;
+    hosts.deinit();
+    hosts.writable = writable;
     saveRemembered(model);
 }
 
@@ -425,7 +427,7 @@ pub fn rememberShown(model: *Model) void {
 /// Tests share this module's process state; each starts from nothing.
 pub fn forgetForTests() void {
     chosen_len = 0;
-    remembered = .{};
+    remembered.deinit();
     remembered_loaded = false;
 }
 

@@ -570,6 +570,7 @@ test "Disconnect of a remembered host Cockpit does not hold forgets it and says 
     remote_hosts.forgetForTests();
     defer remote_hosts.forgetForTests();
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(hosts.add("me@mini"));
     try testing.expect(hosts.add("studio"));
     remote_memory.storeAll(io, memory, &hosts);
@@ -643,6 +644,7 @@ test "relaunch reattaches every remembered host beside the coordinators held, ea
     const memory = remote_memory.setPathFor(state_path).?;
     defer _ = remote_memory.setPathFor(null);
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(hosts.add("me@mini"));
     try testing.expect(hosts.add("studio"));
     remote_memory.storeAll(io, memory, &hosts);
@@ -719,6 +721,7 @@ test "relaunch hands each remembered host its own record, and a removed host's r
     const mini_id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = "me@mini" } });
     const studio_id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = "studio" } });
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(hosts.add("me@mini"));
     try testing.expect(hosts.add("studio"));
     try testing.expect(hosts.setShown(0, .{ .session = 1, .server = 7, .front = true }));

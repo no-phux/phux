@@ -188,31 +188,31 @@ pub fn frontViewport(model: *const Model) ?contract.Viewport {
 /// True when one changed, so the caller writes the file.
 pub fn capture(model: *const Model, hosts: *remote_memory.Hosts) bool {
     if (comptime !support.phux_enabled) return false;
-    var next: [remote_memory.max_hosts]?Shown = @splat(null);
-    var kept: [remote_memory.max_hosts]bool = @splat(false);
-    var live_front = false;
+    const live_front = hasLiveFront(model, hosts);
+    var changed = false;
     for (0..hosts.count) |index| {
         const id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = hosts.get(index) } });
-        kept[index] = unsettled(model, id);
-        next[index] = if (kept[index]) hosts.shown[index] else liveRecord(model, id);
-        if (kept[index]) continue;
-        if (next[index]) |record| {
-            if (record.front) live_front = true;
-        }
+        const next = if (unsettled(model, id)) retainedRecord(hosts.shown[index], live_front) else liveRecord(model, id);
+        changed = hosts.setShown(index, next) or changed;
     }
-    // At most one record is front. A remembered host's tab in front now
-    // outranks a loaded front record not shown yet (another host was chosen,
-    // or the config made a remembered host active), so the file never names
-    // two.
-    for (0..hosts.count) |index| {
-        if (!live_front or !kept[index]) continue;
-        if (next[index]) |record| {
-            if (record.front) next[index] = null;
-        }
-    }
-    var changed = false;
-    for (0..hosts.count) |index| changed = hosts.setShown(index, next[index]) or changed;
     return changed;
+}
+
+fn hasLiveFront(model: *const Model, hosts: *const remote_memory.Hosts) bool {
+    for (0..hosts.count) |index| {
+        const id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = hosts.get(index) } });
+        if (unsettled(model, id)) continue;
+        const record = liveRecord(model, id) orelse continue;
+        if (record.front) return true;
+    }
+    return false;
+}
+
+/// A current front selection outranks a restore still waiting on its host.
+fn retainedRecord(record: ?Shown, live_front: bool) ?Shown {
+    const value = record orelse return null;
+    if (live_front and value.front) return null;
+    return value;
 }
 
 /// Whether what coordinator `id` shows is not settled yet: a launch restore

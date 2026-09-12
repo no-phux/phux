@@ -411,6 +411,7 @@ test "a cold restart that reissues the id drops the record, and so does an old r
     var file: [remote_memory.max_list_file_bytes]u8 = undefined;
     const bytes = try std.fmt.bufPrint(&file, "phux-cockpit-remote v3\ntarget=studio\nshown=2,{x:0>16},-,0\n", .{remote_memory.serverHash("an earlier server")});
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(remote_memory.parseAll(bytes, &hosts));
     try testing.expect(hosts.shown[0].?.created == null);
     launch.remember(1, hosts.shown[0].?);
@@ -514,6 +515,7 @@ test "what is kept is the session on screen, its tab, and whether that tab is in
 
     var hosts: remote_memory.Hosts = .{};
     try testing.expect(hosts.add("mini"));
+    defer hosts.deinit();
     try testing.expect(hosts.add("studio"));
     // mini's tab in front: its session, its tab's shared window, front.
     try testing.expect(model.selectTerminal(try refOn(mini, 7)));
@@ -582,6 +584,7 @@ test "Connect to Host during a pending front restore cancels it, and the file ke
     try testing.expectEqual(@as(usize, 0), countFrames(launch.mini).attach);
     // Its cancelled record is not front in the file any more.
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(hosts.add("mini"));
     try testing.expect(hosts.add("studio"));
     try testing.expect(hosts.setShown(0, front));
@@ -611,6 +614,7 @@ test "a remembered host made active by the config, in front, outranks a loaded f
     model.peer_restore[0] = .{ .coordinator = mini.providerId(), .shown = loaded, .pending = true };
 
     var hosts: remote_memory.Hosts = .{};
+    defer hosts.deinit();
     try testing.expect(hosts.add("mini"));
     try testing.expect(hosts.add("studio"));
     try testing.expect(hosts.setShown(0, loaded));
@@ -621,6 +625,7 @@ test "a remembered host made active by the config, in front, outranks a loaded f
     // Written and read back: both hosts, one front.
     var out: [remote_memory.max_list_file_bytes]u8 = undefined;
     var parsed: remote_memory.Hosts = .{};
+    defer parsed.deinit();
     try testing.expect(remote_memory.parseAll(remote_memory.encodeAll(&hosts, &out).?, &parsed));
     try testing.expectEqual(@as(usize, 2), parsed.count);
     try testing.expectEqual(@as(usize, 1), fronts(&parsed));
