@@ -14,6 +14,18 @@
                 <button size="sm" variant="ghost" selected="{settingsSection == section.index}" on-press="settings_section:{section.index}">{section.label}</button>
               </for>
             </tabs>
+            <if test="{configEditorConfirm}">
+              <panel padding="16">
+                <column gap="8">
+                  <text wrap="true">Save your preview before editing the configuration file?</text>
+                  <row gap="8">
+                    <button size="sm" disabled="{appearanceBusy}" on-press="settings_save_edit">Save and Edit</button>
+                    <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_discard_edit">Discard and Edit</button>
+                    <button size="sm" variant="ghost" on-press="settings_cancel_edit">Cancel</button>
+                  </row>
+                </column>
+              </panel>
+            </if>
             <scroll grow="1">
               <column gap="16">
                 <for each="settingRows" key="id" as="setting">
