@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.32.0](https://github.com/no-phux/phux/compare/v0.31.0...v0.32.0) (2026-09-11)
+
+
+### Features
+
+* **install:** cockpit curl installer, core-only latest resolution, curl-first hero ([d5e2977](https://github.com/no-phux/phux/commit/d5e2977c1e327c84fe20b1f8192589be693008c1))
+* **site:** cockpit install path and hero install band above demo ([7bf7846](https://github.com/no-phux/phux/commit/7bf7846b2c5711bf810cc04546064f69f6164e0f))
+
 ## [0.31.0](https://github.com/no-phux/phux/compare/v0.30.0...v0.31.0) (2026-09-11)
 
 
