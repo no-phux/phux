@@ -583,7 +583,8 @@ separate:
   across a server binary re-exec. `phux update` is the user-facing verb
   built on that handoff: it resolves the published release, verifies the
   `.sha256` sidecar, replaces the binaries atomically, then calls
-  `phux upgrade`. It writes only to installs it maintains — a Homebrew,
+  `phux upgrade`. Default is the latest `vX.Y.Z`; `--channel next` follows
+  green `main`. It writes only to installs it maintains — a Homebrew,
   Cargo, or Nix install gets the exact native command instead
   ([`INSTALL.md`](./INSTALL.md#updating)).
 

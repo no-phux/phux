@@ -444,6 +444,10 @@ require_fixed docs/INSTALL.md 'nix profile upgrade phux'
 require_fixed docs/INSTALL.md 'nixos-rebuild switch'
 require_fixed docs/INSTALL.md 'Verifies the checksum before unpacking anything'
 require_fixed docs/INSTALL.md 'phux update --rollback'
+require_fixed docs/INSTALL.md '--channel next'
+require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
+require_fixed docs/INSTALL.md 'sh -s -- --channel next'
+require_fixed docs/site/src/pages/index.astro '--channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
 
 if [ "$failures" -ne 0 ]; then
