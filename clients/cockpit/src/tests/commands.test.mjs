@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initialModel, update, commandMsg } from '../core.ts';
 import { COMMAND_CATALOG } from '../command-catalog.ts';
-import { generatedCatalog } from '../../scripts/command-catalog.mjs';
+import { generatedCatalog, generatedShippingFixture } from '../../scripts/command-catalog.mjs';
 
 const bytes = text => new TextEncoder().encode(text);
 const text = bytes => new TextDecoder().decode(bytes);
@@ -16,6 +16,10 @@ test('command catalog derives exactly from shipping menu labels and shortcuts', 
   const manifest = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
   const generated = readFileSync(new URL('../command-catalog.ts', import.meta.url), 'utf8');
   assert.equal(generated, generatedCatalog(manifest));
+  const fixture = readFileSync(new URL('./shipping_commands.zig', import.meta.url), 'utf8');
+  assert.equal(fixture, generatedShippingFixture(manifest));
+  assert.match(fixture, /\.id = "commands.open", \.key = "p", \.modifiers = \.\{ \.primary = true, \.shift = true \}/);
+  assert.equal((fixture.match(/\.command = /g) ?? []).length, COMMAND_CATALOG.length);
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'commands.open').shortcut), 'Cmd+Shift+P');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.clear').shortcut), 'Cmd+K');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.find-previous').shortcut), 'Cmd+Shift+G');
