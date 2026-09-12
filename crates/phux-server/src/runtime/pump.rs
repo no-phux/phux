@@ -87,6 +87,22 @@ const GAP_RESYNC_MAX_BACKOFF: Duration = Duration::from_secs(4);
 /// merely busy actor is never mistaken for a dead one.
 const GAP_RESYNC_MAX_ATTEMPTS: u32 = 5;
 
+/// How long after the pane read a chunk an interactive pump may still forward
+/// it.
+///
+/// The broadcast holds 256 chunks, so its own `Lagged` signal fires only once
+/// a consumer is hundreds of kilobytes behind — on a remote link slower than
+/// the pane's output, that is ten seconds of screen in front of every
+/// keystroke echo. On a local socket a chunk reaches the pump within
+/// milliseconds; one that is older than this is a consumer draining slower
+/// than the pane talks, and it gets one fresh screen instead of the backlog.
+pub(super) const STALE_OUTPUT_BUDGET: Duration = Duration::from_millis(250);
+
+/// Has a chunk read `age` ago fallen past [`STALE_OUTPUT_BUDGET`]?
+pub(super) fn is_stale(age: Duration) -> bool {
+    age > STALE_OUTPUT_BUDGET
+}
+
 /// Where one pump has got to inside the generation it is publishing, and
 /// whether that generation may still carry live output.
 #[derive(Debug)]
@@ -276,8 +292,19 @@ pub(super) async fn next_event(
 mod tests {
     use std::time::Duration;
 
-    use super::{GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, next_event};
+    use super::{
+        GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, STALE_OUTPUT_BUDGET,
+        is_stale, next_event,
+    };
+
     use crate::terminal_actor::PaneOutput;
+
+    #[test]
+    fn output_is_stale_only_past_the_budget() {
+        assert!(!is_stale(Duration::ZERO));
+        assert!(!is_stale(STALE_OUTPUT_BUDGET));
+        assert!(is_stale(STALE_OUTPUT_BUDGET + Duration::from_millis(1)));
+    }
 
     #[test]
     fn tracked_pump_abort_fences_blocked_send_and_reclaims_churn() {

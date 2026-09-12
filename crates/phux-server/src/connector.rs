@@ -249,7 +249,7 @@ impl Incoming for ConnectorIncoming {
             };
             return Ok((
                 QuicReader::from_stream(recv),
-                QuicWriter::from_stream(send),
+                QuicWriter::from_stream(send, self.connection.clone()),
                 crate::auth::ConnectionIdentity {
                     peer: PeerIdentity {
                         uid: 0,

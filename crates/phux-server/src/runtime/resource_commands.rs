@@ -643,7 +643,7 @@ async fn live_pump(
             received = live.recv() => received,
         };
         match output {
-            Ok(PaneOutput::Live { seq, bytes }) => {
+            Ok(PaneOutput::Live { seq, bytes, .. }) => {
                 if seq <= base_seq {
                     continue;
                 }

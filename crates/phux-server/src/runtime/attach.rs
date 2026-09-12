@@ -812,20 +812,30 @@ impl OutputPumpContext {
     async fn request_gap_resync(
         &self,
         generation: &mut PumpGeneration,
-        dropped: u64,
+        cause: GapCause,
     ) -> ControlFlow<Option<PumpFault>> {
         crate::perf::PUMP_LAGGED.incr();
         if generation.fence_for_gap() {
             debug!(
                 terminal_id = ?self.wire_terminal_id,
-                dropped,
+                %cause,
                 "{} lagged again while a resync was already in flight; re-requesting",
+                self.lag_label,
+            );
+        } else if matches!(cause, GapCause::Stale(_)) {
+            // A consumer slower than its link goes stale every cycle by
+            // design, so this is DEBUG: a WARN here would log once a second
+            // for as long as the remote attach lasts. `pump.lagged` counts it.
+            debug!(
+                terminal_id = ?self.wire_terminal_id,
+                %cause,
+                "{} fell behind; skipping to a fresh checkpoint",
                 self.lag_label,
             );
         } else {
             warn!(
                 terminal_id = ?self.wire_terminal_id,
-                dropped,
+                %cause,
                 "{} lagged; requesting in-band resync",
                 self.lag_label,
             );
@@ -896,6 +906,25 @@ impl OutputPumpContext {
     }
 }
 
+/// Why a pump gave up on its generation and asked for a resync.
+#[derive(Debug, Clone, Copy)]
+enum GapCause {
+    /// The pane's broadcast overwrote this many chunks under the pump.
+    Dropped(u64),
+    /// The chunk in hand was read from the pane this long ago, past
+    /// [`pump::STALE_OUTPUT_BUDGET`].
+    Stale(std::time::Duration),
+}
+
+impl std::fmt::Display for GapCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dropped(n) => write!(f, "broadcast dropped {n} chunks"),
+            Self::Stale(age) => write!(f, "chunk {}ms old", age.as_millis()),
+        }
+    }
+}
+
 /// What one turn of [`next_pump_event`] produced.
 enum PumpStep {
     /// Dispatch this broadcast result.
@@ -957,8 +986,17 @@ async fn run_output_pump(
             PumpStep::Stop(fault) => return fault,
         };
         let step = match received {
-            Ok(PaneOutput::Live { seq, bytes }) => {
-                ctx.forward_live(&mut generation, seq, &bytes).await
+            Ok(PaneOutput::Live { seq, bytes, at }) => {
+                let age = at.elapsed();
+                if pump::is_stale(age) && generation.forwards(seq) {
+                    // The consumer drains slower than the pane talks: skip it
+                    // to a fresh checkpoint rather than replay a backlog that
+                    // only grows (tmux's rule, measured in time).
+                    ctx.request_gap_resync(&mut generation, GapCause::Stale(age))
+                        .await
+                } else {
+                    ctx.forward_live(&mut generation, seq, &bytes).await
+                }
             }
             Ok(PaneOutput::Control { owner, frame }) => {
                 ctx.forward_control(&mut generation, owner, frame).await
@@ -984,7 +1022,8 @@ async fn run_output_pump(
                 .await
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                ctx.request_gap_resync(&mut generation, n).await
+                ctx.request_gap_resync(&mut generation, GapCause::Dropped(n))
+                    .await
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
         };

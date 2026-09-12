@@ -1415,7 +1415,7 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
                     .await
                     .expect("raw output stalled")
                     .expect("raw output channel closed");
-                if let PaneOutput::Live { seq, bytes } = output {
+                if let PaneOutput::Live { seq, bytes, .. } = output {
                     assert_eq!(seq, expected_seq);
                     expected_seq += 1;
                     raw_bytes += bytes.len();
@@ -1519,6 +1519,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
         .send(PaneOutput::Live {
             seq: 5,
             bytes: Bytes::from_static(b"prior"),
+            at: std::time::Instant::now(),
         })
         .expect("queue prior live output");
     actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);

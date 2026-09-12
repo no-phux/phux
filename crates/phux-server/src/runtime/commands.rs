@@ -1879,7 +1879,7 @@ impl AttachResourcePumpCtx {
         use crate::terminal_actor::PaneOutput;
 
         match msg {
-            Ok(PaneOutput::Live { seq, bytes }) => self.forward_live(stream, seq, &bytes).await,
+            Ok(PaneOutput::Live { seq, bytes, .. }) => self.forward_live(stream, seq, &bytes).await,
             Ok(PaneOutput::Control { owner, frame }) => {
                 self.forward_control(stream, owner, frame).await
             }

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-11
 ---
 
 # Transport abstraction
@@ -85,7 +85,19 @@ seam changes.
   reusing the same persisted self-signed cert and token store. Opt-in via
   `phux server --quic <HOST:PORT>`; connection migration and 0-RTT
   resumption are inherent to the stack, with a roaming-aware client the
-  follow-up.
+  follow-up. **Backpressure:** the server's writer holds quinn's send window
+  to the congestion window plus 16 KiB of unsent slack (TCP's
+  `NOTSENT_LOWAT` rule) rather than quinn's 10 MB default, so a link slower
+  than a pane's output blocks the writer within about a round trip. The
+  stall backs up into the attach pump, which measures lag in time rather
+  than in broadcast slots: a live chunk older than 250ms when the pump
+  dequeues it (`runtime::pump::STALE_OUTPUT_BUDGET`, stamped with the PTY
+  read time) fences the generation and requests an in-band resync to a
+  fresh checkpoint — the same path a dropped broadcast window takes. A slow
+  remote consumer skips frames instead of queueing seconds of output in
+  front of its own keystroke echoes. Not yet covered: an attach bridged
+  through `phux-relay`, whose consumer-facing hop still buffers at quinn's
+  defaults, and the WebTransport writer.
 - **WebTransport** (via `wtransport`) — QUIC-class transport for browsers,
   which cannot open raw QUIC connections. An HTTP/3 `CONNECT` session whose
   single bidirectional stream carries the identical length-prefixed frames;

@@ -139,6 +139,11 @@ pub enum PaneOutput {
         seq: u64,
         /// Verbatim output bytes for this sequence.
         bytes: Bytes,
+        /// When the producer read these bytes (for a Terminal, when the PTY
+        /// `read(2)` returned). A pump that dequeues a chunk long after this
+        /// is a consumer that has fallen behind in time, whatever the
+        /// broadcast's slot count says.
+        at: std::time::Instant,
     },
     /// Post-resize grid resync forwarded as `TERMINAL_SNAPSHOT` at the
     /// carried dims (phux-8v1 reconverge mechanism + phux-3ns5 mirror

@@ -619,6 +619,7 @@ impl TerminalActor {
         let _ = self.core.output_tx.send(PaneOutput::Live {
             seq,
             bytes: burst.payload,
+            at: read_at,
         });
         let native_step_due = self.native_bootstrap_pending();
         if burst.saw_eof {

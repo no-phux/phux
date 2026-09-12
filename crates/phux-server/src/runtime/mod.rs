@@ -3385,6 +3385,7 @@ mod tests {
                     .send(PaneOutput::Live {
                         seq: 1,
                         bytes: bytes::Bytes::from_static(b"live"),
+                        at: std::time::Instant::now(),
                     })
                     .expect("live receiver");
                 assert!(matches!(

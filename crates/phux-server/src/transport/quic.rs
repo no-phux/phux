@@ -54,6 +54,31 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// NATs rather than being reaped.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
+/// Output quinn may hold beyond what the congestion window lets it send.
+///
+/// quinn's default send window is 10 MB, bounded in practice by the peer's
+/// 1.25 MB stream credit. On a link slower than the output (cmatrix over a
+/// thin Wi-Fi or DERP path) `write_all` kept accepting until that credit was
+/// spent, so the backlog — and the lag in front of every keystroke echo —
+/// grew to seconds before the writer ever blocked. Backpressure never reached
+/// the output pump, so the gap resync that skips a slow consumer to a fresh
+/// checkpoint never fired.
+///
+/// Holding the window to the congestion window plus this slack is TCP's
+/// `NOTSENT_LOWAT` rule: what is unsent stays small, so a slow link queues
+/// about one round trip of output instead of megabytes. The slack keeps the
+/// next write ready when an ack opens room, so the path stays window-limited
+/// and the congestion window keeps growing on a fast link.
+const UNSENT_SLACK: u64 = 16 * 1024;
+
+/// Ceiling for the tracked send window: quinn's own default.
+const MAX_SEND_WINDOW: u64 = 10 * 1024 * 1024;
+
+/// The send window for a path whose congestion window is `cwnd` bytes.
+fn send_window_for(cwnd: u64) -> u64 {
+    cwnd.saturating_add(UNSENT_SLACK).min(MAX_SEND_WINDOW)
+}
+
 /// QUIC application close code for a connection refused at the auth preamble.
 const AUTH_FAILED_CODE: u32 = 0x01;
 
@@ -176,17 +201,60 @@ impl FrameReader for QuicReader {
 /// QUIC write half.
 pub(crate) struct QuicWriter {
     send: quinn::SendStream,
+    /// The connection `send` rides, read for its congestion window.
+    conn: quinn::Connection,
+    /// The send window last handed to quinn; `0` before the first write.
+    send_window: u64,
 }
 impl QuicWriter {
     /// Wrap one already-authenticated QUIC send stream in phux framing.
-    pub(crate) const fn from_stream(send: quinn::SendStream) -> Self {
-        Self { send }
+    pub(crate) const fn from_stream(send: quinn::SendStream, conn: quinn::Connection) -> Self {
+        Self {
+            send,
+            conn,
+            send_window: 0,
+        }
+    }
+
+    /// Hold quinn's send window to the congestion window plus
+    /// [`UNSENT_SLACK`].
+    ///
+    /// Called before every write, so the bound follows the path as the
+    /// congestion controller learns it. A write that finds the window full
+    /// blocks, the per-client mailbox fills behind it, and the output pump
+    /// falls behind the pane's broadcast — which is the lag the pump already
+    /// answers with an in-band resync, skipping the client to a fresh
+    /// checkpoint rather than replaying a backlog it cannot drain.
+    fn track_congestion_window(&mut self) {
+        let window = send_window_for(self.conn.stats().path.cwnd);
+        if window != self.send_window {
+            self.conn.set_send_window(window);
+            self.send_window = window;
+        }
+    }
+
+    /// Write all of `bytes`, re-tracking the window before every partial
+    /// write.
+    ///
+    /// Not `write_all`: that would pin the window for the whole buffer, and a
+    /// bootstrap batch runs to megabytes. Once the congestion window had grown
+    /// past the pinned value quinn would be starved of unsent data, count the
+    /// path as app-limited and stop growing the window — a fresh connection
+    /// would crawl through its first screen at one pinned window per round
+    /// trip instead of ramping up in slow start.
+    async fn write_tracked(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        while !bytes.is_empty() {
+            self.track_congestion_window();
+            let written = self.send.write(bytes).await.map_err(io::Error::other)?;
+            bytes = &bytes[written..];
+        }
+        Ok(())
     }
 }
 
 impl FrameWriter for QuicWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.send.write_all(frame).await.map_err(io::Error::other)
+        self.write_tracked(frame).await
     }
 
     /// One `write_all` for the whole batch, exactly as `UdsWriter` does.
@@ -200,7 +268,7 @@ impl FrameWriter for QuicWriter {
     /// and quinn packs the result into full packets rather than being woken
     /// per frame. `ends` is unused for exactly that reason.
     async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
-        self.send.write_all(batch).await.map_err(io::Error::other)
+        self.write_tracked(batch).await
     }
 
     #[allow(
@@ -291,7 +359,7 @@ impl Incoming for QuicListener {
 
             return Ok((
                 QuicReader::from_stream(recv),
-                QuicWriter::from_stream(send),
+                QuicWriter::from_stream(send, conn),
                 crate::auth::ConnectionIdentity {
                     peer: peer_identity,
                     credential,
@@ -352,6 +420,19 @@ mod tests {
     const TEST_TOKEN: [u8; crate::auth::TOKEN_LEN] = [0x11; crate::auth::TOKEN_LEN];
     /// One complete framed message: 4-byte length prefix (body = 3) + body.
     const FRAME: [u8; 7] = [0, 0, 0, 3, 0xde, 0xad, 0xbe];
+
+    #[test]
+    fn send_window_is_the_congestion_window_plus_unsent_slack() {
+        // Even a collapsed path keeps the slack, so the writer always has
+        // somewhere to put its next batch.
+        assert_eq!(send_window_for(0), UNSENT_SLACK);
+        // In range, only the slack sits beyond what the path may send.
+        assert_eq!(send_window_for(14_720), 14_720 + UNSENT_SLACK);
+        assert_eq!(send_window_for(100_000), 100_000 + UNSENT_SLACK);
+        // A huge window is capped at quinn's own default, without overflow.
+        assert_eq!(send_window_for(MAX_SEND_WINDOW), MAX_SEND_WINDOW);
+        assert_eq!(send_window_for(u64::MAX), MAX_SEND_WINDOW);
+    }
 
     /// A self-signed cert + key in a fresh tempdir, kept alive for the test.
     fn cert_pair() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
