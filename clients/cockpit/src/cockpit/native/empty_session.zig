@@ -188,7 +188,7 @@ fn openBound(engine: anytype, window: usize, shown: View) Opened {
     pick.tab_requested = true;
     pick.setName(shown.name);
     model.empty_picks[window] = pick;
-    if (remote.state() == .attached) {
+    if (boundReady(model, remote, &pick)) {
         queueBound(engine, remote, &model.empty_picks[window].?) catch {
             model.empty_picks[window].?.tab_requested = false;
             return .{ .refused = "Cockpit could not open a tab in that exact session." };
@@ -256,15 +256,22 @@ pub fn dismissWindow(model: *Model, window: usize) void {
 /// spawn was queued or refused.
 pub fn pump(engine: anytype, slot: usize) bool {
     const peer = engine.model.phuxPeerAt(slot) orelse return false;
-    var changed = false;
-    for (0..model_module.max_windows) |window| {
-        changed = pumpBound(engine, slot, peer, window) or changed;
-    }
+    const changed = pumpAttachment(engine, peer);
     const legacy_changed = pumpLegacy(engine, slot);
     return changed or legacy_changed;
 }
 
-fn pumpBound(engine: anytype, slot: usize, remote: *support.PhuxProvider, window: usize) bool {
+/// After an exact provider's projection, advance only its captured windows.
+/// The primary provider has no peer slot and uses this hook directly.
+pub fn pumpAttachment(engine: anytype, remote: *support.PhuxProvider) bool {
+    var changed = false;
+    for (0..model_module.max_windows) |window| {
+        changed = pumpBound(engine, remote, window) or changed;
+    }
+    return changed;
+}
+
+fn pumpBound(engine: anytype, remote: *support.PhuxProvider, window: usize) bool {
     const cell = &engine.model.empty_picks[window];
     const pick = if (cell.*) |*value| value else return false;
     if (pick.attachment_id != remote.context_id) return false;
@@ -273,7 +280,7 @@ fn pumpBound(engine: anytype, slot: usize, remote: *support.PhuxProvider, window
         return true;
     }
     if (!pick.tab_requested or pick.tab_queued) return false;
-    if (!boundReady(engine.model, slot, remote, pick)) return false;
+    if (!boundReady(engine.model, remote, pick)) return false;
     queueBound(engine, remote, pick) catch {
         pick.tab_requested = false;
         pick.tab_queued = false;
@@ -281,9 +288,9 @@ fn pumpBound(engine: anytype, slot: usize, remote: *support.PhuxProvider, window
     return true;
 }
 
-fn boundReady(model: *const Model, slot: usize, remote: *const support.PhuxProvider, pick: *const EmptyPick) bool {
+fn boundReady(model: *Model, remote: *const support.PhuxProvider, pick: *const EmptyPick) bool {
     if (remote.state() != .attached or remote.selectedSessionId() != pick.session) return false;
-    const state = &model.peers.items[slot].workspace;
+    const state = model.sharedWorkspaceForAttachment(remote.context_id) orelse return false;
     return state.attachment_id == pick.attachment_id and state.session == pick.session and state.epoch == remote.connectionEpoch();
 }
 

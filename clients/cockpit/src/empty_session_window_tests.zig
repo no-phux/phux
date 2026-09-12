@@ -224,11 +224,12 @@ test "empty window delayed first tab waits for exact projection and never focuse
     const second = try peer(engine);
     bind(engine.model, first, 0);
     bind(engine.model, second, 1);
-    engine.model.empty_picks[0].?.tab_requested = true;
-    engine.model.active_window = 1;
     const state = engine.model.sharedWorkspaceForAttachment(first.context_id).?;
     state.attachment_id = second.context_id;
     var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .opened);
+    try testing.expect(engine.model.empty_picks[0].?.tab_requested);
+    engine.model.active_window = 1;
     try testing.expect(!empty.pump(&hooks, 0));
     try testing.expectEqual(@as(usize, 0), hooks.calls);
     state.attachment_id = first.context_id;
@@ -259,5 +260,26 @@ test "empty window qualified singleton never falls back to an ambient attached e
     try testing.expect(empty.view(engine.model, 0) == null);
     var hooks: Hooks = .{ .model = engine.model };
     try testing.expect(empty.newTab(&hooks, .{}) == .refused);
+    try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
+}
+
+test "empty window primary attachment New Tab waits for its projection and pumps without a peer slot" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try peer(engine);
+    engine.model.phux_provider = remote;
+    engine.model.peers.items[0].provider = null;
+    bind(engine.model, remote, 0);
+    engine.model.shared_workspace.epoch = 0;
+    var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .opened);
+    try testing.expectEqual(@as(usize, 0), hooks.calls);
+    try testing.expect(!empty.pumpAttachment(&hooks, remote));
+    engine.model.shared_workspace.epoch = remote.connectionEpoch();
+    try testing.expect(empty.pumpAttachment(&hooks, remote));
+    try testing.expectEqual(remote.context_id, hooks.context);
+    try testing.expectEqual(@as(usize, 1), hooks.calls);
+    try testing.expect(!empty.pumpAttachment(&hooks, remote));
     try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
 }
