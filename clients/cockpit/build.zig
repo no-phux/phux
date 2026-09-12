@@ -450,6 +450,7 @@ fn addPhuxGraphTests(
     provider_contract.addImport("native_sdk", sdk_module);
 
     const modules = createPhuxModules(b, target, optimize, sdk_module, provider_contract, ffi);
+    @import("tests/everyday-remote/build.zig").add(b, modules.provider);
 
     // pointer.zig declares phux_pointer_monitor_start/stop, which live in
     // pointer_macos.m. The app graph adds that source to its own root; a
