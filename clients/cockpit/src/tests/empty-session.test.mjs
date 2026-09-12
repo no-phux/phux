@@ -67,10 +67,10 @@ test('an empty session renders its state, with New Tab, in the windows the snaps
   assert.equal(cleared.mainEmptyOpen, false);
   assert.equal(cleared.emptyWindows, 0);
   const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
-  assert.match(markup, /<template name="cockpit-empty" args="emptyopen">/);
+  assert.match(markup, /<template name="cockpit-empty" args="emptyopen name detail picked">/);
   assert.match(markup, /on-press="empty_new_tab">New Tab<\/button>/);
   for (const file of ['../app.native', '../windows/phux-window-2.native']) {
-    assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /<use template="cockpit-empty" emptyopen="\{\w+EmptyOpen\}" \/>/);
+    assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /<use template="cockpit-empty" emptyopen="\{\w+EmptyOpen\}"/);
   }
 });
 

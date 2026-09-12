@@ -5559,3 +5559,99 @@ test "navigation retains keyboard highlight through a metadata snapshot refresh"
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteCursor);
     try std.testing.expect(rig.app_state.model.paletteRows[1].highlighted);
 }
+
+test "each window header names its own session, machine and state from window contexts" {
+    // One self-contained block: the fixture and helpers live inside the test.
+    const Chrome = struct {
+        /// The primary window and secondary windows 1 and 2 open, no tabs, a
+        /// kind 3 primary navigation context, and a kind 5 record naming the
+        /// primary and window 1 but NOT window 2. Before per-window contexts
+        /// every header drew the kind 3 labels: window 1 said "primary-global"
+        /// on "global-host" while it showed "beta" on "mini".
+        const snapshot = blk: {
+            const header = [_]u8{ 1, 2 } ++ [_]u8{0} ** 8 ++ [_]u8{ 7, 0, 0, 0, 0, 0, 0, 0 } ++
+                // active window, placement, tab count, selected, flags, connection, run, width
+                [_]u8{ 0, 0, 0, 0, 0, 2, 0, 0, 168, 0 };
+            // No themes, no active theme, no config flags, empty config path.
+            const settings = [_]u8{ 0, 255, 0, 0 };
+            const secondary = [_]u8{2} ++ [_]u8{ 1, 0, 0, 0, 0, 168, 0 } ++ [_]u8{ 2, 0, 0, 0, 0, 168, 0 };
+            const terminal_states = [_]u8{0} ** 5;
+            const navigation = "\x0eprimary-global" ++ "\x0bglobal-host" ++ "\x00";
+            const contexts = [_]u8{ 1, 2 } ++
+                [_]u8{ 0, 0, 2 } ++ "\x05alpha" ++ "\x06studio" ++
+                [_]u8{ 1, 1, 3 } ++ "\x04beta" ++ "\x04mini";
+            break :blk header ++ settings ++ secondary ++ terminal_states ++
+                [_]u8{ 3, navigation.len, 0 } ++ navigation ++
+                [_]u8{ 5, contexts.len, 0 } ++ contexts;
+        };
+
+        const labels = [_][]const u8{ "", "phux-window-1", "phux-window-2", "phux-window-3", "phux-window-4" };
+
+        fn live(ui: *Adapter.Ui, model: *const core.Model, window: usize) !Adapter.Ui.Node {
+            const document = switch (window) {
+                1 => WindowView1.document,
+                2 => WindowView2.document,
+                3 => WindowView3.document,
+                else => WindowView4.document,
+            };
+            var view = canvas.MarkupView(core.Model, core.Msg).fromDocument(document);
+            return view.build(ui, model);
+        }
+
+        /// Whether window `window`'s chrome, built from `model` by the
+        /// compiled markup (or the live interpreter), draws a text widget
+        /// whose text is exactly `needle`.
+        fn shows(model: *const core.Model, window: usize, interpreted: bool, needle: []const u8) !bool {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var ui = Adapter.Ui.init(arena.allocator());
+            const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+            const node = if (interpreted) try live(&ui, model, window) else if (window == 0) mainView(&ui, model) else windowView(&ui, model, labels[window]);
+            const tree = try ui.finalizeWithTokens(node, tokens);
+            const nodes = try std.testing.allocator.alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+            defer std.testing.allocator.free(nodes);
+            const bounds = native_sdk.geometry.RectF.init(0, 0, 1100, 640);
+            const layout = try canvas.layoutWidgetTreeWithTokens(tree.root, bounds, tokens, nodes);
+            for (layout.nodes) |entry| {
+                if (std.mem.eql(u8, entry.widget.text, needle)) return true;
+            }
+            return false;
+        }
+
+        fn expect(model: *const core.Model, window: usize, needle: []const u8, shown: bool) !void {
+            const engines: []const bool = if (window == 0) &.{false} else &.{ false, true };
+            for (engines) |interpreted| {
+                if (try shows(model, window, interpreted, needle) == shown) continue;
+                std.debug.print("window {d} ({s}) {s} \"{s}\"\n", .{ window, if (interpreted) "live" else "compiled", if (shown) "lacks" else "shows", needle });
+                return error.TestUnexpectedResult;
+            }
+        }
+    };
+
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const bytes: []const u8 = Chrome.snapshot[0..];
+    try rig.dispatch(.{ .snapshot_loaded = bytes });
+    const model = &rig.app_state.model;
+    try std.testing.expect(model.window1Open and model.window2Open);
+
+    try Chrome.expect(model, 0, "alpha", true);
+    try Chrome.expect(model, 0, "studio", true);
+    try Chrome.expect(model, 0, "beta", false);
+    try Chrome.expect(model, 0, "primary-global", false);
+
+    try Chrome.expect(model, 1, "beta", true);
+    try Chrome.expect(model, 1, "mini \u{b7} Offline", true);
+    try Chrome.expect(model, 1, "alpha", false);
+    try Chrome.expect(model, 1, "primary-global", false);
+    // Window 1's Empty session names its own session and machine.
+    try Chrome.expect(model, 1, "Empty session on mini", true);
+    try Chrome.expect(model, 0, "Empty session on mini", false);
+
+    // Open without a record: an explicit unknown, never the primary's labels.
+    try Chrome.expect(model, 2, "Session unknown", true);
+    try Chrome.expect(model, 2, "Window context unavailable", true);
+    try Chrome.expect(model, 2, "alpha", false);
+    try Chrome.expect(model, 2, "primary-global", false);
+}

@@ -1,13 +1,13 @@
 <import src="cockpit-settings.native" />
-<template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect commandnotice">
+<template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status title detail">
   <stack>
     <column>
       <row height="50" padding="4" gap="8" cross="center" background="surface">
         <spacer width="78" window-drag="true" />
         <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
           <column gap="0">
-            <text overflow="ellipsis">{workspaceLabel}</text>
-            <text foreground="text_muted" overflow="ellipsis">{machineLabel}</text>
+            <text overflow="ellipsis">{title}</text>
+            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
           </column>
         </list-item>
         <if test="{tabPlacement == 'top'}">
@@ -64,9 +64,9 @@
         </if>
         <column grow="1">
           <spacer grow="1" label="phux-terminal-space" />
-          <if test="{commandnotice}"><status-bar>{commandnotice}</status-bar></if>
+          <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
           <else>
-            <if test="{reconnect}">
+            <if test="{canReconnect}">
               <row height="40" gap="8" padding="4" cross="center" background="surface">
                 <icon name="alert" width="16" height="16" foreground="warning" />
                 <text grow="1">{status}</text>
@@ -292,7 +292,7 @@
      windows, offered with New Tab instead of treated as broken, in the
      window the snapshot names. A peer's session picked in the switcher can be
      dismissed; nothing attaches it until New Tab. -->
-<template name="cockpit-empty" args="emptyopen">
+<template name="cockpit-empty" args="emptyopen name detail picked">
   <stack>
     <if test="{emptyopen}">
       <row main="center" cross="start" padding="16">
@@ -300,10 +300,10 @@
           <column gap="8">
             <row cross="center" gap="8">
               <icon name="terminal" width="16" height="16" />
-              <text grow="1" overflow="ellipsis">{emptyName}</text>
-              <if test="{emptyPicked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
+              <text grow="1" overflow="ellipsis">{name}</text>
+              <if test="{picked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
             </row>
-            <text foreground="text_muted" overflow="ellipsis">{emptyDetail}</text>
+            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
             <text size="heading">Empty session</text>
             <text wrap="true">Open a new tab to start a terminal.</text>
             <if test="{emptyNotice}"><text wrap="true" foreground="text_muted">{emptyNotice}</text></if>

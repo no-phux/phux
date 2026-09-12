@@ -12,6 +12,156 @@ const EXTENSION_TAB_CONTEXTS = 2;
 const EXTENSION_NAVIGATION_CONTEXT = 3;
 /// The Empty session state (empty_session.zig): which windows show it.
 const EXTENSION_EMPTY_SESSION = 4;
+/// Per-window header context (window_contexts.zig).
+const EXTENSION_WINDOW_CONTEXTS = 5;
+const WINDOW_CONTEXTS_VERSION = 1;
+/// The primary window and four secondary slots (`model.max_windows`).
+export const MAX_WINDOWS = 5;
+const WINDOW_CONTEXT_TEXT_LIMIT = 64;
+/// Bits 0..3 are empty, picked, opening, unavailable; any higher bit is a
+/// record this build cannot read, so the whole record is refused.
+const WINDOW_CONTEXT_FLAGS_LIMIT = 15;
+/// `ts_navigation.Connection`: local, connecting, connected, offline,
+/// workspace unavailable.
+const WINDOW_CONTEXT_CONNECTION_LIMIT = 4;
+
+/// What one open window shows, by that window's own source: the session and
+/// machine its header names, its connection, and its Empty session state.
+/// Display metadata only; action targets and freshness live elsewhere.
+export interface WindowContext {
+  readonly window: number;
+  readonly empty: boolean;
+  readonly picked: boolean;
+  readonly opening: boolean;
+  readonly unavailable: boolean;
+  readonly connection: number;
+  readonly session: Uint8Array;
+  readonly host: Uint8Array;
+}
+
+/// The `window_contexts` record as the snapshot carried it. `present` is
+/// false only for a snapshot from a build that predates the record; a
+/// current engine always writes it, with `records` possibly empty.
+export interface WindowContexts {
+  readonly present: boolean;
+  readonly records: readonly WindowContext[];
+}
+
+const NO_WINDOW_CONTEXTS: readonly WindowContext[] = [];
+
+function absentWindowContexts(): WindowContexts {
+  return { present: false, records: NO_WINDOW_CONTEXTS };
+}
+
+/// The lowest and highest second byte a UTF-8 lead byte admits: E0 and F0
+/// refuse overlong forms, ED refuses surrogates, F4 refuses past U+10FFFF.
+function utf8SecondMin(lead: number): number {
+  if (lead === 0xe0) return 0xa0;
+  if (lead === 0xf0) return 0x90;
+  return 0x80;
+}
+
+function utf8SecondMax(lead: number): number {
+  if (lead === 0xed) return 0x9f;
+  if (lead === 0xf4) return 0x8f;
+  return 0xbf;
+}
+
+function utf8Width(lead: number): number {
+  if (lead < 0x80) return 1;
+  if (lead < 0xc2 || lead > 0xf4) return 0;
+  if (lead < 0xe0) return 2;
+  if (lead < 0xf0) return 3;
+  return 4;
+}
+
+/// The byte length of the well-formed scalar at `at`, or 0 when the bytes
+/// there are not one.
+function utf8Scalar(bytes: Uint8Array, at: number): number {
+  const lead = bytes[at];
+  const width = utf8Width(lead);
+  if (width <= 1) return width;
+  if (at + width > bytes.length) return 0;
+  const second = bytes[at + 1];
+  if (second < utf8SecondMin(lead) || second > utf8SecondMax(lead)) return 0;
+  for (let next = 2; next < width; next += 1) {
+    const byte = bytes[at + next];
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return width;
+}
+
+/// Well-formed UTF-8 (RFC 3629): no overlong forms, surrogates, scalars past
+/// U+10FFFF, stray continuation bytes, or sequences cut short.
+export function validUtf8(bytes: Uint8Array): boolean {
+  let at = 0;
+  while (at < bytes.length) {
+    const width = utf8Scalar(bytes, at);
+    if (width === 0) return false;
+    at += width;
+  }
+  return true;
+}
+
+function windowContextText(bytes: Uint8Array, at: number): Uint8Array | null {
+  if (at >= bytes.length) return null;
+  const length = bytes[at];
+  if (length > WINDOW_CONTEXT_TEXT_LIMIT || at + 1 + length > bytes.length) return null;
+  const text = bytes.subarray(at + 1, at + 1 + length);
+  return validUtf8(text) ? text : null;
+}
+
+interface WindowContextRecord {
+  readonly context: WindowContext;
+  readonly end: number;
+}
+
+function windowContextRecord(bytes: Uint8Array, at: number): WindowContextRecord | null {
+  if (at + 3 > bytes.length) return null;
+  const window = bytes[at];
+  const flags = bytes[at + 1];
+  const connection = bytes[at + 2];
+  if (!(window >= 0 && window < MAX_WINDOWS)) return null;
+  if (!(flags >= 0 && flags <= WINDOW_CONTEXT_FLAGS_LIMIT)) return null;
+  if (!(connection >= 0 && connection <= WINDOW_CONTEXT_CONNECTION_LIMIT)) return null;
+  const session = windowContextText(bytes, at + 3);
+  if (session === null) return null;
+  const host = windowContextText(bytes, at + 4 + session.length);
+  if (host === null) return null;
+  const context: WindowContext = {
+    window: Math.trunc(window), connection: Math.trunc(connection), session, host,
+    empty: (flags & 1) !== 0, picked: (flags & 2) !== 0, opening: (flags & 4) !== 0, unavailable: (flags & 8) !== 0,
+  };
+  return { context, end: at + 5 + session.length + host.length };
+}
+
+function hasWindowContext(records: readonly WindowContext[], window: number): boolean {
+  for (const record of records) {
+    if (record.window === window) return true;
+  }
+  return false;
+}
+
+/// The `window_contexts` payload, version 1: `version, count`, then per open
+/// window `window, flags, connection, session_len, session, host_len, host`.
+/// Strict: an unknown version, a count the payload does not hold exactly, a
+/// repeated or out-of-range window, a reserved flag bit, an unknown
+/// connection, or an over-long or malformed string refuses the whole record,
+/// never a prefix of it.
+export function windowContexts(payload: Uint8Array): readonly WindowContext[] | null {
+  if (payload.length < 2 || payload[0] !== WINDOW_CONTEXTS_VERSION) return null;
+  const count = payload[1];
+  if (!(count >= 0 && count <= MAX_WINDOWS)) return null;
+  const records: WindowContext[] = [];
+  let at = 2;
+  for (let index = 0; index < count; index += 1) {
+    const record = windowContextRecord(payload, at);
+    if (record === null || hasWindowContext(records, record.context.window)) return null;
+    records.push(record.context);
+    at = record.end;
+  }
+  return at === payload.length ? records : null;
+}
 
 /// A keep-empty session with no windows, as the snapshot offers it: a mask
 /// of the windows showing its state (bit 0 is the main window), whether it
@@ -128,6 +278,9 @@ export interface EngineSnapshot extends Invalidation {
   /// snapshot carried none (which is also what an absent record means).
   readonly agents: readonly SnapshotAgentRow[];
   readonly emptySession: SnapshotEmptySession;
+  /// Per-window header context; preferred over the navigation context and
+  /// `emptySession` for every window whenever `present`.
+  readonly windowContexts: WindowContexts;
 }
 
 function readU32(bytes: Uint8Array, at: number): number {
@@ -271,10 +424,7 @@ function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
 interface SecondaryRecords {
   readonly windows: readonly SecondaryWindow[];
   readonly terminalStates: Uint8Array;
-  readonly contexts: Uint8Array;
-  readonly agents: readonly SnapshotAgentRow[];
-  readonly navigation: NavigationSnapshotContext;
-  readonly empty: SnapshotEmptySession;
+  readonly extensions: SnapshotExtensions;
 }
 
 /// The `agent_rows` payload: a row count, then `[window][tab][state][flags]
@@ -319,6 +469,11 @@ interface SnapshotExtensions {
   readonly contexts: Uint8Array;
   readonly navigation: NavigationSnapshotContext;
   readonly empty: SnapshotEmptySession;
+  readonly windowContexts: WindowContexts;
+}
+
+function noExtensions(): SnapshotExtensions {
+  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), windowContexts: absentWindowContexts() };
 }
 
 interface NavigationSnapshotContext {
@@ -361,11 +516,19 @@ function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: 
     const empty = readEmptySession(payload);
     return empty === null ? null : { ...previous, empty };
   }
+  if (kind === EXTENSION_WINDOW_CONTEXTS) return withWindowContexts(previous, payload);
   return previous;
 }
 
+/// A second record would leave two answers for one window; refuse it.
+function withWindowContexts(previous: SnapshotExtensions, payload: Uint8Array): SnapshotExtensions | null {
+  if (previous.windowContexts.present) return null;
+  const records = windowContexts(payload);
+  return records === null ? null : { ...previous, windowContexts: { present: true, records } };
+}
+
 function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
-  let result: SnapshotExtensions = { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
+  let result: SnapshotExtensions = noExtensions();
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
@@ -399,13 +562,13 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
 
 function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly SecondaryWindow[]): SecondaryRecords | null {
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), extensions: noExtensions() };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
   const extensions = readExtensions(bytes, at + 5);
   if (extensions === null) return null;
-  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts, navigation: extensions.navigation, empty: extensions.empty };
+  return { windows: secondary, terminalStates, extensions };
 }
 
 function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
@@ -441,12 +604,13 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (settings === null) return null;
   const secondary = readSecondary(bytes, settings.at);
   if (secondary === null) return null;
+  const extensions = secondary.extensions;
   return {
     connection: bytes[23],
-    currentSession: secondary.navigation.currentSession,
-    coordinatorEndpoint: secondary.navigation.coordinatorEndpoint,
-    connectionDetail: secondary.navigation.connectionDetail,
-    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, secondary.contexts, window.index) })),
+    currentSession: extensions.navigation.currentSession,
+    coordinatorEndpoint: extensions.navigation.coordinatorEndpoint,
+    connectionDetail: extensions.navigation.connectionDetail,
+    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, extensions.contexts, window.index) })),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,
@@ -464,9 +628,10 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     runStart: bytes[24],
     runCount: bytes[25],
     tabWidth: bytes[26] + bytes[27] * 256,
-    tabs: targetTabs(main.tabs, secondary.contexts, 0),
-    agents: secondary.agents,
-    emptySession: secondary.empty,
+    tabs: targetTabs(main.tabs, extensions.contexts, 0),
+    agents: extensions.agents,
+    emptySession: extensions.empty,
+    windowContexts: extensions.windowContexts,
   };
 }
 

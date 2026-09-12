@@ -64,6 +64,9 @@ import {
   type WireU64,
   type SnapshotTab,
   type SecondaryWindow,
+  type SnapshotEmptySession,
+  type WindowContext,
+  type WindowContexts,
   invalidation,
   intent,
   sameU64,
@@ -164,6 +167,18 @@ export interface WindowState {
 export type TabPlacement = "top" | "side";
 export type ChannelState = "data" | "closed" | "rejected";
 
+/// What one open window's header and Empty session chrome name. Bound per
+/// window from kind 5 when present; otherwise from the kind 3 / kind 4
+/// primary labels so older snapshots keep painting.
+export interface WindowChromeContext {
+  readonly title: Uint8Array;
+  readonly detail: Uint8Array;
+  readonly emptyName: Uint8Array;
+  readonly emptyDetail: Uint8Array;
+  readonly emptyPicked: boolean;
+  readonly emptyOpening: boolean;
+}
+
 export interface Model {
   readonly tabs: readonly Tab[];
   /// The run the band has room for, always holding the selected tab. The
@@ -182,6 +197,12 @@ export interface Model {
   /// depth rather than as a loop inside a loop.
   readonly railRows: readonly RailRow[];
   readonly workspaceLabel: Uint8Array;
+  /// Per-window session/machine header and Empty session labels.
+  readonly mainContext: WindowChromeContext;
+  readonly window1Context: WindowChromeContext;
+  readonly window2Context: WindowChromeContext;
+  readonly window3Context: WindowChromeContext;
+  readonly window4Context: WindowChromeContext;
   readonly window1RailRows: readonly RailRow[];
   readonly window2RailRows: readonly RailRow[];
   readonly window3RailRows: readonly RailRow[];
@@ -1392,6 +1413,119 @@ function windowStatus(connection: number, terminal: number, refused: boolean): U
   return joinBytes(global, asciiBytes(" / "), terminalStateLabel(terminal));
 }
 
+const MIDDLE_DOT = utf8Bytes(" \u00b7 ");
+const NO_WINDOW_CONTEXT: WindowChromeContext = {
+  title: NO_BYTES, detail: NO_BYTES, emptyName: NO_BYTES, emptyDetail: NO_BYTES,
+  emptyPicked: false, emptyOpening: false,
+};
+
+function findWindowContext(records: readonly WindowContext[], window: number): WindowContext | null {
+  for (const record of records) {
+    if (record.window === window) return record;
+  }
+  return null;
+}
+
+/// State word for the header detail line: unavailable and connection words
+/// outrank Empty session's opening/empty markers.
+function windowContextStateWord(record: WindowContext): Uint8Array {
+  if (record.unavailable) return asciiBytes("Unavailable");
+  if (record.connection === 4) return asciiBytes("Workspace unavailable");
+  if (record.connection === 1) return asciiBytes("Connecting...");
+  if (record.connection === 3) return asciiBytes("Offline");
+  if (record.opening) return asciiBytes("Opening...");
+  if (record.empty) return asciiBytes("Empty session");
+  return NO_BYTES;
+}
+
+function windowContextDetail(host: Uint8Array, record: WindowContext): Uint8Array {
+  const word = windowContextStateWord(record);
+  return word.length === 0 ? host : joinBytes(host, MIDDLE_DOT, word);
+}
+
+function unknownWindowContext(): WindowChromeContext {
+  return {
+    title: asciiBytes("Session unknown"),
+    detail: asciiBytes("Window context unavailable"),
+    emptyName: NO_BYTES,
+    emptyDetail: NO_BYTES,
+    emptyPicked: false,
+    emptyOpening: false,
+  };
+}
+
+function chromeFromWindowContext(record: WindowContext): WindowChromeContext {
+  const host = record.host.length > 0 ? record.host : asciiBytes("Machine not yet known");
+  return {
+    title: record.session.length > 0 ? record.session : asciiBytes("Sessions"),
+    detail: windowContextDetail(host, record),
+    emptyName: record.empty ? record.session : NO_BYTES,
+    emptyDetail: record.empty ? joinBytes(asciiBytes("Empty session on "), host, NO_BYTES) : NO_BYTES,
+    emptyPicked: record.empty && record.picked,
+    emptyOpening: record.empty && record.opening,
+  };
+}
+
+function legacyWindowContext(
+  open: boolean,
+  session: Uint8Array,
+  host: Uint8Array,
+  empty: SnapshotEmptySession,
+  bit: number,
+): WindowChromeContext {
+  if (!open) return NO_WINDOW_CONTEXT;
+  const shown = (empty.windows & bit) !== 0;
+  return {
+    title: session.length > 0 ? session : asciiBytes("Sessions"),
+    detail: host.length > 0 ? host : asciiBytes("Machine not yet known"),
+    emptyName: shown ? empty.name : NO_BYTES,
+    emptyDetail: shown ? joinBytes(asciiBytes("Empty session on "), empty.host, NO_BYTES) : NO_BYTES,
+    emptyPicked: shown && empty.picked,
+    emptyOpening: shown && empty.opening,
+  };
+}
+
+function windowChromeContext(
+  open: boolean,
+  window: number,
+  bit: number,
+  contexts: WindowContexts,
+  session: Uint8Array,
+  host: Uint8Array,
+  empty: SnapshotEmptySession,
+): WindowChromeContext {
+  if (!open) return NO_WINDOW_CONTEXT;
+  if (!contexts.present) return legacyWindowContext(open, session, host, empty, bit);
+  const record = findWindowContext(contexts.records, window);
+  return record === null ? unknownWindowContext() : chromeFromWindowContext(record);
+}
+
+function emptyMaskFromContexts(contexts: WindowContexts, fallback: number): number {
+  if (!contexts.present) return fallback;
+  let mask = 0;
+  for (const record of contexts.records) {
+    if (!record.empty) continue;
+    if (!(record.window >= 0 && record.window < 5)) continue;
+    mask |= 1 << Math.trunc(record.window);
+  }
+  return mask >= 0 && mask <= 31 ? Math.trunc(mask) : 0;
+}
+
+function windowConnectionStatus(
+  open: boolean,
+  window: number,
+  contexts: WindowContexts,
+  connection: number,
+  terminal: number,
+  refused: boolean,
+): Uint8Array {
+  if (!contexts.present) return windowStatus(connection, terminal, refused);
+  if (!open) return windowStatus(connection, terminal, refused);
+  const record = findWindowContext(contexts.records, window);
+  if (record === null) return asciiBytes("Connection status unavailable");
+  return windowStatus(record.connection, terminal, refused);
+}
+
 function engineUnavailable(model: Model, status: Uint8Array): Model {
   return { ...model, engineConnected: false, status, canReconnect: false,
     connectionStatus: asciiBytes("Connection status unavailable"), paletteRows: NO_ROWS,
@@ -1827,6 +1961,18 @@ export function initialModel(): [Model, Cmd<Msg>] {
       tabPlacement: "top",
       railRows: NO_RAIL_ROWS,
       workspaceLabel: asciiBytes("Sessions"),
+      mainContext: {
+        title: asciiBytes("Sessions"),
+        detail: asciiBytes("Machine not yet known"),
+        emptyName: NO_BYTES,
+        emptyDetail: NO_BYTES,
+        emptyPicked: false,
+        emptyOpening: false,
+      },
+      window1Context: NO_WINDOW_CONTEXT,
+      window2Context: NO_WINDOW_CONTEXT,
+      window3Context: NO_WINDOW_CONTEXT,
+      window4Context: NO_WINDOW_CONTEXT,
       window1RailRows: NO_RAIL_ROWS,
       window2RailRows: NO_RAIL_ROWS,
       window3RailRows: NO_RAIL_ROWS,
@@ -3472,7 +3618,27 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const width3 = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
       const width4 = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
       const rawEmpty = projected.emptySession.windows;
-      const emptyMask = rawEmpty >= 0 && rawEmpty <= 31 ? Math.trunc(rawEmpty) : 0;
+      const legacyEmpty = rawEmpty >= 0 && rawEmpty <= 31 ? Math.trunc(rawEmpty) : 0;
+      const contexts = projected.windowContexts;
+      const emptyMaskRaw = emptyMaskFromContexts(contexts, legacyEmpty);
+      const emptyMask = emptyMaskRaw >= 0 && emptyMaskRaw <= 31 ? Math.trunc(emptyMaskRaw) : 0;
+      const sessionLabel = projected.currentSession.length > 0 ? projected.currentSession : asciiBytes("Sessions");
+      const hostLabel = projected.coordinatorEndpoint.length > 0 ? projected.coordinatorEndpoint : asciiBytes("Machine not yet known");
+      const primaryRecord = findWindowContext(contexts.records, 0);
+      const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
+      const window1Context = windowChromeContext(w1.open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
+      const window2Context = windowChromeContext(w2.open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
+      const window3Context = windowChromeContext(w3.open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
+      const window4Context = windowChromeContext(w4.open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
+      const refusedLocal = refusedMask !== 0;
+      const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], refusedLocal);
+      const emptyPicked = contexts.present
+        ? mainContext.emptyPicked || window1Context.emptyPicked || window2Context.emptyPicked || window3Context.emptyPicked || window4Context.emptyPicked
+        : projected.emptySession.picked;
+      const emptyOpening = contexts.present ? false : projected.emptySession.opening;
+      const primaryHost = contexts.present
+        ? (primaryRecord !== null && primaryRecord.host.length > 0 ? primaryRecord.host : asciiBytes("Machine not yet known"))
+        : hostLabel;
       const synced: Model = {
         ...model,
         activeWindow: projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0,
@@ -3503,9 +3669,14 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         tabs: mainTabs,
         visibleTabs: mainVisible,
         railRows: railRows(mainTabs),
-        workspaceLabel: projected.currentSession.length > 0 ? projected.currentSession : asciiBytes("Sessions"),
+        workspaceLabel: mainContext.title,
+        mainContext,
+        window1Context,
+        window2Context,
+        window3Context,
+        window4Context,
         coordinatorEndpoint: projected.coordinatorEndpoint,
-        machineLabel: projected.coordinatorEndpoint.length > 0 ? projected.coordinatorEndpoint : asciiBytes("Machine not yet known"),
+        machineLabel: primaryHost,
         connectionDetail: projected.connectionDetail,
         window1RailRows: railRows(w1.tabs),
         window2RailRows: railRows(w2.tabs),
@@ -3521,18 +3692,20 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         engineRevision: projected.revision,
         canReconnect: projected.connection === 3,
         lastConnection: projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255,
-        connectionStatus: remoteConnectionStatus(model, windowStatus(projected.connection, projected.terminalStates[0], refusedMask !== 0)),
-        window1Status: windowStatus(projected.connection, projected.terminalStates[1], refusedMask !== 0),
-        window2Status: windowStatus(projected.connection, projected.terminalStates[2], refusedMask !== 0),
-        window3Status: windowStatus(projected.connection, projected.terminalStates[3], refusedMask !== 0),
-        window4Status: windowStatus(projected.connection, projected.terminalStates[4], refusedMask !== 0),
+        connectionStatus: contexts.present && primaryRecord === null
+          ? asciiBytes("Connection status unavailable")
+          : remoteConnectionStatus(model, primaryStatus),
+        window1Status: windowConnectionStatus(w1.open, 1, contexts, projected.connection, projected.terminalStates[1], refusedLocal),
+        window2Status: windowConnectionStatus(w2.open, 2, contexts, projected.connection, projected.terminalStates[2], refusedLocal),
+        window3Status: windowConnectionStatus(w3.open, 3, contexts, projected.connection, projected.terminalStates[3], refusedLocal),
+        window4Status: windowConnectionStatus(w4.open, 4, contexts, projected.connection, projected.terminalStates[4], refusedLocal),
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
         emptyWindows: emptyMask,
         emptyName: projected.emptySession.name,
         emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
-        emptyPicked: projected.emptySession.picked,
-        emptyBusy: projected.emptySession.windows !== 0 && (model.emptyBusy || projected.emptySession.opening),
-        emptyNotice: projected.emptySession.windows === 0 ? NO_BYTES : model.emptyNotice,
+        emptyPicked,
+        emptyBusy: emptyMask !== 0 && (model.emptyBusy || emptyOpening),
+        emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
       };
       // An open Go to Directory names a listing on the connection that just
       // moved: withdraw its rows, and list again once connected.
