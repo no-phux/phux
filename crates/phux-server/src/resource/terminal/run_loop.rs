@@ -6,9 +6,9 @@ use super::{
     ConsumerSyncState, DEFAULT_TICK_INTERVAL, EncodedInputRequest, FrameKind, MAX_EMIT_INSTANTS,
     MAX_INPUT_COALESCE, MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES, NativeOrPty, Outbound,
     PaneOutput, PaneUpgradeHandle, PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest,
-    ResyncReason, ScreenRequest, SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest,
-    TerminalActor, TerminalInput, UpgradeHandleRequest, debug, error, mpsc, recv_native_or_pty,
-    tick, trace, warn,
+    ResyncAudience, ResyncReason, ResyncTarget, ScreenRequest, SetDefaultColorsRequest,
+    SnapshotBytes, SnapshotRequest, TerminalActor, TerminalInput, UpgradeHandleRequest, debug,
+    error, mpsc, recv_native_or_pty, tick, trace, warn,
 };
 use crate::grid::SnapshotSynthesizer;
 use crate::grid::reference::ReferenceCursorMode;
@@ -95,9 +95,25 @@ impl BootstrapPump {
     }
 }
 
+/// One request's claim on the debounced resync: why it is owed and, for a
+/// gap, the one pump it is owed to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OwedResync {
+    /// Why the requester's generation cannot continue.
+    reason: ResyncReason,
+    /// The pump that fell behind, or `None` when every subscriber is owed
+    /// (a reflow, or a gap request that named no pump).
+    target: Option<ResyncTarget>,
+}
+
 /// phux-8v1 drag fix: the debounced post-resize client resync owned by the
 /// `run` loop. (Re)armed on each resync-requesting resize; when the timer
 /// fires we broadcast ONE snapshot at the settled size.
+///
+/// It also collects *who* the snapshot is for. A reflow is owed to every
+/// subscriber; a gap is owed only to the pumps that asked. Both share the one
+/// deadline and the one synthesis, so N stale pumps still converge on a
+/// single snapshot, and a reflow owed in the same window subsumes them all.
 struct ResyncDebounce {
     /// A resync is owed once the debounce deadline lands. False until a
     /// resize arms it, which is why the idle far-future deadline the loop
@@ -105,9 +121,25 @@ struct ResyncDebounce {
     pending: bool,
     /// Why the owed resync was armed; broadcast when the deadline fires.
     reason: ResyncReason,
+    /// Every subscriber is owed the resync, whatever `targets` says.
+    everyone: bool,
+    /// The pumps that asked for a gap resync of their own, deduplicated.
+    /// Bounded by the pumps on this pane: a pump asks again only after its
+    /// retry backoff, and its repeat is folded onto its existing entry.
+    targets: Vec<ResyncTarget>,
 }
 
 impl ResyncDebounce {
+    /// Nothing owed.
+    const fn idle() -> Self {
+        Self {
+            pending: false,
+            reason: ResyncReason::Resize,
+            everyone: false,
+            targets: Vec::new(),
+        }
+    }
+
     /// Whether the settled-resize snapshot may fire this turn: one is owed,
     /// and no native bootstrap is holding the loop's broadcast arms closed.
     const fn may_fire(&self, bootstrap_pending: bool) -> bool {
@@ -127,19 +159,35 @@ impl ResyncDebounce {
     /// snapshot they are all waiting for would never fire, and none of them
     /// would ever unfence. Coalescing onto the first deadline is what makes
     /// the fleet converge instead of starve.
-    fn arm(&mut self, reason: ResyncReason, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
-        if self.pending && reason == ResyncReason::OutboundGap {
+    ///
+    /// The audience is recorded before that early return, so a pump that
+    /// asks while another pump's gap resync is already owed still rides the
+    /// same snapshot.
+    fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
+        match owed.target {
+            None => self.everyone = true,
+            Some(target) if !self.targets.contains(&target) => self.targets.push(target),
+            Some(_) => {}
+        }
+        if self.pending && owed.reason == ResyncReason::OutboundGap {
             return;
         }
         self.pending = true;
-        self.reason = reason;
+        self.reason = owed.reason;
         deadline.reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
     }
 
-    /// Clear the owed resync and hand back the reason to broadcast it with.
-    const fn take_reason(&mut self) -> ResyncReason {
+    /// Clear the owed resync and hand back the reason and audience to
+    /// broadcast it with.
+    fn take(&mut self) -> (ResyncReason, ResyncAudience) {
         self.pending = false;
-        self.reason
+        let targets = std::mem::take(&mut self.targets);
+        let audience = if std::mem::replace(&mut self.everyone, false) {
+            ResyncAudience::Everyone
+        } else {
+            ResyncAudience::Only(targets.into())
+        };
+        (self.reason, audience)
     }
 }
 
@@ -187,10 +235,7 @@ impl TerminalActor {
         // the initial instant is never observed.
         let resync_deadline = tokio::time::sleep(std::time::Duration::from_secs(3600));
         tokio::pin!(resync_deadline);
-        let mut resync = ResyncDebounce {
-            pending: false,
-            reason: ResyncReason::Resize,
-        };
+        let mut resync = ResyncDebounce::idle();
         // Native control and PTY output are one outer select arm so the actor
         // never borrows either receiver twice. Preference swaps after every
         // selected ingress, but both sources remain enabled: a silent PTY can
@@ -274,8 +319,10 @@ impl TerminalActor {
                 // resize storm settles (RESIZE_RESYNC_DEBOUNCE after the
                 // last resync-requesting resize). Guarded by the owed-resync
                 // flag so the idle far-future timer never fires spuriously.
-                () = &mut resync_deadline, if resync.may_fire(bootstrap_pending) =>
-                    self.broadcast_resync(resync.take_reason()),
+                () = &mut resync_deadline, if resync.may_fire(bootstrap_pending) => {
+                    let (reason, audience) = resync.take();
+                    self.broadcast_resync(reason, audience);
+                }
 
                 Some(req) = self.consumer_attach_rx.recv(), if !bootstrap_pending =>
                     self.handle_consumer_attach(req),
@@ -390,8 +437,8 @@ impl TerminalActor {
         resync: &mut ResyncDebounce,
         deadline: std::pin::Pin<&mut tokio::time::Sleep>,
     ) {
-        if let Some(reason) = self.apply_resize_request(req) {
-            resync.arm(reason, deadline);
+        if let Some(owed) = self.apply_resize_request(req) {
+            resync.arm(owed, deadline);
         }
     }
 
@@ -878,9 +925,13 @@ impl TerminalActor {
         let _ = req.reply.send(cwd);
     }
 
-    /// Apply one resize request, returning the [`ResyncReason`] the caller
-    /// should arm the debounce timer with, or `None` when this resize earns no
-    /// client resync.
+    /// Apply one resize request, returning the resync the caller should arm
+    /// the debounce timer with, or `None` when this resize earns no client
+    /// resync.
+    ///
+    /// A reflow is owed to every subscriber. A `resync_only` gap request is
+    /// owed only to the pump it names (`resync_for`), so the one consumer
+    /// that fell behind is re-bootstrapped and nobody else is.
     ///
     /// phux-8v1: re-broadcast a full snapshot for live
     /// resizes so client mirrors reconverge after their
@@ -896,7 +947,7 @@ impl TerminalActor {
     /// bootstrap generation — so a client confirming the size
     /// it already asked for at spawn must not cost the pane the
     /// checkpoint it just published.
-    fn apply_resize_request(&mut self, req: ResizeRequest) -> Option<ResyncReason> {
+    fn apply_resize_request(&mut self, req: ResizeRequest) -> Option<OwedResync> {
         // A `resync_only` request (from a lagged output pump)
         // carries no geometry — skip the resize and only schedule
         // the resync broadcast below.
@@ -909,9 +960,15 @@ impl TerminalActor {
             return None;
         }
         Some(if req.resync_only {
-            ResyncReason::OutboundGap
+            OwedResync {
+                reason: ResyncReason::OutboundGap,
+                target: req.resync_for,
+            }
         } else {
-            ResyncReason::Resize
+            OwedResync {
+                reason: ResyncReason::Resize,
+                target: None,
+            }
         })
     }
 
@@ -1381,12 +1438,42 @@ mod tick_rearm_tests {
 mod resync_debounce_tests {
     use std::time::Duration;
 
-    use super::{RESIZE_RESYNC_DEBOUNCE, ResyncDebounce, ResyncReason};
+    use super::{
+        OwedResync, RESIZE_RESYNC_DEBOUNCE, ResyncAudience, ResyncDebounce, ResyncReason,
+        ResyncTarget,
+    };
 
     fn idle() -> ResyncDebounce {
-        ResyncDebounce {
-            pending: false,
+        ResyncDebounce::idle()
+    }
+
+    fn pump(owner: u64) -> ResyncTarget {
+        ResyncTarget {
+            owner,
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("non-zero stream id"),
+        }
+    }
+
+    /// A gap resync owed to one pump.
+    const fn gap_for(target: ResyncTarget) -> OwedResync {
+        OwedResync {
+            reason: ResyncReason::OutboundGap,
+            target: Some(target),
+        }
+    }
+
+    /// A gap resync that named no pump: owed to everyone.
+    const fn gap() -> OwedResync {
+        OwedResync {
+            reason: ResyncReason::OutboundGap,
+            target: None,
+        }
+    }
+
+    const fn resize() -> OwedResync {
+        OwedResync {
             reason: ResyncReason::Resize,
+            target: None,
         }
     }
 
@@ -1409,14 +1496,14 @@ mod resync_debounce_tests {
         tokio::pin!(sleep);
         let mut debounce = idle();
 
-        debounce.arm(ResyncReason::OutboundGap, sleep.as_mut());
+        debounce.arm(gap_for(pump(0)), sleep.as_mut());
         let first_deadline = sleep.deadline();
         assert!(debounce.pending);
 
-        for _ in 0..20 {
+        for round in 0..20_u64 {
             // Faster than the debounce, which is exactly the starving case.
             tokio::time::advance(RESIZE_RESYNC_DEBOUNCE / 4).await;
-            debounce.arm(ResyncReason::OutboundGap, sleep.as_mut());
+            debounce.arm(gap_for(pump(round % 10)), sleep.as_mut());
             assert_eq!(
                 sleep.deadline(),
                 first_deadline,
@@ -1430,7 +1517,77 @@ mod resync_debounce_tests {
             sleep.deadline() <= tokio::time::Instant::now(),
             "the coalesced snapshot must have become due despite the request storm",
         );
-        assert_eq!(debounce.take_reason(), ResyncReason::OutboundGap);
+        let (reason, audience) = debounce.take();
+        assert_eq!(reason, ResyncReason::OutboundGap);
+        let expected: Vec<_> = (0..10).map(pump).collect();
+        assert_eq!(
+            audience,
+            ResyncAudience::Only(expected.into()),
+            "every lagged pump rides the one snapshot, each named once",
+        );
+    }
+
+    /// phux-auqy: a gap resync is owed only to the pumps that asked.
+    ///
+    /// Two stale pumps inside one window share one snapshot addressed to both
+    /// of them and to nobody else; the debounce then starts empty, so the
+    /// next window does not inherit them.
+    #[tokio::test(start_paused = true)]
+    async fn a_gap_resync_is_addressed_only_to_the_pumps_that_asked() {
+        let sleep = tokio::time::sleep(Duration::from_secs(3600));
+        tokio::pin!(sleep);
+        let mut debounce = idle();
+
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        debounce.arm(gap_for(pump(2)), sleep.as_mut());
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        let (reason, audience) = debounce.take();
+        assert_eq!(reason, ResyncReason::OutboundGap);
+        assert_eq!(
+            audience,
+            ResyncAudience::Only(vec![pump(1), pump(2)].into())
+        );
+        assert!(!audience.includes(pump(3)), "a fresh pump is not addressed");
+
+        debounce.arm(gap_for(pump(3)), sleep.as_mut());
+        assert_eq!(
+            debounce.take().1,
+            ResyncAudience::Only(vec![pump(3)].into())
+        );
+    }
+
+    /// A reflow changes the grid under every consumer, so a resize owed in
+    /// the same window widens a targeted gap resync to everyone — whichever
+    /// order the two arrive in — and a gap request that names no pump stays
+    /// the old everyone-resync.
+    #[tokio::test(start_paused = true)]
+    async fn a_resize_or_an_unnamed_gap_widens_the_audience_to_everyone() {
+        let sleep = tokio::time::sleep(Duration::from_secs(3600));
+        tokio::pin!(sleep);
+
+        let mut debounce = idle();
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        debounce.arm(resize(), sleep.as_mut());
+        assert_eq!(
+            debounce.take(),
+            (ResyncReason::Resize, ResyncAudience::Everyone)
+        );
+
+        let mut debounce = idle();
+        debounce.arm(resize(), sleep.as_mut());
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        assert_eq!(
+            debounce.take(),
+            (ResyncReason::Resize, ResyncAudience::Everyone)
+        );
+
+        let mut debounce = idle();
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        debounce.arm(gap(), sleep.as_mut());
+        assert_eq!(
+            debounce.take(),
+            (ResyncReason::OutboundGap, ResyncAudience::Everyone)
+        );
     }
 
     /// The other half: a resize storm still re-arms every time, because there
@@ -1442,10 +1599,10 @@ mod resync_debounce_tests {
         tokio::pin!(sleep);
         let mut debounce = idle();
 
-        debounce.arm(ResyncReason::Resize, sleep.as_mut());
+        debounce.arm(resize(), sleep.as_mut());
         let first_deadline = sleep.deadline();
         tokio::time::advance(RESIZE_RESYNC_DEBOUNCE / 4).await;
-        debounce.arm(ResyncReason::Resize, sleep.as_mut());
+        debounce.arm(resize(), sleep.as_mut());
         assert!(
             sleep.deadline() > first_deadline,
             "a drag storm must settle on the last size",
@@ -1461,12 +1618,12 @@ mod resync_debounce_tests {
         tokio::pin!(sleep);
         let mut debounce = idle();
 
-        debounce.arm(ResyncReason::OutboundGap, sleep.as_mut());
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
         let gap_deadline = sleep.deadline();
         tokio::time::advance(RESIZE_RESYNC_DEBOUNCE / 4).await;
-        debounce.arm(ResyncReason::Resize, sleep.as_mut());
+        debounce.arm(resize(), sleep.as_mut());
 
         assert!(sleep.deadline() > gap_deadline);
-        assert_eq!(debounce.take_reason(), ResyncReason::Resize);
+        assert_eq!(debounce.take().0, ResyncReason::Resize);
     }
 }

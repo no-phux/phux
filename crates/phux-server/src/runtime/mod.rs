@@ -3402,6 +3402,7 @@ mod tests {
                         rows: 24,
                         bytes: bytes::Bytes::new(),
                         reason: ResyncReason::OutboundGap,
+                        audience: crate::terminal_actor::ResyncAudience::Everyone,
                         base_seq: 1,
                     })
                     .expect("resync receiver");

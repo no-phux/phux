@@ -400,6 +400,7 @@ fn resize_path_does_not_panic_against_pty() {
                 cell_px: Some((8, 16)),
                 resync_clients: true,
                 resync_only: false,
+                resync_for: None,
             })
             .await
             .expect("resize");

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
 # Operations
@@ -130,7 +130,7 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90` `p99`
 | `consumer.mailbox_full` | ticks that skipped a consumer whose outbound queue was full | 0; a steady rate is a client that cannot drain |
 | `consumer.ack_rtt` | emit to `FRAME_ACK` round trip per state-sync client | tracks the link: sub-ms local, tens of ms over QUIC |
 | `pump.frames` / `pump.bytes` / `pump.frame.bytes` | raw broadcast fan-out volume and per-frame size | frame size near `pty.burst.bytes` |
-| `pump.lagged` / `pump.gap_resync` | broadcast receivers that fell more than 256 frames behind, and the resyncs that cost | 0 |
+| `pump.lagged` / `pump.gap_resync` | output pumps that fell behind (more than 256 frames, or a chunk older than 250 ms when dequeued), and the resyncs that cost; each resync re-bootstraps only the pump that fell behind | 0 |
 | `wire.write` / `wire.write.bytes` / `wire.bytes_out` | coalesced socket writes per client | p99 under 500 us on UDS |
 | `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
 | `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |

@@ -601,6 +601,7 @@ pub(crate) fn handle_terminal_resize(
             cell_px: None,
             resync_clients: true,
             resync_only: false,
+            resync_for: None,
         }) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -1797,6 +1798,14 @@ struct PumpResync {
 }
 
 impl AttachResourcePumpCtx {
+    /// How a gap resync names this pump to the actor.
+    const fn resync_target(&self) -> crate::terminal_actor::ResyncTarget {
+        crate::terminal_actor::ResyncTarget {
+            owner: self.client_id.0,
+            stream_id: self.stream_id,
+        }
+    }
+
     /// Forward this pane's output to one `ATTACH_RESOURCE` consumer until the
     /// generation is cancelled, replaced, or the consumer goes away.
     ///
@@ -1888,8 +1897,17 @@ impl AttachResourcePumpCtx {
                 rows,
                 bytes,
                 reason,
+                audience,
                 base_seq,
             }) => {
+                // A gap resync some other pump asked for is not ours to
+                // take (phux-auqy).
+                if !stream
+                    .generation
+                    .takes_resync(&audience, self.resync_target())
+                {
+                    return PumpStep::Continue;
+                }
                 let resync = PumpResync {
                     cols,
                     rows,
@@ -2058,7 +2076,7 @@ impl AttachResourcePumpCtx {
     /// Queue the resync request, abandoning the connection if the actor will
     /// not take it.
     async fn request_resync(&self) -> PumpStep {
-        if crate::runtime::attach::enqueue_output_resync(&self.resize).await {
+        if crate::runtime::attach::enqueue_output_resync(&self.resize, self.resync_target()).await {
             return PumpStep::Continue;
         }
         self.fail_unrecoverable_gap().await
@@ -4490,6 +4508,7 @@ pub(crate) fn handle_viewport_resize(
                 cell_px,
                 resync_clients: true,
                 resync_only: false,
+                resync_for: None,
             }) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::BootstrapId;
 
-use crate::terminal_actor::PaneOutput;
+use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
 
 /// Spawn an owned output task from any subscription path. Completion guards
 /// are captured before spawning, so even abort-before-first-poll resolves the
@@ -236,6 +236,29 @@ impl PumpGeneration {
         self.gap_attempts
     }
 
+    /// Does a [`PaneOutput::Resync`] addressed to `audience` replace this
+    /// pump's generation?
+    ///
+    /// The single gate both pumps' resync arms pass through, for the same
+    /// reason [`Self::forwards`] is the single live gate. A resync addressed
+    /// to everyone (a reflow) always does. One addressed to named pumps is a
+    /// gap resync some pump asked for: it replaces this generation only if
+    /// this pump is named *and still fenced*. Every other pump on the pane —
+    /// the local TUI beside a slow remote attach, a recorder, a cockpit —
+    /// keeps its generation and pays no tombstone, no bootstrap, and no
+    /// native checkpoint capture (phux-auqy). A named pump that is no longer
+    /// fenced already took an everyone-resync that healed its gap, so a second
+    /// republish would be exactly that churn again.
+    ///
+    /// Taking an addressed resync only while fenced loses nothing: a pump
+    /// asks for one only after fencing itself, and only a republish unfences.
+    pub(super) fn takes_resync(&self, audience: &ResyncAudience, pump: ResyncTarget) -> bool {
+        match audience {
+            ResyncAudience::Everyone => true,
+            ResyncAudience::Only(_) => self.gap_pending && audience.includes(pump),
+        }
+    }
+
     /// A replacement generation is published at `base_seq`: unfence, reactivate
     /// and re-anchor the sequence expectation.
     pub(super) const fn republished_at(&mut self, base_seq: u64) {
@@ -297,7 +320,44 @@ mod tests {
         is_stale, next_event,
     };
 
-    use crate::terminal_actor::PaneOutput;
+    use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
+
+    fn pump_on(owner: u64, stream: u64) -> ResyncTarget {
+        ResyncTarget {
+            owner,
+            stream_id: phux_protocol::ids::StreamId::new(stream).expect("non-zero stream id"),
+        }
+    }
+
+    /// phux-auqy: an addressed gap resync replaces only the fenced pump it
+    /// names. A fresh pump beside it — or the same client on another stream —
+    /// keeps its generation; a reflow still replaces everyone's.
+    #[test]
+    fn an_addressed_resync_is_taken_only_by_the_fenced_pump_it_names() {
+        let stale = pump_on(1, 1);
+        let addressed = ResyncAudience::Only(vec![stale].into());
+
+        let mut fenced = opened();
+        fenced.fence_for_gap();
+        assert!(fenced.takes_resync(&addressed, stale));
+        assert!(
+            !fenced.takes_resync(&addressed, pump_on(1, 2)),
+            "another stream of the same client is a different pump",
+        );
+
+        let fresh = opened();
+        assert!(
+            !fresh.takes_resync(&addressed, pump_on(2, 1)),
+            "a fresh pump must not be re-bootstrapped for someone else's gap",
+        );
+        assert!(
+            !fresh.takes_resync(&addressed, stale),
+            "a named pump whose gap an earlier resync already healed skips it",
+        );
+
+        assert!(fresh.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
+        assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
+    }
 
     #[test]
     fn output_is_stale_only_past_the_budget() {
@@ -545,6 +605,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 reason: crate::terminal_actor::ResyncReason::OutboundGap,
+                audience: ResyncAudience::Everyone,
                 base_seq: 9_000,
                 bytes: bytes::Bytes::new(),
             });

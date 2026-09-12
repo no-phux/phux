@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # Transport abstraction
@@ -95,7 +95,12 @@ seam changes.
   read time) fences the generation and requests an in-band resync to a
   fresh checkpoint — the same path a dropped broadcast window takes. A slow
   remote consumer skips frames instead of queueing seconds of output in
-  front of its own keystroke echoes. Not yet covered: an attach bridged
+  front of its own keystroke echoes. That resync is addressed to the one
+  pump that fell behind (`ResyncAudience::Only`, keyed by client and
+  stream): every other consumer of the pane skips it and keeps its
+  generation, so a slow remote attach never re-bootstraps the local TUI, a
+  recorder, or a cockpit beside it. Only a reflow is still broadcast to
+  every consumer. Not yet covered: an attach bridged
   through `phux-relay`, whose consumer-facing hop still buffers at quinn's
   defaults, and the WebTransport writer.
 - **WebTransport** (via `wtransport`) — QUIC-class transport for browsers,

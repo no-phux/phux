@@ -28,7 +28,7 @@ use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, PwdRequest, ResizeRequest,
-    SetDefaultColorsRequest, SnapshotRequest,
+    ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
 /// Adapt a broadcast byte chunk to a client's capabilities for the wire:
@@ -392,11 +392,16 @@ pub(crate) async fn send_synthesized_bootstrap(
 
 /// Queue the mandatory in-band resync after a broadcast gap.
 ///
+/// The resync is addressed to `pump` alone: the gap is this consumer's, and
+/// every other consumer of the pane keeps its generation (phux-auqy). See
+/// [`PumpGeneration::takes_resync`].
+///
 /// The output pump awaits mailbox capacity and therefore cannot consume or
 /// forward a later delta until the actor has accepted the resync request.
 /// A closed or persistently full actor mailbox fails boundedly.
 pub(crate) async fn enqueue_output_resync(
     resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
+    pump: ResyncTarget,
 ) -> bool {
     matches!(
         tokio::time::timeout(
@@ -407,6 +412,7 @@ pub(crate) async fn enqueue_output_resync(
                 cell_px: None,
                 resync_clients: true,
                 resync_only: true,
+                resync_for: Some(pump),
             }),
         )
         .await,
@@ -486,7 +492,8 @@ struct OutputPumpContext {
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
     /// phux-y8v6: lets a lagged pump ask the actor to broadcast an in-band
     /// resync (a full grid snapshot on the same ordered channel) so a
-    /// consumer that dropped bytes reconverges.
+    /// consumer that dropped bytes reconverges. The request names this pump
+    /// ([`Self::resync_target`]), so only it republishes (phux-auqy).
     resize: tokio::sync::mpsc::Sender<ResizeRequest>,
     /// Wire identity of the pane being pumped.
     wire_terminal_id: phux_protocol::ids::ResourceId,
@@ -510,6 +517,30 @@ struct OutputPumpContext {
 }
 
 impl OutputPumpContext {
+    /// How a gap resync names this pump to the actor.
+    const fn resync_target(&self) -> ResyncTarget {
+        ResyncTarget {
+            owner: self.client_id.0,
+            stream_id: self.stream_id,
+        }
+    }
+
+    /// Replace the published generation for a resync addressed to this pump,
+    /// and skip one addressed to other pumps.
+    async fn apply_resync(
+        &self,
+        generation: &mut PumpGeneration,
+        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        audience: &ResyncAudience,
+        resync: &PaneResync,
+    ) -> ControlFlow<Option<PumpFault>> {
+        if !generation.takes_resync(audience, self.resync_target()) {
+            return ControlFlow::Continue(());
+        }
+        self.republish_generation(generation, output_rx, resync)
+            .await
+    }
+
     /// Is this pump publishing native libghostty checkpoints?
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     const fn publishes_native_checkpoints(&self) -> bool {
@@ -842,7 +873,7 @@ impl OutputPumpContext {
         }
         generation.note_resync_requested();
         crate::perf::PUMP_GAP_RESYNC.incr();
-        if enqueue_output_resync(&self.resize).await {
+        if enqueue_output_resync(&self.resize, self.resync_target()).await {
             return ControlFlow::Continue(());
         }
         self.fail_unrecoverable_gap().await
@@ -870,7 +901,7 @@ impl OutputPumpContext {
             self.lag_label,
         );
         generation.note_resync_requested();
-        if enqueue_output_resync(&self.resize).await {
+        if enqueue_output_resync(&self.resize, self.resync_target()).await {
             return ControlFlow::Continue(());
         }
         self.fail_unrecoverable_gap().await
@@ -1006,11 +1037,13 @@ async fn run_output_pump(
                 rows,
                 bytes,
                 reason,
+                audience,
                 base_seq,
             }) => {
-                ctx.republish_generation(
+                ctx.apply_resync(
                     &mut generation,
                     &mut output_rx,
+                    &audience,
                     &PaneResync {
                         cols,
                         rows,
@@ -3791,6 +3824,7 @@ pub(crate) fn apply_attach_viewport(
                 cell_px: s.resolve_terminal_cell_px(pane.terminal_id),
                 resync_clients: false,
                 resync_only: false,
+                resync_for: None,
             }) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -4185,6 +4219,402 @@ mod tests {
         assert!(!state.with(|server| server.attached().contains_key(&client_id)));
     }
 
+    /// The stream every pump in the two-pump tests publishes on.
+    fn two_pump_stream() -> StreamId {
+        StreamId::new(1).expect("stream id")
+    }
+
+    /// The generation each test pump opens with.
+    fn two_pump_initial_generation() -> BootstrapId {
+        BootstrapId::new(1).expect("bootstrap id")
+    }
+
+    /// A running ATTACH output pump on a shared pane broadcast, with its
+    /// consumer's mailbox exposed.
+    struct TwoPumpConsumer {
+        out_rx: tokio::sync::mpsc::Receiver<Outbound>,
+        task: tokio::task::JoinHandle<Option<PumpFault>>,
+    }
+
+    /// Start one synthesized-profile ATTACH pump for `client` whose published
+    /// bootstrap covers everything up to `published_cut`.
+    fn spawn_two_pump_consumer(
+        client: u64,
+        published_cut: u64,
+        mailbox: usize,
+        output: &tokio::sync::broadcast::Sender<PaneOutput>,
+        resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
+    ) -> TwoPumpConsumer {
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(mailbox);
+        let ctx = OutputPumpContext {
+            out_tx,
+            resize: resize.clone(),
+            wire_terminal_id: phux_protocol::ids::ResourceId::local(1),
+            stream_id: two_pump_stream(),
+            initial_bootstrap_id: two_pump_initial_generation(),
+            client_id: ClientId(client),
+            client_caps: ClientCapabilities::default(),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            lag_label: "two-pump test pump",
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            terminal: native_attach_handle()
+                .0
+                .terminal()
+                .expect("terminal facet")
+                .clone(),
+        };
+        let (gate_tx, gate_rx) = oneshot::channel();
+        gate_tx
+            .send(OutputPumpStart {
+                published_cut,
+                replay: Vec::new(),
+                live: None,
+            })
+            .unwrap_or_else(|_| panic!("gate receiver alive"));
+        let live = output.subscribe();
+        let task =
+            tokio::task::spawn_local(async move { run_output_pump(&ctx, gate_rx, live).await });
+        TwoPumpConsumer { out_rx, task }
+    }
+
+    /// What one consumer's mirror saw, reduced to what these tests judge.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Seen {
+        Output {
+            generation: BootstrapId,
+            seq: u64,
+        },
+        Begin {
+            generation: BootstrapId,
+            base_seq: u64,
+        },
+        Chunk,
+        Ready {
+            generation: BootstrapId,
+        },
+        Tombstone,
+        Other,
+    }
+
+    impl Seen {
+        fn of(outbound: Outbound) -> Self {
+            let Outbound::Frame(frame) = outbound else {
+                return Self::Other;
+            };
+            match frame {
+                FrameKind::ResourceOutput {
+                    bootstrap_id, seq, ..
+                } => Self::Output {
+                    generation: bootstrap_id,
+                    seq,
+                },
+                FrameKind::BootstrapBegin {
+                    bootstrap_id,
+                    base_seq,
+                    ..
+                } => Self::Begin {
+                    generation: bootstrap_id,
+                    base_seq,
+                },
+                FrameKind::BootstrapChunk { .. } => Self::Chunk,
+                FrameKind::BootstrapReady { bootstrap_id, .. } => Self::Ready {
+                    generation: bootstrap_id,
+                },
+                FrameKind::BootstrapTombstone { .. } => Self::Tombstone,
+                _ => Self::Other,
+            }
+        }
+    }
+
+    /// Drain `consumer` until it has seen `count` frames.
+    async fn frames_seen(consumer: &mut TwoPumpConsumer, count: usize) -> Vec<Seen> {
+        let mut seen = Vec::with_capacity(count);
+        while seen.len() < count {
+            let outbound =
+                tokio::time::timeout(std::time::Duration::from_secs(5), consumer.out_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("pump went quiet after {seen:?}"))
+                    .expect("pump mailbox closed");
+            seen.push(Seen::of(outbound));
+        }
+        seen
+    }
+
+    /// Let every pump task on the `LocalSet` run until it parks again.
+    async fn let_pumps_run() {
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// The consumer has nothing further queued: no late tombstone or
+    /// republish is sitting in its mailbox.
+    async fn assert_quiet(consumer: &mut TwoPumpConsumer, who: &str) {
+        let_pumps_run().await;
+        if let Ok(outbound) = consumer.out_rx.try_recv() {
+            panic!("{who} saw an unexpected frame: {:?}", Seen::of(outbound));
+        }
+    }
+
+    /// Wait for the gap resync request a pump sends the actor.
+    async fn resync_request(
+        resize_rx: &mut tokio::sync::mpsc::Receiver<ResizeRequest>,
+    ) -> ResizeRequest {
+        tokio::time::timeout(std::time::Duration::from_secs(5), resize_rx.recv())
+            .await
+            .expect("no resync request reached the actor")
+            .expect("resize mailbox closed")
+    }
+
+    /// Answer a gap resync the way the actor does: one broadcast `Resync`,
+    /// addressed to exactly the pump the request named.
+    fn answer_gap_resync(
+        output: &tokio::sync::broadcast::Sender<PaneOutput>,
+        request: &ResizeRequest,
+        base_seq: u64,
+    ) {
+        let audience = request.resync_for.map_or(ResyncAudience::Everyone, |pump| {
+            ResyncAudience::Only(vec![pump].into())
+        });
+        output
+            .send(PaneOutput::Resync {
+                cols: 80,
+                rows: 24,
+                reason: crate::terminal_actor::ResyncReason::OutboundGap,
+                audience,
+                base_seq,
+                bytes: bytes::Bytes::from_static(b"snapshot"),
+            })
+            .expect("pumps subscribed");
+    }
+
+    fn live(seq: u64, at: std::time::Instant) -> PaneOutput {
+        PaneOutput::Live {
+            seq,
+            bytes: bytes::Bytes::from_static(b"x"),
+            at,
+        }
+    }
+
+    /// phux-auqy: one consumer going stale re-bootstraps that consumer and
+    /// nobody else on the pane.
+    ///
+    /// Two ATTACH pumps share one pane. The fresh one attached later, so its
+    /// checkpoint already covers the chunk the remote one is only now
+    /// dequeuing, a second after the PTY read — past the staleness budget for
+    /// the remote pump alone. The remote pump fences and asks for a resync
+    /// that names it; the actor's answer is addressed to it. The fresh pump
+    /// must keep forwarding on its original generation with no tombstone and
+    /// no republish, and the stale one must converge onto a fresh generation
+    /// and resume live output there. A reflow afterwards is still owed to
+    /// both.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario: stale, targeted recovery, then a reflow"
+    )]
+    async fn a_stale_consumer_resyncs_without_republishing_its_neighbour() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(64);
+                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+                let mut fresh = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
+                let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
+                let initial = two_pump_initial_generation();
+                let replacement = next_bootstrap_id(initial);
+
+                let read_a_second_ago = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .expect("monotonic clock has run for a second");
+                output
+                    .send(live(2, read_a_second_ago))
+                    .expect("pumps subscribed");
+
+                let request = resync_request(&mut resize_rx).await;
+                assert!(request.resync_only && request.resync_clients);
+                assert_eq!(
+                    request.resync_for,
+                    Some(ResyncTarget {
+                        owner: 2,
+                        stream_id: two_pump_stream(),
+                    }),
+                    "the resync names the stale pump, not the pane",
+                );
+
+                let now = std::time::Instant::now();
+                output.send(live(3, now)).expect("pumps subscribed");
+                answer_gap_resync(&output, &request, 3);
+                output.send(live(4, now)).expect("pumps subscribed");
+
+                assert_eq!(
+                    frames_seen(&mut fresh, 2).await,
+                    vec![
+                        Seen::Output {
+                            generation: initial,
+                            seq: 3
+                        },
+                        Seen::Output {
+                            generation: initial,
+                            seq: 4
+                        },
+                    ],
+                    "the fresh consumer keeps its generation straight through",
+                );
+                assert_eq!(
+                    frames_seen(&mut stale, 4).await,
+                    vec![
+                        Seen::Begin {
+                            generation: replacement,
+                            base_seq: 3
+                        },
+                        Seen::Chunk,
+                        Seen::Ready {
+                            generation: replacement
+                        },
+                        Seen::Output {
+                            generation: replacement,
+                            seq: 4
+                        },
+                    ],
+                    "the stale consumer converges onto a fresh generation",
+                );
+                assert_quiet(&mut fresh, "the fresh consumer").await;
+                assert_quiet(&mut stale, "the stale consumer").await;
+                assert!(
+                    resize_rx.try_recv().is_err(),
+                    "nobody else asked the actor for a resync",
+                );
+
+                // A reflow changes the grid under everyone: still broadcast.
+                output
+                    .send(PaneOutput::Resync {
+                        cols: 100,
+                        rows: 30,
+                        reason: crate::terminal_actor::ResyncReason::Resize,
+                        audience: ResyncAudience::Everyone,
+                        base_seq: 4,
+                        bytes: bytes::Bytes::from_static(b"reflowed"),
+                    })
+                    .expect("pumps subscribed");
+                assert_eq!(
+                    frames_seen(&mut fresh, 1).await,
+                    vec![Seen::Begin {
+                        generation: replacement,
+                        base_seq: 4
+                    }],
+                );
+                assert_eq!(
+                    frames_seen(&mut stale, 1).await,
+                    vec![Seen::Begin {
+                        generation: next_bootstrap_id(replacement),
+                        base_seq: 4
+                    }],
+                );
+
+                drop(output);
+                for consumer in [fresh, stale] {
+                    let fault = consumer.task.await.expect("pump task");
+                    assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
+                }
+            })
+            .await;
+    }
+
+    /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
+    /// enough for the broadcast to overwrite its window is re-bootstrapped
+    /// alone. Its neighbour, draining promptly, sees every chunk on its
+    /// original generation and never a republish.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(4);
+                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+                let mut fresh = spawn_two_pump_consumer(1, 0, 64, &output, &resize_tx);
+                let mut lagging = spawn_two_pump_consumer(2, 0, 1, &output, &resize_tx);
+                let initial = two_pump_initial_generation();
+                let replacement = next_bootstrap_id(initial);
+
+                // Nobody drains the lagging consumer yet, so its link is
+                // stalled: its one mailbox slot takes seq 1 and its pump
+                // blocks forwarding seq 2 while the four-slot ring moves on
+                // past the chunks it has not read.
+                let now = std::time::Instant::now();
+                for seq in 1..=9 {
+                    output.send(live(seq, now)).expect("pumps subscribed");
+                    let_pumps_run().await;
+                }
+                assert!(
+                    resize_rx.try_recv().is_err(),
+                    "a stalled pump has not observed its gap yet",
+                );
+
+                // The link drains; only now does the pump find its window
+                // overwritten and ask for a resync.
+                assert_eq!(
+                    frames_seen(&mut lagging, 2).await,
+                    vec![
+                        Seen::Output {
+                            generation: initial,
+                            seq: 1
+                        },
+                        Seen::Output {
+                            generation: initial,
+                            seq: 2
+                        },
+                    ],
+                );
+                let request = resync_request(&mut resize_rx).await;
+                assert_eq!(
+                    request.resync_for,
+                    Some(ResyncTarget {
+                        owner: 2,
+                        stream_id: two_pump_stream(),
+                    }),
+                    "the resync names the lagging pump, not the pane",
+                );
+                answer_gap_resync(&output, &request, 9);
+                output.send(live(10, now)).expect("pumps subscribed");
+
+                let expected_fresh: Vec<_> = (1..=10)
+                    .map(|seq| Seen::Output {
+                        generation: initial,
+                        seq,
+                    })
+                    .collect();
+                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                assert_eq!(
+                    frames_seen(&mut lagging, 4).await,
+                    vec![
+                        Seen::Begin {
+                            generation: replacement,
+                            base_seq: 9
+                        },
+                        Seen::Chunk,
+                        Seen::Ready {
+                            generation: replacement
+                        },
+                        Seen::Output {
+                            generation: replacement,
+                            seq: 10
+                        },
+                    ],
+                );
+                assert_quiet(&mut fresh, "the fresh consumer").await;
+                assert_quiet(&mut lagging, "the lagging consumer").await;
+
+                drop(output);
+                for consumer in [fresh, lagging] {
+                    let fault = consumer.task.await.expect("pump task");
+                    assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
+                }
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn saturated_resync_mailbox_blocks_until_actor_accepts_request() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -4194,11 +4624,16 @@ mod tests {
             cell_px: None,
             resync_clients: false,
             resync_only: false,
+            resync_for: None,
         })
         .await
         .expect("occupy resize mailbox");
 
-        let mut pending = Box::pin(enqueue_output_resync(&tx));
+        let pump = ResyncTarget {
+            owner: 7,
+            stream_id: StreamId::new(3).expect("stream id"),
+        };
+        let mut pending = Box::pin(enqueue_output_resync(&tx, pump));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), &mut pending)
                 .await
@@ -4212,10 +4647,15 @@ mod tests {
         assert!(pending.await, "resync queues once capacity is available");
         let queued = rx.recv().await.expect("queued resync");
         assert!(queued.resync_only && queued.resync_clients);
+        assert_eq!(
+            queued.resync_for,
+            Some(pump),
+            "a gap resync names the pump that fell behind, so nobody else republishes",
+        );
 
         drop(rx);
         assert!(
-            !enqueue_output_resync(&tx).await,
+            !enqueue_output_resync(&tx, pump).await,
             "closed actor mailbox fails instead of resuming delta forwarding"
         );
     }
