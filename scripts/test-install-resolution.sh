@@ -63,12 +63,12 @@ expect_tag install-cockpit.sh cockpit-v9.8.7
 : > "$TMP/calls"
 FAIL_NETWORK=1 resolve install.sh --version v9.8.7 >/dev/null
 FAIL_NETWORK=1 resolve install-cockpit.sh --version 9.8.7 >/dev/null
-for invalid in v1.2.3/evil v1.2.3.4 v1..3 v+1.2.3 v01.2.3 $'v1.2.3\nevil'; do
+for invalid in '' v1.2.3/evil v1.2.3.4 v1..3 v+1.2.3 v01.2.3 $'v1.2.3\nevil'; do
   if resolve install.sh --version "$invalid" >"$TMP/out" 2>"$TMP/err"; then
     echo "core accepted invalid pin $invalid" >&2; exit 1
   fi
 done
-for invalid in 1.2.3.4 1..3 01.2.3; do
+for invalid in '' 1.2.3.4 1..3 01.2.3; do
   if resolve install-cockpit.sh --version "$invalid" >"$TMP/out" 2>"$TMP/err"; then
     echo "Cockpit accepted invalid pin $invalid" >&2; exit 1
   fi

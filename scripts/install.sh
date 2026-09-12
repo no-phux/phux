@@ -54,6 +54,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
       [ "$#" -ge 2 ] || die "--version requires a value"
+      [ -n "$2" ] || die "--version requires a nonempty release tag"
       version="$2"
       shift 2
       ;;
