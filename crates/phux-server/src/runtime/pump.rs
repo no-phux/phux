@@ -273,21 +273,28 @@ impl PumpGeneration {
     /// Taking an addressed resync only while fenced loses nothing: a pump
     /// asks for one only after fencing itself, and only a republish unfences.
     ///
-    /// A *retired* generation — a forwarded `BootstrapTombstone` voided it,
-    /// with no gap fence set — takes any resync, addressed to it or not. It
-    /// forwards nothing until a replacement lands and never asks for one of
-    /// its own (the stale and lag paths both go through [`Self::forwards`],
-    /// which a retired generation fails), so another pump's resync is its
-    /// only way back. Taking it is always safe: the resync is an ordered cut
-    /// on the same broadcast, covering every sequence before it. Before
-    /// resyncs were addressed, any everyone-resync revived such a pump; this
-    /// keeps that rescue.
+    /// A named pump that is *retired* — a forwarded `BootstrapTombstone`
+    /// voided its generation without a gap fence — takes it too. That is how
+    /// the actor revives the native pumps a reflow tombstoned when no
+    /// everyone-resync follows (an attach-time viewport change): it names
+    /// them (phux-p5bo). A retired pump is never revived by a resync naming
+    /// someone else. A native pump retired by its own client's reattach must
+    /// stay retired, or its capture races the live stream's for the
+    /// owner-keyed native binding and the loser detaches the client.
     pub(super) fn takes_resync(&self, audience: &ResyncAudience, pump: ResyncTarget) -> bool {
         match audience {
             ResyncAudience::Everyone => true,
-            ResyncAudience::Only(_) if !self.generation_active => true,
-            ResyncAudience::Only(_) => self.gap_pending && audience.includes(pump),
+            ResyncAudience::Only(_) => {
+                (self.gap_pending || !self.generation_active) && audience.includes(pump)
+            }
         }
+    }
+
+    /// Restart the staleness clock once a published generation's bootstrap
+    /// and replay are handed off, so a chunk that waited behind them is aged
+    /// from here rather than from its PTY read. See [`Self::chunk_age`].
+    pub(super) fn restart_staleness_clock(&mut self) {
+        self.published_at = std::time::Instant::now();
     }
 
     /// A replacement generation is published at `base_seq`: unfence, reactivate
@@ -391,28 +398,28 @@ mod tests {
         assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
     }
 
-    /// A retired generation takes any resync, addressed or not.
+    /// A retired generation takes a resync that names it, and only that.
     ///
-    /// A tombstone can retire a pump without fencing it, and such a pump asks
-    /// for no resync of its own; before resyncs were addressed, whichever
-    /// everyone-resync came next revived it. Another pump's addressed resync
-    /// must still do so, or the retired pump never shows output again.
+    /// The actor names the native pumps a reflow tombstoned (phux-p5bo); a
+    /// resync naming another pump must not revive a retired one, because a
+    /// pump retired by its own client's reattach must stay retired.
     #[test]
-    fn a_retired_generation_takes_any_resync_even_one_addressed_elsewhere() {
-        let addressed_elsewhere = ResyncAudience::Only(vec![pump_on(1, 1)].into());
+    fn a_retired_generation_takes_only_a_resync_that_names_it() {
+        let me = pump_on(2, 1);
         let mut retired = opened();
         retired.retire();
         assert!(!retired.is_fenced(), "retirement alone sets no gap fence");
+        assert!(retired.takes_resync(&ResyncAudience::Only(vec![me].into()), me));
         assert!(
-            retired.takes_resync(&addressed_elsewhere, pump_on(2, 1)),
-            "the stale neighbour's resync is the retired pump's only way back",
+            !retired.takes_resync(&ResyncAudience::Only(vec![pump_on(1, 1)].into()), me),
+            "another pump's resync must not revive a retired pump",
         );
-        assert!(retired.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
+        assert!(retired.takes_resync(&ResyncAudience::Everyone, me));
 
         retired.republished_at(100);
         assert!(
-            !retired.takes_resync(&addressed_elsewhere, pump_on(2, 1)),
-            "once republished it is an ordinary fresh pump again",
+            !retired.takes_resync(&ResyncAudience::Only(vec![me].into()), me),
+            "once republished and unfenced it is an ordinary fresh pump again",
         );
     }
 

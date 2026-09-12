@@ -1545,6 +1545,57 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     ));
 }
 
+/// phux-p5bo: an attach-time reflow (`resync_clients: false`) tombstones every
+/// native pump on the pane and owes no everyone-resync, so it must owe one to
+/// exactly the pumps it tombstoned. Without it those pumps are retired,
+/// forward nothing, never ask for a resync of their own, and stay frozen.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned() {
+    let bundle = TerminalActor::new(20, 5).expect("new actor");
+    let mut actor = bundle.actor;
+    let stream_id = phux_protocol::ids::StreamId::new(3).expect("stream id");
+    actor.native_cursor_owners.insert(
+        7,
+        NativeCursorOwner {
+            cursor: [1; libghostty_vt::snapshot::incremental::TOKEN_LEN],
+            record_index: 0,
+            touched: tokio::time::Instant::now(),
+            next_page_seq: 1,
+            terminal_id: phux_protocol::ids::ResourceId::local(1),
+            stream_id,
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        },
+    );
+    let attach_time_reflow = |cols, rows| ResizeRequest {
+        cols,
+        rows,
+        cell_px: None,
+        resync_clients: false,
+        resync_only: false,
+        resync_for: None,
+    };
+
+    let owed = actor.apply_resize_request(attach_time_reflow(30, 8));
+    assert_eq!(
+        owed,
+        vec![super::run_loop::OwedResync {
+            reason: crate::resource::ResyncReason::Resize,
+            target: Some(crate::resource::ResyncTarget {
+                owner: 7,
+                stream_id,
+            }),
+        }],
+        "the tombstoned native pump is owed a resync addressed to it",
+    );
+
+    let owed = actor.apply_resize_request(attach_time_reflow(40, 9));
+    assert!(
+        owed.is_empty(),
+        "with nothing native left to tombstone, an attach-time reflow owes nothing",
+    );
+}
+
 /// phux-rv52: a pane created while a client is attached is resized by the
 /// layout the instant it exists, and `invalidate_all_native_cursors`
 /// drains every binding. The `HISTORY_REQUEST` the client already sent for

@@ -724,6 +724,11 @@ pub struct TerminalActor {
     native_requests: NativeRequestReceivers,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners: HashMap<u64, NativeCursorOwner>,
+    /// Native pumps the last reflow tombstoned, taken by the resize path so
+    /// it can address a resync to them when no everyone-resync follows
+    /// (phux-p5bo).
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    reflow_tombstoned: Vec<crate::resource::ResyncTarget>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_bootstrap: Option<PendingNativeBootstrap>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

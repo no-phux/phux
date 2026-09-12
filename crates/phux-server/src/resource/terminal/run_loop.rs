@@ -98,12 +98,12 @@ impl BootstrapPump {
 /// One request's claim on the debounced resync: why it is owed and, for a
 /// gap, the one pump it is owed to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct OwedResync {
+pub(super) struct OwedResync {
     /// Why the requester's generation cannot continue.
-    reason: ResyncReason,
+    pub(super) reason: ResyncReason,
     /// The pump that fell behind, or `None` when every subscriber is owed
     /// (a reflow, or a gap request that named no pump).
-    target: Option<ResyncTarget>,
+    pub(super) target: Option<ResyncTarget>,
 }
 
 /// phux-8v1 drag fix: the debounced post-resize client resync owned by the
@@ -437,8 +437,9 @@ impl TerminalActor {
         resync: &mut ResyncDebounce,
         deadline: std::pin::Pin<&mut tokio::time::Sleep>,
     ) {
-        if let Some(owed) = self.apply_resize_request(req) {
-            resync.arm(owed, deadline);
+        let mut deadline = deadline;
+        for owed in self.apply_resize_request(req) {
+            resync.arm(owed, deadline.as_mut());
         }
     }
 
@@ -947,7 +948,13 @@ impl TerminalActor {
     /// bootstrap generation — so a client confirming the size
     /// it already asked for at spawn must not cost the pane the
     /// checkpoint it just published.
-    fn apply_resize_request(&mut self, req: ResizeRequest) -> Option<OwedResync> {
+    ///
+    /// A reflow that owes no everyone-resync (an attach-time viewport change,
+    /// `resync_clients: false`) still owes one to every native pump it
+    /// tombstoned: those pumps are retired, forward nothing, and never ask
+    /// for a resync of their own, so without one addressed to them they stay
+    /// frozen (phux-p5bo).
+    pub(super) fn apply_resize_request(&mut self, req: ResizeRequest) -> Vec<OwedResync> {
         // A `resync_only` request (from a lagged output pump)
         // carries no geometry — skip the resize and only schedule
         // the resync broadcast below.
@@ -956,10 +963,23 @@ impl TerminalActor {
         } else {
             self.handle_resize(req.cols, req.rows, req.cell_px)
         };
-        if !req.resync_clients || !(req.resync_only || reflowed) {
-            return None;
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let tombstoned = std::mem::take(&mut self.reflow_tombstoned);
+        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+        let tombstoned: Vec<ResyncTarget> = Vec::new();
+        if !req.resync_clients {
+            return tombstoned
+                .into_iter()
+                .map(|target| OwedResync {
+                    reason: ResyncReason::Resize,
+                    target: Some(target),
+                })
+                .collect();
         }
-        Some(if req.resync_only {
+        if !(req.resync_only || reflowed) {
+            return Vec::new();
+        }
+        vec![if req.resync_only {
             OwedResync {
                 reason: ResyncReason::OutboundGap,
                 target: req.resync_for,
@@ -969,7 +989,7 @@ impl TerminalActor {
                 reason: ResyncReason::Resize,
                 target: None,
             }
-        })
+        }]
     }
 
     /// One tick of the state-sync emission driver (phux-q0e.3, phux-ia4).

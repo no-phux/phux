@@ -767,6 +767,10 @@ impl OutputPumpContext {
             }
             generation.note_forwarded(seq);
         }
+        // Activation stamped the generation, but the replay above can hold
+        // the pump for as long as the checkpoint takes to drain; live chunks
+        // queued behind it waited on that, not on a slow consumer.
+        generation.restart_staleness_clock();
         Ok(())
     }
 
@@ -1010,6 +1014,8 @@ async fn run_output_pump(
     {
         return Some(fault);
     }
+    // The first live chunk waited behind the attach bootstrap and its replay.
+    generation.restart_staleness_clock();
     loop {
         let received = match next_pump_event(ctx, &mut generation, &mut output_rx).await {
             PumpStep::Event(received) => received,
@@ -4327,15 +4333,21 @@ mod tests {
         }
     }
 
+    /// How long a two-pump test waits for any one step before failing.
+    ///
+    /// Generous on purpose: nothing here is timed against it except a
+    /// broken pump, and a loaded CI box can hold a test process off the CPU
+    /// for seconds.
+    const TWO_PUMP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
     /// Drain `consumer` until it has seen `count` frames.
     async fn frames_seen(consumer: &mut TwoPumpConsumer, count: usize) -> Vec<Seen> {
         let mut seen = Vec::with_capacity(count);
         while seen.len() < count {
-            let outbound =
-                tokio::time::timeout(std::time::Duration::from_secs(5), consumer.out_rx.recv())
-                    .await
-                    .unwrap_or_else(|_| panic!("pump went quiet after {seen:?}"))
-                    .expect("pump mailbox closed");
+            let outbound = tokio::time::timeout(TWO_PUMP_DEADLINE, consumer.out_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("pump went quiet after {seen:?}"))
+                .expect("pump mailbox closed");
             seen.push(Seen::of(outbound));
         }
         seen
@@ -4357,14 +4369,30 @@ mod tests {
         }
     }
 
-    /// Wait for the gap resync request a pump sends the actor.
-    async fn resync_request(
+    /// Wait for the gap resync request the pump behind `laggard` sends the
+    /// actor.
+    ///
+    /// A missing request has three very different causes, so a timeout
+    /// reports which one it was instead of just "elapsed": a chunk in the
+    /// laggard's mailbox means its pump judged the output fresh, and an empty
+    /// mailbox means its pump either died (task finished) or never ran.
+    async fn resync_request_from(
         resize_rx: &mut tokio::sync::mpsc::Receiver<ResizeRequest>,
+        laggard: &mut TwoPumpConsumer,
     ) -> ResizeRequest {
-        tokio::time::timeout(std::time::Duration::from_secs(5), resize_rx.recv())
-            .await
-            .expect("no resync request reached the actor")
-            .expect("resize mailbox closed")
+        let_pumps_run().await;
+        if let Ok(received) = tokio::time::timeout(TWO_PUMP_DEADLINE, resize_rx.recv()).await {
+            return received.expect("resize mailbox closed");
+        }
+        let mut sent = Vec::new();
+        while let Ok(outbound) = laggard.out_rx.try_recv() {
+            sent.push(Seen::of(outbound));
+        }
+        panic!(
+            "no resync request reached the actor; the laggard was sent {sent:?} \
+             (pump task finished: {})",
+            laggard.task.is_finished(),
+        );
     }
 
     /// Answer a gap resync the way the actor does: one broadcast `Resync`,
@@ -4425,6 +4453,10 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
+                // Let both pumps open (stamping their generations) before the
+                // clock below starts, or a late first poll pushes their
+                // publish instants past the backdated chunk.
+                let_pumps_run().await;
                 // Staleness is measured from the later of the read and the
                 // generation's publication, so the pumps must have been live
                 // past the budget before a backdated chunk can count as late.
@@ -4440,7 +4472,7 @@ mod tests {
                     .send(live(2, read_a_second_ago))
                     .expect("pumps subscribed");
 
-                let request = resync_request(&mut resize_rx).await;
+                let request = resync_request_from(&mut resize_rx, &mut stale).await;
                 assert!(request.resync_only && request.resync_clients);
                 assert_eq!(
                     request.resync_for,
@@ -4530,105 +4562,6 @@ mod tests {
             .await;
     }
 
-    /// A pump a tombstone retired without fencing converges on its stale
-    /// neighbour's addressed resync.
-    ///
-    /// Two pre-existing paths retire a native pump with no gap fence and no
-    /// resync of its own to follow (a second native pump of the same client,
-    /// an attach-time reflow). Such a pump forwards nothing and never asks,
-    /// so the next resync on the pane — whoever it is addressed to — is its
-    /// only way back. Before resyncs were addressed, a neighbour's resync
-    /// always revived it; this pins that it still does.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_retired_pump_converges_on_its_stale_neighbours_resync() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(64);
-                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
-                let mut retired = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
-                let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
-                let initial = two_pump_initial_generation();
-                let replacement = next_bootstrap_id(initial);
-
-                // The actor voids pump 1's generation with no fence and no
-                // resync of its own to follow.
-                output
-                    .send(PaneOutput::Control {
-                        owner: 1,
-                        frame: FrameKind::BootstrapTombstone {
-                            terminal_id: phux_protocol::ids::ResourceId::local(1),
-                            stream_id: two_pump_stream(),
-                            bootstrap_id: initial,
-                            reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
-                            last_valid_seq: 2,
-                        },
-                    })
-                    .expect("pumps subscribed");
-                assert_eq!(frames_seen(&mut retired, 1).await, vec![Seen::Tombstone]);
-
-                // Staleness is measured from the later of the read and the
-                // generation's publication, so the pumps must have been live
-                // past the budget before a backdated chunk can count as late.
-                tokio::time::sleep(
-                    crate::runtime::pump::STALE_OUTPUT_BUDGET
-                        + std::time::Duration::from_millis(50),
-                )
-                .await;
-                let read_a_second_ago = std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(1))
-                    .expect("monotonic clock has run for a second");
-                output
-                    .send(live(2, read_a_second_ago))
-                    .expect("pumps subscribed");
-                let request = resync_request(&mut resize_rx).await;
-                assert_eq!(
-                    request.resync_for,
-                    Some(ResyncTarget {
-                        owner: 2,
-                        stream_id: two_pump_stream(),
-                    }),
-                    "only the stale pump asks; the retired one never does",
-                );
-
-                let now = std::time::Instant::now();
-                output.send(live(3, now)).expect("pumps subscribed");
-                answer_gap_resync(&output, &request, 3);
-                output.send(live(4, now)).expect("pumps subscribed");
-
-                let converged = vec![
-                    Seen::Begin {
-                        generation: replacement,
-                        base_seq: 3,
-                    },
-                    Seen::Chunk,
-                    Seen::Ready {
-                        generation: replacement,
-                    },
-                    Seen::Output {
-                        generation: replacement,
-                        seq: 4,
-                    },
-                ];
-                assert_eq!(
-                    frames_seen(&mut retired, 4).await,
-                    converged,
-                    "the retired pump takes its neighbour's resync and resumes",
-                );
-                assert_eq!(frames_seen(&mut stale, 4).await, converged);
-                assert_quiet(&mut retired, "the retired pump").await;
-                assert_quiet(&mut stale, "the stale pump").await;
-                assert!(resize_rx.try_recv().is_err(), "no further resync requests");
-
-                drop(output);
-                for consumer in [retired, stale] {
-                    let fault = consumer.task.await.expect("pump task");
-                    assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
-                }
-            })
-            .await;
-    }
-
     /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
     /// enough for the broadcast to overwrite its window is re-bootstrapped
     /// alone. Its neighbour, draining promptly, sees every chunk on its
@@ -4674,7 +4607,7 @@ mod tests {
                         },
                     ],
                 );
-                let request = resync_request(&mut resize_rx).await;
+                let request = resync_request_from(&mut resize_rx, &mut lagging).await;
                 assert_eq!(
                     request.resync_for,
                     Some(ResyncTarget {

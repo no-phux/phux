@@ -930,10 +930,13 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    ///
+    /// Returns the pumps it tombstoned, so a reflow that schedules no
+    /// everyone-resync can still address one to them (phux-p5bo).
     pub(super) fn invalidate_all_native_cursors(
         &mut self,
         reason: phux_protocol::wire::frame::TombstoneReason,
-    ) {
+    ) -> Vec<crate::resource::ResyncTarget> {
         self.native_bootstrap_backlog.clear();
         if let Some(pending) = self.pending_native_bootstrap.take() {
             self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
@@ -941,7 +944,12 @@ impl TerminalActor {
         let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
         self.native_publications.clear();
         let last_valid_seq = self.core.seq();
+        let mut tombstoned = Vec::with_capacity(bindings.len());
         for (owner, binding) in bindings {
+            tombstoned.push(crate::resource::ResyncTarget {
+                owner,
+                stream_id: binding.stream_id,
+            });
             self.publish_native_control(
                 owner,
                 FrameKind::BootstrapTombstone {
@@ -956,6 +964,7 @@ impl TerminalActor {
                 let _ = manager.release_generation(&binding.cursor);
             }
         }
+        tombstoned
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

@@ -262,7 +262,10 @@ impl TerminalActor {
             (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        {
+            self.reflow_tombstoned = self
+                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        }
         self.cols = applied.0;
         self.rows = applied.1;
         self.size_report.set(SizeReportSize {
