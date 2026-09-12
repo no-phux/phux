@@ -148,13 +148,51 @@ release_page() {
       if (text !~ /^(-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?|true|false|null)$/) fail()
       kind = "literal"
     }
-    function string_token() {
-      while (!match(buffer, /^"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/)) {
-        if (!more_input()) fail()
+    function string_token(    c) {
+      # Most strings fit in the current chunk. One complete-token match keeps
+      # dense arrays fast; failure switches to the incremental path below.
+      if (match(buffer, /^"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/)) {
+        text = substr(buffer, 2, RLENGTH - 2)
+        buffer = substr(buffer, RLENGTH + 1)
+        kind = "string"; return
       }
-      text = substr(buffer, 2, RLENGTH - 2)
-      buffer = substr(buffer, RLENGTH + 1)
-      kind = "string"
+      buffer = substr(buffer, 2)
+      text = ""; kind = "string"
+      while (1) {
+        if (buffer == "" && !more_input()) fail()
+        # Match only the unread fragment, never the accumulated string. The
+        # escape helpers consume exact bytes even across a chunk boundary.
+        match(buffer, /^[^"\\[:cntrl:]]+/)
+        if (RLENGTH > 0) {
+          text = text substr(buffer, 1, RLENGTH)
+          buffer = substr(buffer, RLENGTH + 1)
+          continue
+        }
+        c = string_byte()
+        if (c == "\"") return
+        if (c != "\\") fail()
+        text = text "\\" string_escape()
+      }
+    }
+    function string_byte(    c) {
+      if (buffer == "" && !more_input()) fail()
+      c = substr(buffer, 1, 1)
+      buffer = substr(buffer, 2)
+      return c
+    }
+    function string_escape(    c) {
+      c = string_byte()
+      if (c == "u") return c unicode_escape()
+      if (!index("\"\\/bfnrt", c)) fail()
+      return c
+    }
+    function unicode_escape(    i, c, hex) {
+      for (i = 0; i < 4; i++) {
+        c = string_byte()
+        if (c !~ /^[0-9a-fA-F]$/) fail()
+        hex = hex c
+      }
+      return hex
     }
     function consume(expected) {
       if (kind != expected) fail()

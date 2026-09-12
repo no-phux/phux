@@ -169,5 +169,47 @@ awk 'BEGIN {
 }' > "$TMP/pages/1.json"
 PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os darwin --arch arm64 > "$TMP/long-out"
 grep -Fq 'v9.8.7/' "$TMP/long-out"
+
+# A near-limit ordinary body previously rescanned its growing prefix for each
+# 1 KiB chunk. Check full parsing and selection here; benchmark elapsed time
+# separately so the regression suite has no CPU-speed-dependent deadline.
+awk 'BEGIN {
+  printf "[{\"tag_name\":\"v9.8.7\",\"draft\":false,\"prerelease\":false,\"body\":\""
+  for (i = 0; i < 1000000; i++) printf "x"
+  print "\"},{\"tag_name\":\"cockpit-v9.8.7\",\"draft\":false,\"prerelease\":false}]"
+}' > "$TMP/pages/1.json"
+for script in install.sh install-cockpit.sh; do
+  PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/$script" --dry-run --os darwin --arch arm64 > "$TMP/near-limit-out"
+  grep -Fq '9.8.7/' "$TMP/near-limit-out"
+done
+
+# Position each escape and its hex digits on both sides of a chunk boundary.
+# Invoke the canonical parser with system awk; generated copies are checked by
+# the surface gate. A selected tag must never escape a malformed trailing body.
+for offset in {0..7}; do
+  for suffix in '\u0061tail"}]' '\"tail"}]' '\\tail"}]' '\/tail"}]' \
+    '\b\f\n\r\t"}]' '"}]' '\u123"}]' '\u12g4"}]' '\x"}]' \
+    '\' '\u' '\u0' '\u00' '\u000' $'\n"}]'; do
+    JSON_SUFFIX="$suffix" awk -v offset="$offset" 'BEGIN {
+      prefix = "[{\"tag_name\":\"v9.8.7\",\"draft\":false,\"prerelease\":false,\"body\":\""
+      printf "%s", prefix
+      for (i = length(prefix); i < 1024 - offset; i++) printf "x"
+      printf "%s", ENVIRON["JSON_SUFFIX"]
+    }' > "$TMP/boundary.json"
+    case "$suffix" in
+      '\u0061tail"}]'|'\"tail"}]'|'\\tail"}]'|'\/tail"}]'|'\b\f\n\r\t"}]'|'"}]') expected=0 ;;
+      *) expected=1 ;;
+    esac
+    status=0
+    PATH="$TMP/wget-bin" "$SH" -c '. "$1"; release_page v "$2"' parser \
+      "$ROOT/scripts/lib/install-release.sh" "$TMP/boundary.json" > "$TMP/boundary-out" || status=$?
+    [[ $status == "$expected" ]] || { echo "escape boundary failed: offset=$offset suffix=$suffix" >&2; exit 1; }
+    if [[ $expected == 0 ]]; then
+      grep -Fxq 'v9.8.7' "$TMP/boundary-out"
+    else
+      [[ ! -s $TMP/boundary-out ]]
+    fi
+  done
+done
 [[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
 echo 'installer release resolution tests passed'
