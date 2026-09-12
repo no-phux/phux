@@ -31,7 +31,7 @@
 
 use std::time::Duration;
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
@@ -276,12 +276,13 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
 /// `0x71`, Ctrl-C is `0x03`, and `ArrowUp` is `\x1b[A`.
 #[test]
 fn encoder_emits_legacy_bytes_for_q_in_default_terminal_mode() {
-    let terminal = GhosttyTerminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 1000,
-    })
-    .expect("Terminal::new");
+    let terminal = {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(1000))
+            .expect("Terminal::new");
+        terminal
+    };
     let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
 
     let q_bytes = enc
@@ -349,12 +350,13 @@ fn default_shell_command_advertises_xterm_256color() {
 /// shape).
 #[test]
 fn encoder_emits_kitty_csi_u_when_terminal_has_kitty_flags() {
-    let mut terminal = GhosttyTerminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 1000,
-    })
-    .expect("Terminal::new");
+    let mut terminal = {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(1000))
+            .expect("Terminal::new");
+        terminal
+    };
     // Push kitty flags (DISAMBIGUATE | REPORT_EVENTS | REPORT_ALTERNATES
     // | REPORT_ALL | REPORT_ASSOCIATED == 31). An inner app that wants
     // the full kitty progressive enhancement writes exactly this.

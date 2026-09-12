@@ -37,7 +37,7 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_tui::attach::render::{ReplicaWalk, TerminalRenderer};
 use support::{Corpus, MEASURED_SAMPLES, WARMUP_SAMPLES, deterministic_line, percentile};
 
@@ -117,12 +117,13 @@ impl Write for CountingSink {
 /// ends of the wire are measured against the same cells.
 fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static> {
     let (cols, rows) = corpus.geometry();
-    let mut terminal = GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: corpus.history_lines().max(1_000),
-    })
-    .expect("benchmark terminal");
+    let mut terminal = {
+        let mut terminal = GhosttyTerminal::new(cols, rows).expect("benchmark terminal");
+        terminal
+            .set_scrollback_max_lines(Some(corpus.history_lines().max(1_000)))
+            .expect("benchmark terminal");
+        terminal
+    };
 
     match corpus {
         Corpus::Shell80x24 => {

@@ -4,17 +4,16 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::print_stderr, reason = "probe diagnostics on failure")]
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_server::extract::{extract_match, extract_match_in_scope};
 use phux_server::search::{Region, Scope, SearchOptions, search_oneshot};
 
 fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-    GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: 200,
-    })
-    .unwrap()
+    {
+        let mut terminal = GhosttyTerminal::new(cols, rows).unwrap();
+        terminal.set_scrollback_max_lines(Some(200)).unwrap();
+        terminal
+    }
 }
 
 const fn vp() -> SearchOptions {

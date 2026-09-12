@@ -144,15 +144,15 @@ impl PerTerminalPasteEncoder {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use libghostty_vt::TerminalOptions;
 
     fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols: 80,
-            rows: 24,
-            max_scrollback: 1000,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(1000))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     /// Mirror of `phux-protocol`'s `paste_trust_discriminants_match_libghostty`:

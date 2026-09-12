@@ -13,7 +13,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_server::input::key::PerTerminalKeyEncoder;
 
@@ -63,12 +63,13 @@ fn hex_dump(bytes: &[u8]) -> String {
 
 /// Fresh 80x24 terminal with no extra modes set.
 fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-    GhosttyTerminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 1000,
-    })
-    .expect("Terminal::new")
+    {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(1000))
+            .expect("Terminal::new");
+        terminal
+    }
 }
 
 /// Enable xterm modifyOtherKeys=2 (`CSI > 4 ; 2 m`) on a terminal.

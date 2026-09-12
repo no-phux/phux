@@ -80,7 +80,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_core::screen::{
     CellColor, CellInfo, CellStyle, RenderedFrame, SCHEMA_VERSION, ScreenState, SemanticContent,
 };
@@ -336,12 +336,14 @@ const CORPUS: &[Case] = &[
 /// docs. `vt_write` is infallible by libghostty's contract (malformed input
 /// is logged, not rejected).
 fn fed_terminal(case: &Case) -> GhosttyTerminal<'static, 'static> {
-    let mut term = GhosttyTerminal::new(TerminalOptions {
-        cols: case.cols,
-        rows: case.rows,
-        max_scrollback: MAX_SCROLLBACK,
-    })
-    .expect("terminal construction");
+    let mut term = {
+        let mut terminal =
+            GhosttyTerminal::new(case.cols, case.rows).expect("terminal construction");
+        terminal
+            .set_scrollback_max_lines(Some(MAX_SCROLLBACK))
+            .expect("terminal construction");
+        terminal
+    };
     term.vt_write(case.bytes.as_bytes());
     term
 }

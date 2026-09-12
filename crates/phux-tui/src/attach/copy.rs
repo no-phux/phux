@@ -267,17 +267,18 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use super::*;
     use libghostty_vt::{
-        Terminal as GhosttyTerminal, TerminalOptions,
+        Terminal as GhosttyTerminal,
         terminal::{PointSpace, ScrollViewport},
     };
 
     fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     /// A two-corner [`SelectionGrab::Rect`] request over the inclusive

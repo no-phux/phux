@@ -1265,9 +1265,9 @@ fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
     );
 }
 
-/// A real active-area checkpoint record is hundreds of kilobytes, far past the
-/// seed window, so this only reaches `READY` if the `OutOfSpace` retry widens
-/// the scratch to the exact `required_bytes` libghostty reported.
+/// Official GHOSTSNP of an empty 200×50 grid is ~1 KiB. Fill unique
+/// scrollback so the prefix exceeds the 64 KiB seed window and the
+/// `OutOfSpace` retry widens scratch to the exact `required_bytes`.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
@@ -1278,6 +1278,12 @@ async fn native_bootstrap_grows_its_scratch_past_the_seed_window() {
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             let actor = bundle.actor;
+            {
+                let mut terminal = actor.terminal.borrow_mut();
+                for row in 0..2_000 {
+                    terminal.vt_write(format!("scratch-row-{row:05} {row:<180}\r\n").as_bytes());
+                }
+            }
             let (reply, replied) = oneshot::channel();
             handle
                 .terminal()
@@ -1497,8 +1503,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let terminal_id = phux_protocol::ids::ResourceId::local(1);
     let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
-    let cursor: crate::native_state::OpaqueHistoryCursor =
-        [1; libghostty_vt::snapshot::incremental::TOKEN_LEN];
+    let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     actor.native_cursor_owners.insert(
         7,
         NativeCursorOwner {
@@ -1558,7 +1563,7 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
     actor.native_cursor_owners.insert(
         7,
         NativeCursorOwner {
-            cursor: [1; libghostty_vt::snapshot::incremental::TOKEN_LEN],
+            cursor: [1; crate::native_state::TOKEN_LEN],
             record_index: 0,
             touched: tokio::time::Instant::now(),
             next_page_seq: 1,
@@ -1613,8 +1618,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let terminal_id = phux_protocol::ids::ResourceId::local(1);
     let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
-    let cursor: crate::native_state::OpaqueHistoryCursor =
-        [1; libghostty_vt::snapshot::incremental::TOKEN_LEN];
+    let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     let wire_cursor = Bytes::copy_from_slice(&cursor);
     let binding = || NativeCursorOwner {
         cursor,

@@ -32,9 +32,9 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// A persistent libghostty grid oracle: the stand-in for the host
@@ -52,12 +52,13 @@ struct Oracle {
 impl Oracle {
     fn new(cols: u16, n_rows: u16) -> Self {
         Self {
-            terminal: GhosttyTerminal::new(TerminalOptions {
-                cols,
-                rows: n_rows,
-                max_scrollback: 1000,
-            })
-            .expect("oracle terminal"),
+            terminal: {
+                let mut terminal = GhosttyTerminal::new(cols, n_rows).expect("oracle terminal");
+                terminal
+                    .set_scrollback_max_lines(Some(1000))
+                    .expect("oracle terminal");
+                terminal
+            },
             state: RenderState::new().expect("render state"),
             rows: RowIterator::new().expect("row iter"),
             cells: CellIterator::new().expect("cell iter"),
