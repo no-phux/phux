@@ -1333,6 +1333,52 @@ PhuxClientResult phux_remote_tunnel_start(PhuxRemoteTunnel *tunnel, int transpor
  * bounded by one scheduler poll, never by the network. Must not race info. */
 void phux_remote_tunnel_free(PhuxRemoteTunnel *tunnel);
 
+/* Saved-machine inventory, additive ABI v2. All calls are single-owner-thread.
+ * Listing reads only configuration (including its layers), never credentials or
+ * network. No four-entry limit: caller budgets bound capture and indexes page it.
+ * Every span below is borrowed until registry_free. Initialize size/version.
+ * Rows have no connection state: the host joins authenticated endpoint identity.
+ * Captured (registry handle,index) is authority; display names alone are not.
+ */
+typedef struct PhuxMachineRegistry PhuxMachineRegistry;
+typedef struct PhuxMachineRegistryOptions {
+    size_t size;
+    uint32_t version;
+    PhuxBytes config_path; /* Empty selects the CLI path; otherwise absolute. */
+    size_t max_entries;
+    size_t max_file_bytes;
+} PhuxMachineRegistryOptions;
+typedef struct PhuxMachineRegistryInfo {
+    size_t size;
+    uint32_t version;
+    size_t count;
+    uint32_t failed;
+    PhuxBytes message;
+} PhuxMachineRegistryInfo;
+typedef struct PhuxMachineRecord {
+    size_t size;
+    uint32_t version;
+    uint32_t role; /* 1 remote, 2 satellite */
+    uint32_t route; /* 1 direct, 2 setup, 3 via hub, 4 disabled, 5 unsupported */
+    PhuxBytes name;
+    PhuxBytes endpoint;
+    PhuxBytes session;
+    PhuxBytes message;
+} PhuxMachineRecord;
+/* Load errors yield OK with info.failed=1 and a sanitized actionable message. */
+PhuxClientResult phux_machine_registry_open(const PhuxMachineRegistryOptions *options, PhuxMachineRegistry **out);
+PhuxClientResult phux_machine_registry_info(const PhuxMachineRegistry *registry, PhuxMachineRegistryInfo *out);
+PhuxClientResult phux_machine_registry_get(const PhuxMachineRegistry *registry, size_t index, PhuxMachineRecord *out);
+/* State error if captured root bytes or effective registrations changed. */
+PhuxClientResult phux_machine_registry_validate(const PhuxMachineRegistry *registry, size_t index);
+/* Returns a checked, exact tunnel (no network yet). Start never resolves aliases
+ * again. Caller owns out through phux_remote_tunnel_free. Unsupported roles fail. */
+PhuxClientResult phux_machine_registry_resolve(const PhuxMachineRegistry *registry, size_t index, PhuxRemoteTunnel **out);
+/* Caller first explicitly disconnects. Exact root entry only, comments preserved;
+ * no token files removed. Success invalidates capture; refresh before next action. */
+PhuxClientResult phux_machine_registry_forget(const PhuxMachineRegistry *registry, size_t index);
+void phux_machine_registry_free(PhuxMachineRegistry *registry);
+
 #ifdef __cplusplus
 }
 #endif

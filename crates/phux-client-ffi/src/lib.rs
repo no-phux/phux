@@ -44,6 +44,7 @@ pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,
 };
+pub use remote::registry::*;
 pub use remote::*;
 pub use session_query::*;
 pub use session_rename::*;

@@ -30,6 +30,7 @@ mod schema;
 pub mod session_name; // phux-c2td.6 (`${random-name}` adjective-noun generator)
 pub mod settings; // phux-u1tq.3 (scalar settings catalogue, provenance snapshot, comment-preserving writer)
 pub mod socket; // phux-93b (shared default socket path: daemon + thin clients)
+pub mod toml_registry;
 pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
 // Wave 5 modules — each owned by its respective subtask:

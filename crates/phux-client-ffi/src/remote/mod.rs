@@ -21,6 +21,7 @@
 )]
 
 mod pump;
+pub mod registry;
 mod target;
 
 use std::ffi::c_int;
