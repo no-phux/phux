@@ -38,8 +38,8 @@
                   <if test="{row.agent}">
                     <row gap="8" padding="4" cross="center">
                       <spacer width="16" />
-                      <text foreground="text_muted" overflow="ellipsis">{row.label}</text>
-                      <text grow="1" foreground="text_muted">{row.state}</text>
+                      <text grow="1" foreground="text_muted" overflow="ellipsis">{row.label}</text>
+                      <text foreground="text_muted">{row.state}</text>
                       <text foreground="warning" label="{row.attentionLabel}">{row.mark}</text>
                     </row>
                   </if>

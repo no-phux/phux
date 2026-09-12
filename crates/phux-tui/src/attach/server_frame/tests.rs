@@ -5321,7 +5321,10 @@ fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
             profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
             cols: 0,
             rows: 0,
-            base_seq: 0,
+            // Per the AgentEventsJsonlV1 erratum (L1 §4.8), base_seq is the
+            // record counter at the cut: this bootstrap retains record seq 1,
+            // so the cut is 1 and the first live record is seq 2.
+            base_seq: 1,
         },
         &mut panes,
         &mut workspace,
@@ -5378,7 +5381,8 @@ fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
             terminal_id: agent.clone(),
             stream_id,
             bootstrap_id,
-            seq: 1,
+            // The envelope echoes the batch's final record sequence.
+            seq: 2,
             bytes: bytes::Bytes::from(live.as_bytes().to_vec()),
         },
         &mut panes,

@@ -215,7 +215,7 @@ test "the snapshot carries agent rows as an extension record the TS core decodes
     // the shared sections. The variable-length navigation context can shift
     // the quiet snapshot's length, so scan for the record and strictly
     // validate its framing instead of trusting the quiet boundary.
-    findParentRows(quiet) catch |err| try testing.expectEqual(error.TestExpectedParentAgentRows, err);
+    try testing.expectError(error.TestExpectedParentAgentRows, findParentRows(quiet));
     const rows = try findParentRows(bytes);
     try testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, rows[3..5], .little));
     try testing.expectEqual(@as(u8, 2), rows[5]);
