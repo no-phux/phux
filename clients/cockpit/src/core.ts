@@ -238,6 +238,8 @@ export interface Model {
   readonly hostOpen: boolean;
   readonly toolPurpose: number;
   readonly toolToken: Uint8Array;
+  readonly toolLaunchToken: Uint8Array;
+  readonly toolLaunchPending: boolean;
   readonly toolOperationId: number;
   readonly toolOperationToken: Uint8Array;
   readonly toolStatusBusy: boolean;
@@ -437,6 +439,7 @@ export type Msg =
   | { readonly kind: "keybindings_loaded"; readonly body: Uint8Array }
   | { readonly kind: "new_session_cancelled"; readonly body: Uint8Array }
   | { readonly kind: "new_session_cancel_failed"; readonly error: Uint8Array }
+  | { readonly kind: "context_refused" }
   | { readonly kind: "navigator_scrolled"; readonly scroll: ScrollState }
   | { readonly kind: "keybindings_failed"; readonly error: Uint8Array }
   | { readonly kind: "sessions_open" }
@@ -470,6 +473,8 @@ export type Msg =
   | { readonly kind: "host_name_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "local_tool_loaded"; readonly body: Uint8Array }
   | { readonly kind: "local_tool_failed"; readonly error: Uint8Array }
+  | { readonly kind: "local_tool_launch_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "local_tool_launch_failed"; readonly error: Uint8Array }
   | { readonly kind: "local_tool_status_loaded"; readonly body: Uint8Array }
   | { readonly kind: "local_tool_status_failed"; readonly error: Uint8Array }
   | { readonly kind: "local_tool_acknowledged"; readonly body: Uint8Array }
@@ -551,7 +556,7 @@ export type Msg =
     };
 
 export const viewUnbound = [
-  "pendingSessionAction", "pendingSettingsAction", "retiredSessionToken", "new_session_cancelled", "new_session_cancel_failed",
+  "pendingSessionAction", "pendingSettingsAction", "retiredSessionToken", "new_session_cancelled", "new_session_cancel_failed", "context_refused",
   "select_tab",
   "settingsAnchor",
   "settingsFocus",
@@ -566,6 +571,7 @@ export const viewUnbound = [
   "paletteRefreshing",
   "paletteSelection",
   "toolToken",
+  "toolLaunchToken", "toolLaunchPending", "local_tool_launch_loaded", "local_tool_launch_failed",
   "toolOperationId", "toolOperationToken", "toolStatusBusy", "tool_status_tick",
   "local_tool_status_loaded", "local_tool_status_failed", "local_tool_acknowledged", "local_tool_ack_failed",
   "friendlyAnchor",
@@ -1863,6 +1869,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       hostOpen: false,
       toolPurpose: 0,
       toolToken: NO_BYTES,
+      toolLaunchToken: NO_BYTES,
+      toolLaunchPending: false,
       toolOperationId: 0,
       toolOperationToken: NO_BYTES,
       toolStatusBusy: false,
@@ -2450,7 +2458,17 @@ function receivedMachineInventory(model: Model, body: Uint8Array): NavigatorDeci
   if (machines === model.machines) return { model, effect: 0, request: NO_BYTES };
   const next = { ...model, machines };
   if (model.machines.operation === 7 && !machines.failed && !machines.loading) return openMachineSessions(next);
+  const status = continueMachineStatus(next);
+  if (status !== null) return status;
   return navigatorDecision(next, 0, NO_BYTES);
+}
+
+function continueMachineStatus(model: Model): NavigatorDecision | null {
+  const machines = model.machines;
+  if (machines.loading || machines.failed) return null;
+  if (machines.statusFirst > 0) return requestMachineStatus(model, false);
+  if (machines.statusDirty) return requestMachineStatus(model, true);
+  return null;
 }
 
 function openMachineSessions(model: Model): NavigatorDecision {
@@ -2463,8 +2481,19 @@ function openMachineSessions(model: Model): NavigatorDecision {
 function refreshMachineSnapshot(model: Model): NavigatorDecision | null {
   if (!model.paletteOpen || model.navigatorView !== 2 || model.machines.loading) return null;
   if (model.machines.generation === 0 || model.machines.failed) return null;
-  const machines = requestMachines(model.machines, 8);
+  return requestMachineStatus(model, true);
+}
+
+function requestMachineStatus(model: Model, restart: boolean): NavigatorDecision {
+  const previous: MachineState = restart ? { ...model.machines, statusFirst: 0, statusDirty: false } : model.machines;
+  const machines = requestMachines(previous, 8);
   return navigatorDecision({ ...model, machines }, 2, machineStatusRequest(machines));
+}
+
+function retainMachineInvalidation(model: Model): Model {
+  if (!model.paletteOpen || model.navigatorView !== 2) return model;
+  if (!model.machines.loading) return model;
+  return { ...model, machines: { ...model.machines, statusDirty: true } };
 }
 
 function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
@@ -2766,10 +2795,10 @@ function describeLocalTool(model: Model, purpose: number): NavigatorDecision {
 }
 
 function launchLocalTool(model: Model): NavigatorDecision {
-  if (model.toolOperationId > 0) return navigatorDecision({ ...model, hostNotice: asciiBytes("Waiting for the previous local tool receipt. Its status is still being checked.") }, 0, NO_BYTES);
+  if (model.toolLaunchPending || model.toolOperationId > 0) return navigatorDecision({ ...model, hostNotice: asciiBytes("Waiting for the previous local tool receipt. Its status is still being checked.") }, 0, NO_BYTES);
   if (model.hostBusy || model.toolToken.length !== 8) return navigatorDecision(model, 0, NO_BYTES);
   if (model.toolPurpose === 1 && model.hostQuery.length === 0) return navigatorDecision({ ...model, hostNotice: asciiBytes("Enter a hostname or SSH destination.") }, 0, NO_BYTES);
-  return navigatorDecision({ ...model, hostBusy: true }, 6,
+  return navigatorDecision({ ...model, hostBusy: true, toolLaunchPending: true, toolLaunchToken: model.toolToken.slice() }, 19,
     localToolLaunchRequest(model));
 }
 
@@ -2783,15 +2812,40 @@ function receiveLocalTool(model: Model, body: Uint8Array): NavigatorDecision {
   if (reply === null) return navigatorDecision({ ...model, hostBusy: false, hostNotice: asciiBytes("Local setup status unavailable. Try again.") }, 0, NO_BYTES);
   if (model.toolToken.length > 0 && !sameBytes(model.toolToken, reply.token)) return navigatorDecision(model, 0, NO_BYTES);
   const next = { ...model, hostBusy: false, toolToken: reply.token, toolTarget: reply.target, hostNotice: reply.message };
-  if (reply.phase === 1) return queuedLocalTool(next, reply.operation, reply.token);
   if (reply.phase === 0 && model.toolPurpose === 2) return launchLocalTool(next);
   return navigatorDecision(next, 0, NO_BYTES);
 }
 
+function ownsToolDialog(model: Model, token: Uint8Array): boolean {
+  return model.hostOpen && sameBytes(model.toolToken, token);
+}
+
+function receiveLocalToolAdmission(model: Model, body: Uint8Array): NavigatorDecision {
+  if (!model.toolLaunchPending) return { model, effect: 0, request: NO_BYTES };
+  const reply = localToolReply(body);
+  if (reply === null) return failedLocalToolAdmission(model);
+  if (!sameBytes(reply.token, model.toolLaunchToken)) return { model, effect: 0, request: NO_BYTES };
+  const next: Model = { ...model, toolLaunchPending: false };
+  if (reply.phase === 1) return queuedLocalTool(next, reply.operation, reply.token);
+  return rejectedLocalToolAdmission(next, reply.message);
+}
+
+function rejectedLocalToolAdmission(model: Model, message: Uint8Array): NavigatorDecision {
+  if (ownsToolDialog(model, model.toolLaunchToken)) return navigatorDecision({ ...model, hostBusy: false, hostNotice: message }, 0, NO_BYTES);
+  return navigatorDecision({ ...model, commandNotice: joinBytes(asciiBytes("Local tool was not admitted. Check This Mac before retrying. "), message, NO_BYTES) }, 0, NO_BYTES);
+}
+
+function failedLocalToolAdmission(model: Model): NavigatorDecision {
+  if (!model.toolLaunchPending) return { model, effect: 0, request: NO_BYTES };
+  return rejectedLocalToolAdmission({ ...model, toolLaunchPending: false }, asciiBytes("Could not confirm local launch. Check This Mac before trying again."));
+}
+
 function queuedLocalTool(model: Model, operation: number, token: Uint8Array): NavigatorDecision {
-  if (!(operation > 0 && operation <= 4294967295)) return navigatorDecision({ ...model,
-    hostNotice: asciiBytes("Local launch returned no operation receipt. Check This Mac before trying again.") }, 0, NO_BYTES);
-  const next = scopeOverlays({ ...model, hostOpen: false, toolQueued: true, toolStatusBusy: true,
+  if (!(operation > 0 && operation <= 4294967295)) return rejectedLocalToolAdmission(model,
+    asciiBytes("Local launch returned no operation receipt. Check This Mac before trying again."));
+  const owned = ownsToolDialog(model, token);
+  const next = scopeOverlays({ ...model, hostOpen: owned ? false : model.hostOpen, hostBusy: owned ? false : model.hostBusy,
+    toolQueued: true, toolStatusBusy: true,
     toolOperationId: Math.trunc(operation), toolOperationToken: token,
     commandNotice: TOOL_QUEUED_NOTICE });
   return navigatorDecision(next, 15, localToolRequest(4, token, NO_BYTES, NO_BYTES));
@@ -2846,6 +2900,8 @@ function acknowledgeLocalTool(model: Model, body: Uint8Array): NavigatorDecision
 
 function localToolStatusTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
+    case "local_tool_launch_loaded": return receiveLocalToolAdmission(model, msg.body);
+    case "local_tool_launch_failed": return failedLocalToolAdmission(model);
     case "tool_status_tick": return pollLocalTool(model);
     case "local_tool_status_loaded": return receiveLocalToolStatus(model, msg.body);
     case "local_tool_acknowledged": return acknowledgeLocalTool(model, msg.body);
@@ -2998,7 +3054,14 @@ function toolSurfaceMessage(surface: number): Msg {
 }
 
 interface PreparedMessage { readonly model: Model; readonly msg: Msg; }
-export interface DeferredAction { readonly code: number; readonly argument: number; readonly target: Uint8Array }
+export interface DeferredAction {
+  readonly code: number;
+  readonly argument: number;
+  readonly target: Uint8Array;
+  readonly revision: WireU64;
+  readonly window: number;
+  readonly contextTarget: Uint8Array;
+}
 
 function deferredActionCode(msg: Msg): number {
   const surface = openingSurface(msg);
@@ -3019,13 +3082,33 @@ function deferredArgument(msg: Msg): number {
   return 0;
 }
 
-function captureDeferredAction(msg: Msg): DeferredAction {
+function captureDeferredAction(model: Model, msg: Msg): DeferredAction {
   const rawCode = deferredActionCode(msg);
   const rawArgument = deferredArgument(msg);
   const code = rawCode >= 0 && rawCode <= 22 ? Math.trunc(rawCode) : 0;
   const argument = rawArgument >= 0 && rawArgument <= 65535 ? Math.trunc(rawArgument) : 0;
   const target = msg.kind === "select_target" || msg.kind === "palette_pick" ? msg.target.slice() : NO_BYTES;
-  return { code, argument, target };
+  return { code, argument, target, revision: model.engineRevision, window: model.activeWindow,
+    contextTarget: focusedTabTarget(model).slice() };
+}
+
+function deferredContextRequired(action: DeferredAction): boolean {
+  if (action.code <= 5) return false;
+  return action.code !== 11;
+}
+
+function deferredContextCurrent(model: Model, action: DeferredAction): boolean {
+  if (!sameU64(model.engineRevision, action.revision)) return false;
+  if (model.activeWindow !== action.window) return false;
+  return sameBytes(focusedTabTarget(model), action.contextTarget);
+}
+
+function resumeDeferredAction(model: Model, action: DeferredAction): PreparedMessage {
+  if (deferredContextRequired(action) && !deferredContextCurrent(model, action)) return {
+    model: { ...model, commandNotice: asciiBytes("The command context changed while closing the dialog. Reopen the command in the intended window and try again.") },
+    msg: { kind: "context_refused" },
+  };
+  return { model, msg: deferredActionMessage(action) };
 }
 
 function deferredActionMessage(action: DeferredAction): Msg {
@@ -3063,6 +3146,7 @@ function settingsDisplacingMessage(msg: Msg): boolean {
 }
 
 function departureTransition(model: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "context_refused") return navigatorDecision(model, 1, NO_BYTES);
   if (model.pendingSessionAction !== null) return waitingSessionDeparture(model, msg);
   if (model.creatingSession && sessionDisplacingMessage(msg)) return cancelSessionForAction(model, msg);
   if (model.settingsOpen && settingsDisplacingMessage(msg)) return cancelSettingsForAction(model, msg);
@@ -3071,15 +3155,15 @@ function departureTransition(model: Model, msg: Msg): NavigatorDecision | null {
 
 function cancelSessionForAction(model: Model, msg: Msg): NavigatorDecision {
   const next = scopeOverlays({ ...model, renameOpen: false, creatingSession: false, newSessionAwaiting: false,
-    pendingSessionAction: captureDeferredAction(msg), retiredSessionToken: model.newSessionToken });
+    pendingSessionAction: captureDeferredAction(model, msg), retiredSessionToken: model.newSessionToken });
   if (model.newSessionToken.length !== 8) return navigatorDecision(next, 1, NO_BYTES);
   return navigatorDecision(next, 13, newSessionRequest(4, model.newSessionToken, NO_BYTES));
 }
 
 function waitingSessionDeparture(model: Model, msg: Msg): NavigatorDecision | null {
   if (msg.kind === "new_session_cancelled" || msg.kind === "new_session_cancel_failed") return failedSessionCancellation(model);
-  if (msg.kind === "palette_close" || msg.kind === "rename_close") return navigatorDecision({ ...model, pendingSessionAction: captureDeferredAction({ kind: "engine_wake" }) }, 1, NO_BYTES);
-  if (sessionDisplacingMessage(msg)) return navigatorDecision({ ...model, pendingSessionAction: captureDeferredAction(msg) }, 0, NO_BYTES);
+  if (msg.kind === "palette_close" || msg.kind === "rename_close") return navigatorDecision({ ...model, pendingSessionAction: captureDeferredAction(model, { kind: "engine_wake" }) }, 1, NO_BYTES);
+  if (sessionDisplacingMessage(msg)) return navigatorDecision({ ...model, pendingSessionAction: captureDeferredAction(model, msg) }, 0, NO_BYTES);
   if (msg.kind !== "new_session_loaded") return null;
   if (model.newSessionToken.length > 0) return { model, effect: 0, request: NO_BYTES };
   const reply = newSessionReply(msg.body);
@@ -3094,7 +3178,7 @@ function failedSessionCancellation(model: Model): NavigatorDecision {
 }
 
 function cancelSettingsForAction(model: Model, msg: Msg): NavigatorDecision {
-  const next: Model = { ...model, pendingSettingsAction: captureDeferredAction(msg), settingsReloadStage: 0, pendingToolOpen: false,
+  const next: Model = { ...model, pendingSettingsAction: captureDeferredAction(model, msg), settingsReloadStage: 0, pendingToolOpen: false,
     appearanceClosing: true, appearanceBusy: true, navigationAfterSettings: msg.kind === "palette_open" };
   return navigatorDecision(next, 7, appearanceRequest(6, 0));
 }
@@ -3102,7 +3186,8 @@ function cancelSettingsForAction(model: Model, msg: Msg): NavigatorDecision {
 function resumeSessionAction(model: Model, msg: Msg): PreparedMessage {
   if (!sessionCancellationDone(model, msg)) return { model, msg };
   const action = model.pendingSessionAction;
-  return { model: { ...model, pendingSessionAction: null }, msg: action === null ? { kind: "engine_wake" } : deferredActionMessage(action) };
+  const next: Model = { ...model, pendingSessionAction: null };
+  return action === null ? { model: next, msg: { kind: "engine_wake" } } : resumeDeferredAction(next, action);
 }
 
 function sessionCancellationDone(model: Model, msg: Msg): boolean {
@@ -3125,7 +3210,7 @@ function resumeSettingsAction(model: Model, msg: Msg): PreparedMessage {
   const waiting = { ...model, navigationAfterSettings: false };
   const decision = msg.kind === "appearance_loaded" ? loadedAppearance(waiting, msg.body) : appearanceFailure(waiting);
   if (!decision.closed) return { model, msg };
-  return { model: { ...decision.model, pendingSettingsAction: null }, msg: deferredActionMessage(action) };
+  return resumeDeferredAction({ ...decision.model, pendingSettingsAction: null }, action);
 }
 
 function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
@@ -3209,6 +3294,10 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     if (navigator.effect === 16) return [navigator.model, Cmd.delay("cockpit-tool-status-tick", 500, "tool_status_tick")];
     if (navigator.effect === 17) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_status_loaded", err: "local_tool_status_failed" })];
     if (navigator.effect === 18) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_acknowledged", err: "local_tool_ack_failed" })];
+    if (navigator.effect === 19) return [navigator.model, Cmd.batch([
+      Cmd.host("cockpit.committed", NO_BYTES),
+      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-launch", ok: "local_tool_launch_loaded", err: "local_tool_launch_failed" }),
+    ])];
     return navigator.model;
   }
   // Go to Directory first: while it is open it owns Escape and the arrows.
@@ -3449,7 +3538,7 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // moved: withdraw its rows, and list again once connected.
       const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
       const directoryRelists = directoryMoved && projected.connection === 2;
-      const scoped = directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced);
+      const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
       const machinePoll = refreshMachineSnapshot(scoped);
       if (machinePoll !== null) return [machinePoll.model, Cmd.request("cockpit.machines", machinePoll.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" })];
       // Remote status is asked for only when the connection moved (or a

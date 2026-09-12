@@ -24,7 +24,7 @@ test('Add Machine retains destination through dedicated local setup and explicit
   assert.equal(cmd.cmds[1].payload[1], 3);
   assert.deepEqual(cmd.cmds[1].payload.slice(2, 10), token);
   assert.ok(text(cmd.cmds[1].payload).includes('alice@mini'));
-  [model] = step(model, { kind: 'local_tool_loaded', body: toolReply(1) });
+  [model] = step(model, { kind: cmd.cmds[1].okKind, body: toolReply(1) });
   assert.equal(model.hostOpen, false);
   assert.equal(model.toolQueued, true);
   assert.equal(text(model.hostQuery), 'alice@mini');
@@ -43,7 +43,9 @@ test('Edit Configuration uses a captured local launch and never types into the f
   assert.deepEqual(cmd.cmds[1].payload.slice(2, 10), token);
   assert.equal(text(model.toolTarget), '/tmp/config with spaces');
   [model] = step(model, { kind: 'host_close' });
-  assert.equal(step(model, { kind: 'local_tool_loaded', body: toolReply(1) })[0].hostOpen, false);
+  const [admitted] = step(model, { kind: cmd.cmds[1].okKind, body: toolReply(1) });
+  assert.equal(admitted.hostOpen, false);
+  assert.equal(admitted.toolQueued, true);
 });
 
 test('New Session names its captured machine, echoes token, and does not report pending as success', () => {

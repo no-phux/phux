@@ -36,6 +36,7 @@ export interface MachineState {
   readonly operation: number;
   readonly browseToken: Uint8Array;
   readonly statusFirst: number;
+  readonly statusDirty: boolean;
   readonly requestId: number;
   readonly generation: number;
   readonly total: number;
@@ -54,7 +55,7 @@ const EMPTY = new Uint8Array(0);
 const NO_MACHINES: readonly MachineRow[] = [];
 
 export function initialMachines(): MachineState {
-  return { operation: 0, browseToken: EMPTY, statusFirst: 0, requestId: 0, generation: 0, total: 0, rows: NO_MACHINES, visible: NO_MACHINES,
+  return { operation: 0, browseToken: EMPTY, statusFirst: 0, statusDirty: false, requestId: 0, generation: 0, total: 0, rows: NO_MACHINES, visible: NO_MACHINES,
     selected: EMPTY, notice: EMPTY, loading: false, failed: false, hasMore: false, forgetTarget: EMPTY, forgetName: EMPTY };
 }
 
@@ -86,6 +87,7 @@ export function requestMachines(state: MachineState, operation: number): Machine
   const requestId = (state.requestId + 1) % 4294967296;
   const action = operation >= 0 && operation <= 8 ? Math.trunc(operation) : 0;
   return { ...state, operation: action, requestId: requestId >= 0 && requestId <= 4294967295 ? Math.trunc(requestId) : 0,
+    statusFirst: operation === 8 ? state.statusFirst : 0, statusDirty: operation === 0 ? false : state.statusDirty,
     loading: true, notice: asciiBytes("Refreshing machines...") };
 }
 
@@ -230,14 +232,40 @@ export function receiveMachines(state: MachineState, body: Uint8Array, query: Ui
   const page = machinePage(body);
   if (page === null) return { ...state, loading: false, failed: true, notice: asciiBytes("Machines unavailable. Refresh to try again.") };
   if (page.requestId !== state.requestId) return state;
+  if (!validStatusPage(state, page)) return { ...state, loading: false, failed: true, forgetTarget: EMPTY,
+    notice: asciiBytes("Machine status changed unexpectedly. Refresh Machines before trying again.") };
   if (page.status !== 0 && page.rows.length === 0) return { ...state, loading: false, failed: true, notice: page.message, selected: EMPTY, forgetTarget: EMPTY };
   const rows = updatedMachineRows(state, page);
   const selected = restoredSelection(state, rows);
   const generation = page.generation >= 0 && page.generation <= 4294967295 ? Math.trunc(page.generation) : 0;
   const total = page.total >= 0 && page.total <= 4294967295 ? Math.trunc(page.total) : 0;
   const next = { ...state, generation, total, rows, selected,
-    loading: false, failed: page.status !== 0, hasMore: rows.length < page.total, notice: page.message, forgetTarget: EMPTY };
+    loading: false, failed: page.status !== 0, hasMore: rows.length < page.total, notice: page.message,
+    forgetTarget: retainedForgetTarget(state, rows) };
   return filterMachines(advanceMachineStatus(next, page), query);
+}
+
+function validStatusPage(state: MachineState, page: MachinePage): boolean {
+  if (state.operation !== 8 || page.status !== 0) return true;
+  if (page.generation !== state.generation || page.first !== state.statusFirst) return false;
+  return page.rows.length > 0 || page.first >= state.rows.length;
+}
+
+function retainedForgetTarget(state: MachineState, rows: readonly MachineRow[]): Uint8Array {
+  if (state.operation !== 8) return EMPTY;
+  for (const previous of state.rows) {
+    if (!sameBytes(previous.target, state.forgetTarget)) continue;
+    return stillForgettable(previous, rows) ? state.forgetTarget : EMPTY;
+  }
+  return EMPTY;
+}
+
+function stillForgettable(previous: MachineRow, rows: readonly MachineRow[]): boolean {
+  for (const row of rows) {
+    if (!sameBytes(row.target, previous.target)) continue;
+    return row.canForget && sameMachine(previous, row);
+  }
+  return false;
 }
 
 function advanceMachineStatus(state: MachineState, page: MachinePage): MachineState {
@@ -257,7 +285,8 @@ export function moveMachine(state: MachineState, delta: number, query: Uint8Arra
 }
 
 export function capturedMachine(state: MachineState, target: Uint8Array): MachineRow | null {
-  if (state.loading) return null;
+  if (state.failed) return null;
+  if (state.loading && state.operation !== 8) return null;
   for (const row of state.rows) if (sameBytes(row.target, target)) return row;
   return null;
 }

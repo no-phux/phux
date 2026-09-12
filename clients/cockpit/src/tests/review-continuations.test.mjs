@@ -23,6 +23,30 @@ function inventory(id, connection = 2) {
     ...u32(0), 0, 0, connection, ...field('This Mac'), ...field(''), ...field(''), ...field('')]);
 }
 
+function snapshotMessage(revision = 7) {
+  const body = new Uint8Array(33);
+  body[0] = 1; body[1] = 2; body[10] = revision; body[23] = 2; body[26] = 168; body[29] = 255;
+  return { kind: 'snapshot_loaded', body };
+}
+
+function machineInventory(id, first = 0, count = 1, total = 1, connection = 0) {
+  const rows = Array.from({ length: count }, (_, at) => {
+    const index = first + at;
+    return [...u32(index), 1, 1, connection, ...field(`machine-${index}`), ...field(`host-${index}`), ...field(''), ...field('')];
+  }).flat();
+  return new Uint8Array([1, 0, ...u32(id), ...u32(3), ...u32(total), ...u32(first), count, 0, ...field(''), ...rows]);
+}
+
+function listedMachines(count = 1) {
+  let [model] = step(initialModel()[0], { kind: 'machines_open' });
+  [model] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 0, Math.min(64, count), count) });
+  if (count > 64) {
+    [model] = step(model, { kind: 'machines_more' });
+    [model] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 64, count - 64, count) });
+  }
+  return model;
+}
+
 test('Commands Toggle Tab Placement commits its departure before native intent', () => {
   let [model] = step(initialModel()[0], { kind: 'commands_open' });
   [model] = step(model, { kind: 'palette_edit', edit: { kind: 'insert_text', text: bytes('Toggle Tab Placement') } });
@@ -49,6 +73,98 @@ test('replacing New Session cancels captured native focus authority first', () =
     assert.deepEqual(cancel.payload.slice(2, 10), token);
     assert.equal(model.newSessionAwaiting, false);
   }
+});
+
+test('deferred Close Pane, New Window and New Tab refuse an intervening snapshot revision', () => {
+  for (const action of [{ kind: 'native_command', command: 3 }, { kind: 'new_window' }, { kind: 'new_terminal' }]) {
+    let [model] = step(pendingSession(), action);
+    assert.equal(model.pendingSessionAction.revision.lo, model.engineRevision.lo);
+    const capturedRevision = model.pendingSessionAction.revision.lo;
+    [model] = step(model, snapshotMessage());
+    assert.equal(model.engineRevision.lo, 7);
+    assert.equal(model.pendingSessionAction.revision.lo, capturedRevision, 'snapshots never refresh captured authority');
+    const [refused, cmd] = step(model, { kind: 'new_session_cancelled', body: session(0) });
+    assert.equal(request(cmd, 'cockpit.tab-command'), undefined, action.kind);
+    assert.equal(request(cmd, 'cockpit.intent'), undefined, action.kind);
+    assert.match(new TextDecoder().decode(refused.commandNotice), /context changed/i);
+  }
+});
+
+test('unchanged deferred command context still admits the originally requested action', () => {
+  for (const action of [{ kind: 'native_command', command: 3 }, { kind: 'new_window' }, { kind: 'new_terminal' }]) {
+    const [waiting] = step(pendingSession(), action);
+    const [resumed, cmd] = step(waiting, { kind: 'new_session_cancelled', body: session(0) });
+    assert.equal(resumed.pendingSessionAction, null);
+    assert.ok(request(cmd, 'cockpit.tab-command'), action.kind);
+  }
+});
+
+test('a refused deferred Settings command still commits the completed modal departure', () => {
+  let [model] = step(settings(), { kind: 'new_window' });
+  [model] = step(model, snapshotMessage());
+  const [refused, cmd] = step(model, { kind: 'appearance_loaded', body: appearance(false) });
+  assert.equal(refused.settingsOpen, false);
+  assert.ok(committed(cmd));
+  assert.equal(request(cmd, 'cockpit.tab-command'), undefined);
+  assert.match(new TextDecoder().decode(refused.commandNotice), /context changed/i);
+});
+
+test('Forget confirmation survives read-only status and remains usable during a poll', () => {
+  let model = listedMachines();
+  const target = model.machineRows[0].target.slice();
+  [model] = step(model, { kind: 'machine_forget', target });
+  [model] = step(model, snapshotMessage());
+  const polling = model;
+  [model] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId) });
+  assert.deepEqual(model.machines.forgetTarget, target);
+  const [, cmd] = step(polling, { kind: 'machine_forget_confirm' });
+  assert.equal(request(cmd, 'cockpit.machines')?.payload[1], 5);
+  assert.deepEqual(request(cmd, 'cockpit.machines').payload.slice(6, 14), target);
+});
+
+test('status changes retire Forget when the captured identity or capability changes', () => {
+  for (const change of ['connected', 'identity']) {
+    let model = listedMachines();
+    [model] = step(model, { kind: 'machine_forget', target: model.machineRows[0].target });
+    [model] = step(model, snapshotMessage());
+    const body = machineInventory(model.machines.requestId, 0, 1, 1, change === 'connected' ? 2 : 0);
+    if (change === 'identity') body[31] = 'X'.charCodeAt(0);
+    [model] = step(model, { kind: 'machines_loaded', body });
+    assert.equal(model.machines.forgetTarget.length, 0);
+    const [, cmd] = step(model, { kind: 'machine_forget_confirm' });
+    assert.equal(request(cmd, 'cockpit.machines'), undefined);
+  }
+});
+
+test('a non-progressing status page fails closed instead of starting an infinite sweep', () => {
+  let model = listedMachines(65);
+  [model] = step(model, snapshotMessage());
+  const [failed, cmd] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 0, 0, 65) });
+  assert.equal(failed.machines.failed, true);
+  assert.equal(failed.machines.loading, false);
+  assert.equal(request(cmd, 'cockpit.machines'), undefined);
+});
+
+test('a status sweep drains 65 loaded rows and replays an in-flight invalidation without more snapshots', () => {
+  let model = { ...listedMachines(65), navigatorScroll: 400 };
+  const selected = model.machineRows[64].target.slice();
+  model = { ...model, machines: { ...model.machines, selected } };
+  [model] = step(model, snapshotMessage());
+  [model] = step(model, snapshotMessage(8));
+  let cmd;
+  [model, cmd] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 0, 64, 65, 1) });
+  assert.equal(request(cmd, 'cockpit.machines')?.payload[10], 64);
+  [model, cmd] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 64, 1, 65, 2) });
+  assert.equal(request(cmd, 'cockpit.machines')?.payload[10], 0, 'the retained invalidation starts one fresh sweep');
+  [model, cmd] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 0, 64, 65, 2) });
+  assert.equal(request(cmd, 'cockpit.machines')?.payload[10], 64);
+  [model, cmd] = step(model, { kind: 'machines_loaded', body: machineInventory(model.machines.requestId, 64, 1, 65, 2) });
+  assert.equal(request(cmd, 'cockpit.machines'), undefined);
+  assert.equal(model.machines.loading, false);
+  assert.equal(model.machineRows.length, 65);
+  assert.ok(model.machineRows.every(row => row.connected));
+  assert.deepEqual(model.machines.selected, selected);
+  assert.equal(model.navigatorScroll, 400);
 });
 
 test('Cancel retires Reload continuation instead of reopening Settings', () => {

@@ -12,8 +12,9 @@ const effects = cmd => !cmd ? [] : cmd.op === 'batch' ? cmd.cmds.flatMap(effects
 const request = cmd => effects(cmd).find(effect => effect.name === 'cockpit.local-tools');
 function queued() {
   let [model] = step(initialModel()[0], { kind: 'config_edit' });
-  [model] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
-  return step(model, { kind: 'local_tool_loaded', body: reply(1) });
+  let launch;
+  [model, launch] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
+  return step(model, { kind: request(launch).okKind, body: reply(1) });
 }
 
 test('local-tool codec retains operation identity and accepts placed and unknown receipts', () => {
@@ -91,4 +92,51 @@ test('Edit Configuration does not carry retained Add Machine fields into the edi
   let [model] = step({ ...initialModel()[0], hostFriendlyName: bytes('Build machine') }, { kind: 'config_edit' });
   const [, cmd] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
   assert.deepEqual(request(cmd).payload.slice(10), new Uint8Array([0, 0]));
+});
+
+test('cancel before launch admission still tracks the exact late receipt after a new Describe', () => {
+  let [model] = step(initialModel()[0], { kind: 'config_edit' });
+  let launch;
+  [model, launch] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
+  const admissionKind = request(launch).okKind;
+  [model] = step(model, { kind: 'host_close' });
+  [model] = step(model, { kind: 'add_machine_open' });
+  const nextToken = new Uint8Array(8).fill(7);
+  [model] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0, nextToken) });
+  const [tracked, cmd] = step(model, { kind: admissionKind, body: reply(1) });
+  assert.equal(tracked.toolQueued, true);
+  assert.deepEqual(tracked.toolOperationToken, token);
+  assert.deepEqual(tracked.toolToken, nextToken);
+  assert.equal(tracked.hostOpen, true, 'late admission must not close the newer dialog');
+  assert.equal(request(cmd)?.payload[1], 4);
+  assert.deepEqual(request(cmd).payload.slice(2, 10), token);
+});
+
+test('a foreign or duplicate launch admission cannot replace the pending operation', () => {
+  let [model] = step(initialModel()[0], { kind: 'config_edit' });
+  let launch;
+  [model, launch] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
+  const kind = request(launch).okKind;
+  [model] = step(model, { kind: 'host_close' });
+  const [foreign, ignored] = step(model, { kind, body: reply(1, 10, new Uint8Array(8).fill(7)) });
+  assert.equal(foreign.toolLaunchPending, true);
+  assert.equal(foreign.toolOperationId, 0);
+  assert.equal(request(ignored), undefined);
+  [model] = step(foreign, { kind, body: reply(1) });
+  const [duplicate, cmd] = step(model, { kind, body: reply(1, 11) });
+  assert.equal(duplicate.toolOperationId, 9);
+  assert.equal(request(cmd), undefined);
+});
+
+test('late admission failure after cancel remains visible without closing newer Settings', () => {
+  let [model] = step(initialModel()[0], { kind: 'config_edit' });
+  let launch;
+  [model, launch] = step(model, { kind: 'local_tool_loaded', body: reply(0, 0) });
+  [model] = step(model, { kind: 'host_close' });
+  [model] = step(model, { kind: 'settings_open' });
+  const [failed, cmd] = step(model, { kind: request(launch).okKind, body: reply(2, 0) });
+  assert.equal(failed.settingsOpen, true);
+  assert.equal(failed.toolLaunchPending, false);
+  assert.match(text(failed.commandNotice), /This Mac/);
+  assert.equal(request(cmd), undefined);
 });
