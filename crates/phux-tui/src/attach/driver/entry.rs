@@ -596,6 +596,7 @@ async fn detach_and_drain(
             // could have qualified.
             FrameKind::Detached { .. } => {
                 orphan_kills.finish_switch_drain();
+                conn.unbind_all_terminals();
                 return Ok(());
             }
             other => {

@@ -58,6 +58,11 @@ const PREAMBLE_DEADLINE: Duration = Duration::from_secs(5);
 /// send its bearer preamble, so the bound only fires on stalled peers.
 const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
+/// Maximum number of consumer bidi streams bridged onto one tunnel. This
+/// mirrors the server's and client connection mux caps and prevents a single
+/// consumer from turning a route into an unbounded task factory.
+const MAX_CONSUMER_STREAMS: usize = 128;
+
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
@@ -349,7 +354,8 @@ async fn admit_tunnel(
 
     // Stream-0 watchdog. `send0` is held, not dropped: dropping it would
     // FIN the reserved stream. Stream 0 carries ONLY the preamble; any
-    // further byte is a protocol violation and closes the tunnel.
+    // further byte is a protocol violation and closes the tunnel. Consumer
+    // control and Terminal streams use later stream pairs.
     let _reserved_send0 = send0;
     let mut byte = [0u8; 1];
     let watchdog = async {
@@ -378,10 +384,11 @@ async fn admit_tunnel(
     tracing::info!(route = %route, %remote, "tunnel down");
 }
 
-/// Bridge one consumer connection onto its route's live tunnel: exactly
-/// one consumer-initiated bidi stream, spliced onto one fresh
-/// relay-initiated bidi stream. The consumer's own bearer preamble crosses
-/// opaquely — the relay never reads it (ADR-0051 Decision 4).
+/// Bridge one consumer connection onto its route's live tunnel. Every
+/// consumer-initiated bidi stream is spliced onto one fresh relay-initiated
+/// bidi stream, preserving the control-plus-Terminal-stream shape. The
+/// consumer's own bearer preamble crosses opaquely — the relay never reads it
+/// (ADR-0051 Decision 4).
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
@@ -407,14 +414,11 @@ async fn bridge_consumer(
     // CONSUMER_STREAM_DEADLINE so a handshake-only consumer cannot pin
     // its cap permit forever (the permit is released when this returns).
     // Errors on `accept_bi` just mean the consumer went away.
-    let opened = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, async {
-        let consumer_streams = conn.accept_bi().await.ok()?;
-        Some((consumer_streams, tunnel.open_bi().await))
-    })
-    .await;
-    let ((cons_send, cons_recv), tun_streams) = match opened {
-        Ok(Some(streams)) => streams,
-        Ok(None) => return,
+    let consumer_streams = match tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi())
+        .await
+    {
+        Ok(Ok(streams)) => streams,
+        Ok(Err(_)) => return,
         Err(_) => {
             tracing::warn!(%remote, route = %route, "refused: no consumer stream within deadline");
             conn.close(
@@ -424,14 +428,42 @@ async fn bridge_consumer(
             return;
         }
     };
-    let Ok((tun_send, tun_recv)) = tun_streams else {
+    let Ok((tun_send, tun_recv)) = tunnel.open_bi().await else {
         tracing::warn!(%remote, route = %route, "tunnel dropped while bridging; refusing consumer");
         conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
         return;
     };
     tracing::info!(route = %route, %remote, "consumer bridged");
-    splice(cons_recv, tun_send, tun_recv, cons_send).await;
-    tracing::debug!(route = %route, %remote, "consumer bridge ended");
+    let mut control_bridge = tokio::spawn(splice(
+        consumer_streams.1,
+        tun_send,
+        tun_recv,
+        consumer_streams.0,
+    ));
+
+    let mut stream_count = 1;
+    loop {
+        tokio::select! {
+            _ = &mut control_bridge => break,
+            opened = conn.accept_bi() => {
+                let Ok((cons_send, cons_recv)) = opened else { break };
+                stream_count += 1;
+                if stream_count > MAX_CONSUMER_STREAMS {
+                    tracing::warn!(%remote, route = %route, cap = MAX_CONSUMER_STREAMS, "refused consumer stream cap");
+                    conn.close(PROTOCOL_VIOLATION_CODE.into(), b"consumer stream capacity");
+                    break;
+                }
+                let Ok((tun_send, tun_recv)) = tunnel.open_bi().await else {
+                    tracing::warn!(%remote, route = %route, "tunnel dropped while opening a consumer stream");
+                    conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
+                    break;
+                };
+                tokio::spawn(splice(cons_recv, tun_send, tun_recv, cons_send));
+            }
+            _ = conn.closed() => break,
+        }
+    }
+    tracing::debug!(route = %route, %remote, streams = stream_count, "consumer bridge ended");
 }
 
 /// Read one length-prefixed auth preamble (`len: u32 BE` + raw token),

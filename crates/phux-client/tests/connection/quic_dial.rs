@@ -18,7 +18,10 @@ use bytes::BytesMut;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
+use phux_protocol::caps::{
+    BootstrapCapabilities, ServerCapabilities, ServerFeature, ServerFeatureSet,
+    select_bootstrap_profile,
+};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::policy::QUIC_ALPN;
 use phux_protocol::wire::frame::FrameKind;
@@ -82,6 +85,18 @@ async fn write_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
     reason = "the fixture must reject a non-HELLO first frame"
 )]
 async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
+    accept_hello_with_caps(send, recv, ServerCapabilities::new()).await;
+}
+
+#[allow(
+    clippy::panic,
+    reason = "the fixture must reject a non-HELLO first frame"
+)]
+async fn accept_hello_with_caps(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    server_caps: ServerCapabilities,
+) {
     let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
         panic!("expected HELLO");
     };
@@ -94,13 +109,28 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
+            server_caps,
             server_id: Vec::new(),
             selected_profile,
             bootstrap_limits,
         },
     )
     .await;
+}
+
+async fn read_stream_bind(
+    recv: &mut quinn::RecvStream,
+) -> phux_protocol::wire::stream_bind::StreamBind {
+    let mut prefix = [0_u8; 4];
+    recv.read_exact(&mut prefix).await.unwrap();
+    let len = u32::from_be_bytes(prefix) as usize;
+    let mut bytes = Vec::with_capacity(4 + len);
+    bytes.extend_from_slice(&prefix);
+    bytes.resize(4 + len, 0);
+    recv.read_exact(&mut bytes[4..]).await.unwrap();
+    let (bind, used) = phux_protocol::wire::stream_bind::decode(&bytes).unwrap();
+    assert_eq!(used, bytes.len());
+    bind
 }
 
 const fn ack(seq: u64) -> FrameKind {
@@ -154,6 +184,64 @@ async fn loopback_skip_verify_round_trips_both_directions() {
         got, from_server,
         "server's frame round-trips back to client"
     );
+}
+
+#[tokio::test]
+async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let from_client = FrameKind::FrameAck {
+        terminal_id: terminal_id.clone(),
+        stream_id: phux_protocol::StreamId::new(1).unwrap(),
+        bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
+        seq: 11,
+    };
+    let from_server = ack(22);
+
+    let server = {
+        let terminal_id = terminal_id.clone();
+        let from_client = from_client.clone();
+        let from_server = from_server.clone();
+        async move {
+            let conn = endpoint.accept().await.unwrap().await.unwrap();
+            let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+            accept_hello_with_caps(
+                &mut control_send,
+                &mut control_recv,
+                ServerCapabilities::new()
+                    .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+            )
+            .await;
+            let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+            let bind = read_stream_bind(&mut terminal_recv).await;
+            assert_eq!(bind.terminal_id, terminal_id);
+            assert_eq!(bind.stream_id.get(), 1);
+            write_frame(&mut terminal_send, &from_server).await;
+            assert_eq!(read_frame(&mut terminal_recv).await, from_client);
+            terminal_send.finish().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        assert!(conn.multistream_enabled());
+        conn.bind_terminal(&terminal_id).await.expect("bind");
+        conn.send(&from_client)
+            .await
+            .expect("send on Terminal stream");
+        conn.recv().await.expect("receive Terminal stream frame")
+    };
+
+    let (_server, got) = tokio::join!(server, client);
+    assert_eq!(got, from_server);
 }
 
 #[tokio::test]
