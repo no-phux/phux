@@ -1008,7 +1008,7 @@ fn composeView(ui: *Adapter.Ui, model: *const core.Model, markup: Adapter.Ui.Nod
     const engine = bridge.engine orelse return markup;
     if (engine.model.wsAtConst(window_index)) |workspace|
         syncTerminalSpace(model, window_index, workspace.surface_size, cockpit.projection.cockpitTokens(engine.model));
-    if (model.paletteOpen or model.settingsOpen) return markup;
+    if (Bridge.interactionMode(model) != .terminal) return markup;
     return ui.el(.stack, .{ .grow = 1 }, .{
         terminalInteraction(ui, engine, window_index),
         markup,
@@ -3924,6 +3924,45 @@ fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []
         if (std.mem.eql(u8, entry.widget.semantics.label, label)) return true;
     }
     return false;
+}
+
+fn terminalInputCount(model: *const core.Model, window_index: usize) !usize {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const node = composeView(&ui, model, compiledWindow(&ui, model, window_index), window_index);
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const tree = try ui.finalizeWithTokens(node, tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 1100, 640), tokens, nodes);
+    var count: usize = 0;
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind != .stack) continue;
+        if (entry.widget.semantics.role == .textbox) count += 1;
+    }
+    return count;
+}
+
+test "shipping host dialog removes terminal accessibility targets in every window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 1));
+
+    // Blocking raw input is insufficient: a hidden terminal must also leave the
+    // accessibility/focus tree while an app-wide dialog owns interaction.
+    try rig.dispatch(.host_open);
+    try std.testing.expect(rig.app_state.model.hostOpen);
+    try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 0));
+    try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 1));
+
+    try rig.dispatch(.palette_close);
+    try std.testing.expect(!rig.app_state.model.hostOpen);
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 1));
 }
 
 test "healthy canvas gives the footer space to the terminal" {
