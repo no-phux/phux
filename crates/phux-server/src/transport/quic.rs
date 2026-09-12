@@ -37,7 +37,6 @@ use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
 use tracing::{debug, warn};
 
-use super::tls::quic_server_config;
 use super::{FrameReader, FrameWriter, Incoming, LENGTH_PREFIX};
 
 /// Upper bound on the token preamble body, in bytes. Generous relative to the
@@ -120,13 +119,29 @@ impl QuicListener {
     /// (routable consumers, ADR-0031 parity with `wss://`); `None` is the
     /// loopback/dev path that expects no preamble. QUIC is TLS-encrypted in
     /// both modes (the protocol mandates it).
+    #[allow(
+        dead_code,
+        reason = "kept as the compatibility constructor for transport tests"
+    )]
     pub(crate) fn from_pem(
         addr: SocketAddr,
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     ) -> Result<Self, QuicBindError> {
-        let tls = quic_server_config(cert_path, key_path)?;
+        Self::from_pem_with_client_ca(addr, cert_path, key_path, tokens, None)
+    }
+
+    /// Bind a QUIC listener with optional workload-CA client verification.
+    pub(crate) fn from_pem_with_client_ca(
+        addr: SocketAddr,
+        cert_path: &std::path::Path,
+        key_path: &std::path::Path,
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        client_ca_path: Option<&std::path::Path>,
+    ) -> Result<Self, QuicBindError> {
+        let tls =
+            super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca_path)?;
         Ok(Self {
             endpoint: build_endpoint(addr, tls)?,
             tokens,

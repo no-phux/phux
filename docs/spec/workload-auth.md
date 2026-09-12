@@ -18,10 +18,12 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,TerminalScopeSet,TerminalEffectiveScopeSet -->
-> **Status: spec-only.** The mTLS enrollment, registry, classifier, and
-> live-revocation path described here are not implemented. The only code
-> is the `PolicyEngine::authorize_hello` seam and its permissive default.
+<!-- impl-status: foundation; probe: MtlsWorkloadIdentity,TerminalScopeSet,TerminalEffectiveScopeSet -->
+> **Status: foundation landed.** The persisted workload CA, client enrollment,
+> credential-id derivation, and validated scope registry are implemented in
+> `phux_server::workload`. TLS handshake enforcement, scope classification,
+> and live revocation remain follow-up work; the current `PolicyEngine` default
+> is still permissive until those seams are wired.
 
 ## 1. Profile boundary
 

@@ -45,6 +45,7 @@ pub mod telemetry;
 pub use resource::terminal as terminal_actor;
 pub mod transport;
 pub mod upgrade;
+pub mod workload;
 
 pub use hub::link::{HubLinkStatuses, LinkStatus};
 pub use hub::{HubEntry, HubTable, HubTableError, SatelliteTarget};

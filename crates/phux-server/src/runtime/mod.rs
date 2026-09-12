@@ -1688,7 +1688,12 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
         return None;
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "wss");
-    let acceptor = match crate::transport::tls::acceptor_from_pem(&cert_path, &key_path) {
+    let workload_ca = workload_ca_for_secure(secure);
+    let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
+        &cert_path,
+        &key_path,
+        workload_ca.as_deref(),
+    ) {
         Ok(acceptor) => acceptor,
         Err(err) => {
             error!(error = %err, "TLS setup failed; WebSocket disabled");
@@ -1726,6 +1731,26 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
             None
         }
     }
+}
+
+/// Resolve the optional workload CA used for mTLS listeners.
+///
+/// The opt-in environment gate keeps existing bearer-paired deployments
+/// bootable while clients are being enrolled. Once enabled, both QUIC and WSS
+/// use the same persisted CA and require a client certificate at TLS time.
+fn workload_ca_for_secure(secure: bool) -> Option<PathBuf> {
+    if !secure || std::env::var_os("PHUX_WORKLOAD_MTLS").is_none() {
+        return None;
+    }
+    let cert = std::env::var_os("PHUX_WORKLOAD_CA")
+        .map_or_else(crate::workload::default_ca_cert_path, PathBuf::from);
+    let key = std::env::var_os("PHUX_WORKLOAD_CA_KEY")
+        .map_or_else(crate::workload::default_ca_key_path, PathBuf::from);
+    if let Err(error) = crate::workload::ensure_ca(&cert, &key) {
+        warn!(error = %error, "workload mTLS CA unavailable; listener remains bearer-only");
+        return None;
+    }
+    Some(cert)
 }
 
 /// Log, do not fail, when the persisted certificate does not name the address
@@ -1832,7 +1857,14 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
     };
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
-    match crate::transport::quic::QuicListener::from_pem(addr, &cert_path, &key_path, tokens) {
+    let workload_ca = workload_ca_for_secure(secure);
+    match crate::transport::quic::QuicListener::from_pem_with_client_ca(
+        addr,
+        &cert_path,
+        &key_path,
+        tokens,
+        workload_ca.as_deref(),
+    ) {
         Ok(quic) => {
             let bound = quic.local_addr().map(|a| a.to_string()).unwrap_or_default();
             if secure {

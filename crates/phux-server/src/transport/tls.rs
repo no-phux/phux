@@ -51,6 +51,9 @@ pub enum TlsError {
     /// rustls rejected the certificate/key pair.
     #[error("rustls: {0}")]
     Rustls(#[from] rustls::Error),
+    /// The workload CA could not produce a client-certificate verifier.
+    #[error("client certificate verifier: {0}")]
+    ClientVerifier(String),
     /// Generating the self-signed certificate failed.
     #[error("certificate generation: {0}")]
     Rcgen(#[from] rcgen::Error),
@@ -232,55 +235,76 @@ pub fn uncovered_names(cert_path: &Path, names: &[String]) -> Result<Vec<String>
 /// re-exported here for the QUIC transport's call sites and tests.
 pub(crate) use phux_protocol::policy::QUIC_ALPN;
 
-/// Build a rustls [`ServerConfig`] from a PEM certificate chain and private
-/// key, using the `ring` provider. Shared by the WebSocket [`TlsAcceptor`] and
-/// the QUIC listener so both terminate TLS with the identical cert material.
-///
-/// `cert_path` is a PEM file with the leaf certificate first, followed by any
-/// intermediates; `key_path` is a PEM file with one PKCS#8 / SEC1 / PKCS#1
-/// private key. No client authentication is required — the bearer token
-/// (see [`crate::auth`]) is the authentication layer; TLS provides encryption
-/// and server identity only. Mutual TLS is the ADR-0031 v0.2 hardening.
-fn server_config_from_pem(cert_path: &Path, key_path: &Path) -> Result<ServerConfig, TlsError> {
-    let certs = load_certs(cert_path)?;
-    let key = load_key(key_path)?;
-
-    Ok(
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(TlsError::Rustls)?
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?,
-    )
-}
-
 /// Build a [`TlsAcceptor`] for the WebSocket listener from a PEM cert + key.
 pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAcceptor, TlsError> {
-    Ok(TlsAcceptor::from(Arc::new(server_config_from_pem(
-        cert_path, key_path,
-    )?)))
+    acceptor_from_pem_with_client_ca(cert_path, key_path, None)
 }
 
-/// Build the rustls [`ServerConfig`] for the QUIC listener from a PEM cert +
-/// key: TLS 1.3 only (QUIC forbids earlier versions) with the phux ALPN set.
-///
-/// Returned as a bare rustls config; the QUIC transport wraps it in quinn's
-/// `QuicServerConfig`. Reuses the same cert material as the WebSocket path.
-pub(crate) fn quic_server_config(
+/// Build a WebSocket TLS acceptor that verifies client certificates against a
+/// workload CA. `None` retains the legacy server-only TLS mode for local and
+/// compatibility callers.
+pub(crate) fn acceptor_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
+    client_ca_path: Option<&Path>,
+) -> Result<TlsAcceptor, TlsError> {
+    Ok(TlsAcceptor::from(Arc::new(
+        server_config_from_pem_with_client_ca(cert_path, key_path, client_ca_path)?,
+    )))
+}
+
+/// Build the QUIC server config with optional mTLS client verification.
+pub(crate) fn quic_server_config_with_client_ca(
+    cert_path: &Path,
+    key_path: &Path,
+    client_ca_path: Option<&Path>,
 ) -> Result<ServerConfig, TlsError> {
     let certs = load_certs(cert_path)?;
     let key = load_key(key_path)?;
 
-    let mut config =
+    let builder =
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(TlsError::Rustls)?
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
+            .map_err(TlsError::Rustls)?;
+    let mut config = match client_ca_path {
+        Some(path) => builder
+            .with_client_cert_verifier(client_verifier(path)?)
+            .with_single_cert(certs, key)?,
+        None => builder.with_no_client_auth().with_single_cert(certs, key)?,
+    };
     config.alpn_protocols = vec![QUIC_ALPN.to_vec()];
     Ok(config)
+}
+
+fn server_config_from_pem_with_client_ca(
+    cert_path: &Path,
+    key_path: &Path,
+    client_ca_path: Option<&Path>,
+) -> Result<ServerConfig, TlsError> {
+    let certs = load_certs(cert_path)?;
+    let key = load_key(key_path)?;
+    let builder =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(TlsError::Rustls)?;
+    Ok(match client_ca_path {
+        Some(path) => builder
+            .with_client_cert_verifier(client_verifier(path)?)
+            .with_single_cert(certs, key)?,
+        None => builder.with_no_client_auth().with_single_cert(certs, key)?,
+    })
+}
+
+fn client_verifier(
+    ca_path: &Path,
+) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in load_certs(ca_path)? {
+        roots.add(cert).map_err(TlsError::Rustls)?;
+    }
+    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|error| TlsError::ClientVerifier(error.to_string()))
 }
 
 /// Build the rustls [`ServerConfig`] for the WebTransport listener from a PEM
@@ -462,5 +486,18 @@ mod tests {
         let missing_key = dir.path().join("nope.key");
         assert!(acceptor_from_pem(&missing_cert, &missing_key).is_err());
         assert!(cert_fingerprint(&missing_cert).is_err());
+    }
+
+    #[test]
+    fn m_tls_acceptor_and_quic_config_accept_a_workload_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("remote-cert.pem");
+        let key = dir.path().join("remote-key.pem");
+        let ca = dir.path().join("workload-ca.pem");
+        let ca_key = dir.path().join("workload-ca.key");
+        ensure_self_signed(&cert, &key).unwrap();
+        crate::workload::ensure_ca(&ca, &ca_key).unwrap();
+        acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca)).unwrap();
+        quic_server_config_with_client_ca(&cert, &key, Some(&ca)).unwrap();
     }
 }
