@@ -928,6 +928,93 @@ test "twelve FFI catalog wakes share one real SDK channel and advance round robi
     try testing.expectEqual(.negotiated, engine.model.phuxPeerAt(11).?.state());
 }
 
+test "failed mux input with unread tail becomes quiescent while healthy catalogs progress" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const Message = union(enum) { event: native_sdk.EffectChannelEvent };
+    const Effects = native_sdk.Effects(Message);
+    var fx = Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    engine.openPeerChannels(&fx, Effects.channelMsg(.event));
+    try engine.model.ensurePeerSlots(2);
+    for (engine.model.peers.items) |entry| {
+        const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/mux-malformed-unused" }, null, "tail");
+        entry.provider = peer;
+        peer.standBy();
+        try peer.host.start("tail");
+    }
+    const failed = engine.model.phuxPeerAt(0).?;
+    try testing.expect(failed.bridge.incoming.stage("\xff"));
+    try fixture.stageFixture(failed.bridge, "hello.bin");
+    // Decoder failure retires the Host before failPeer joins the producer.
+    // Exercise that retained unread tail without emitting an expected error
+    // into Zig's runner (which treats every error log as a test failure).
+    failed.host.disconnect();
+    const healthy = engine.model.phuxPeerAt(1).?;
+    try fixture.stageFixture(healthy.bridge, "hello.bin");
+    try fixture.stageFixture(healthy.bridge, "standby_state.bin");
+    _ = engine.peer_wake_handle.post("");
+    for (0..8) |_| {
+        const msg = fx.takeMsg() orelse break;
+        _ = engine.onPeerChannel(&fx, msg.event, Effects.channelMsg(.event));
+    }
+    try testing.expect(engine.model.peers.items[0].failed);
+    try testing.expectEqual(@as(usize, 2), healthy.standbyCatalog().len);
+    try testing.expect(fx.takeMsg() == null);
+}
+
+test "shared mux readmits after SDK channel capacity returns" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const Message = union(enum) { event: native_sdk.EffectChannelEvent };
+    const Effects = native_sdk.Effects(Message);
+    var fx = Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    for (0..8) |index| _ = fx.openChannel(.{ .key = 500 + index, .on_event = Effects.channelMsg(.event) });
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    engine.openPeerChannels(&fx, Effects.channelMsg(.event));
+    try testing.expect(!engine.peer_wake_handle.live());
+    const rejected_key = engine.peer_wake_key;
+    const rejected = fx.takeMsg().?;
+    _ = engine.onPeerChannel(&fx, rejected.event, Effects.channelMsg(.event));
+    fx.closeChannel(500);
+    _ = fx.takeMsg();
+    try engine.model.ensurePeerSlots(1);
+    engine.model.peers.items[0].provider = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/mux-readmit-unused" }, null, "readmit");
+    engine.openPeerChannel(&fx, 0, Effects.channelMsg(.event));
+    try testing.expect(engine.peer_wake_handle.live());
+    try testing.expect(engine.peer_wake_key != rejected_key);
+    try testing.expect(!engine.onPeerChannel(&fx, .{ .key = rejected_key, .kind = .closed }, Effects.channelMsg(.event)));
+}
+
+test "replay registers shared mux events without opening peer workers" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const Message = union(enum) { event: native_sdk.EffectChannelEvent };
+    const Effects = native_sdk.Effects(Message);
+    var fx = Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    fx.replay = true;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    try engine.model.ensurePeerSlots(1);
+    const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/replay-must-not-dial" }, null, "replay");
+    engine.model.peers.items[0].provider = peer;
+    engine.openPeerWakeForReplay(&fx, Effects.channelMsg(.event));
+    try testing.expect(peer.worker == null);
+    try testing.expectEqual(.new, peer.state());
+    try testing.expect(!engine.peer_wake_handle.live());
+    const key = engine.peer_wake_key;
+    try fx.feedChannelEvent(key, .data, "", 0, 0);
+    try testing.expectEqual(key, fx.takeMsg().?.event.key);
+    try fx.feedChannelEvent(key, .closed, "", 0, 0);
+    try testing.expectEqual(.closed, fx.takeMsg().?.event.kind);
+    try testing.expect(peer.worker == null);
+}
+
 test "allocated peer handles stay unique beyond sixteen entries and across growth" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
@@ -1036,6 +1123,45 @@ const RetryLog = struct {
     }
     pub fn showNotification(_: *const @This(), _: anytype) void {}
 };
+
+test "manual retries retire real SDK timer slots before sixteen pending deadlines" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const Message = union(enum) { timer: native_sdk.EffectTimer };
+    const Effects = native_sdk.Effects(Message);
+    const RetryEffects = struct {
+        effects: *Effects,
+        pub fn schedulePeerRetry(self: @This(), key: u64, delay: u64) void {
+            self.effects.startTimer(.{ .key = key, .interval_ms = delay, .mode = .one_shot, .on_fire = Effects.timerMsg(.timer) });
+        }
+        pub fn cancelTimer(self: @This(), key: u64) void {
+            self.effects.cancelTimer(key);
+        }
+        pub fn restartPeer(_: @This(), _: *ts_engine.Engine, _: usize) bool {
+            return true;
+        }
+        pub fn closeChannel(_: @This(), _: u64) void {}
+        pub fn openChannel(_: @This(), _: anytype) native_sdk.ChannelHandle {
+            return .{};
+        }
+        pub fn showNotification(_: @This(), _: anytype) void {}
+    };
+    var effects = Effects.init(testing.allocator);
+    defer effects.deinit();
+    effects.executor = .fake;
+    var fx: RetryEffects = .{ .effects = &effects };
+    const pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    for (0..20) |_| {
+        _ = pair.engine.onPeerChannel(&fx, .{ .key = pair.engine.peerChannelKey(0), .kind = .closed }, null);
+        try testing.expectEqual(@as(usize, 1), effects.pendingTimerCount());
+        try testing.expect(pair.engine.retryPeer(pair.peer.providerId(), &fx));
+        try testing.expectEqual(@as(usize, 0), effects.pendingTimerCount());
+    }
+    _ = pair.engine.onPeerChannel(&fx, .{ .key = pair.engine.peerChannelKey(0), .kind = .closed }, null);
+    pair.engine.dropPeer(&fx, 0);
+    try testing.expectEqual(@as(usize, 0), effects.pendingTimerCount());
+    try testing.expect(effects.takeMsg() == null);
+}
 
 test "a failed listing peer is redialed as a lister after 1 s, twice as long after each failure to 60 s, and from 1 s only once it stayed listed" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;

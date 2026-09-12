@@ -1268,9 +1268,22 @@ pub const Engine = struct {
 
     /// Open every peer's channel at launch.
     pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
+        self.openPeerWakeForReplay(fx, on_event);
+        for (0..self.model.peers.items.len) |slot| self.openPeerChannel(fx, slot, on_event);
+    }
+
+    /// Register the shared effect occupancy without starting any socket workers.
+    /// Replay's posting handle is intentionally inert; recorded events feed it.
+    pub fn openPeerWakeForReplay(self: *Engine, fx: anytype, on_event: anytype) void {
         if (self.peer_wake_key == 0) self.peer_wake_key = support.allocatePeerHandle() catch return;
         self.peer_wake_handle = fx.openChannel(.{ .key = self.peer_wake_key, .on_event = on_event, .max_pending = 1 });
-        for (0..self.model.peers.items.len) |slot| self.openPeerChannel(fx, slot, on_event);
+    }
+
+    fn livePeerWake(self: *Engine, fx: anytype, on_event: anytype) native_sdk.ChannelHandle {
+        if (self.peer_wake_handle.live()) return self.peer_wake_handle;
+        self.peer_wake_key = support.allocatePeerHandle() catch return .{};
+        self.openPeerWakeForReplay(fx, on_event);
+        return self.peer_wake_handle;
     }
 
     /// Open one peer's channel and start (or restart) its worker. A peer that
@@ -1284,7 +1297,7 @@ pub const Engine = struct {
             return;
         }
         const handle = if (self.peer_wake_key != 0)
-            self.peer_wake_handle
+            self.livePeerWake(fx, on_event)
         else
             fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
         if (!handle.live()) {
@@ -1312,6 +1325,7 @@ pub const Engine = struct {
     /// picking its row retries it, and once its tabs leave the screen it goes
     /// back to listing (`settlePeers`).
     fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         // This connection's listing, if any, ends with this failure.
         const entry = self.model.peers.items[slot];
         if (self.peerListedStably(slot)) entry.retry_delay_ms = 0;
@@ -1328,19 +1342,27 @@ pub const Engine = struct {
 
     /// The slot now holds another coordinator (or none): the next failure
     /// waits 1 s again, and a timer already armed is stale.
-    fn resetPeerRetry(self: *Engine, slot: usize) void {
+    fn resetPeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         const entry = self.model.peers.items[slot];
         entry.retry_delay_ms = 0;
-        entry.retry_key = null;
         entry.listed_since = null;
+    }
+
+    fn cancelPeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        const entry = self.model.peers.items[slot];
+        const key = entry.retry_key orelse return;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "cancelTimer")) fx.cancelTimer(key);
+        entry.retry_key = null;
     }
 
     /// The slot listed on this connection: a timer already armed is stale.
     /// The backoff itself is not reset here; the next failure decides, by how
     /// long the peer stayed listed (`peerListedStably`).
-    fn notePeerListed(self: *Engine, slot: usize) void {
+    fn notePeerListed(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         const entry = self.model.peers.items[slot];
-        entry.retry_key = null;
         if (entry.listed_since == null) entry.listed_since = std.Io.Clock.awake.now(self.model.provider.io);
     }
 
@@ -1363,6 +1385,14 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         self.model.peers.items[slot].failed = false;
         _ = fx.restartPeer(self, slot);
+        return self.commitProviderChange(true);
+    }
+
+    /// SDK admission failure is terminal for this timer. Keep manual retry
+    /// available rather than recursively scheduling another rejected timer.
+    pub fn onPeerRetryRejected(self: *Engine, key: u64) bool {
+        const slot = self.peerRetrySlot(key) orelse return false;
+        self.model.peers.items[slot].retry_key = null;
         return self.commitProviderChange(true);
     }
 
@@ -1390,13 +1420,13 @@ pub const Engine = struct {
     /// Close the slot's current channel and move its key to the next
     /// generation, so anything that occupancy still delivers is stale.
     fn retirePeerChannel(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         const Fx = navigationFxType(@TypeOf(fx));
         if (self.peer_wake_key == 0) {
             if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
         }
         const entry = self.model.peers.items[slot];
         entry.channel_key = support.allocatePeerHandle() catch 0;
-        entry.retry_key = null;
     }
 
     /// Drain one peer's wake. A listing peer can only move the switcher's
@@ -1425,6 +1455,7 @@ pub const Engine = struct {
         // Visible work always gets the first turn. Each provider already
         // bounds its own FFI drain; a catalog flood never precedes input work.
         for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.failed) continue;
             const peer = entry.provider orelse continue;
             if (!peer.showing() or !peerWakePending(peer)) continue;
             changed = self.drainPeer(fx, slot) or changed;
@@ -1447,6 +1478,7 @@ pub const Engine = struct {
             self.peer_background_cursor %= peers.len;
             const slot = self.peer_background_cursor;
             self.peer_background_cursor += 1;
+            if (peers[slot].failed) continue;
             const peer = peers[slot].provider orelse continue;
             if (!peer.showing() and peerWakePending(peer)) return slot;
         }
@@ -1455,6 +1487,7 @@ pub const Engine = struct {
 
     fn continuePeerWake(self: *Engine) void {
         for (self.model.peers.items) |entry| {
+            if (entry.failed) continue;
             const peer = entry.provider orelse continue;
             if (!peerWakePending(peer)) continue;
             _ = self.peer_wake_handle.post("");
@@ -1498,7 +1531,7 @@ pub const Engine = struct {
         const delta = peer.drainReadinessBudget(limit) catch return self.failPeer(fx, slot);
         if (delta.sessions_listed or delta.ready_published) {
             self.model.peers.items[slot].failed = false;
-            self.notePeerListed(slot);
+            self.notePeerListed(fx, slot);
         }
         if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
         return self.drainListingPeerWake(fx, slot, delta);
@@ -1546,6 +1579,7 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const slot = self.model.peerSlot(coordinator) orelse return false;
         if (!self.model.peers.items[slot].failed) return false;
+        self.cancelPeerRetry(fx, slot);
         self.model.peers.items[slot].failed = false;
         return fx.restartPeer(self, slot);
     }
@@ -1803,7 +1837,7 @@ pub const Engine = struct {
         entry.reopen = false;
         entry.closing_key = null;
         entry.failed = false;
-        self.resetPeerRetry(slot);
+        self.resetPeerRetry(fx, slot);
         peer.stop();
         // Its close event may arrive after another peer takes the slot; the
         // new generation's key tells the two apart.
@@ -1875,7 +1909,7 @@ pub const Engine = struct {
             model.peers.items[slot].provider = peer;
         }
         model.peers.items[slot].failed = false;
-        self.resetPeerRetry(slot);
+        self.resetPeerRetry(fx, slot);
         // The slot now names another coordinator: strays of the one it
         // held are not this one's to kill.
         self.peer_edits.dropStrays(slot);
