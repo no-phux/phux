@@ -1361,6 +1361,14 @@ typedef struct PhuxRemoteTunnelInfo {
  * host; that tunnel is FAILED with a message. Only malformed arguments fail
  * the call. */
 PhuxClientResult phux_remote_tunnel_resolve(const PhuxRemoteTarget *target, PhuxRemoteTunnel **out_tunnel);
+/** Fresh RESOLVED tunnel from the source's immutable captured dial configuration.
+ * Copies endpoint, pin and token-file/config provenance without registry or token
+ * reads. Shares no socket, thread, cancellation or connection state. Source may
+ * be connecting/failed; it must have resolved successfully and remain live for
+ * this call (no concurrent free). Caller owns out; writable out is cleared on
+ * failure. Ordinary reconnect/independent attachments use this exact snapshot;
+ * an explicit registry Retry may resolve anew to adopt changed credentials. */
+PhuxClientResult phux_remote_tunnel_clone_resolved(const PhuxRemoteTunnel *source, PhuxRemoteTunnel **out_tunnel);
 /** Thread-safe with respect to the tunnel's own thread and to a concurrent
  * phux_remote_tunnel_start; may be called from any thread until free. */
 PhuxClientResult phux_remote_tunnel_info(const PhuxRemoteTunnel *tunnel, PhuxRemoteTunnelInfo *out_info);

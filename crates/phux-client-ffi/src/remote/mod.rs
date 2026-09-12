@@ -20,9 +20,12 @@
     reason = "the private remote module's crate-visible items serve the crate-root C exports"
 )]
 
+mod captured;
 mod pump;
 pub mod registry;
 mod target;
+
+pub use captured::phux_remote_tunnel_clone_resolved;
 
 use std::ffi::c_int;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -144,7 +147,9 @@ impl Shared {
 
 /// Opaque tunnel handle.
 ///
-/// One embedder thread owns resolve/start/free. `phux_remote_tunnel_info`
+/// One embedder thread at a time owns resolve/start/free. Ownership may move
+/// before start, and back after the embedder joins its socket worker; unlike a
+/// `PhuxClient`, this handle has no originating-thread affinity. `phux_remote_tunnel_info`
 /// may run on any thread while the tunnel lives, including concurrently with
 /// `start`, because nothing `start` changes is reachable except through
 /// atomics and the thread mutex.
