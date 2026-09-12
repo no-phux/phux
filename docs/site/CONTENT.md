@@ -111,26 +111,16 @@ This is why the project deserves to exist.
 hero; the narrative sections run top to bottom below it.
 
 Marketing lives on `phux.sh`. Documentation lives on `docs.phux.sh`. Nav is
-docs / apps / agents / github — apps is the consumer index (CLI, Cockpit,
-web, agents), matching how the product is organized rather than the repo tree.
+Docs / Apps / Agents / GitHub.
 
-1. **Install band + hero + live proof** — curl CLI and Cockpit installers
-   first, then the headline: "You and your agents share the same terminals."
-   Subhead: panes are a view; each terminal is an object on a wire you,
-   Cockpit, a script, or an agent attach to. Homebrew is the documented
-   day-to-day alternative. The wasm island sits below as proof — launch-gated.
-2. **Apps** — CLI, Cockpit, Web, Agents as four peer surfaces. Each row links
-   into `docs.phux.sh/consumers/*`.
-3. **Why the wire exists** — spawn / observe / drive, then the structural
-   argument in the same section: a re-parsing multiplexer always lags; phux
-   never re-parses because the same libghostty engine runs on both ends. No
-   comparison table. Links to `/wire` and `/concepts` on the docs host.
-4. **Built for agents** — CLI + MCP read/act/wait against the same terminals
-   a person sees. Links to `/consumers/agents`.
-5. **Status** — TUI, CLI, MCP, Cockpit, hub-and-spoke. AgentSession is in
-   this tree; older releases: `phux status --json`. Not yet: public SDK crate,
-   on-disk journal. Predictive echo is experimental. License + GitHub.
-6. **Get going** — router rows: quickstart / docs / the wire / apps / github.
+1. **Hero** — headline, short lede, Install + Docs, then the live terminal
+   as the product. No SYS badge, no install wall above the fold.
+2. **Features** — four rows, phux's own ladder: panes are a view, same
+   objects / many consumers, co-presence, bytes stay bytes. Each row
+   links into docs.
+3. **Install** — the closer. CLI and Cockpit copy-paste commands, then
+   Homebrew and the full install guide. Checksums and platform notes stay
+   here, not in the hero.
 
 ### `/overview` — docs landing on docs.phux.sh
 

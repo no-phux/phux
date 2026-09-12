@@ -148,6 +148,8 @@ merged remote session or window model. Gaps: [Concepts](./docs/CONCEPTS.md#statu
 
 ## Learn more
 
+Docs: [https://docs.phux.sh/overview](https://docs.phux.sh/overview)
+
 | | |
 |---|---|
 | Decide if phux fits | [When to use phux](./docs/when-to-use.md) |
