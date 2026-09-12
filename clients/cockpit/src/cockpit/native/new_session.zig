@@ -97,6 +97,18 @@ pub const Controller = struct {
     entries: std.ArrayList(Entry) = .empty,
     next_token: u64 = 1,
 
+    /// Withdraw all retained interest before stopping the owning providers.
+    /// Pending server writes still execute; their exact Client keeps only the
+    /// reply tombstone. Do not poll or invoke focus callbacks during teardown.
+    pub fn retire(self: *Controller, engine: anytype) void {
+        for (self.entries.items) |*entry| {
+            entry.cancelled = true;
+            if (entry.phase == .pending) engine.releaseNewSession(entry.destination, entry.request_id);
+        }
+        self.entries.clearRetainingCapacity();
+    }
+
+    /// Allocation-only cleanup, after retire(engine) and provider shutdown.
     pub fn deinit(self: *Controller, allocator: std.mem.Allocator) void {
         self.entries.deinit(allocator);
         self.* = .{};
@@ -280,6 +292,31 @@ test "new session keeps empty and correlates concurrent out of order results" {
     try std.testing.expectEqual(@as(u8, 3), first[1]);
     try std.testing.expectEqual(@as(u32, 52), engine.selected);
     try std.testing.expectEqual(@as(u32, 2), engine.released);
+}
+
+test "retire discards ready and completed entries without releasing completed receipts again" {
+    var model: Fixture.Model = .{};
+    var engine: Fixture = .{ .model = &model };
+    var controller: Controller = .{};
+    defer controller.deinit(std.testing.allocator);
+    var request: [256]u8 = undefined;
+    var response: [max_bytes]u8 = undefined;
+    _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);
+    _ = try controller.handle(&engine, .{}, testRequest(.create, 1, "done", &request), &response);
+    engine.outcomes[0] = .{ .created = 42 };
+    controller.poll(&engine, .{});
+    try std.testing.expectEqual(@as(u32, 1), engine.released);
+    _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);
+    try std.testing.expectEqual(@as(usize, 2), controller.entries.items.len);
+    engine.selected = 0;
+    controller.retire(&engine);
+    controller.retire(&engine);
+    controller.poll(&engine, .{});
+    try std.testing.expectEqual(@as(u32, 1), engine.released);
+    try std.testing.expectEqual(@as(u32, 0), engine.selected);
+    try std.testing.expectEqual(@as(usize, 0), controller.entries.items.len);
+    controller.deinit(std.testing.allocator);
+    controller.deinit(std.testing.allocator);
 }
 
 test "new session rejects stale invoking window and changed coordinator before sending" {

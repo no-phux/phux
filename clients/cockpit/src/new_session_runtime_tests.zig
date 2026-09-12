@@ -152,6 +152,41 @@ test "new session runtime cancellation and window closure retire a pending same-
     try std.testing.expectEqual(.none, remote.sessionCreateInfo(1).status);
 }
 
+test "new session runtime teardown retires pending and cancelled requests before provider stop" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const remote = try peer(engine);
+    var hooks: Hooks = .{ .engine = engine, .model = engine.model, .remote = remote };
+    var controller: sessions.Controller = .{};
+    defer controller.deinit(std.testing.allocator);
+    var input: [256]u8 = undefined;
+    var output: [sessions.max_bytes]u8 = undefined;
+    for ([_]u64{ 1, 2, 3 }) |token| {
+        _ = try controller.handle(&hooks, .{}, request(.describe, 0, "", &input), &output);
+        if (token != 3) _ = try controller.handle(&hooks, .{}, request(.create, token, "pending", &input), &output);
+    }
+    _ = try controller.handle(&hooks, .{}, request(.cancel, 2, "", &input), &output);
+    // The old bridge teardown only freed controller memory, leaking pending
+    // result ownership until the whole Client was eventually destroyed.
+    const capacity = controller.entries.capacity;
+    controller.retire(&hooks);
+    controller.retire(&hooks);
+    controller.poll(&hooks, .{});
+    try std.testing.expectEqual(capacity, controller.entries.capacity);
+    try std.testing.expectEqual(@as(usize, 0), controller.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 4), controller.next_token);
+    _ = try controller.handle(&hooks, .{}, request(.create, 1, "late", &input), &output);
+    try std.testing.expectEqual(@intFromEnum(sessions.Phase.unavailable), output[1]);
+    try Remote.test_support.expectOutgoingCount(remote.bridge, 6);
+    remote.host.disconnect();
+    controller.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), hooks.releases);
+    try std.testing.expectEqual(@as(usize, 0), hooks.focused);
+    try std.testing.expectEqual(.none, remote.sessionCreateInfo(1).status);
+    try std.testing.expectEqual(.none, remote.sessionCreateInfo(2).status);
+}
+
 const Effects = struct {
     calls: usize = 0,
     context: u64 = 0,
