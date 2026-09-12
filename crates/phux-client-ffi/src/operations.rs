@@ -22,6 +22,9 @@ use crate::{
 };
 use phux_client_core::session::KernelSend;
 
+mod close_resource;
+pub use close_resource::{phux_client_queue_close_resource, phux_client_queue_close_resources};
+
 pub const MAX_OPERATIONS: usize = 128;
 pub const MAX_DYNAMIC_TERMINALS: usize = 256;
 pub const MAX_SPAWN_ARGS: usize = 256;
@@ -92,7 +95,7 @@ pub struct PhuxOperationResult {
     pub size: usize,
     pub version: u32,
     pub request_id: u32,
-    /// 1 = spawn, 2 = attach terminal, 3 = detach terminal.
+    /// 1 = spawn, 2 = attach, 3 = detach, 4 = abandoned-spawn kill, 5 = close, 6 = batch close.
     pub kind: u32,
     /// 1 = success, 2 = refused, 3 = disconnected with unknown outcome. Never retry spawn automatically.
     pub status: u32,
@@ -129,6 +132,9 @@ enum Pending {
     Detach(ResourceId),
     /// `KILL_RESOURCE_IF` (ADR-0109): never admits or retires anything.
     Kill(ResourceId),
+    /// Intentional resource termination; admission waits for authoritative closure.
+    Close(ResourceId),
+    CloseMany(Vec<ResourceId>),
 }
 
 impl Pending {
@@ -138,13 +144,17 @@ impl Pending {
             Self::Attach(_) => 2,
             Self::Detach(_) => 3,
             Self::Kill(_) => 4,
+            Self::Close(_) => 5,
+            Self::CloseMany(_) => 6,
         }
     }
 
     fn terminal(&self) -> Option<ResourceId> {
         match self {
-            Self::Spawn { .. } => None,
-            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) => Some(id.clone()),
+            Self::Spawn { .. } | Self::CloseMany(_) => None,
+            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) | Self::Close(id) => {
+                Some(id.clone())
+            }
         }
     }
 }
@@ -173,6 +183,8 @@ pub(crate) struct Operations {
     pending: HashMap<u32, Pending>,
     completed: Vec<Completion>,
     dynamic: HashSet<ResourceId>,
+    /// Bound spawn evidence survives consuming its receipt, but never disconnect.
+    instances: HashMap<ResourceId, ServerInstance>,
     // At most one never-transmitted page request and latest cumulative ACK per
     // pending detach, preserving cursor/flow control if withdrawal is refused.
     deferred_sends: HashMap<ResourceId, DeferredSends>,
@@ -186,6 +198,7 @@ impl Operations {
 
     pub(crate) fn retire(&mut self, id: &ResourceId) {
         self.dynamic.remove(id);
+        self.instances.remove(id);
         self.deferred_sends.remove(id);
     }
 
@@ -252,7 +265,7 @@ impl Operations {
             .values()
             .filter(|op| matches!(op, Pending::Spawn { .. }))
             .count();
-        if self.dynamic.len() + reserved >= MAX_DYNAMIC_TERMINALS {
+        if self.dynamic.len().max(self.instances.len()) + reserved >= MAX_DYNAMIC_TERMINALS {
             return Err(BridgeError::state(
                 "dynamic terminal admission limit reached",
             ));
@@ -317,6 +330,7 @@ impl Operations {
             );
         }
         self.dynamic.clear();
+        self.instances.clear();
         self.deferred_sends.clear();
     }
 }
@@ -785,6 +799,12 @@ fn complete_spawn(
             if matches!(id, ResourceId::Local { .. }) {
                 client.operations.dynamic.insert(id.clone());
             }
+            if let Some(token) = instance {
+                client
+                    .operations
+                    .instances
+                    .insert(id.clone(), ServerInstance::new(token));
+            }
             client
                 .operations
                 .complete(request_id, 1, Some(id), 0, 0, "");
@@ -849,8 +869,14 @@ fn complete_subscription(
     }
     match result {
         CommandResult::Ok => {
-            if let Pending::Detach(id) = client.operations.pending(request_id)?.clone() {
-                complete_detach(client, &id)?;
+            match client.operations.pending(request_id)?.clone() {
+                Pending::Detach(id) => complete_detach(client, &id)?,
+                Pending::Kill(id) => {
+                    // A never-attached satellite may send no RESOURCE_CLOSED.
+                    // Forget only binding metadata, never subscription admission.
+                    client.operations.instances.remove(&id);
+                }
+                _ => {}
             }
             client.operations.complete(request_id, 1, None, 0, 0, "");
         }

@@ -484,7 +484,9 @@ typedef enum PhuxOperationKind {
     PHUX_OPERATION_ATTACH_RESOURCE = 2,
     PHUX_OPERATION_DETACH_RESOURCE = 3,
     /* phux_client_queue_kill_if (see "conditional kill" below); additive. */
-    PHUX_OPERATION_KILL_IF = 4
+    PHUX_OPERATION_KILL_IF = 4,
+    PHUX_OPERATION_CLOSE_RESOURCE = 5,
+    PHUX_OPERATION_CLOSE_RESOURCES = 6
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -1156,6 +1158,24 @@ PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint
 PhuxClientResult phux_client_queue_spawn_bound(PhuxClient *client, const PhuxSpawnOptions *options);
 PhuxClientResult phux_client_operation_instance(const PhuxClient *client, size_t index, uint8_t out_instance[16], bool *out_bound);
 PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id, const uint8_t instance[16]);
+
+/* Intentional termination of a current, live terminal owned by this ATTACH.
+ * KILL_RESOURCE, or instance-only KILL_RESOURCE_IF when a bound spawn supplied
+ * evidence. This does not weaken abandoned-spawn cleanup above. Result kind 5
+ * reports correlated success/refusal/unknown outcome. Enqueue and receipt leave
+ * admission intact: authoritative RESOURCE_CLOSED ends the view.
+ * The exact client is the connection fence. It cannot reconnect; disconnect
+ * discards queued output. Captured actions and outgoing bytes MUST NOT be
+ * replayed on a replacement connection or retargeted by numeric terminal ID. */
+PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id);
+
+/* Atomic batch on the owning coordinator via KILL_RESOURCES. All 1..256 IDs
+ * must be distinct current live owners of this attachment; validation failure
+ * queues nothing and consumes no request ID. Same connection fence/no replay
+ * contract as close_resource. Result kind 6 has no single returned terminal;
+ * individual RESOURCE_CLOSED publications carry per-terminal truth. The wire
+ * batch has no instance precondition; never move it to another connection. */
+PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
 PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 
