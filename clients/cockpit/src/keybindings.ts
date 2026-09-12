@@ -72,7 +72,10 @@ export function keybindingResponse(bytes: Uint8Array): KeybindingPage | null {
     const defaultStart = bindingStart + bytes[offset + 4];
     const end = defaultStart + bytes[offset + 5];
     if (end > bytes.length) return null;
-    rows.push({ index, command: bytes.slice(commandStart, labelStart), label: bytes.slice(labelStart, bindingStart),
+    // scriptc needs the whole-number proof at the record construction site;
+    // validHeader's byte/count guard is not propagated across helper calls.
+    const rowIndex = index >= 0 && index <= 191 ? Math.trunc(index) : 0;
+    rows.push({ index: rowIndex, command: bytes.slice(commandStart, labelStart), label: bytes.slice(labelStart, bindingStart),
       binding: bytes.slice(bindingStart, defaultStart), defaultBinding: bytes.slice(defaultStart, end),
       overridden: bytes[offset + 1] === 1 });
     offset = end;
