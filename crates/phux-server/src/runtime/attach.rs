@@ -517,11 +517,13 @@ struct OutputPumpContext {
 }
 
 impl OutputPumpContext {
-    /// How a gap resync names this pump to the actor.
-    const fn resync_target(&self) -> ResyncTarget {
+    /// How a gap resync names this pump, and the generation it replaces, to
+    /// the actor.
+    const fn resync_target(&self, generation: &PumpGeneration) -> ResyncTarget {
         ResyncTarget {
             owner: self.client_id.0,
             stream_id: self.stream_id,
+            bootstrap_id: generation.bootstrap_id(),
         }
     }
 
@@ -534,7 +536,7 @@ impl OutputPumpContext {
         audience: &ResyncAudience,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
-        if !generation.takes_resync(audience, self.resync_target()) {
+        if !generation.takes_resync(audience, self.resync_target(generation)) {
             return ControlFlow::Continue(());
         }
         self.republish_generation(generation, output_rx, resync)
@@ -877,7 +879,7 @@ impl OutputPumpContext {
         }
         generation.note_resync_requested();
         crate::perf::PUMP_GAP_RESYNC.incr();
-        if enqueue_output_resync(&self.resize, self.resync_target()).await {
+        if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
         self.fail_unrecoverable_gap().await
@@ -905,7 +907,7 @@ impl OutputPumpContext {
             self.lag_label,
         );
         generation.note_resync_requested();
-        if enqueue_output_resync(&self.resize, self.resync_target()).await {
+        if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
         self.fail_unrecoverable_gap().await
@@ -4479,6 +4481,7 @@ mod tests {
                     Some(ResyncTarget {
                         owner: 2,
                         stream_id: two_pump_stream(),
+                        bootstrap_id: initial,
                     }),
                     "the resync names the stale pump, not the pane",
                 );
@@ -4613,6 +4616,7 @@ mod tests {
                     Some(ResyncTarget {
                         owner: 2,
                         stream_id: two_pump_stream(),
+                        bootstrap_id: two_pump_initial_generation(),
                     }),
                     "the resync names the lagging pump, not the pane",
                 );
@@ -4672,6 +4676,7 @@ mod tests {
         let pump = ResyncTarget {
             owner: 7,
             stream_id: StreamId::new(3).expect("stream id"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap id"),
         };
         let mut pending = Box::pin(enqueue_output_resync(&tx, pump));
         assert!(

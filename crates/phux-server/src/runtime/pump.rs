@@ -365,6 +365,7 @@ mod tests {
         ResyncTarget {
             owner,
             stream_id: phux_protocol::ids::StreamId::new(stream).expect("non-zero stream id"),
+            bootstrap_id: bootstrap(7),
         }
     }
 
@@ -396,6 +397,24 @@ mod tests {
 
         assert!(fresh.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
         assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
+    }
+
+    /// Owner and stream can collide across pump kinds (an `ATTACH` pump's
+    /// stream comes from its attach id, an `ATTACH_RESOURCE` pump's from its
+    /// client id),
+    /// so a target names the generation too: a resync owed to one generation
+    /// is not taken by another pump that happens to share owner and stream.
+    #[test]
+    fn a_resync_for_another_generation_of_the_same_stream_is_not_taken() {
+        let mut retired = opened();
+        retired.retire();
+        let same_stream_other_generation = ResyncTarget {
+            bootstrap_id: bootstrap(8),
+            ..pump_on(2, 1)
+        };
+        let audience = ResyncAudience::Only(vec![same_stream_other_generation].into());
+        assert!(!retired.takes_resync(&audience, pump_on(2, 1)));
+        assert!(retired.takes_resync(&audience, same_stream_other_generation));
     }
 
     /// A retired generation takes a resync that names it, and only that.

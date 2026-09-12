@@ -1471,6 +1471,7 @@ mod resync_debounce_tests {
         ResyncTarget {
             owner,
             stream_id: phux_protocol::ids::StreamId::new(1).expect("non-zero stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("non-zero bootstrap id"),
         }
     }
 

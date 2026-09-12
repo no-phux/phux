@@ -949,6 +949,7 @@ impl TerminalActor {
             tombstoned.push(crate::resource::ResyncTarget {
                 owner,
                 stream_id: binding.stream_id,
+                bootstrap_id: binding.bootstrap_id,
             });
             self.publish_native_control(
                 owner,

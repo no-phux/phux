@@ -1584,6 +1584,7 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
             target: Some(crate::resource::ResyncTarget {
                 owner: 7,
                 stream_id,
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
             }),
         }],
         "the tombstoned native pump is owed a resync addressed to it",

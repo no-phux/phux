@@ -531,6 +531,7 @@ async fn targeted_gap_resyncs_coalesce_into_one_snapshot_for_exactly_their_pumps
             let pump = |owner| ResyncTarget {
                 owner,
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
             };
             for owner in [4, 9, 4] {
                 handle

@@ -122,6 +122,13 @@ pub struct ResyncTarget {
     pub owner: u64,
     /// Stream the pump publishes its generations on.
     pub stream_id: phux_protocol::ids::StreamId,
+    /// The generation the resync replaces: the one the pump was fenced on, or
+    /// the one a reflow tombstoned. Owner and stream alone can collide — an
+    /// `ATTACH` pump's stream id comes from its attach id and an
+    /// `ATTACH_RESOURCE` pump's from its client id — so without the generation
+    /// one addressed resync could revive two pumps, and their native captures
+    /// would race for the owner-keyed binding.
+    pub bootstrap_id: phux_protocol::ids::BootstrapId,
 }
 
 /// Which output pumps a [`PaneOutput::Resync`] replaces the generation of.
