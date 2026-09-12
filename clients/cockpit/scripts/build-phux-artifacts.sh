@@ -11,10 +11,14 @@ esac
 # original sequence: combining packages changes dependency LTO units and makes
 # CLI staging rebuild; aligning engine features was slower cold as well.
 # See research/2026-09-09-ci-compute-audit.md for all three measured alternatives.
-export CARGO_TARGET_DIR="${ROOT}/target"
+# shellcheck source=clients/cockpit/scripts/native-cargo-target.sh
+source "${ROOT}/clients/cockpit/scripts/native-cargo-target.sh"
+phux_native_cargo_setup "$ROOT" "$PROFILE"
 cd "$ROOT"
-CARGO_ARGS=(--locked --manifest-path "${ROOT}/Cargo.toml" --profile "$PROFILE")
 cargo rustc "${CARGO_ARGS[@]}" -p phux-client-ffi --lib --crate-type staticlib
 cargo build "${CARGO_ARGS[@]}" -p phux
-test -s "${ROOT}/target/${PROFILE}/libphux_client_ffi.a"
-test -x "${ROOT}/target/${PROFILE}/phux"
+test -s "${PHUX_CARGO_OUTPUT}/libphux_client_ffi.a"
+test -x "${PHUX_CARGO_OUTPUT}/phux"
+for artifact in libphux_client_ffi.a phux; do
+    phux_publish_native_artifact "${PHUX_CARGO_OUTPUT}/${artifact}" "${ROOT}/target/${PROFILE}/${artifact}"
+done

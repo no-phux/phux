@@ -14,6 +14,19 @@ ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ROOT.parent.parent
 
 
+def copy_build_scripts(scripts):
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("build-phux-cli.sh", "build-phux-artifacts.sh", "stage-phux-cli.sh", "native-cargo-target.sh"):
+        source = ROOT / "scripts" / name
+        (scripts / name).write_text(source.read_text())
+
+
+def mock_rustc(tools):
+    rustc = tools / "rustc"
+    rustc.write_text("#!/bin/sh\ntest \"$1\" = -vV || exit 91\nprintf 'rustc fixture\\nhost: aarch64-apple-darwin\\n'\n")
+    rustc.chmod(0o755)
+
+
 class BuildContracts(unittest.TestCase):
     def cache_steps(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
@@ -146,18 +159,17 @@ class BuildContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="cockpit cli contract ") as directory:
             repo = Path(directory)
             scripts = repo / "clients/cockpit/scripts"
-            scripts.mkdir(parents=True)
+            copy_build_scripts(scripts)
             script = scripts / "build-phux-cli.sh"
-            script.write_text((ROOT / "scripts/build-phux-cli.sh").read_text())
-            (scripts / "stage-phux-cli.sh").write_text((ROOT / "scripts/stage-phux-cli.sh").read_text())
             tools = repo / "tools"
             tools.mkdir()
+            mock_rustc(tools)
             cargo = tools / "cargo"
             cargo.write_text('''#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$CARGO_TARGET_DIR" "$@" > "$CAPTURE"
-mkdir -p "$CARGO_TARGET_DIR/ffi-dev"
-printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/ffi-dev/phux"
+mkdir -p "$CARGO_TARGET_DIR/aarch64-apple-darwin/ffi-dev"
+printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/aarch64-apple-darwin/ffi-dev/phux"
 ''')
             cargo.chmod(0o755)
             # A global installed phux is deliberately poisonous; staging should
@@ -174,16 +186,17 @@ printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/ffi-dev/phux"
             previous = destination.open("rb")
             self.addCleanup(previous.close)
             env = dict(os.environ, CAPTURE=str(capture),
+                       RUSTC=str(tools / "rustc"),
                        CARGO_TARGET_DIR="/unrelated/target",
                        PATH=f"{tools}:{os.environ['PATH']}")
             subprocess.run(["bash", str(script), "ffi-dev", str(destination)],
                            env=env, check=True, capture_output=True)
             self.assertEqual(capture.read_text().splitlines(), [
                 str(repo / "target"), "build", "--locked", "--manifest-path",
-                str(repo / "Cargo.toml"), "--profile", "ffi-dev", "-p", "phux",
+                str(repo / "Cargo.toml"), "--profile", "ffi-dev", "--target", "aarch64-apple-darwin", "-p", "phux",
             ])
             self.assertTrue(os.access(destination, os.X_OK))
-            self.assertEqual(destination.read_bytes(), (repo / "target/ffi-dev/phux").read_bytes())
+            self.assertEqual(destination.read_bytes(), (repo / "target/aarch64-apple-darwin/ffi-dev/phux").read_bytes())
             self.assertEqual(previous.read(), b"old CLI")
 
             # A producer failure must not stage an old executable already in target.
@@ -203,17 +216,17 @@ printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/ffi-dev/phux"
         with tempfile.TemporaryDirectory(prefix="cockpit-producer-contract-") as directory:
             repo = Path(directory)
             scripts = repo / "clients/cockpit/scripts"
-            scripts.mkdir(parents=True)
+            copy_build_scripts(scripts)
             helper = scripts / "build-phux-artifacts.sh"
-            helper.write_text((ROOT / "scripts/build-phux-artifacts.sh").read_text())
             tools = repo / "tools"
             tools.mkdir()
+            mock_rustc(tools)
             cargo = tools / "cargo"
             cargo.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
 with open(os.environ["CAPTURE"], "a") as log:
     log.write(json.dumps([os.environ["CARGO_TARGET_DIR"], *sys.argv[1:]]) + "\\n")
-output = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "ffi-release"
+output = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "aarch64-apple-darwin" / "ffi-release"
 output.mkdir(parents=True, exist_ok=True)
 (output / "libphux_client_ffi.a").write_text("archive")
 cli = output / "phux"
@@ -223,10 +236,11 @@ cli.chmod(0o755)
             cargo.chmod(0o755)
             capture = repo / "calls.jsonl"
             env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", CAPTURE=str(capture),
+                       RUSTC=str(tools / "rustc"),
                        CARGO_TARGET_DIR="/unrelated/target")
             subprocess.run(["bash", str(helper)], env=env, check=True, capture_output=True)
             actual = [json.loads(line) for line in capture.read_text().splitlines()]
-            common = ["--locked", "--manifest-path", str(repo / "Cargo.toml"), "--profile", "ffi-release"]
+            common = ["--locked", "--manifest-path", str(repo / "Cargo.toml"), "--profile", "ffi-release", "--target", "aarch64-apple-darwin"]
             self.assertEqual(actual, [
                 [str(repo / "target"), "rustc", *common, "-p", "phux-client-ffi", "--lib", "--crate-type", "staticlib"],
                 [str(repo / "target"), "build", *common, "-p", "phux"],
@@ -268,6 +282,68 @@ cli.chmod(0o755)
         for profile in ("ffi-release", "ffi-dev"):
             section = re.search(rf"(?ms)^\[profile\.{profile}\]\n(.*?)(?=^\[|\Z)", manifest).group(1)
             self.assertRegex(section, r'(?m)^panic = "unwind"$')
+
+    def test_native_artifacts_override_environment_and_cargo_config_targets(self):
+        # Model Cargo's --target > env > build.target precedence. A successful
+        # wrong-target build leaves poisonous old host-layout artifacts behind.
+        for setting in ("environment", "config"):
+            for command in ("build-phux-cli.sh", "build-phux-artifacts.sh"):
+                with self.subTest(setting=setting, command=command):
+                    self.check_native_artifacts(setting, command)
+
+    def check_native_artifacts(self, setting, command):
+        with tempfile.TemporaryDirectory(prefix="cockpit target contract ") as directory:
+            repo = Path(directory)
+            scripts = repo / "clients/cockpit/scripts"
+            copy_build_scripts(scripts)
+            tools = repo / "tools"
+            tools.mkdir()
+            mock_rustc(tools)
+            config = repo / ".cargo/config.toml"
+            config.parent.mkdir()
+            config.write_text('[build]\ntarget = "x86_64-unknown-linux-gnu"\n' if setting == "config" else "")
+            cargo = tools / "cargo"
+            cargo.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, re, sys
+args = sys.argv[1:]
+with open(os.environ["CAPTURE"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+config = pathlib.Path(os.environ["CONFIG"]).read_text()
+configured = re.search(r'target = "([^"]+)"', config)
+target = os.environ.get("CARGO_BUILD_TARGET") or (configured[1] if configured else "")
+if "--target" in args:
+    target = args[args.index("--target") + 1]
+profile = args[args.index("--profile") + 1]
+output = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / target / profile
+output.mkdir(parents=True, exist_ok=True)
+name = "libphux_client_ffi.a" if args[0] == "rustc" else "phux"
+artifact = output / name
+artifact.write_text("fresh " + target + " " + name)
+artifact.chmod(0o755)
+''')
+            cargo.chmod(0o755)
+            legacy = repo / "target/ffi-release"
+            legacy.mkdir(parents=True)
+            for name in ("phux", "libphux_client_ffi.a"):
+                (legacy / name).write_text("stale " + name)
+                (legacy / name).chmod(0o755)
+            destination = repo / "staged/phux"
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                       RUSTC=str(tools / "rustc"), CAPTURE=str(repo / "calls"), CONFIG=str(config),
+                       CARGO_TARGET_DIR=str(repo / "unrelated-target"), PHUX_CI_ARTIFACTS_VERIFIED="false")
+            env.pop("CARGO_BUILD_TARGET", None)
+            if setting == "environment":
+                env["CARGO_BUILD_TARGET"] = "x86_64-unknown-linux-gnu"
+            subprocess.run(["bash", str(scripts / command), "ffi-release", str(destination)],
+                           env=env, check=True, capture_output=True)
+            staged = destination if command == "build-phux-cli.sh" else legacy / "phux"
+            self.assertEqual(staged.read_text(), "fresh aarch64-apple-darwin phux")
+            if command == "build-phux-artifacts.sh":
+                self.assertEqual((legacy / "libphux_client_ffi.a").read_text(),
+                                 "fresh aarch64-apple-darwin libphux_client_ffi.a")
+            for call in (json.loads(line) for line in (repo / "calls").read_text().splitlines()):
+                self.assertIn("--target", call)
+                self.assertEqual(call[call.index("--target") + 1], "aarch64-apple-darwin")
 
 
 if __name__ == "__main__":
