@@ -146,7 +146,8 @@ pub const Controller = struct {
         if (!entry.windowCurrent(engine)) return entry.refuse("The invoking window was closed. Open New Session again.");
         if (!engine.newSessionDestinationCurrent(entry.destination)) return entry.refuse("The destination connection changed. Open New Session again.");
         const id = engine.sendNewSession(entry.destination, name, true) catch |err| {
-            entry.refuse(@errorName(err));
+            var reason: [max_text_bytes]u8 = undefined;
+            entry.refuse(std.fmt.bufPrint(&reason, "Could not create the session ({s}). Check the machine connection and try again.", .{@errorName(err)}) catch "Could not create the session. Check the machine connection and try again.");
             return;
         };
         if (id == 0) return entry.refuse("The coordinator did not accept this request.");
@@ -302,8 +303,9 @@ test "cancelled creation settles and releases without stealing focus" {
     var response: [max_bytes]u8 = undefined;
     _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);
     _ = try controller.handle(&engine, .{}, testRequest(.create, 1, "Build", &request), &response);
-    _ = try controller.handle(&engine, .{}, testRequest(.cancel, 1, "", &request), &response);
     engine.outcomes[0] = .{ .created = 41 };
+    // Cancel wins even when the success is ready in this same event turn.
+    _ = try controller.handle(&engine, .{}, testRequest(.cancel, 1, "", &request), &response);
     controller.poll(&engine, .{});
     try std.testing.expectEqual(@as(u32, 0), engine.selected);
     try std.testing.expectEqual(@as(u32, 1), engine.released);
@@ -320,5 +322,19 @@ test "invalid names and small reply buffer never send a session operation" {
     try std.testing.expectError(error.InvalidRequest, controller.handle(&engine, .{}, testRequest(.create, 1, "a\nb", &request), &response));
     try std.testing.expectError(error.BufferTooSmall, controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), response[0..16]));
     try std.testing.expectEqual(@as(usize, 0), controller.entries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), engine.sent);
+}
+
+test "a failed create is an actionable refusal and cannot masquerade as pending" {
+    var model: Fixture.Model = .{};
+    var engine: Fixture = .{ .model = &model, .fail_send = true };
+    var controller: Controller = .{};
+    defer controller.deinit(std.testing.allocator);
+    var request: [256]u8 = undefined;
+    var response: [max_bytes]u8 = undefined;
+    _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);
+    const reply = try controller.handle(&engine, .{}, testRequest(.create, 1, "Build", &request), &response);
+    try std.testing.expectEqual(@as(u8, 3), reply[1]);
+    try std.testing.expect(std.mem.indexOf(u8, reply, "Check the machine connection") != null);
     try std.testing.expectEqual(@as(u32, 0), engine.sent);
 }
