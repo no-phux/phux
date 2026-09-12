@@ -12,10 +12,13 @@ overflow, semantic state, and calm incremental updates.
 
 ### Type roles
 
-- The entire interface uses the platform monospace stack. This is an
-  operational instrument, not an editorial product shell.
-- Hierarchy comes from size, weight, case, rule weight, and position rather
-  than switching type families.
+- Chrome — nav, sidebar, breadcrumbs, TOC, meta — uses the platform
+  monospace stack. That is the instrument.
+- Docs body (`.prose`) uses the platform UI sans so a long guide is a
+  document, not a transcript. Code, selectors, and protocol symbols stay
+  monospace.
+- Hierarchy in chrome still comes from size, weight, rule, and position.
+  Body headings inherit the sans family and use size/weight only.
 
 ### Color roles
 

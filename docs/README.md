@@ -6,10 +6,8 @@ last-reviewed: 2026-09-12
 
 # phux documentation
 
-**TL;DR.** This is the public documentation index. Start with the quickstart
-to run a persistent terminal, then branch into install, configuration, agents,
-or remote access. Protocol, architecture, operations, and ADRs live in
-separate reference sections.
+**TL;DR.** Public documentation index. Start with the quickstart. Protocol,
+architecture, operations, and ADRs are separate reference sections.
 
 ---
 

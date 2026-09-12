@@ -64,6 +64,19 @@ export default defineConfig({
   // Match the wire/phall.io house style: bare, no-trailing-slash canonical paths.
   trailingSlash: "never",
   build: { format: "file" },
+  // Old numbered-H2 slices of tui.md / agents.md. Those guides are one page
+  // now; keep the public URLs from 404ing.
+  redirects: {
+    "/consumers/tui/commands": "/consumers/tui",
+    "/consumers/tui/configuration": "/consumers/tui",
+    "/consumers/tui/interface": "/consumers/tui",
+    "/consumers/tui/automation": "/consumers/tui",
+    "/consumers/tui/reference": "/consumers/tui",
+    "/consumers/agents/cli": "/consumers/agents",
+    "/consumers/agents/targeting": "/consumers/agents",
+    "/consumers/agents/json": "/consumers/agents",
+    "/consumers/agents/integrations": "/consumers/agents",
+  },
   // The live terminal is a React island (<PhuxTerminal client:idle />), and the
   // docs chrome is the Fumadocs React island (<Docs client:load />).
   integrations: [react(), mdx({ extendMarkdownConfig: true, syntaxHighlight: false }), sitemap(), searchIndex()],

@@ -4,7 +4,7 @@ stability: evolving
 last-reviewed: 2026-09-12
 ---
 
-# Remote access over an overlay network
+# Remote access
 
 **TL;DR.** Attach to a phux server on another machine with one command. The
 first run pairs the host; every later run is a direct encrypted QUIC dial

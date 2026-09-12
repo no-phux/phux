@@ -23,11 +23,11 @@ script, Cockpit, or an agent can observe and drive those same terminals
 while you watch.
 
 This page is the TUI's product surface. The CLI verb catalog lives in
-[`../reference/cli.md`](../reference/cli.md) and
-[`agents.md`](./agents.md). Config keys live in
-[`../CONFIG.md`](../CONFIG.md). Recording lives in
-[`recording.md`](./recording.md). Maturity lives in
-[`../CONCEPTS.md`](../CONCEPTS.md).
+the [generated CLI reference](../reference/cli.md) and
+[agents](./agents.md). Config keys live in
+[configuration](../CONFIG.md). Recording lives in
+[recording](./recording.md). Maturity lives in
+[concepts](../CONCEPTS.md).
 
 The TUI has no protocol-level standing
 ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)). Sessions,
@@ -596,11 +596,11 @@ action = { kind = "run", command = "afplay /System/Library/Sounds/Glass.aiff" }
 
 | You want | Read |
 |---|---|
-| Install and the first attach | [`../QUICKSTART.md`](../QUICKSTART.md) |
-| Every config key | [`../CONFIG.md`](../CONFIG.md) |
-| Every action the dispatcher handles | [`../reference/actions.md`](../reference/actions.md) |
-| Every status-bar widget | [`../reference/widgets.md`](../reference/widgets.md) |
-| Headless verbs, JSON, `%name` | [`agents.md`](./agents.md) |
-| Record a pane or the glass | [`recording.md`](./recording.md) |
-| The native macOS client | [`cockpit.md`](./cockpit.md) |
-| What is shipped versus a gap | [`../CONCEPTS.md`](../CONCEPTS.md) |
+| Install and the first attach | [Quickstart](../QUICKSTART.md) |
+| Every config key | [Configuration](../CONFIG.md) |
+| Every action the dispatcher handles | [Action catalog](../reference/actions.md) |
+| Every status-bar widget | [Widgets](../reference/widgets.md) |
+| Headless verbs, JSON, `%name` | [Agents](./agents.md) |
+| Record a pane or the glass | [Recording](./recording.md) |
+| The native macOS client | [Cockpit](./cockpit.md) |
+| What is shipped versus a gap | [Concepts](../CONCEPTS.md) |
