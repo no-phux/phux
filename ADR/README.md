@@ -133,7 +133,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Accepted (builds on [0040](./0040-agent-identity-metadata.md)) |
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
 | [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) | Durable coordinator is a separate bounded endpoint | Accepted (forward-compat; builds on [0092](./0092-durable-work-coordinator-authority.md), still Proposed) |
-| [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
+| [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md); proof profile superseded in part by [0114](./0116-workload-auth-is-mtls.md)) |
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted |
 | [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (builds on [0020](./0020-layered-render.md)) |
 | [0101](./0101-the-settings-page-edits-the-file.md) | The settings page edits the file | Accepted (builds on [0023](./0023-config-ux-philosophy.md)) |
@@ -150,6 +150,9 @@ not a summary: the TL;DR lives in the ADR.
 | [0112](./0112-stable-split-sidebar-navigation.md) | Sidebar navigation stays put while status changes | Accepted (amends [0089](./0089-three-zone-attention-sidebar.md)) |
 | [0113](./0113-next-release-channel.md) | Opt-in next channel from green main | Accepted (builds on [0074](./0074-self-update-trust-boundary.md)) |
 | [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) | Cockpit closes terminals and detaches windows | Accepted (builds on [0105](./0105-sessions-can-outlive-their-last-window.md), [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
+| [0115](./0115-quic-stream-per-terminal.md) | QUIC carries one control stream plus one bidi stream per attached Terminal | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md) and [0070](./0070-native-engine-state-bootstrap.md)) |
+| [0116](./0116-workload-auth-is-mtls.md) | Workload authentication is mTLS; the bespoke proof protocol is retired unshipped | Accepted (supersedes in part [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
+| [0117](./0117-wire-codec-stays-tlv.md) | The wire codec stays hand-rolled TLV; protobuf considered and rejected | Accepted |
 
 ## When to write an ADR
 

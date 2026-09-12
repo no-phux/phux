@@ -156,16 +156,17 @@ mod tests {
         assert_eq!(lg.button(), None);
     }
 
-    use libghostty_vt::{Terminal, TerminalOptions};
+    use libghostty_vt::Terminal;
 
     /// 80x24 terminal that has already applied `modes` (raw VT bytes).
     fn terminal_with(modes: &[u8]) -> Terminal<'static, 'static> {
-        let mut t = Terminal::new(TerminalOptions {
-            cols: 80,
-            rows: 24,
-            max_scrollback: 0,
-        })
-        .expect("Terminal::new");
+        let mut t = {
+            let mut terminal = Terminal::new(80, 24).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(0))
+                .expect("Terminal::new");
+            terminal
+        };
         t.vt_write(modes);
         t
     }

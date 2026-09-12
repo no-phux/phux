@@ -15,8 +15,6 @@
 use std::collections::HashMap;
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-#[cfg(test)]
-use libghostty_vt::TerminalOptions;
 use libghostty_vt::terminal::Mode;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 #[cfg(test)]
@@ -191,11 +189,11 @@ impl PaneSlot {
         let _ = (cols, rows);
         #[cfg(test)]
         let terminal = {
-            let mut terminal = GhosttyTerminal::new(TerminalOptions {
-                cols: cols.max(1),
-                rows: rows.max(1),
-                max_scrollback: 10_000,
-            })?;
+            let mut terminal = {
+                let mut terminal = GhosttyTerminal::new(cols.max(1), rows.max(1))?;
+                terminal.set_scrollback_max_lines(Some(10_000))?;
+                terminal
+            };
             phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
             terminal.resize(
                 cols.max(1),

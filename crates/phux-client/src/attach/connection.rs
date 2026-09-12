@@ -20,6 +20,7 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, Layer, LayerSet,
     ServerFeature, ServerFeatureSet,
 };
+use phux_protocol::ids::{ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MoveResult, Scope, SpawnResult,
 };
@@ -118,6 +119,133 @@ pub struct Connection {
     /// unresolved operation must be reported unknown rather than replayed.
     server_id: Option<Vec<u8>>,
     next_attach_id: u32,
+    /// QUIC multi-stream state (proto.md §4.2): built on the first
+    /// [`Self::bind_terminal`] and only ever on a QUIC connection whose
+    /// `HELLO_OK` advertised `QUIC_STREAMS`. `None` everywhere else — UDS,
+    /// WebSocket, and QUIC without the bit keep the single-stream shape.
+    multistream: Option<Multistream>,
+}
+
+/// QUIC multi-stream state (proto.md §4.2, ADR-0115).
+///
+/// Bound Terminal streams pump complete frames into one merged channel,
+/// which [`Connection::recv`] reads alongside the control stream; Terminal
+/// input, history requests, and acks write to the Terminal's own stream
+/// send half instead of control. Per-stream backpressure therefore never
+/// stalls another pane or the control channel.
+#[derive(Debug)]
+struct Multistream {
+    /// The connection the Terminal streams ride.
+    conn: quinn::Connection,
+    /// Live Terminal streams by Terminal.
+    bindings: std::collections::HashMap<ResourceId, MuxBinding>,
+    /// Next client-allocated app-level `StreamId`. Connection-local,
+    /// monotonic, never zero; a re-bind of the same Terminal gets a new
+    /// value (a new generation, per L1 §4.6).
+    next_stream_id: u64,
+    /// Merged frames from every bound Terminal stream's pump task.
+    frames_rx: tokio::sync::mpsc::Receiver<BytesMut>,
+    /// Sender half the pump tasks hold.
+    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    /// `Ended` notifications from pump tasks (stream finish/reset).
+    ended_rx: tokio::sync::mpsc::Receiver<(ResourceId, StreamId)>,
+    /// Sender half the pump tasks hold.
+    ended_tx: tokio::sync::mpsc::Sender<(ResourceId, StreamId)>,
+}
+
+/// One bound Terminal stream's client-side state.
+#[derive(Debug)]
+struct MuxBinding {
+    /// The app-level `StreamId` this stream opened under.
+    stream_id: StreamId,
+    /// This stream's send half; Terminal-addressed frames route here.
+    send: quinn::SendStream,
+}
+
+/// Depth of the mux's merged frame channel. Small: a stalled reader stalls
+/// every stream's pump, which is ordinary backpressure (the frames wait in
+/// QUIC's per-stream flow control), not loss.
+const MUX_FRAME_CHANNEL: usize = 64;
+const MAX_CLIENT_TERMINAL_STREAMS: usize = 128;
+
+impl Multistream {
+    fn new(conn: quinn::Connection) -> Self {
+        let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(MUX_FRAME_CHANNEL);
+        let (ended_tx, ended_rx) = tokio::sync::mpsc::channel(MUX_FRAME_CHANNEL);
+        Self {
+            conn,
+            bindings: std::collections::HashMap::new(),
+            next_stream_id: 1,
+            frames_rx,
+            frames_tx,
+            ended_rx,
+            ended_tx,
+        }
+    }
+
+    const fn next_stream_id(&mut self) -> Option<StreamId> {
+        let raw = self.next_stream_id;
+        self.next_stream_id = self.next_stream_id.wrapping_add(1);
+        if self.next_stream_id == 0 {
+            self.next_stream_id = 1;
+        }
+        StreamId::new(raw)
+    }
+}
+
+/// Pump framed bytes from one server-to-client Terminal stream into the
+/// connection-wide receive queue. A frame is queued only after its complete
+/// length-prefixed body has arrived, so frames from different streams can be
+/// merged without corrupting one another.
+async fn pump_terminal_stream(
+    mut recv: quinn::RecvStream,
+    terminal_id: ResourceId,
+    stream_id: StreamId,
+    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    ended_tx: tokio::sync::mpsc::Sender<(ResourceId, StreamId)>,
+) {
+    let mut buf = BytesMut::with_capacity(8192);
+    loop {
+        match recv.read_buf(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => loop {
+                let Ok(Some(frame)) = framing::split_frame(&mut buf) else {
+                    break;
+                };
+                if frames_tx.send(frame).await.is_err() {
+                    return;
+                }
+            },
+        }
+    }
+    let _ = ended_tx.send((terminal_id, stream_id)).await;
+}
+
+/// Frames whose payload belongs to one Terminal and therefore routes over
+/// that Terminal's dedicated stream when one is bound.
+const fn terminal_target(frame: &FrameKind) -> Option<&ResourceId> {
+    match frame {
+        FrameKind::InputKey { terminal_id, .. }
+        | FrameKind::InputMouse { terminal_id, .. }
+        | FrameKind::InputFocus { terminal_id, .. }
+        | FrameKind::InputPaste { terminal_id, .. }
+        | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::FrameAck { terminal_id, .. }
+        | FrameKind::HistoryRequest { terminal_id, .. }
+        | FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
+}
+
+async fn send_quic_frame(
+    send: &mut quinn::SendStream,
+    frame: &FrameKind,
+) -> Result<(), AttachError> {
+    let mut out = BytesMut::with_capacity(256);
+    frame.encode(&mut out);
+    send.write_all(&out)
+        .await
+        .map_err(|err| AttachError::Io(io::Error::other(err)))
 }
 
 /// Immutable result of protocol-0.7 bootstrap negotiation.
@@ -307,6 +435,7 @@ impl Connection {
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
+            multistream: None,
         })
     }
 
@@ -358,6 +487,7 @@ impl Connection {
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
+            multistream: None,
         })
     }
 
@@ -401,6 +531,7 @@ impl Connection {
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
+            multistream: None,
         })
     }
 
@@ -425,7 +556,8 @@ impl Connection {
     /// per attempt. For UDS this is a no-op (dropping the socket halves is a
     /// clean close already). [`QuicWriter`]'s [`Drop`] is the best-effort
     /// backstop on paths that cannot await.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
+        self.unbind_all_terminals();
         if let FrameWriter::Quic(writer) = &self.writer {
             writer.connection.close(0u32.into(), b"phux: detach");
             writer.endpoint.wait_idle().await;
@@ -483,6 +615,7 @@ impl Connection {
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
+            multistream: None,
         }
     }
 
@@ -586,7 +719,117 @@ impl Connection {
     }
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
+        if let Some(terminal_id) = terminal_target(frame)
+            && self.multistream_enabled()
+            && let Some(mux) = self.multistream.as_mut()
+            && let Some(binding) = mux.bindings.get_mut(terminal_id)
+        {
+            return send_quic_frame(&mut binding.send, frame).await;
+        }
         self.writer.send(frame).await
+    }
+
+    /// Whether this negotiated QUIC connection supports per-Terminal
+    /// streams. The feature is intentionally gated by both the negotiated
+    /// bit and the transport variant: UDS/WS peers must retain their one
+    /// stream shape even if a future server advertises unrelated bits.
+    #[must_use]
+    pub fn multistream_enabled(&self) -> bool {
+        matches!(self.writer, FrameWriter::Quic(_)) && self.advertises(ServerFeature::QuicStreams)
+    }
+
+    /// Open and bind one client-originated QUIC Terminal stream.
+    ///
+    /// The stream id is application-level and allocated by this connection;
+    /// it is never the QUIC stream id. The server consumes the bind header
+    /// before handing the stream's framed bytes to the normal dispatcher.
+    pub async fn bind_terminal(&mut self, terminal_id: &ResourceId) -> Result<(), AttachError> {
+        if !self.multistream_enabled() {
+            return Ok(());
+        }
+        if self
+            .multistream
+            .as_ref()
+            .is_some_and(|mux| mux.bindings.contains_key(terminal_id))
+        {
+            return Ok(());
+        }
+        if self
+            .multistream
+            .as_ref()
+            .is_some_and(|mux| mux.bindings.len() >= MAX_CLIENT_TERMINAL_STREAMS)
+        {
+            return Err(AttachError::Protocol(format!(
+                "QUIC Terminal stream cap exceeded ({MAX_CLIENT_TERMINAL_STREAMS})"
+            )));
+        }
+
+        if self.multistream.is_none() {
+            let connection = match &self.writer {
+                FrameWriter::Quic(writer) => writer.connection.clone(),
+                FrameWriter::Uds(_) | FrameWriter::Ws(_) => return Ok(()),
+            };
+            self.multistream = Some(Multistream::new(connection));
+        }
+
+        let Some(mux) = self.multistream.as_mut() else {
+            return Err(AttachError::Protocol(
+                "QUIC multi-stream state was not initialized".to_owned(),
+            ));
+        };
+        let Some(stream_id) = mux.next_stream_id() else {
+            return Err(AttachError::Protocol(
+                "QUIC Terminal stream id exhausted".to_owned(),
+            ));
+        };
+        let (mut send, recv) = mux
+            .conn
+            .open_bi()
+            .await
+            .map_err(|err| AttachError::Connect(format!("opening Terminal stream: {err}")))?;
+        let mut header = BytesMut::with_capacity(64);
+        phux_protocol::wire::stream_bind::encode(
+            &phux_protocol::wire::stream_bind::StreamBind {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+            },
+            &mut header,
+        );
+        send.write_all(&header)
+            .await
+            .map_err(|err| AttachError::Io(io::Error::other(err)))?;
+
+        let frames_tx = mux.frames_tx.clone();
+        let ended_tx = mux.ended_tx.clone();
+        let ended_terminal = terminal_id.clone();
+        mux.bindings
+            .insert(terminal_id.clone(), MuxBinding { stream_id, send });
+        tokio::spawn(pump_terminal_stream(
+            recv,
+            ended_terminal,
+            stream_id,
+            frames_tx,
+            ended_tx,
+        ));
+        Ok(())
+    }
+
+    /// Finish and forget one Terminal stream, if it is bound.
+    pub fn unbind_terminal(&mut self, terminal_id: &ResourceId) {
+        if let Some(mux) = self.multistream.as_mut()
+            && let Some(mut binding) = mux.bindings.remove(terminal_id)
+        {
+            let _ = binding.send.finish();
+        }
+    }
+
+    /// Finish all client-opened Terminal streams.
+    pub fn unbind_all_terminals(&mut self) {
+        if let Some(mux) = self.multistream.as_mut() {
+            for (_, mut binding) in mux.bindings.drain() {
+                let _ = binding.send.finish();
+            }
+        }
     }
 
     /// Accumulate sends until [`Self::uncork`] instead of writing each one.
@@ -615,11 +858,41 @@ impl Connection {
     /// EOF from the kernel and QUIC has its own keep-alive, so both read
     /// straight through.
     pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
+        if self.multistream.is_some() {
+            return self.recv_multistream().await;
+        }
         match (&mut self.reader, &mut self.writer) {
             (FrameReader::Ws(reader), FrameWriter::Ws(writer)) => {
                 reader.recv_alive(&mut writer.inner).await
             }
             (reader, _) => reader.recv().await,
+        }
+    }
+
+    async fn recv_multistream(&mut self) -> Result<FrameKind, AttachError> {
+        let limits = self
+            .negotiated_bootstrap
+            .map_or_else(BootstrapLimits::default, |negotiated| negotiated.limits);
+        loop {
+            let Some(mux) = self.multistream.as_mut() else {
+                return Err(AttachError::Protocol(
+                    "QUIC multi-stream state disappeared".to_owned(),
+                ));
+            };
+            let reader = &mut self.reader;
+            tokio::select! {
+                result = reader.recv() => return result,
+                Some(mut bytes) = mux.frames_rx.recv() => {
+                    return decode_buffered(&mut bytes, limits)?.ok_or_else(||
+                        AttachError::Protocol("Terminal stream ended with a partial frame".to_owned())
+                    );
+                }
+                Some((terminal_id, stream_id)) = mux.ended_rx.recv() => {
+                    if mux.bindings.get(&terminal_id).is_some_and(|binding| binding.stream_id == stream_id) {
+                        mux.bindings.remove(&terminal_id);
+                    }
+                }
+            }
         }
     }
 

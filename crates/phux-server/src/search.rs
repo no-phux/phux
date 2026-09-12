@@ -288,19 +288,19 @@ fn push_byte_hits(
 mod tests {
     use super::*;
     use libghostty_vt::{
-        TerminalOptions,
         fmt::{Format, Formatter, FormatterOptions},
         selection::{FormatOptions, Selection},
         terminal::{Point, PointCoordinate},
     };
 
     fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     fn vp() -> SearchOptions {

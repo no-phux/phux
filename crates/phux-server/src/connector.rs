@@ -24,7 +24,7 @@ use crate::runtime::accept_loop;
 use crate::runtime::input_lane::InputLaneHandle;
 use crate::state::SharedState;
 use crate::transport::Incoming;
-use crate::transport::quic::{QuicReader, QuicWriter, authorize_preamble};
+use crate::transport::quic::{QuicMuxReader, QuicWriter, authorize_preamble};
 
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -203,8 +203,12 @@ struct ConnectorIncoming {
 }
 
 impl Incoming for ConnectorIncoming {
-    type Reader = QuicReader;
+    type Reader = QuicMuxReader;
     type Writer = QuicWriter;
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Quic
+    }
 
     async fn accept(
         &self,
@@ -252,7 +256,13 @@ impl Incoming for ConnectorIncoming {
                 }
             };
             return Ok((
-                QuicReader::from_stream(recv),
+                // The first consumer stream is the control stream after its
+                // opaque bearer preamble. Subsequent streams on this tunnel
+                // are the consumer's STREAM_BIND-bound Terminal streams; the
+                // mux accepts and merges them just like a direct QUIC
+                // listener. Keeping this aggregation here is what makes a
+                // relay transparent to QUIC's multi-stream shape.
+                QuicMuxReader::new(recv, self.connection.clone()),
                 QuicWriter::from_stream(send, self.window.clone()),
                 crate::auth::ConnectionIdentity {
                     peer: PeerIdentity {

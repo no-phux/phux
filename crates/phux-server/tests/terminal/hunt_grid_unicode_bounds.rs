@@ -6,17 +6,16 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::print_stderr, reason = "probe diagnostics on failure")]
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_server::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
 use phux_server::search::{Scope, SearchOptions, search_oneshot};
 
 fn fresh(cols: u16, rows: u16, scrollback: usize) -> GhosttyTerminal<'static, 'static> {
-    GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: scrollback,
-    })
-    .unwrap()
+    {
+        let mut terminal = GhosttyTerminal::new(cols, rows).unwrap();
+        terminal.set_scrollback_max_lines(Some(scrollback)).unwrap();
+        terminal
+    }
 }
 
 const fn vp() -> SearchOptions {

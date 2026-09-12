@@ -57,7 +57,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 
 /// Version of the `phux update --json` document. Additive fields do not bump
 /// it (ADR-0071 freezes the shape at 1.0).
-const DOCUMENT_SCHEMA_VERSION: u8 = 1;
+pub(crate) const DOCUMENT_SCHEMA_VERSION: u8 = 1;
 
 /// Everything that can go wrong between "there is a newer release" and "it is
 /// installed", with the failure kept separate from how it is reported.

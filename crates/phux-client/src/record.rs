@@ -141,9 +141,12 @@ async fn record_on_connection(
     let _ = conn
         .send(&FrameKind::Command {
             request_id: REQUEST_DETACH,
-            command: Command::DetachResource { terminal_id },
+            command: Command::DetachResource {
+                terminal_id: terminal_id.clone(),
+            },
         })
         .await;
+    conn.unbind_terminal(&terminal_id);
     outcome
 }
 
@@ -181,6 +184,8 @@ async fn subscribe(
     if let CommandResult::Error { message, .. } = result {
         return Err(AttachError::Refused(message));
     }
+
+    conn.bind_terminal(terminal_id).await?;
 
     conn.send(&FrameKind::SubscribeEvents {
         terminal: Some(terminal_id.clone()),

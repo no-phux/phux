@@ -26,18 +26,19 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 fn render(bytes: &[u8], cols: u16, rows: u16) -> (Vec<String>, Option<(u16, u16)>) {
-    let mut term = GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: 200,
-    })
-    .expect("terminal");
+    let mut term = {
+        let mut terminal = GhosttyTerminal::new(cols, rows).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(200))
+            .expect("terminal");
+        terminal
+    };
     term.vt_write(bytes);
     let mut state = RenderState::new().expect("rs");
     let mut row_iter = RowIterator::new().expect("rows");

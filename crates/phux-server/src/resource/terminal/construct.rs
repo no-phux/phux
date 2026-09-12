@@ -11,9 +11,8 @@ use super::{
     PerTerminalFocusEncoder, PerTerminalKeyEncoder, PerTerminalMouseEncoder,
     PerTerminalPasteEncoder, PtySource, Rc, RefCell, ResourceCore, ResourceFacetHandle,
     ResourceHandle, ResourceKind, ResourceLifecycle, SizeReportSize, SnapshotSynthesizer,
-    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, TerminalOptions,
-    VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133, resolve_shell,
-    spawn_pty, watch,
+    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, VecDeque, adopt_pty,
+    color_query_reply, default_shell_command, mpsc, osc133, resolve_shell, spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -162,15 +161,12 @@ impl TerminalActor {
         token: CancellationToken,
         default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     ) -> Result<TerminalActorBundle, TerminalActorError> {
-        let mut terminal = GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            // `defaults.history-limit` is a `u32` on the wire/config; the
-            // libghostty option is `usize`. The widen is lossless on all
-            // supported targets.
-            max_scrollback: scrollback.lines as usize,
-        })?;
-        // `TerminalOptions::max_scrollback` is only libghostty's *line* limit.
+        let mut terminal = {
+            let mut terminal = GhosttyTerminal::new(cols, rows)?;
+            terminal.set_scrollback_max_lines(Some(scrollback.lines as usize))?;
+            terminal
+        };
+        // `set_scrollback_max_lines` is only libghostty's *line* limit.
         // The engine enforces a byte limit alongside it and applies whichever
         // is reached first, and a terminal built through the C API keeps
         // Ghostty's 10_000-byte constructor default — floored at two standard
@@ -180,6 +176,7 @@ impl TerminalActor {
         // `defaults.history-bytes` explicitly so both bounds are the
         // operator's (ADR-0094).
         terminal.set_scrollback_max_bytes(Some(scrollback.bytes as usize))?;
+        terminal.set_continuation_max_bytes(64 * 1024 * 1024)?;
         phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
         if let Some(colors) = default_colors {
             Self::install_default_colors(&mut terminal, colors)?;

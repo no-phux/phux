@@ -53,9 +53,7 @@ use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
-    render::{
-        CellIterator, CursorVisualStyle, Dirty, RowBuf, RowCell, RowCells, RowIteration, Snapshot,
-    },
+    render::{CellIterator, CursorVisualStyle, Dirty, RowIteration, Snapshot},
     screen::CellWide,
     style::{RgbColor, Style, StyleColor, Underline},
 };
@@ -89,6 +87,95 @@ pub enum RenderError {
         /// The pane-local column whose cell could not be decoded.
         col: u16,
     },
+}
+
+/// Per-cell snapshot of one row, filled from libghostty's cell iterator.
+///
+/// Upstream no longer ships a batched `read_row` C crossing. This local
+/// buffer keeps the paint loop's [`RowCells`] shape while walking cells with
+/// the official iterator.
+#[derive(Debug, Default)]
+struct RowBuf {
+    cells: Vec<OwnedRowCell>,
+    styles: Vec<Style>,
+}
+
+#[derive(Debug, Clone)]
+struct OwnedRowCell {
+    text: String,
+    style_index: u32,
+    fg: Option<RgbColor>,
+    bg: Option<RgbColor>,
+    wide: CellWide,
+}
+
+/// Borrowed view of a [`RowBuf`] for one paint/project walk.
+#[derive(Debug, Clone, Copy)]
+struct RowCells<'buf> {
+    cells: &'buf [OwnedRowCell],
+    styles: &'buf [Style],
+}
+
+/// One cell in a [`RowCells`] walk.
+#[derive(Debug, Clone, Copy)]
+struct RowCell<'buf> {
+    text: &'buf str,
+    style_index: u32,
+    fg: Option<RgbColor>,
+    bg: Option<RgbColor>,
+    wide: CellWide,
+}
+
+impl<'buf> RowCells<'buf> {
+    const fn len(self) -> usize {
+        self.cells.len()
+    }
+
+    fn get(self, col: usize) -> Option<RowCell<'buf>> {
+        let cell = self.cells.get(col)?;
+        Some(RowCell {
+            text: cell.text.as_str(),
+            style_index: cell.style_index,
+            fg: cell.fg,
+            bg: cell.bg,
+            wide: cell.wide,
+        })
+    }
+
+    fn style(self, index: u32) -> Result<Style, RenderError> {
+        self.styles
+            .get(index as usize)
+            .copied()
+            .ok_or(RenderError::UnreadableCell { col: 0 })
+    }
+}
+
+fn read_row<'alloc, 'buf>(
+    cells: &mut CellIterator<'alloc>,
+    row: &RowIteration<'alloc, '_>,
+    buf: &'buf mut RowBuf,
+) -> Result<RowCells<'buf>, RenderError> {
+    buf.cells.clear();
+    buf.styles.clear();
+    let mut iter = cells.update(row)?;
+    while let Some(cell) = iter.next() {
+        let style = cell.style()?;
+        let style_index = u32::try_from(buf.styles.len()).unwrap_or(u32::MAX);
+        buf.styles.push(style);
+        let mut text = String::new();
+        cell.graphemes_utf8(&mut text)?;
+        buf.cells.push(OwnedRowCell {
+            text,
+            style_index,
+            fg: cell.fg_color()?,
+            bg: cell.bg_color()?,
+            wide: cell.raw_cell()?.wide()?,
+        });
+    }
+    Ok(RowCells {
+        cells: &buf.cells,
+        styles: &buf.styles,
+    })
 }
 
 /// The copy-mode selection rectangle the renderer reverse-videos while painting.
@@ -1031,7 +1118,7 @@ fn paint_row<'alloc>(
     // one column, including a wide glyph's spacer tail (which emits nothing),
     // so walking the columns in step with the cells clips at `cols_total`
     // exactly as the old per-cell walk did.
-    let batch = cells.update(row)?.read_row(rowbuf)?;
+    let batch = read_row(cells, row, rowbuf)?;
     let recorded = emit_and_record(buf, front_row, next, &batch, at, pass)?;
 
     if !buf.is_empty() {
@@ -1597,7 +1684,7 @@ fn project_row_into_frame<'alloc>(
     cols_total: u16,
 ) -> Result<(), RenderError> {
     let (ox, oy) = origin;
-    let batch = cells.update(row)?.read_row(rowbuf)?;
+    let batch = read_row(cells, row, rowbuf)?;
     walk_row_cells(&batch, cols_total, |col, cell| {
         project_cell_into_frame(
             frame,
@@ -2189,7 +2276,7 @@ fn emit_cursor_style(
 mod tests {
     use super::*;
     use libghostty_vt::{
-        RenderState, Terminal as GhosttyTerminal, TerminalOptions,
+        RenderState, Terminal as GhosttyTerminal,
         render::{CellIterator, RowIterator},
     };
 
@@ -2302,12 +2389,13 @@ mod tests {
     }
 
     fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-        GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: 100,
-        })
-        .expect("Terminal::new")
+        {
+            let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("Terminal::new");
+            terminal
+        }
     }
 
     /// ADR-0086: the renderer's pooled render state is rebuilt when the pane's
@@ -3596,8 +3684,6 @@ mod tests {
                 style_index: 0,
                 fg: None,
                 bg: None,
-                has_styling: false,
-                selected: false,
                 wide: CellWide::Narrow,
             })
         }
@@ -3909,12 +3995,13 @@ mod tests {
     /// the bench walk the same cells.
     fn corpus_terminal(corpus: support::Corpus) -> GhosttyTerminal<'static, 'static> {
         let (cols, rows) = corpus.geometry();
-        let mut terminal = GhosttyTerminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: corpus.history_lines().max(1_000),
-        })
-        .expect("corpus terminal");
+        let mut terminal = {
+            let mut terminal = GhosttyTerminal::new(cols, rows).expect("corpus terminal");
+            terminal
+                .set_scrollback_max_lines(Some(corpus.history_lines().max(1_000)))
+                .expect("corpus terminal");
+            terminal
+        };
 
         match corpus {
             support::Corpus::Shell80x24 => {
@@ -3950,12 +4037,13 @@ mod tests {
     fn edge_case_terminal() -> GhosttyTerminal<'static, 'static> {
         // 8 columns: "abcdef" then a wide glyph occupying cols 6-7, so the
         // row's LAST column is the glyph's spacer tail.
-        let mut terminal = GhosttyTerminal::new(TerminalOptions {
-            cols: 8,
-            rows: 4,
-            max_scrollback: 100,
-        })
-        .expect("edge terminal");
+        let mut terminal = {
+            let mut terminal = GhosttyTerminal::new(8, 4).expect("edge terminal");
+            terminal
+                .set_scrollback_max_lines(Some(100))
+                .expect("edge terminal");
+            terminal
+        };
         terminal.vt_write("abcdef\u{6771}".as_bytes());
         terminal.vt_write(b"\r\n");
         // Background-only cells: erase a run with a bg set, so the cells carry

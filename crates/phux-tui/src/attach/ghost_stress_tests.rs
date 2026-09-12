@@ -22,8 +22,8 @@
 
 use std::collections::HashMap;
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::ResourceId;
@@ -156,12 +156,14 @@ impl Rig {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
-            glass: GhosttyTerminal::new(TerminalOptions {
-                cols: viewport.0,
-                rows: viewport.1,
-                max_scrollback: 200,
-            })
-            .expect("glass terminal"),
+            glass: {
+                let mut terminal =
+                    GhosttyTerminal::new(viewport.0, viewport.1).expect("glass terminal");
+                terminal
+                    .set_scrollback_max_lines(Some(200))
+                    .expect("glass terminal");
+                terminal
+            },
             viewport,
             seq: HashMap::new(),
             kernel,

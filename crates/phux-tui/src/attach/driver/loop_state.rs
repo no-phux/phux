@@ -21,6 +21,7 @@ use std::time::Duration;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
+use phux_protocol::ResourceKind;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
@@ -486,6 +487,9 @@ pub(super) struct SessionLoop {
     /// per-frame `FRAME_ACK`: only a state-sync consumer's acks are tracked
     /// server-side, so a raw consumer skips them (see `should_emit_frame_ack`).
     wants_state_sync: bool,
+    /// Control-stream `ATTACH_READY` held until all per-Terminal streams have
+    /// delivered READY or CLOSED. QUIC has no cross-stream ordering.
+    pending_attach_ready: Option<FrameKind>,
 
     /// The client-side terminal engine every pane's replica lives in.
     engine_kernel: SessionKernel<GhosttyAdapter>,
@@ -773,6 +777,7 @@ impl SessionLoop {
             host_refresh_request: false,
             session_picker_dirty: false,
             wants_state_sync,
+            pending_attach_ready: None,
             engine_kernel: SessionKernel::with_history_config(
                 GhosttyAdapter::new(negotiated.limits),
                 negotiated.profile,
@@ -1300,6 +1305,15 @@ impl SessionLoop {
         initial_attached: FrameKind,
         initial_notice: Option<Notice>,
     ) -> Result<Option<LoopExit>, AttachError> {
+        if conn.multistream_enabled()
+            && let FrameKind::Attached { snapshot, .. } = &initial_attached
+        {
+            for resource in &snapshot.resources {
+                if resource.kind == ResourceKind::Terminal {
+                    conn.bind_terminal(&resource.id).await?;
+                }
+            }
+        }
         let moment = self
             .onboarding_claim
             .as_ref()
@@ -1883,6 +1897,7 @@ impl SessionLoop {
             // Stdin EOF — outer terminal closed. Detach cleanly.
             if !self.detach_pending {
                 conn.send(&FrameKind::Detach).await?;
+                conn.unbind_all_terminals();
                 self.detach_pending = true;
             }
             return Ok(Step::Continue);
@@ -2202,6 +2217,19 @@ impl SessionLoop {
             let Some(frame) = self.orphan_kills.observe(frame) else {
                 continue;
             };
+            if matches!(frame, FrameKind::Attached { .. }) {
+                self.pending_attach_ready = None;
+            }
+            if matches!(frame, FrameKind::AttachReady { .. })
+                && conn.multistream_enabled()
+                && self
+                    .engine_kernel
+                    .attach_ready_pending()
+                    .is_some_and(|pending| pending > 0)
+            {
+                self.pending_attach_ready = Some(frame);
+                continue;
+            }
             let Some(frame) = self.intercept_peer_reply(conn, frame, &mut repaint).await? else {
                 continue;
             };
@@ -2215,6 +2243,18 @@ impl SessionLoop {
             {
                 FrameStep::Done | FrameStep::Rebootstrap => {}
                 FrameStep::Exit(exit) => return Ok(Step::Exit(exit)),
+            }
+            if self.pending_attach_ready.is_some()
+                && self.engine_kernel.attach_ready_pending() == Some(0)
+                && let Some(ready) = self.pending_attach_ready.take()
+            {
+                match self
+                    .apply_server_frame(conn, out, sidebar, ready, false, &mut repaint)
+                    .await?
+                {
+                    FrameStep::Done | FrameStep::Rebootstrap => {}
+                    FrameStep::Exit(exit) => return Ok(Step::Exit(exit)),
+                }
             }
         }
         self.drain_repaint(out, sidebar, &mut repaint);
@@ -2592,6 +2632,7 @@ impl SessionLoop {
                 },
             )
             .await?;
+            conn.bind_terminal(terminal_id).await?;
         }
         Ok(())
     }
@@ -2616,10 +2657,13 @@ impl SessionLoop {
                 conn,
                 &FrameKind::Command {
                     request_id,
-                    command: Command::AttachResource { terminal_id },
+                    command: Command::AttachResource {
+                        terminal_id: terminal_id.clone(),
+                    },
                 },
             )
             .await?;
+            conn.bind_terminal(&terminal_id).await?;
         }
         Ok(())
     }

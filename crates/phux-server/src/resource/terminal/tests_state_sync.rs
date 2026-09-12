@@ -750,12 +750,13 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
 
     // Mirror starts at the same point the acked reference was primed to
     // (an empty grid) — what the consumer's TERMINAL_SNAPSHOT establishes.
-    let mut mirror = GhosttyTerminal::new(TerminalOptions {
-        cols: 20,
-        rows: 5,
-        max_scrollback: 100,
-    })
-    .expect("mirror");
+    let mut mirror = {
+        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("mirror");
+        terminal
+    };
 
     // Content A → delta 1. SIMULATE A DROP: do not apply it, do not ack.
     actor.vt_write_for_test(b"AAAA");
@@ -798,12 +799,13 @@ fn loss_tolerant_incremental_after_ack_converges() {
         .register_consumer(client, tx, 11, true)
         .expect("register");
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = GhosttyTerminal::new(TerminalOptions {
-        cols: 20,
-        rows: 5,
-        max_scrollback: 100,
-    })
-    .expect("mirror");
+    let mut mirror = {
+        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("mirror");
+        terminal
+    };
 
     // Round 1: content, deliver + ack.
     actor.vt_write_for_test(b"row-one");
@@ -847,12 +849,13 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
         .register_consumer(client, tx, 11, true)
         .expect("register");
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = GhosttyTerminal::new(TerminalOptions {
-        cols: 20,
-        rows: 5,
-        max_scrollback: 100,
-    })
-    .expect("mirror");
+    let mut mirror = {
+        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("mirror");
+        terminal
+    };
 
     // Content → delta. Simulate a drop: discard it, never ack.
     actor.vt_write_for_test(b"lonely");

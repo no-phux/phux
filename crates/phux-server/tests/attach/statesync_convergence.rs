@@ -24,18 +24,19 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
 
 fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-    GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: 100,
-    })
-    .expect("Terminal::new")
+    {
+        let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("Terminal::new");
+        terminal
+    }
 }
 
 /// Right-trimmed viewport text rows, wide-cell tails skipped.

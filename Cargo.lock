@@ -1606,7 +1606,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=6923d415dc948ada785ad952c845fa65bdd9fa1b#6923d415dc948ada785ad952c845fa65bdd9fa1b"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=920ce00ba85263706bc683063ad05eaf97c577c3#920ce00ba85263706bc683063ad05eaf97c577c3"
 dependencies = [
  "allocator-api2 0.4.0",
  "bitflags 2.13.1",
@@ -1618,7 +1618,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=6923d415dc948ada785ad952c845fa65bdd9fa1b#6923d415dc948ada785ad952c845fa65bdd9fa1b"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=920ce00ba85263706bc683063ad05eaf97c577c3#920ce00ba85263706bc683063ad05eaf97c577c3"
 
 [[package]]
 name = "libm"
@@ -2424,6 +2424,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "wtransport",
+ "x509-parser",
 ]
 
 [[package]]

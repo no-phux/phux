@@ -51,7 +51,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 use phux_server::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
@@ -65,12 +65,13 @@ use phux_server_testkit::{
 /// snapshot's declared `cols × rows`. Mirrors the construction the
 /// client uses in `phux-client/src/attach/driver.rs`.
 fn fresh_terminal(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-    GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: 1000,
-    })
-    .expect("Terminal::new")
+    {
+        let mut terminal = GhosttyTerminal::new(cols, rows).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(1000))
+            .expect("Terminal::new");
+        terminal
+    }
 }
 
 #[allow(clippy::too_many_lines)]

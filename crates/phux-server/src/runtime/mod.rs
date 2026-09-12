@@ -1740,7 +1740,9 @@ async fn build_ws_listener(
         );
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "wss");
-    let acceptor = match crate::transport::tls::acceptor_from_pem(&cert_path, &key_path) {
+    let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
+        &cert_path, &key_path, None,
+    ) {
         Ok(acceptor) => acceptor,
         Err(err) => {
             error!(error = %err, "TLS setup failed; WebSocket disabled");
@@ -1800,6 +1802,45 @@ async fn build_ws_listener(
                     ListenerDisabledReason::BindFailed,
                 ),
             )
+        }
+    }
+}
+
+/// Resolve the optional workload CA used for mTLS listeners.
+///
+/// The opt-in environment gate keeps existing bearer-paired deployments
+/// bootable while clients are being enrolled. Once enabled, QUIC uses the
+/// persisted CA and requires a client certificate at TLS time. WSS remains on
+/// the bearer path until its upgrade can retain the TLS peer certificate for
+/// registry identity stamping.
+fn workload_ca_for_secure(secure: bool) -> Option<PathBuf> {
+    if !secure || std::env::var_os("PHUX_WORKLOAD_MTLS").is_none() {
+        return None;
+    }
+    let cert = std::env::var_os("PHUX_WORKLOAD_CA")
+        .map_or_else(crate::workload::default_ca_cert_path, PathBuf::from);
+    let key = std::env::var_os("PHUX_WORKLOAD_CA_KEY")
+        .map_or_else(crate::workload::default_ca_key_path, PathBuf::from);
+    if let Err(error) = crate::workload::ensure_ca(&cert, &key) {
+        warn!(error = %error, "workload mTLS CA unavailable; listener remains bearer-only");
+        return None;
+    }
+    Some(cert)
+}
+
+/// Load the registry paired with an mTLS CA. A malformed registry disables
+/// the paired listener rather than turning an empty snapshot into authority.
+fn workload_registry_for(
+    ca_path: Option<&Path>,
+) -> Option<std::sync::Arc<crate::workload::WorkloadRegistry>> {
+    ca_path?;
+    let path = std::env::var_os("PHUX_WORKLOAD_KEYS")
+        .map_or_else(crate::workload::default_registry_path, PathBuf::from);
+    match crate::workload::WorkloadRegistry::load(&path) {
+        Ok(registry) => Some(std::sync::Arc::new(registry)),
+        Err(error) => {
+            warn!(error = %error, path = %path.display(), "workload registry unavailable; mTLS disabled");
+            None
         }
     }
 }
@@ -1929,7 +1970,19 @@ fn build_quic_listener(
     };
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
-    match crate::transport::quic::QuicListener::from_pem(addr, &cert_path, &key_path, tokens) {
+    let (workload_ca, workload_registry) =
+        workload_ca_for_secure(secure).map_or((None, None), |ca| {
+            workload_registry_for(Some(&ca))
+                .map_or((None, None), |registry| (Some(ca), Some(registry)))
+        });
+    match crate::transport::quic::QuicListener::from_pem_with_client_ca_and_registry(
+        addr,
+        &cert_path,
+        &key_path,
+        tokens,
+        workload_ca.as_deref(),
+        workload_registry,
+    ) {
         Ok(quic) => {
             let bound = quic.local_addr().map_or(addr_s, |a| a.to_string());
             if secure {
@@ -2699,6 +2752,7 @@ mod tests {
                         &test_root_token,
                         &mut output_pumps,
                         &test_root_token,
+                        false,
                     )
                     .await;
                 });
@@ -2878,6 +2932,7 @@ mod tests {
                         &token,
                         &mut output_pumps,
                         &token,
+                        false,
                     )
                     .await;
                 });
@@ -2981,6 +3036,7 @@ mod tests {
                         &second_token,
                         &mut output_pumps,
                         &second_token,
+                        false,
                     )
                     .await;
                 });
@@ -3425,6 +3481,7 @@ mod tests {
                         &root_token,
                         &mut output_pumps,
                         &task_token,
+                        false,
                     )
                     .await;
                     task_token.cancelled().await;

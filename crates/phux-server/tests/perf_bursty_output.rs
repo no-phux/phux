@@ -61,7 +61,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
 
 const COLS: u16 = 80;
@@ -81,12 +81,13 @@ const MAX_ALLOCS_PER_TICK: usize = 250;
 #[test]
 #[ignore = "runs in the stress lane (`just stress`): ~110s of CPU-bound churn, too heavy for the PR unit pool"]
 fn synthesize_against_reference_alloc_bounded_under_full_churn() {
-    let mut t = GhosttyTerminal::new(TerminalOptions {
-        cols: COLS,
-        rows: ROWS,
-        max_scrollback: 100,
-    })
-    .expect("Terminal::new");
+    let mut t = {
+        let mut terminal = GhosttyTerminal::new(COLS, ROWS).expect("Terminal::new");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("Terminal::new");
+        terminal
+    };
     let mut synth = SnapshotSynthesizer::new().expect("synth");
     let mut reference = ConsumerReference::new();
     synth

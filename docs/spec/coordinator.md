@@ -56,15 +56,15 @@ The endpoint is selected before decoding:
 
 | Transport | v0.1 binding |
 |---|---|
-| Local | Dedicated owner-only Unix socket, distinct from the terminal socket, plus paired proof |
-| QUIC | ALPN `phux-coordinator/1`, confidential channel binding, plus paired proof |
-| SSH/stdin bridge | Forbidden: `phux-workload/v1` has no v0.1 SSH channel binding |
+| Local | Dedicated owner-only Unix socket, distinct from the terminal socket, plus kernel-uid authority |
+| QUIC | ALPN `phux-coordinator/1`, plus mTLS client certificate |
+| SSH/stdin bridge | Forbidden: no independently verifiable channel binding |
 | Any other transport | Forbidden until a capability and channel binding are specified |
 
 Terminal and coordinator endpoints MAY share a process and implementation
 components. They MUST NOT share a stream, COORD_HELLO state, version, capability
 namespace, or frame namespace. Remote transport always supplies confidentiality
-and integrity; signed workload proof is authentication, not encryption.
+and integrity; the mTLS client certificate is authentication, not encryption.
 
 No private key or bearer secret may be passed through argv, environment
 variables, frame diagnostics, or logs.
@@ -192,18 +192,18 @@ OperationId are not part of the guard.
 The only handshake is:
 
 ```text
-COORD_HELLO -> WORKLOAD_CHALLENGE -> WORKLOAD_RESPONSE -> COORD_HELLO_OK
+TLS handshake (mTLS client certificate) -> COORD_HELLO -> COORD_HELLO_OK
 ```
 
-COORD_PING is the only permitted pre-COORD_HELLO interleaving; nothing interleaves
-CHALLENGE/RESPONSE. Imported `phux-workload/v1` records and tags come from
-[workload-auth.md](./workload-auth.md) and
-[ADR-0098](../../ADR/0098-workload-proof-and-closed-scope-authority.md), using
-service `phux-coordinator` and paired mode. COORD_HELLO carries WorkloadOffer;
-WORKLOAD_CHALLENGE authenticates service, version, nonces, incarnation, channel
-binding, and authority key; WORKLOAD_RESPONSE carries key, expiry,
-`requested_scope_bytes`, and proof; COORD_HELLO_OK carries the WorkloadGrant
-with `effective_scope_bytes`.
+COORD_PING is the only permitted pre-COORD_HELLO interleaving.
+Authentication is the TLS handshake per [workload-auth.md](./workload-auth.md)
+as amended by [ADR-0116](../../ADR/0116-workload-auth-is-mtls.md): the server
+verifies an mTLS client certificate against the phux CA and authorizes the
+credential id against the registry before COORD_HELLO is evaluated. There
+are no `WORKLOAD_CHALLENGE` / `WORKLOAD_RESPONSE` frames and no
+`WorkloadOffer` / `WorkloadGrant` records; the endpoint owns its closed
+scope schema but not a proof profile. COORD_HELLO carries no workload
+field; admission beyond the TLS layer is version check, then scope check.
 
 The server reads only bounded version fields first. Major/minor mismatch is
 fatal `VERSION_INCOMPATIBLE` before authority material is parsed. Missing,
@@ -226,7 +226,8 @@ COORD_HELLO {                                // 0x01, C -> S
  10 max_typed_payload_bytes: u32
  11 max_event_credit_count: u32
  12 max_event_credit_bytes: u32
- 13 workload_offer: WorkloadOffer
+ // field 13 is retired-unshipped: the WorkloadOffer record belonged to the
+ //   retired phux-workload/v1 proof profile (ADR-0116). No sender emits it.
 }
 
 COORD_HELLO_OK {                             // 0x80, S -> C
@@ -243,7 +244,8 @@ COORD_HELLO_OK {                             // 0x80, S -> C
  11 max_typed_payload_bytes: u32
  12 max_event_credit_count: u32
  13 max_event_credit_bytes: u32
- 14 workload_grant: WorkloadGrant
+ // field 14 is retired-unshipped: the WorkloadGrant record belonged to the
+ //   retired phux-workload/v1 proof profile (ADR-0116). No sender emits it.
  15 operation_result_retention_secs: u64     // >= 2_592_000
  16 activation_certificate: ActivationCertificate
 }
@@ -313,12 +315,13 @@ it never leaves a reduced, plausibly complete stream.
 
 ## 7. Frame and nested-type allocation
 
-The IDs are coordinator-local except imported WORKLOAD frames:
+The IDs are coordinator-local. The `0x04` / `0x84` slots once pencilled
+for imported `WORKLOAD_RESPONSE` / `WORKLOAD_CHALLENGE` are
+retired-unshipped with the proof profile (ADR-0116) and stay unallocated.
 
 | ID | Direction | Frame |
 |---:|---|---|
 | `0x01` | C -> S | `COORD_HELLO` |
-| `0x04` | C -> S | `WORKLOAD_RESPONSE` (imported) |
 | `0x10` | C -> S | `COORD_COMMAND` |
 | `0x11` | C -> S | `GET_OPERATION_RESULT` |
 | `0x20` | C -> S | `OPEN_SNAPSHOT` |
@@ -333,7 +336,7 @@ The IDs are coordinator-local except imported WORKLOAD frames:
 | `0x80` | S -> C | `COORD_HELLO_OK` |
 | `0x82` | S -> C | `ACK` |
 | `0x83` | S -> C | `COORD_AUTHORITY_RENEWED` |
-| `0x84` | S -> C | `WORKLOAD_CHALLENGE` (imported) |
+| `0x84` | — | retired-unshipped (was `WORKLOAD_CHALLENGE`; ADR-0116) |
 | `0x90` | S -> C | `COORD_COMMAND_RESULT` |
 | `0x91` | S -> C | `OPERATION_RESULT` |
 | `0xa0` | S -> C | `SNAPSHOT_BEGIN` |
@@ -357,7 +360,7 @@ are complete schemas. COORD_PING proves liveness only.
 
 Connection-local nonzero request IDs are occupied through the terminal reply.
 Reuse while outstanding is malformed. CREDIT, COORD_PING/COORD_PONG, GAP, COORD_EVENT,
-COORD_AUTHORITY_RENEWED, and workload frames have no request ID.
+and COORD_AUTHORITY_RENEWED have no request ID.
 
 ```text
 ObjectKind = u16 {
@@ -862,8 +865,8 @@ A client rejects lower epoch/activation, changed CoordinatorId/witness pin,
 unapproved authority-key replacement, expired/revoked token, or equal
 epoch/activation with another incarnation/token. It quarantines conflicts and
 never chooses by clock, event count, reachability, or start time. Higher
-authority becomes current only after workload proof, valid witness certificate,
-and a complete snapshot.
+authority becomes current only after mTLS authentication, a valid witness
+certificate, and a complete snapshot.
 
 One home coordinator owns a lineage. Foreign coordinator records are not merged.
 There is no protocol/auth/store downgrade: mismatched major/minor, missing
@@ -910,9 +913,9 @@ A conforming implementation proves:
    are byte-for-byte unchanged.
 2. Length and type enter fixed storage; connection/type caps are checked before
    payload allocation, and aggregate resources are charged before cuts/queues.
-3. Version mismatch precedes authority parsing; paired proof is mandatory even
-   on owner UDS; SSH/stdin is unavailable.
-4. Transcript alteration, nonce replay, wrong service/channel/signature, expiry,
+3. Version mismatch precedes authority parsing; mTLS client authentication
+   is mandatory on TLS transports; SSH/stdin is unavailable.
+4. Missing, unknown, or expired client certificate, wrong CA, expiry,
    noncanonical/unknown scopes, and secret leakage fail closed.
 5. A non-clonable external witness grants one unexpired activation token; copied
    stores, concurrent launch, expired leases, unsupported schema, and lock loss

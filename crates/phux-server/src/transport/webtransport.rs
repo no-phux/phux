@@ -259,6 +259,10 @@ impl Incoming for WtListener {
     type Reader = WtReader;
     type Writer = WtWriter;
 
+    fn transport_type(&self) -> TransportType {
+        TransportType::WebTransport
+    }
+
     async fn accept(&self) -> io::Result<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
         // One endpoint multiplexes many sessions; a single bad handshake or
         // refused token must not tear the listener down, so per-session

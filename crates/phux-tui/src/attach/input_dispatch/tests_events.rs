@@ -2037,12 +2037,13 @@ use crate::predict::{PredictionState, PredictiveConfig};
 /// must let prediction through.
 #[test]
 fn alt_screen_gate_false_on_main_screen() {
-    let terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 100,
-    })
-    .expect("terminal");
+    let terminal = {
+        let mut terminal = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("terminal");
+        terminal
+    };
     assert!(
         !terminal_in_alt_screen(&terminal),
         "a fresh pane sits on the main screen — predict here"
@@ -2054,12 +2055,13 @@ fn alt_screen_gate_false_on_main_screen() {
 /// `?1047h` variant is caught too.
 #[test]
 fn alt_screen_gate_tracks_dec_private_modes() {
-    let mut terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 100,
-    })
-    .expect("terminal");
+    let mut terminal = {
+        let mut terminal = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("terminal");
+        terminal
+    };
     terminal.vt_write(b"\x1b[?1049h");
     assert!(
         terminal_in_alt_screen(&terminal),
@@ -2071,12 +2073,13 @@ fn alt_screen_gate_tracks_dec_private_modes() {
         "1049l returns to the main screen — predict again"
     );
 
-    let mut legacy = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 100,
-    })
-    .expect("terminal");
+    let mut legacy = {
+        let mut terminal = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100))
+            .expect("terminal");
+        terminal
+    };
     legacy.vt_write(b"\x1b[?1047h");
     assert!(
         terminal_in_alt_screen(&legacy),

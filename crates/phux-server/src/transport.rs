@@ -67,6 +67,17 @@ pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// prefix included) per call, or `None` at end-of-stream.
 pub(crate) trait FrameReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>>;
+
+    /// Terminal-stream events (QUIC multi-stream only).
+    ///
+    /// After the connection negotiates `QUIC_STREAMS`, the client task calls
+    /// this once to take the receiver for [`quic::QuicStreamEvent`]s (binds
+    /// and stream ends) and start the mux's stream-accept loop. Transports
+    /// without streams return `None`; calling twice returns `None` the
+    /// second time.
+    fn take_stream_events(&mut self) -> Option<tokio::sync::mpsc::Receiver<quic::QuicStreamEvent>> {
+        None
+    }
 }
 
 /// Write side: writes one complete pre-encoded frame.
@@ -142,6 +153,11 @@ pub(crate) trait Incoming {
     fn accept_errors_are_fatal(&self) -> bool {
         false
     }
+
+    /// The transport behind this listener, stamped into `PeerIdentity` at
+    /// accept and consulted when HELLO advertises transport-gated features
+    /// (`QUIC_STREAMS` is QUIC-only).
+    fn transport_type(&self) -> TransportType;
     /// Short transport label for logs (`"uds"` / `"ws"`).
     fn kind(&self) -> &'static str;
 }
@@ -227,6 +243,10 @@ impl UdsListener {
 impl Incoming for UdsListener {
     type Reader = UdsReader;
     type Writer = UdsWriter;
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::UnixSocket
+    }
 
     async fn accept(&self) -> io::Result<(UdsReader, UdsWriter, crate::auth::ConnectionIdentity)> {
         let (stream, _addr) = self.0.accept().await?;
@@ -477,6 +497,10 @@ impl FrameWriter for WsWriter {
 impl Incoming for WsListener {
     type Reader = WsReader;
     type Writer = WsWriter;
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::WebSocket
+    }
 
     async fn accept(&self) -> io::Result<(WsReader, WsWriter, crate::auth::ConnectionIdentity)> {
         let (tcp, peer) = self.tcp.accept().await?;

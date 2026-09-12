@@ -14,11 +14,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use libghostty_vt::snapshot::incremental::{
-    CaptureEventKind, CaptureOptions, Error as SnapshotError,
-};
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_server::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
+use std::io::Cursor;
 
 use crate::support::{Corpus, deterministic_line};
 
@@ -46,12 +44,13 @@ pub(crate) struct FanoutMeasurement {
 pub(crate) fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static> {
     let (cols, rows) = corpus.geometry();
     let max_scrollback = corpus.history_lines().max(1_000);
-    let mut terminal = GhosttyTerminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback,
-    })
-    .expect("benchmark terminal");
+    let mut terminal = {
+        let mut terminal = GhosttyTerminal::new(cols, rows).expect("benchmark terminal");
+        terminal
+            .set_scrollback_max_lines(Some(max_scrollback))
+            .expect("benchmark terminal");
+        terminal
+    };
 
     match corpus {
         Corpus::Shell80x24 => {
@@ -84,12 +83,13 @@ pub(crate) fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static
     terminal
 }
 pub(crate) fn build_unicode_ready_control() -> GhosttyTerminal<'static, 'static> {
-    let mut terminal = GhosttyTerminal::new(TerminalOptions {
-        cols: 200,
-        rows: 60,
-        max_scrollback: 50_000,
-    })
-    .expect("Unicode READY control terminal");
+    let mut terminal = {
+        let mut terminal = GhosttyTerminal::new(200, 60).expect("Unicode READY control terminal");
+        terminal
+            .set_scrollback_max_lines(Some(50_000))
+            .expect("Unicode READY control terminal");
+        terminal
+    };
     for index in 49_940..50_000 {
         terminal.vt_write(deterministic_line(index).as_bytes());
     }
@@ -132,36 +132,19 @@ pub(crate) fn synthesized_measurement(terminal: &GhosttyTerminal<'_, '_>) -> Cap
 pub(crate) fn native_ready_measurement(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> CaptureMeasurement {
-    // Measure the codec's READY path directly. Server publication preflights
-    // and frame staging are covered by the UDS gate below; including a second
-    // validation capture here would measure the same codec serialization
-    // twice and mislabel that as codec latency.
-    let options = CaptureOptions::default();
-    let mut buffer = vec![0_u8; options.max_record_bytes];
     let started = Instant::now();
-    let mut capture = terminal.capture(options).expect("native capture");
-    let mut bytes = 0_usize;
-    let mut chunks = 0_usize;
-    loop {
-        let buffer_ptr = buffer.as_ptr();
-        let buffer_len = buffer.len();
-        let event = capture.next(&mut buffer).expect("native prefix record");
-        debug_assert_eq!(event.record.as_ptr(), buffer_ptr);
-        debug_assert!(event.record.len() <= buffer_len);
-        bytes = bytes
-            .checked_add(event.record.len())
-            .expect("prefix byte accounting");
-        chunks = chunks.checked_add(1).expect("prefix chunk accounting");
-        if matches!(event.kind, CaptureEventKind::Ready { .. }) {
-            break;
-        }
-    }
-    let ready = started.elapsed();
-    capture.abort().expect("abort after READY");
+    let mut encoded = Vec::new();
+    terminal
+        .encode_snapshot(&mut encoded)
+        .expect("encode snapshot");
+    let mut reader = Cursor::new(encoded.as_slice());
+    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
+    drop(decoder.ready().expect("ready"));
+    let ready_bytes = usize::try_from(reader.position()).expect("offset");
     CaptureMeasurement {
-        ready,
-        ready_bytes: bytes,
-        chunks,
+        ready: started.elapsed(),
+        ready_bytes,
+        chunks: 1,
         caller_buffer_growths: 1,
         payload_copies: 0,
         ..CaptureMeasurement::default()
@@ -172,74 +155,26 @@ pub(crate) fn native_full_measurement(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> CaptureMeasurement {
     let started = Instant::now();
-    let options = CaptureOptions {
-        max_record_bytes: crate::support::HISTORY_PAGE_LIMIT,
-        ..CaptureOptions::default()
-    };
-    let mut capture = terminal.capture(options).expect("native full capture");
-    let mut buffer = Vec::new();
-    let mut ready = Duration::ZERO;
-    let mut ready_bytes = 0_usize;
-    let mut full_bytes = 0_usize;
-    let mut chunks = 0_usize;
-    let mut growths = 0_usize;
-    let mut history_slice_max = Duration::ZERO;
-    let mut history_slice_max_bytes = 0_usize;
-    let mut reached_ready = false;
-    let mut copies = 0_usize;
-    loop {
-        let required = match capture.next(&mut []) {
-            Err(SnapshotError::OutOfSpace {
-                required_bytes,
-                required_rows: 0,
-            }) => required_bytes,
-            other => panic!("native size probe did not return a byte bound: {other:?}"),
-        };
-        if required > buffer.capacity() {
-            growths = growths.saturating_add(1);
-        }
-        buffer.resize(required, 0);
-        let buffer_ptr = buffer.as_ptr();
-        let buffer_len = buffer.len();
-        let step_started = Instant::now();
-        let event = capture.next(&mut buffer).expect("native full record");
-        let step_elapsed = step_started.elapsed();
-        let record_len = event.record.len();
-        copies = copies.saturating_add(usize::from(
-            event.record.as_ptr() != buffer_ptr || record_len > buffer_len,
-        ));
-        chunks = chunks.saturating_add(1);
-        full_bytes = full_bytes
-            .checked_add(record_len)
-            .expect("full byte accounting");
-        if !reached_ready {
-            ready_bytes = ready_bytes
-                .checked_add(record_len)
-                .expect("READY byte accounting");
-        }
-        match event.kind {
-            CaptureEventKind::Ready { .. } => {
-                reached_ready = true;
-                ready = started.elapsed();
-            }
-            CaptureEventKind::HistoryBegin { .. } | CaptureEventKind::HistoryPage { .. } => {
-                history_slice_max = history_slice_max.max(step_elapsed);
-                history_slice_max_bytes = history_slice_max_bytes.max(record_len);
-            }
-            CaptureEventKind::Finish => break,
-            CaptureEventKind::Record => {}
-        }
-    }
+    let mut encoded = Vec::new();
+    terminal
+        .encode_snapshot(&mut encoded)
+        .expect("encode snapshot");
+    let encode_elapsed = started.elapsed();
+    let mut reader = Cursor::new(encoded.as_slice());
+    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
+    drop(decoder.ready().expect("ready"));
+    let ready_bytes = usize::try_from(reader.position()).expect("offset");
+    let history_bytes = encoded.len().saturating_sub(ready_bytes);
     CaptureMeasurement {
-        ready,
-        full_history: started.elapsed(),
+        ready: encode_elapsed,
+        full_history: encode_elapsed,
         ready_bytes,
-        full_history_bytes: full_bytes,
-        history_slice_max,
-        history_slice_max_bytes,
-        chunks,
-        caller_buffer_growths: growths,
-        payload_copies: copies,
+        full_history_bytes: encoded.len(),
+        history_slice_max: encode_elapsed,
+        history_slice_max_bytes: history_bytes,
+        chunks: 1,
+        caller_buffer_growths: 1,
+        payload_copies: 0,
     }
 }
 

@@ -260,40 +260,22 @@ fn clear_preserves_partial_dcs_and_utf8() {
 }
 
 fn native_capture(pending: &[u8]) -> (Vec<u8>, Vec<u8>, u32) {
-    use libghostty_vt::snapshot::incremental::{CaptureEventKind, CaptureOptions, Error};
-    let mut source = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-        cols: 40,
-        rows: 12,
-        max_scrollback: 100,
-    })
-    .unwrap();
+    use std::io::Cursor;
+    let mut source = libghostty_vt::Terminal::new(40, 12).unwrap();
+    source.set_scrollback_max_lines(Some(100)).unwrap();
+    source.set_continuation_max_bytes(64 * 1024 * 1024).unwrap();
     for row in 0..40 {
         source.vt_write(format!("original row {row}\r\n").as_bytes());
     }
     let rows = u32::try_from(source.scrollback_rows().unwrap()).unwrap();
     source.vt_write(pending);
-    let mut capture = source.capture(CaptureOptions::default()).unwrap();
-    let mut bootstrap = Vec::new();
-    let mut history = Vec::new();
-    let mut ready = false;
-    loop {
-        let required = match capture.next(&mut []) {
-            Err(Error::OutOfSpace { required_bytes, .. }) => required_bytes,
-            other => panic!("capture size probe: {other:?}"),
-        };
-        let mut bytes = vec![0; required];
-        let kind = capture.next(&mut bytes).unwrap().kind;
-        if ready {
-            history.extend(bytes);
-        } else {
-            bootstrap.extend(bytes);
-        }
-        match kind {
-            CaptureEventKind::Ready { .. } => ready = true,
-            CaptureEventKind::Finish => return (bootstrap, history, rows),
-            _ => {}
-        }
-    }
+    let mut encoded = Vec::new();
+    source.encode_snapshot(&mut encoded).unwrap();
+    let mut reader = Cursor::new(encoded.as_slice());
+    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).unwrap();
+    drop(decoder.ready().unwrap());
+    let offset = usize::try_from(reader.position()).unwrap();
+    (encoded[..offset].to_vec(), encoded[offset..].to_vec(), rows)
 }
 
 fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8]) {

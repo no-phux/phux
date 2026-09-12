@@ -1174,7 +1174,7 @@ mod tests {
     #[test]
     fn unicode_vt_paint_keeps_borders_on_grid_in_full_and_clipped_paths() {
         use crate::attach::render::{ReplicaWalk, TerminalRenderer};
-        use libghostty_vt::{Terminal, TerminalOptions};
+        use libghostty_vt::Terminal;
         let mut buf = Buffer::empty(Rect::new(0, 0, 24, 4));
         buf.set_string(
             3,
@@ -1189,12 +1189,13 @@ mod tests {
             } else {
                 emit_buffer(&mut out, &buf).expect("full paint");
             }
-            let mut terminal = Terminal::new(TerminalOptions {
-                cols: 24,
-                rows: 4,
-                max_scrollback: 0,
-            })
-            .expect("terminal");
+            let mut terminal = {
+                let mut terminal = Terminal::new(24, 4).expect("terminal");
+                terminal
+                    .set_scrollback_max_lines(Some(0))
+                    .expect("terminal");
+                terminal
+            };
             terminal.vt_write(&out);
             let mut renderer = TerminalRenderer::new().expect("renderer");
             for (col, ch) in [
