@@ -292,35 +292,17 @@ const Bridge = struct {
     }
 
     fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
+        const self: *Bridge = @ptrCast(@alignCast(context));
+        if (self.requestWorkflow(name, key, payload)) return;
         if (std.mem.eql(u8, name, result_wire.request_name)) {
-            const result_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return result_bridge.requestResults(key, payload);
-        }
-        if (std.mem.eql(u8, name, cockpit.engine.appearance.request_name)) {
-            const appearance_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return appearance_bridge.requestAppearance(key, payload);
+            return self.requestResults(key, payload);
         }
         if (std.mem.eql(u8, name, cockpit.engine.tab_commands.request_name)) {
-            const command_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return command_bridge.requestTabCommand(key, payload);
-        }
-        if (std.mem.eql(u8, name, cockpit.remote_hosts.request_name)) {
-            const remote_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return remote_bridge.requestRemote(key, payload);
-        }
-        if (std.mem.eql(u8, name, cockpit.directory_picker.request_name)) {
-            const directory_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return directory_bridge.requestDirectory(key, payload);
-        }
-        if (std.mem.eql(u8, name, cockpit.session_commands.request_name)) {
-            const session_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return session_bridge.requestSession(key, payload);
+            return self.requestTabCommand(key, payload);
         }
         if (std.mem.eql(u8, name, cockpit.engine.navigation.request_name)) {
-            const navigation_bridge: *Bridge = @ptrCast(@alignCast(context));
-            return navigation_bridge.requestNavigation(key, payload);
+            return self.requestNavigation(key, payload);
         }
-        const self: *Bridge = @ptrCast(@alignCast(context));
         self.pending = true;
         self.pending_key = key;
         if (!std.mem.eql(u8, name, protocol.snapshot_request)) {
@@ -340,6 +322,28 @@ const Bridge = struct {
         };
         self.pending_ok = true;
         self.pending_len = bytes.len;
+    }
+
+    /// Dialog requests have independent replies and never consume a terminal
+    /// command receipt. Keep their dispatch separate from state synchronization.
+    fn requestWorkflow(self: *Bridge, name: []const u8, key: u64, payload: []const u8) bool {
+        if (std.mem.eql(u8, name, cockpit.engine.appearance.request_name)) {
+            self.requestAppearance(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, cockpit.remote_hosts.request_name)) {
+            self.requestRemote(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, cockpit.directory_picker.request_name)) {
+            self.requestDirectory(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, cockpit.session_commands.request_name)) {
+            self.requestSession(key, payload);
+            return true;
+        }
+        return false;
     }
 
     fn requestNavigation(self: *Bridge, key: u64, payload: []const u8) void {
@@ -520,14 +524,18 @@ const Bridge = struct {
 
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        if (self.pending and self.pending_key == key) self.pending = false;
-        if (self.navigation_pending and self.navigation_key == key) self.navigation_pending = false;
-        if (self.command_pending and self.command_key == key) self.command_pending = false;
-        if (self.result_pending and self.result_key == key) self.result_pending = false;
-        if (self.appearance_pending and self.appearance_key == key) self.appearance_pending = false;
-        if (self.remote_pending and self.remote_key == key) self.remote_pending = false;
-        if (self.directory_pending and self.directory_key == key) self.directory_pending = false;
-        if (self.session_pending and self.session_key == key) self.session_pending = false;
+        cancelReply(&self.pending, self.pending_key, key);
+        cancelReply(&self.navigation_pending, self.navigation_key, key);
+        cancelReply(&self.command_pending, self.command_key, key);
+        cancelReply(&self.result_pending, self.result_key, key);
+        cancelReply(&self.appearance_pending, self.appearance_key, key);
+        cancelReply(&self.remote_pending, self.remote_key, key);
+        cancelReply(&self.directory_pending, self.directory_key, key);
+        cancelReply(&self.session_pending, self.session_key, key);
+    }
+
+    fn cancelReply(pending: *bool, reply_key: u64, canceled_key: u64) void {
+        if (reply_key == canceled_key) pending.* = false;
     }
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
