@@ -229,7 +229,7 @@ run_cockpit_install() {
 COCKPIT_APPS="$TMP/cockpit-apps"
 output="$(run_cockpit_install "$COCKPIT_APPS")"
 grep -Fq "installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" <<<"$output"
-grep -Fq 'next: open -a "Phux Cockpit"' <<<"$output"
+grep -Fq 'next: open ' <<<"$output"
 cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$COCKPIT_APPS/Phux Cockpit.app/Contents/Info.plist"
 cmp "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit" "$COCKPIT_APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
 [[ -e $TMP/xattr-cleared ]] || {
@@ -242,6 +242,22 @@ cmp "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit" "$COCKPIT_APPS/Phux 
 printf 'obsolete resource\n' > "$COCKPIT_APPS/Phux Cockpit.app/Contents/obsolete"
 run_cockpit_install "$COCKPIT_APPS" > "$TMP/cockpit-repeat.out"
 diff -r "$FIXTURE/Phux Cockpit.app" "$COCKPIT_APPS/Phux Cockpit.app"
+
+# Execute only the printed shell command, with open stubbed. Name-based launch
+# can select a different registered bundle; the installer must name its own
+# absolute destination, with spaces and apostrophes preserved as one argument.
+cat > "$FAKE_BIN/open" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$OPEN_ARGUMENTS"
+EOF
+chmod 755 "$FAKE_BIN/open"
+CUSTOM_APPS="$TMP/someone's custom applications"
+output="$(run_cockpit_install "$CUSTOM_APPS")"
+next_command="$(sed -n 's/^next: //p' <<<"$output")"
+PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
+  "$INSTALLER_SH" -c "$next_command"
+printf '%s/Phux Cockpit.app\n' "$(cd "$CUSTOM_APPS" && pwd -P)" > "$TMP/expected-open-arguments"
+cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
 
 # The active publisher owns its lock, even when another installer refuses it.
 COCKPIT_LOCKED="$TMP/cockpit-locked"
