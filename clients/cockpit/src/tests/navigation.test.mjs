@@ -336,7 +336,7 @@ test('authoritative revision refresh replaces the reason while the inspected age
 });
 
 test('identity rows distinguish split parents and jump using the exact fenced parent target', () => {
-  const extension = extensionRecord(5, [...u16(30), 2,
+  const extension = extensionRecord(6, [...u16(30), 2,
     ...boundAgent('phux:0:9001@', 'phux:0:42@', 300),
     ...boundAgent('phux:0:9002@', 'phux:0:43@', 301)]);
   const body = tabbedSnapshotBytes('Split', extension);
@@ -351,7 +351,7 @@ test('identity rows distinguish split parents and jump using the exact fenced pa
   [model] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: event, droppedPending: 0, droppedTotal: 0 });
   assert.equal(model.railRows.some(row => row.agent), false);
   assert.equal(step(model, { kind: 'agent_parent', index: 301 })[1], null);
-  assert.equal(snapshot(tabbedSnapshotBytes('Split', extensionRecord(5, [...u16(30), 0]))).agentTotal, 30);
+  assert.equal(snapshot(tabbedSnapshotBytes('Split', extensionRecord(6, [...u16(30), 0]))).agentTotal, 30);
   for (let end = body.length - extension.length + 1; end < body.length; end++) {
     assert.equal(snapshot(body.subarray(0, end)), null);
   }
