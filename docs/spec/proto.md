@@ -167,6 +167,10 @@ oriented byte stream. This version defines these concrete transports:
   QUIC mandates ALPN: both ends MUST offer the exact protocol id
   `phux-quic/1` (`QUIC_ALPN` in `phux-protocol`) or the TLS handshake
   fails — a stray non-phux QUIC client never reaches the frame layer.
+  When both peers negotiate `QUIC_STREAMS` (§6.2), the connection
+  carries one control stream plus one bidi stream per attached Terminal
+  instead (§4.2); without the bit the single-stream shape above is the
+  whole contract.
 
 Future protocol versions MAY define additional transports (for example,
 a UDP-based resilient transport in the style of Mosh). Such transports
@@ -212,6 +216,60 @@ adds no frame, field, tag, or error code to the protocol.
 
 [ADR-0051]: ../../ADR/0051-outbound-dial-out-connector-transport.md
 [ADR-0057]: ../../ADR/0057-minimal-reference-relay.md
+
+### 4.2 QUIC multi-stream (`QUIC_STREAMS`)
+
+When `HELLO_OK` advertises `QUIC_STREAMS` ([§6.2](#62-capability-and-synchronization-profile-negotiation),
+[ADR-0113](../../ADR/0113-quic-stream-per-terminal.md)), a QUIC
+connection is one **control stream** plus one **bidi stream per attached
+Terminal**, replacing the single-stream shape of §4 for that connection.
+UDS, ssh-stdio, WebSocket, and WebTransport never negotiate this;
+single-stream is their permanent shape.
+
+- **Control stream.** The client's first opened bidi stream, exactly as
+  in the single-stream shape (bearer preamble where required, then
+  frames). It carries every frame that is not Terminal content:
+  `HELLO` / `HELLO_OK`, `COMMAND` / `COMMAND_RESULT`, `ATTACH` /
+  `ATTACHED` / `ATTACH_READY`, `DETACH` / `DETACHED`, `PING` / `PONG`,
+  `ERROR`, and session-scoped lifecycle (`RESOURCE_SPAWNED`,
+  `RESOURCE_CLOSED`, `RESOURCE_MOVED`, `BELL`, `EVENT`). Command
+  correlation stays connection-wide via `request_id`.
+- **Terminal streams.** The client opens one bidi stream per Terminal it
+  attaches to (session `ATTACH` opens one per pane in the snapshot;
+  `ATTACH_RESOURCE` opens one for that resource); the server never
+  opens one. Each carries exactly that Terminal's `RESOURCE_OUTPUT`,
+  `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`, and `INPUT_*` frames — the
+  L1 §4 mapping is normative for which frames ride where. Input and
+  output share the stream, so per-Terminal causal order (keystroke
+  before its echo) is stream order.
+- **Binding.** The first bytes on a new Terminal stream are a
+  `STREAM_BIND` header — `len: u32 BE` + `terminal_id` in its canonical
+  L1 encoding + `stream_id: u64 BE` — a transport-establishment detail
+  like the bearer preamble, not a phux frame, so it takes no
+  discriminant. The server answers with that generation's
+  `BOOTSTRAP_BEGIN` on the same stream; an unknown or unauthorized id
+  is refused with an uncorrelated `ERROR` on control and a stream
+  reset. A `STREAM_BIND` that does not complete within the admission
+  deadline (§4, QUIC `ADMISSION_DEADLINE`) abandons the stream.
+- **Teardown.** Client `finish()` after `DETACH_RESOURCE`; server reset
+  on Terminal death follows the `RESOURCE_CLOSED` already sent on
+  control. Stream close is a detach signal, never an error: the
+  generation machinery ([L1.md §4.6](./L1.md)) owns continuity, and
+  rebinding a `StreamId` to a fresh QUIC stream after migration or
+  re-attach is the reconnect path it already specifies. The app-level
+  `StreamId` is never the QUIC stream id.
+- **Flow control.** Each Terminal stream has independent QUIC flow
+  control: a flooding Terminal stalls only its own stream. The §8
+  application bounds (per-client queues, gap resync) apply per stream,
+  not per connection.
+- **Relay.** The relay forwards stream pairs without parsing (§4.1):
+  each consumer-opened stream is spliced to a fresh `tunnel.open_bi()`.
+  Stream 0 has no special status. Per-connection stream count is capped
+  on both legs; over cap closes the connection with the relay's
+  application close codes, emitting no phux frame.
+
+A client MUST NOT open a second stream unless `HELLO_OK` advertised
+`QUIC_STREAMS`. A server that receives one anyway resets it.
 
 The transport is responsible for confidentiality, integrity, and its baseline
 peer/server evidence. The protocol assumes all three and servers MUST reject a
@@ -409,6 +467,8 @@ ServerFeature = bitset (u32) {
     SSH_ORIGIN         = 0x00100000, // HELLO.ssh_origin honored; whoami reports ssh-stdio (L3.md §3.9)
     CONDITIONAL_KILL   = 0x00200000, // KILL_RESOURCE_IF, SPAWN_RESOURCE.bind_instance,
                                      //   RESOURCE_SPAWNED.instance (L1.md §3.1, §5.2.1; ADR-0109)
+    QUIC_STREAMS       = 0x00400000, // one control stream + one bidi stream per
+                                     //   attached Terminal (§4.2; ADR-0113)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -527,6 +587,16 @@ safe to send unadvertised. A server without the bit skips the field and
 answers an unbound `OK`, which tells the client there is no token to bind. The
 token in `RESOURCE_SPAWNED.instance` names the answering server's id space:
 through a hub, the satellite's ([L1.md](./L1.md) §3.1).
+
+`QUIC_STREAMS = 0x400000` gates a transport shape, not a frame: the §4.2
+control-plus-per-Terminal-streams connection. A client MUST NOT open a
+second QUIC stream unless `HELLO_OK` advertised the bit; a server that
+receives one anyway resets it. The bit is QUIC-only: it is never
+advertised on (and never affects) UDS, ssh-stdio, WebSocket, or
+WebTransport, whose single-stream shape is permanent. Unlike a frame bit,
+there is no degrading unadvertised case — one stream is the complete
+contract without it, which is exactly the pre-bit behavior, so old peers
+interoperate unchanged.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -946,6 +1016,16 @@ queue at its own READY rather than waiting for other panes or history.
 Capture leases, post-cut raw queues (bytes and age), outbound queues, history
 work, and local caches are bounded independently per consumer. Overflow
 tombstones the affected generation; other consumers and panes continue.
+
+Under `QUIC_STREAMS` (§4.2) the per-consumer outbound bound is per
+Terminal stream, not per connection: each stream drains its own queue
+into its own QUIC flow-control window, so a slow or flooding Terminal
+exerts backpressure only on its stream. The gap-resync rule is unchanged
+— a stream that cannot drain is skipped to a fresh checkpoint via
+`BOOTSTRAP_TOMBSTONE` on that stream — but the skip no longer affects
+any other Terminal on the connection. Control-stream queues stay
+connection-wide and are bounded separately; control traffic is small,
+so one shared bound is sufficient.
 
 ---
 
