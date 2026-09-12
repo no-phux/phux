@@ -7,15 +7,16 @@ import { SITE } from "../../lib/site";
 interface Props {
   title: string;
   description: string;
+  origin?: string;
 }
 
-const { title, description } = Astro.props;
+const { title, description, origin = SITE.docsUrl } = Astro.props;
 ---
 
 <!doctype html>
 <html lang="en" class="dark" data-design={SITE.designMode}>
   <head>
-    <Head title={title} description={description} type="article" />
+    <Head title={title} description={description} type="article" origin={origin} />
     <ClientRouter />
   </head>
   <body
@@ -30,6 +31,7 @@ const { title, description } = Astro.props;
     <footer class="wrap">
       <div class="foot">
         <span class="dim">phux · MIT/Apache-2.0</span>
+        <a href={SITE.url}>phux.sh</a>
         <a href={SITE.github} target="_blank" rel="noopener">source</a>
         <a href="/wire">the wire</a>
         <span class="sp dim">© 2026 no-phux</span>

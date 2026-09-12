@@ -12,6 +12,7 @@ import {
   remarkNpm,
 } from "fumadocs-core/mdx-plugins";
 import { buildSearchIndex } from "./scripts/build-search.mjs";
+import { isDocsPath } from "./host/routes.ts";
 
 // The docs pages render with the Fumadocs markdown pipeline: anchored headings
 // (for the TOC), npm-install tabs, and Shiki-highlighted code.
@@ -78,8 +79,24 @@ export default defineConfig({
     "/consumers/agents/integrations": "/consumers/agents",
   },
   // The live terminal is a React island (<PhuxTerminal client:idle />), and the
-  // docs chrome is the Fumadocs React island (<Docs client:load />).
-  integrations: [react(), mdx({ extendMarkdownConfig: true, syntaxHighlight: false }), sitemap(), searchIndex()],
+  // docs chrome is the Fumadocs React island (<Docs client:load />). Host
+  // split (phux.sh vs docs.phux.sh) is the site worker in host/index.ts.
+  integrations: [
+    react(),
+    mdx({ extendMarkdownConfig: true, syntaxHighlight: false }),
+    sitemap({
+      filter: (page) => !page.includes("/embed"),
+      serialize(item) {
+        const url = new URL(item.url);
+        if (isDocsPath(url.pathname)) {
+          url.hostname = "docs.phux.sh";
+          item.url = url.href;
+        }
+        return item;
+      },
+    }),
+    searchIndex(),
+  ],
   markdown: {
     processor: unified({
       syntaxHighlight: false,

@@ -27,7 +27,8 @@ architecture, operations, and ADRs are separate reference sections.
 Task pages first; protocol, architecture, operations, and ADRs when you need
 to understand or extend the substrate.
 
-The public site at https://phux.sh is generated from this tree.
+The public site at https://phux.sh is generated from this tree. Documentation
+is served at https://docs.phux.sh (overview at `/overview`).
 
 ## Working on the project
 

@@ -5,6 +5,8 @@ export const SITE = {
   name: "phux",
   domain: "phux.sh",
   url: "https://phux.sh",
+  docsDomain: "docs.phux.sh",
+  docsUrl: "https://docs.phux.sh",
   tagline: "you and your agents share the same terminals",
   description:
     "phux is a terminal multiplexer whose panes are a view. Each terminal is an addressable object on a wire: you, Cockpit, a script, or an agent attach to the same live emulator.",
@@ -16,11 +18,35 @@ export const SITE = {
   demoWsUrl: import.meta.env.PUBLIC_PHUX_DEMO_WS ?? "",
 } as const;
 
-export const NAV = [
-  { href: "/docs", label: "docs" },
-  { href: "/quickstart", label: "quickstart" },
-  { href: "/concepts", label: "concepts" },
-  { href: "/consumers/agents", label: "agents" },
-  { href: "/wire", label: "protocol" },
+/**
+ * Absolute docs origin in production builds so marketing chrome lands on
+ * docs.phux.sh instead of bouncing through a same-host 301. `astro dev`
+ * stays same-origin so the local tree is clickable.
+ *
+ * Override with PUBLIC_DOCS_ORIGIN when previewing a split locally.
+ */
+export const DOCS_ORIGIN =
+  import.meta.env.PUBLIC_DOCS_ORIGIN ?? (import.meta.env.PROD ? SITE.docsUrl : "");
+
+export function docsHref(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return DOCS_ORIGIN ? `${DOCS_ORIGIN}${normalized}` : normalized;
+}
+
+export const MARKETING_NAV = [
+  { href: docsHref("/overview"), label: "docs" },
+  { href: docsHref("/consumers"), label: "apps" },
+  { href: docsHref("/consumers/agents"), label: "agents" },
   { href: SITE.github, label: "github", external: true },
 ] as const;
+
+export const DOCS_NAV = [
+  { href: "/overview", label: "overview" },
+  { href: "/quickstart", label: "quickstart" },
+  { href: "/consumers", label: "apps" },
+  { href: "/wire", label: "protocol" },
+  { href: SITE.url, label: "phux.sh", external: true },
+  { href: SITE.github, label: "github", external: true },
+] as const;
+
+export const NAV = MARKETING_NAV;

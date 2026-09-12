@@ -1,7 +1,7 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
 import PhuxTerminal from "../components/PhuxTerminal.tsx";
-import { SITE } from "../lib/site";
+import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
 ---
 
@@ -43,7 +43,7 @@ open -a "Phux Cockpit"</code></pre>
         (<code>brew trust --tap no-phux/tap && brew tap no-phux/tap</code>) and
         then <code>brew install no-phux/tap/phux</code> or
         <code>brew install --cask no-phux/tap/phux-cockpit</code>.
-        The <a href="/quickstart/install">install guide</a> also covers release
+        The <a href={docsHref("/quickstart/install")}>install guide</a> also covers release
         tarballs, source builds, and <code>--channel next</code> for green
         <code>main</code>
         (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
@@ -60,8 +60,8 @@ open -a "Phux Cockpit"</code></pre>
         emulator. Nobody screen-scrapes. Nobody holds a second copy.
       </p>
       <div class="hero-ctas">
-        <a class="cta" href="/quickstart">quickstart</a>
-        <a class="cta ghost" href="/wire">read the wire</a>
+        <a class="cta" href={docsHref("/quickstart")}>quickstart</a>
+        <a class="cta ghost" href={docsHref("/overview")}>docs</a>
       </div>
       <div class="hero-points" aria-label="phux design points">
         <div>
@@ -112,6 +112,33 @@ open -a "Phux Cockpit"</code></pre>
     </div>
   </section>
 
+  <!-- ── surfaces (CLI, Cockpit, web, agents) ───────────────────────────── -->
+  <section class="wrap section">
+    <h2>Apps</h2>
+    <p class="lede">
+      One server, four ways in. Pick the surface that matches the glass in
+      front of you — they all attach to the same terminals.
+    </p>
+    <div class="features apps">
+      <a class="f" href={docsHref("/consumers/tui")}>
+        <h3><span class="g">01 CLI</span></h3>
+        <p>The reference TUI. Attach, split, detach, copy-mode. Prefix keys, then work.</p>
+      </a>
+      <a class="f" href={docsHref("/consumers/cockpit")}>
+        <h3><span class="g">02 Cockpit</span></h3>
+        <p>Native macOS. Same objects as the TUI, on Apple silicon, without a tty in the way.</p>
+      </a>
+      <a class="f" href={docsHref("/consumers/web")}>
+        <h3><span class="g">03 Web</span></h3>
+        <p>The browser client you are looking at. Own engine, canvas projection, same wire.</p>
+      </a>
+      <a class="f" href={docsHref("/consumers/agents")}>
+        <h3><span class="g">04 Agents</span></h3>
+        <p>CLI, MCP, OpenCode, Pi, Claude. Read, act, wait on the terminals a person sees.</p>
+      </a>
+    </div>
+  </section>
+
   <!-- ── a terminal is an object on a wire ──────────────────────────────── -->
   <section class="wrap section">
     <h2>Why the wire exists</h2>
@@ -142,8 +169,8 @@ open -a "Phux Cockpit"</code></pre>
       multiplexer has to implement every protocol by hand and always lags.
       phux never re-parses: the same engine runs on both ends, so the bytes
       on the wire are the bytes your program wrote.
-      <a href="/concepts">See the model</a> or
-      <a href="/wire">read the protocol</a>.
+      <a href={docsHref("/concepts")}>See the model</a> or
+      <a href={docsHref("/wire")}>read the protocol</a>.
     </p>
   </section>
 
@@ -154,7 +181,7 @@ open -a "Phux Cockpit"</code></pre>
       The CLI and MCP adapter let an agent read, act, and wait against the same
       terminals a person sees. Rich clients can carry the engine and project
       structure locally, as <span class="mark">phux-web</span> does.
-      <a href="/consumers/agents">Use the agent guide</a>.
+      <a href={docsHref("/consumers/agents")}>Use the agent guide</a>.
     </p>
   </section>
 
@@ -166,7 +193,7 @@ open -a "Phux Cockpit"</code></pre>
       federation are here. Agent sessions exist in this tree; older brew/curl
       releases may not advertise them — check
       <code>phux status --json</code>. No crates.io SDK.
-      Gaps: <a href="/concepts">concepts</a>.
+      Gaps: <a href={docsHref("/concepts")}>concepts</a>.
     </p>
     <ul class="status-tiers">
       <li>
@@ -196,20 +223,20 @@ open -a "Phux Cockpit"</code></pre>
   <section class="wrap section">
     <h2>Get going</h2>
     <div class="router">
-      <a class="route" href="/quickstart">
+      <a class="route" href={docsHref("/quickstart")}>
         <span class="route-k">quickstart</span>
         <span class="route-t">Install it, attach, and share a live terminal.</span>
       </a>
-      <a class="route" href="/docs">
+      <a class="route" href={docsHref("/overview")}>
         <span class="route-k">docs</span>
         <span class="route-t">Guided paths for users, agents, and implementers.</span>
       </a>
-      <a class="route" href="/wire">
+      <a class="route" href={docsHref("/wire")}>
         <span class="route-k">the wire</span>
         <span class="route-t">The protocol — L1 bytes, L3 metadata and links.</span>
       </a>
-      <a class="route" href="/consumers">
-        <span class="route-k">consumers</span>
+      <a class="route" href={docsHref("/consumers")}>
+        <span class="route-k">apps</span>
         <span class="route-t">The TUI, Cockpit, web client, agent CLI, and MCP.</span>
       </a>
       <a class="route" href={SITE.github} target="_blank" rel="noopener">
@@ -754,6 +781,19 @@ open -a "Phux Cockpit"</code></pre>
     }
     .features .f h3 .g {
       color: var(--color-signal);
+    }
+    .features.apps {
+      display: block;
+    }
+    .features.apps .f {
+      text-decoration: none;
+      color: inherit;
+    }
+    .features.apps .f:hover {
+      background: var(--color-surface-raised);
+    }
+    .features.apps .f p {
+      color: var(--color-dim);
     }
 
     .status-tiers {

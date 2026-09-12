@@ -2,9 +2,9 @@ name: site-deploy
 
 # Push to main touching docs/, ADR/, or the curl installer → build the Astro
 # site (docs/site) and deploy it as a Workers static-assets worker (phux-site)
-# on phux.sh. Site, docs, and installer share this repository, so an edit to
-# any of them rebuilds the site directly — no cross-repo dispatch, no drift
-# polling.
+# on phux.sh and docs.phux.sh. Site, docs, and installer share this repository,
+# so an edit to any of them rebuilds the site directly — no cross-repo
+# dispatch, no drift polling.
 # The live demo reads PUBLIC_PHUX_DEMO_WS (a repo *variable*); it points at the
 # Worker's wss URL (see site-deploy-worker.yml + docs/site/DEPLOY.md).
 
