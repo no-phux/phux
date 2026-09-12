@@ -89,6 +89,10 @@ pub const State = struct {
     /// connection epoch. Null retains the legacy unbound projection behavior.
     attachment_id: ?u64 = null,
     presentation_window: ?struct { window: usize, window_epoch: u64 } = null,
+    hidden_windows: [capacity]WindowId = undefined,
+    hidden_count: usize = 0,
+    detached: bool = false,
+    projection_dirty: bool = false,
     session: u32 = 0,
     revision: u64 = 0,
     projection_generation: u64 = 0,
@@ -136,11 +140,83 @@ pub const State = struct {
         return null;
     }
 
-    fn defaultWindow(self: *const State, model: *const Model) usize {
+    fn defaultWindow(self: *const State, model: *const Model) !usize {
         const target = self.presentation_window orelse return model.firstOpenWindow();
-        if (!model.windowOpen(target.window)) return model.firstOpenWindow();
-        if (model.window_epochs[target.window] != target.window_epoch) return model.firstOpenWindow();
+        if (!model.windowOpen(target.window)) return error.StalePresentationWindow;
+        if (model.window_epochs[target.window] != target.window_epoch) return error.StalePresentationWindow;
         return target.window;
+    }
+
+    /// Explicit user navigation reopens hidden views at its captured native
+    /// destination. Publication never raises a window or changes global focus.
+    pub fn showInWindow(self: *State, window: usize, window_epoch: u64) void {
+        self.presentation_window = .{ .window = window, .window_epoch = window_epoch };
+        self.hidden_count = 0;
+        self.detached = false;
+        self.projection_dirty = true;
+        self.desired_terminal = null;
+        self.placement_hint = null;
+    }
+
+    /// Call before Model.closeWindow. This only records client-view intent;
+    /// shared layout and durable resources remain owned by the coordinator.
+    pub fn hideNativeWindow(self: *State, model: *const Model, window: usize) !void {
+        const workspace = model.wsAtConst(window) orelse return error.UnknownWindow;
+        const previous_count = self.hidden_count;
+        errdefer self.hidden_count = previous_count;
+        var affected = self.targetsWindow(model, window);
+        for (workspace.tabs[0..workspace.tab_count], 0..) |*tree, tab| {
+            if (!self.ownership().owns(tree)) continue;
+            affected = true;
+            const id = workspace.shared_ids[tab] orelse continue;
+            if (!self.shownElsewhere(model, window, id)) try self.hideSharedWindow(id);
+        }
+        if (!affected) return;
+        self.presentation_window = self.remainingWindow(model, window);
+        self.detached = self.presentation_window == null;
+        self.projection_dirty = true;
+        self.desired_terminal = null;
+        self.placement_hint = null;
+    }
+
+    fn targetsWindow(self: *const State, model: *const Model, window: usize) bool {
+        const target = self.presentation_window orelse return false;
+        return target.window == window and target.window_epoch == model.window_epochs[window];
+    }
+
+    fn shownElsewhere(self: *const State, model: *const Model, excluded: usize, id: WindowId) bool {
+        const view = self.current(model);
+        for (view.placements[0..view.count]) |placement| {
+            if (placement.native_window == excluded) continue;
+            if (std.mem.eql(u8, &placement.id, &id)) return true;
+        }
+        return false;
+    }
+
+    fn remainingWindow(self: *const State, model: *const Model, excluded: usize) @FieldType(State, "presentation_window") {
+        const view = self.current(model);
+        for (view.placements[0..view.count]) |placement| {
+            if (placement.native_window == excluded) continue;
+            return .{ .window = placement.native_window, .window_epoch = placement.window_epoch };
+        }
+        return null;
+    }
+
+    fn hideSharedWindow(self: *State, id: WindowId) !void {
+        if (hiddenWindow(self.hidden_windows[0..self.hidden_count], id)) return;
+        if (self.hidden_count == self.hidden_windows.len) return error.WorkspaceCapacity;
+        self.hidden_windows[self.hidden_count] = id;
+        self.hidden_count += 1;
+    }
+
+    fn pruneHidden(self: *State, snapshot: shared.Snapshot) void {
+        var kept: usize = 0;
+        for (self.hidden_windows[0..self.hidden_count]) |id| {
+            if (!snapshotHasWindow(snapshot, id)) continue;
+            self.hidden_windows[kept] = id;
+            kept += 1;
+        }
+        self.hidden_count = kept;
     }
 
     /// The caller supplies endpoint/incarnation evidence, excluding session.
@@ -198,6 +274,10 @@ pub const State = struct {
         self.subscription_refused = false;
         self.desired_terminal = null;
         self.placement_hint = null;
+        self.presentation_window = null;
+        self.hidden_count = 0;
+        self.detached = false;
+        self.projection_dirty = false;
     }
 
     fn priorView(self: *const State, model: *const Model, session: u32) SessionView {
@@ -210,7 +290,7 @@ pub const State = struct {
         if (snapshot.state == .unavailable) return false;
         if (snapshot.state == .last_good_error) return error.UnavailableWorkspace;
         if (snapshot.session_id == 0) return error.InvalidSession;
-        if (self.session == snapshot.session_id and self.revision == snapshot.revision and self.epoch == epoch and self.placement_hint == null) {
+        if (self.samePublication(snapshot, epoch)) {
             const refused = operationRefused(snapshot);
             const recovered = self.refused != refused;
             self.refused = refused;
@@ -221,12 +301,19 @@ pub const State = struct {
         self.applyHint(model, &previous);
         const candidate = try std.heap.page_allocator.create(Candidate);
         defer std.heap.page_allocator.destroy(candidate);
-        candidate.* = .{ .owner = self.ownership(), .default_window = self.defaultWindow(model) };
+        candidate.* = .{
+            .owner = self.ownership(),
+            .default_window = try self.defaultWindow(model),
+            .hidden_windows = self.hidden_windows[0..self.hidden_count],
+            .detached = self.detached,
+        };
         try candidate.prepare(model, snapshot, &previous);
         candidate.restoreSelection(&previous);
         candidate.publish(model, &previous);
         self.projection_generation +%= 1;
         self.placement_hint = null;
+        self.projection_dirty = false;
+        self.pruneHidden(snapshot);
         if (self.epoch != epoch) {
             self.subscriptions = @splat(null);
             self.detachments = @splat(null);
@@ -237,6 +324,11 @@ pub const State = struct {
         self.refused = operationRefused(snapshot);
         _ = self.selectDesired(model);
         return true;
+    }
+
+    fn samePublication(self: *const State, snapshot: shared.Snapshot, epoch: u64) bool {
+        return self.session == snapshot.session_id and self.revision == snapshot.revision and
+            self.epoch == epoch and self.placement_hint == null and !self.projection_dirty;
     }
 
     fn applyHint(self: *State, model: *const Model, previous: *SessionView) void {
@@ -274,6 +366,7 @@ pub const State = struct {
         for (remote.workspaceSnapshot().nodes) |node| {
             const ref = node.terminal_ref orelse continue;
             if (node.kind != .leaf or remote.terminalKnown(ref)) continue;
+            if (self.locate(model, ref) == null) continue;
             if (count == refs.len) break;
             refs[count] = ref;
             count += 1;
@@ -295,6 +388,11 @@ pub const State = struct {
     }
 
     pub fn completeSubscription(self: *State, result: @import("phux_support.zig").OperationResult, refresh_request: u32) bool {
+        if (self.attachment_id != null) return false;
+        return self.completeSubscriptionResult(result, refresh_request);
+    }
+
+    fn completeSubscriptionResult(self: *State, result: support.OperationResult, refresh_request: u32) bool {
         const entries = switch (result.kind) {
             .attach => &self.subscriptions,
             .detach => &self.detachments,
@@ -315,7 +413,7 @@ pub const State = struct {
     /// attachment cannot complete this attachment's work.
     pub fn completeSubscriptionFrom(self: *State, attachment_id: u64, result: support.OperationResult, refresh_request: u32) bool {
         if (self.attachment_id != attachment_id) return false;
-        return self.completeSubscription(result, refresh_request);
+        return self.completeSubscriptionResult(result, refresh_request);
     }
 
     fn retryReady(entry: Subscription, snapshot: shared.Snapshot) bool {
@@ -521,6 +619,8 @@ fn retainedCount(model: *const Model, window: usize, owner: Ownership) usize {
 const Candidate = struct {
     owner: Ownership,
     default_window: usize,
+    hidden_windows: []const WindowId,
+    detached: bool,
     trees: [capacity]layout.Tree = @splat(.{}),
     placements: [capacity]Placement = undefined,
     count: usize = 0,
@@ -533,8 +633,10 @@ const Candidate = struct {
         if (snapshot.windows.len > capacity or snapshot.nodes.len > self.seen.len) return error.WorkspaceCapacity;
         // Another showing coordinator's tabs keep their slots.
         for (0..model_module.max_windows) |window| self.counts[window] = retainedCount(model, window, self.owner);
-        for (snapshot.windows, 0..) |window, index| {
-            try self.prepareWindow(model, snapshot.nodes, window, index, previous);
+        if (self.detached) return;
+        for (snapshot.windows) |window| {
+            if (hiddenWindow(self.hidden_windows, window.id)) continue;
+            try self.prepareWindow(model, snapshot.nodes, window, self.count, previous);
         }
     }
 
@@ -630,9 +732,8 @@ const Candidate = struct {
 
     fn publish(self: *const Candidate, model: *Model, previous: *const SessionView) void {
         const cleared = clearAuthority(model, self.owner);
-        // Web selection and the active window are client-wide: only the
-        // active coordinator's projection restores them, so showing a peer
-        // never moves them.
+        // Tagged attachments restore only their own window's Web selection.
+        // Publication is asynchronous and must never raise a native window.
         const home = self.owner.primary(model);
         for (0..model_module.max_windows) |window| {
             const workspace = model.wsAt(window) orelse continue;
@@ -748,6 +849,16 @@ fn hasLeaf(snapshot: shared.Snapshot, ref: TerminalRef) bool {
         if (node.kind != .leaf) continue;
         if (node.terminal_ref) |known| if (known.eql(ref)) return true;
     }
+    return false;
+}
+
+fn hiddenWindow(ids: []const WindowId, id: WindowId) bool {
+    for (ids) |known| if (std.mem.eql(u8, &known, &id)) return true;
+    return false;
+}
+
+fn snapshotHasWindow(snapshot: shared.Snapshot, id: WindowId) bool {
+    for (snapshot.windows) |window| if (std.mem.eql(u8, &window.id, &id)) return true;
     return false;
 }
 
@@ -1239,7 +1350,7 @@ test "scoped projection selects colliding refs in the exact attachment tab and r
     try std.testing.expectEqual(@as(?u64, 100), model.primary.tabs[0].attachment_id);
 }
 
-test "same endpoint attachment subscription and detach queues remain independent" {
+test "same endpoint detach queue ignores a sibling attachment showing the same terminal" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -1260,7 +1371,12 @@ test "same endpoint attachment subscription and detach queues remain independent
     var refs: [capacity]TerminalRef = undefined;
     const count = b.terminalRefs(&refs);
     try std.testing.expect(count > 0);
-    state.releaseOne(model, refs[0]);
+    model.shared_workspace.authority = a.providerId();
+    model.shared_workspace.attachment_id = a.context_id;
+    const windows = [_]shared.Window{testWindow(1, 0)};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = refs[0] }};
+    _ = try model.shared_workspace.apply(model, .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &windows, .nodes = &nodes }, 1);
+    state.releaseUnused(model);
     try fixture.expectOutgoingCount(a.bridge, 0);
     try fixture.expectOutgoingCount(b.bridge, 1);
     // Removing B never turns its stale projection into an alias for A.
@@ -1275,6 +1391,7 @@ test "subscription completions require attachment identity as well as request an
     const ref = testRef(11);
     state.subscriptions[0] = .{ .ref = ref, .request = 7, .epoch = 2 };
     var result: support.OperationResult = .{ .kind = .attach, .status = .success, .request_id = 7, .connection_epoch = 2, .terminal_ref = ref, .error_domain = .none, .error_code = 0 };
+    try std.testing.expect(!state.completeSubscription(result, 1));
     try std.testing.expect(!state.completeSubscriptionFrom(100, result, 1));
     try std.testing.expect(!state.subscriptions[0].?.completed);
     result.connection_epoch = 1;
@@ -1283,4 +1400,78 @@ test "subscription completions require attachment identity as well as request an
     try std.testing.expect(state.completeSubscriptionFrom(200, result, 1));
     state.setContext(1);
     try std.testing.expect(!state.completeSubscriptionFrom(200, result, 1));
+}
+
+test "closing session views suppresses rediscovery until explicit show without disturbing a sibling" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    _ = model.openWindow(1).?;
+    _ = model.openWindow(2).?;
+    var a: State = .{ .attachment_id = 100 };
+    defer a.deinit();
+    var b: State = .{ .attachment_id = 200 };
+    defer b.deinit();
+    const windows = [_]shared.Window{ testWindow(1, 0), testWindow(2, 1), testWindow(3, 2) };
+    const nodes = [_]shared.Node{
+        .{ .kind = .leaf, .terminal_ref = testRef(11) },
+        .{ .kind = .leaf, .terminal_ref = testRef(12) },
+        .{ .kind = .leaf, .terminal_ref = testRef(13) },
+    };
+    a.showInWindow(0, model.window_epochs[0]);
+    a.placement_hint = .{ .shared_id = windows[1].id, .window = 1, .window_epoch = model.window_epochs[1] };
+    var snapshot: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = windows[0..2], .nodes = &nodes };
+    _ = try a.apply(model, snapshot, 1);
+    b.showInWindow(2, model.window_epochs[2]);
+    _ = try b.apply(model, .{ .session_id = 2, .revision = 1, .state = .authoritative, .windows = windows[0..1], .nodes = nodes[0..1] }, 1);
+    const b_key = model.wsAt(2).?.tab_ids[0];
+    try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
+    try a.hideNativeWindow(model, 1);
+    model.closeWindow(1);
+    snapshot.revision = 2;
+    _ = try a.apply(model, snapshot, 1);
+    try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    try std.testing.expect(a.locate(model, testRef(12)) == null);
+    try std.testing.expectEqual(b_key, model.wsAt(2).?.tab_ids[0]);
+    try a.hideNativeWindow(model, 0);
+    model.closeWindow(0);
+    // New remote layout does not revive a completely detached presentation.
+    snapshot.windows = &windows;
+    snapshot.revision = 3;
+    _ = try a.apply(model, snapshot, 2);
+    try std.testing.expect(a.detached);
+    try std.testing.expectEqual(@as(usize, 1), model.wsAt(2).?.tab_count);
+    a.showInWindow(2, model.window_epochs[2]);
+    // Explicit reopening invalidates the unchanged revision/epoch fast path.
+    try std.testing.expect(try a.apply(model, snapshot, 2));
+    try std.testing.expectEqual(@as(usize, 4), model.wsAt(2).?.tab_count);
+    try std.testing.expectEqual(b_key, model.wsAt(2).?.tab_ids[0]);
+    try std.testing.expectEqual(@as(usize, 0), model.wsAt(2).?.selected_tab);
+    try std.testing.expect(a.locate(model, testRef(12)) != null);
+}
+
+test "delayed first session publication refuses a recycled native destination" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    _ = model.openWindow(1).?;
+    var state: State = .{ .attachment_id = 100 };
+    defer state.deinit();
+    state.showInWindow(1, model.window_epochs[1]);
+    model.closeWindow(1);
+    _ = model.openWindow(1).?;
+    const primary_tabs = model.primary.tab_count;
+    const secondary_tabs = model.wsAt(1).?.tab_count;
+    const windows = [_]shared.Window{testWindow(1, 0)};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(11) }};
+    const snapshot: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &windows, .nodes = &nodes };
+    try std.testing.expectError(error.StalePresentationWindow, state.apply(model, snapshot, 1));
+    try std.testing.expectEqual(@as(u64, 0), state.revision);
+    try std.testing.expectEqual(primary_tabs, model.primary.tab_count);
+    try std.testing.expectEqual(secondary_tabs, model.wsAt(1).?.tab_count);
+    try std.testing.expect(state.locate(model, testRef(11)) == null);
+    state.showInWindow(1, model.window_epochs[1]);
+    _ = try state.apply(model, snapshot, 1);
+    try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
+    try std.testing.expectEqual(@as(usize, 0), model.active_window);
 }
