@@ -5,14 +5,15 @@ use phux_protocol::wire::frame::KillConditions;
 
 use super::{
     BridgeError, Client, Command, FrameKind, KillPrecondition, MAX_DYNAMIC_TERMINALS, Operations,
-    Pending, PhuxClient, PhuxClientResult, PhuxResourceId, ResourceId, ensure_queue_capacity, ptr,
-    terminal_id_in, valid_terminal, with_client_mut,
+    Pending, PendingClose, PhuxClient, PhuxClientResult, PhuxResourceId, ResourceId,
+    ensure_queue_capacity, ptr, terminal_id_in, valid_terminal, with_client_mut,
 };
 
 /// Queue intentional termination of a terminal owned by this attached client.
 ///
-/// Success/refusal is reported as operation kind 5. Neither enqueue nor success
-/// withdraws admission: authoritative `RESOURCE_CLOSED` retires the replica.
+/// Success/refusal is reported as operation kind 5. Success is retained until
+/// this Client receives both command Ok and authoritative `RESOURCE_CLOSED`,
+/// in either order. Enqueue and Ok never fabricate replica retirement.
 ///
 /// The client is the connection fence: it cannot reconnect, disconnect discards
 /// queued bytes, and calls on it then fail. A host must retain this exact client
@@ -42,7 +43,9 @@ pub unsafe extern "C" fn phux_client_queue_close_resource(
             request_id,
             command: close_command(client, &id)?,
         })?;
-        client.operations.insert(request_id, Pending::Close(id));
+        client
+            .operations
+            .insert(request_id, Pending::Close(PendingClose::new(vec![id])));
         Ok(())
     })
 }
@@ -51,6 +54,8 @@ pub unsafe extern "C" fn phux_client_queue_close_resource(
 ///
 /// The batch result (kind 6) has no single terminal. No instance-conditional
 /// batch exists on the wire; the captured connection fence is mandatory.
+/// Success requires command Ok and `RESOURCE_CLOSED` for every captured ID;
+/// disconnect before all evidence arrives reports an unknown outcome.
 /// Satellite IDs are refused even when bound: the batch relay does not provide
 /// correlated atomic teardown, so no local prefix may be submitted either.
 ///
@@ -75,7 +80,7 @@ pub unsafe extern "C" fn phux_client_queue_close_resources(
         })?;
         client
             .operations
-            .insert(request_id, Pending::CloseMany(ids));
+            .insert(request_id, Pending::CloseMany(PendingClose::new(ids)));
         Ok(())
     })
 }
@@ -109,8 +114,7 @@ unsafe fn close_ids_in(
 
 fn close_pending(operations: &Operations, id: &ResourceId) -> bool {
     operations.pending.values().any(|op| match op {
-        Pending::Close(target) => target == id,
-        Pending::CloseMany(targets) => targets.contains(id),
+        Pending::Close(close) | Pending::CloseMany(close) => close.contains(id),
         _ => false,
     })
 }

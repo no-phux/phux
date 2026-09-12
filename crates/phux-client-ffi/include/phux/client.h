@@ -1166,8 +1166,12 @@ PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_
  * A hub connection alone cannot fence a satellite restart. The satellite must
  * evaluate the unchanged instance precondition or the relay returns refusal.
  * This does not weaken abandoned-spawn cleanup above. Result kind 5
- * reports correlated success/refusal/unknown outcome. Enqueue and receipt leave
- * admission intact: authoritative RESOURCE_CLOSED ends the view.
+ * reports correlated success/refusal/unknown outcome. SUCCESS is published only
+ * after this exact Client has processed command Ok AND RESOURCE_CLOSED for the
+ * captured terminal, in either order. Ok alone only acknowledges cancellation;
+ * it never produces a success receipt or fabricates replica retirement.
+ * Disconnect while either proof is missing reports UNKNOWN_OUTCOME, including
+ * after Ok. Clearing completed results leaves pending close evidence intact.
  * The exact client is the connection fence. It cannot reconnect; disconnect
  * discards queued output. Captured actions and outgoing bytes MUST NOT be
  * replayed on a replacement connection or retargeted by numeric terminal ID. */
@@ -1180,7 +1184,9 @@ PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t r
  * fall back to closing only the local subset. Validation failure
  * queues nothing and consumes no request ID. Same connection fence/no replay
  * contract as close_resource. Result kind 6 has no single returned terminal;
- * individual RESOURCE_CLOSED publications carry per-terminal truth. The wire
+ * SUCCESS requires Ok AND individual RESOURCE_CLOSED for EVERY captured ID,
+ * regardless of arrival order. Partial closure leaves the operation pending;
+ * disconnect then produces UNKNOWN_OUTCOME, not success. The wire
  * batch has no instance precondition; never move it to another connection. */
 PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */

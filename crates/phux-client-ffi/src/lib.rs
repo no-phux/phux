@@ -1371,6 +1371,7 @@ fn apply_terminal_closed(
     operations::release_terminal(client, terminal_id)?;
     forget_terminal(client, terminal_id);
     client.forget_resource(terminal_id);
+    client.operations.observe_resource_closed(terminal_id);
     Ok(())
 }
 

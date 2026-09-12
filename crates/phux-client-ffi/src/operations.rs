@@ -22,7 +22,9 @@ use crate::{
 };
 use phux_client_core::session::KernelSend;
 
+mod close_completion;
 mod close_resource;
+use close_completion::PendingClose;
 pub use close_resource::{phux_client_queue_close_resource, phux_client_queue_close_resources};
 
 pub const MAX_OPERATIONS: usize = 128;
@@ -132,9 +134,9 @@ enum Pending {
     Detach(ResourceId),
     /// `KILL_RESOURCE_IF` (ADR-0109): never admits or retires anything.
     Kill(ResourceId),
-    /// Intentional resource termination; admission waits for authoritative closure.
-    Close(ResourceId),
-    CloseMany(Vec<ResourceId>),
+    /// Intentional termination completes only after acknowledgement and closure.
+    Close(PendingClose),
+    CloseMany(PendingClose),
 }
 
 impl Pending {
@@ -152,9 +154,8 @@ impl Pending {
     fn terminal(&self) -> Option<ResourceId> {
         match self {
             Self::Spawn { .. } | Self::CloseMany(_) => None,
-            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) | Self::Close(id) => {
-                Some(id.clone())
-            }
+            Self::Close(close) => close.terminal(),
+            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) => Some(id.clone()),
         }
     }
 }
@@ -869,6 +870,9 @@ fn complete_subscription(
     }
     match result {
         CommandResult::Ok => {
+            if client.operations.acknowledge_close(request_id)? {
+                return Ok(());
+            }
             match client.operations.pending(request_id)?.clone() {
                 Pending::Detach(id) => complete_detach(client, &id)?,
                 Pending::Kill(id) => {
