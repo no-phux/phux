@@ -178,7 +178,10 @@ pub const Hosts = struct {
 /// empty, for anything malformed.
 pub fn parseAll(bytes: []const u8, out: *Hosts) bool {
     out.deinit();
-    if (parse(bytes)) |target| return out.add(target);
+    if (parse(bytes)) |target| {
+        if (!out.add(target)) return reject(out);
+        return true;
+    }
     const records = std.mem.startsWith(u8, bytes, shown_header);
     if (!records and !std.mem.startsWith(u8, bytes, list_header)) return reject(out);
     var rest = bytes[list_header.len..];
@@ -478,4 +481,28 @@ test "failed catalog growth keeps existing targets and restore records" {
     try std.testing.expectEqual(count, hosts.count);
     try std.testing.expectEqualStrings("one", hosts.get(0));
     try std.testing.expectEqual(@as(u32, 12), hosts.shown[0].?.session);
+}
+
+test "v1 allocation failures preserve the source through later save" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ directory, "old.remote" });
+    defer std.testing.allocator.free(file_path);
+    const original = header ++ "target=precious\n";
+    // Parsing has two owned allocations: target storage and shown records.
+    for (0..2) |failure| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "old.remote", .data = original });
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = failure });
+        var hosts: Hosts = .{ .allocator = failing.allocator() };
+        defer hosts.deinit();
+        try std.testing.expect(!parseAll(original, &hosts));
+        try std.testing.expect(!hosts.writable);
+        try std.testing.expect(!save(io, file_path, &hosts));
+        const retained = try tmp.dir.readFileAlloc(io, "old.remote", std.testing.allocator, .unlimited);
+        defer std.testing.allocator.free(retained);
+        try std.testing.expectEqualStrings(original, retained);
+    }
 }
