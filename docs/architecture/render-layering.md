@@ -56,9 +56,9 @@ must invalidate the front buffer through
 `TerminalRenderer::invalidate_front` (all rows) or
 `invalidate_front_rows` (some rows):
 
-- screen clears (the SIGWINCH clear, the full-screen overlay path) and
-  a frame that failed to reach the terminal or was dropped by the
-  stdout writer;
+- screen clears (the full-frame clear, the SIGWINCH clear, the
+  full-screen overlay path), an incremental frame that failed to reach
+  the terminal, and a frame the stdout writer dropped;
 - modal overlays and the copy-mode status strip;
 - the predictive-echo overlay, for the rows its guesses cover.
 

@@ -493,14 +493,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         session_name,
         theme,
     );
-    let (painted, shipped) = seal_frame(block, painted, composed, status_bar);
-    if !shipped {
-        // phux-esge: the renderers recorded cells the terminal may never
-        // have received, and cleared the dirty bits that would have repainted
-        // them. Forget the records so the next paint rewrites rows whole.
-        super::pane_state::invalidate_all_fronts(panes);
-    }
-    painted
+    seal_frame(block, painted, composed, status_bar)
 }
 
 /// ADR-0105: the empty state's title line.
@@ -557,7 +550,7 @@ pub(super) fn paint_empty_session<W: super::RenderSink>(
         true,
     );
     let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
-    seal_frame(block, painted, composed, status_bar).0
+    seal_frame(block, painted, composed, status_bar)
 }
 
 /// Write `lines` centered in `rect`, each clipped to the rect's width.
@@ -579,23 +572,25 @@ fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines:
 /// `NotPublished` and invalidates the painter, so the bar re-emits next time
 /// rather than trusting a cache that describes bytes the terminal never got.
 ///
-/// The second value is whether the frame shipped, so a caller that painted
-/// panes can forget their front buffers on the same failure (`phux-esge`).
+/// No pane front buffer needs forgetting on a failed seal: every frame sealed
+/// here paints its panes FORCED (or none at all), and a forced paint records
+/// nothing (`phux-esge`); `paint_full_frame_into` forgets the fronts at its
+/// clear.
 fn seal_frame<W: Write>(
     block: FrameBlock<'_, W>,
     painted: StatusBarPaint,
     composed: bool,
     status_bar: Option<&mut StatusBarPainter>,
-) -> (StatusBarPaint, bool) {
+) -> StatusBarPaint {
     if composed && block.end().is_ok() {
-        return (painted, true);
+        return painted;
     }
     if !matches!(painted, StatusBarPaint::NotPublished)
         && let Some(painter) = status_bar
     {
         painter.invalidate();
     }
-    (StatusBarPaint::NotPublished, false)
+    StatusBarPaint::NotPublished
 }
 
 /// [`paint_full_frame`]'s body, emitting into the frame block. Returns the
@@ -641,6 +636,11 @@ fn paint_full_frame_into<W: Write>(
     // reaches the terminal until the block ships.
     // ED2 (clear screen) + cursor home. Cheap and unambiguous.
     let _ = out.write_all(b"\x1b[2J\x1b[H");
+    // phux-esge: the clear wiped every pane's cells. Forget every front here,
+    // at the clear, rather than trusting each pane's forced paint to: a pane
+    // with no published replica is skipped below, and one whose render state
+    // errors returns before its renderer reaches its own invalidation.
+    super::pane_state::invalidate_all_fronts(panes);
     // Non-focused panes first; chrome (dividers + status bar) next; the
     // focused pane's render_at is intentionally the LAST cursor-touching
     // emit in the frame so it owns final cursor position + DECTCEM. This
@@ -784,7 +784,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
         session_name,
         theme,
     );
-    seal_frame(block, painted, composed, status_bar).0
+    seal_frame(block, painted, composed, status_bar)
 }
 
 /// [`paint_chrome_in_place`]'s body, emitting into the frame block.

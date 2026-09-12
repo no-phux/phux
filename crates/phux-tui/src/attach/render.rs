@@ -244,8 +244,14 @@ pub struct TerminalRenderer<'alloc> {
 /// Writers outside the renderer invalidate explicitly through
 /// [`TerminalRenderer::invalidate_front`] and
 /// [`TerminalRenderer::invalidate_front_rows`]: the predictive-echo overlay
-/// (the rows it painted), and modal overlays and the copy-mode status strip
-/// (the whole pane).
+/// (the rows it painted); and, for the whole pane, the full-frame clear (at
+/// the clear itself, not trusting each pane's forced paint to get that far),
+/// the SIGWINCH clear, a stdout-writer resync, an incremental frame that
+/// failed to ship, modal overlays and the copy-mode status strip.
+///
+/// A forced paint records nothing: it emits straight from the batched read
+/// and leaves its rows unknown, so a failed forced frame cannot leave a false
+/// claim behind. And a row becomes known only after its bytes reach the sink.
 #[derive(Debug, Default)]
 struct FrontBuffer {
     /// The paint identity the rows were recorded under. A paint under any
@@ -1026,11 +1032,15 @@ fn paint_row<'alloc>(
     // so walking the columns in step with the cells clips at `cols_total`
     // exactly as the old per-cell walk did.
     let batch = cells.update(row)?.read_row(rowbuf)?;
-    emit_and_record(buf, front_row, next, &batch, at, pass)?;
+    let recorded = emit_and_record(buf, front_row, next, &batch, at, pass)?;
 
     if !buf.is_empty() {
         out.write_all(buf)?;
     }
+    // The recording is a claim about the terminal, so it becomes known only
+    // once its bytes have been handed to the sink: a failed write returns
+    // above with the row still unknown (and its dirty bit still set).
+    front_row.known = recorded;
     // Reset per-row dirty bit after drawing, per the libghostty
     // contract.
     row.set_dirty(false)?;
@@ -1045,6 +1055,10 @@ fn paint_row<'alloc>(
 /// then [`record_row`]), byte-identical to the pre-front-buffer paint. The
 /// old front row's buffers are then swapped into `next`, to be reused as
 /// scratch by the next row painted.
+///
+/// Returns whether `front_row` now holds a recording of the row. It is left
+/// UNKNOWN either way: [`paint_row`] marks it known only once the emitted
+/// bytes have reached the sink.
 fn emit_and_record(
     buf: &mut Vec<u8>,
     front_row: &mut FrontRow,
@@ -1052,7 +1066,7 @@ fn emit_and_record(
     batch: &RowCells<'_>,
     at: RowAt,
     pass: &mut PaintPass,
-) -> Result<(), RenderError> {
+) -> Result<bool, RenderError> {
     // Run indices belong to one row read, so the run memory starts empty on
     // every row; the outer pen itself carries over.
     pass.pen.last_pen = None;
@@ -1062,7 +1076,8 @@ fn emit_and_record(
         // leave the row unknown, to be recorded by its next incremental paint.
         begin_full_row(buf, at, &mut pass.pen)?;
         front_row.known = false;
-        return emit_unrecorded_row(buf, batch, at, pass);
+        emit_unrecorded_row(buf, batch, at, pass)?;
+        return Ok(false);
     }
     let painted = batch.len().min(usize::from(at.cols_total));
     if front_row.known && front_row.cells.len() == painted {
@@ -1073,14 +1088,21 @@ fn emit_and_record(
         record_row(next, batch, at, pass.selection, Some((buf, &mut pass.pen)))?;
     }
     std::mem::swap(front_row, next);
-    front_row.known = true;
-    Ok(())
+    front_row.known = false;
+    Ok(true)
 }
 
 /// Emit a whole row straight from its batched read, recording nothing — the
 /// forced-paint path, and the pre-`phux-esge` cell loop exactly: a cell whose
 /// pen identity ([`PenKey`]) matches its predecessor's skips straight to its
 /// glyphs, and a spacer tail writes nothing.
+///
+/// This loop and [`record_row`]'s emitting mode must stay byte-identical: a
+/// row painted forced and the same row painted as an unknown incremental row
+/// must reach the terminal as the same bytes. The byte-identity gate
+/// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk` and its two
+/// siblings) runs both paths against the per-cell walk and against each
+/// other, so a change to one that is not made to the other fails there.
 fn emit_unrecorded_row(
     buf: &mut Vec<u8>,
     batch: &RowCells<'_>,
@@ -1125,7 +1147,8 @@ fn emit_unrecorded_row(
 /// dead weight now: the batched read resolves an unstyled row to a single
 /// default style-table entry anyway. The byte-identity gate
 /// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`) holds this
-/// path to the old one, flag and all.
+/// path to the old one, flag and all, and to [`emit_unrecorded_row`], its
+/// forced-paint twin.
 ///
 /// With `emit`, the row is also written to the sink as it is recorded — the
 /// whole-row paint, fused into the same walk so an unknown row costs one pass
@@ -2828,6 +2851,9 @@ mod tests {
         invisible: bool,
         strikethrough: bool,
         overline: bool,
+        /// Emitted from `style.underline_color` directly (it has no resolved
+        /// accessor), so a pen that drops or mangles it shows here.
+        underline_color: StyleColor,
     }
 
     impl VisAttrs {
@@ -2842,6 +2868,7 @@ mod tests {
                 invisible: style.invisible,
                 strikethrough: style.strikethrough,
                 overline: style.overline,
+                underline_color: style.underline_color,
             }
         }
     }
@@ -4631,7 +4658,7 @@ mod tests {
         "\u{1f980}",
         "\u{e9}",
     ];
-    const PENS: [&str; 9] = [
+    const PENS: [&str; 10] = [
         "\x1b[0m",
         "\x1b[1m",
         "\x1b[31m",
@@ -4641,6 +4668,7 @@ mod tests {
         "\x1b[4m",
         "\x1b[3;9m",
         "\x1b[0;2;38;2;200;100;0m",
+        "\x1b[4;58;5;196m",
     ];
 
     /// One random edit of the kind real programs make: positioned styled
@@ -4813,6 +4841,14 @@ mod tests {
                     self.scribble_both(guess.as_bytes(), Some((row, row + 1)));
                     let touch = format!("\x1b[{};{cols}H{}", row + 1, rng.pick(&GLYPHS[..5]));
                     self.write_all(&touch);
+                    false
+                }
+                3 | 4 => {
+                    // Another writer leaves a non-default pen behind (bold,
+                    // underline, red bg) and touches no cell, so nothing is
+                    // forgotten. The next pane paint's first span must still
+                    // set its own pen rather than inherit this one.
+                    self.scribble_both(b"\x1b[1;4;41m", None);
                     false
                 }
                 _ => false,
