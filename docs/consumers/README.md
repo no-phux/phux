@@ -32,7 +32,7 @@ server and one terminal model.
 Every interface here is a peer of the others; the TUI has no protocol-level
 standing ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)).
 
-phux is pre-alpha. [`../CONCEPTS.md`](../CONCEPTS.md) owns the Status table.
+Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 
 ## Files
 

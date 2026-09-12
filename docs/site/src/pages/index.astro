@@ -151,9 +151,8 @@ open -a "Phux Cockpit"</code></pre>
     <p class="lede">
       The CLI and MCP adapter let an agent read, act, and wait against the same
       terminals a person sees. Rich clients can carry the engine and project
-      structure locally, as <span class="mark">phux-web</span> does. The control
-      loop works today; the APIs are pre-1.0. <a href="/consumers/agents">Use
-      the agent guide</a>.
+      structure locally, as <span class="mark">phux-web</span> does.
+      <a href="/consumers/agents">Use the agent guide</a>.
     </p>
   </section>
 
@@ -161,11 +160,11 @@ open -a "Phux Cockpit"</code></pre>
   <section class="wrap section">
     <h2>Status</h2>
     <p class="lede">
-      phux is pre-alpha. The TUI, Cockpit, headless CLI, MCP adapter, and
-      hub-and-spoke federation are real. Agent sessions exist in this tree;
-      older brew/curl releases may not advertise them — check
-      <code>phux status --json</code>. There is no published crates.io SDK.
-      Gaps live in <a href="/concepts">concepts</a>.
+      The TUI, Cockpit, headless CLI, MCP adapter, and hub-and-spoke
+      federation are here. Agent sessions exist in this tree; older brew/curl
+      releases may not advertise them — check
+      <code>phux status --json</code>. No crates.io SDK.
+      Gaps: <a href="/concepts">concepts</a>.
     </p>
     <ul class="status-tiers">
       <li>
@@ -177,8 +176,8 @@ open -a "Phux Cockpit"</code></pre>
         Cockpit, WSS/QUIC attach, and <code>host/@N</code> satellite routing.
       </li>
       <li>
-        <b>not a product yet</b> — a typed public SDK crate, and a
-        durable on-disk journal.
+        <b>not yet</b> — a typed public SDK crate, and a durable on-disk
+        journal.
       </li>
       <li>
         <b>experimental</b> — predictive local echo is implemented and opt-in,

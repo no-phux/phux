@@ -20,14 +20,13 @@ tmux. Find your row below.
 | A human who wants a native macOS client on those same terminals | **Yes** | Cockpit ships, independently versioned. Install is in [`INSTALL.md`](./INSTALL.md#cockpit-native-macos). |
 | An agent author who wants structured, scriptable terminal control | **Yes** | `ls`/`snapshot`/`send-keys`/`run`/`wait`/`watch`/`ask`/`agent` with `--json`, plus `phux-mcp`. The CLI + JSON schema is the contract. |
 | A team composing terminal-native coding agents | **Yes** | Public Codex/Claude integration fixtures, plugin workspace profiles, and MCP tools give you a phux-shaped agent bench without an in-process plugin host. |
-| A tmux user who wants a modern, protocol-honest multiplexer | **Yes, with eyes open** | Attach/detach, splits, status bar, keybindings, visible help hints, and copy/navigation affordances work. Expect pre-1.0 edges. |
+| A tmux user who wants a modern, protocol-honest multiplexer | **Yes** | Attach/detach, splits, status bar, keybindings, visible help hints, and copy/navigation affordances work. |
 | Someone on one SSH session who just wants splits and persistence | **Probably not yet** | tmux already does this well and phux adds no wire advantage for a single local user. Revisit when you want remoting or agents. |
 | A fleet operator who wants to drive terminals across machines | **Yes, with a hub-and-spoke limit** | A configured hub aggregates and routes satellite Terminals addressed as `host/@N`; it does not merge remote session/window models or chain satellite routes. |
 | Someone who wants their agent's own event log held next to its terminal, readable by the same tools | **Yes, in this tree** | `phux agent session open` / `close`, `phux agent emit`, `phux agent log`. `%name` resolves an AgentSession. Older brew/curl releases may not advertise it; `phux status --json` is the check. |
 
-## The honest gaps
+## Gaps
 
-phux is pre-alpha. Known gaps versus the target are the
 [Status table in CONCEPTS](./CONCEPTS.md#status).
 
 ## Go deeper

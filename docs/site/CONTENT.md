@@ -81,9 +81,9 @@ This is why the project deserves to exist.
   protocol symbols, versions, and terminal output. General interface and prose
   use proportional type so technical signals retain their emphasis.
 - Precise, technical, dry. No hype, no superlatives, no "revolutionary."
-- **Honest about maturity.** It's pre-alpha, spec-first. Say so. This audience
-  respects "here's the bet, here's what works today, here's where it's going."
-- Confident about the architecture, modest about the timeline.
+- **What's here, what isn't.** State the facts. Don't lead with a disclaimer
+  and don't decorate every page with "pre-alpha."
+- Confident about the architecture. Gaps live in concepts.
 
 ## What we DON'T say
 
@@ -124,12 +124,10 @@ hero; the narrative sections run top to bottom below it.
    never re-parses because the same libghostty engine runs on both ends. No
    comparison table. Links to `/wire` and `/concepts`.
 4. **Built for agents** — CLI + MCP read/act/wait against the same terminals
-   a person sees. Control loop works today; APIs are pre-1.0. Links to
-   `/consumers/agents`.
-5. **Status** — pre-alpha, stated once. Try the TUI. CLI, MCP, Cockpit, and
-   hub-and-spoke federation are real. AgentSession is in this tree; older
-   releases: `phux status --json`. Not a product yet: public SDK crate, on-disk
-   journal. Predictive echo is experimental. License + GitHub.
+   a person sees. Links to `/consumers/agents`.
+5. **Status** — TUI, CLI, MCP, Cockpit, hub-and-spoke. AgentSession is in
+   this tree; older releases: `phux status --json`. Not yet: public SDK crate,
+   on-disk journal. Predictive echo is experimental. License + GitHub.
 6. **Get going** — router cards: quickstart / docs / the wire / consumers /
    github. Consumers include Cockpit.
 
@@ -140,7 +138,7 @@ fully explained.
 
 ### `/quickstart` — run it today
 Synced from `docs/QUICKSTART.md` (+ `INSTALL.md`, `operations.md`).
-Build-from-source, the prefix keys, attach/detach. Honest pre-alpha caveats.
+Build-from-source, the prefix keys, attach/detach.
 
 ### `/wire` — the protocol (the crown jewel for builders)
 Synced from `docs/spec/`. L1 terminals (bytes + input), L3 metadata and links.
