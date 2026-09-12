@@ -16,6 +16,28 @@ const std = @import("std");
 const result_wire = cockpit.command_results;
 test {
     _ = @import("tests/shipping_pointer_tests.zig");
+    _ = cockpit.machines;
+}
+test "keybindings SDK registration and fallback dispatch share applied chord" {
+    try @import("keybindings_sdk_tests.zig").check(native_sdk, cockpit.keybindings_runtime);
+}
+test "keybindings SDK registrations retain state-owned strings through rollback" {
+    try @import("keybindings_sdk_tests.zig").checkStorage(native_sdk, cockpit.keybindings_runtime);
+}
+test "keybindings SDK ignores events from superseded registration generations" {
+    try @import("keybindings_sdk_tests.zig").checkStale(native_sdk, cockpit.keybindings_runtime);
+}
+test "keybindings SDK never interprets text input as a shortcut" {
+    try @import("keybindings_sdk_tests.zig").checkTextPhase(native_sdk, cockpit.keybindings_runtime);
+}
+test "shipping SDK journals remaps and overlay shortcut admission" {
+    try @import("keybindings_replay_tests.zig").check(native_sdk, cockpit.keybindings_runtime, cockpit.keybindings_runtime.replay);
+}
+test "shipping SDK journals fallback input phases" {
+    try @import("keybindings_replay_tests.zig").checkFallback(native_sdk, cockpit.keybindings_runtime, cockpit.keybindings_runtime.replay);
+}
+test "shipping SDK refuses divergent shortcut replay" {
+    try @import("keybindings_replay_tests.zig").checkDivergence(native_sdk, cockpit.keybindings_runtime, cockpit.keybindings_runtime.replay);
 }
 const native_sdk = @import("native_sdk");
 const core = @import("core");
@@ -27,6 +49,7 @@ const Adapter = native_sdk.TsUiApp(core);
 const Effects = Adapter.Effects;
 const canvas = native_sdk.canvas;
 const canvas_label = "phux-cockpit-canvas";
+const admission_channel_key = std.hash.Wyhash.hash(0, "cockpit.keybinding-admission.v1");
 
 /// The effects the engine drives, with this graph's own result constructors
 /// filled in: the engine names a clipboard verb and a key, and the answer
@@ -57,6 +80,9 @@ const EngineFx = struct {
     }
     pub fn cancel(self: EngineFx, key: u64) void {
         self.effects.cancel(key);
+    }
+    pub fn cancelTimer(self: EngineFx, key: u64) void {
+        self.effects.cancelTimer(key);
     }
     pub fn closeWindow(self: EngineFx, label: []const u8) void {
         self.effects.closeWindow(label);
@@ -146,7 +172,49 @@ fn channelBindingType() type {
     return @typeInfo(function).@"fn".params[1].type.?;
 }
 
+/// One serialized workflow's response. Borrowed bytes remain owned by Bridge
+/// until the SDK copies the completion; cancellation never erases a later key.
+fn WorkflowReply(comptime capacity: usize) type {
+    return struct {
+        key: u64 = 0,
+        pending: bool = false,
+        ok: bool = false,
+        len: usize = 0,
+        buffer: [capacity]u8 = undefined,
+
+        fn begin(self: *@This(), key: u64) void {
+            self.key = key;
+            self.pending = true;
+            self.ok = false;
+            self.len = 0;
+        }
+
+        fn fail(self: *@This(), message: []const u8) void {
+            self.ok = false;
+            self.len = @min(self.buffer.len, message.len);
+            @memcpy(self.buffer[0..self.len], message[0..self.len]);
+        }
+
+        fn finish(self: *@This(), bytes: []const u8) void {
+            self.ok = true;
+            self.len = bytes.len;
+        }
+
+        fn cancel(self: *@This(), key: u64) void {
+            if (self.key == key) self.pending = false;
+        }
+
+        fn take(self: *@This()) ?native_sdk.HostCallCompletion {
+            if (!self.pending) return null;
+            self.pending = false;
+            return .{ .key = self.key, .ok = self.ok, .bytes = self.buffer[0..self.len] };
+        }
+    };
+}
+
 const Bridge = struct {
+    const Keybindings = cockpit.keybindings_runtime.State(native_sdk.platform);
+    const Admission = cockpit.keybindings_runtime.replay.Journal(native_sdk);
     const InteractionMode = enum { terminal, palette, settings };
     /// Mirrors committed core modality, never the most recently painted view.
     /// The core's modal is app-wide even when presented in a secondary window.
@@ -157,6 +225,31 @@ const Bridge = struct {
     /// then there is nothing to spawn shells through, and `spawnShells` is
     /// idempotent so the first frame catches up.
     effects: ?*Effects = null,
+    runtime: ?*native_sdk.Runtime = null,
+    keybindings: ?Keybindings = null,
+    admission: Admission = .{},
+    fallback_origin: ?Admission.Origin = null,
+    command_admission: bool = true,
+    accepted_bindings: cockpit.keybindings_runtime.bindings.Overrides = .{},
+    rejected_bindings: ?cockpit.keybindings_runtime.bindings.Overrides = null,
+    rejected_bindings_notice: []const u8 = "",
+    keybindings_notice: []const u8 = "",
+    keybindings_pending: bool = false,
+    keybindings_key: u64 = 0,
+    keybindings_len: usize = 0,
+    keybindings_buffer: [cockpit.keybindings_runtime.max_response_bytes]u8 = undefined,
+    window_pending: bool = false,
+    window_key: u64 = 0,
+    window_buffer: [cockpit.engine.tab_commands.receipt_len]u8 = undefined,
+    machines: cockpit.machines.State = .{},
+    machine_reply: WorkflowReply(cockpit.machines.max_bytes) = .{},
+    machine_browse: cockpit.machine_browse.Capture = .{},
+    machine_action_token: ?[cockpit.machine_browse.token_len]u8 = null,
+    local_tools: cockpit.local_tools.State = .{},
+    local_tool_launch: cockpit.local_tool_launch.Adapter = .{},
+    local_tool_reply: WorkflowReply(cockpit.local_tools.max_bytes) = .{},
+    new_session: cockpit.new_session.Controller = .{},
+    new_session_reply: WorkflowReply(cockpit.new_session.max_bytes) = .{},
     /// Tests that want no child processes clear this before starting.
     shells: bool = true,
     /// The one snapshot completion in flight. A newer request overwrites an
@@ -170,7 +263,7 @@ const Bridge = struct {
     navigation_key: u64 = 0,
     navigation_ok: bool = false,
     navigation_len: usize = 0,
-    navigation_buffer: [cockpit.engine.navigation.max_bytes]u8 = undefined,
+    navigation_buffer: [@max(cockpit.engine.navigation.max_bytes, cockpit.window_navigation.max_bytes)]u8 = undefined,
     /// The core serializes commands until this exact receipt is consumed.
     /// Snapshot/navigation requests have their own independently polled slots.
     command_pending: bool = false,
@@ -327,6 +420,14 @@ const Bridge = struct {
     /// Dialog requests have independent replies and never consume a terminal
     /// command receipt. Keep their dispatch separate from state synchronization.
     fn requestWorkflow(self: *Bridge, name: []const u8, key: u64, payload: []const u8) bool {
+        if (std.mem.eql(u8, name, cockpit.window_navigation.request_name)) {
+            self.requestWindow(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, "cockpit.keybindings")) {
+            self.requestKeybindings(key, payload);
+            return true;
+        }
         if (std.mem.eql(u8, name, cockpit.engine.appearance.request_name)) {
             self.requestAppearance(key, payload);
             return true;
@@ -346,6 +447,107 @@ const Bridge = struct {
         return false;
     }
 
+    fn requestWindow(self: *Bridge, key: u64, payload: []const u8) void {
+        self.window_pending = true;
+        self.window_key = key;
+        const decoded = cockpit.window_navigation.decodeCommand(payload);
+        var receipt: cockpit.engine.tab_commands.Receipt = .{ .reason = .invalid_command };
+        if (decoded) |command| {
+            receipt.id = command.id;
+            receipt.reason = self.activateWindow(command.target);
+        }
+        if (self.engine) |engine| {
+            receipt.sequence = engine.sequence;
+            receipt.revision = engine.revision;
+            if (receipt.reason == .none) self.announce(engine);
+        }
+        self.window_buffer = receipt.encode();
+    }
+
+    fn activateWindow(self: *Bridge, target: cockpit.window_navigation.Target) cockpit.engine.tab_commands.Reason {
+        const engine = self.engine orelse return .unavailable;
+        const destination = target.resolve(engine.model) orelse return .stale_target;
+        const workspace = engine.model.wsAtConst(destination.window) orelse return .stale_target;
+        self.raiseNativeWindow(destination.window, workspace.window_id) catch return .unavailable;
+        // Native activation may synchronously deliver events. Revalidate the
+        // same identity rather than reuse an index observed before activation.
+        const selected = target.resolve(engine.model) orelse return .stale_target;
+        const intent = protocol.encodeIntent(.{
+            .kind = if (selected.tab != null) .select_tab else .focus_window,
+            .expected_revision = engine.revision,
+            .window = selected.window,
+            .argument = selected.tab orelse 0,
+        });
+        const applied = if (engineFx()) |fx| engine.applyIntent(&intent, fx) else engine.applyIntent(&intent, &cockpit.NoShells{});
+        return if (applied) .none else .stale_target;
+    }
+
+    fn raiseNativeWindow(self: *Bridge, window: usize, captured_id: u64) !void {
+        const runtime = self.runtime orelse return error.RuntimeUnavailable;
+        const id = if (captured_id != 0) captured_id else try nativeWindowId(runtime, window);
+        try runtime.showWindow(id);
+        try runtime.focusWindow(id);
+    }
+
+    fn nativeWindowId(runtime: *native_sdk.Runtime, window: usize) !u64 {
+        // Empty views can precede their first terminal paint, which normally
+        // records the platform ID. Resolve only the epoch-validated live slot.
+        var windows: [native_sdk.platform.max_windows]native_sdk.platform.WindowInfo = undefined;
+        const label = cockpit.scene.windowLabelFor(window);
+        for (runtime.listWindows(&windows)) |info| {
+            if (info.open and std.mem.eql(u8, info.label, label)) return info.id;
+        }
+        return error.WindowUnavailable;
+    }
+
+    fn keybindingsEnabled(self: *Bridge) bool {
+        if (self.interaction_mode != .terminal) return false;
+        const engine = self.engine orelse return false;
+        return !engine.textInputOwnsKeyboard();
+    }
+
+    fn syncKeybindings(self: *Bridge) !void {
+        const runtime = self.runtime orelse return;
+        const keys = if (self.keybindings) |*value| value else return;
+        try keys.sync(runtime.options.platform.services, &self.accepted_bindings, self.keybindingsEnabled());
+    }
+
+    fn requestKeybindings(self: *Bridge, key: u64, payload: []const u8) void {
+        self.keybindings_pending = true;
+        self.keybindings_key = key;
+        self.keybindings_len = 0;
+        const engine = self.engine orelse return;
+        const keys = if (self.keybindings) |*value| value else return;
+        self.editKeybindings(payload) catch |err| {
+            self.keybindings_notice = cockpit.keybindings_runtime.errorNotice(err);
+        };
+        const reply = keys.response(&engine.model.config.keybindings, self.bindingNotice(), &self.keybindings_buffer) catch return;
+        self.keybindings_len = reply.len;
+    }
+
+    fn bindingNotice(self: *const Bridge) []const u8 {
+        if (self.keybindings_notice.len != 0) return self.keybindings_notice;
+        const rejected = self.rejected_bindings orelse return "";
+        const engine = self.engine orelse return "";
+        if (std.meta.eql(rejected, engine.model.config.keybindings)) return self.rejected_bindings_notice;
+        return "";
+    }
+
+    fn editKeybindings(self: *Bridge, payload: []const u8) !void {
+        const decoded = try cockpit.keybindings_runtime.Request.decode(payload);
+        if (decoded.action == 0) return;
+        const engine = self.engine orelse return error.EngineUnavailable;
+        const runtime = self.runtime orelse return error.RuntimeUnavailable;
+        if (self.appearance.initial == null) return error.SettingsPreviewRequired;
+        const keys = if (self.keybindings) |*value| value else return error.RuntimeUnavailable;
+        var candidate = engine.model.config.keybindings;
+        try keys.registry.edit(&candidate, decoded.action, decoded.index, decoded.value);
+        try keys.sync(runtime.options.platform.services, &candidate, self.keybindingsEnabled());
+        self.accepted_bindings = candidate;
+        engine.model.config.keybindings = candidate;
+        self.keybindings_notice = "";
+    }
+
     fn requestNavigation(self: *Bridge, key: u64, payload: []const u8) void {
         self.navigation_pending = true;
         self.navigation_key = key;
@@ -354,12 +556,23 @@ const Bridge = struct {
             self.navigation_len = copyInto(&self.navigation_buffer, "engine unavailable");
             return;
         };
-        const bytes = engine.navigationSnapshot(payload, &self.navigation_buffer) catch |err| {
+        const snapshot = if (isWindowNavigation(payload))
+            cockpit.window_labels.encode(engine.model, engine.revision, payload, &self.navigation_buffer)
+        else
+            engine.navigationSnapshot(payload, &self.navigation_buffer);
+        const bytes = snapshot catch |err| {
             self.navigation_len = copyInto(&self.navigation_buffer, @errorName(err));
             return;
         };
         self.navigation_ok = true;
         self.navigation_len = bytes.len;
+    }
+
+    fn isWindowNavigation(payload: []const u8) bool {
+        if (payload.len < 15) return false;
+        // Only choose the decoder here; it validates lengths, UTF-8 and the
+        // revision fence before reading or returning any catalog records.
+        return payload[0] == 1 and payload[1] == 4 and payload[payload.len - 2] == 4;
     }
 
     fn requestRemote(self: *Bridge, key: u64, payload: []const u8) void {
@@ -515,12 +728,44 @@ const Bridge = struct {
         // Probe inside Begin. A separate revision-fenced host command races
         // the request's revision increment in the effects batch.
         if (std.mem.eql(u8, payload, &.{ 1, 0, 0 })) _ = engine.probeConfig();
-        self.appearance.apply(engine.model, payload);
+        const installer = self.appearanceInstaller(payload);
+        self.appearance.applyWithBindings(engine.model, payload, installer) catch |err| {
+            self.keybindings_notice = cockpit.keybindings_runtime.errorNotice(err);
+        };
         self.appearance_len = self.appearance.encode(engine.model, &self.appearance_buffer).len;
         engine.sequence +%= 1;
         engine.revision +%= 1;
         self.announce(engine);
     }
+
+    fn appearanceInstaller(self: *Bridge, payload: []const u8) BindingInstaller {
+        if (payload.len != 3 or payload[0] != 1) return .{ .owner = self, .enabled = self.keybindingsEnabled() };
+        const ending = payload[1] == 6 or payload[1] == 7;
+        return .{ .owner = self, .enabled = ending or self.keybindingsEnabled(), .allow_rejected = payload[1] == 0 or payload[1] == 6 };
+    }
+
+    const BindingInstaller = struct {
+        owner: *Bridge,
+        enabled: bool,
+        allow_rejected: bool = false,
+
+        pub fn sync(self: BindingInstaller, overrides: *const cockpit.keybindings_runtime.bindings.Overrides) !void {
+            const runtime = self.owner.runtime orelse return;
+            const keys = if (self.owner.keybindings) |*value| value else return;
+            const effective = self.recoveryBindings(overrides);
+            try keys.sync(runtime.options.platform.services, effective, self.enabled);
+            self.owner.accepted_bindings = effective.*;
+        }
+
+        fn recoveryBindings(self: BindingInstaller, overrides: *const cockpit.keybindings_runtime.bindings.Overrides) *const cockpit.keybindings_runtime.bindings.Overrides {
+            if (!self.allow_rejected) return overrides;
+            const rejected = self.owner.rejected_bindings orelse return overrides;
+            // Only Begin/Cancel may restore the exact rejected startup state.
+            // Save and Reload must always prove the candidate is installable.
+            if (std.meta.eql(rejected, overrides.*)) return &.{};
+            return overrides;
+        }
+    };
 
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *Bridge = @ptrCast(@alignCast(context));
@@ -532,6 +777,11 @@ const Bridge = struct {
         cancelReply(&self.remote_pending, self.remote_key, key);
         cancelReply(&self.directory_pending, self.directory_key, key);
         cancelReply(&self.session_pending, self.session_key, key);
+        cancelReply(&self.keybindings_pending, self.keybindings_key, key);
+        cancelReply(&self.window_pending, self.window_key, key);
+        self.machine_reply.cancel(key);
+        self.local_tool_reply.cancel(key);
+        self.new_session_reply.cancel(key);
     }
 
     fn cancelReply(pending: *bool, reply_key: u64, canceled_key: u64) void {
@@ -540,6 +790,14 @@ const Bridge = struct {
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *Bridge = @ptrCast(@alignCast(context));
+        if (self.window_pending) {
+            self.window_pending = false;
+            return .{ .key = self.window_key, .ok = true, .bytes = &self.window_buffer };
+        }
+        if (self.keybindings_pending) {
+            self.keybindings_pending = false;
+            return .{ .key = self.keybindings_key, .ok = self.keybindings_len != 0, .bytes = self.keybindings_buffer[0..self.keybindings_len] };
+        }
         if (self.appearance_pending) {
             self.appearance_pending = false;
             return .{ .key = self.appearance_key, .ok = self.appearance_len != 0, .bytes = self.appearance_buffer[0..self.appearance_len] };
@@ -581,14 +839,47 @@ const Bridge = struct {
 
     /// After every other slot, so Rename Session is additive to the seam.
     fn pollSession(self: *Bridge) ?native_sdk.HostCallCompletion {
-        if (!self.session_pending) return null;
+        if (!self.session_pending) return self.pollCreationWorkflows();
         self.session_pending = false;
         return .{ .key = self.session_key, .ok = self.session_ok, .bytes = self.session_buffer[0..self.session_len] };
     }
 
+    fn pollCreationWorkflows(self: *Bridge) ?native_sdk.HostCallCompletion {
+        if (self.machine_reply.take()) |reply| return reply;
+        if (self.local_tool_reply.take()) |reply| return reply;
+        return self.new_session_reply.take();
+    }
+
     fn hasPending(context: *anyopaque) bool {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.appearance_pending or self.remote_pending or self.directory_pending or self.session_pending;
+        return self.pending or self.navigation_pending or self.command_pending or self.result_pending or self.hasWorkflowPending();
+    }
+
+    fn hasWorkflowPending(self: *const Bridge) bool {
+        return self.appearance_pending or self.remote_pending or self.directory_pending or self.session_pending or self.keybindings_pending or self.window_pending or self.hasCreationPending();
+    }
+
+    fn hasCreationPending(self: *const Bridge) bool {
+        return self.machine_reply.pending or self.local_tool_reply.pending or self.new_session_reply.pending;
+    }
+
+    fn deinitRequests(self: *Bridge) void {
+        self.local_tools.deinit();
+        self.local_tool_launch.deinit();
+        self.machine_browse.deinit();
+        self.new_session.deinit(std.heap.page_allocator);
+        self.machines.deinit();
+    }
+
+    fn retireWorkflows(self: *Bridge) void {
+        const engine = self.engine orelse return;
+        const Retirement = struct {
+            engine: *Engine,
+            pub fn releaseNewSession(owner: @This(), destination: cockpit.new_session.Destination, request_id: u32) void {
+                cockpit.new_session_runtime.release(owner.engine, destination, request_id);
+            }
+        };
+        self.new_session.retire(Retirement{ .engine = engine });
     }
 
     fn bindChannels(context: *anyopaque, channels: HostChannelBinding) void {
@@ -804,12 +1095,14 @@ fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
 /// A failed peer's backoff elapsed (Engine.onPeerRetryTimer). A rejected
 /// timer arms nothing; the peer's row still retries it when picked.
 fn peerRetryTimer(event: native_sdk.EffectTimer) core.Msg {
-    if (event.outcome != .fired) return .engine_wake;
-    if (bridge.engine) |engine| {
-        if (engineFx()) |fx| {
-            if (engine.onPeerRetryTimer(fx, event.key)) bridge.announce(engine);
-        }
+    const engine = bridge.engine orelse return .engine_wake;
+    if (event.outcome == .rejected) {
+        if (engine.onPeerRetryRejected(event.key)) bridge.announce(engine);
+        return .engine_wake;
     }
+    if (event.outcome != .fired) return .engine_wake;
+    const fx = engineFx() orelse return .engine_wake;
+    if (engine.onPeerRetryTimer(fx, event.key)) bridge.announce(engine);
     return .engine_wake;
 }
 
@@ -853,6 +1146,7 @@ fn registerReplayChannels(event: native_sdk.LifecycleEvent) void {
     if (engine.model.phux() == null) return;
     const fx = engineFx() orelse return;
     _ = fx.openChannel(.{ .key = cockpit.phux_channel_key, .on_event = phuxChannel, .max_pending = 1 });
+    engine.openPeerWakeForReplay(fx, peerChannel);
 }
 
 /// Keys no markup widget claimed. The palette and settings surfaces are the
@@ -879,22 +1173,13 @@ fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 /// core messages as menus/real shortcuts so the driven and physical paths are
 /// indistinguishable after this boundary.
 fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
-    if (event.phase == .key_up or !event.modifiers.super) return null;
-    const key = event.key;
-    const shift = event.modifiers.shift;
-    const control = event.modifiers.control;
-    const alt = event.modifiers.alt;
-    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "t")) return core.commandMsg("terminal.new");
-    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "n")) return core.commandMsg("window.new");
-    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "w")) return core.commandMsg("terminal.close");
-    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "d")) return core.commandMsg("pane.split-right");
-    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "d")) return core.commandMsg("pane.split-down");
-    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("terminal.find");
-    if (!control and !alt and !shift and std.mem.eql(u8, key, ",")) return core.commandMsg("settings.open");
-    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "p")) return core.commandMsg("tabs.palette");
-    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "j")) return core.commandMsg("directory.open");
-    if (control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("window.fullscreen");
-    return null;
+    const keys = if (bridge.keybindings) |*value| value else return null;
+    const origin = bridge.fallback_origin orelse return null;
+    const command = (bridge.admission.fallbackWithPermission(keys, event, origin, bridge.command_admission) catch |err| {
+        bridge.keybindings_notice = @errorName(err);
+        return null;
+    }) orelse return null;
+    return core.commandMsg(command);
 }
 
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
@@ -1133,12 +1418,14 @@ fn paintChromeWindow(model: *const core.Model, builder: *canvas.Builder, context
 fn installEngine(options: *Adapter.CoreOptions, gpa: std.mem.Allocator, io: std.Io) void {
     bridge = .{};
     bridge.engine = Engine.create(gpa, io) catch null;
+    if (bridge.engine) |engine| engine.external_keybindings = true;
     options.host_calls = bridge.binding();
 }
 
 pub fn configureCoreOptions(options: *Adapter.CoreOptions, init: std.process.Init) void {
     bridge = .{};
     bridge.engine = Engine.createConfigured(std.heap.page_allocator, init) catch null;
+    if (bridge.engine) |engine| engine.external_keybindings = true;
     options.host_calls = bridge.binding();
 }
 
@@ -1210,23 +1497,43 @@ const PointerHost = struct {
     fn start(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try self.inner.start(runtime);
+        bridge.runtime = runtime;
+        bridge.keybindings = try Bridge.Keybindings.init(runtime.options.shortcuts, runtime.options.menus);
+        bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
+        try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
+        startKeybindings(runtime);
+        syncSystemAppearance(runtime.appearance);
         if (comptime cockpit.phux_enabled) try runtime.startTimer(workspace_timer_id, std.time.ns_per_s, true);
     }
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
-        defer _ = bridge.replayInteraction();
+        const previous_origin = bridge.fallback_origin;
+        const previous_admission = bridge.command_admission;
+        defer bridge.fallback_origin = previous_origin;
+        defer bridge.command_admission = previous_admission;
+        bridge.fallback_origin = inputOrigin(value);
+        bridge.command_admission = true;
+        defer syncCommittedKeybindings();
         defer self.syncSelectionAutoscrollTimer(runtime) catch {};
         const engine = bridge.engine;
         const before = if (engine) |current| current.beginPublication() else null;
-        if (value == .timer and value.timer.id == workspace_timer_id and !bridge.replayInteraction()) {
-            if (engine) |current| current.refreshWorkspace();
-        }
-        routeNativeInput(value);
-        try self.inner.event(runtime, value);
-        if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
-        if (engine) |current| {
+        defer if (engine) |current| {
             if (current.finishPublication(before.?)) bridge.announce(current);
-        }
+        };
+        prepareInputAdmission(value);
+        const admitted = (try canonicalShortcut(value)) orelse return;
+        refreshNativeState(value);
+        routeNativeInput(admitted);
+        try self.inner.event(runtime, admitted);
+        if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+    }
+
+    fn refreshNativeState(value: native_sdk.Event) void {
+        if (bridge.replayInteraction()) return;
+        if (value == .appearance_changed) syncSystemAppearance(value.appearance_changed);
+        if (value != .timer) return;
+        if (value.timer.id != workspace_timer_id) return;
+        if (bridge.engine) |engine| engine.refreshWorkspace();
     }
     fn stop(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
@@ -1235,7 +1542,11 @@ const PointerHost = struct {
             runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
             self.selection_autoscroll_timer_active = false;
         }
+        bridge.retireWorkflows();
         try self.inner.stop(runtime);
+        bridge.deinitRequests();
+        if (!bridge.admission.replaying) bridge.admission.deinit();
+        bridge.runtime = null;
     }
 
     fn focusTerminalAfterTabClick(self: *PointerHost, runtime: *native_sdk.Runtime, routed: native_sdk.runtime.CanvasWidgetPointerEvent) !void {
@@ -1256,6 +1567,18 @@ const PointerHost = struct {
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        switch (control) {
+            .arm => {
+                bridge.admission.deinit();
+                try bridge.admission.armReplay();
+                if (bridge.runtime) |runtime| try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
+            },
+            .feed => |record| if (try bridge.admission.feed(record)) return,
+            .finish => {
+                defer bridge.admission.deinit();
+                try bridge.admission.finishReplay();
+            },
+        }
         try self.inner.replayControl(control);
         _ = bridge.replayInteraction();
     }
@@ -1273,40 +1596,157 @@ const PointerHost = struct {
     }
 };
 
+fn canonicalShortcut(value: native_sdk.Event) !?native_sdk.Event {
+    // Runtime sends a preliminary command before delivering the full shortcut
+    // event. Only that later event carries the chord needed for admission.
+    if (value == .command and value.command.source == .shortcut) return null;
+    if (value != .shortcut) return value;
+    const keys = if (bridge.keybindings) |*state| state else return null;
+    const command = (try bridge.admission.shortcutWithPermission(keys, value.shortcut, bridge.command_admission)) orelse return null;
+    return .{ .command = .{ .name = command, .source = .shortcut, .window_id = value.shortcut.window_id } };
+}
+
+fn prepareInputAdmission(value: native_sdk.Event) void {
+    if (bridge.replayInteraction()) return;
+    if (value == .command and value.command.source == .shortcut) return;
+    const engine = bridge.engine orelse return;
+    if (!adoptInputWindow(engine, value)) return;
+    // Registrations must reflect the destination's text owner before lookup,
+    // including the first driven key after switching native windows.
+    bridge.syncKeybindings() catch |err| {
+        bridge.command_admission = false;
+        bridge.keybindings_notice = cockpit.keybindings_runtime.errorNotice(err);
+    };
+}
+
+fn inputOrigin(value: native_sdk.Event) ?Bridge.Admission.Origin {
+    if (value != .canvas_widget_keyboard) return null;
+    const routed = value.canvas_widget_keyboard;
+    return .{ .window_id = routed.window_id, .view_label = routed.view_label };
+}
+
+fn syncCommittedKeybindings() void {
+    if (bridge.replayInteraction()) return;
+    bridge.syncKeybindings() catch |err| {
+        bridge.keybindings_notice = cockpit.keybindings_runtime.errorNotice(err);
+    };
+}
+
+fn startKeybindings(runtime: *native_sdk.Runtime) void {
+    if (bridge.replayInteraction()) return;
+    const engine = bridge.engine orelse return;
+    const keys = if (bridge.keybindings) |*state| state else return;
+    keys.sync(runtime.options.platform.services, &engine.model.config.keybindings, bridge.keybindingsEnabled()) catch |err| {
+        bridge.keybindings_notice = cockpit.keybindings_runtime.errorNotice(err);
+        // A malformed stored override cannot disable every command on launch.
+        // Keep the file intact and install the manifest defaults for recovery.
+        bridge.rejected_bindings = engine.model.config.keybindings;
+        bridge.rejected_bindings_notice = bridge.keybindings_notice;
+        keys.sync(runtime.options.platform.services, &.{}, bridge.keybindingsEnabled()) catch |fallback_error| {
+            bridge.keybindings_notice = cockpit.keybindings_runtime.errorNotice(fallback_error);
+        };
+        return;
+    };
+    bridge.accepted_bindings = engine.model.config.keybindings;
+}
+
+fn syncSystemAppearance(appearance: native_sdk.runtime.Appearance) void {
+    if (bridge.replayInteraction()) return;
+    const engine = bridge.engine orelse return;
+    const changed = bridge.appearance.setSystemAppearance(engine.model, switch (appearance.color_scheme) {
+        .dark => .dark,
+        .light => .light,
+    });
+    if (!changed) return;
+    engine.sequence +%= 1;
+    bridge.announce(engine);
+}
+
+test "shipping system appearance remembers explicit mode and publishes auto transitions" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const before = engine.sequence;
+    _ = engine.model.config.setTheme("phux-dark");
+    syncSystemAppearance(.{ .color_scheme = .light });
+    try std.testing.expectEqual(before, engine.sequence);
+    try std.testing.expectEqual(.light, bridge.appearance.system_scheme);
+    engine.model.config.follow_system_theme = true;
+    syncSystemAppearance(.{ .color_scheme = .light });
+    try std.testing.expectEqual(before + 1, engine.sequence);
+    try std.testing.expect(engine.model.config.follow_system_theme);
+    try std.testing.expectEqualStrings("phux-light", engine.model.config.theme.slice());
+    syncSystemAppearance(.{ .color_scheme = .light });
+    try std.testing.expectEqual(before + 1, engine.sequence);
+    syncSystemAppearance(.{ .color_scheme = .dark });
+    try std.testing.expectEqual(before + 2, engine.sequence);
+    try std.testing.expectEqualStrings("phux-dark", engine.model.config.theme.slice());
+}
+
 fn routeNativeInput(value: native_sdk.Event) void {
     if (bridge.replayInteraction()) return;
     const engine = bridge.engine orelse return;
     const fx = engineFx() orelse return;
+    if (adoptInputWindow(engine, value)) return;
     switch (value) {
-        .command => |command| engine.adoptFocusedWindow(command.window_id),
-        // A routed key names the window it was typed in: adopt it before the
-        // key fallback resolves the focused pane, as CockpitHost adopts a
-        // routed event's window. The raw echo is left to the pointer kinds.
-        .canvas_widget_keyboard => |routed| {
-            const index = Engine.windowIndexForCanvas(routed.view_label) orelse return;
-            if (engine.model.windowOpen(index)) engine.model.active_window = index;
-        },
-        .gpu_surface_input => |raw| {
-            switch (raw.kind) {
-                .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
-                else => return,
-            }
-            const index = Engine.windowIndexForCanvas(raw.label) orelse return;
-            if (bridge.interaction_mode != .terminal) return;
-            if (!engine.model.windowOpen(index)) return;
-            // A press in any window's grid makes that window the active one
-            // before the pane under it is resolved, as CockpitHost adopts
-            // the routed event's window.
-            engine.model.active_window = index;
-            if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
-            engine.noteTopologyChange(fx, topologyTimer);
-        },
+        .gpu_surface_input => |raw| routePointerInput(engine, fx, raw),
         .files_dropped => |drop| _ = engine.onDrop(fx, drop),
         .timer => |timer| if (timer.id == cockpit.selection_autoscroll_timer_id) {
             engine.selectionAutoscroll(fx);
         },
         else => {},
     }
+}
+
+fn adoptInputWindow(engine: *Engine, value: native_sdk.Event) bool {
+    switch (value) {
+        .command => |command| engine.adoptFocusedWindow(command.window_id),
+        .shortcut => |shortcut| engine.adoptFocusedWindow(shortcut.window_id),
+        // A routed key names the window it was typed in: adopt it before the
+        // key fallback resolves the focused pane, as CockpitHost adopts a
+        // routed event's window. The raw echo is left to the pointer kinds.
+        .canvas_widget_keyboard => |routed| adoptCanvasWindow(engine, routed.view_label),
+        .canvas_widget_pointer => |routed| {
+            if (routed.pointer.phase != .down and routed.pointer.phase != .up) return false;
+            if (!pointerMayAdoptWindow(routed)) return false;
+            adoptCanvasWindow(engine, routed.view_label);
+        },
+        else => return false,
+    }
+    return true;
+}
+
+fn adoptCanvasWindow(engine: *Engine, label: []const u8) void {
+    const index = Engine.windowIndexForCanvas(label) orelse return;
+    if (engine.model.windowOpen(index)) engine.model.active_window = index;
+}
+
+fn pointerMayAdoptWindow(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    if (bridge.interaction_mode == .terminal) return true;
+    const target = routed.press_target orelse return false;
+    // A modal blocks the grids in every window. An explicit chrome control
+    // can still initiate a contextual departure; background pane hits cannot.
+    return target.kind == .button;
+}
+
+fn routePointerInput(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
+    switch (raw.kind) {
+        .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
+        else => return,
+    }
+    const index = Engine.windowIndexForCanvas(raw.label) orelse return;
+    if (bridge.interaction_mode != .terminal) return;
+    if (!engine.model.windowOpen(index)) return;
+    // Inactive-window scrolling and hovering use that window's geometry, but
+    // only a press changes the context of the next keyboard/menu command.
+    const active = engine.model.active_window;
+    defer if (raw.kind != .pointer_down and engine.model.active_window == index) {
+        engine.model.active_window = active;
+    };
+    engine.model.active_window = index;
+    if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
+    engine.noteTopologyChange(fx, topologyTimer);
 }
 
 var pointer_host = PointerHost{};
@@ -1496,6 +1936,8 @@ const Rig = struct {
         });
         errdefer harness.destroy(std.testing.allocator);
         harness.null_platform.gpu_surfaces = true;
+        harness.runtime.options.shortcuts = @import("tests/shipping_commands.zig").shortcuts;
+        harness.runtime.options.menus = @import("tests/shipping_commands.zig").menus;
         try harness.start(decorated);
         try harness.runtime.dispatchPlatformEvent(decorated, .{ .gpu_surface_frame = .{
             .label = canvas_label,
@@ -1516,12 +1958,18 @@ const Rig = struct {
             .x = 400,
             .y = 300,
         } });
+        // Direct callback tests supply the same origin as their main canvas.
+        // Production only borrows an origin inside PointerHost.event's scope.
+        bridge.fallback_origin = .{ .window_id = 1, .view_label = canvas_label };
         return .{ .app_state = app_state, .decorated = decorated, .harness = harness };
     }
 
     fn stop(self: *Rig) void {
+        bridge.retireWorkflows();
         self.app_state.destroy();
         self.harness.destroy(std.testing.allocator);
+        bridge.deinitRequests();
+        bridge.admission.deinit();
         if (bridge.engine) |engine| engine.destroy();
         bridge = .{};
     }
@@ -1587,7 +2035,20 @@ const Rig = struct {
         } });
         const now = engine.currentRun();
         const moved = was.first != now.first or was.count != now.count or was.extent != now.extent;
-        try self.settle(if (moved) before + 1 else before, "READY");
+        if (moved) try std.testing.expect(engine.sequence > before);
+        // Settings departures can acknowledge a rollback in the same effects
+        // drain. Verify convergence to current native authority rather than
+        // assume that resizing is the only source of an announcement.
+        try self.settleCurrent();
+    }
+
+    fn settleCurrent(self: *Rig) !void {
+        for (0..8) |_| {
+            const model = self.app_state.model;
+            if (!Bridge.hasPending(&bridge) and model.engineSequence.lo == bridge.engine.?.sequence and std.mem.eql(u8, model.status, "READY")) return;
+            try self.harness.runtime.dispatchPlatformEvent(self.decorated, .wake);
+        }
+        return error.TestEnginePublicationDidNotSettle;
     }
 
     /// Drive the real core and engine into `state`: the tab count through
@@ -2257,7 +2718,8 @@ test "shipping Phux callbacks emit structured key text paste and focus frames" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
-    const ref = try rig.attachFixture();
+    _ = try rig.attachFixture();
+    try rig.settleCurrent();
     const engine = bridge.engine.?;
     const remote = engine.model.phux().?;
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
@@ -2265,10 +2727,12 @@ test "shipping Phux callbacks emit structured key text paste and focus frames" {
     try expectOutgoingTag(remote, 0x10);
     _ = onKey(.{ .phase = .key_down, .key = "enter" });
     try expectOutgoingTag(remote, 0x10);
-    _ = onKey(.{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
-    try std.testing.expect(engine.model.paste_inflight);
-    try std.testing.expect(engine.model.paste_owner.terminal_ref.eql(ref));
-    engine.onClipboardRead(EngineFx{ .effects = &rig.app_state.effects }, true, "hello paste");
+    try rig.harness.runtime.options.platform.services.writeClipboard("hello paste");
+    try rig.dispatch(onKey(.{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } }).?);
+    for (0..8) |_| {
+        if (remote.bridge.outgoing.hasPending()) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
     try expectOutgoingTag(remote, 0x11);
     engine.setFocused(EngineFx{ .effects = &rig.app_state.effects }, false);
     try expectOutgoingTag(remote, 0x14);
@@ -2322,8 +2786,213 @@ test "shipping Phux committed text consumes composition modifiers" {
 }
 
 test "shipping Control F is terminal input rather than a fullscreen shortcut" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    const defaults = [_]native_sdk.platform.Shortcut{.{ .id = "window.fullscreen", .key = "f", .modifiers = .{ .primary = true, .control = true } }};
+    bridge.keybindings = try Bridge.Keybindings.init(&defaults, &.{});
+    bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
+    try bridge.syncKeybindings();
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }) == null);
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
+}
+
+test "shipping binding request previews platform chords and Cancel restores the default" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    const defaults = [_]native_sdk.platform.Shortcut{.{ .id = "terminal.new", .key = "t", .modifiers = .{ .primary = true } }};
+    bridge.keybindings = try Bridge.Keybindings.init(&defaults, &.{});
+    bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
+    try bridge.syncKeybindings();
+    const engine = bridge.engine.?;
+    bridge.appearance.apply(engine.model, &.{ 1, 0, 0 });
+    const old_id = try std.testing.allocator.dupe(u8, rig.harness.null_platform.configuredShortcuts()[0].id);
+    defer std.testing.allocator.free(old_id);
+    Bridge.request(&bridge, "cockpit.keybindings", 301, &.{ 1, 1, 0, 5, 'C', 'm', 'd', '+', 'r' });
+    const preview = Bridge.poll(&bridge).?;
+    try std.testing.expect(preview.ok);
+    try std.testing.expectEqual(@as(u64, 301), preview.key);
+    try std.testing.expect(bridge.appearance.hasPendingChanges(engine.model));
+    try std.testing.expectEqualStrings("r", rig.harness.null_platform.configuredShortcuts()[0].key);
+    try std.testing.expect(bridge.keybindings.?.commandForShortcut(.{ .id = old_id, .key = "t", .modifiers = .{ .primary = true } }) == null);
+    Bridge.request(&bridge, cockpit.engine.appearance.request_name, 302, &.{ 1, 6, 0 });
+    const canceled = Bridge.poll(&bridge).?;
+    try std.testing.expect(canceled.ok);
+    try std.testing.expectEqual(@as(u64, 302), canceled.key);
+    try std.testing.expect(bridge.appearance.initial == null);
+    try std.testing.expectEqualStrings("t", rig.harness.null_platform.configuredShortcuts()[0].key);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.config.keybindings.count);
+}
+
+test "shipping platform shortcut executes once and rejects the superseded registration" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const defaults = [_]native_sdk.platform.Shortcut{.{ .id = "terminal.new", .key = "t", .modifiers = .{ .primary = true } }};
+    bridge.keybindings = try Bridge.Keybindings.init(&defaults, &.{});
+    bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
+    try bridge.syncKeybindings();
+    const installed = rig.harness.null_platform.configuredShortcuts()[0];
+    const old_id = try std.testing.allocator.dupe(u8, installed.id);
+    defer std.testing.allocator.free(old_id);
+    const shortcut: native_sdk.ShortcutEvent = .{ .id = old_id, .key = installed.key, .modifiers = installed.modifiers, .window_id = 1 };
+    const before = bridge.engine.?.model.ws().tab_count;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = shortcut });
+    try rig.settle(@intCast(before), "READY");
+    try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
+    bridge.appearance.apply(bridge.engine.?.model, &.{ 1, 0, 0 });
+    try bridge.editKeybindings(&.{ 1, 1, 0, 5, 'C', 'm', 'd', '+', 'r' });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = shortcut });
+    try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
+}
+
+test "first chord in another window obeys that window's search ownership" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const second = engine.model.openWindow(1) orelse return error.OutOfMemory;
+    second.window_id = 2;
+    engine.model.active_window = 1;
+    const create = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0, .window = 1 });
+    try std.testing.expect(engine.applyIntent(&create, &cockpit.NoShells{}));
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.searchOpen();
+    engine.model.active_window = 0;
+    try bridge.syncKeybindings();
+    const installed = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "t") and !item.modifiers.shift) break item;
+    } else return error.TestExpectedNewTabShortcut;
+    const old_id = try std.testing.allocator.dupe(u8, installed.id);
+    defer std.testing.allocator.free(old_id);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = old_id,
+        .key = "t",
+        .modifiers = installed.modifiers,
+        .window_id = 2,
+    } });
+    try std.testing.expectEqual(@as(usize, 1), second.tab_count);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
+    const key: canvas.WidgetKeyboardEvent = .{ .phase = .key_down, .key = "t", .modifiers = .{ .super = true } };
+    bridge.fallback_origin = .{ .window_id = 2, .view_label = cockpit.scene.canvasLabelFor(1) };
+    prepareInputAdmission(.{ .canvas_widget_keyboard = .{ .window_id = 2, .view_label = cockpit.scene.canvasLabelFor(1), .keyboard = key } });
+    try std.testing.expect(primaryChord(key) == null);
+    bridge.fallback_origin = .{ .window_id = 1, .view_label = canvas_label };
+    prepareInputAdmission(.{ .canvas_widget_keyboard = .{ .window_id = 1, .view_label = canvas_label, .keyboard = key } });
+    try std.testing.expect(primaryChord(key) != null);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+}
+
+test "shortcut repair failure preserves committed text and key releases" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const remote = bridge.engine.?.model.phux().?;
+    bridge.keybindings.?.installed = false;
+    rig.harness.runtime.options.platform.services.configure_shortcuts_fn = struct {
+        fn refuse(_: ?*anyopaque, _: []const native_sdk.platform.Shortcut) !void {
+            return error.ShortcutServiceUnavailable;
+        }
+    }.refuse;
+    const events = [_]canvas.WidgetKeyboardEvent{
+        .{ .phase = .text_input, .key = "z", .text = "z" },
+        .{ .phase = .key_up, .key = "z" },
+    };
+    for (events) |event| {
+        try rig.decorated.event(&rig.harness.runtime, .{ .canvas_widget_keyboard = .{
+            .window_id = 1,
+            .view_label = canvas_label,
+            .keyboard = event,
+        } });
+        try expectOutgoingTag(remote, 0x10);
+    }
+    const before = bridge.engine.?.model.ws().tab_count;
+    try rig.decorated.event(&rig.harness.runtime, .{ .canvas_widget_keyboard = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .keyboard = .{ .phase = .key_down, .key = "t", .modifiers = .{ .super = true } },
+    } });
+    try std.testing.expectEqual(before, bridge.engine.?.model.ws().tab_count);
+    try std.testing.expect(!bridge.keybindings.?.installed);
+    try std.testing.expect(bridge.keybindings_notice.len != 0);
+}
+
+test "chrome presses adopt their window while inactive hovering preserves keyboard context" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const second = engine.model.openWindow(1) orelse return error.OutOfMemory;
+    second.window_id = 2;
+    const label = cockpit.scene.canvasLabelFor(1);
+    for ([_]native_sdk.platform.GpuSurfaceInputKind{ .pointer_move, .scroll }) |kind| {
+        routeNativeInput(.{ .gpu_surface_input = .{ .window_id = 2, .label = label, .kind = kind, .x = 10, .y = 10 } });
+        try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    }
+    // An overlay's chrome never reaches terminal pointer routing. Its own
+    // routed press must establish the native context before a button handler.
+    bridge.interaction_mode = .palette;
+    try rig.decorated.event(&rig.harness.runtime, .{ .canvas_widget_pointer = .{
+        .window_id = 2,
+        .view_label = label,
+        .pointer = .{ .phase = .down, .point = .{ .x = 10, .y = 10 } },
+        .press_target = .{ .id = 123, .kind = .button, .bounds = native_sdk.geometry.RectF.init(0, 0, 32, 32), .depth = 1, .index = 0, .state = .{} },
+    } });
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+}
+
+test "rejected stored bindings suspend safely and can be reset without overwriting configuration" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const original_file = "# preserve this\nkeybind.terminal.new = Cmd+r\nkeybind.window.new = Cmd+r\n";
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config", .data = original_file });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const defaults = [_]native_sdk.platform.Shortcut{
+        .{ .id = "terminal.new", .key = "t", .modifiers = .{ .primary = true } },
+        .{ .id = "window.new", .key = "n", .modifiers = .{ .primary = true } },
+    };
+    bridge.keybindings = try Bridge.Keybindings.init(&defaults, &.{});
+    bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
+    const engine = bridge.engine.?;
+    engine.model.config_file.setPath(path);
+    try engine.model.config.keybindings.set("terminal.new", "Cmd+r");
+    try engine.model.config.keybindings.set("window.new", "Cmd+r");
+    const original = engine.model.config.keybindings;
+    startKeybindings(&rig.harness.runtime);
+    try std.testing.expectEqual(@as(usize, 2), rig.harness.null_platform.configuredShortcuts().len);
+    bridge.interaction_mode = .settings;
+    try bridge.syncKeybindings();
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
+    Bridge.request(&bridge, cockpit.engine.appearance.request_name, 401, &.{ 1, 0, 0 });
+    _ = Bridge.poll(&bridge);
+    try std.testing.expect(bridge.appearance.initial != null);
+    try bridge.editKeybindings(&.{ 1, 3, 0, 0 });
+    try std.testing.expectEqual(@as(usize, 0), engine.model.config.keybindings.count);
+    Bridge.request(&bridge, cockpit.engine.appearance.request_name, 402, &.{ 1, 6, 0 });
+    _ = Bridge.poll(&bridge);
+    try std.testing.expectEqual(.canceled, bridge.appearance.outcome);
+    try std.testing.expect(std.meta.eql(original, engine.model.config.keybindings));
+    try std.testing.expectEqual(@as(usize, 2), rig.harness.null_platform.configuredShortcuts().len);
+    var file = try tmp.dir.openFile(std.testing.io, "config", .{});
+    var bytes: [1024]u8 = undefined;
+    const preserved = try file.readPositionalAll(std.testing.io, &bytes, 0);
+    file.close(std.testing.io);
+    try std.testing.expectEqualStrings(original_file, bytes[0..preserved]);
+    Bridge.request(&bridge, cockpit.engine.appearance.request_name, 403, &.{ 1, 0, 0 });
+    _ = Bridge.poll(&bridge);
+    try bridge.editKeybindings(&.{ 1, 3, 0, 0 });
+    Bridge.request(&bridge, cockpit.engine.appearance.request_name, 404, &.{ 1, 7, 0 });
+    _ = Bridge.poll(&bridge);
+    try std.testing.expectEqual(.saved, bridge.appearance.outcome);
+    file = try tmp.dir.openFile(std.testing.io, "config", .{});
+    const saved = try file.readPositionalAll(std.testing.io, &bytes, 0);
+    file.close(std.testing.io);
+    try std.testing.expectEqualStrings("# preserve this\n", bytes[0..saved]);
 }
 
 test "shipping overlay commit suspends remote focus and input before a frame" {
@@ -2429,7 +3098,9 @@ test "replayed modality routes fallback keys without live terminal effects" {
     // Replay supplies the recorded rollback acknowledgement, not a live disk
     // or provider effect. Until that record arrives Settings owns the keys.
     try std.testing.expectEqual(core.Msg.settings_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
-    try rig.dispatch(.{ .appearance_loaded = &.{ 1, 0, 2, 0, 255, 0, 0, 0, 0, 0 } });
+    var canceled: cockpit.engine.appearance.State = .{ .outcome = .canceled };
+    var reply: [cockpit.engine.appearance.max_bytes]u8 = undefined;
+    try rig.dispatch(.{ .appearance_loaded = canceled.encode(engine.model, &reply) });
     try std.testing.expectEqual(core.Msg.palette_close, onKey(.{ .phase = .key_down, .key = "Escape" }).?);
     _ = onText(.{ .phase = .text_input, .key = "a", .text = "a" });
     routeNativeInput(.{ .files_dropped = .{ .window_id = 1, .view_label = canvas_label, .paths = &.{"/blocked"} } });
@@ -3041,15 +3712,16 @@ const parity_states = [_]ChromeState{
     .{ .label = "scrollable palette beyond one transport page", .palette = true, .tabs = 5 },
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
-    .{ .label = "connection settings", .settings = true, .settings_section = 2 },
+    .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
     .{ .label = "both overlays, full strip", .tabs = 16, .palette = true, .settings = true },
 };
 
 fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, density: canvas.Density, label: []const u8) !usize {
-    const arena_bytes = try std.testing.allocator.alloc(u8, 1 << 20);
-    defer std.testing.allocator.free(arena_bytes);
-    var fixed = std.heap.FixedBufferAllocator.init(arena_bytes);
-    var ui = Adapter.Ui.init(fixed.allocator());
+    // Audit the complete shipping command catalog. The production UiApp uses
+    // an arena; the old 1 MiB fixture exhausted its budget on this larger tree.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
 
     var tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
     tokens.density = density;
@@ -3091,7 +3763,10 @@ test "the markup chrome passes the layout audit at every declared size, density 
     for (parity_states) |state| {
         try rig.reach(state);
         for (parity_sizes) |size| {
-            try rig.resize(size);
+            rig.resize(size) catch |err| {
+                std.debug.print("chrome resize failed: {s}, {d}x{d}: {s}\n", .{ state.label, size.width, size.height, @errorName(err) });
+                return err;
+            };
             for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
                 total += try auditChromeAt(&rig.app_state.model, size, density, state.label);
             }
@@ -4248,6 +4923,65 @@ test "navigation bridge preserves independently pending catalog and snapshot com
     Bridge.cancel(&service, 44);
     try std.testing.expectEqual(@as(u64, 33), Bridge.poll(&service).?.key);
     try std.testing.expect(!Bridge.hasPending(&service));
+}
+
+test "window inventory traverses the shipping bridge with captured native identities" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    // TestHarness reserves Runtime's startup window but does not create the
+    // platform window. Register that exact ID to exercise real show/focus calls.
+    const native_id = try Bridge.nativeWindowId(&rig.harness.runtime, 0);
+    _ = try rig.harness.runtime.options.platform.services.createWindow(.{ .id = native_id, .label = "main" });
+    var service: Bridge = .{ .engine = engine, .runtime = bridge.runtime };
+    var request = [_]u8{0} ** 15;
+    request[0] = 1;
+    request[1] = 4;
+    std.mem.writeInt(u64, request[2..10], engine.revision, .little);
+    request[13] = 4;
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 81, &request);
+    const reply = Bridge.poll(&service).?;
+    try std.testing.expect(reply.ok);
+    try std.testing.expectEqual(@as(u64, 81), reply.key);
+    try std.testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, reply.bytes[15..17], .little));
+    try std.testing.expectEqual(@as(u8, 4), reply.bytes[17]);
+    var at: usize = 18;
+    for (0..4) |index| {
+        const label_len = reply.bytes[at + 2];
+        const target_len = std.mem.readInt(u16, reply.bytes[at + 3 ..][0..2], .little);
+        const target = cockpit.window_navigation.decodeTarget(reply.bytes[at + 5 ..][0..target_len]).?;
+        try std.testing.expectEqual(@as(u8, @intCast(index / 2)), target.window);
+        try std.testing.expectEqual(index % 2 == 1, target.tab != null);
+        try std.testing.expect(target.resolve(engine.model) != null);
+        at += 5 + target_len + label_len;
+    }
+    try std.testing.expectEqual(@as(u8, 0x4e), reply.bytes[at]);
+    // A stale listing cannot substitute new window contents under old authority.
+    std.mem.writeInt(u64, request[2..10], engine.revision + 1, .little);
+    Bridge.request(&service, cockpit.engine.navigation.request_name, 82, &request);
+    try std.testing.expect(!Bridge.poll(&service).?.ok);
+
+    var encoded: [cockpit.window_navigation.max_target_bytes]u8 = undefined;
+    const target: cockpit.window_navigation.Target = .{ .window = 0, .epoch = engine.model.window_epochs[0] };
+    const target_bytes = target.encode(&encoded);
+    var command = [_]u8{0} ** 20;
+    command[0] = 1;
+    command[1] = 1;
+    std.mem.writeInt(u64, command[2..10], 123, .little);
+    @memcpy(command[10..], target_bytes);
+    Bridge.request(&service, cockpit.window_navigation.request_name, 83, &command);
+    const applied = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u8, 1), applied.bytes[1]);
+    try std.testing.expectEqual(@as(u64, 123), std.mem.readInt(u64, applied.bytes[3..11], .little));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    std.mem.writeInt(u64, command[12..20], target.epoch + 1, .little);
+    Bridge.request(&service, cockpit.window_navigation.request_name, 84, &command);
+    const refused = Bridge.poll(&service).?;
+    try std.testing.expectEqual(@as(u8, 2), refused.bytes[1]);
+    try std.testing.expectEqual(@as(u8, 2), refused.bytes[2]);
 }
 
 test "navigation waits for snapshot commit before advancing positional fences" {

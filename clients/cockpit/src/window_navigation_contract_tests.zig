@@ -51,8 +51,9 @@ test "window navigator searches full named empty session and host independently 
     const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
     _ = engine.model.openWindow(1) orelse return error.OutOfMemory;
+    const slot = try engine.model.freePeerSlot();
     const remote = try @import("cockpit/phux_support.zig").PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .remote = .{ .target = "fixture-host" } }, null, "test");
-    engine.model.phux_peers[0] = remote;
+    engine.model.peers.items[slot].provider = remote;
     remote.standBy();
     try remote.host.start("test");
     try std.testing.expect(remote.bridge.incoming.stage(@embedFile("tests/fixtures/hello.bin")));

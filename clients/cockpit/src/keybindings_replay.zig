@@ -94,7 +94,13 @@ pub fn Journal(comptime sdk: type) type {
         /// keys.applied (host requests are parked and live config is irrelevant).
         /// Rejections are recorded too, so missing decisions fail explicitly.
         pub fn shortcut(self: *Self, keys: anytype, event: sdk.platform.ShortcutEvent) !?[]const u8 {
-            const candidate = if (self.replaying) null else keys.commandForShortcut(event);
+            return self.shortcutWithPermission(keys, event, true);
+        }
+
+        /// A host registration-repair failure refuses command admission, not
+        /// ordinary typing. Journal that refusal without altering installed state.
+        pub fn shortcutWithPermission(self: *Self, keys: anytype, event: sdk.platform.ShortcutEvent, allowed: bool) !?[]const u8 {
+            const candidate = if (self.replaying or !allowed) null else keys.commandForShortcut(event);
             return self.exchange(&keys.registry, .{ .shortcut = event }, candidate);
         }
 
@@ -103,9 +109,13 @@ pub fn Journal(comptime sdk: type) type {
         /// UiApp.event and restore it on return. on_key alone omits the origin;
         /// replay must prove the callback still belongs to BOTH its window/view.
         pub fn fallback(self: *Self, keys: anytype, event: sdk.canvas.WidgetKeyboardEvent, origin: Origin) !?[]const u8 {
+            return self.fallbackWithPermission(keys, event, origin, true);
+        }
+
+        pub fn fallbackWithPermission(self: *Self, keys: anytype, event: sdk.canvas.WidgetKeyboardEvent, origin: Origin, allowed: bool) !?[]const u8 {
             if (!isFallbackKey(event)) return null;
             if (!validOrigin(origin)) return self.refuse();
-            const candidate = if (self.replaying) null else keys.commandForEvent(event);
+            const candidate = if (self.replaying or !allowed) null else keys.commandForEvent(event);
             return self.exchange(&keys.registry, .{ .gpu_surface_input = .{
                 .window_id = origin.window_id,
                 .label = origin.view_label,
