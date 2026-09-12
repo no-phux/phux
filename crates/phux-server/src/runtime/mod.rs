@@ -1688,11 +1688,8 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
         return None;
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "wss");
-    let workload_ca = workload_ca_for_secure(secure);
     let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
-        &cert_path,
-        &key_path,
-        workload_ca.as_deref(),
+        &cert_path, &key_path, None,
     ) {
         Ok(acceptor) => acceptor,
         Err(err) => {
@@ -1736,8 +1733,10 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
 /// Resolve the optional workload CA used for mTLS listeners.
 ///
 /// The opt-in environment gate keeps existing bearer-paired deployments
-/// bootable while clients are being enrolled. Once enabled, both QUIC and WSS
-/// use the same persisted CA and require a client certificate at TLS time.
+/// bootable while clients are being enrolled. Once enabled, QUIC uses the
+/// persisted CA and requires a client certificate at TLS time. WSS remains on
+/// the bearer path until its upgrade can retain the TLS peer certificate for
+/// registry identity stamping.
 fn workload_ca_for_secure(secure: bool) -> Option<PathBuf> {
     if !secure || std::env::var_os("PHUX_WORKLOAD_MTLS").is_none() {
         return None;
@@ -1751,6 +1750,23 @@ fn workload_ca_for_secure(secure: bool) -> Option<PathBuf> {
         return None;
     }
     Some(cert)
+}
+
+/// Load the registry paired with an mTLS CA. A malformed registry disables
+/// the paired listener rather than turning an empty snapshot into authority.
+fn workload_registry_for(
+    ca_path: Option<&Path>,
+) -> Option<std::sync::Arc<crate::workload::WorkloadRegistry>> {
+    ca_path?;
+    let path = std::env::var_os("PHUX_WORKLOAD_KEYS")
+        .map_or_else(crate::workload::default_registry_path, PathBuf::from);
+    match crate::workload::WorkloadRegistry::load(&path) {
+        Ok(registry) => Some(std::sync::Arc::new(registry)),
+        Err(error) => {
+            warn!(error = %error, path = %path.display(), "workload registry unavailable; mTLS disabled");
+            None
+        }
+    }
 }
 
 /// Log, do not fail, when the persisted certificate does not name the address
@@ -1857,13 +1873,18 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
     };
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
-    let workload_ca = workload_ca_for_secure(secure);
-    match crate::transport::quic::QuicListener::from_pem_with_client_ca(
+    let (workload_ca, workload_registry) =
+        workload_ca_for_secure(secure).map_or((None, None), |ca| {
+            workload_registry_for(Some(&ca))
+                .map_or((None, None), |registry| (Some(ca), Some(registry)))
+        });
+    match crate::transport::quic::QuicListener::from_pem_with_client_ca_and_registry(
         addr,
         &cert_path,
         &key_path,
         tokens,
         workload_ca.as_deref(),
+        workload_registry,
     ) {
         Ok(quic) => {
             let bound = quic.local_addr().map(|a| a.to_string()).unwrap_or_default();

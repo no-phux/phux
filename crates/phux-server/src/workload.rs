@@ -144,6 +144,16 @@ impl WorkloadRegistry {
         })
     }
 
+    /// Find an active credential from a TLS leaf certificate's DER bytes.
+    /// rustls has already verified the chain; this method only extracts the
+    /// stable `SubjectPublicKeyInfo` used as the registry identity.
+    #[must_use]
+    pub fn lookup_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
+        let (_, parsed) = x509_parser::parse_x509_certificate(certificate).ok()?;
+        let id = credential_id(parsed.tbs_certificate.subject_pki.raw);
+        self.lookup(&id)
+    }
+
     /// Number of records in this validated snapshot.
     #[must_use]
     pub const fn len(&self) -> usize {

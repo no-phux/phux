@@ -110,6 +110,7 @@ const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    workload_registry: Option<Arc<crate::workload::WorkloadRegistry>>,
 }
 
 impl QuicListener {
@@ -140,11 +141,31 @@ impl QuicListener {
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
         client_ca_path: Option<&std::path::Path>,
     ) -> Result<Self, QuicBindError> {
+        Self::from_pem_with_client_ca_and_registry(
+            addr,
+            cert_path,
+            key_path,
+            tokens,
+            client_ca_path,
+            None,
+        )
+    }
+
+    /// Bind a QUIC listener with mTLS and a workload registry.
+    pub(crate) fn from_pem_with_client_ca_and_registry(
+        addr: SocketAddr,
+        cert_path: &std::path::Path,
+        key_path: &std::path::Path,
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        client_ca_path: Option<&std::path::Path>,
+        workload_registry: Option<Arc<crate::workload::WorkloadRegistry>>,
+    ) -> Result<Self, QuicBindError> {
         let tls =
             super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca_path)?;
         Ok(Self {
             endpoint: build_endpoint(addr, tls)?,
             tokens,
+            workload_registry,
         })
     }
 
@@ -300,6 +321,10 @@ impl Incoming for QuicListener {
         TransportType::Quic
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "transport admission keeps TLS, bearer, and workload identity checks in one ordered gate"
+    )]
     async fn accept(
         &self,
     ) -> io::Result<(QuicMuxReader, QuicWriter, crate::auth::ConnectionIdentity)> {
@@ -364,6 +389,47 @@ impl Incoming for QuicListener {
                 None => None,
             };
 
+            let workload_credential = match &self.workload_registry {
+                Some(registry) => {
+                    let Some(identity) = conn.peer_identity() else {
+                        debug!(%remote, "quic mTLS peer identity missing");
+                        conn.close(AUTH_FAILED_CODE.into(), b"workload certificate required");
+                        continue;
+                    };
+                    let Some(certs) =
+                        identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+                    else {
+                        debug!(%remote, "quic mTLS peer identity had an unexpected type");
+                        conn.close(AUTH_FAILED_CODE.into(), b"invalid workload certificate");
+                        continue;
+                    };
+                    let Some(certificate) = certs.first() else {
+                        debug!(%remote, "quic mTLS peer certificate chain was empty");
+                        conn.close(AUTH_FAILED_CODE.into(), b"workload certificate required");
+                        continue;
+                    };
+                    let Some(record) = registry.lookup_certificate(certificate.as_ref()) else {
+                        debug!(%remote, "quic mTLS certificate is not enrolled");
+                        conn.close(
+                            AUTH_FAILED_CODE.into(),
+                            b"workload certificate not enrolled",
+                        );
+                        continue;
+                    };
+                    Some(crate::auth::AuthenticatedCredential {
+                        id: record.id.clone(),
+                        principal: record.id.clone(),
+                        scopes: record.scopes.clone(),
+                        issued_at: chrono::Utc::now(),
+                        expires_at: record
+                            .expires_at
+                            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0)),
+                        generation: 0,
+                    })
+                }
+                None => None,
+            };
+            let credential = workload_credential.or(credential);
             let peer_identity = PeerIdentity {
                 uid: 0,
                 pid: None,

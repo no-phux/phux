@@ -168,6 +168,9 @@ hex = "0.4"
 # `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
 # Same version/features phux-dial declares, so it is the same type.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Extract the SubjectPublicKeyInfo from a verified mTLS leaf so the transport
+# can map it to the workload registry's public-key-derived credential id.
+x509-parser = "0.18"
 # QUIC transport (phux-y8v6, ADR-0007). quinn is the QUIC stack ADR-0007
 # names by name ("a future QUIC impl ... via `quinn`"); it gives connection
 # migration, 0-RTT resumption, and mandatory TLS 1.3 — the Mosh-class UX
