@@ -86,15 +86,48 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(smoke.list_rows(text, "Open windows"), 1)
 
     def test_foreign_build_environment_cannot_choose_linked_ffi(self):
-        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/foreign/target", "PHUX_CLIENT_FFI_INCLUDE_DIR": "/foreign/include", "PHUX_CLIENT_FFI_LIB_DIR": "/foreign/lib"}):
+        target = "aarch64-apple-darwin"
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/foreign/target", "CARGO_BUILD_TARGET": "wasm32-wasip1", "PHUX_CLIENT_FFI_INCLUDE_DIR": "/foreign/include", "PHUX_CLIENT_FFI_LIB_DIR": "/foreign/lib"}):
             with tempfile.TemporaryDirectory() as directory, patch.object(smoke.subprocess, "run") as runner:
-                smoke.build(Path(directory))
+                smoke.build(Path(directory), target)
         cargo, zig = runner.call_args_list
         self.assertEqual(cargo.kwargs["env"]["CARGO_TARGET_DIR"], str(smoke.CHECKOUT / "target"))
         self.assertNotIn("PHUX_CLIENT_FFI_LIB_DIR", zig.kwargs["env"])
         self.assertNotIn("PHUX_CLIENT_FFI_INCLUDE_DIR", zig.kwargs["env"])
+        self.assertNotIn("CARGO_BUILD_TARGET", cargo.kwargs["env"])
+        self.assertNotIn("CARGO_BUILD_TARGET", zig.kwargs["env"])
+        self.assertEqual(cargo.args[0][cargo.args[0].index("--target") + 1], target)
         self.assertIn(f"-Dphux-client-ffi-include-dir={smoke.FFI_HEADER.parents[1]}", zig.args[0])
-        self.assertIn(f"-Dphux-client-ffi-lib-dir={smoke.FFI_ARCHIVE.parent}", zig.args[0])
+        self.assertIn(f"-Dphux-client-ffi-lib-dir={smoke.ffi_archive(target).parent}", zig.args[0])
+
+    def test_cargo_config_target_cannot_redirect_selected_host_archive(self):
+        # Simulate foreign and same-host config defaults: both used to redirect
+        # Cargo output while Zig continued consuming the legacy unqualified path.
+        for configured in ("wasm32-wasip1", "aarch64-apple-darwin"):
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as directory:
+                checkout = Path(directory)
+                config = checkout / ".cargo/config.toml"
+                config.parent.mkdir()
+                config.write_text(f'[build]\ntarget = "{configured}"\n')
+                with patch.object(smoke, "CHECKOUT", checkout), patch.object(smoke, "run", return_value="rustc fixture\nhost: aarch64-apple-darwin\n") as probe:
+                    target = smoke.native_target()
+                    with patch.object(smoke.subprocess, "run") as runner:
+                        smoke.build(checkout, target)
+                self.assertEqual(probe.call_args.args[0], ["rustc", "-vV"])
+                cargo, zig = runner.call_args_list
+                self.assertEqual(cargo.args[0][cargo.args[0].index("--target") + 1], target)
+                expected = checkout / "target/aarch64-apple-darwin/ffi-dev"
+                self.assertIn(f"-Dphux-client-ffi-lib-dir={expected}", zig.args[0])
+                self.assertEqual(config.read_text(), f'[build]\ntarget = "{configured}"\n')
+
+    def test_missing_rustc_host_is_not_guessed(self):
+        with patch.object(smoke, "run", return_value="rustc fixture without host"):
+            with self.assertRaisesRegex(smoke.InfrastructureError, "host target"):
+                smoke.native_target()
+
+    def test_build_environment_clears_target_override(self):
+        with patch.dict(os.environ, {"CARGO_BUILD_TARGET": "wasm32-wasip1"}):
+            self.assertIsNone(smoke.build_environment().get("CARGO_BUILD_TARGET"))
 
     def test_stubborn_app_cannot_skip_server_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -29,7 +29,13 @@ accepts a new directory; the default is under `/private/tmp/opencode`.
 `--no-build` is useful for instrument development, but explicitly records an
 **unverified source/build binding**. Use the default build for acceptance.
 The build explicitly binds Cargo output and Zig's FFI include/archive inputs
-to this checkout, overriding inherited foreign archive locations.
+to this checkout, overriding inherited foreign archive locations. It reads the
+native host triple from `rustc -vV`, clears `CARGO_BUILD_TARGET`, and passes
+`cargo rustc --target <host>` explicitly. This outranks Cargo configuration's
+`build.target`. Zig consumes exactly
+`target/<host>/ffi-dev/libphux_client_ffi.a`; the triple-qualified directory is
+required even when the selected target equals the native host. Provenance records
+that target and hashes that exact archive, never `target/ffi-dev` left by an older build.
 
 The script stops only the app and server it launched. Artifacts remain after
 both success and failure. It never installs an app, connects to real remote

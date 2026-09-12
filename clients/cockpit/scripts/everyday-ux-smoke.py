@@ -18,7 +18,6 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUT = ROOT.parents[1]
-FFI_ARCHIVE = CHECKOUT / "target/ffi-dev/libphux_client_ffi.a"
 FFI_HEADER = CHECKOUT / "crates/phux-client-ffi/include/phux/client.h"
 
 
@@ -151,6 +150,7 @@ class Journey:
         self.sequence = 0
         self.handles = []
         self.provenance = {}
+        self.ffi_archive = None
 
     def save(self, name, content):
         (self.work / name).write_text(content + "\n")
@@ -202,7 +202,7 @@ class Journey:
                                environment=self.env_subset(), native=self.native,
                                native_sha256=sha256(self.native), phux=self.phux,
                                phux_sha256=sha256(self.phux), phux_version=run([self.phux, "--version"]))
-        self.provenance["ffi"] = dict(archive=str(FFI_ARCHIVE), archive_sha256=sha256(FFI_ARCHIVE),
+        self.provenance["ffi"] = dict(archive=str(self.ffi_archive), archive_sha256=sha256(self.ffi_archive),
                                        header=str(FFI_HEADER), header_sha256=sha256(FFI_HEADER))
         self.save("rust-source.diff", run(["git", "diff", "HEAD", "--", "crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"], cwd=CHECKOUT))
         with (staged / "Contents/Info.plist").open("rb") as handle:
@@ -436,17 +436,34 @@ class Journey:
 
 def build_environment():
     env = {key: value for key, value in os.environ.items() if not key.startswith("PHUX_CLIENT_FFI_")}
+    env.pop("CARGO_BUILD_TARGET", None)
     env.update(CARGO_TARGET_DIR=str(CHECKOUT / "target"),
                CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "2"))
     return env
 
 
-def build(work):
-    commands = (["just", "cockpit-ffi"],
+def native_target():
+    version = run(["rustc", "-vV"], cwd=CHECKOUT, env=build_environment())
+    match = re.search(r"^host: ([a-zA-Z0-9_-]+)$", version, re.M)
+    if not match:
+        raise InfrastructureError("rustc -vV did not report a usable host target")
+    return match[1]
+
+
+def ffi_archive(target):
+    return CHECKOUT / "target" / target / "ffi-dev/libphux_client_ffi.a"
+
+
+def build(work, target):
+    # Explicit --target outranks Cargo's project/global build.target configuration.
+    # Even a same-host --target adds the triple directory to Cargo's output path.
+    commands = (["cargo", "rustc", "--locked", "--manifest-path", str(CHECKOUT / "Cargo.toml"),
+                 "--profile", "ffi-dev", "--target", target, "-p", "phux-client-ffi",
+                 "--lib", "--crate-type", "staticlib"],
                 [str(ROOT / "scripts/zig-build.sh"), "package", "-j2", "-Dautomation=true",
                  "-Dphux-enabled=true", "-Dphux-client-ffi-profile=ffi-dev", "-Doptimize=ReleaseSafe",
                  f"-Dphux-client-ffi-include-dir={FFI_HEADER.parents[1]}",
-                 f"-Dphux-client-ffi-lib-dir={FFI_ARCHIVE.parent}"])
+                 f"-Dphux-client-ffi-lib-dir={ffi_archive(target).parent}"])
     env = build_environment()
     for index, command in enumerate(commands):
         with (work / f"build-{index}.log").open("w") as log:
@@ -474,8 +491,11 @@ def main():
                               source_diff=run(["git", "diff", "HEAD", "--", "src", "app.zon", "build.zig", "build.zig.zon"], cwd=ROOT),
                               build_binding="unverified existing package" if args.no_build else "built by this run")
     try:
+        target = native_target()
+        journey.ffi_archive = ffi_archive(target)
+        journey.provenance["cargo_target"] = target
         if not args.no_build:
-            build(work)
+            build(work, target)
         journey.setup(ROOT / "zig-out/package/phux-cockpit.app")
         journey.terminal_input()
         journey.commands()
