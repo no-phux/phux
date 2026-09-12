@@ -202,6 +202,10 @@ impl Incoming for ConnectorIncoming {
     type Reader = QuicReader;
     type Writer = QuicWriter;
 
+    fn transport_type(&self) -> TransportType {
+        TransportType::Quic
+    }
+
     async fn accept(
         &self,
     ) -> io::Result<(Self::Reader, Self::Writer, crate::auth::ConnectionIdentity)> {

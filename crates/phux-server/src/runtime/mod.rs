@@ -2561,6 +2561,7 @@ mod tests {
                         &test_root_token,
                         &mut output_pumps,
                         &test_root_token,
+                        false,
                     )
                     .await;
                 });
@@ -2740,6 +2741,7 @@ mod tests {
                         &token,
                         &mut output_pumps,
                         &token,
+                        false,
                     )
                     .await;
                 });
@@ -2843,6 +2845,7 @@ mod tests {
                         &second_token,
                         &mut output_pumps,
                         &second_token,
+                        false,
                     )
                     .await;
                 });
@@ -3287,6 +3290,7 @@ mod tests {
                         &root_token,
                         &mut output_pumps,
                         &task_token,
+                        false,
                     )
                     .await;
                     task_token.cancelled().await;

@@ -12,9 +12,11 @@ use phux_protocol::PROTOCOL_VERSION;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet, QUIC_STREAMS,
     ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
+use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
+use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, RESOURCE_AGENT_KEY,
 };
@@ -27,12 +29,14 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
-    STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, handle_attach, handle_command,
-    handle_frame_ack, handle_move_terminal, handle_spawn_terminal, handle_terminal_input,
-    handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
+    STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, bootstrap_attach_terminal, handle_attach,
+    handle_command, handle_detach_terminal, handle_frame_ack, handle_move_terminal,
+    handle_spawn_terminal, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
+    handle_viewport_resize, subscribe_attach_terminal,
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
+use crate::transport::quic::{QuicStreamEvent, QuicWriter, refuse_terminal_stream};
 use crate::transport::{
     AcceptErrorDisposition, FrameReader, FrameWriter, Incoming, WS_REJECTION_WARN_INTERVAL,
 };
@@ -100,6 +104,75 @@ mod negotiated_feature_tests {
         let advertised = runtime_server_features();
         assert!(advertised.contains(ServerFeature::TerminalReply));
         assert!(connection(advertised).accepts_terminal_reply());
+    }
+
+    /// QUIC multi-stream is transport-gated at the HELLO advertisement, not
+    /// merely at stream-accept time: a client that sees the bit knows a
+    /// second stream will be accepted, and every other transport never sees
+    /// it (ADR-0113).
+    #[tokio::test]
+    async fn quic_streams_bit_advertised_on_quic_only() {
+        async fn negotiate(transport: TransportType) -> NegotiatedConnection {
+            let state = SharedState::new();
+            let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+            state.with_mut(|s| {
+                s.set_connection_identity(
+                    client_id,
+                    crate::auth::ConnectionIdentity {
+                        peer: phux_protocol::policy::PeerIdentity {
+                            uid: 0,
+                            pid: None,
+                            exe_path: None,
+                            mcp_host_key: None,
+                            transport,
+                            source_addr: None,
+                        },
+                        credential: None,
+                        ssh_origin: None,
+                    },
+                );
+            });
+            let (out_tx, _rx) = tokio::sync::mpsc::channel(8);
+            let mut negotiated = None;
+            negotiate_hello(
+                &state,
+                client_id,
+                &out_tx,
+                HelloRequest {
+                    client_name: "test".to_owned(),
+                    protocol_major: PROTOCOL_VERSION.major,
+                    protocol_minor: PROTOCOL_VERSION.minor,
+                    protocol_patch: PROTOCOL_VERSION.patch,
+                    client_caps: ClientCapabilities::default(),
+                },
+                &mut negotiated,
+                transport,
+            )
+            .await
+            .map_err(|close| close.message)
+            .expect("compatible HELLO negotiates");
+            negotiated.expect("negotiation caches the selection")
+        }
+
+        let quic = negotiate(TransportType::Quic).await;
+        assert!(
+            quic.server_features.contains(ServerFeature::QuicStreams),
+            "QUIC connections advertise QUIC_STREAMS"
+        );
+        for transport in [
+            TransportType::UnixSocket,
+            TransportType::SshTunnel,
+            TransportType::WebSocket,
+            TransportType::WebTransport,
+        ] {
+            let selection = negotiate(transport).await;
+            assert!(
+                !selection
+                    .server_features
+                    .contains(ServerFeature::QuicStreams),
+                "{transport:?} must not advertise QUIC_STREAMS"
+            );
+        }
     }
 }
 
@@ -1291,8 +1364,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         let client_token = root_token.child_token();
                         let task_root_token = root_token.clone();
                         let task_input_lane = input_lane.clone();
+                        let task_transport = listener.transport_type();
                         clients.spawn_local(async move {
-                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane).await {
+                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport).await {
                                 warn!(error = %err, "client task ended with error");
                             }
                             // Implicit detach on EOF / error path, plus the
@@ -1559,6 +1633,20 @@ struct ConnectionClose {
     message: String,
 }
 
+/// One bound Terminal stream's outbound half (proto.md §4.2).
+///
+/// The mailbox is what that Terminal's actor, pump, and bootstrap write
+/// through; the writer task drains it into the stream's `QuicWriter` with
+/// the same [`writer_task`] all transports share, so per-stream batching,
+/// compression, and the generation fence are identical — only the
+/// destination differs. Dropping the binding's sender (teardown) lets the
+/// writer drain and `finish()` the QUIC stream.
+struct StreamBinding {
+    tx: tokio::sync::mpsc::Sender<Outbound>,
+    stream_id: StreamId,
+    writer: JoinSet<()>,
+}
+
 /// One connection's outbound plumbing: the mailbox every stage sends through,
 /// the writer task's close signal, and the two task sets whose separation
 /// matters — DETACH/session switch must abort the per-attach pane output pumps
@@ -1571,6 +1659,9 @@ struct ClientPlumbing {
     sibling_tasks: JoinSet<()>,
     /// Per-attach raw-output pumps.
     output_pumps: JoinSet<()>,
+    /// Bound Terminal streams (QUIC multi-stream only): terminal → binding.
+    /// Empty on every other transport, where all frames share `out_tx`.
+    stream_bindings: HashMap<WireResourceId, StreamBinding>,
     /// The frame compression the writer applies, published by HELLO.
     ///
     /// A shared cell rather than a constructor argument because the writer
@@ -1600,6 +1691,7 @@ impl ClientPlumbing {
             writer_close,
             sibling_tasks,
             output_pumps: JoinSet::new(),
+            stream_bindings: HashMap::new(),
             compression,
         }
     }
@@ -1614,6 +1706,74 @@ impl ClientPlumbing {
     fn set_compression(&self, compression: Compression) {
         self.compression
             .store(compression.as_u8(), Ordering::Relaxed);
+    }
+
+    /// The mailbox for Terminal-addressed outbound: the bound stream's sender
+    /// when this connection bound the Terminal, else the control mailbox.
+    ///
+    /// The fallback covers single-stream connections trivially (no bindings
+    /// ever exist) and multi-stream races (a frame produced between attach
+    /// and bind). Terminal-content frames produced pre-bind on a
+    /// multi-stream connection are dropped by the caller, never silently
+    /// sunk to control — this helper only resolves the mailbox.
+    fn sender_for(&self, terminal_id: &WireResourceId) -> tokio::sync::mpsc::Sender<Outbound> {
+        self.stream_bindings
+            .get(terminal_id)
+            .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())
+    }
+
+    /// Bind a Terminal stream: create its mailbox, spawn its writer task
+    /// draining into the stream's send half, and register both. Replaces any
+    /// live binding for the Terminal (re-bind supersedes; the old writer
+    /// drains and finishes once its pump is replaced and its sender drops).
+    fn bind_stream(
+        &mut self,
+        client_id: ClientId,
+        terminal_id: WireResourceId,
+        stream_id: StreamId,
+        writer: QuicWriter,
+    ) -> tokio::sync::mpsc::Sender<Outbound> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
+        let mut writer_tasks: JoinSet<()> = JoinSet::new();
+        writer_tasks.spawn_local(writer_task(
+            writer,
+            rx,
+            self.writer_close.subscribe(),
+            Arc::clone(&self.compression),
+            client_id,
+        ));
+        let sender = tx.clone();
+        self.stream_bindings.insert(
+            terminal_id,
+            StreamBinding {
+                tx,
+                stream_id,
+                writer: writer_tasks,
+            },
+        );
+        sender
+    }
+
+    /// Drop one stream binding, returning its generation for staleness
+    /// checks. The writer task exits and finishes the QUIC stream once the
+    /// pump's sender clone is gone; the caller aborts the pump first.
+    fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) -> Option<StreamId> {
+        self.stream_bindings.remove(terminal_id).map(|mut binding| {
+            binding.writer.detach_all();
+            binding.stream_id
+        })
+    }
+
+    /// Drop every stream binding (session DETACH, disconnect). Pumps are
+    /// aborted by the caller first; writers drain and finish.
+    fn drop_all_stream_bindings(&mut self) -> Vec<(WireResourceId, StreamId)> {
+        self.stream_bindings
+            .drain()
+            .map(|(terminal_id, mut binding)| {
+                binding.writer.detach_all();
+                (terminal_id, binding.stream_id)
+            })
+            .collect()
     }
 
     /// End one connection for a protocol violation, in the order §9 requires.
@@ -1744,6 +1904,7 @@ async fn negotiate_hello(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     hello: HelloRequest,
     negotiated: &mut Option<NegotiatedConnection>,
+    transport: TransportType,
 ) -> Result<(), ConnectionClose> {
     let HelloRequest {
         client_name,
@@ -1797,7 +1958,15 @@ async fn negotiate_hello(
             // preference field.
             phux_protocol::caps::OutputMode::Raw
         };
-    let server_features = runtime_server_features();
+    let mut server_features = runtime_server_features();
+    // QUIC multi-stream is transport-gated, not merely negotiated: the bit
+    // is advertised only where streams exist to back it (ADR-0113). UDS,
+    // ssh-stdio, WebSocket, and WebTransport keep the single-stream shape
+    // permanently, so a client that sees the bit knows a second stream will
+    // be accepted. Unknown transport variants fail closed (no bit).
+    if matches!(transport, TransportType::Quic) {
+        server_features = ServerFeatureSet::from_wire(server_features.as_wire() | QUIC_STREAMS);
+    }
     // The client's offer is the whole input: a server never compresses toward
     // a consumer that did not say it can inflate. The reference TUI offers
     // only on a remote dial, so a UDS connection stays byte-for-byte what it
@@ -2086,6 +2255,10 @@ async fn serve_history_request(
     clippy::cognitive_complexity,
     reason = "what remains is `loop { read; decode; gate; dispatch }` — the residual score is the dispatch match sitting inside the read loop, which is the shape of a per-connection frame loop, not accidental nesting."
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the connection context (state, ids, tokens, lane, transport) threaded verbatim from the accept loop; the transport selects QUIC-only advertisement"
+)]
 pub(crate) async fn handle_client<R, W>(
     mut reader: R,
     writer: W,
@@ -2094,6 +2267,7 @@ pub(crate) async fn handle_client<R, W>(
     token: CancellationToken,
     root_token: CancellationToken,
     input_lane: Option<InputLaneHandle>,
+    transport: TransportType,
 ) -> io::Result<()>
 where
     R: FrameReader + 'static,
@@ -2115,11 +2289,19 @@ where
     // duplicate HELLO is fatal, so an attached connection can never mutate it.
     let mut negotiated: Option<NegotiatedConnection> = None;
 
+    // Terminal-stream events, taken from the transport once HELLO negotiates
+    // QUIC multi-stream. `None` on every other transport (and before HELLO).
+    let mut stream_events: Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>> = None;
+
     loop {
         // Pull the next complete frame from the transport — length-prefixed on
         // UDS, one binary message on WebSocket (see `transport.rs`). EOF ends
         // the session cleanly; cancellation preempts a slow read via the biased
         // select so a server-wide shutdown isn't blocked behind it.
+        //
+        // Terminal-stream binds/ends arrive on their own channel (QUIC
+        // multi-stream only); they are connection events, not frames, so
+        // they bypass decode and dispatch straight to subscription handling.
         let framed = tokio::select! {
             biased;
             () = token.cancelled() => {
@@ -2128,6 +2310,30 @@ where
                     .close_for_cancellation(&state, client_id, &root_token)
                     .await;
                 return Ok(());
+            }
+            event = async {
+                match stream_events.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => core::future::pending().await,
+                }
+            } => {
+                match event {
+                    Some(event) => {
+                        handle_stream_event(
+                            &state,
+                            client_id,
+                            event,
+                            &mut plumbing,
+                            negotiated.as_ref(),
+                            &token,
+                        )
+                        .await;
+                        continue;
+                    }
+                    // The mux ended with the connection; the control read
+                    // below will observe EOF next.
+                    None => continue,
+                }
             }
             res = reader.read_frame() => match res {
                 Ok(Some(framed)) => framed,
@@ -2174,15 +2380,33 @@ where
                     protocol_patch,
                     client_caps,
                 };
-                if let Err(close) =
-                    negotiate_hello(&state, client_id, &plumbing.out_tx, hello, &mut negotiated)
-                        .await
+                if let Err(close) = negotiate_hello(
+                    &state,
+                    client_id,
+                    &plumbing.out_tx,
+                    hello,
+                    &mut negotiated,
+                    transport,
+                )
+                .await
                 {
                     plumbing.close(close, &state, client_id).await;
                     return Ok(());
                 }
-                if let Some(negotiated) = negotiated {
-                    plumbing.set_compression(negotiated.compression);
+                if let Some(selection) = negotiated.as_ref() {
+                    plumbing.set_compression(selection.compression);
+                    // QUIC multi-stream upgrades the transport once, right
+                    // after HELLO selects it: the mux starts accepting
+                    // Terminal streams and the frame loop starts polling
+                    // bind/end events. Before this point the client cannot
+                    // have opened a second stream (it learns the bit from
+                    // HELLO_OK), so nothing is missed.
+                    if selection
+                        .server_features
+                        .contains(ServerFeature::QuicStreams)
+                    {
+                        stream_events = reader.take_stream_events();
+                    }
                 }
             }
             FrameKind::Ping { nonce } => reply_pong(&plumbing.out_tx, client_id, nonce).await,
@@ -2229,6 +2453,12 @@ where
                     "ATTACH with immutable bootstrap selection",
                 );
                 let attach_started = std::time::Instant::now();
+                // QUIC multi-stream defers per-pane subscription to
+                // STREAM_BIND (proto.md §4.2): the snapshot publishes here,
+                // content streams start at bind.
+                let defer_subscription = selection
+                    .server_features
+                    .contains(ServerFeature::QuicStreams);
                 handle_attach(
                     &state,
                     client_id,
@@ -2244,6 +2474,7 @@ where
                     &root_token,
                     &mut plumbing.output_pumps,
                     &token,
+                    defer_subscription,
                 )
                 .await;
                 crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
@@ -2256,6 +2487,11 @@ where
                     &mut plumbing.output_pumps,
                 )
                 .await;
+                // Session DETACH ends every Terminal stream too: pumps and
+                // subscriptions are already gone via the detach path above,
+                // so dropping the bindings lets each writer drain and finish
+                // its QUIC stream.
+                plumbing.drop_all_stream_bindings();
             }
             FrameKind::ViewportResize { viewport } => {
                 debug!(
@@ -2384,10 +2620,13 @@ where
                 let Some(selection) = negotiated.as_ref() else {
                     continue;
                 };
+                // Terminal-content replies ride the bound stream when one
+                // exists (proto.md §4.9); control otherwise.
+                let history_tx = plumbing.sender_for(&terminal_id);
                 serve_history_request(
                     &state,
                     client_id,
-                    &plumbing.out_tx,
+                    &history_tx,
                     *selection,
                     HistoryPageRequest {
                         terminal_id,
@@ -2534,6 +2773,21 @@ where
                     continue;
                 };
                 let command_started = std::time::Instant::now();
+                // QUIC multi-stream defers ATTACH_RESOURCE subscription to
+                // STREAM_BIND (proto.md §4.2): register now, bootstrap at
+                // bind with the stream's mailbox.
+                let defer_subscription = selection
+                    .server_features
+                    .contains(ServerFeature::QuicStreams);
+                // An explicit DETACH_RESOURCE also drops the stream binding
+                // on a multi-stream connection (the writer drains and
+                // finishes once the pump's sender clone is gone).
+                let detached_stream = defer_subscription.then(|| match &command {
+                    phux_protocol::wire::frame::Command::DetachResource { terminal_id } => {
+                        Some(terminal_id.clone())
+                    }
+                    _ => None,
+                });
                 handle_command(
                     &state,
                     client_id,
@@ -2546,8 +2800,15 @@ where
                     input_lane.as_ref(),
                     &token,
                     &root_token,
+                    defer_subscription,
                 )
                 .await;
+                if let Some(Some(terminal_id)) = detached_stream {
+                    // The command above already unsubscribed, stopped the
+                    // pump, and detached the actor consumer; dropping the
+                    // binding lets its writer drain and finish the stream.
+                    plumbing.drop_stream_binding(&terminal_id);
+                }
                 crate::perf::CMD_HANDLE.record_elapsed(command_started);
             }
             other => {
@@ -2564,6 +2825,198 @@ where
             }
         }
     }
+}
+
+/// Handle one QUIC Terminal-stream event (proto.md §4.2).
+///
+/// `Bound` authorizes the bind against the client's subscriptions, registers
+/// the stream (mailbox + writer task), subscribes with the control mailbox,
+/// and bootstraps with the stream's. Refusals carry an uncorrelated `ERROR`
+/// on control plus a stream reset — never silence, so a client that bound
+/// the wrong id learns immediately.
+/// `Ended` is the detach signal: unsubscribe exactly as for an explicit
+/// `DETACH_RESOURCE`, guarded by generation so a stale end is ignored.
+async fn handle_stream_event(
+    state: &SharedState,
+    client_id: ClientId,
+    event: QuicStreamEvent,
+    plumbing: &mut ClientPlumbing,
+    negotiated: Option<&NegotiatedConnection>,
+    token: &CancellationToken,
+) {
+    let Some(selection) = negotiated else {
+        // Pre-HELLO binds cannot happen (the client learns the bit from
+        // HELLO_OK), and a non-negotiating connection never opens a second
+        // stream: either way this is a transport-level surprise, reset.
+        if let QuicStreamEvent::Bound { send, .. } = event {
+            refuse_terminal_stream(send);
+        }
+        return;
+    };
+    if !selection
+        .server_features
+        .contains(ServerFeature::QuicStreams)
+    {
+        // Negotiated without the shape: same surprise, same reset.
+        if let QuicStreamEvent::Bound { send, .. } = event {
+            refuse_terminal_stream(send);
+        }
+        return;
+    }
+    match event {
+        QuicStreamEvent::Bound {
+            terminal_id,
+            stream_id,
+            send,
+            conn,
+        } => {
+            bind_terminal_stream(
+                state,
+                client_id,
+                terminal_id,
+                stream_id,
+                send,
+                conn,
+                plumbing,
+                selection,
+                token,
+            )
+            .await;
+        }
+        QuicStreamEvent::Ended {
+            terminal_id,
+            stream_id,
+        } => {
+            let current = plumbing
+                .stream_bindings
+                .get(&terminal_id)
+                .map(|binding| binding.stream_id);
+            if current != Some(stream_id) {
+                debug!(
+                    ?client_id,
+                    ?terminal_id,
+                    "stale terminal-stream end ignored"
+                );
+                return;
+            }
+            teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
+        }
+    }
+}
+
+/// Subscribe-and-bootstrap one bound Terminal stream.
+///
+/// The subscription registers against the *control* mailbox (lifecycle
+/// fanout, input gates, and this very authorization resolve through the
+/// remembered mailbox); the bootstrap — actor emission, pump, BEGIN /
+/// READY — runs against the *stream* mailbox. A failed bootstrap keeps the
+/// subscription (the client retries the bind) but finishes the stream: the
+/// uncorrelated `ERROR` on control is the refusal, and no partial
+/// generation is left live behind it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the negotiated connection context plus the split stream halves; same list as the attach path"
+)]
+async fn bind_terminal_stream(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: WireResourceId,
+    stream_id: StreamId,
+    send: quinn::SendStream,
+    conn: quinn::Connection,
+    plumbing: &mut ClientPlumbing,
+    selection: &NegotiatedConnection,
+    token: &CancellationToken,
+) {
+    // Authorization is subscription membership: the Terminal names a pane in
+    // the client's attached session or an ATTACH_RESOURCE registration.
+    // Session ATTACH registers membership without content (deferred), so
+    // this check passes for every pane in the snapshot.
+    let subscribed = state.with(|s| {
+        let local = match s.resolve_resource(&terminal_id).into_owned() {
+            crate::state::ResolvedOwned::Local(local) => local,
+            crate::state::ResolvedOwned::Remote(_) | crate::state::ResolvedOwned::Unknown => {
+                return false;
+            }
+        };
+        s.subscribers_for_terminal(local.id).contains(&client_id)
+    });
+    if !subscribed {
+        refuse_terminal_stream(send);
+        let _ = plumbing
+            .out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::TerminalNotFound,
+                message: format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
+            }))
+            .await;
+        return;
+    }
+    let stream_tx = plumbing.bind_stream(
+        client_id,
+        terminal_id.clone(),
+        stream_id,
+        QuicWriter::from_stream(send, conn),
+    );
+    // Remember the subscription against control BEFORE bootstrapping with
+    // the stream: lifecycle fanout must resolve to control even if the
+    // Terminal dies mid-bootstrap.
+    let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx);
+    let Some((core, handle)) = subscription else {
+        plumbing.drop_stream_binding(&terminal_id);
+        let _ = plumbing
+            .out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::TerminalNotFound,
+                message: format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
+            }))
+            .await;
+        return;
+    };
+    if let Err(failure) = bootstrap_attach_terminal(
+        state,
+        client_id,
+        &terminal_id,
+        core,
+        &handle,
+        &stream_tx,
+        stream_id,
+        selection.client_caps,
+        selection.profile,
+        selection.limits,
+        token,
+    )
+    .await
+    {
+        // Keep the subscription (retry re-binds); finish the stream. The
+        // writer drains whatever queued and `finish()`es once the pump's
+        // sender clone is gone — no partial generation stays live.
+        plumbing.drop_stream_binding(&terminal_id);
+        let _ = plumbing
+            .out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: None,
+                code: failure.code,
+                message: failure.message,
+            }))
+            .await;
+    }
+}
+
+/// Tear one Terminal stream down: unsubscribe (stops the pump, detaches the
+/// actor consumer) then drop the binding so its writer drains and finishes
+/// the QUIC stream. Shared by explicit `DETACH_RESOURCE`, stream ends, and
+/// session teardown.
+async fn teardown_terminal_stream(
+    state: &SharedState,
+    client_id: ClientId,
+    plumbing: &mut ClientPlumbing,
+    terminal_id: &WireResourceId,
+) {
+    handle_detach_terminal(state, client_id, terminal_id).await;
+    plumbing.drop_stream_binding(terminal_id);
 }
 
 /// Route one decoded `INPUT_*` event, preferring the dedicated input lane
@@ -4132,6 +4585,7 @@ mod writer_close_tests {
     use super::{handle_client, writer_task};
     use crate::state::{ClientId, Outbound, SharedState};
     use crate::transport::{FrameReader, FrameWriter};
+    use phux_protocol::policy::TransportType;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum WriterEvent {
@@ -4446,6 +4900,7 @@ mod writer_close_tests {
                     root_token.child_token(),
                     root_token.clone(),
                     None,
+                    TransportType::UnixSocket,
                 ));
                 tokio::task::yield_now().await;
                 root_token.cancel();
@@ -4659,6 +5114,7 @@ mod fatal_preflight_close_tests {
                     connection_token,
                     CancellationToken::new(),
                     None,
+                    TransportType::UnixSocket,
                 ));
                 let actor = tokio::task::spawn_local(async move {
                     let registration = consumer_attach_rx

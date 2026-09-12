@@ -3562,6 +3562,14 @@ pub(crate) async fn handle_attach(
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
     connection_token: &CancellationToken,
+    // QUIC multi-stream (proto.md §4.2): publish the snapshot and stop.
+    // Per-pane subscription (actor registration, pump, bootstrap) starts
+    // at `STREAM_BIND` with the stream's mailbox, not here — so this path
+    // skips capture, staging, and pump commit while keeping resolve,
+    // viewport, snapshot, and `ATTACHED` / `ATTACH_READY`. Panes stay
+    // bindable through the subscription sweep `prepare_attach` already
+    // performed. `false` everywhere else.
+    defer_subscription: bool,
 ) {
     let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
         send_error(
@@ -3632,6 +3640,29 @@ pub(crate) async fn handle_attach(
     // for a host-side status bar is the client's concern via the
     // post-attach `RESIZE_TERMINAL` reflow path used by multi-pane).
     apply_attach_viewport(state, client_id, &panes_to_snapshot, viewport);
+
+    // Multi-stream deferral (proto.md §4.2): the snapshot above is the
+    // whole attach. Subscription membership is registered (the sweep in
+    // `prepare_attach`), so every pane is bindable, but no actor consumer
+    // is registered, no pump is spawned, and no bootstrap is staged — all
+    // of that starts at STREAM_BIND with the stream's mailbox. `ATTACHED`
+    // tells the client which panes to open streams for; `ATTACH_READY`
+    // tells it the set is complete.
+    if defer_subscription {
+        let publication = AttachPublication {
+            state,
+            out_tx,
+            connection_token,
+            client_id,
+            attach_id,
+            stream_id: stream_id_from(u64::from(attach_id)),
+            bootstrap_id: initial_bootstrap_id(),
+        };
+        publication
+            .publish(snapshot, initial_client_id, Vec::new(), &session_name)
+            .await;
+        return;
+    }
 
     // Capture sources one pane at a time. Each completed result is charged to
     // the aggregate staging budget before the next actor receives its remaining
@@ -4402,6 +4433,7 @@ mod tests {
                     &root_token,
                     &mut output_pumps,
                     &connection_token,
+                    false,
                 );
                 let actor = answer_native_attach(
                     &mut consumer_attach_rx,
@@ -4470,6 +4502,7 @@ mod tests {
                     &root_token,
                     &mut output_pumps,
                     &connection_token,
+                    false,
                 );
                 tokio::join!(
                     first,
@@ -4500,6 +4533,7 @@ mod tests {
                     &root_token,
                     &mut output_pumps,
                     &connection_token,
+                    false,
                 );
                 tokio::join!(
                     replacement,

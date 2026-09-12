@@ -52,9 +52,14 @@ pub fn encode(bind: &StreamBind, buf: &mut BytesMut) {
         encode_terminal_id(&bind.terminal_id, &mut enc);
         enc.write_u64_be(bind.stream_id.get());
     }
+    // Bounded by construction (one tag byte, one `u32`, one `u64`, one host
+    // of at most 255 bytes); on a hypothetical overflow the saturated
+    // length fails decode, never truncates (the `unwrap_or` convention from
+    // `Encoder::write_bytes`).
     debug_assert!(body.len() <= MAX_STREAM_BIND_BYTES);
+    let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
     let mut enc = Encoder::new(buf);
-    enc.write_u32_be(body.len() as u32);
+    enc.write_u32_be(len);
     // Raw append, not `write_bytes`: that helper length-prefixes its input
     // as a leaf primitive, which would double-frame the header.
     buf.extend_from_slice(&body);
@@ -123,11 +128,11 @@ mod tests {
     #[test]
     fn oversized_length_refused_before_allocation() {
         let mut buf = BytesMut::new();
-        Encoder::new(&mut buf).write_u32_be((MAX_STREAM_BIND_BYTES + 1) as u32);
-        assert!(matches!(
-            decode(&buf),
-            Err(DecodeError::LengthOverflow)
-        ));
+        {
+            let len = u32::try_from(MAX_STREAM_BIND_BYTES + 1).expect("test bound fits");
+            Encoder::new(&mut buf).write_u32_be(len);
+        }
+        assert!(matches!(decode(&buf), Err(DecodeError::LengthOverflow)));
     }
 
     #[test]
@@ -141,10 +146,7 @@ mod tests {
             &mut buf,
         );
         buf.truncate(buf.len() - 1);
-        assert!(matches!(
-            decode(&buf),
-            Err(DecodeError::UnexpectedEof)
-        ));
+        assert!(matches!(decode(&buf), Err(DecodeError::UnexpectedEof)));
     }
 
     #[test]
@@ -162,10 +164,7 @@ mod tests {
         let len = u32::from_be_bytes(buf[..4].try_into().expect("len")) + 1;
         buf[..4].copy_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&[0]);
-        assert!(matches!(
-            decode(&buf),
-            Err(DecodeError::LengthOverflow)
-        ));
+        assert!(matches!(decode(&buf), Err(DecodeError::LengthOverflow)));
     }
 
     #[test]
@@ -180,13 +179,11 @@ mod tests {
         let mut buf = BytesMut::new();
         {
             let mut enc = Encoder::new(&mut buf);
-            enc.write_u32_be(body.len() as u32);
+            let len = u32::try_from(body.len()).expect("bind body bounded by construction");
+            enc.write_u32_be(len);
         }
         // Raw append (see `encode`): `write_bytes` would add a second prefix.
         buf.extend_from_slice(&body);
-        assert!(matches!(
-            decode(&buf),
-            Err(DecodeError::InvalidStreamId)
-        ));
+        assert!(matches!(decode(&buf), Err(DecodeError::InvalidStreamId)));
     }
 }

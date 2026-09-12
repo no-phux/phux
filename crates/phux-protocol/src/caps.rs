@@ -931,9 +931,10 @@ pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
 pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
 /// Wire bit advertising the `GET_PERF` telemetry snapshot command.
 pub const GET_PERF: u32 = 0x0000_0800;
-/// Wire bit advertising the `TRANSCRIBE` voice passthrough command. `0x1000`
-/// is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit was
-/// specified but never implemented, ADR-0114) and skipped: it is not
+/// Wire bit advertising the `TRANSCRIBE` voice passthrough command.
+///
+/// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit
+/// was specified but never implemented, ADR-0114) and skipped: it is not
 /// advertised and MUST NOT be reused without a version bump.
 pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// Wire bit advertising non-Terminal `ResourceKind`s.
@@ -977,10 +978,12 @@ pub const SSH_ORIGIN: u32 = 0x0010_0000;
 /// `RESOURCE_SPAWNED.instance`.
 pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
 
-/// Wire bit advertising QUIC multi-stream (`docs/spec/proto.md` §4.2,
-/// ADR-0113): a negotiating QUIC connection carries one control stream plus
-/// one client-opened bidi stream per attached Terminal. QUIC-only; never
-/// advertised on (or affecting) UDS, ssh-stdio, WebSocket, or WebTransport.
+/// Wire bit advertising QUIC multi-stream.
+///
+/// A negotiating QUIC connection carries one control stream plus one
+/// client-opened bidi stream per attached Terminal (`docs/spec/proto.md`
+/// §4.2, ADR-0113). QUIC-only; never advertised on (or affecting) UDS,
+/// ssh-stdio, WebSocket, or WebTransport.
 pub const QUIC_STREAMS: u32 = 0x0040_0000;
 
 /// An additive server-owned protocol feature.
@@ -1833,10 +1836,10 @@ mod tests {
         );
         assert_eq!(CONDITIONAL_KILL, 0x0020_0000);
         assert_eq!(QUIC_STREAMS, 0x0040_0000);
+        assert!(ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::QuicStreams));
         assert!(
-            ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::QuicStreams)
+            !ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::QuicStreams)
         );
-        assert!(!ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::QuicStreams));
         assert!(
             ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
         );

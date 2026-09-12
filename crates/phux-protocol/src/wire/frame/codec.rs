@@ -336,7 +336,7 @@ pub(in crate::wire) fn decode_paste_event(
 // -----------------------------------------------------------------------------
 
 /// Encode a [`ResourceId`] including its discriminant byte.
-pub(crate) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>) {
+pub(in crate::wire) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>) {
     match id {
         ResourceId::Local { id } => {
             enc.write_u8(RESOURCE_ID_TAG_LOCAL);
@@ -355,7 +355,7 @@ pub(crate) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>) {
 /// v0.1 decoders MUST accept the `Satellite` tag and surface it to the
 /// dispatcher; the dispatcher responds with `ERROR
 /// { UnsupportedSatelliteRoute }` when the server is not a federation hub.
-pub(crate) fn decode_terminal_id(
+pub(in crate::wire) fn decode_terminal_id(
     dec: &mut Decoder<'_>,
 ) -> Result<ResourceId, DecodeError> {
     let tag = dec.read_u8()?;
