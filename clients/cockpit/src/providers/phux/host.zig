@@ -23,6 +23,10 @@ test {
 const workspace = provider.workspace;
 pub const OperationResult = operations.types.Result;
 pub const test_support = @import("operation_test_support.zig");
+
+test {
+    _ = @import("close_resource_tests.zig");
+}
 pub const AgentSession = agent_sessions.Session;
 pub const AgentState = agent_sessions.State;
 pub const AgentRecordsKind = agent_sessions.RecordsKind;
@@ -521,6 +525,37 @@ pub const Host = struct {
         const raw = cId(&remote);
         try resultError(c.phux_client_queue_kill_if(host.client, request_id, &raw, &instance));
         host.operation_ledger.accepted(request_id, host.client_generation, .kill_if, terminal_ref);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// Intentional close is scoped to the connection captured with the action.
+    /// Receipts do not manufacture an ended view; RESOURCE_CLOSED owns that.
+    pub fn requestCloseResource(host: *Host, terminal_ref: provider.TerminalRef, expected_epoch: u64) !u32 {
+        const request_id = try host.preflightOperation();
+        if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
+        const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+        if (!terminal.published or terminal.phase != .live) return error.InvalidState;
+        const raw = cId(&terminal.id);
+        try resultError(c.phux_client_queue_close_resource(host.client, request_id, &raw));
+        host.operation_ledger.accepted(request_id, host.client_generation, .close_resource, terminal_ref);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// A tab's exact leaves, validated together and sent as one server command.
+    pub fn requestCloseResources(host: *Host, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
+        const request_id = try host.preflightOperation();
+        if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
+        if (refs.len == 0 or refs.len > max_terminals) return error.InvalidArgument;
+        var ids: [max_terminals]c.PhuxResourceId = undefined;
+        for (refs, ids[0..refs.len]) |terminal_ref, *raw| {
+            const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+            if (!terminal.published or terminal.phase != .live) return error.InvalidState;
+            raw.* = cId(&terminal.id);
+        }
+        try resultError(c.phux_client_queue_close_resources(host.client, request_id, &ids, refs.len));
+        host.operation_ledger.accepted(request_id, host.client_generation, .close_resources, null);
         host.stageOutgoing() catch host.disconnect();
         return request_id;
     }
@@ -1391,8 +1426,8 @@ pub const Host = struct {
     }
 
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
-        // A conditional kill names a terminal it never admits as a replica.
-        if (result.kind == .kill_if) return;
+        // Kill receipts never admit replicas or fake authoritative closure.
+        if (result.kind == .kill_if or result.kind == .close_resource or result.kind == .close_resources) return;
         const terminal_ref = result.terminal_ref orelse return;
         if (result.kind == .detach) {
             if (result.status == .success) host.removeOperationReplica(terminal_ref);

@@ -568,6 +568,15 @@ pub const PhuxProvider = struct {
         return self.host.requestKillIf(terminal_ref, instance);
     }
 
+    /// Close only on the connection epoch captured with the invoking owner.
+    pub fn requestCloseResource(self: *PhuxProvider, terminal_ref: provider.TerminalRef, expected_epoch: u64) !u32 {
+        return self.host.requestCloseResource(terminal_ref, expected_epoch);
+    }
+
+    pub fn requestCloseResources(self: *PhuxProvider, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
+        return self.host.requestCloseResources(refs, expected_epoch);
+    }
+
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
         return self.host.requestDetach(terminal_ref);
     }
