@@ -26,6 +26,10 @@ pub fn Replay(comptime sdk: type) type {
         const Op = enum(u8) { channel = 1, timer = 2 };
         const Channel = struct { active: bool = false, rejected: bool = false, opened: bool = false };
         const Declaration = struct { op: Op, key: u64, value: u64 };
+        pub const DrainContext = struct {
+            installed: bool,
+            primary_canvas_label: []const u8,
+        };
         // version + operation + original key + admission/platform timer ID.
         const metadata_bytes = 1 + 1 + 8 + 8;
 
@@ -167,22 +171,29 @@ pub fn Replay(comptime sdk: type) type {
             self.pending += 1;
         }
 
-        /// Call before inner.event. Skip only a recorded native timer ID; other
+        /// Call before inner.event with the UiApp's ACTUAL entry-time installed
+        /// state and primary canvas label. Its installing frame drains nothing.
+        /// Skip only a recorded native timer ID; other
         /// events continue through the SDK. Native results were delivered live
         /// on these UiApp drain boundaries, never during replay feed itself.
-        pub fn event(self: *Self, value: sdk.Event, effects: anytype) !bool {
+        pub fn event(self: *Self, value: sdk.Event, effects: anytype, context: DrainContext) !bool {
             if (!self.replaying) return false;
             if (self.failed) return error.NativeReplayMismatch;
             try self.verifyTimerIsolation(effects);
             if (value == .timer) return self.timer_ids.contains(value.timer.id);
-            switch (value) {
-                .effects_wake, .gpu_surface_frame => {
-                    self.delivered += self.pending;
-                    self.pending = 0;
-                },
-                else => {},
+            if (drains(value, context)) {
+                self.delivered += self.pending;
+                self.pending = 0;
             }
             return false;
+        }
+        fn drains(value: sdk.Event, context: DrainContext) bool {
+            if (!context.installed) return false;
+            return switch (value) {
+                .effects_wake => true,
+                .gpu_surface_frame => |frame| std.mem.eql(u8, frame.label, context.primary_canvas_label),
+                else => false,
+            };
         }
         fn verifyTimerIsolation(self: *Self, effects: anytype) !void {
             if (self.timer_ids.count() == 0) return;

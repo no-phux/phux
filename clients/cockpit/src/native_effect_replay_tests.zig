@@ -147,7 +147,7 @@ fn Driver(comptime sdk: type, comptime module: type, comptime allocateKey: anyty
             const previous = active;
             active = self;
             defer active = previous;
-            if (try self.sink.event(value, &self.ui.effects)) return;
+            if (try self.sink.event(value, &self.ui.effects, .{ .installed = self.ui.installed, .primary_canvas_label = self.ui.options.canvas_label })) return;
             try self.ui.app().event(rt, value);
             if (self.callback_error) |err| return err;
         }
@@ -283,13 +283,24 @@ pub fn checkOwnership(comptime sdk: type, comptime module: type, comptime alloca
     }
     sink.armReplay();
     timer_sink.armReplay();
+    const installed: Sink.DrainContext = .{ .installed = true, .primary_canvas_label = "canvas" };
+    const uninstalled: Sink.DrainContext = .{ .installed = false, .primary_canvas_label = "canvas" };
     const data: sdk.runtime.EffectResultRecord = .{ .kind = .channel, .key = channel_key, .payload = &.{1} };
     try std.testing.expect(try sink.feed(data));
     try std.testing.expectEqual(@as(usize, 0), sink.delivered);
     try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
-    try std.testing.expect(!try sink.event(.{ .lifecycle = .activate }, effects));
+    for ([_][]const u8{ "secondary", "unknown" }) |label| {
+        try std.testing.expect(!try sink.event(.{ .gpu_surface_frame = .{ .label = label, .size = .{ .width = 400, .height = 300 } } }, effects, installed));
+        try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+    }
+    const primary: sdk.Event = .{ .gpu_surface_frame = .{ .label = "canvas", .size = .{ .width = 400, .height = 300 } } };
+    try std.testing.expect(!try sink.event(primary, effects, uninstalled));
     try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
-    try std.testing.expect(!try sink.event(.effects_wake, effects));
+    try std.testing.expect(!try sink.event(.effects_wake, effects, uninstalled));
+    try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+    try std.testing.expect(!try sink.event(.{ .lifecycle = .activate }, effects, installed));
+    try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
+    try std.testing.expect(!try sink.event(.effects_wake, effects, installed));
     try sink.finish();
     try std.testing.expectEqual(@as(usize, 1), sink.delivered);
 
@@ -298,17 +309,18 @@ pub fn checkOwnership(comptime sdk: type, comptime module: type, comptime alloca
     try std.testing.expect(!try sink.feed(.{ .kind = .host, .key = 77, .payload = "snapshot" }));
     try std.testing.expect(!try sink.feed(.{ .kind = .file, .key = channel_key }));
     try std.testing.expect(try sink.feed(.{ .kind = .channel, .key = channel_key, .channel_kind = .closed }));
-    try std.testing.expect(!try sink.event(.effects_wake, effects));
+    try std.testing.expect(!try sink.event(primary, effects, installed));
+    try sink.finish();
     try std.testing.expectError(error.NativeReplayMismatch, sink.feed(data));
     try std.testing.expectError(error.NativeReplayMismatch, sink.finish());
 
     const base = sdk.runtime.effect_timer_platform_id_base;
-    try std.testing.expect(try timer_sink.event(.{ .timer = .{ .id = base } }, effects));
-    try std.testing.expect(!try timer_sink.event(.{ .timer = .{ .id = base + 1 } }, effects));
+    try std.testing.expect(try timer_sink.event(.{ .timer = .{ .id = base } }, effects, installed));
+    try std.testing.expect(!try timer_sink.event(.{ .timer = .{ .id = base + 1 } }, effects, installed));
     effects.startTimer(.{ .key = 7, .interval_ms = 1, .mode = .one_shot, .on_fire = Fx.timerMsg(.timer) });
     // A core timer shifted into the omitted native slot must not be silently
     // lost even when the next recorded timer ID itself is unowned.
-    try std.testing.expectError(error.NativeReplayMismatch, timer_sink.event(.{ .timer = .{ .id = base + 1 } }, effects));
+    try std.testing.expectError(error.NativeReplayMismatch, timer_sink.event(.{ .timer = .{ .id = base + 1 } }, effects, installed));
     try std.testing.expectError(error.NativeReplayMismatch, timer_sink.finish());
 
     var unknown = Sink.init(gpa, 7001, policy(module));
