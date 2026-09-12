@@ -7,11 +7,23 @@ pub const bindings = @import("config/keybindings.zig");
 pub fn State(comptime Platform: type) type {
     return struct {
         const Self = @This();
+        const Registration = struct {
+            resolved: bindings.Resolved = .{},
+            // "kb." + u64 decimal + "." + at most three index digits.
+            ids: [bindings.max_commands]bindings.Text(27) = @splat(.{}),
+            shortcuts: [Platform.max_shortcuts]Platform.Shortcut = undefined,
+            menus: [Platform.max_menus]Platform.Menu = undefined,
+            items: [Platform.max_menu_items]Platform.MenuItem = undefined,
+            shortcut_count: usize = 0,
+        };
         registry: bindings.Registry = .{},
         original_menus: []const Platform.Menu = &.{},
         applied: bindings.Resolved = .{},
         installed: bool = false,
         enabled: bool = false,
+        registrations: [2]Registration = @splat(.{}),
+        active_bank: u1 = 0,
+        generation: u64 = 0,
 
         pub fn init(shortcuts: []const Platform.Shortcut, menus: []const Platform.Menu) !Self {
             // Runtime configures the manifest before calling App.start. It is
@@ -24,49 +36,61 @@ pub fn State(comptime Platform: type) type {
                 }
             }
             for (shortcuts) |shortcut| {
-                try self.registry.add(.{ .id = shortcut.id, .default = try manifestChord(shortcut.key, shortcut.modifiers) });
+                const label = if (self.registry.indexOf(shortcut.id) == null) shortcutCaption(shortcut.id) else "";
+                try self.registry.add(.{ .id = shortcut.id, .label = label, .default = try manifestChord(shortcut.key, shortcut.modifiers) });
             }
             self.applied = try self.registry.resolve(&.{});
             return self;
         }
 
-        /// Call on start and after committed interaction/config changes. The
-        /// platform copies these arrays synchronously (AppKit and NullPlatform).
-        /// Suspending both registrations AND menu equivalents gives text fields
-        /// ordinary editing/composition rather than swallowing their Cmd keys.
+        /// Keep State at a stable address after the first sync: NullPlatform
+        /// copies descriptors but borrows their key/id slices. Two owned banks
+        /// retain the previous installation while preparing its replacement.
+        /// Suspending registrations AND menu equivalents preserves text editing.
         pub fn sync(self: *Self, services: anytype, overrides: *const bindings.Overrides, enabled: bool) !void {
             const candidate = try self.registry.resolve(overrides);
             if (self.installed and self.enabled == enabled and std.meta.eql(self.applied, candidate)) return;
-            self.install(services, &candidate, enabled) catch |err| {
-                // Roll back both halves; if rollback fails, surface it rather
-                // than publishing hints which no longer describe registrations.
-                self.install(services, &self.applied, self.enabled) catch return error.KeybindingRollbackFailed;
+            self.install(services, &candidate, enabled, self.active_bank ^ 1) catch |err| {
+                // An attempt can publish shortcuts before failing on menus.
+                // Rollback therefore uses a NEW generation, not the old IDs.
+                self.install(services, &self.applied, self.enabled, self.active_bank) catch {
+                    self.installed = false;
+                    return error.KeybindingRollbackFailed;
+                };
                 return err;
             };
-            self.applied = candidate;
+        }
+
+        fn install(self: *Self, services: anytype, resolved: *const bindings.Resolved, enabled: bool, bank: u1) !void {
+            const registration = &self.registrations[bank];
+            try self.prepare(registration, resolved, enabled);
+            self.installed = false;
+            try services.configureShortcuts(registration.shortcuts[0..registration.shortcut_count]);
+            try services.configureMenus(registration.menus[0..self.original_menus.len]);
+            self.applied = registration.resolved;
+            self.active_bank = bank;
             self.enabled = enabled;
             self.installed = true;
         }
 
-        fn install(self: *Self, services: anytype, resolved: *const bindings.Resolved, enabled: bool) !void {
-            var shortcuts: [Platform.max_shortcuts]Platform.Shortcut = undefined;
-            const count = try self.shortcutList(resolved, enabled, &shortcuts);
-            var menus: [Platform.max_menus]Platform.Menu = undefined;
-            var items: [Platform.max_menu_items]Platform.MenuItem = undefined;
-            try self.menuList(resolved, enabled, &menus, &items);
-            try services.configureShortcuts(shortcuts[0..count]);
-            try services.configureMenus(menus[0..self.original_menus.len]);
+        fn prepare(self: *Self, registration: *Registration, resolved: *const bindings.Resolved, enabled: bool) !void {
+            self.generation = std.math.add(u64, self.generation, 1) catch return error.KeybindingGenerationExhausted;
+            registration.resolved = resolved.*;
+            registration.shortcut_count = try self.shortcutList(registration, enabled);
+            try self.menuList(&registration.resolved, enabled, &registration.menus, &registration.items);
         }
 
-        fn shortcutList(self: *Self, resolved: *const bindings.Resolved, enabled: bool, out: []Platform.Shortcut) !usize {
+        fn shortcutList(self: *Self, registration: *Registration, enabled: bool) !usize {
             if (!enabled) return 0;
             var count: usize = 0;
+            const resolved = &registration.resolved;
             for (resolved.chords[0..resolved.count], 0..) |maybe, index| {
                 const chord = maybe orelse continue;
-                if (count == out.len) return error.TooManyShortcuts;
-                const id = self.registry.commands[index].id;
-                if (id.len > Platform.max_shortcut_id_bytes) return error.CommandIdTooLong;
-                out[count] = .{ .id = id, .key = resolved.chords[index].?.key.slice(), .modifiers = platformModifiers(chord.modifiers) };
+                if (count == registration.shortcuts.len) return error.TooManyShortcuts;
+                const id = &registration.ids[index];
+                const text = try std.fmt.bufPrint(&id.bytes, "kb.{d}.{d}", .{ self.generation, index });
+                id.len = text.len;
+                registration.shortcuts[count] = .{ .id = id.slice(), .key = resolved.chords[index].?.key.slice(), .modifiers = platformModifiers(chord.modifiers) };
                 count += 1;
             }
             return count;
@@ -97,7 +121,8 @@ pub fn State(comptime Platform: type) type {
         }
 
         pub fn commandForEvent(self: *const Self, event: anytype) ?[]const u8 {
-            if (!self.enabled or event.phase == .key_up) return null;
+            if (!self.installed or !self.enabled) return null;
+            if (event.phase != .key_down) return null;
             const modifiers = widgetModifiers(event.modifiers);
             const index = self.applied.match(event.key, modifiers) orelse return null;
             return self.registry.commands[index].id;
@@ -106,11 +131,26 @@ pub fn State(comptime Platform: type) type {
         /// A host event may have been queued before a remap. Never let its old
         /// command id bypass the current binding or execute in a text overlay.
         pub fn acceptsShortcut(self: *const Self, event: Platform.ShortcutEvent) bool {
-            if (!self.enabled) return false;
-            const chord = manifestChord(event.key, event.modifiers) catch return false;
-            const value = chord orelse return false;
-            const index = self.applied.match(value.key.slice(), value.modifiers) orelse return false;
-            return std.mem.eql(u8, self.registry.commands[index].id, event.id);
+            return self.commandForShortcut(event) != null;
+        }
+
+        /// Platform IDs name an installation, not a canonical command. A
+        /// matched-registration event has already lost physical Shift, so its
+        /// generation is the only proof it belongs to current input ownership.
+        pub fn commandForShortcut(self: *const Self, event: Platform.ShortcutEvent) ?[]const u8 {
+            if (!self.installed or !self.enabled) return null;
+            const chord = manifestChord(event.key, event.modifiers) catch return null;
+            const value = chord orelse return null;
+            const index = self.applied.match(value.key.slice(), value.modifiers) orelse return null;
+            const id = self.registrations[self.active_bank].ids[index].slice();
+            if (!std.mem.eql(u8, id, event.id)) return null;
+            return self.registry.commands[index].id;
+        }
+
+        pub fn response(self: *const Self, overrides: *const bindings.Overrides, notice: []const u8, out: []u8) ![]const u8 {
+            if (self.installed) return encodeResponse(&self.registry, &self.applied, overrides, notice, out);
+            const unknown: bindings.Resolved = .{ .count = self.registry.count };
+            return encodeResponse(&self.registry, &unknown, overrides, "Shortcut installation is unknown. Retry to restore your bindings.", out);
         }
 
         fn platformModifiers(mask: u8) Platform.ShortcutModifiers {
@@ -156,7 +196,9 @@ pub const Request = struct {
 
 /// Encode only the currently accepted registry, never an unapplied candidate.
 /// A rejected edit can still return the real rows with an actionable notice.
-pub fn response(registry: *const bindings.Registry, resolved: *const bindings.Resolved, overrides: *const bindings.Overrides, notice: []const u8, out: []u8) ![]const u8 {
+pub const response = encodeResponse;
+
+fn encodeResponse(registry: *const bindings.Registry, resolved: *const bindings.Resolved, overrides: *const bindings.Overrides, notice: []const u8, out: []u8) ![]const u8 {
     if (notice.len > 255) return error.NoticeTooLong;
     var writer: Writer = .{ .out = out };
     try writer.write(&.{ 1, @intCast(registry.count), @intFromBool(notice.len > 0), @intCast(notice.len) });
@@ -200,9 +242,29 @@ pub fn errorNotice(err: anyerror) []const u8 {
         error.ReservedChord => "macOS or the application menu owns this chord. Choose another key.",
         error.UnknownCommand => "This command is not in the current application. Reload the binding list.",
         error.InvalidModifier, error.DuplicateModifier, error.InvalidKey => "Use a chord such as Cmd+Shift+p, or none to remove a binding.",
-        error.KeybindingRollbackFailed => "Shortcut restoration failed. Reopen Cockpit before editing bindings again.",
+        error.KeybindingRollbackFailed => "Shortcut restoration failed. Retry to repair the installation before using app shortcuts.",
         else => "Could not apply these bindings. Your previous bindings remain active; retry or cancel.",
     };
+}
+
+/// Canonical captions agreed with the frontend command catalog. They annotate
+/// only IDs actually present in app.zon; they never create executable commands.
+fn shortcutCaption(id: []const u8) []const u8 {
+    const captions = .{
+        .{ "surface.1", "Select Tab 1" },
+        .{ "surface.2", "Select Tab 2" },
+        .{ "surface.3", "Select Tab 3" },
+        .{ "surface.4", "Select Tab 4" },
+        .{ "surface.5", "Select Tab 5" },
+        .{ "pane.focus-left", "Focus Pane Left" },
+        .{ "pane.focus-right", "Focus Pane Right" },
+        .{ "pane.focus-up", "Focus Pane Up" },
+        .{ "pane.focus-down", "Focus Pane Down" },
+    };
+    inline for (captions) |caption| {
+        if (std.mem.eql(u8, id, caption[0])) return caption[1];
+    }
+    return "";
 }
 
 const TestPlatform = struct {
@@ -229,9 +291,11 @@ const TestServices = struct {
     menu_calls: usize = 0,
     shortcut_calls: usize = 0,
     fail_menu_once: bool = false,
+    fail_shortcut_call: usize = 0,
 
     fn configureShortcuts(self: *TestServices, shortcuts: []const TestPlatform.Shortcut) !void {
         self.shortcut_calls += 1;
+        if (self.shortcut_calls == self.fail_shortcut_call) return error.TestShortcutsFailed;
         self.registry = .{};
         for (shortcuts) |shortcut| {
             try self.registry.add(.{ .id = shortcut.id, .default = try manifestChord(shortcut.key, shortcut.modifiers) });
@@ -245,10 +309,11 @@ const TestServices = struct {
         }
         self.menu_key = try bindings.Text(32).init(menus[0].items[0].key);
     }
-    fn dispatch(self: *const TestServices, key: []const u8, modifiers: u8) ?[]const u8 {
+    fn dispatch(self: *const TestServices, state: *const State(TestPlatform), key: []const u8, modifiers: u8) ?[]const u8 {
         const resolved = self.registry.defaults();
         const index = resolved.match(key, modifiers) orelse return null;
-        return self.registry.commands[index].id;
+        const chord = resolved.chords[index].?;
+        return state.commandForShortcut(.{ .id = self.registry.commands[index].id, .key = chord.key.slice(), .modifiers = State(TestPlatform).platformModifiers(chord.modifiers) });
     }
 };
 
@@ -262,15 +327,15 @@ test "runtime remap replaces actual platform dispatch and menu equivalents once"
     var services: TestServices = .{};
     var overrides: bindings.Overrides = .{};
     try state.sync(&services, &overrides, true);
-    try std.testing.expectEqualStrings("terminal.new", services.dispatch("t", bindings.cmd).?);
-    try std.testing.expect(services.dispatch("r", bindings.cmd) == null);
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "t", bindings.cmd).?);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd) == null);
     try overrides.set("terminal.new", "cmd+r");
     try state.sync(&services, &overrides, true);
-    try std.testing.expect(services.dispatch("t", bindings.cmd) == null);
-    try std.testing.expectEqualStrings("terminal.new", services.dispatch("r", bindings.cmd).?);
+    try std.testing.expect(services.dispatch(&state, "t", bindings.cmd) == null);
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "r", bindings.cmd).?);
     try std.testing.expectEqualStrings("r", services.menu_key.slice());
-    try std.testing.expect(services.dispatch("r", bindings.ctrl) == null);
-    try std.testing.expect(services.dispatch("r", bindings.cmd | bindings.alt) == null);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.ctrl) == null);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd | bindings.alt) == null);
     try state.sync(&services, &overrides, true);
     try std.testing.expectEqual(@as(usize, 2), services.shortcut_calls);
     try std.testing.expectEqual(@as(usize, 2), services.menu_calls);
@@ -283,12 +348,12 @@ test "text editing suspends capture and reset restores default physical dispatch
     try overrides.set("terminal.new", "cmd+r");
     try state.sync(&services, &overrides, true);
     try state.sync(&services, &overrides, false);
-    try std.testing.expect(services.dispatch("r", bindings.cmd) == null);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd) == null);
     try std.testing.expectEqualStrings("", services.menu_key.slice());
     overrides.resetAll();
     try state.sync(&services, &overrides, true);
-    try std.testing.expectEqualStrings("terminal.new", services.dispatch("t", bindings.cmd).?);
-    try std.testing.expect(services.dispatch("r", bindings.cmd) == null);
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "t", bindings.cmd).?);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd) == null);
     try std.testing.expectEqualStrings("t", services.menu_key.slice());
 }
 
@@ -300,8 +365,8 @@ test "failed menu replacement rolls shortcuts back before publishing new hints" 
     try overrides.set("terminal.new", "cmd+r");
     services.fail_menu_once = true;
     try std.testing.expectError(error.TestMenuFailed, state.sync(&services, &overrides, true));
-    try std.testing.expectEqualStrings("terminal.new", services.dispatch("t", bindings.cmd).?);
-    try std.testing.expect(services.dispatch("r", bindings.cmd) == null);
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "t", bindings.cmd).?);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd) == null);
     try std.testing.expectEqualStrings("t", services.menu_key.slice());
     try std.testing.expectEqualStrings("t", state.applied.chords[0].?.key.slice());
 }
@@ -317,4 +382,53 @@ test "request validation and response snapshot describe accepted bindings" {
     const result = try response(&state.registry, &resolved, &overrides, "", &bytes);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 0, 0, 0, 1, 12, 7, 0, 5 }, result[0..10]);
     try std.testing.expectError(error.NoSpaceLeft, response(&state.registry, &resolved, &overrides, "", bytes[0..10]));
+}
+
+test "compound replacement failure invalidates installation and forces repair" {
+    var state = try State(TestPlatform).init(&.{}, &test_menus);
+    var services: TestServices = .{};
+    const original: bindings.Overrides = .{};
+    try state.sync(&services, &original, true);
+    const original_id = try bindings.Text(27).init(services.registry.commands[0].id);
+    var changed = original;
+    try changed.set("terminal.new", "cmd+r");
+    services.fail_menu_once = true;
+    services.fail_shortcut_call = 3; // Candidate shortcuts succeeded; rollback fails.
+    try std.testing.expectError(error.KeybindingRollbackFailed, state.sync(&services, &changed, true));
+    try std.testing.expect(!state.installed);
+    const candidate_id = try bindings.Text(27).init(services.registry.commands[0].id);
+    // The physical registration is still the candidate, but neither command
+    // acceptance nor displayed hints may claim a known installation.
+    try std.testing.expect(services.registry.defaults().match("r", bindings.cmd) != null);
+    try std.testing.expect(services.dispatch(&state, "r", bindings.cmd) == null);
+    try std.testing.expect(!state.acceptsShortcut(.{ .id = original_id.slice(), .key = "t", .modifiers = .{ .command = true } }));
+    var bytes: [max_response_bytes]u8 = undefined;
+    const unknown = try state.response(&original, "", &bytes);
+    try std.testing.expectEqual(@as(u8, 1), unknown[2]);
+    try std.testing.expectEqual(@as(u8, 0), unknown[4 + @as(usize, unknown[3]) + 4]);
+    try state.sync(&services, &original, true);
+    try std.testing.expect(services.shortcut_calls > 3);
+    try std.testing.expectEqualStrings("t", state.applied.chords[0].?.key.slice());
+    try std.testing.expectEqualStrings("t", services.menu_key.slice());
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "t", bindings.cmd).?);
+    try std.testing.expect(!state.acceptsShortcut(.{ .id = original_id.slice(), .key = "t", .modifiers = .{ .command = true } }));
+    try std.testing.expect(!state.acceptsShortcut(.{ .id = candidate_id.slice(), .key = "r", .modifiers = .{ .command = true } }));
+    const repaired = try state.response(&original, "", &bytes);
+    try std.testing.expectEqual(@as(u8, 0), repaired[2]);
+    try std.testing.expectEqual(@as(u8, 5), repaired[8]);
+}
+
+test "rollback restores keys under a new generation without reviving queued IDs" {
+    var state = try State(TestPlatform).init(&.{}, &test_menus);
+    var services: TestServices = .{};
+    var overrides: bindings.Overrides = .{};
+    try state.sync(&services, &overrides, true);
+    const old_id = try bindings.Text(27).init(services.registry.commands[0].id);
+    try overrides.set("terminal.new", "cmd+r");
+    services.fail_menu_once = true;
+    try std.testing.expectError(error.TestMenuFailed, state.sync(&services, &overrides, true));
+    try std.testing.expect(state.installed);
+    try std.testing.expectEqual(@as(u64, 3), state.generation);
+    try std.testing.expect(!state.acceptsShortcut(.{ .id = old_id.slice(), .key = "t", .modifiers = .{ .command = true } }));
+    try std.testing.expectEqualStrings("terminal.new", services.dispatch(&state, "t", bindings.cmd).?);
 }
