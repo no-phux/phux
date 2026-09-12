@@ -69,6 +69,49 @@ pub const Creation = struct {
         return n;
     }
 
+    /// First-tab evidence for the active provider this drain. Entries still
+    /// advancing report `.pending`; completed placements report their result.
+    /// `empty_session.settleAttachment` consumes opening flags from these
+    /// outcomes without treating an empty queue as refusal.
+    pub const EmptyFirstTab = struct {
+        window: usize,
+        window_epoch: u64,
+        connection_epoch: u64,
+        outcome: Outcome,
+
+        pub const Outcome = enum { pending, refused, placed };
+    };
+
+    pub fn collectEmptyFirstTabs(self: *const Creation, out: []EmptyFirstTab) usize {
+        var total: usize = 0;
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (total >= out.len) break;
+            if (entry.completion) |completion| {
+                const outcome: EmptyFirstTab.Outcome = switch (completion.placement) {
+                    .placed => .placed,
+                    .refused, .destination_lost, .unknown => .refused,
+                    .not_requested => continue,
+                };
+                out[total] = .{
+                    .window = entry.placement_window orelse entry.window,
+                    .window_epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch,
+                    .connection_epoch = entry.epoch,
+                    .outcome = outcome,
+                };
+            } else {
+                out[total] = .{
+                    .window = entry.placement_window orelse entry.window,
+                    .window_epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch,
+                    .connection_epoch = entry.epoch,
+                    .outcome = .pending,
+                };
+            }
+            total += 1;
+        }
+        return total;
+    }
+
     fn vacant(self: *Creation) !*?Pending {
         for (&self.pending) |*slot| if (slot.* == null) return slot;
         return error.OperationCapacity;

@@ -109,11 +109,29 @@ const Creation = struct {
     }
 };
 
+/// One first-tab creation's outcome for `empty_session.settleAttachment`.
+/// Pending rows are still in `creations`; refused/placed are drain-local
+/// records filled when a creation clears so queue absence is never inferred.
+pub const EmptyFirstTab = struct {
+    window: usize,
+    window_epoch: u64,
+    connection_epoch: u64,
+    outcome: enum { pending, refused, placed },
+};
+
+const EmptyTabSettlement = struct {
+    window: usize,
+    window_epoch: u64,
+    epoch: u64,
+    placed: bool,
+};
+
 pub const Edits = struct {
     pub const State = struct {
         mutations: shared_mutations.Coordinator = .{},
         creations: [max_creations]?Creation = @splat(null),
         strays: [max_strays]?Stray = @splat(null),
+        empty_tab_settlements: [max_creations]?EmptyTabSettlement = @splat(null),
     };
     states: std.ArrayList(*State) = .empty,
     // At most one provisional operation owns each physical window.
@@ -144,6 +162,7 @@ pub const Edits = struct {
         for (state.creations) |held| if (held) |entry| self.drop(slot, entry);
         state.mutations = .{};
         state.creations = @splat(null);
+        state.empty_tab_settlements = @splat(null);
     }
 
     fn drop(self: *Edits, slot: usize, entry: Creation) void {
@@ -312,6 +331,44 @@ pub const Edits = struct {
         return count;
     }
 
+    /// Exact first-tab evidence for one peer slot this drain. Pending creations
+    /// report `.pending`; cleared creations report the settlement recorded when
+    /// they finished. Call after `pump`/`complete` and before the next drain.
+    pub fn collectEmptyFirstTabs(self: *Edits, slot: usize, out: []EmptyFirstTab) usize {
+        if (slot >= self.states.items.len) return 0;
+        const state = self.states.items[slot];
+        var count: usize = 0;
+        for (state.creations) |held| {
+            const entry = held orelse continue;
+            const window = entry.window orelse continue;
+            if (count >= out.len) break;
+            out[count] = .{ .window = window, .window_epoch = entry.window_epoch, .connection_epoch = entry.epoch, .outcome = .pending };
+            count += 1;
+        }
+        for (&state.empty_tab_settlements) |*held| {
+            const value = held.* orelse continue;
+            held.* = null;
+            if (count >= out.len) continue;
+            out[count] = .{
+                .window = value.window,
+                .window_epoch = value.window_epoch,
+                .connection_epoch = value.epoch,
+                .outcome = if (value.placed) .placed else .refused,
+            };
+            count += 1;
+        }
+        return count;
+    }
+
+    fn noteEmptyTabSettlement(state: *State, entry: Creation, placed: bool) void {
+        const window = entry.window orelse return;
+        for (&state.empty_tab_settlements) |*held| {
+            if (held.* != null) continue;
+            held.* = .{ .window = window, .window_epoch = entry.window_epoch, .epoch = entry.epoch, .placed = placed };
+            return;
+        }
+    }
+
     /// A later explicit selection supersedes every pending placement's focus.
     pub fn supersedeFocus(self: *Edits) void {
         for (self.states.items) |state| for (&state.creations) |*entry| {
@@ -452,6 +509,7 @@ pub const Edits = struct {
             if (entry.stage != .spawning and entry.stage != .attaching) continue;
             if (entry.request != result.request_id or entry.epoch != result.connection_epoch) continue;
             accept(model, slot, entry, result) catch {
+                noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                 self.orphan(entry.*);
                 held.* = null;
             };
@@ -471,6 +529,7 @@ pub const Edits = struct {
         for (&self.states.items[slot].creations) |*held| {
             const entry = if (held.*) |*value| value else continue;
             if (entry.epoch != peer_view.peer.connectionEpoch() or entry.session != peer_view.shared_workspace.session) {
+                noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                 self.drop(slot, entry.*);
                 held.* = null;
                 changed = true;
@@ -487,11 +546,13 @@ pub const Edits = struct {
             .spawning, .attaching => return false,
             .publishing => {
                 if (!creationWindowCurrent(model, entry.*)) {
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                     self.drop(slot, entry.*);
                     held.* = null;
                     return true;
                 }
                 const outcome = self.place(peer_view, slot, entry) catch {
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                     self.drop(slot, entry.*);
                     held.* = null;
                     return true;
@@ -503,7 +564,11 @@ pub const Edits = struct {
                 if (completion.outcome == .confirmed) {
                     placeInWindow(model, peer_view, entry.*);
                     if (entry.may_focus) peer_view.shared_workspace.desired_terminal = entry.terminal;
-                } else self.orphan(entry.*);
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, true);
+                } else {
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
+                    self.orphan(entry.*);
+                }
                 held.* = null;
                 return true;
             },

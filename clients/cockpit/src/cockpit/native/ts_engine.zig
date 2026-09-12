@@ -534,7 +534,7 @@ pub const Engine = struct {
         }
         if (model.phux()) |remote| {
             const workspace = remote.workspaceSnapshot();
-            if (workspace.state != .unavailable) return self.synchronizeSharedWorkspace() or changed;
+            if (workspace.state != .unavailable) return self.synchronizeSharedWorkspace(delta.sessions_listed) or changed;
         }
         return changed;
     }
@@ -558,13 +558,17 @@ pub const Engine = struct {
         return state.completeSubscription(result, remote.workspaceSnapshot().request_id);
     }
 
-    fn synchronizeSharedWorkspace(self: *Engine) bool {
+    fn synchronizeSharedWorkspace(self: *Engine, catalog_listed: bool) bool {
         const model = self.model;
         const remote = model.phux() orelse return false;
         self.sharedContext() catch return self.projectionRefused();
         var changed = model.shared_mutations.pump(model);
         changed = self.creation.pump(model) or changed;
         changed = (self.projectSharedWorkspace() catch return self.projectionRefused()) or changed;
+        // Bound empty New Tab on the primary provider: queue, then settle from
+        // this drain's creation evidence (primary has no peer `holds` path).
+        changed = empty_session.pumpAttachment(self, remote) or changed;
+        changed = self.settleEmptyAttachment(remote, null, catalog_listed) or changed;
         self.admitDesiredTerminal();
         if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
         model.shared_workspace.subscribe(model);
@@ -682,6 +686,7 @@ pub const Engine = struct {
         self.cancelSplitDrag();
         self.model.captureRemotePaint();
         if (self.model.phux()) |remote| {
+            empty_session.forgetAttachment(self.model, remote.context_id, false);
             remote.stop();
             while (remote.takeOperationResult()) |result| {
                 _ = self.creation.completeDisconnected(self.model, result);
@@ -1560,7 +1565,7 @@ pub const Engine = struct {
 
     fn drainShowingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
         if (delta.detached) return self.peerDetached(fx, slot);
-        const projected = self.drainShowingPeer(fx, slot);
+        const projected = self.drainShowingPeer(fx, slot, delta.sessions_listed);
         return self.commitProviderChange(projected or peerPublicationMoved(delta));
     }
 
@@ -1599,9 +1604,11 @@ pub const Engine = struct {
     /// Cockpit asked for names an older generation and never reaches here.
     fn peerClosed(self: *Engine, fx: anytype, slot: usize) bool {
         const model = self.model;
-        model.phuxPeerAt(slot).?.stop();
+        const peer = model.phuxPeerAt(slot).?;
+        empty_session.forgetAttachment(model, peer.context_id, false);
+        peer.stop();
         self.peer_edits.forget(slot);
-        empty_session.forgetPeer(model, model.phuxPeerAt(slot).?.providerId(), false);
+        empty_session.forgetPeer(model, peer.providerId(), false);
         peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
         model.peers.items[slot].channel_key = support.allocatePeerHandle() catch 0;
@@ -1614,6 +1621,7 @@ pub const Engine = struct {
     /// Its placed tabs keep their last frames, frozen, until it reconnects.
     fn failPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
+        empty_session.forgetAttachment(self.model, peer.context_id, false);
         peer.stop();
         self.peer_edits.forget(slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
@@ -1627,7 +1635,7 @@ pub const Engine = struct {
     /// A showing peer's wake, as `drainPhux` is the active one's: attach and
     /// detach results settle its subscriptions, its bells ring, and its
     /// shared workspace projects beside the other coordinators' tabs.
-    fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize) bool {
+    fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize, catalog_listed: bool) bool {
         const model = self.model;
         const peer = model.phuxPeerAt(slot).?;
         const state = &model.peers.items[slot].workspace;
@@ -1647,11 +1655,58 @@ pub const Engine = struct {
         const projected = self.projectPeer(peer, state, published);
         // A picked empty session New Tab showed: its first tab, on this peer.
         changed = empty_session.pump(self, slot) or changed;
+        changed = self.settleEmptyAttachment(peer, slot, catalog_listed) or changed;
         // A terminal spawned for a new tab or split is not placed yet; it
         // must not be detached as unused before its placement lands.
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
         state.subscribe(model);
         return projected or changed;
+    }
+
+    /// After pumping an exact attachment, settle its empty picks from that
+    /// source's first-tab outcomes and whether this drain adopted a list.
+    fn settleEmptyAttachment(self: *Engine, remote: *support.PhuxProvider, peer_slot: ?usize, catalog_listed: bool) bool {
+        var reported: [16]empty_session.FirstTab = undefined;
+        const count = self.emptyFirstTabs(remote, peer_slot, &reported);
+        return empty_session.settleAttachment(self.model, remote, .{ .first_tabs = reported[0..count], .catalog_listed = catalog_listed });
+    }
+
+    fn emptyFirstTabs(self: *Engine, remote: *support.PhuxProvider, peer_slot: ?usize, out: []empty_session.FirstTab) usize {
+        if (peer_slot) |slot| {
+            var raw: [16]peer_edits.EmptyFirstTab = undefined;
+            const count = self.peer_edits.collectEmptyFirstTabs(slot, &raw);
+            const n = @min(count, out.len);
+            for (raw[0..n], 0..) |entry, i| {
+                out[i] = .{
+                    .window = entry.window,
+                    .window_epoch = entry.window_epoch,
+                    .connection_epoch = entry.connection_epoch,
+                    .outcome = switch (entry.outcome) {
+                        .pending => .pending,
+                        .refused => .refused,
+                        .placed => .placed,
+                    },
+                };
+            }
+            return n;
+        }
+        _ = remote;
+        var raw: [16]durable_creation.Creation.EmptyFirstTab = undefined;
+        const count = self.creation.collectEmptyFirstTabs(&raw);
+        const n = @min(count, out.len);
+        for (raw[0..n], 0..) |entry, i| {
+            out[i] = .{
+                .window = entry.window,
+                .window_epoch = entry.window_epoch,
+                .connection_epoch = entry.connection_epoch,
+                .outcome = switch (entry.outcome) {
+                    .pending => .pending,
+                    .refused => .refused,
+                    .placed => .placed,
+                },
+            };
+        }
+        return n;
     }
 
     /// Apply a peer's publication beside the other coordinators' tabs. A
@@ -1843,6 +1898,7 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return;
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
+        empty_session.forgetAttachment(model, peer.context_id, true);
         self.stopShowingPeer(slot);
         empty_session.forgetPeer(model, peer.providerId(), true);
         self.peer_edits.dropStrays(slot);

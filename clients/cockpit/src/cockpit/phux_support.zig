@@ -69,6 +69,7 @@ const DisabledAgentSession = struct {
 /// session navigation compares, never a connection.
 const DisabledHost = struct {
     context_id: u64 = 0,
+    sessions_generation: u64 = 0,
 };
 const disabled_host: DisabledHost = .{};
 
@@ -81,6 +82,7 @@ const DisabledPhuxProvider = struct {
     context_id: u64 = 0,
     host: *const DisabledHost = &disabled_host,
     session_id: ?u32 = null,
+    pending_retarget: ?void = null,
 
     pub const AgentState = DisabledAgentState;
     pub const AgentSession = DisabledAgentSession;

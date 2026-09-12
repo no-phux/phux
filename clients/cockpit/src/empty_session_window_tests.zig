@@ -57,6 +57,35 @@ fn bind(model: *Model, remote: *Remote, window: usize) void {
     model.empty_picks[window].?.setName("scratch");
 }
 
+/// What one runtime drain of `remote` reports about window `window`'s first
+/// tab. `none` is a source with no outcome for it at all.
+const Report = enum { none, pending, refused, placed };
+
+fn settle(model: *Model, remote: *Remote, window: usize, report: Report, listed: bool) bool {
+    const outcome: empty.FirstTab.Outcome = switch (report) {
+        .none, .pending => .pending,
+        .refused => .refused,
+        .placed => .placed,
+    };
+    const reported = [_]empty.FirstTab{.{ .window = window, .window_epoch = model.window_epochs[window], .connection_epoch = remote.connectionEpoch(), .outcome = outcome }};
+    const first_tabs: []const empty.FirstTab = if (report == .none) &.{} else &reported;
+    return empty.settleAttachment(model, remote, .{ .first_tabs = first_tabs, .catalog_listed = listed });
+}
+
+/// The attachment's current list, minus `scratch` (session 3, listed last).
+/// The caller restores the length so the host still frees every summary.
+fn unlistScratch(remote: *Remote) void {
+    remote.host.sessions.items.len = 1;
+}
+
+fn primary(engine: *Engine) !*Remote {
+    const remote = try peer(engine);
+    engine.model.phux_provider = remote;
+    engine.model.peers.items[0].provider = null;
+    bind(engine.model, remote, 0);
+    return remote;
+}
+
 const Hooks = struct {
     model: *Model,
     calls: usize = 0,
@@ -242,7 +271,11 @@ test "empty window delayed first tab waits for exact projection and never focuse
     try testing.expect(!hooks.focused);
     try testing.expect(!empty.pump(&hooks, 0));
     try testing.expectEqual(@as(usize, 1), hooks.calls);
+    // An empty creation queue is absence, not an outcome: holding the view
+    // settles nothing. Only the exact creation's refusal reopens New Tab.
     try testing.expect(empty.holds(engine.model, 0, 0, false));
+    try testing.expect(engine.model.empty_picks[0].?.tab_requested);
+    try testing.expect(settle(engine.model, first, 0, .refused, false));
     try testing.expect(!engine.model.empty_picks[0].?.tab_requested);
     try Remote.test_support.expectOutgoingCount(second.bridge, 0);
 }
@@ -263,14 +296,11 @@ test "empty window qualified singleton never falls back to an ambient attached e
     try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
 }
 
-test "empty window primary attachment New Tab waits for its projection and pumps without a peer slot" {
+test "empty window primary attachment New Tab waits for its projection and settles a refusal for retry" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(testing.allocator, testing.io);
     defer engine.destroy();
-    const remote = try peer(engine);
-    engine.model.phux_provider = remote;
-    engine.model.peers.items[0].provider = null;
-    bind(engine.model, remote, 0);
+    const remote = try primary(engine);
     engine.model.shared_workspace.epoch = 0;
     var hooks: Hooks = .{ .model = engine.model };
     try testing.expect(empty.newTab(&hooks, .{}) == .opened);
@@ -281,5 +311,145 @@ test "empty window primary attachment New Tab waits for its projection and pumps
     try testing.expectEqual(remote.context_id, hooks.context);
     try testing.expectEqual(@as(usize, 1), hooks.calls);
     try testing.expect(!empty.pumpAttachment(&hooks, remote));
+    // Neither a silent source nor a still-pending creation settles it.
+    _ = settle(engine.model, remote, 0, .none, false);
+    try testing.expect(empty.view(engine.model, 0).?.opening);
+    _ = settle(engine.model, remote, 0, .pending, false);
+    try testing.expect(empty.view(engine.model, 0).?.opening);
+    // The spawn is refused asynchronously. The primary has no peer slot, so
+    // `holds` never reaches it: before settleAttachment its New Tab stayed
+    // "already opening" for good.
+    _ = settle(engine.model, remote, 0, .refused, false);
+    try testing.expect(!empty.view(engine.model, 0).?.opening);
+    try testing.expect(empty.newTab(&hooks, .{}) == .opened);
+    try testing.expectEqual(@as(usize, 2), hooks.calls);
     try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
+}
+
+test "empty window primary first tab that lands retires its pick before the window empties again" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try primary(engine);
+    var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .opened);
+    try testing.expectEqual(@as(usize, 1), hooks.calls);
+    try testing.expect(empty.view(engine.model, 0).?.opening);
+    // The tab is placed and projected, then later closed. Before settlement
+    // the pick outlived it and brought back "already opening".
+    engine.model.primary.tab_count = 1;
+    _ = settle(engine.model, remote, 0, .placed, false);
+    engine.model.primary.tab_count = 0;
+    const again = empty.view(engine.model, 0).?;
+    try testing.expect(!again.opening);
+    try testing.expect(empty.newTab(&hooks, .{}) == .opened);
+    try testing.expectEqual(@as(usize, 2), hooks.calls);
+    try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
+}
+
+test "empty window creation receipt lasts only until a later list confirms the session" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try peer(engine);
+    bind(engine.model, remote, 0);
+    const listed = remote.host.sessions.items.len;
+    defer remote.host.sessions.items.len = listed;
+    // The receipt's own list predates the create and lacks the session.
+    unlistScratch(remote);
+    engine.model.empty_picks[0].?.created = true;
+    try testing.expect(!empty.view(engine.model, 0).?.unavailable);
+    // The next list names it; the receipt has done its job.
+    remote.host.sessions.items.len = listed;
+    _ = settle(engine.model, remote, 0, .none, true);
+    try testing.expect(!empty.view(engine.model, 0).?.unavailable);
+    // Then the session is deleted and a fresh list lacks it. Before the fix
+    // `created` still overrode that list and offered New Tab.
+    unlistScratch(remote);
+    _ = settle(engine.model, remote, 0, .none, true);
+    const gone = empty.view(engine.model, 0);
+    try testing.expect(gone == null or gone.?.unavailable);
+    var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .refused);
+    try testing.expectEqual(@as(usize, 0), hooks.calls);
+    try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
+}
+
+test "empty window creation receipt never outlives a fresh list that lacks the session" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try peer(engine);
+    bind(engine.model, remote, 0);
+    const listed = remote.host.sessions.items.len;
+    defer remote.host.sessions.items.len = listed;
+    unlistScratch(remote);
+    engine.model.empty_picks[0].?.created = true;
+    try testing.expect(!empty.view(engine.model, 0).?.unavailable);
+    // A list adopted after the receipt still lacks it: no available phantom.
+    _ = settle(engine.model, remote, 0, .none, true);
+    const gone = empty.view(engine.model, 0);
+    try testing.expect(gone == null or gone.?.unavailable);
+    var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .refused);
+    try testing.expectEqual(@as(usize, 0), hooks.calls);
+}
+
+test "empty window creation receipt never authorizes a reconnected Client" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try peer(engine);
+    bind(engine.model, remote, 0);
+    const listed = remote.host.sessions.items.len;
+    defer remote.host.sessions.items.len = listed;
+    unlistScratch(remote);
+    engine.model.empty_picks[0].?.created = true;
+    const epoch = remote.connectionEpoch();
+    try remote.host.reconnect("empty-window");
+    try stage(remote, "hello_keep_empty.bin");
+    try testing.expect(remote.connectionEpoch() != epoch);
+    try testing.expectEqual(.negotiated, remote.state());
+    remote.bridge.outgoing.reset();
+    // The retained name still displays, but nothing on the new connection
+    // vouches for it, so New Tab cannot queue for a session that may be gone.
+    try testing.expect(empty.view(engine.model, 0).?.unavailable);
+    var hooks: Hooks = .{ .model = engine.model };
+    try testing.expect(empty.newTab(&hooks, .{}) == .refused);
+    try testing.expect(!engine.model.empty_picks[0].?.tab_requested);
+    // The runtime settles that drain; the old connection's receipt is spent.
+    _ = settle(engine.model, remote, 0, .none, false);
+    try testing.expect(!engine.model.empty_picks[0].?.created);
+    // The new connection's first list lacks the session.
+    remote.host.sessions_generation = remote.connectionEpoch();
+    _ = settle(engine.model, remote, 0, .none, true);
+    const gone = empty.view(engine.model, 0);
+    try testing.expect(gone == null or gone.?.unavailable);
+    try testing.expect(empty.newTab(&hooks, .{}) == .refused);
+    try testing.expectEqual(@as(usize, 0), hooks.calls);
+    try Remote.test_support.expectOutgoingCount(remote.bridge, 0);
+}
+
+test "empty window creation receipt binds only its exact attachment and current connection" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    _ = engine.model.openWindow(1) orelse return error.OutOfMemory;
+    const remote = try peer(engine);
+    bind(engine.model, remote, 0);
+    engine.model.empty_picks[0] = null;
+    const current: empty.Receipt = .{ .session = 3, .name = "scratch", .connection_epoch = remote.connectionEpoch() };
+    var stale = current;
+    stale.connection_epoch +%= 1;
+    try testing.expect(!empty.noteCreationReceipt(engine.model, remote, 0, stale));
+    try testing.expect(engine.model.empty_picks[0] == null);
+    // Window 1 is not bound to this attachment.
+    try testing.expect(!empty.noteCreationReceipt(engine.model, remote, 1, current));
+    try testing.expect(engine.model.empty_picks[1] == null);
+    try testing.expect(empty.noteCreationReceipt(engine.model, remote, 0, current));
+    const pick = engine.model.empty_picks[0].?;
+    try testing.expect(pick.created);
+    try testing.expectEqual(remote.context_id, pick.attachment_id);
+    try testing.expectEqual(engine.model.window_epochs[0], pick.window_epoch);
+    try testing.expectEqualStrings("scratch", empty.view(engine.model, 0).?.name);
 }

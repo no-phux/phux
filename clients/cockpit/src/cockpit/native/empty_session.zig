@@ -15,6 +15,12 @@
 //! A bound empty view holds its own attachment even without a pending tab.
 //! Failure withdraws the pending spawn while retaining the named view for
 //! reconnect. An empty session has no panes, so its attach sizes none.
+//!
+//! Runtime order per drain of one exact attachment, primary or peer:
+//! `pumpAttachment` (queue a ready first tab), then `settleAttachment` with
+//! that source's first-tab outcomes and whether the drain adopted a session
+//! list. Only the current connection's list, or a creation receipt noted on
+//! it (`noteCreationReceipt`), makes a bound view available.
 
 const std = @import("std");
 const support = @import("../phux_support.zig");
@@ -92,27 +98,62 @@ fn boundRemote(model: *const Model, pick: *const EmptyPick, window: usize) ?*con
 
 fn boundPickView(model: *const Model, pick: *const EmptyPick, window: usize) ?View {
     const remote = boundRemote(model, pick, window) orelse return null;
-    const ws = model.wsAtConst(window) orelse return null;
-    if (ws.tab_count != 0) return null;
+    if (windowHoldsTab(model, window)) return null;
     if (remote.state() == .attached and remote.selectedSessionId() != pick.session) return null;
     const name = boundName(remote, pick) orelse return null;
-    return .{ .attachment_id = pick.attachment_id, .window_epoch = pick.window_epoch, .coordinator = pick.coordinator, .session = pick.session, .name = name, .host = remote.remoteLabel() orelse "This Mac", .picked = true, .opening = pick.tab_requested, .unavailable = !connected(remote) };
+    return .{ .attachment_id = pick.attachment_id, .window_epoch = pick.window_epoch, .coordinator = pick.coordinator, .session = pick.session, .name = name.text, .host = remote.remoteLabel() orelse "This Mac", .picked = true, .opening = pick.tab_requested, .unavailable = !connected(remote) or !name.vouched };
+}
+
+fn windowHoldsTab(model: *const Model, window: usize) bool {
+    const ws = model.wsAtConst(window) orelse return true;
+    return ws.tab_count != 0;
 }
 
 fn connected(remote: *const support.PhuxProvider) bool {
     return remote.state() == .attached or remote.state() == .negotiated;
 }
 
-fn boundName(remote: *const support.PhuxProvider, pick: *const EmptyPick) ?[]const u8 {
-    if (remote.host.sessions_generation == remote.connectionEpoch()) {
-        for (remote.sessionCatalog()) |entry| {
-            if (entry.id != pick.session) continue;
-            return if (entry.empty) entry.name else null;
+/// The attachment holds a session list from its present connection. A list
+/// from an earlier connection says nothing about what exists now.
+fn catalogCurrent(remote: *const support.PhuxProvider) bool {
+    return remote.host.sessions_generation == remote.connectionEpoch();
+}
+
+/// A pick's display name, and whether the attachment's present connection
+/// vouches for the session. Only a vouched name may offer New Tab; a name
+/// retained from an earlier list still displays, as unavailable, so a
+/// reconnect cannot queue a first tab for a session that may be gone.
+const Name = struct { text: []const u8, vouched: bool };
+
+fn boundName(remote: *const support.PhuxProvider, pick: *const EmptyPick) ?Name {
+    if (catalogCurrent(remote)) {
+        if (findListed(remote.sessionCatalog(), pick.session)) |entry| {
+            return if (entry.empty) .{ .text = entry.name, .vouched = true } else null;
         }
-        if (connected(remote) and !pick.created) return null;
+        // The list omits it. Only an unexpired creation receipt from this
+        // very connection outranks that: the list may predate the create.
+        if (receiptLive(remote, pick)) return retainedName(pick, true);
+        if (connected(remote)) return null;
     }
+    return retainedName(pick, false);
+}
+
+fn retainedName(pick: *const EmptyPick, vouched: bool) ?Name {
     if (pick.name_len == 0) return null;
-    return pick.nameSlice();
+    return .{ .text = pick.nameSlice(), .vouched = vouched };
+}
+
+fn findListed(catalog: anytype, id: u32) ?*const @typeInfo(@TypeOf(catalog)).pointer.child {
+    for (catalog) |*entry| if (entry.id == id) return entry;
+    return null;
+}
+
+/// `created` is a receipt from the attachment's connection that was current
+/// when it was noted (noteCreationReceipt). It stands in for a list only
+/// while that list is current and the connection still up; settleAttachment
+/// and forgetAttachment consume it on the first later list or disconnect.
+fn receiptLive(remote: *const support.PhuxProvider, pick: *const EmptyPick) bool {
+    return pick.created and connected(remote) and catalogCurrent(remote);
 }
 
 fn pickedView(model: *const Model, pick: *const EmptyPick) ?View {
@@ -181,9 +222,9 @@ pub fn newTab(engine: anytype, fx: anytype) Opened {
 }
 
 fn openBound(engine: anytype, window: usize, shown: View) Opened {
-    if (shown.unavailable) return .{ .refused = "That session is disconnected. Reconnect its machine before opening a tab." };
     const model = engine.model;
     const remote = model.phuxForAttachment(shown.attachment_id) orelse return .{ .refused = "That session attachment is no longer available." };
+    if (shown.unavailable) return .{ .refused = unavailableReason(remote) };
     var pick = model.empty_picks[window] orelse EmptyPick{ .coordinator = shown.coordinator, .session = shown.session, .window = window, .attachment_id = shown.attachment_id, .window_epoch = shown.window_epoch };
     pick.tab_requested = true;
     pick.setName(shown.name);
@@ -197,6 +238,11 @@ fn openBound(engine: anytype, window: usize, shown: View) Opened {
     var opened = shown;
     opened.opening = true;
     return .{ .opened = opened };
+}
+
+fn unavailableReason(remote: *const support.PhuxProvider) []const u8 {
+    if (!connected(remote)) return "That session is disconnected. Reconnect its machine before opening a tab.";
+    return "That session is not confirmed on its machine yet. Wait for its session list.";
 }
 
 fn queueBound(engine: anytype, remote: *support.PhuxProvider, pick: *EmptyPick) !void {
@@ -316,33 +362,28 @@ fn legacyReady(model: *Model, slot: usize, peer: *const support.PhuxProvider, pi
 }
 
 /// Whether this exact peer owns a bound empty view or a legacy first-tab hold.
-/// Completed/refused bound spawns settle their opening flags while the view
-/// keeps its attachment. The caller separately accounts for visible tabs.
+/// A bound view's opening flags settle only in settleAttachment, from the
+/// creation's own outcome: `pending_creations` reaching zero is queue absence,
+/// not an outcome, and serves the legacy singleton alone. The caller
+/// separately accounts for visible tabs.
 pub fn holds(model: *Model, slot: usize, pending_creations: usize, visible: bool) bool {
     const remote = model.phuxPeerAt(slot) orelse return false;
     var held = false;
     for (0..model_module.max_windows) |window| {
-        held = holdsBound(model, remote, window, pending_creations) or held;
+        held = holdsBound(model, remote, window) or held;
     }
     const legacy_held = holdsLegacy(model, slot, pending_creations, visible);
     return held or legacy_held;
 }
 
-fn holdsBound(model: *Model, remote: *const support.PhuxProvider, window: usize, pending: usize) bool {
+fn holdsBound(model: *Model, remote: *const support.PhuxProvider, window: usize) bool {
     const binding = model.window_attachments[window] orelse return false;
     if (binding.id != remote.context_id) return false;
     const shown = view(model, window) orelse {
         model.empty_picks[window] = null;
         return false;
     };
-    if (shown.attachment_id != remote.context_id or shown.unavailable) return false;
-    if (model.empty_picks[window]) |*pick| {
-        if (pick.tab_queued and pending == 0) {
-            pick.tab_requested = false;
-            pick.tab_queued = false;
-        }
-    }
-    return true;
+    return shown.attachment_id == remote.context_id and !shown.unavailable;
 }
 
 fn holdsLegacy(model: *Model, slot: usize, pending_creations: usize, visible: bool) bool {
@@ -369,7 +410,8 @@ pub fn forgetPeer(model: *Model, coordinator: support.ProviderId, dropped: bool)
 
 /// Exact attachment failure/retirement. A sibling on the same machine keeps
 /// its own display and pending first-tab request. Disconnect withdraws pending
-/// spawn intent but retains the named empty session for a later reconnect.
+/// spawn intent and the connection's creation receipt, but retains the named
+/// empty session, as unavailable, until a later connection lists it.
 pub fn forgetAttachment(model: *Model, attachment_id: u64, dropped: bool) void {
     if (attachment_id == 0) return;
     for (&model.empty_picks) |*cell| {
@@ -380,8 +422,127 @@ pub fn forgetAttachment(model: *Model, attachment_id: u64, dropped: bool) void {
         } else {
             pick.tab_requested = false;
             pick.tab_queued = false;
+            pick.created = false;
         }
     }
+}
+
+/// A creation receipt for `session`, from exactly `remote` on connection
+/// `connection_epoch` (the epoch the create was sent and answered on). The
+/// window must already be bound to that attachment. The receipt lets the
+/// Empty session state show before any list names the new session; it is
+/// refused when that connection is no longer current, so a receipt can
+/// never authorize a reconnected Client.
+pub const Receipt = struct { session: u32, name: []const u8, connection_epoch: u64 };
+
+pub fn noteCreationReceipt(model: *Model, remote: *const support.PhuxProvider, window: usize, receipt: Receipt) bool {
+    if (comptime !support.phux_enabled) return false;
+    if (!receiptCurrent(remote, receipt)) return false;
+    const window_epoch = boundWindowEpoch(model, window, remote) orelse return false;
+    // A first tab already on its way keeps its pick; the receipt waits.
+    if (model.empty_picks[window]) |held| if (held.tab_requested) return false;
+    var pick: EmptyPick = .{ .attachment_id = remote.context_id, .window_epoch = window_epoch, .coordinator = remote.providerId(), .session = receipt.session, .window = window, .created = true };
+    pick.setName(receipt.name);
+    model.empty_picks[window] = pick;
+    return true;
+}
+
+fn receiptCurrent(remote: *const support.PhuxProvider, receipt: Receipt) bool {
+    return receipt.connection_epoch == remote.connectionEpoch() and connected(remote);
+}
+
+/// The epoch of `window`'s binding, when that binding is exactly `remote`.
+fn boundWindowEpoch(model: *const Model, window: usize, remote: *const support.PhuxProvider) ?u64 {
+    if (window >= model_module.max_windows) return null;
+    const binding = model.window_attachments[window] orelse return null;
+    return if (binding.id == remote.context_id) binding.epoch else null;
+}
+
+/// The outcome of one first-tab creation the engine's pending creation for
+/// an exact source holds, keyed by the destination it captured.
+pub const FirstTab = struct {
+    window: usize,
+    window_epoch: u64,
+    connection_epoch: u64,
+    outcome: Outcome,
+
+    pub const Outcome = enum {
+        /// Spawning or placing, or its reply not yet reconciled.
+        pending,
+        /// Refused or failed on that connection: New Tab may be pressed again.
+        refused,
+        /// Placed. Its projected tab retires the pick.
+        placed,
+    };
+};
+
+/// What one drain of an exact source proved. An empty `first_tabs` proves
+/// nothing about any creation, so opening flags stay as they are.
+pub const Evidence = struct {
+    first_tabs: []const FirstTab = &.{},
+    /// This drain adopted a session list (`SyncDelta.sessions_listed`).
+    catalog_listed: bool = false,
+};
+
+/// After pumping `remote` and projecting it, settle every window bound to
+/// exactly that attachment: primary and peer alike, since the primary has
+/// no peer slot and so never reaches `holds`. A projected tab or a list
+/// without the session retires the pick; a refused or placed creation clears
+/// New Tab's opening state; a later list or a lost connection consumes the
+/// creation receipt. True when anything shown may have changed.
+pub fn settleAttachment(model: *Model, remote: *const support.PhuxProvider, evidence: Evidence) bool {
+    if (comptime !support.phux_enabled) return false;
+    var changed = false;
+    for (0..model_module.max_windows) |window| {
+        changed = settleWindow(model, remote, window, evidence) or changed;
+    }
+    return changed;
+}
+
+fn settleWindow(model: *Model, remote: *const support.PhuxProvider, window: usize, evidence: Evidence) bool {
+    const cell = &model.empty_picks[window];
+    const pick = if (cell.*) |*value| value else return false;
+    if (pick.attachment_id != remote.context_id) return false;
+    const expired = expireReceipt(remote, pick, evidence.catalog_listed);
+    if (pickRetired(model, remote, pick, window)) {
+        cell.* = null;
+        return true;
+    }
+    return settleFirstTab(remote, pick, evidence.first_tabs) or expired;
+}
+
+fn expireReceipt(remote: *const support.PhuxProvider, pick: *EmptyPick, listed: bool) bool {
+    if (!pick.created) return false;
+    if (!listed and receiptLive(remote, pick)) return false;
+    pick.created = false;
+    return true;
+}
+
+/// A pick drives only an empty window. Once a tab is projected there its
+/// opening flags must not return when the window is empty again, and once
+/// the present list lacks the session there is nothing left to open.
+fn pickRetired(model: *const Model, remote: *const support.PhuxProvider, pick: *const EmptyPick, window: usize) bool {
+    if (boundRemote(model, pick, window) == null) return true;
+    if (windowHoldsTab(model, window)) return true;
+    return boundName(remote, pick) == null;
+}
+
+fn settleFirstTab(remote: *const support.PhuxProvider, pick: *EmptyPick, first_tabs: []const FirstTab) bool {
+    if (!pick.tab_queued) return false;
+    const outcome = firstTabOutcome(remote, pick, first_tabs) orelse return false;
+    if (outcome == .pending) return false;
+    pick.tab_requested = false;
+    pick.tab_queued = false;
+    return true;
+}
+
+fn firstTabOutcome(remote: *const support.PhuxProvider, pick: *const EmptyPick, first_tabs: []const FirstTab) ?FirstTab.Outcome {
+    for (first_tabs) |entry| {
+        if (entry.window != pick.window or entry.window_epoch != pick.window_epoch) continue;
+        if (entry.connection_epoch != remote.connectionEpoch()) continue;
+        return entry.outcome;
+    }
+    return null;
 }
 
 /// The snapshot record: which windows show the Empty session state, whether
