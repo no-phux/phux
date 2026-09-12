@@ -101,25 +101,50 @@ valid_release_tag() {
 release_page() {
   LC_ALL=C awk -v prefix="$1" '
     function fail() { invalid = 1; exit 1 }
-    function advance(    rest, c) {
-      rest = substr(document, position)
-      match(rest, /^[ \t\r\n]*/)
-      position += RLENGTH
-      rest = substr(document, position)
-      c = substr(rest, 1, 1)
-      kind = c; text = c
-      if (c == "") return
-      if (c == "\"") { string_token(rest); return }
-      if (index("{}[],:", c)) { position++; return }
-      if (!match(rest, /^(-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?|true|false|null)/)) fail()
-      text = substr(rest, 1, RLENGTH)
-      kind = "literal"
-      position += RLENGTH
+    # Keep unread input in 1 KiB chunks. Matching/removing a small token must
+    # not copy the entire page; only a token spanning chunks grows the buffer.
+    function append_record(line,    i, size) {
+      line = tail line "\n"
+      size = length(line)
+      for (i = 1; i + 1023 <= size; i += 1024) chunks[++chunk_count] = substr(line, i, 1024)
+      tail = substr(line, i)
     }
-    function string_token(rest) {
-      if (!match(rest, /^"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/)) fail()
-      text = substr(rest, 2, RLENGTH - 2)
-      position += RLENGTH
+    function more_input() {
+      if (chunk_read == chunk_count) return 0
+      buffer = buffer chunks[++chunk_read]
+      delete chunks[chunk_read]
+      return 1
+    }
+    function advance(    c) {
+      while (1) {
+        if (buffer == "" && !more_input()) { kind = ""; text = ""; return }
+        match(buffer, /^[ \t\r\n]*/)
+        if (RLENGTH == 0) break
+        buffer = substr(buffer, RLENGTH + 1)
+      }
+      c = substr(buffer, 1, 1)
+      kind = c; text = c
+      if (c == "\"") { string_token(); return }
+      if (index("{}[],:", c)) { buffer = substr(buffer, 2); return }
+      literal_token()
+    }
+    function literal_token() {
+      # Do not accept a partial number/keyword at a chunk boundary. A complete
+      # release array always supplies a delimiter after every scalar value.
+      while (!match(buffer, /[ \t\r\n{}\[\],:"]/)) {
+        if (!more_input()) fail()
+      }
+      text = substr(buffer, 1, RSTART - 1)
+      buffer = substr(buffer, RSTART)
+      if (text !~ /^(-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?|true|false|null)$/) fail()
+      kind = "literal"
+    }
+    function string_token() {
+      while (!match(buffer, /^"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/)) {
+        if (!more_input()) fail()
+      }
+      text = substr(buffer, 2, RLENGTH - 2)
+      buffer = substr(buffer, RLENGTH + 1)
       kind = "string"
     }
     function consume(expected) {
@@ -129,6 +154,7 @@ release_page() {
     # Only keys and tag names need decoding. Their vocabulary is ASCII. Other
     # Unicode remains lexically validated but cannot turn into an ASCII key/tag.
     function ascii_string(raw,    result, i, c) {
+      if (!index(raw, "\\")) return raw
       result = ""
       for (i = 1; i <= length(raw); i++) {
         c = substr(raw, i, 1)
@@ -200,7 +226,7 @@ release_page() {
       if (selected == "" && tag ~ ("^" prefix version_pattern "$")) selected = tag
     }
     function page() {
-      position = 1; advance(); consume("[")
+      advance(); consume("[")
       if (kind != "]") {
         while (1) {
           release(); count++
@@ -214,8 +240,11 @@ release_page() {
       else if (count == 0) print "empty"
       else print "more"
     }
-    { document = document $0 "\n" }
-    END { if (!invalid) page() }
+    { append_record($0) }
+    END {
+      if (tail != "") chunks[++chunk_count] = tail
+      if (!invalid) page()
+    }
   ' "$2"
 }
 

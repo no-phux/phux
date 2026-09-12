@@ -91,6 +91,10 @@ for script in install.sh install-cockpit.sh; do
     '[{"tag_name":"v1.2.3","draft":false,"prerelease":false},]' \
     '[{"tag_name":"v1.2.3","draft":false,"prerelease":false}] garbage' \
     '[{"tag_name":"v1.2.3","draft":"false","prerelease":false}]' \
+    '[{"tag_name":"v1.2.3","draft":false,"prerelease":false,"ignored":"\u123"}]' \
+    '[{"tag_name":"v1.2.3","draft":false,"prerelease":false,"ignored":"\x"}]' \
+    '[{"tag_name":"v1.2.3","draft":false,"prerelease":false,"ignored":1e+}]' \
+    '[{"tag_name":"v1.2.3","draft":false,"prerelease":false,"ignored":01}]' \
     '[{"tag_name":"v1.2.3","draft":false,"draft":true,"prerelease":false}]'; do
     printf '%s\n' "$malformed" > "$TMP/pages/1.json"
     expect_failure "$script" 'invalid release list'
@@ -134,5 +138,36 @@ for script in install.sh install-cockpit.sh; do
   PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/$script" --dry-run --os darwin --arch arm64 > "$TMP/wget-out"
   grep -Fq '9.8.7/' "$TMP/wget-out"
 done
+
+# The system awk used to copy the whole unread page for each token: a valid
+# 600 KiB ignored array could take tens of seconds. Keep dense numeric/string
+# arrays and cross-chunk escaped strings, numbers and keywords in the real
+# installer path. Timing is measured separately, not asserted on loaded CI.
+for atom in '10' '"x"' '[-12.34e+56,true,false,null,"\u0061\"\\\/\b\f\n\r\t"]'; do
+  count=200000
+  [[ $atom == '['* ]] && count=2048
+  JSON_ATOM="$atom" awk -v count="$count" 'BEGIN {
+    printf "[{\"tag_name\":\"v9.8.7\",\"draft\":false,\"prerelease\":false,\"ignored\":["
+    for (i = 0; i < count; i++) printf "%s%s", i ? "," : "", ENVIRON["JSON_ATOM"]
+    printf "]},{\"tag_name\":\"cockpit-v9.8.7\",\"draft\":false,\"prerelease\":false}]\n"
+  }' > "$TMP/pages/1.json"
+  for script in install.sh install-cockpit.sh; do
+    PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/$script" --dry-run --os darwin --arch arm64 > "$TMP/dense-out"
+    grep -Fq '9.8.7/' "$TMP/dense-out"
+  done
+done
+
+# A long token must carry across chunks without being truncated, including an
+# escape and closing quote near a boundary. Pretty input is coalesced as well.
+awk 'BEGIN {
+  print "[{\"tag_name\":\"v9.8.7\",\"draft\":false,\"prerelease\":false,\"ignored\":{"
+  printf "\"body\":\""
+  for (i = 0; i < 4093; i++) printf "x"
+  print "\\u0061\\\"tail\",\"array\":["
+  for (i = 0; i < 4096; i++) print i ? ",false" : "true"
+  print "]}}]"
+}' > "$TMP/pages/1.json"
+PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os darwin --arch arm64 > "$TMP/long-out"
+grep -Fq 'v9.8.7/' "$TMP/long-out"
 [[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
 echo 'installer release resolution tests passed'

@@ -110,6 +110,13 @@ addition to curl or wget; they do not require jq or Python. Maintainers edit
 discovery loop in both served scripts. The install-surface gate verifies these
 copies and runs hermetic release-selection tests.
 
+Parsing has its own bounds: the response limit above and a nesting limit of
+128 levels. The tokenizer buffers input in 1 KiB chunks to avoid copying an
+entire page for every small token; tokens spanning chunks are carried intact.
+Network timeouts do not apply to parsing. The POSIX parser validates JSON
+structure and ASCII release metadata, but does not validate UTF-8 encoding in
+ignored string contents.
+
 ## Phux Cockpit (native macOS)
 
 Cockpit is versioned and released independently (`cockpit-vX.Y.Z` tags on a
