@@ -675,27 +675,12 @@ function navigationRequestFor(model: Model): Uint8Array {
     : scopedNavigationRequest(model);
 }
 
-function jumpAgentParent(model: Model, index: number): Model | [Model, Cmd<Msg>] {
-  if (!validAgentParent(model, index)) return model;
-  return [model, Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index))];
-}
-
 function validAgentParent(model: Model, index: number): boolean {
   if (!model.engineConnected || index === 65535) return false;
   for (const row of model.railRows) {
     if (row.agent && row.parentIndex === index) return true;
   }
   return false;
-}
-
-function submitAgentParent(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
-  if (msg.kind === "palette_pick" || model.paletteRows.length === 0) return model;
-  const index = model.paletteRows[model.paletteCursor].index;
-  if (index === 65535) return model;
-  return [closePalette(model), Cmd.batch([
-    Cmd.host("cockpit.committed", NO_BYTES),
-    Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, index)),
-  ])];
 }
 
 function failedAgentNavigation(model: Model): Model {
@@ -2287,7 +2272,17 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [closePalette({ ...model, hostOpen: false, hostAwaiting: false }), Cmd.host("cockpit.committed", NO_BYTES)];
     case "palette_submit":
     case "palette_pick": {
-      if (model.agentsMode) return submitAgentParent(model, msg);
+      // Agent inspection submits the cursor row's exact parent terminal.
+      // Cmd values are built inline: the AOT core forbids them in helpers.
+      if (model.agentsMode) {
+        if (msg.kind === "palette_pick" || model.paletteRows.length === 0) return model;
+        const parent = model.paletteRows[model.paletteCursor].index;
+        if (parent === 65535) return model;
+        return [closePalette(model), Cmd.batch([
+          Cmd.host("cockpit.committed", NO_BYTES),
+          Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, parent)),
+        ])];
+      }
       const target = navigationTarget(model, msg);
       if (target.length === 0) return model;
       const host = navigationHostFilter(target);
@@ -2308,7 +2303,9 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         }),
       ])];
     }
-    case "agent_parent": return jumpAgentParent(model, msg.index);
+    case "agent_parent":
+      if (!validAgentParent(model, msg.index)) return model;
+      return [model, Cmd.host("cockpit.intent", navigationIntent(model.engineRevision, msg.index))];
     case "navigation_loaded":
       return loadedNavigation(model, msg.body);
     case "navigation_failed": {

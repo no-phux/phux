@@ -38,8 +38,13 @@ pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
 const navigation_context_bytes = 6 + max_session_bytes + max_endpoint_bytes + max_connection_detail_bytes;
 
-// Identity rows consume only remaining capacity; always reserve their total.
-const agent_record_bytes: usize = 6;
+/// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
+/// what keeps the record inside `max_bytes` beside a full workspace; the
+/// comptime assert below is the proof, not this comment.
+pub const max_provider_bytes: usize = 12;
+pub const max_agent_rows: usize = 24;
+const agent_row_bytes: usize = 5 + max_provider_bytes;
+const agent_record_bytes: usize = 4 + max_agent_rows * agent_row_bytes;
 
 pub const TabRun = struct {
     first: u8 = 0,
