@@ -1449,19 +1449,30 @@ pub const Model = struct {
     }
 
     pub fn terminalOwner(model: *const Model, terminal_ref: TerminalRef) ?ReplicaOwner {
-        if (model.attachmentPending(terminal_ref)) return null;
-        return switch (support.providerKind(terminal_ref)) {
-            .local => model.provider.owner(terminal_ref),
-            .phux => if (model.phuxForRefConst(terminal_ref)) |remote| remote.owner(terminal_ref) else null,
-        };
+        if (support.providerKind(terminal_ref) == .local) return model.provider.owner(terminal_ref);
+        const remote = model.phuxForInteractionConst(terminal_ref) orelse return null;
+        if (model.pendingFor(remote, terminal_ref)) return null;
+        return remote.owner(terminal_ref);
     }
 
     pub fn ownerIsCurrent(model: *const Model, owner_value: ReplicaOwner) bool {
-        if (model.attachmentPending(owner_value.terminal_ref)) return false;
-        return switch (support.providerKind(owner_value.terminal_ref)) {
-            .local => model.provider.ownerIsCurrent(owner_value),
-            .phux => if (model.phuxForOwnerConst(owner_value)) |remote| remote.ownerIsCurrent(owner_value) else false,
-        };
+        if (support.providerKind(owner_value.terminal_ref) == .local) return model.provider.ownerIsCurrent(owner_value);
+        const remote = model.phuxForOwnerConst(owner_value) orelse return false;
+        if (model.pendingFor(remote, owner_value.terminal_ref)) return false;
+        return remote.ownerIsCurrent(owner_value);
+    }
+
+    fn pendingFor(model: *const Model, remote: *const PhuxProvider, ref: TerminalRef) bool {
+        return remote == model.phuxConst() and model.attachmentPending(ref);
+    }
+
+    /// Initial keyboard/pointer ownership comes from the selected tree. Held
+    /// and asynchronous operations use phuxForOwner instead of reacquiring it.
+    pub fn phuxForInteractionConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        if (model.selectedTreeConst()) |pane_tree| {
+            if (pane_tree.find(ref) != null) return model.phuxForTreeConst(pane_tree);
+        }
+        return model.phuxForRefConst(ref);
     }
 
     /// The agent sessions running under one terminal, in catalog order.
@@ -1495,10 +1506,23 @@ pub const Model = struct {
     }
 
     pub fn remotePresentation(model: *const Model, terminal_ref: TerminalRef) ?Presentation {
-        if (model.attachmentPending(terminal_ref)) return null;
         if (support.providerKind(terminal_ref) != .phux) return null;
-        const remote = model.phuxForRefConst(terminal_ref) orelse return null;
+        const remote = model.phuxForInteractionConst(terminal_ref) orelse return null;
+        if (model.pendingFor(remote, terminal_ref)) return null;
         return remote.presentation(terminal_ref);
+    }
+
+    pub fn remotePaintPresentationIn(model: *const Model, pane_tree: *const layout.Tree, ref: TerminalRef) ?Presentation {
+        if (comptime !support.phux_enabled) return null;
+        if (pane_tree.find(ref) == null) return null;
+        const remote = model.phuxForTreeConst(pane_tree) orelse return null;
+        if (!model.pendingFor(remote, ref)) return remote.presentation(ref);
+        for (model.frozen_paint) |entry| {
+            const frozen = entry orelse continue;
+            if (frozen.owner.source_context != remote.host.context_id) continue;
+            if (frozen.reference.terminal_ref.eql(ref)) return frozen.snapshot.value;
+        }
+        return null;
     }
 
     /// Paint alone may read the previously proven display while a replacement
@@ -1603,6 +1627,10 @@ pub const Model = struct {
         // Retained presentation may be frozen, but must still belong to this
         // exact published owner. terminalOwner also enforces attachmentPending.
         const current_owner = model.terminalOwner(terminal_ref) orelse return null;
+        return model.remoteUiForOwnerConst(current_owner);
+    }
+
+    pub fn remoteUiForOwnerConst(model: *const Model, current_owner: ReplicaOwner) ?*const RemoteUiState {
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref == null) continue;
             if (state.owner.eql(current_owner)) return state;
