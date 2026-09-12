@@ -1,5 +1,7 @@
 export const ENGINE_CHANNEL_KEY = 0x434f434b0001;
 export const PROTOCOL_VERSION = 1;
+/// Mirrors `ts_snapshot.max_bytes`; raised for per-window context records.
+const SNAPSHOT_MAX_BYTES = 8192;
 
 const STATE_INVALIDATED = 1;
 const SNAPSHOT = 2;
@@ -423,7 +425,7 @@ function tabTarget(contexts: Uint8Array, window: number, id: number): Uint8Array
 }
 
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
-  if (bytes.length < 28 || bytes.length > 4096) return false;
+  if (bytes.length < 28 || bytes.length > SNAPSHOT_MAX_BYTES) return false;
   if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== SNAPSHOT) return false;
   if (!(bytes[23] >= 0 && bytes[23] <= 4)) return false;
   return validRun(bytes[20], bytes[21], bytes[24], bytes[25]);
