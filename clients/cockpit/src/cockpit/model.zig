@@ -1194,11 +1194,87 @@ pub const Model = struct {
     /// Where a ref's input, sizing and presentation go: the coordinator
     /// that minted it, and no other.
     pub fn phuxForRef(model: *Model, ref: TerminalRef) ?*PhuxProvider {
-        return model.phuxFor(ref.provider_id);
+        return @constCast(model.phuxForRefConst(ref));
     }
 
     pub fn phuxForRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        const projected = model.projectedAttachment(ref);
+        if (projected.ambiguous) return null;
+        if (projected.id) |id| return model.phuxForAttachmentConst(id);
         return model.phuxForConst(ref.provider_id);
+    }
+
+    /// Stable process-local attachment identity, independent of coordinator ID.
+    pub fn phuxForAttachment(model: *Model, id: u64) ?*PhuxProvider {
+        return @constCast(model.phuxForAttachmentConst(id));
+    }
+
+    pub fn phuxForAttachmentConst(model: *const Model, id: u64) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phux_provider) |remote| if (remote.context_id == id) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (remote.context_id == id) return remote;
+        }
+        return null;
+    }
+
+    pub fn phuxForOwner(model: *Model, owner: ReplicaOwner) ?*PhuxProvider {
+        return @constCast(model.phuxForOwnerConst(owner));
+    }
+
+    pub fn phuxForOwnerConst(model: *const Model, owner: ReplicaOwner) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (owner.source_context == 0) return model.phuxForRefConst(owner.terminal_ref);
+        if (model.phux_provider) |remote| if (remote.host.context_id == owner.source_context) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (remote.host.context_id == owner.source_context) return remote;
+        }
+        return null;
+    }
+
+    pub fn phuxForTree(model: *Model, pane_tree: *const layout.Tree) ?*PhuxProvider {
+        return @constCast(model.phuxForTreeConst(pane_tree));
+    }
+
+    pub fn phuxForTreeConst(model: *const Model, pane_tree: *const layout.Tree) ?*const PhuxProvider {
+        if (pane_tree.attachment_id) |id| return model.phuxForAttachmentConst(id);
+        const authority = @import("shared_workspace.zig").tabAuthority(pane_tree) orelse return null;
+        return model.phuxForConst(authority);
+    }
+
+    pub fn peerSlotForAttachment(model: *const Model, id: u64) ?usize {
+        if (comptime !support.phux_enabled) return null;
+        for (model.peers.items, 0..) |entry, slot| {
+            const remote = entry.provider orelse continue;
+            if (remote.context_id == id) return slot;
+        }
+        return null;
+    }
+
+    const ProjectedAttachment = struct {
+        id: ?u64 = null,
+        ambiguous: bool = false,
+
+        fn include(self: *ProjectedAttachment, pane_tree: *const layout.Tree, ref: TerminalRef) void {
+            if (pane_tree.find(ref) == null) return;
+            const id = pane_tree.attachment_id orelse return;
+            if (self.id) |previous| if (previous != id) {
+                self.ambiguous = true;
+            };
+            self.id = id;
+        }
+    };
+
+    fn projectedAttachment(model: *const Model, ref: TerminalRef) ProjectedAttachment {
+        var result: ProjectedAttachment = .{};
+        for (0..max_windows) |window| {
+            if (!model.windowOpen(window)) continue;
+            const workspace = model.wsAtConst(window) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |*pane_tree| result.include(pane_tree, ref);
+        }
+        return result;
     }
 
     /// Whether coordinator `id`'s terminals are on screen: the active one's
@@ -1295,7 +1371,7 @@ pub const Model = struct {
         if (model.attachmentPending(owner_value.terminal_ref)) return false;
         return switch (support.providerKind(owner_value.terminal_ref)) {
             .local => model.provider.ownerIsCurrent(owner_value),
-            .phux => if (model.phuxForRefConst(owner_value.terminal_ref)) |remote| remote.ownerIsCurrent(owner_value) else false,
+            .phux => if (model.phuxForOwnerConst(owner_value)) |remote| remote.ownerIsCurrent(owner_value) else false,
         };
     }
 
@@ -1420,6 +1496,7 @@ pub const Model = struct {
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref) |known| {
                 if (!known.eql(terminal_ref)) continue;
+                if (state.owner.source_context != current_owner.source_context) continue;
                 if (!state.owner.eql(current_owner)) state.replaceOwner(current_owner, model.attachment_context);
                 // READY can precede the first metadata read. Bind UI created
                 // in that interval once this same replica's session is proven.

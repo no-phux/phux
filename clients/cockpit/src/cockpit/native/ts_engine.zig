@@ -3018,11 +3018,11 @@ pub const Engine = struct {
         // Focus can move between coordinators: each side hears it on its own
         // connection.
         if (self.remote_focus_owner) |previous| {
-            if (self.model.phuxForRef(previous.terminal_ref)) |remote| remote.sendFocus(previous, false) catch {};
+            if (self.model.phuxForOwner(previous)) |remote| remote.sendFocus(previous, false) catch {};
         }
         self.remote_focus_owner = next;
         if (next) |owner| {
-            if (self.model.phuxForRef(owner.terminal_ref)) |remote| remote.sendFocus(owner, true) catch {};
+            if (self.model.phuxForOwner(owner)) |remote| remote.sendFocus(owner, true) catch {};
         }
     }
 

@@ -147,6 +147,50 @@ fn leafSnapshot(session: u32, revision: u64, windows: []const shared.Window, nod
     return .{ .session_id = session, .revision = revision, .state = .authoritative, .windows = windows, .nodes = nodes };
 }
 
+test "model resolves same coordinator attachments and held owners without ambiguous ref fallback" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    const first = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/model-same-host" }, null, "first");
+    model.phux_provider = first;
+    try model.ensurePeerSlots(1);
+    const second = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/model-same-host" }, null, "second");
+    model.peers.items[0].provider = second;
+    try fixture.attachHost(first.host);
+    try fixture.attachHost(second.host);
+    const ref = try refOn(first, 7);
+    const windows = [_]shared.Window{.{ .id = @splat(1), .root = 0 }};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = ref }};
+    model.shared_workspace.attachment_id = first.context_id;
+    model.peers.items[0].workspace.attachment_id = second.context_id;
+    _ = try model.shared_workspace.apply(model, leafSnapshot(1, 1, &windows, &nodes), first.connectionEpoch());
+    try testing.expect(model.phuxForRef(ref) == first);
+    _ = try model.peers.items[0].workspace.apply(model, leafSnapshot(1, 1, &windows, &nodes), second.connectionEpoch());
+    try testing.expect(model.phuxForRef(ref) == null);
+    for (model.primary.tabs[0..model.primary.tab_count]) |*tree| {
+        const id = tree.attachment_id orelse continue;
+        try testing.expect(model.phuxForTreeConst(tree) == model.phuxForAttachmentConst(id));
+    }
+    const first_owner = first.owner(ref).?;
+    const second_owner = second.owner(ref).?;
+    try testing.expect(model.phuxForOwner(first_owner) == first);
+    try testing.expect(model.phuxForOwner(second_owner) == second);
+    try testing.expect(model.ownerIsCurrent(first_owner));
+    try testing.expect(model.ownerIsCurrent(second_owner));
+    var stale = second_owner;
+    stale.source_context = std.math.maxInt(u64);
+    try testing.expect(model.phuxForOwner(stale) == null);
+    var tree = model.primary.tabs[0];
+    tree.attachment_id = std.math.maxInt(u64);
+    try testing.expect(model.phuxForTreeConst(&tree) == null);
+    _ = countFrames(first);
+    _ = countFrames(second);
+    try model.phuxForOwner(second_owner).?.sendFocus(second_owner, true);
+    try testing.expectEqual(@as(usize, 0), countFrames(first).total);
+    try testing.expect(countFrames(second).total != 0);
+}
+
 test "the same numeric terminal on two coordinators is two identities, and input reaches only its own" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);
