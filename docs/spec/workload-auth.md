@@ -18,8 +18,8 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: foundation; probe: MtlsWorkloadIdentity,TerminalScopeSet,TerminalEffectiveScopeSet -->
-> **Status: foundation landed.** The persisted workload CA, client enrollment,
+<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id -->
+> **Status: partial.** The persisted workload CA, client enrollment,
 > credential-id derivation, and validated scope registry are implemented in
 > `phux_server::workload`. TLS handshake enforcement, scope classification,
 > and live revocation remain follow-up work; the current `PolicyEngine` default
