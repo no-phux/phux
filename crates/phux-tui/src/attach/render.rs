@@ -121,6 +121,7 @@ pub struct ReplicaWalk<'a, 'alloc, 'cb> {
     pub(super) generation: TerminalGeneration,
 }
 
+#[cfg(any(test, feature = "testkit"))]
 impl<'a, 'alloc, 'cb> ReplicaWalk<'a, 'alloc, 'cb> {
     /// Pair a test-owned terminal with a fixed token.
     ///
@@ -128,7 +129,6 @@ impl<'a, 'alloc, 'cb> ReplicaWalk<'a, 'alloc, 'cb> {
     /// token is a constant — "a generation that never changes" is exactly
     /// what the pool's rebuild rule reads it as. Tests that specifically
     /// exercise a REPLACEMENT build the pair directly with distinct tokens.
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     pub const fn for_test(terminal: &'a GhosttyTerminal<'alloc, 'cb>) -> Self {
         Self {

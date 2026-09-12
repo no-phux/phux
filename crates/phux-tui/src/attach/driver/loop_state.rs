@@ -246,6 +246,12 @@ enum FrameStep {
 /// so they are refreshed, pruned, and reset together.
 #[derive(Default)]
 struct PeerCaches {
+    /// Identity of the serving machine, read once through the whoami key.
+    serving_host: Option<String>,
+    serving_host_pending: Option<u32>,
+    serving_host_attempted: bool,
+    /// Rebuild the sidebar projection once at the burst drain.
+    chrome_dirty: bool,
     /// phux-4li.20: cache of the server's session graph, refreshed from
     /// every ATTACHED snapshot. The `<leader> a` session picker reads
     /// this to list peer sessions; `focused_session` marks the row the
@@ -327,13 +333,16 @@ impl PeerCaches {
     /// The peer-wide projection zones 1 and 3 of the sidebar strip render
     /// from.
     fn inputs(&self) -> crate::attach::sidebar_zones::PeerInputs<'_> {
-        peer_inputs(
+        let mut inputs = peer_inputs(
             &self.sessions,
             self.focused_session,
             &self.foreign_layouts,
             &self.foreign_agents,
             &self.foreign_attention,
-        )
+        );
+        inputs.serving_host = self.serving_host.as_deref();
+        inputs.hosts = &self.hosts;
+        inputs
     }
 }
 
@@ -695,6 +704,7 @@ pub(super) struct SessionLoop {
     /// ungrouped shape is the honest rendering of "this client cannot know
     /// what else is out there".
     host_sessions_supported: bool,
+    whoami_supported: bool,
     /// phux-c2td.3: set by `apply_action_effects` when an action wants a
     /// fresher host inventory (opening the session picker). Drained after
     /// the dispatch batch into one `GET_STATE`.
@@ -759,6 +769,7 @@ impl SessionLoop {
             host_sessions_supported: negotiated
                 .server_features
                 .contains(ServerFeature::HostSessions),
+            whoami_supported: negotiated.server_features.contains(ServerFeature::Whoami),
             host_refresh_request: false,
             session_picker_dirty: false,
             wants_state_sync,
@@ -1099,7 +1110,39 @@ impl SessionLoop {
         .await?;
         // phux-c2td.3: the fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
+        self.request_serving_host(conn).await?;
         self.request_host_inventory(conn).await
+    }
+
+    /// Read the server's identity after first paint without blocking the frame loop.
+    async fn request_serving_host(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        if !self.whoami_supported || self.peers.serving_host_attempted {
+            return Ok(());
+        }
+        self.peers.serving_host_attempted = true;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.peers.serving_host_pending = Some(request_id);
+        super::session_io::send_unless_peer_gone(
+            conn,
+            &FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Global,
+                key: phux_protocol::wire::frame::WHOAMI_KEY.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Invalid or unsupported identity leaves the honest `this server` label.
+    fn fold_serving_host(&mut self, value: Option<&[u8]>) {
+        use phux_protocol::wire::frame::{WHOAMI_SCHEMA_VERSION, WhoamiRecord};
+        self.peers.serving_host_pending = None;
+        self.peers.serving_host = value
+            .and_then(|bytes| serde_json::from_slice::<WhoamiRecord>(bytes).ok())
+            .filter(|r| r.schema_version == WHOAMI_SCHEMA_VERSION && !r.host.trim().is_empty())
+            .map(|r| r.host);
+        self.peers.chrome_dirty = true;
     }
 
     /// phux-c2td.3: ask this server for its federation host inventory — one
@@ -1154,6 +1197,11 @@ impl SessionLoop {
                 phux_protocol::wire::frame::CommandValue::State(snapshot),
             ) => {
                 self.peers.hosts = snapshot.hosts().to_vec();
+                if self.peers.sessions != snapshot.sessions {
+                    self.peers.sessions.clone_from(&snapshot.sessions);
+                    self.peers.sweep_pending = true;
+                }
+                self.peers.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 &self.peers.hosts
             }
@@ -2231,7 +2279,36 @@ impl SessionLoop {
         frame: FrameKind,
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
+        let Some(frame) = self
+            .intercept_sidebar_metadata(conn, frame, repaint)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.intercept_inventory_reply(conn, frame, repaint).await
+    }
+
+    /// Correlate the sidebar's metadata reads independently of command replies.
+    async fn intercept_sidebar_metadata(
+        &mut self,
+        conn: &mut Connection,
+        frame: FrameKind,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<Option<FrameKind>, AttachError> {
         match frame {
+            FrameKind::MetadataValue { request_id, value }
+                if self.peers.serving_host_pending == Some(request_id) =>
+            {
+                self.fold_serving_host(value.as_deref());
+                Ok(None)
+            }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                ..
+            } if self.peers.serving_host_pending == Some(request_id) => {
+                self.peers.serving_host_pending = None;
+                Ok(None)
+            }
             // phux-foz.8: a peer session's persisted-layout GET reply.
             // Picker/fleet display data only — decode into the cache and skip
             // the general frame handler.
@@ -2251,6 +2328,7 @@ impl SessionLoop {
             {
                 if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id) {
                     apply_foreign_agent_reply(&mut self.peers.foreign_agents, id, value.as_deref());
+                    self.peers.chrome_dirty = true;
                     repaint.raise_fleet();
                 }
                 Ok(None)
@@ -2279,6 +2357,18 @@ impl SessionLoop {
                 self.peers.foreign_agent_pending.remove(&request_id);
                 Ok(None)
             }
+            other => Ok(Some(other)),
+        }
+    }
+
+    /// Inventory and replay command replies share the connection, not projection state.
+    async fn intercept_inventory_reply(
+        &mut self,
+        conn: &mut Connection,
+        frame: FrameKind,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<Option<FrameKind>, AttachError> {
+        match frame {
             // phux-c2td.3: the reply to our own host-inventory GET_STATE.
             // Picker display data only, same intercept shape as the peer
             // replies above.
@@ -2349,6 +2439,18 @@ impl SessionLoop {
             return Ok(());
         };
         apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value);
+        self.reconcile_peer_layout(conn, session).await?;
+        self.peers.chrome_dirty = true;
+        repaint.raise_fleet();
+        Ok(())
+    }
+
+    /// GET and broadcast layouts discover agent watches through the same path.
+    async fn reconcile_peer_layout(
+        &mut self,
+        conn: &mut Connection,
+        session: SessionId,
+    ) -> Result<(), AttachError> {
         prune_foreign_agents(
             &mut self.peers.foreign_agents,
             &mut self.peers.foreign_agent_subscribed,
@@ -2364,11 +2466,6 @@ impl SessionLoop {
             )
             .await?;
         }
-        // ADR-0029 §2: raise, drain once (after the burst). A peer's layout
-        // reply arrives with one agent-record reply per foreign pane right
-        // behind it; refreshing inline would re-project (and repaint) the
-        // dashboard once per reply.
-        repaint.raise_fleet();
         Ok(())
     }
 
@@ -2425,7 +2522,7 @@ impl SessionLoop {
             .await?;
         self.settle_orphans(conn, &mut outcome, &answered).await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
-        self.fold_peer_outcome(&mut outcome, repaint);
+        self.fold_peer_outcome(conn, &mut outcome, repaint).await?;
         self.finish_paint(outcome.status_bar_painted);
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
@@ -2686,14 +2783,15 @@ impl SessionLoop {
     /// now feeds the always-on strip, so raising `fleet` alone would leave a
     /// peer's change invisible unless the fleet modal happened to be open
     /// (`refresh_fleet_if_open` returns `NotPublished` when it is not).
-    fn fold_peer_outcome(&mut self, outcome: &mut FrameOutcome, repaint: &mut RepaintAccumulator) {
+    async fn fold_peer_outcome(
+        &mut self,
+        conn: &mut Connection,
+        outcome: &mut FrameOutcome,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<(), AttachError> {
         let layout_folded = if let Some((session, value)) = outcome.foreign_layout.take() {
             apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value.as_deref());
-            prune_foreign_agents(
-                &mut self.peers.foreign_agents,
-                &mut self.peers.foreign_agent_subscribed,
-                &self.peers.foreign_layouts,
-            );
+            self.reconcile_peer_layout(conn, session).await?;
             true
         } else {
             false
@@ -2710,13 +2808,13 @@ impl SessionLoop {
             .foreign_attention
             .take()
             .is_some_and(|id| self.peers.foreign_attention.insert(id));
-        // A peer spawn/close needs no fold of its own: the
-        // layouts are re-read on the next sweep, so flagging
-        // the repaint is enough.
+        // Lifecycle changes owe a real graph/layout sweep after this burst.
+        self.peers.sweep_pending |= outcome.foreign_pane_set_dirty;
         if layout_folded || agent_folded || asked_folded || outcome.foreign_pane_set_dirty {
-            repaint.raise_chrome();
+            self.peers.chrome_dirty = true;
             repaint.raise_fleet();
         }
+        Ok(())
     }
 
     /// Re-sweep the watches and caches an ATTACHED snapshot or a pane
@@ -3129,6 +3227,9 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         repaint: &mut RepaintAccumulator,
     ) {
+        if std::mem::take(&mut self.peers.chrome_dirty) {
+            self.note_chrome_change(repaint);
+        }
         let drained = repaint.drain();
         // The overlay half of the same drain. A no-op unless a
         // live fleet list is actually in the overlay stack, so

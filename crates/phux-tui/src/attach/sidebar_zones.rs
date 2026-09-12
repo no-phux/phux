@@ -1,7 +1,7 @@
 //! The sidebar's cross-session projections (phux-k0cw).
 //!
-//! Zone 1 (`needs you`) and zone 3 (`spaces`) are the two parts of the strip
-//! that describe the whole server rather than the attached session, so their
+//! Agents and Sessions describe the whole server rather than only the
+//! attached session, so their
 //! inputs are the peer caches the driver keeps rather than the workspace it
 //! renders. Pure functions over plain data: everything arrives as arguments,
 //! nothing is fetched here, and the tests drive them with fully synthetic
@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{ResourceId, SessionId};
-use phux_protocol::wire::info::SessionInfo;
+use phux_protocol::wire::info::{HostInventory, SessionInfo};
 
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
@@ -33,6 +33,10 @@ const UNNAMED_AGENT: &str = "unnamed agent";
 /// phux-jx39).
 #[derive(Clone, Copy)]
 pub(super) struct PeerInputs<'a> {
+    /// The serving server's own hostname, never the TUI process's hostname.
+    pub serving_host: Option<&'a str>,
+    /// Host-qualified satellite inventories, separate from local session ids.
+    pub hosts: &'a [HostInventory],
     /// The server's session graph, from the `ATTACHED` snapshot.
     pub sessions: &'a [SessionInfo],
     /// Which of those sessions this client is attached to.
@@ -48,11 +52,10 @@ pub(super) struct PeerInputs<'a> {
 impl PeerInputs<'_> {
     /// The peer sessions, in the graph's order, paired with the cached layout
     /// each one has (if any).
-    fn peers(&self) -> impl Iterator<Item = (&SessionInfo, Option<&Workspace>)> {
-        self.sessions
-            .iter()
-            .filter(move |s| Some(s.id) != self.focused_session)
-            .map(move |s| (s, self.foreign_layouts.get(&s.id)))
+    fn ordered_sessions(&self) -> Vec<&SessionInfo> {
+        let mut sessions: Vec<_> = self.sessions.iter().collect();
+        sessions.sort_by_key(|s| s.id);
+        sessions
     }
 }
 
@@ -69,31 +72,18 @@ fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)
     out
 }
 
-/// The cross-session attention queue, most-wanting-a-human first.
-///
-/// `local` is the attached session's rows, already ranked by the driver;
-/// peers are appended and the whole list re-sorted by [`attention_rank`]. The
-/// sort is STABLE, which is what gives the tiebreak its shape: local rows
-/// keep the driver's last-change ordering, and peer rows follow in the
-/// session graph's order below any local row of equal rank.
-///
-/// Two honest degradations, both structural rather than oversights:
-///
-/// - **Peer rows have no clock.** The per-pane last-change map is keyed by
-///   local `ResourceId`, so two peer agents that both went `blocked` cannot
-///   be ordered by recency. They hold declaration order instead.
-/// - **Peer rows are never `seen`.** A pane is marked seen by focusing it,
-///   which for a peer means switching sessions — at which point it stops
-///   being a peer. So a peer's finished-and-unread agent stays on the
-///   done-unvisited rung until someone goes and looks, which is the correct
-///   behaviour for an inbox but means the queue never self-clears from a
-///   distance.
-///
-/// Returns the FULL ranked list. Truncation belongs to the row model, so the
-/// `+N more` count can be honest about what it dropped.
+/// Full agent list in stable session-id, window and leaf order. Status and
+/// review changes affect the row's badge only. Truncation belongs to the
+/// painter's fixed Agents panel, never to this projection.
 pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) -> Vec<AgentEntry> {
-    let mut rows = local;
-    for (session, layout) in peers.peers() {
+    let mut rows = Vec::new();
+    let mut local = Some(local);
+    for session in peers.ordered_sessions() {
+        if Some(session.id) == peers.focused_session {
+            rows.extend(local.take().unwrap_or_default());
+            continue;
+        }
+        let layout = peers.foreign_layouts.get(&session.id);
         let Some(layout) = layout else { continue };
         for (w, p, id) in leaves_with_position(layout) {
             let asked = peers.foreign_attention.contains(&id);
@@ -125,17 +115,12 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
             });
         }
     }
-    rows.sort_by(|a, b| {
-        attention_rank(b.state, b.attention, b.seen).cmp(&attention_rank(
-            a.state,
-            a.attention,
-            a.seen,
-        ))
-    });
+    // Synthetic or not-yet-snapshotted local state still remains navigable.
+    rows.extend(local.unwrap_or_default());
     rows
 }
 
-/// One roster line per peer session, rolled up from its cached panes.
+/// Every session, including the current one, with its serving host.
 ///
 /// A session with no cached layout still gets a row — "this space exists" is
 /// the roster's whole job, and a session the client cannot describe yet is
@@ -143,16 +128,20 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
 /// zero and its dot is the quiet rung, which reads as "nothing known", not as
 /// "nothing happening".
 ///
-/// A **satellite** session reports every pane as `unknown` and never as
-/// `blocked: 0`. Its per-Terminal metadata is normatively unsubscribable
-/// (`docs/spec/L3.md`), so a zero there would not be a measurement — it would
-/// be an attention surface lying by omission, which is the one failure mode
-/// that discredits the whole strip.
-pub(super) fn session_roster(peers: &PeerInputs<'_>) -> Vec<SessionRosterEntry> {
+/// Satellite sessions come from the host inventory, not from scanning a
+/// local session's leaves. Their agent counts remain explicitly unknown.
+pub(super) fn session_roster(
+    peers: &PeerInputs<'_>,
+    local: &[AgentEntry],
+) -> Vec<SessionRosterEntry> {
     let mut out = Vec::new();
-    for (session, layout) in peers.peers() {
+    for session in peers.ordered_sessions() {
         let mut entry = SessionRosterEntry {
             name: session.name.clone(),
+            host: peers.serving_host.unwrap_or("this server").to_owned(),
+            active: Some(session.id) == peers.focused_session,
+            route_host: None,
+            selectable: true,
             blocked: 0,
             working: 0,
             done_unvisited: 0,
@@ -160,33 +149,86 @@ pub(super) fn session_roster(peers: &PeerInputs<'_>) -> Vec<SessionRosterEntry> 
             unknown: 0,
             satellite: false,
         };
-        if let Some(layout) = layout {
-            for (_, _, id) in leaves_with_position(layout) {
-                if !id.is_local() {
-                    entry.satellite = true;
-                    entry.unknown += 1;
-                    continue;
-                }
-                let asked = peers.foreign_attention.contains(&id);
-                let record = peers.foreign_agents.get(&id);
-                let (state, attention) = record.map_or((AgentMetaState::Unknown, asked), |r| {
+        if entry.active {
+            summarize_local_agents(&mut entry, local);
+        } else if let Some(layout) = peers.foreign_layouts.get(&session.id) {
+            count_peer_panes(&mut entry, layout, peers);
+        }
+        out.push(entry);
+    }
+    out.extend(satellite_roster(peers.hosts));
+    out
+}
+
+/// Share the current-session summary between live and headless chrome.
+pub(super) fn summarize_local_agents(entry: &mut SessionRosterEntry, agents: &[AgentEntry]) {
+    for agent in agents {
+        count_rank(
+            entry,
+            attention_rank(agent.state, agent.attention, agent.seen),
+        );
+    }
+}
+
+/// A remote pane does not change the host of the session containing it.
+fn count_peer_panes(entry: &mut SessionRosterEntry, layout: &Workspace, peers: &PeerInputs<'_>) {
+    for (_, _, id) in leaves_with_position(layout) {
+        if !id.is_local() {
+            entry.unknown += 1;
+            continue;
+        }
+        let asked = peers.foreign_attention.contains(&id);
+        let (state, attention) =
+            peers
+                .foreign_agents
+                .get(&id)
+                .map_or((AgentMetaState::Unknown, asked), |r| {
                     (
                         r.state,
                         asked || r.effective_attention() == AgentAttention::High,
                     )
                 });
-                // A peer pane is never `seen` (see `needs_you_queue`), so the
-                // roster and the queue classify the same pane identically.
-                match attention_rank(state, attention, false) {
-                    4 => entry.blocked += 1,
-                    3 => entry.done_unvisited += 1,
-                    2 => entry.working += 1,
-                    1 => entry.settled += 1,
-                    _ => entry.unknown += 1,
-                }
-            }
+        count_rank(entry, attention_rank(state, attention, false));
+    }
+}
+
+const fn count_rank(entry: &mut SessionRosterEntry, rank: u8) {
+    match rank {
+        4 => entry.blocked += 1,
+        3 => entry.done_unvisited += 1,
+        2 => entry.working += 1,
+        1 => entry.settled += 1,
+        _ => entry.unknown += 1,
+    }
+}
+
+/// Satellite session ids are host-local; never merge them with local ids.
+fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
+    let mut hosts: Vec<_> = hosts.iter().collect();
+    hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
+    let mut out = Vec::new();
+    for host in hosts {
+        let base = SessionRosterEntry {
+            host: host.host.to_string(),
+            route_host: Some(host.host.to_string()),
+            satellite: true,
+            selectable: host.is_reachable(),
+            ..SessionRosterEntry::default()
+        };
+        if !host.is_reachable() {
+            out.push(SessionRosterEntry {
+                name: "unreachable".to_owned(),
+                ..base
+            });
+            continue;
         }
-        out.push(entry);
+        let mut sessions: Vec<_> = host.sessions.iter().collect();
+        sessions.sort_by_key(|s| s.id);
+        out.extend(sessions.into_iter().map(|session| SessionRosterEntry {
+            name: session.name.clone(),
+            unknown: usize::from(session.pane_count),
+            ..base.clone()
+        }));
     }
     out
 }
@@ -231,6 +273,8 @@ mod tests {
     impl Fixture {
         fn inputs(&self) -> PeerInputs<'_> {
             PeerInputs {
+                serving_host: Some("mini"),
+                hosts: &[],
                 sessions: &self.sessions,
                 focused_session: Some(SessionId::new(1)),
                 foreign_layouts: &self.layouts,
@@ -254,11 +298,9 @@ mod tests {
         }
     }
 
-    /// THE point of a cross-session queue: urgency ignores locality. A peer's
-    /// blocked agent must outrank a local working one, or the user still has
-    /// to go looking — which is the keyhole the whole design replaces.
+    /// A peer changing state cannot jump ahead of an existing local row.
     #[test]
-    fn a_peers_blocked_agent_outranks_a_local_working_one() {
+    fn a_peers_blocked_agent_keeps_its_session_order() {
         let mut f = fixture();
         f.agents.insert(
             ResourceId::local(10),
@@ -272,16 +314,27 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            rows[0].name, "claude",
-            "the blocked peer is first: {rows:?}"
+            rows[1].name, "claude",
+            "the blocked peer stays in its session position: {rows:?}"
         );
         assert_eq!(
-            rows[0].session.as_deref(),
+            rows[1].session.as_deref(),
             Some("peer"),
             "and it carries the session a click must switch to"
         );
-        assert_eq!(rows[0].pane, Some(0), "and the pane that wants the human");
-        assert_eq!(rows[1].name, "codex");
+        assert_eq!(rows[1].pane, Some(0), "and the pane that wants the human");
+        assert_eq!(rows[0].name, "codex");
+
+        f.agents.get_mut(&ResourceId::local(10)).unwrap().state = AgentMetaState::Done;
+        let done = needs_you_queue(vec![local_row("codex", AgentMetaState::Idle)], &f.inputs());
+        assert_eq!(
+            done.iter()
+                .map(|e| (&e.name, e.window, e.pane))
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .map(|e| (&e.name, e.window, e.pane))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// A pane with no record and no ask is a shell, not an agent. The queue
@@ -320,9 +373,15 @@ mod tests {
             record("codex", AgentMetaState::Working),
         );
 
-        let roster = session_roster(&f.inputs());
-        assert_eq!(roster.len(), 1, "only peers appear: {roster:?}");
-        let peer = &roster[0];
+        let roster = session_roster(&f.inputs(), &[]);
+        assert_eq!(
+            roster.len(),
+            2,
+            "current and peer sessions appear: {roster:?}"
+        );
+        assert!(roster[0].active);
+        assert_eq!(roster[0].host, "mini");
+        let peer = &roster[1];
         assert_eq!(peer.name, "peer");
         assert_eq!(peer.blocked, 1);
         assert_eq!(peer.working, 1);
@@ -348,9 +407,13 @@ mod tests {
         f.agents
             .insert(sat, record("claude", AgentMetaState::Blocked));
 
-        let roster = session_roster(&f.inputs());
-        let peer = &roster[0];
-        assert!(peer.satellite, "the row is marked as a satellite");
+        let roster = session_roster(&f.inputs(), &[]);
+        let peer = &roster[1];
+        assert!(
+            !peer.satellite,
+            "a remote pane does not change its containing session's host"
+        );
+        assert_eq!(peer.host, "mini");
         assert_eq!(peer.unknown, 1);
         assert_eq!(peer.blocked, 0);
         assert_eq!(
@@ -368,10 +431,44 @@ mod tests {
         let mut f = fixture();
         f.layouts.clear();
 
-        let roster = session_roster(&f.inputs());
-        assert_eq!(roster.len(), 1);
-        assert_eq!(roster[0].name, "peer");
-        assert_eq!(roster[0].total(), 0);
+        let roster = session_roster(&f.inputs(), &[]);
+        assert_eq!(roster.len(), 2);
+        assert_eq!(roster[1].name, "peer");
+        assert_eq!(roster[1].total(), 0);
+    }
+
+    #[test]
+    fn same_named_sessions_keep_host_qualified_targets() {
+        use phux_protocol::wire::info::HostSessionInfo;
+        let f = fixture();
+        let hosts = vec![
+            HostInventory::reachable(
+                "devbox".into(),
+                vec![
+                    HostSessionInfo::new(SessionId::new(1), "here")
+                        .with_window_count(2)
+                        .with_pane_count(3),
+                ],
+            ),
+            HostInventory::unreachable("offline".into(), "link down"),
+        ];
+        let mut inputs = f.inputs();
+        inputs.hosts = &hosts;
+        let roster = session_roster(&inputs, &[]);
+        assert_eq!(
+            (&roster[0].name, &roster[0].host),
+            (&"here".to_owned(), &"mini".to_owned())
+        );
+        assert!(roster[0].route_host.is_none());
+        assert_eq!(roster[2].name, "here");
+        assert_eq!(roster[2].host, "devbox");
+        assert_eq!(roster[2].route_host.as_deref(), Some("devbox"));
+        assert_eq!(roster[2].unknown, 3);
+        assert!(roster[2].selectable);
+        assert_eq!(roster[3].host, "offline");
+        assert!(!roster[3].selectable);
+        inputs.serving_host = None;
+        assert_eq!(session_roster(&inputs, &[])[0].host, "this server");
     }
 
     /// The projections feed a change-gated painter, so identical inputs must
@@ -391,6 +488,9 @@ mod tests {
             needs_you_queue(local.clone(), &f.inputs()),
             needs_you_queue(local, &f.inputs())
         );
-        assert_eq!(session_roster(&f.inputs()), session_roster(&f.inputs()));
+        assert_eq!(
+            session_roster(&f.inputs(), &[]),
+            session_roster(&f.inputs(), &[])
+        );
     }
 }

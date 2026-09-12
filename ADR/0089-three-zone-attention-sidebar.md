@@ -16,6 +16,8 @@ state the client already receives; no wire surface is added.
 Status: Accepted
 Date: 2026-08-15
 
+Layout and ordering amended by [ADR-0112](./0112-stable-split-sidebar-navigation.md).
+
 ## Context
 
 The strip listed the attached session's windows and, under a second header,

@@ -80,12 +80,17 @@ pub(super) fn targets(
     windows: usize,
     roster: usize,
 ) -> crate::render::chrome::sidebar::SidebarTargets {
-    use crate::render::chrome::sidebar::{SidebarCounts, SidebarTarget, SidebarTargets};
+    use crate::render::chrome::sidebar::{
+        SessionRosterTarget, SidebarCounts, SidebarTarget, SidebarTargets,
+    };
+    // Window-only fixtures still represent one current session.
+    let roster = roster.max(usize::from(windows > 0));
     SidebarTargets {
         counts: SidebarCounts {
             needs_you,
             windows,
             roster,
+            active_session: (windows > 0 && roster > 0).then_some(0),
         },
         needs_you: (0..needs_you)
             .map(|j| {
@@ -102,6 +107,13 @@ pub(super) fn targets(
                 }
             })
             .collect(),
-        roster: (0..roster).map(|j| format!("space-{j}")).collect(),
+        roster: (0..roster)
+            .map(|j| {
+                Some(SessionRosterTarget {
+                    name: format!("space-{j}"),
+                    host: None,
+                })
+            })
+            .collect(),
     }
 }

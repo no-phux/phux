@@ -1343,8 +1343,8 @@ fn an_unscoped_layout_key_has_no_session_authority() {
     assert_eq!(window_leaves(&local, 0), vec![tid(1)]);
 }
 
-/// phux-k0cw: a `phux.agent/v1` push for a pane we hold no slot for is a
-/// peer's. It must not enter the local index, which
+/// A `phux.agent/v1` push for a pane outside our workspace is a
+/// peer's, even when ATTACHED allocated a mirror slot. It must not enter the local index, which
 /// `sync_agent_meta_subscriptions` retains against the LOCAL pane set —
 /// a foreign record folded in there would be evicted on the next sweep.
 #[test]
@@ -1353,7 +1353,7 @@ fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
 
     let mut local = Workspace::single(tid(1));
     let mut focused = Some(tid(1));
-    let mut panes = panes_for(&[&tid(1)]);
+    let mut panes = panes_for(&[&tid(1), &tid(77)]);
     let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
 
     let outcome = drive_layout_frame(
@@ -4249,6 +4249,57 @@ fn asked_event_sets_attention_and_dirties_chrome() {
         "the other pane stays quiet"
     );
     assert!(outcome.chrome_dirty, "the chrome must repaint");
+}
+
+/// Server-wide mirror slots do not make a peer's question local.
+#[test]
+fn peer_asked_event_with_a_cached_slot_routes_to_foreign_attention() {
+    let local = tid(1);
+    let peer = tid(9);
+    let mut layout = Workspace::single(local.clone());
+    let mut focused = Some(local.clone());
+    let mut panes = panes_for(&[&local, &peer]);
+    let outcome = drive_asked(&mut layout, &mut focused, &mut panes, &peer);
+    assert_eq!(outcome.foreign_attention, Some(peer.clone()));
+    assert!(
+        panes.get(&peer).unwrap().attention,
+        "retain the observation until ownership is fully known"
+    );
+    assert!(!outcome.chrome_dirty);
+}
+
+/// Provisional workspace ownership must not lose a coalesced local question.
+#[test]
+fn early_local_ask_survives_persisted_layout_adoption() {
+    let first = tid(1);
+    let later = tid(2);
+    let mut workspace = Workspace::single(first.clone());
+    let mut focused = Some(first.clone());
+    let mut panes = panes_for(&[&first, &later]);
+    let asked = drive_asked(&mut workspace, &mut focused, &mut panes, &later);
+    assert_eq!(asked.foreign_attention, Some(later.clone()));
+    let complete = two_pane_workspace(&first, &later, &first);
+    let adopted = drive_layout_frame(
+        FrameKind::MetadataValue {
+            request_id: 42,
+            value: Some(complete.encode_cbor().unwrap()),
+        },
+        Some(42),
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+    );
+    assert!(adopted.layout_replaced);
+    assert!(
+        panes.get(&later).unwrap().attention,
+        "the server need not repeat Asked"
+    );
+    let repeated = drive_asked(&mut workspace, &mut focused, &mut panes, &later);
+    assert!(!repeated.chrome_dirty);
+    assert!(
+        repeated.foreign_attention.is_none(),
+        "ownership now resolves locally"
+    );
 }
 
 /// phux-foz.1: a repeated `Asked` while the flag is already up changes

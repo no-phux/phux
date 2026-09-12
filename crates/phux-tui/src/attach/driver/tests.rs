@@ -1284,8 +1284,8 @@ const PROBE_SIDEBAR_W: u16 = 20;
 /// nowhere in any pane content or overlay body, so finding it in the
 /// replayed frame proves the strip painted.
 const PROBE_WINDOW: &str = "w1-agent";
-/// Branch shown on the sidebar's branch row (herdr-style, phux-p4vp).
-const PROBE_BRANCH: &str = "foz10-br";
+/// Serving host shown under the session, distinct from pane content.
+const PROBE_HOST: &str = "probe-host";
 /// Content written into the pane mirror, to prove the base frame
 /// repainted around the floating modal.
 const PROBE_PANE_TEXT: &str = "PANE-BASE";
@@ -1379,7 +1379,7 @@ fn shipped_frame_at_a_roomy_viewport() {
         probe_window("server", false),
     ];
     let rows = shipped_frame_rows((100, 12), &windows);
-    let bar = rows.last().expect("a bar row");
+    let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "{bar:?}");
     assert!(bar.contains("Space palette"), "{bar:?}");
     assert!(bar.contains("phux"), "{bar:?}");
@@ -1400,7 +1400,7 @@ fn shipped_frame_at_a_phone_sized_viewport() {
         probe_window("logs", false),
     ];
     let rows = shipped_frame_rows((46, 12), &windows);
-    let bar = rows.last().expect("a bar row");
+    let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains("switch"), "{bar:?}");
     assert!(!bar.contains("Space palette"), "hints yield: {bar:?}");
@@ -1422,7 +1422,7 @@ fn shipped_frame_when_the_tab_strip_must_collapse() {
         probe_window("logs", false),
     ];
     let rows = shipped_frame_rows((36, 10), &windows);
-    let bar = rows.last().expect("a bar row");
+    let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains('\u{203a}'), "hidden tabs are marked: {bar:?}");
     assert!(!bar.contains("3:logs"), "the far tab is dropped: {bar:?}");
@@ -1493,12 +1493,19 @@ fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> V
     );
 
     let mut sidebar_painter = SidebarPainter::new(theme);
+    sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
+        name: "probe".to_owned(),
+        host: PROBE_HOST.to_owned(),
+        active: true,
+        selectable: true,
+        ..Default::default()
+    }]);
     sidebar_painter.set_windows(vec![WindowInfo {
         name: PROBE_WINDOW.to_owned(),
         active: true,
         zoomed: false,
         attention: false,
-        branch: Some(PROBE_BRANCH.to_owned()),
+        branch: None,
     }]);
 
     let mut overlays = OverlayState::new();
@@ -1582,14 +1589,14 @@ fn overlay_base_frame_without_painter_blanks_the_sidebar() {
     let rows = replay_rows(&paint_overlay_frame(palette_overlay(), false));
     let strip = strip_columns(&rows).join("\n");
     assert!(
-        !strip.contains(PROBE_WINDOW) && !strip.contains(PROBE_BRANCH),
+        !strip.contains(PROBE_WINDOW) && !strip.contains(PROBE_HOST),
         "probe must detect the blank strip when the painter is absent;\n{strip}"
     );
 }
 
 /// phux-foz.10: opening the command palette must NOT blank the sidebar.
 /// The floating-modal base frame repaints the strip (window label +
-/// branch line) and the panes, then paints the modal on top.
+/// session host) and the panes, then paints the modal on top.
 #[test]
 fn command_palette_keeps_sidebar_visible() {
     let rows = replay_rows(&paint_overlay_frame(palette_overlay(), true));
@@ -1600,8 +1607,8 @@ fn command_palette_keeps_sidebar_visible() {
         "sidebar window label must survive the palette;\n{all}"
     );
     assert!(
-        strip.contains(PROBE_BRANCH),
-        "sidebar branch line must survive the palette;\n{all}"
+        strip.contains(PROBE_HOST),
+        "sidebar host line must survive the palette;\n{all}"
     );
     assert!(
         all.contains("command palette"),
@@ -1682,8 +1689,8 @@ fn all_floating_overlays_keep_sidebar_visible() {
             rows.join("\n")
         );
         assert!(
-            strip.contains(PROBE_BRANCH),
-            "{label}: sidebar branch line must survive the overlay;\n{}",
+            strip.contains(PROBE_HOST),
+            "{label}: sidebar host line must survive the overlay;\n{}",
             rows.join("\n")
         );
     }

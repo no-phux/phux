@@ -427,6 +427,13 @@ mod tests {
 
         // The same window list `window_infos` would hand the strip painter.
         let mut sidebar_painter = SidebarPainter::new(Theme::default());
+        sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
+            name: "test".to_owned(),
+            host: "test-host".to_owned(),
+            active: true,
+            selectable: true,
+            ..Default::default()
+        }]);
         sidebar_painter.set_windows(vec![
             WindowInfo {
                 name: "editor".to_owned(),
@@ -472,9 +479,7 @@ mod tests {
             sep.contains('│'),
             "sidebar separator must sit at the strip's last column (19); got {sep:?}"
         );
-        // phux-k0cw: the strip is three zones now and which one tops it
-        // depends on whether anything wants a human, so locate the rows by
-        // searching the strip rather than pinning row 0 to one header.
+        // The two fixed panels compose alongside the panes.
         let strip_rows: Vec<String> = (0..24)
             .map(|r| {
                 (0..19)
@@ -483,7 +488,7 @@ mod tests {
             })
             .collect();
         assert!(
-            strip_rows.iter().any(|row| row.contains("here")),
+            strip_rows.iter().any(|row| row.contains("Sessions")),
             "the focused session's header must paint into the strip; got {strip_rows:?}"
         );
         assert!(

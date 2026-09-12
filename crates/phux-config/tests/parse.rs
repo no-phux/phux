@@ -149,7 +149,7 @@ fn empty_input_is_full_defaults() {
     );
     assert_eq!(cfg.sidebar.width, 0, "default width adapts to the viewport");
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
-    assert_eq!(cfg.status.position, StatusPosition::Bottom);
+    assert_eq!(cfg.status.position, StatusPosition::Top);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
     assert_eq!(cfg.defaults.spawn_on_attach, None);
     assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");

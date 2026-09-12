@@ -7,8 +7,8 @@
 //!   for `RESOURCE_OUTPUT` arrivals where only the focused pane changed.
 //!
 //! `content_rect` reserves one outer-terminal row for the status bar —
-//! the bottom row by default, the top row under `[status] position =
-//! "top"` (phux-foz.8) — so pane Rects never spill into it.
+//! the top row by default, the bottom row under `[status] position =
+//! "bottom"` — so pane Rects never spill into it.
 
 use std::collections::HashMap;
 use std::io::Write;

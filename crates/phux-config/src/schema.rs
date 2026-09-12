@@ -541,7 +541,7 @@ pub struct StatusCfg {
     /// Right slot.
     #[serde(default)]
     pub right: Vec<Widget>,
-    /// Which outer-terminal row the bar reserves. Default `bottom`
+    /// Which outer-terminal row the bar reserves. Default `top`
     /// (per `docs/consumers/tui.md` section 8).
     #[serde(default)]
     pub position: StatusPosition,
@@ -555,10 +555,10 @@ pub struct StatusCfg {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusPosition {
-    /// One row at the very bottom of the outer terminal (default).
-    #[default]
+    /// One row at the very bottom of the outer terminal.
     Bottom,
-    /// One row at the very top of the outer terminal.
+    /// One row at the very top of the outer terminal (default).
+    #[default]
     Top,
 }
 

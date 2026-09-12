@@ -743,6 +743,66 @@ fn a_wide_tab_separator_never_overruns_the_budget() {
     }
 }
 
+#[test]
+fn hidden_tab_arrows_navigate_even_beside_a_long_active_label() {
+    use phux_config::widget::CellHit;
+    let windows = [
+        win("before", false),
+        win("a-long-active-window", true),
+        win("after", false),
+    ];
+    let widget = build_spec("windows", &[]).expect("windows builds");
+    let ctx = WidgetContext::new(fixed_time(), "", "C-a", &windows);
+    let cells = widget.render_within(&ctx, 12);
+    assert_eq!(text_of(&cells), "‹1:a-long-…›");
+    assert_eq!(
+        cells.cells.first().expect("left arrow").hit,
+        Some(CellHit::Window(0))
+    );
+    assert_eq!(
+        cells.cells.last().expect("right arrow").hit,
+        Some(CellHit::Window(2))
+    );
+    assert!(
+        cells.cells[1..cells.len() - 1]
+            .iter()
+            .all(|c| c.hit == Some(CellHit::Window(1)))
+    );
+    assert_eq!(emitted_columns(&cells.cells), Ok(cells.len()));
+}
+
+#[test]
+fn tab_navigation_stays_in_bounds_at_every_width_and_active_position() {
+    use phux_config::widget::CellHit;
+    let widget = build_spec("windows", &[]).expect("windows builds");
+    for active in 0..3 {
+        let windows: Vec<_> = ["漢字-long-name", "short", "another-long-name"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| win(name, i == active))
+            .collect();
+        let ctx = WidgetContext::new(fixed_time(), "", "C-a", &windows);
+        for budget in 0..80 {
+            let rendered = widget.render_within(&ctx, budget);
+            assert!(rendered.len() <= budget);
+            assert_eq!(emitted_columns(&rendered.cells), Ok(rendered.len()));
+            for cell in &rendered.cells {
+                if let Some(CellHit::Window(index)) = cell.hit {
+                    assert!(index < windows.len());
+                }
+            }
+            if budget > 0 {
+                assert!(
+                    rendered
+                        .cells
+                        .iter()
+                        .any(|c| c.hit == Some(CellHit::Window(active)))
+                );
+            }
+        }
+    }
+}
+
 /// A composed row must advance the terminal exactly as many columns as
 /// it claims. An ORPHAN BASE — a double-width character whose claimed
 /// cell was cut away — is one cell the row counts and two the terminal

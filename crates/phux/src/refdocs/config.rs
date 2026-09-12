@@ -462,7 +462,7 @@ mod tests {
             "| `defaults.history-limit` | `50000` |",
             "| `keybindings.prefix` | `\"C-a\"` |",
             "| `sidebar.width` | `0` |",
-            "| `status.position` | `\"bottom\"` |",
+            "| `status.position` | `\"top\"` |",
         ] {
             assert!(page.body.contains(row), "scalar table lost the row {row:?}");
         }

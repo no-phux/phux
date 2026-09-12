@@ -1,6 +1,6 @@
 //! Integration test for the phux-nz4.5 status-bar pipeline:
 //! TOML string → `Config` → `StatusBar` → painter → assert widget
-//! output landed on the bottom row.
+//! output landed on the configured row.
 //!
 //! Tests the seams the user cares about: the two in-tree widgets
 //! (`time`, `session-name`) must appear when included in `[status]`.
@@ -20,7 +20,7 @@ right = [{ kind = "time", format = "FAKE-CLOCK" }]
 "#;
 
 #[test]
-fn both_in_tree_widgets_render_to_bottom_row_from_config() {
+fn both_in_tree_widgets_render_to_top_row_from_config() {
     let cfg =
         phux_config::parse_str(CONFIG_BOTH_WIDGETS, &PathBuf::from("test.toml")).expect("parse");
     let registry = WidgetRegistry::with_builtins();
@@ -43,8 +43,7 @@ fn both_in_tree_widgets_render_to_bottom_row_from_config() {
 
     let s = String::from_utf8(buf).expect("utf8");
 
-    // CUP to last row (`rows`, 1-based).
-    assert!(s.contains("\x1b[24;1H"), "no CUP to bottom row: {s:?}");
+    assert!(s.contains("\x1b[1;1H"), "no CUP to top row: {s:?}");
     // session-name widget output (with `[` prefix).
     assert!(s.contains("[session-x"), "session widget missing: {s:?}");
     // time widget output (literal because the format has no `%` escapes).
@@ -52,9 +51,7 @@ fn both_in_tree_widgets_render_to_bottom_row_from_config() {
 }
 
 #[test]
-fn default_placement_is_bottom() {
-    // No config knob for top/bottom exists today; the painter's
-    // Position::default() must be Bottom per docs/consumers/tui.md §8.5.
+fn default_placement_is_top() {
     let cfg =
         phux_config::parse_str(CONFIG_BOTH_WIDGETS, &PathBuf::from("test.toml")).expect("parse");
     let registry = WidgetRegistry::with_builtins();
@@ -72,9 +69,8 @@ fn default_placement_is_bottom() {
         )
         .expect("paint");
     let s = String::from_utf8(buf).expect("utf8");
-    // Row 10 = bottom of a 10-row viewport, 1-based.
-    assert!(s.contains("\x1b[10;1H"), "default not bottom: {s:?}");
-    assert!(!s.contains("\x1b[1;1H"), "must not target row 1: {s:?}");
+    assert!(s.contains("\x1b[1;1H"), "default not top: {s:?}");
+    assert!(!s.contains("\x1b[10;1H"), "must not target row 10: {s:?}");
 }
 
 #[test]

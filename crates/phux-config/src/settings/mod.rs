@@ -493,7 +493,7 @@ pub const CATALOG: &[SettingSpec] = &[
         section: SettingSection::Status,
         kind: SettingKind::Choice(STATUS_POSITION),
         summary: "Which outer-terminal row the status bar reserves",
-        detail: "bottom (the default) or top. The bar's widget lists are composition, not \
+        detail: "top (the default) or bottom. The bar's widget lists are composition, not \
                  knobs, and are edited in the file directly.",
         applies: Applies::LiveReload,
     },

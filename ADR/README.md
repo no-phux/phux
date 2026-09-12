@@ -124,7 +124,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0086](./0086-shared-render-pool.md) | The pooled libghostty render trio lives in `phux-protocol` | Accepted |
 | [0087](./0087-elastic-status-bar-space.md) | Elastic status-bar space is row-wide slack, not slot layout | Proposed (builds on [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0088](./0088-adopting-a-live-server-into-supervision.md) | Adopting a live server into supervision | Accepted (builds on [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md), [0080](./0080-socket-lifecycle-and-instance-isolation.md)) |
-| [0089](./0089-three-zone-attention-sidebar.md) | The sidebar is a bounded attention inbox, not a structural list | Accepted |
+| [0089](./0089-three-zone-attention-sidebar.md) | The sidebar is a bounded attention inbox, not a structural list | Accepted (amended by [0112](./0112-stable-split-sidebar-navigation.md)) |
 | [0090](./0090-confirmation-gated-predictive-echo.md) | Predictive echo returns to the alt screen via confirmation-gated display | Accepted |
 | [0091](./0091-certificate-names-the-advertised-address.md) | The certificate names the advertised address, once, at generation | Accepted (builds on [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0092](./0092-durable-work-coordinator-authority.md) | The coordinator owns durable work | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md)) |
@@ -147,6 +147,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) | Late kills are conditional on instance and attachment | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md)) |
 | [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) | A showing peer is re-shown at launch only in front | Accepted (amended by [0111](./0111-how-a-front-restore-is-judged.md)) |
 | [0111](./0111-how-a-front-restore-is-judged.md) | How a front restore is judged | Accepted (amends [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)) |
+| [0112](./0112-stable-split-sidebar-navigation.md) | Sidebar navigation stays put while status changes | Accepted (amends [0089](./0089-three-zone-attention-sidebar.md)) |
 
 ## When to write an ADR
 
