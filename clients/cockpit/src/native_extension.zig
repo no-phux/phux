@@ -1954,20 +1954,14 @@ fn pointerMayAdoptWindow(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bo
 }
 
 fn routePointerInput(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
+    if (bridge.interaction_mode != .terminal) return;
     switch (raw.kind) {
         .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
         else => return,
     }
-    const index = Engine.windowIndexForCanvas(raw.label) orelse return;
-    if (bridge.interaction_mode != .terminal) return;
-    if (!engine.model.windowOpen(index)) return;
-    // Inactive-window scrolling and hovering use that window's geometry, but
-    // only a press changes the context of the next keyboard/menu command.
-    const active = engine.model.active_window;
-    defer if (raw.kind != .pointer_down and engine.model.active_window == index) {
-        engine.model.active_window = active;
-    };
-    engine.model.active_window = index;
+    // Window adoption for chrome (tabs, New Tab) is canvas_widget_pointer's
+    // job, after tab-command receipts validate. onPointer itself adopts only
+    // when the hit is inside that window's terminal workspace.
     if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
     engine.noteTopologyChange(fx, topologyTimer);
 }
@@ -4058,7 +4052,7 @@ test "automation batched create hands typing to the new terminal" {
     const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
     var button: u64 = 0;
     for (layout.nodes) |node| {
-        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.widget.id;
+        if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) button = node.widget.id;
     }
     try std.testing.expect(button != 0);
     var command: [128]u8 = undefined;
@@ -4243,7 +4237,7 @@ test "shipping toolbar creation belongs to the clicked secondary window" {
     const tree = try rig.harness.runtime.canvasWidgetLayout(id, "phux-cockpit-canvas-1");
     var button: u64 = 0;
     for (tree.nodes) |node| {
-        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.widget.id;
+        if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) button = node.widget.id;
     }
     try std.testing.expect(button != 0);
     var command: [128]u8 = undefined;
@@ -4341,7 +4335,7 @@ test "shipping focused palette editor dismisses and moves by keyboard" {
     const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
     var editor: u64 = 0;
     for (widgets.nodes) |node| {
-        if (node.widget.kind == .input and std.mem.eql(u8, node.widget.semantics.label, "Find terminal or session")) editor = node.widget.id;
+        if (node.widget.kind == .input and std.mem.eql(u8, node.widget.semantics.label, "Search navigator")) editor = node.widget.id;
     }
     try std.testing.expect(editor != 0);
     try std.testing.expectEqual(editor, rig.harness.runtime.views[0].canvas_widget_focused_id);
@@ -5767,15 +5761,15 @@ test "shipping OS close cancels an actually captured pre-close snapshot" {
     try std.testing.expectEqual(errors, rig.harness.runtime.dispatchErrorTotal());
 }
 
-test "shipping OS close capacity refusal recovers a new native incarnation without losing shared work" {
+test "shipping OS close at tab capacity detaches views without rehoming shared work" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
     _ = try rig.attachFixture();
     const engine = bridge.engine.?;
     const model = engine.model;
-    // Fill the destination with distinct shared identities. Closing the
-    // secondary cannot rehome its tab, so production refuses TabCapacity.
+    // Fill the primary so a rehome-or-refuse close would have nowhere to put
+    // the secondary's tabs. Close Window detaches those views instead (ADR-0114).
     for (1..model.primary.tabs.len) |index| {
         var ref = model.focusedTerminalRef().?;
         ref.terminal_id.phux.id = @intCast(100 + index);
@@ -5802,19 +5796,16 @@ test "shipping OS close capacity refusal recovers a new native incarnation witho
     const divider = try beginShippingDividerDrag(&rig);
     try std.testing.expect(engine.split_drag != null);
     const revision = engine.revision;
+    const primary_tabs = model.primary.tab_count;
     const errors = rig.harness.runtime.dispatchErrorTotal();
     const close = rig.harness.null_platform.userCloseWindow(old_id) orelse return error.TestExpectedWindowClose;
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, close);
     try std.testing.expect(engine.split_drag == null);
-    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
-    try std.testing.expect(model.windowOpen(1));
-    try std.testing.expect(rig.app_state.model.window1Open);
-    try std.testing.expect(secondary.window_id != 0 and secondary.window_id != old_id);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(!model.windowOpen(1));
+    try std.testing.expect(!rig.app_state.model.window1Open);
     try std.testing.expect(engine.revision > revision);
-    try std.testing.expect(retained.eql(secondary.selectedTree().?.focusedTerminal().?));
-    try std.testing.expectEqual(model.primary.tabs.len, model.primary.tab_count);
-    try std.testing.expectEqual(@as(usize, 1), secondary.tab_count);
-    const fraction = tree.node(divider.node).fraction;
+    try std.testing.expectEqual(primary_tabs, model.primary.tab_count);
     // Deliver directly to the shipping wrapper, as a delayed host callback;
     // SDK widget filtering cannot shield the native pre-dispatch input path.
     try rig.decorated.event(&rig.harness.runtime, .{ .gpu_surface_input = .{
@@ -5825,7 +5816,7 @@ test "shipping OS close capacity refusal recovers a new native incarnation witho
         .x = divider.bounds.x + divider.bounds.width * 0.8,
         .y = divider.rect.y + divider.rect.height / 2,
     } });
-    try std.testing.expectEqual(fraction, tree.node(divider.node).fraction);
+    try std.testing.expect(!model.windowOpen(1));
     const fx = engineFx().?;
     try std.testing.expectEqual(.ignored, engine.onPointer(fx, .{
         .window_id = old_id,

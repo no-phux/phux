@@ -239,7 +239,7 @@ test('New Window and window closure retire the Settings transaction first', () =
     const [closed, departed] = step(waiting, { kind: 'appearance_loaded', body: appearance(false) });
     assert.equal(closed.settingsOpen, false);
     assert.ok(committed(departed), msg.kind);
-    assert.ok(request(departed, msg.kind === 'new_window' ? 'cockpit.tab-command' : 'cockpit.intent'));
+    assert.ok(request(departed, msg.kind === 'new_window' ? 'cockpit.tab-command' : 'cockpit.snapshot'));
   }
 });
 
