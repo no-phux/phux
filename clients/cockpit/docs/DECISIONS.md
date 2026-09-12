@@ -57,6 +57,12 @@ built by letting the providers diverge.
 
 ## An emptied window closes — including the main one
 
+**Keep-empty exception, 2026-09-11:** [ADR-0112](../../../ADR/0112-cockpit-closes-terminals-and-detaches-windows.md)
+retains an Empty session view after a keep-empty session's last terminal ends.
+Cmd+W there closes the client window without ending the named session. The
+last-window close still quits. Close Pane/Tab ends work; OS-window close detaches
+Phux views and preserves their shared layout.
+
 **Decided 2026-08-10.** When a window's last tab closes, that window goes away.
 
 macOS apps genuinely vary here, and the main window used to stand on its web

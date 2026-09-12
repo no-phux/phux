@@ -147,6 +147,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) | Late kills are conditional on instance and attachment | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md)) |
 | [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) | A showing peer is re-shown at launch only in front | Accepted (amended by [0111](./0111-how-a-front-restore-is-judged.md)) |
 | [0111](./0111-how-a-front-restore-is-judged.md) | How a front restore is judged | Accepted (amends [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)) |
+| [0112](./0112-cockpit-closes-terminals-and-detaches-windows.md) | Cockpit closes terminals and detaches windows | Accepted (builds on [0105](./0105-sessions-can-outlive-their-last-window.md), [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
 
 ## When to write an ADR
 

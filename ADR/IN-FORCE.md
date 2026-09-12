@@ -49,6 +49,7 @@ by a newer one, the newer line is the operative reading.
 ## Server process and actor model
 
 - [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
+- [0112](./0112-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
 - [0083](./0083-in-place-supervisor-unit-reconcile.md) `service reconcile` patches only the installed unit's restart-policy keys and reloads nothing.
