@@ -1,5 +1,128 @@
 use super::*;
 
+#[test]
+fn exact_names_do_not_collide_with_an_elided_display_name() {
+    let oversized = "a".repeat(1025);
+    let valid = format!("{}…", "a".repeat(1021));
+    let (_dir, registry) = fixture(&format!(
+        "[[remote]]\nname='{oversized}'\nendpoint='ws://localhost:1'\n[[remote]]\nname='{valid}'\nendpoint='ws://localhost:2'\n"
+    ));
+    assert_eq!(registry.rows[0].name, registry.rows[1].name);
+    assert_eq!(registry.rows[0].route, 5);
+    assert_eq!(
+        registry.rows[1].route, 1,
+        "exact valid name is not a duplicate of the oversized name"
+    );
+    assert!(registry.resolve(1).is_ok());
+}
+
+#[test]
+fn quic_trailing_slash_is_not_a_dialable_authority() {
+    let (_dir, registry) = fixture("[[remote]]\nname='box'\nendpoint='quic://host:8788/'\n");
+    assert_eq!(registry.rows[0].route, 5);
+    assert!(registry.resolve(0).is_err());
+}
+
+#[test]
+fn review_multi_at_userinfo_is_redacted_without_losing_ssh_username_routes() {
+    let (_dir, registry) =
+        fixture("[[remote]]\nname='box'\nendpoint='wss://user@realm:synthetic-secret@host:8787'\n");
+    assert!(!registry.rows[0].endpoint.contains("synthetic-secret"));
+    assert_eq!(registry.rows[0].route, 5);
+    assert!(registry.resolve(0).is_err());
+    let (_dir, ssh) = fixture("[[remote]]\nname='box'\nendpoint='ssh://alice@box:22'\n");
+    assert_eq!(ssh.rows[0].endpoint, "ssh://alice@box:22");
+    assert_eq!(ssh.rows[0].route, 2);
+}
+
+#[test]
+fn review_inherited_bytes_share_the_capture_and_freshness_budget() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("config.toml");
+    let layer = dir.path().join("layer.toml");
+    std::fs::write(&root, "extends=['layer.toml']\n").expect("root");
+    let small = "[[remote]]\nname='x'\nendpoint='ws://localhost:1'\n";
+    std::fs::write(&layer, small).expect("layer");
+    let capture = PhuxMachineRegistry::open(root.clone(), 10, 128);
+    assert_eq!(capture.rows.len(), 1);
+    std::fs::write(&layer, format!("{small}#{}", "a".repeat(2100))).expect("large layer");
+    let oversized = PhuxMachineRegistry::open(root, 10, 128);
+    assert!(
+        oversized.contents.is_none(),
+        "root-only bounds do not constrain extends I/O"
+    );
+    assert!(
+        capture.validate(0).is_err(),
+        "freshness must apply the same aggregate budget"
+    );
+}
+
+#[test]
+fn review_bad_endpoint_syntax_is_not_advertised_as_a_working_route() {
+    for endpoint in [
+        "ws://",
+        "quic://:garbage",
+        "wss://host:70000",
+        "quic://host:0",
+        "quic://[::1",
+        "wss://host:notaport",
+        "bogus://host",
+    ] {
+        let (_dir, registry) = fixture(&format!(
+            "[[remote]]\nname='box'\nendpoint='{endpoint}'\n[[satellites]]\nname='sat'\nendpoint='{endpoint}'\n"
+        ));
+        assert!(
+            registry.rows.iter().all(|row| row.route == 5),
+            "invalid endpoint {endpoint}"
+        );
+    }
+}
+
+#[test]
+fn endpoint_syntax_accepts_supported_authorities_without_network() {
+    for (endpoint, route) in [
+        ("ws://localhost", 1),
+        ("wss://host.example:443/phux", 1),
+        ("quic://[::1]:8788", 1),
+        ("ssh://alice@[::1]:22", 2),
+        ("ssh://my_alias", 2),
+    ] {
+        let (_dir, registry) = fixture(&format!("[[remote]]\nname='x'\nendpoint='{endpoint}'\n"));
+        assert_eq!(registry.rows[0].route, route, "{endpoint}");
+    }
+    for endpoint in [
+        "wss://user%3Asecret@host",
+        "ssh://user:secret@host",
+        "quic://[::1]:garbage",
+        "ws://host..",
+        "ws://-host",
+    ] {
+        let (_dir, registry) = fixture(&format!("[[remote]]\nname='x'\nendpoint='{endpoint}'\n"));
+        assert_eq!(registry.rows[0].route, 5, "{endpoint}");
+        assert!(!registry.rows[0].endpoint.contains("secret"));
+    }
+}
+
+#[test]
+fn display_elision_is_utf8_safe_and_never_becomes_mutation_authority() {
+    let name = "界".repeat(25000);
+    let (_dir, registry) = fixture(&format!(
+        "[[remote]]\nname='{name}'\nendpoint='ws://localhost:1'\n"
+    ));
+    // Use a larger file budget: the display limit remains independent.
+    let registry = PhuxMachineRegistry::open(registry.path, 10, 100_000);
+    let row = &registry.rows[0];
+    assert!(row.name.len() <= MAX_DISPLAY_BYTES);
+    assert!(row.name.ends_with('…'));
+    assert_eq!(
+        registry.contents.as_ref().expect("capture").remote[0].name,
+        name
+    );
+    assert_eq!(row.route, 5);
+    assert!(registry.resolve(0).is_err());
+    assert!(registry.forget(0).is_err());
+}
+
 fn fixture(raw: &str) -> (tempfile::TempDir, PhuxMachineRegistry) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

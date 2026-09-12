@@ -11,6 +11,10 @@ const Registry = if (phux_options.enabled) api.Registry else DisabledRegistry;
 pub const Tunnel = if (phux_options.enabled) api.Tunnel else struct {};
 pub const request_name = "cockpit.machines";
 pub const max_bytes = 65536;
+// Four text fields per row plus one receipt diagnostic remain comfortably below
+// max_bytes even after a command changes all diagnostics. Identity is never
+// decoded from these display strings; activation uses the captured registry row.
+pub const max_text_bytes = 1024;
 pub const Error = error{ InvalidRequest, BufferTooSmall, GenerationExhausted };
 pub const Role = enum(u8) { local = 0, remote = 1, satellite = 2 };
 pub const Route = enum(u8) { local = 0, direct = 1, needs_setup = 2, via_hub = 3, disabled = 4, unsupported = 5 };
@@ -110,15 +114,39 @@ pub fn handle(state: *State, context: Context, input: []const u8, output: []u8) 
     // callers reserve the full reply budget, including a failure receipt.
     if (output.len < max_bytes) return error.BufferTooSmall;
     _ = try reply(state, context, request, .{}, request.first, 1, output);
+    if (request.op == 5 and state.generation == std.math.maxInt(u32)) {
+        return reply(state, context, request, .{ .status = .failed, .message = "Machines capture capacity exhausted; reopen Cockpit before forgetting" }, 0, 0, output);
+    }
     const result = activate(state, context, request);
-    if (result.status != .ok) return reply(state, context, request, result, 0, 0, output);
+    return commandReply(state, context, request, result, output);
+}
+
+// After activation, even an unexpected encoding/refresh failure must produce a
+// correlated receipt. Caller capacity was proven before invoking the mutation.
+fn commandReply(state: *State, context: Context, request: Request, result: ActionResult, output: []u8) []const u8 {
+    if (result.status != .ok) return reply(state, context, request, result, 0, 0, output) catch fallbackReceipt(state, request, result.status, output);
     if (request.op == 5) {
-        try state.refresh();
+        state.refresh() catch return fallbackReceipt(state, request, result.status, output);
+        const registry = state.registry orelse return fallbackReceipt(state, request, result.status, output);
+        if (registry.failed) return fallbackReceipt(state, request, result.status, output);
         var refreshed = request;
         refreshed.first = 0;
-        return page(state, context, refreshed, output);
+        return page(state, context, refreshed, output) catch fallbackReceipt(state, request, result.status, output);
     }
-    return reply(state, context, request, result, request.first, 1, output);
+    return reply(state, context, request, result, request.first, 1, output) catch fallbackReceipt(state, request, result.status, output);
+}
+
+fn fallbackReceipt(state: *State, request: Request, status: ReplyStatus, output: []u8) []const u8 {
+    const message = "Machine action settled; refresh Machines for current details";
+    output[0] = 1;
+    output[1] = @intFromEnum(status);
+    std.mem.writeInt(u32, output[2..6], request.id, .little);
+    std.mem.writeInt(u32, output[6..10], state.generation, .little);
+    std.mem.writeInt(u32, output[10..14], state.total(), .little);
+    @memset(output[14..20], 0);
+    std.mem.writeInt(u16, output[20..22], message.len, .little);
+    @memcpy(output[22..][0..message.len], message);
+    return output[0 .. 22 + message.len];
 }
 
 fn page(state: *State, context: Context, request: Request, output: []u8) Error![]const u8 {
@@ -138,6 +166,7 @@ fn capturedRow(state: *State, index: u32) error{StaleRegistry}!Row {
 
 fn activate(state: *State, context: Context, request: Request) ActionResult {
     const row = capturedRow(state, request.first) catch return .{ .status = .stale, .message = "Machine registry changed or is unreadable; refresh Machines" };
+    if (row.route == .unsupported) return .{ .status = .unsupported, .message = row.message };
     const current = context.current(row.identity);
     if (request.op == 5) return forget(state, request.first, current);
     const action = std.enums.fromInt(Action, request.op) orelse return .{ .status = .unsupported };
@@ -154,7 +183,7 @@ fn forget(state: *State, index: u32, current: Status) ActionResult {
         else => {},
     }
     const registry = state.registry orelse return .{ .status = .stale };
-    registry.forget(index - 1) catch return .{ .status = .failed, .message = "Could not forget this exact entry; check permissions, inherited configuration or external edits" };
+    registry.forget(index - 1) catch return .{ .status = .failed, .message = "Could not forget this exact entry; registry may be busy, unwritable, inherited or changed. Refresh and retry" };
     return .{};
 }
 
@@ -180,11 +209,21 @@ const Writer = struct {
         self.used += len;
     }
     fn text(self: *Writer, value: []const u8) Error!void {
-        if (value.len > std.math.maxInt(u16)) return error.BufferTooSmall;
-        try self.int(u16, @intCast(value.len));
-        if (self.bytes.len - self.used < value.len) return error.BufferTooSmall;
-        @memcpy(self.bytes[self.used..][0..value.len], value);
-        self.used += value.len;
+        const clipped = value.len > max_text_bytes;
+        var end = @min(value.len, max_text_bytes);
+        if (clipped) {
+            end -= "…".len;
+            while (end > 0 and (value[end] & 0xc0) == 0x80) end -= 1;
+        }
+        const prefix = if (std.unicode.utf8ValidateSlice(value[0..end])) value[0..end] else "Invalid UTF-8 diagnostic";
+        const suffix: []const u8 = if (clipped) "…" else "";
+        const length = prefix.len + suffix.len;
+        if (self.bytes.len - self.used < 2 + length) return error.BufferTooSmall;
+        try self.int(u16, @intCast(length));
+        @memcpy(self.bytes[self.used..][0..prefix.len], prefix);
+        self.used += prefix.len;
+        @memcpy(self.bytes[self.used..][0..suffix.len], suffix);
+        self.used += suffix.len;
     }
 };
 
@@ -214,7 +253,8 @@ fn reply(state: *State, context: Context, request: Request, result: ActionResult
         const index = std.math.add(u32, first, count) catch break;
         const row = state.row(index) orelse break;
         const before = writer.used;
-        writeRow(&writer, index, row, context.current(row.identity)) catch {
+        const status = if (row.route == .unsupported) Status{ .state = .failed, .message = row.message } else context.current(row.identity);
+        writeRow(&writer, index, row, status) catch {
             writer.used = before;
             if (count == 0) return error.BufferTooSmall;
             break;
@@ -376,4 +416,111 @@ test "registry pagination returns more than four entries and retains local row o
     const malformed = try handle(&state, .{}, &input, &output);
     try std.testing.expectEqual(@as(u8, 1), malformed[1]);
     try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, malformed[18..20], .little));
+}
+
+test "review post-action diagnostics cannot lose an already applied command receipt" {
+    if (!phux_options.enabled) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = "[[remote]]\nname='machine'\nendpoint='ws://localhost:1'\n" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.toml", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const diagnostic = try std.testing.allocator.alloc(u8, 90000);
+    defer std.testing.allocator.free(diagnostic);
+    @memset(diagnostic, 'x');
+    const Probe = struct {
+        diagnostic: []const u8,
+        mutated: bool = false,
+        action_diagnostic: bool = true,
+        fn status(raw: ?*anyopaque, _: Identity) Status {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            return .{ .state = .failed, .message = if (self.mutated) self.diagnostic else "" };
+        }
+        fn action(raw: ?*anyopaque, _: Action, _: Identity, tunnel: ?Tunnel) ActionResult {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            if (tunnel) |owned| owned.close();
+            self.mutated = true;
+            return .{ .message = if (self.action_diagnostic) self.diagnostic else "" };
+        }
+    };
+    var probe: Probe = .{ .diagnostic = diagnostic };
+    const context: Context = .{ .userdata = &probe, .status = Probe.status, .action = Probe.action };
+    var state: State = .{ .config_path = path };
+    defer state.deinit();
+    var input = [_]u8{0} ** 16;
+    input[0] = 1;
+    std.mem.writeInt(u16, input[14..16], 1, .little);
+    var output: [max_bytes]u8 = undefined;
+    _ = try handle(&state, context, &input, &output);
+    input[1] = 2;
+    std.mem.writeInt(u32, input[6..10], state.generation, .little);
+    std.mem.writeInt(u32, input[10..14], 1, .little);
+    const outcome = handle(&state, context, &input, &output);
+    try std.testing.expect(probe.mutated);
+    const receipt = try outcome;
+    try std.testing.expectEqual(@as(u8, 0), receipt[1]);
+    try std.testing.expect(receipt.len <= max_bytes);
+    probe.mutated = false;
+    probe.action_diagnostic = false;
+    input[1] = 3;
+    const status_only_outcome = handle(&state, context, &input, &output);
+    try std.testing.expect(probe.mutated);
+    const status_only = try status_only_outcome;
+    try std.testing.expectEqual(@as(u8, 0), status_only[1]);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, status_only[18..20], .little));
+}
+
+test "display diagnostics elide on UTF-8 boundaries and fallback preserves correlation" {
+    var text: [2000 * 3]u8 = undefined;
+    for (0..2000) |i| @memcpy(text[i * 3 ..][0..3], "界");
+    var output: [max_bytes]u8 = undefined;
+    var writer: Writer = .{ .bytes = &output };
+    try writer.text(&text);
+    const len = std.mem.readInt(u16, output[0..2], .little);
+    try std.testing.expect(len <= max_text_bytes);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(output[2..writer.used]));
+    try std.testing.expect(std.mem.endsWith(u8, output[2..writer.used], "…"));
+    var state: State = .{ .generation = 17 };
+    const request: Request = .{ .op = 2, .id = 42, .generation = 17, .first = 1, .limit = 1 };
+    const fallback = fallbackReceipt(&state, request, .failed, &output);
+    try std.testing.expectEqual(@as(u8, 1), fallback[1]);
+    try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, fallback[2..6], .little));
+    try std.testing.expectEqual(@as(u32, 17), std.mem.readInt(u32, fallback[6..10], .little));
+    try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, fallback[18..20], .little));
+    if (phux_options.enabled) {
+        // Invalid capture budget makes refresh fail after a settled Forget.
+        // The receipt must retain the action's success, not claim it failed.
+        state.max_file_bytes = 0;
+        var forgotten_request = request;
+        forgotten_request.op = 5;
+        const settled = commandReply(&state, .{}, forgotten_request, .{}, &output);
+        try std.testing.expectEqual(@as(u8, 0), settled[1]);
+        try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, settled[2..6], .little));
+        try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, settled[18..20], .little));
+    }
+}
+
+test "review oversized first saved field remains pageable without changing capture authority" {
+    if (!phux_options.enabled) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const name = try std.testing.allocator.alloc(u8, 70000);
+    defer std.testing.allocator.free(name);
+    @memset(name, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "[[remote]]\nname='{s}'\nendpoint='ws://localhost:1'\n[[remote]]\nname='next'\nendpoint='ws://localhost:2'\n", .{name});
+    defer std.testing.allocator.free(body);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = body });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.toml", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    var state: State = .{ .config_path = path };
+    defer state.deinit();
+    var input = [_]u8{0} ** 16;
+    input[0] = 1;
+    std.mem.writeInt(u32, input[10..14], 1, .little);
+    std.mem.writeInt(u16, input[14..16], 2, .little);
+    var output: [max_bytes]u8 = undefined;
+    const page_bytes = try handle(&state, .{}, &input, &output);
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, page_bytes[18..20], .little));
+    try std.testing.expectEqual(Route.unsupported, state.row(1).?.route);
+    try std.testing.expectEqualStrings("next", state.row(2).?.identity.name);
 }

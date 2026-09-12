@@ -144,6 +144,24 @@ pub fn parse_with_defaults(user_input: &str, path: &Path) -> Result<Config, Conf
     deserialize_merged(merged, user_input, path)
 }
 
+/// Parse the usual layer stack with an aggregate external-file byte budget.
+///
+/// `max_read_bytes` includes `user_input` and each unique inherited file; embedded
+/// defaults are excluded. Each layer read stops at remaining bytes plus one
+/// sentinel byte, before parsing. Ordinary unbounded loaders retain their behavior.
+///
+/// # Errors
+/// Same errors as [`parse_with_defaults`]. Budget exhaustion is a
+/// [`ConfigError::LayerRead`] with [`std::io::ErrorKind::FileTooLarge`].
+pub fn parse_with_defaults_bounded(
+    user_input: &str,
+    path: &Path,
+    max_read_bytes: usize,
+) -> Result<Config, ConfigError> {
+    let (merged, _) = layer::merged_with_budget(user_input, path, Some(max_read_bytes))?;
+    deserialize_merged(merged, user_input, path)
+}
+
 /// Deserialize an already-merged layer table into the typed [`Config`].
 ///
 /// Shared by [`parse_with_defaults`] and the settings snapshot

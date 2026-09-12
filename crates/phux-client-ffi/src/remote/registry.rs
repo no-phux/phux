@@ -11,6 +11,13 @@ use super::{
 use crate::error::{BridgeError, check_struct};
 use crate::types::{PhuxBytes, PhuxClientResult, bytes_out};
 
+#[path = "registry_endpoint.rs"]
+mod endpoint;
+
+// Display bounds only: Contents retains the complete captured registrations.
+// Four bounded spans and row tags fit well below the native 64-KiB page.
+const MAX_DISPLAY_BYTES: usize = 1024;
+
 /// Bounds chosen by the embedder. Zero limits are invalid; exhaustion is explicit.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -19,6 +26,7 @@ pub struct PhuxMachineRegistryOptions {
     pub version: u32,
     pub config_path: PhuxBytes,
     pub max_entries: usize,
+    /// Aggregate root plus unique inherited file bytes; embedded defaults excluded.
     pub max_file_bytes: usize,
 }
 
@@ -34,7 +42,11 @@ pub struct PhuxMachineRegistryInfo {
     pub message: PhuxBytes,
 }
 
-/// Borrowed row; strings remain valid until the registry is freed.
+/// Borrowed display row; strings remain valid until the registry is freed.
+///
+/// Each span is at most 1024 UTF-8 bytes. Oversized identity fields produce an
+/// unsupported repair row; the full capture remains internal, and elided display
+/// strings must never authorize an action or authenticate an endpoint.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxMachineRecord {
@@ -99,8 +111,8 @@ fn read_contents(path: &Path, max_entries: usize, max_bytes: usize) -> Result<Co
     if raw.len() > max_bytes {
         return Err("machine registry exceeds caller byte budget".to_owned());
     }
-    let cfg = phux_config::parse_with_defaults(&raw, path)
-        .map_err(|_| "machine registry is malformed or an inherited configuration is unavailable; edit Phux configuration")?;
+    let cfg = phux_config::parse_with_defaults_bounded(&raw, path, max_bytes)
+        .map_err(|error| config_load_message(&error))?;
     if cfg.remote.len().saturating_add(cfg.satellites.len()) > max_entries {
         return Err("machine registry exceeds caller entry budget".to_owned());
     }
@@ -111,78 +123,93 @@ fn read_contents(path: &Path, max_entries: usize, max_bytes: usize) -> Result<Co
     })
 }
 
-fn direct_route(entry: &RemoteConfigEntry) -> (u32, String) {
-    if entry.endpoint.starts_with("ssh://") {
-        return (2, "SSH route requires setup in a local terminal".to_owned());
+fn config_load_message(error: &phux_config::ConfigError) -> &'static str {
+    if let phux_config::ConfigError::LayerRead { source, .. } = error
+        && source.kind() == std::io::ErrorKind::FileTooLarge
+    {
+        return "machine registry and inherited files exceed caller byte budget";
     }
-    let target = target::RemoteTarget {
-        user: None,
-        host: entry.name.clone(),
-        port: None,
-    };
-    if target::classify(&entry.endpoint, &target).is_err() {
-        return (
+    "machine registry is malformed or an inherited configuration is unavailable; edit Phux configuration"
+}
+
+fn direct_route(entry: &RemoteConfigEntry) -> (u32, String) {
+    match endpoint::parse(&entry.endpoint) {
+        Some(endpoint::Kind::Ssh) => (2, "SSH route requires setup in a local terminal".to_owned()),
+        Some(endpoint::Kind::Direct) => (1, String::new()),
+        None => (
             5,
             "unsupported endpoint; edit this saved machine".to_owned(),
-        );
+        ),
     }
-    (1, String::new())
 }
 
 // URLs with embedded credentials are not a display surface. Pins and token-file
 // paths remain internal, and even malformed input cannot echo source text.
-fn display_endpoint(endpoint: &str) -> Option<&str> {
-    if endpoint.contains(['?', '#']) {
-        return None;
-    }
-    let authority = endpoint.split_once("://")?.1.split('/').next()?;
-    if authority
-        .split_once('@')
-        .is_some_and(|(user, _)| user.contains(':'))
-    {
-        return None;
-    }
-    Some(endpoint)
-}
-
 fn protect_row(mut row: Row) -> Row {
-    if display_endpoint(&row.endpoint).is_none() {
+    if endpoint::parse(&row.endpoint).is_none() {
         "(endpoint requires configuration repair)".clone_into(&mut row.endpoint);
         row.route = 5;
         "Credential-bearing or malformed endpoint is not displayed; edit Phux configuration"
             .clone_into(&mut row.message);
     }
+    if [&row.name, &row.endpoint, &row.session]
+        .iter()
+        .any(|text| text.len() > MAX_DISPLAY_BYTES)
+    {
+        row.route = 5;
+        "Saved machine fields exceed display limits; repair Phux configuration before activating this entry".clone_into(&mut row.message);
+    }
+    for text in [
+        &mut row.name,
+        &mut row.endpoint,
+        &mut row.session,
+        &mut row.message,
+    ] {
+        bound_display(text);
+    }
     row
+}
+
+fn bound_display(text: &mut String) {
+    if text.len() <= MAX_DISPLAY_BYTES {
+        return;
+    }
+    let mut end = MAX_DISPLAY_BYTES - "…".len();
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push('…');
 }
 
 fn rows(contents: &Contents) -> Vec<Row> {
     let remotes = contents.remote.iter().map(|entry| {
         let (route, message) = direct_route(entry);
-        protect_row(Row {
+        Row {
             role: 1,
             route,
             name: entry.name.clone(),
             endpoint: entry.endpoint.clone(),
             session: entry.session.clone().unwrap_or_default(),
             message,
-        })
+        }
     });
-    let satellites = contents.satellites.iter().map(|entry| {
-        protect_row(Row {
-            role: 2,
-            route: if entry.enabled { 3 } else { 4 },
-            name: entry.name.clone(),
-            endpoint: entry.endpoint.clone(),
-            session: String::new(),
-            message: if entry.enabled {
-                "Reached through this Mac's Phux hub; browse its sessions"
-            } else {
-                "Satellite is disabled in Phux configuration"
-            }
-            .to_owned(),
-        })
+    let satellites = contents.satellites.iter().map(|entry| Row {
+        role: 2,
+        route: if entry.enabled { 3 } else { 4 },
+        name: entry.name.clone(),
+        endpoint: entry.endpoint.clone(),
+        session: String::new(),
+        message: if entry.enabled {
+            "Reached through this Mac's Phux hub; browse its sessions"
+        } else {
+            "Satellite is disabled in Phux configuration"
+        }
+        .to_owned(),
     });
     let mut rows: Vec<_> = remotes.chain(satellites).collect();
+    // Classify exact captured names before any display elision. Two distinct
+    // names can share the same clipped display without being duplicate aliases.
     let mut seen = std::collections::BTreeSet::new();
     let duplicates: std::collections::BTreeSet<_> = rows
         .iter()
@@ -196,7 +223,7 @@ fn rows(contents: &Contents) -> Vec<Row> {
                 .clone_into(&mut row.message);
         }
     }
-    rows
+    rows.into_iter().map(protect_row).collect()
 }
 
 impl PhuxMachineRegistry {

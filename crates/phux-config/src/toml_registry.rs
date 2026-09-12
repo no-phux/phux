@@ -12,13 +12,135 @@
 //! atomically via a temp file plus rename, so an interrupted write cannot
 //! leave a truncated config that fails to parse on the next start.
 //!
+//! `edit_document` holds a sibling advisory lock throughout read/modify/publish.
+//! Shared CLI remote/satellite writers and native Forget cooperate with it. A busy
+//! writer is refused immediately so a GUI request cannot wait behind a CLI.
+//! The empty sibling lock file persists; closing the handle releases the OS lock.
+//! Keeping its inode stable prevents two cooperating writers locking different
+//! files during unlink/recreate races.
+//! Arbitrary editors do not necessarily take this lock: byte comparisons detect
+//! their observed changes, but comparison plus rename is not an atomic filesystem
+//! CAS against noncooperating editors. No stronger guarantee is claimed.
+//!
 //! What stays with each registry is its schema: field names, validation, and
 //! the meaning of an entry.
 
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+
+/// One locked registry read/modify/publish transaction.
+pub struct RegistryEdit {
+    path: PathBuf,
+    document: DocumentMut,
+    original: String,
+    _lock: std::fs::File,
+}
+
+impl std::fmt::Debug for RegistryEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryEdit")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for RegistryEdit {
+    type Target = DocumentMut;
+    fn deref(&self) -> &Self::Target {
+        &self.document
+    }
+}
+
+impl std::ops::DerefMut for RegistryEdit {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.document
+    }
+}
+
+impl RegistryEdit {
+    /// Publish this edit while retaining its lock through the rename.
+    /// # Errors
+    /// Refuses observed external changes, symlinks and filesystem failures.
+    pub fn commit(self) -> Result<(), String> {
+        publish_document(&self.path, &self.document, Some(&self.original))
+    }
+
+    /// Remove one exact root machine, never an inherited or ambiguous entry.
+    /// # Errors
+    /// Refuses unknown roles, missing entries and duplicate name/endpoint pairs.
+    pub fn remove_machine(&mut self, role: &str, name: &str, endpoint: &str) -> Result<(), String> {
+        if !matches!(role, "remote" | "satellites") {
+            return Err("unknown machine registry role".to_owned());
+        }
+        let tables = tables_mut(&mut self.document, role)?;
+        let matches: Vec<_> = tables
+            .iter()
+            .enumerate()
+            .filter_map(|(index, table)| {
+                (table.get("name").and_then(Item::as_str) == Some(name)
+                    && table.get("endpoint").and_then(Item::as_str) == Some(endpoint))
+                .then_some(index)
+            })
+            .collect();
+        let [index] = matches.as_slice() else {
+            return Err(
+                "machine is ambiguous or inherited; edit its source configuration".to_owned(),
+            );
+        };
+        tables.remove(*index);
+        Ok(())
+    }
+}
+
+/// Begin a shared registry mutation, acquiring its lock before reading anything.
+/// # Errors
+/// Refuses busy writers, symlinks, malformed documents and filesystem errors.
+pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
+    let lock = lock_registry(path)?;
+    let original = read_text(path)?;
+    let document = original
+        .parse::<DocumentMut>()
+        .map_err(|err| format!("could not parse {}: {err}", path.display()))?;
+    Ok(RegistryEdit {
+        path: path.to_path_buf(),
+        document,
+        original,
+        _lock: lock,
+    })
+}
+
+fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
+    reject_symlink(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "registry has no parent directory".to_owned())?;
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| "registry has no file name".to_owned())?
+        .to_os_string();
+    name.push(".registry.lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(parent.join(name))
+        .map_err(|err| err.to_string())?;
+    lock.try_lock()
+        .map_err(|err| format!("registry is busy or could not be locked; retry: {err}"))?;
+    Ok(lock)
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(input) => Ok(input),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(format!("could not read {}: {err}", path.display())),
+    }
+}
 
 /// Remove one captured machine entry in the root user file, preserving comments.
 ///
@@ -35,27 +157,12 @@ pub fn forget_machine(
     name: &str,
     endpoint: &str,
 ) -> Result<(), String> {
-    if !matches!(role, "remote" | "satellites") {
-        return Err("unknown machine registry role".to_owned());
+    let mut edit = edit_document(path)?;
+    if edit.original != expected {
+        return Err("machine registry changed; refresh Machines".to_owned());
     }
-    reject_symlink(path)?;
-    verify_expected(path, Some(expected))?;
-    let mut doc = read_document(path)?;
-    let tables = tables_mut(&mut doc, role)?;
-    let matches: Vec<_> = tables
-        .iter()
-        .enumerate()
-        .filter_map(|(index, table)| {
-            (table.get("name").and_then(Item::as_str) == Some(name)
-                && table.get("endpoint").and_then(Item::as_str) == Some(endpoint))
-            .then_some(index)
-        })
-        .collect();
-    let [index] = matches.as_slice() else {
-        return Err("machine is ambiguous or inherited; edit its source configuration".to_owned());
-    };
-    tables.remove(*index);
-    publish_document(path, &doc, Some(expected))
+    edit.remove_machine(role, name, endpoint)?;
+    edit.commit()
 }
 
 /// Parse `config.toml`, treating a missing file as an empty document — a
@@ -72,7 +179,11 @@ pub fn read_document(config_path: &Path) -> Result<DocumentMut, String> {
 
 /// Replace `config.toml` atomically: write a sibling temp file, fsync, then
 /// rename over the target. A crash mid-write leaves the old config intact.
+///
+/// This is an unconditional replacement. Read/modify callers use [`edit_document`]
+/// to retain the lock from their read through publication.
 pub fn write_document(config_path: &Path, doc: &DocumentMut) -> Result<(), String> {
+    let _lock = lock_registry(config_path)?;
     publish_document(config_path, doc, None)
 }
 
@@ -98,7 +209,11 @@ fn publish_document(
     ));
     let write_result = write_temp_file(&tmp_path, doc.to_string().as_bytes())
         .and_then(|()| verify_expected(config_path, expected))
-        .and_then(|()| std::fs::rename(&tmp_path, config_path).map_err(|err| err.to_string()));
+        .and_then(|()| {
+            #[cfg(test)]
+            before_publish_hook();
+            std::fs::rename(&tmp_path, config_path).map_err(|err| err.to_string())
+        });
     if let Err(err) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(format!("could not write {}: {err}", config_path.display()));
@@ -113,7 +228,7 @@ fn verify_expected(path: &Path, expected: Option<&str>) -> Result<(), String> {
         return Ok(());
     };
     reject_symlink(path)?;
-    if std::fs::read_to_string(path).map_err(|_| "could not recheck registry")? != expected {
+    if read_text(path)? != expected {
         return Err("machine registry changed; refresh Machines".to_owned());
     }
     Ok(())
@@ -200,8 +315,76 @@ fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(test)]
+thread_local! {
+    // Deterministic scheduler boundary, not an alternative writer implementation.
+    static BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn before_publish_hook() {
+    let hook = BEFORE_PUBLISH.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{read_document, tables_mut, validate_fingerprint, write_document};
+
+    #[test]
+    fn review_competing_registry_mutation_cannot_be_lost_during_publication() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let raw =
+            "[[remote]]\nname='a'\nendpoint='ssh://a'\n[[remote]]\nname='b'\nendpoint='ssh://b'\n";
+        std::fs::write(&path, raw).expect("seed");
+        let nested_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = nested_succeeded.clone();
+        let competing_path = path.clone();
+        super::BEFORE_PUBLISH.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                observed.set(
+                    super::forget_machine(&competing_path, raw, "remote", "b", "ssh://b").is_ok(),
+                );
+            }));
+        });
+        super::forget_machine(&path, raw, "remote", "a", "ssh://a").expect("outer forget");
+        assert!(
+            !nested_succeeded.get(),
+            "a cooperating writer committed inside another writer's checked publication"
+        );
+        let after = std::fs::read_to_string(path).expect("read");
+        assert!(after.contains("name='b'"));
+        assert!(!after.contains("name='a'"));
+    }
+
+    #[test]
+    fn transaction_lock_covers_read_modify_publish_and_releases_on_drop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let mut first = super::edit_document(&path).expect("first transaction");
+        assert!(
+            super::edit_document(&path).is_err(),
+            "second writer cannot read under first writer's lock"
+        );
+        first["first"] = toml_edit::value(1);
+        first.commit().expect("publish first");
+        let mut second = super::edit_document(&path).expect("lock released");
+        assert_eq!(second["first"].as_integer(), Some(1));
+        second["second"] = toml_edit::value(2);
+        second.commit().expect("publish second");
+        let third = super::edit_document(&path).expect("third transaction");
+        std::fs::write(&path, "# external edit\n").expect("noncooperating editor");
+        assert!(
+            third.commit().is_err(),
+            "observed external changes are refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).expect("preserved"),
+            "# external edit\n"
+        );
+    }
 
     #[test]
     fn round_trip_preserves_operator_comments() {

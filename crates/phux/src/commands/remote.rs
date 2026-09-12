@@ -226,7 +226,7 @@ fn validate_token_file(path: &Path) -> Result<PathBuf, String> {
 pub(crate) fn add_or_update(new: &NewRemote) -> Result<(), String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
-    let mut doc = toml_registry::read_document(&config_path)?;
+    let mut doc = toml_registry::edit_document(&config_path)?;
 
     let existing = load_registry()?
         .into_iter()
@@ -239,20 +239,16 @@ pub(crate) fn add_or_update(new: &NewRemote) -> Result<(), String> {
         fill_table(&mut table, new);
         toml_registry::tables_mut(&mut doc, KEY)?.push(table);
     }
-    toml_registry::write_document(&config_path, &doc)
+    doc.commit()
 }
 
-/// Remove the entry at `index`.
-pub(crate) fn remove_at(index: usize) -> Result<(), String> {
+/// Remove the captured entry under the shared read/modify/publish lock.
+pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
-    let mut doc = toml_registry::read_document(&config_path)?;
-    let tables = toml_registry::tables_mut(&mut doc, KEY)?;
-    if index >= tables.len() {
-        return Err(format!("remote registry index {index} disappeared"));
-    }
-    tables.remove(index);
-    toml_registry::write_document(&config_path, &doc)
+    let mut doc = toml_registry::edit_document(&config_path)?;
+    doc.remove_machine(KEY, &entry.name, &entry.endpoint)?;
+    doc.commit()
 }
 
 /// Write every field, clearing the ones this entry omits.

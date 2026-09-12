@@ -946,7 +946,7 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
             let Some(entry) = remote_entry else {
                 return json_err::emit(json, &registry_failure("remote entry vanished".into()), 1);
             };
-            (remote::remove_at(entry.index), entry.token_file)
+            (remote::remove_entry(&entry), entry.token_file)
         }
         HostRole::Satellite => {
             let Some(entry) = satellite_entry else {
@@ -956,10 +956,7 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
                     1,
                 );
             };
-            (
-                satellite_registry::remove_entry(entry.index),
-                entry.token_file,
-            )
+            (satellite_registry::remove_entry(&entry), entry.token_file)
         }
     };
     if let Err(err) = removed {

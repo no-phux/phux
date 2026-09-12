@@ -1405,6 +1405,7 @@ typedef struct PhuxMachineRegistryOptions {
     uint32_t version;
     PhuxBytes config_path; /* Empty selects the CLI path; otherwise absolute. */
     size_t max_entries;
+    /* Aggregate root + unique inherited file bytes; embedded defaults excluded. */
     size_t max_file_bytes;
 } PhuxMachineRegistryOptions;
 typedef struct PhuxMachineRegistryInfo {
@@ -1414,6 +1415,8 @@ typedef struct PhuxMachineRegistryInfo {
     uint32_t failed;
     PhuxBytes message;
 } PhuxMachineRegistryInfo;
+/* Display spans are at most 1024 UTF-8 bytes. Oversized identity fields produce
+ * an unsupported repair row. Never authorize actions from elided display text. */
 typedef struct PhuxMachineRecord {
     size_t size;
     uint32_t version;
