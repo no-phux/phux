@@ -181,29 +181,41 @@ fn activate(state: *State, context: Context, request: Request) ActionResult {
     if (request.op == 5) return forget(state, request.first, current);
     const action = std.enums.fromInt(Action, request.op) orelse return .{ .status = .unsupported };
     if (action == .connect or action == .retry) return connect(state, context, request.first, row, current, action);
-    if (action == .disconnect and row.identity.role != .remote) return .{ .status = .unsupported, .message = "Only direct remote connections can be disconnected" };
+    if (refusal(row, action)) |refused| return refused;
     const callback = context.action orelse return .{ .status = .unsupported, .message = "Machine action is unavailable in this runtime" };
     return callback(context.userdata, action, row.identity, null);
 }
 
+/// Route gates checked before the runtime sees a non-connect action. A
+/// satellite is browsable only through the hub its registry row routes it by.
+fn refusal(row: Row, action: Action) ?ActionResult {
+    if (action == .disconnect and row.identity.role != .remote) return .{ .status = .unsupported, .message = "Only direct remote connections can be disconnected" };
+    if (action == .browse and row.identity.role == .satellite and row.route != .via_hub) return .{ .status = .unsupported, .message = row.message };
+    return null;
+}
+
+fn active(state: Connection) bool {
+    return switch (state) {
+        .connected, .connecting, .reconnecting => true,
+        else => false,
+    };
+}
+
 fn forget(state: *State, index: u32, current: Status) ActionResult {
     if (index == 0) return .{ .status = .unsupported, .message = "This Mac is not a saved remote registration" };
-    switch (current.state) {
-        .connected, .connecting, .reconnecting => return .{ .status = .failed, .message = "Disconnect this machine before forgetting it" },
-        else => {},
-    }
+    if (active(current.state)) return .{ .status = .failed, .message = "Disconnect this machine before forgetting it" };
     const registry = state.registry orelse return .{ .status = .stale };
     registry.forget(index - 1) catch return .{ .status = .failed, .message = "Could not forget this exact entry; registry may be busy, unwritable, inherited or changed. Refresh and retry" };
     return .{};
 }
 
 fn connect(state: *State, context: Context, index: u32, row: Row, current: Status, action: Action) ActionResult {
-    if (row.route != .direct) return .{ .status = .unsupported, .message = row.message };
-    switch (current.state) {
-        .connected, .connecting, .reconnecting => return .{}, // double activation joins the same attempt
-        else => {},
-    }
+    if (row.route != .direct and row.route != .local) return .{ .status = .unsupported, .message = row.message };
+    if (active(current.state)) return .{}; // double activation joins the same attempt
     const callback = context.action orelse return .{ .status = .unsupported, .message = "Machine connection is unavailable in this runtime" };
+    // This Mac is independent of registry availability and has no remote tunnel.
+    // The runtime callback owns configured Unix-socket creation/retry authority.
+    if (row.route == .local) return callback(context.userdata, action, row.identity, null);
     const registry = state.registry orelse return .{ .status = .stale };
     const tunnel = registry.resolve(index - 1) catch return .{ .status = .stale, .message = "Saved destination changed; refresh Machines" };
     return callback(context.userdata, action, row.identity, tunnel);
@@ -394,6 +406,47 @@ test "hermetic Machines list, exact connect, double activation, disconnect, forg
     const edited = try handle(&state, context, &input, &output);
     try std.testing.expectEqual(@as(u8, 2), edited[1]);
     try std.testing.expectEqual(@as(usize, 1), probe.attempts);
+}
+
+test "only an enabled via-hub satellite row reaches Browse" {
+    if (!phux_options.enabled) return error.SkipZigTest;
+    const remote = @import("phux_provider").remote_api;
+    var fixture = try remote.TestRegistry.init("machine", "ws://localhost:1");
+    defer fixture.deinit();
+    const body = "[[satellites]]\nname='on'\nendpoint='ssh://on'\n" ++
+        "[[satellites]]\nname='off'\nendpoint='ssh://off'\nenabled=false\n";
+    try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = body });
+    const Probe = struct {
+        browsed: usize = 0,
+        fn action(raw: ?*anyopaque, kind: Action, _: Identity, tunnel: ?Tunnel) ActionResult {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            if (tunnel) |owned| owned.close();
+            if (kind == .browse) self.browsed += 1;
+            return .{};
+        }
+    };
+    var probe: Probe = .{};
+    const context: Context = .{ .userdata = &probe, .action = Probe.action };
+    var state: State = .{ .config_path = fixture.path };
+    defer state.deinit();
+    var input = [_]u8{0} ** 16;
+    input[0] = 1;
+    std.mem.writeInt(u16, input[14..16], 8, .little);
+    var output: [max_bytes]u8 = undefined;
+    _ = try handle(&state, context, &input, &output);
+    try std.testing.expectEqual(Route.via_hub, state.row(1).?.route);
+    try std.testing.expectEqual(Route.disabled, state.row(2).?.route);
+    input[1] = 7;
+    std.mem.writeInt(u32, input[6..10], state.generation, .little);
+    std.mem.writeInt(u32, input[10..14], 2, .little);
+    // A disabled satellite has no hub route; Browse must not reach the runtime.
+    const disabled = try handle(&state, context, &input, &output);
+    try std.testing.expectEqual(@intFromEnum(ReplyStatus.unsupported), disabled[1]);
+    try std.testing.expectEqual(@as(usize, 0), probe.browsed);
+    std.mem.writeInt(u32, input[10..14], 1, .little);
+    const routed = try handle(&state, context, &input, &output);
+    try std.testing.expectEqual(@intFromEnum(ReplyStatus.ok), routed[1]);
+    try std.testing.expectEqual(@as(usize, 1), probe.browsed);
 }
 
 test "registry pagination returns more than four entries and retains local row on malformed input" {

@@ -6,6 +6,7 @@ const Engine = @import("cockpit/native/ts_engine.zig").Engine;
 const Provider = @import("cockpit/phux_support.zig").PhuxProvider;
 const api = @import("phux_provider");
 const remote = api.remote_api;
+const WindowTarget = @import("cockpit/native/ts_window_navigation.zig").Target;
 const gpa = std.testing.allocator;
 const identity: machines.Identity = .{ .role = .remote, .name = "mini", .endpoint = "ws://127.0.0.1:1", .session = "work" };
 const local_identity: machines.Identity = .{ .role = .local, .name = "This Mac", .endpoint = "", .session = "" };
@@ -26,6 +27,7 @@ const Fixture = struct {
     retried: usize = 0,
     disconnected: usize = 0,
     browsed: usize = 0,
+    local_connections: usize = 0,
     reject_adoption: bool = false,
     retire_window_before_disconnect: bool = false,
     targets: [16]runtime.Target = undefined,
@@ -164,6 +166,37 @@ const Fixture = struct {
         try self.copyTargets(selection.targets);
         self.browsed += 1;
     }
+
+    fn connectLocal(raw: ?*anyopaque, origin: WindowTarget) !void {
+        const self = from(raw);
+        if (self.retire_window_before_disconnect) {
+            self.engine.model.closeWindow(1);
+            _ = self.engine.model.openWindow(1) orelse return error.OutOfMemory;
+        }
+        // Hook contract: the origin is revalidated before any provider effect.
+        if (!origin.validWindow(self.engine.model)) return error.StaleTarget;
+        const path = self.engine.model.config.phux_socket.slice();
+        for (self.engine.model.peers.items) |peer| {
+            const provider = peer.provider orelse continue;
+            if (provider.endpoint != .unix) continue;
+            if (!std.mem.eql(u8, path, provider.endpoint.unix)) continue;
+            try provider.host.reconnect("local-fixture");
+            self.local_connections += 1;
+            return;
+        }
+        const provider = try Provider.create(gpa, std.testing.io, .{ .unix = path }, null, "local-fixture");
+        errdefer provider.destroy();
+        const slot = try self.engine.model.freePeerSlot();
+        self.engine.model.peers.items[slot].provider = provider;
+        self.local_connections += 1;
+    }
+
+    fn localAdapter(self: *Fixture) !Adapter {
+        try self.engine.model.config.phux_socket.set("/fixture-local.sock");
+        var result = self.adapter();
+        result.hooks.connectLocal = connectLocal;
+        return result;
+    }
 };
 
 test "machine runtime aggregates actual captured connections without joining edited aliases" {
@@ -298,7 +331,7 @@ test "machine runtime This Mac requires an actual local Phux provider" {
     if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.create();
     defer fixture.destroy();
-    var adapter = fixture.adapter();
+    var adapter = try fixture.localAdapter();
     try std.testing.expectEqual(machines.Connection.not_connected, adapter.status(local_identity).state);
     fixture.engine.model.phux_provider = try Provider.create(gpa, std.testing.io, .{ .remote = .{ .target = "ambient-remote" } }, null, "fixture");
     try Fixture.negotiate(fixture.engine.model.phux_provider.?);
@@ -349,4 +382,207 @@ test "machine runtime disabled context compiles and refuses actions" {
     const context = adapter.context();
     try std.testing.expectEqual(machines.Connection.not_connected, context.status.?(context.userdata, identity).state);
     try std.testing.expectEqual(machines.ReplyStatus.unsupported, context.action.?(context.userdata, .connect, identity, null).status);
+}
+
+test "machine runtime local connect retries actual Unix provider and fences identity and origin" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    var adapter = try fixture.localAdapter();
+    // A healthy ambient remote must not satisfy the local machine action.
+    fixture.engine.model.phux_provider = try Provider.create(gpa, std.testing.io, .{ .remote = .{ .target = "ambient-remote" } }, null, "fixture");
+    const ambient = fixture.engine.model.phux_provider.?;
+    try Fixture.negotiate(ambient);
+    try std.testing.expectEqual(machines.Connection.not_connected, adapter.status(local_identity).state);
+    try std.testing.expectEqual(machines.ReplyStatus.ok, adapter.action(.connect, local_identity, null).status);
+    try std.testing.expectEqual(@as(usize, 1), fixture.local_connections);
+    const local = fixture.engine.model.phuxPeer().?;
+    try std.testing.expectEqualStrings("/fixture-local.sock", local.endpoint.unix);
+    try std.testing.expectEqual(machines.Connection.connecting, adapter.status(local_identity).state);
+    try std.testing.expectEqual(machines.ReplyStatus.ok, adapter.action(.retry, local_identity, null).status);
+    try std.testing.expectEqual(@as(usize, 1), fixture.local_connections);
+    try Fixture.negotiate(local);
+    try std.testing.expectEqual(machines.Connection.connected, adapter.status(local_identity).state);
+    try std.testing.expectEqual(machines.ReplyStatus.ok, adapter.action(.connect, local_identity, try fixture.tunnel()).status);
+    try std.testing.expectEqual(@as(usize, 1), Tracked.closed);
+    try std.testing.expectEqual(@as(usize, 1), fixture.local_connections);
+    local.stop();
+    try std.testing.expectEqual(machines.Connection.failed, adapter.status(local_identity).state);
+    try std.testing.expectEqual(machines.ReplyStatus.ok, adapter.action(.retry, local_identity, null).status);
+    try std.testing.expectEqual(@as(usize, 2), fixture.local_connections);
+    try std.testing.expectEqual(local.context_id, fixture.engine.model.phuxPeer().?.context_id);
+    try std.testing.expectEqual(machines.Connection.connecting, adapter.status(local_identity).state);
+    try std.testing.expectEqual(api.State.negotiated, ambient.state());
+    adapter.origin.window = 1;
+    try std.testing.expectEqual(machines.ReplyStatus.stale, adapter.action(.connect, local_identity, null).status);
+    adapter.origin.window = 0;
+    var forged = local_identity;
+    forged.name = "Another Mac";
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.retry, forged, null).status);
+    forged = local_identity;
+    forged.endpoint = "ws://remote:1";
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.connect, forged, null).status);
+    forged = local_identity;
+    forged.session = "other";
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.connect, forged, null).status);
+    try std.testing.expectEqual(@as(usize, 2), fixture.local_connections);
+}
+
+test "machine runtime local row admits connect and retry without a registry tunnel" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    var adapter = try fixture.localAdapter();
+    // Even an unavailable registry retains the independently useful local row.
+    var state: machines.State = .{ .generation = 1 };
+    defer state.deinit();
+    var request = [_]u8{0} ** 16;
+    request[0] = 1;
+    request[1] = 2;
+    std.mem.writeInt(u32, request[2..6], 77, .little);
+    std.mem.writeInt(u32, request[6..10], state.generation, .little);
+    var output: [machines.max_bytes]u8 = undefined;
+    const connected = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@intFromEnum(machines.ReplyStatus.ok), connected[1]);
+    try std.testing.expectEqual(@as(usize, 1), fixture.local_connections);
+    try std.testing.expectEqual(@as(u32, 77), std.mem.readInt(u32, connected[2..6], .little));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, connected[18..20], .little));
+    // Repeated native activation joins the original attempt.
+    _ = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@as(usize, 1), fixture.local_connections);
+    fixture.engine.model.phuxPeer().?.stop();
+    request[1] = 3;
+    const retried = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@intFromEnum(machines.ReplyStatus.ok), retried[1]);
+    try std.testing.expectEqual(@as(usize, 2), fixture.local_connections);
+    request[1] = 4;
+    const refused = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@intFromEnum(machines.ReplyStatus.unsupported), refused[1]);
+    try std.testing.expectEqual(@as(usize, 0), fixture.disconnected);
+    try std.testing.expectEqual(@as(usize, 0), Tracked.closed);
+    adapter.origin.window = 1;
+    fixture.engine.model.phuxPeer().?.stop();
+    request[1] = 2;
+    const stale = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@intFromEnum(machines.ReplyStatus.stale), stale[1]);
+    try std.testing.expectEqual(@as(usize, 2), fixture.local_connections);
+}
+
+test "machine runtime This Mac needs a configured socket and reports a retired origin as stale" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    var adapter = fixture.adapter();
+    adapter.hooks.connectLocal = Fixture.connectLocal;
+    // Without a configured coordinator there is no exact local target: an
+    // arbitrary Unix-socket attachment is not This Mac, and nothing is dialed.
+    try fixture.engine.model.config.phux_socket.set("");
+    const stray = try Provider.create(gpa, std.testing.io, .{ .unix = "/stray.sock" }, null, "fixture");
+    const slot = try fixture.engine.model.freePeerSlot();
+    fixture.engine.model.peers.items[slot].provider = stray;
+    try Fixture.negotiate(stray);
+    try std.testing.expectEqual(machines.Connection.not_connected, adapter.status(local_identity).state);
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.connect, local_identity, null).status);
+    try std.testing.expectEqual(@as(usize, 0), fixture.local_connections);
+    // A window retired while the hook runs is stale, not a generic failure.
+    try fixture.engine.model.config.phux_socket.set("/fixture-local.sock");
+    _ = fixture.engine.model.openWindow(1) orelse return error.OutOfMemory;
+    adapter.origin = .{ .window = 1, .epoch = fixture.engine.model.window_epochs[1] };
+    fixture.retire_window_before_disconnect = true;
+    try std.testing.expectEqual(machines.ReplyStatus.stale, adapter.action(.connect, local_identity, null).status);
+    try std.testing.expectEqual(@as(usize, 0), fixture.local_connections);
+}
+
+test "machine runtime browses a via-hub satellite only through the canonical local hub attachment" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    var adapter = try fixture.localAdapter();
+    const satellite: machines.Identity = .{ .role = .satellite, .name = "devbox", .endpoint = "ssh://devbox", .session = "" };
+    try std.testing.expectEqual(machines.ReplyStatus.stale, adapter.action(.browse, satellite, null).status);
+    // Neither an ambient remote nor another Unix socket is this Mac's hub.
+    fixture.engine.model.phux_provider = try Provider.create(gpa, std.testing.io, .{ .remote = .{ .target = "devbox" } }, null, "fixture");
+    try Fixture.negotiate(fixture.engine.model.phux_provider.?);
+    const other = try Provider.create(gpa, std.testing.io, .{ .unix = "/other.sock" }, null, "fixture");
+    fixture.engine.model.peers.items[try fixture.engine.model.freePeerSlot()].provider = other;
+    try Fixture.negotiate(other);
+    try std.testing.expectEqual(machines.ReplyStatus.stale, adapter.action(.browse, satellite, null).status);
+    try std.testing.expectEqual(@as(usize, 0), fixture.browsed);
+    const hub = try Provider.create(gpa, std.testing.io, .{ .unix = "/fixture-local.sock" }, null, "fixture");
+    fixture.engine.model.peers.items[try fixture.engine.model.freePeerSlot()].provider = hub;
+    try Fixture.negotiate(hub);
+    try std.testing.expectEqual(machines.ReplyStatus.ok, adapter.action(.browse, satellite, null).status);
+    try std.testing.expectEqual(@as(usize, 1), fixture.browsed);
+    try std.testing.expectEqual(@as(usize, 1), fixture.target_count);
+    const captured = fixture.targets[0];
+    // The hub's exact attachment and epoch carry authority; the satellite's
+    // own identity stays separate and is never rewritten to This Mac.
+    try std.testing.expectEqual(hub.context_id, captured.attachment_id);
+    try std.testing.expectEqual(hub.host.context_id, captured.source_context);
+    try std.testing.expectEqual(hub.connectionEpoch(), captured.connection_epoch);
+    try std.testing.expectEqual(machines.Role.satellite, captured.identity.role);
+    try std.testing.expectEqualStrings("devbox", captured.identity.name);
+    const selected: runtime.Browse = .{ .identity = satellite, .targets = fixture.targets[0..1], .origin = adapter.origin };
+    try std.testing.expect(selected.valid(fixture.engine.model));
+    var renamed = satellite;
+    renamed.name = "other-box";
+    const mismatched: runtime.Browse = .{ .identity = renamed, .targets = fixture.targets[0..1], .origin = adapter.origin };
+    try std.testing.expect(!mismatched.valid(fixture.engine.model));
+    // The route is part of the authority: a satellite target cannot claim a
+    // direct attachment, and a hub route cannot carry a remote identity.
+    try std.testing.expectEqual(runtime.Target.Route.local_hub, captured.route);
+    var forged = captured;
+    forged.route = .direct;
+    try std.testing.expect(!forged.matches(fixture.engine.model));
+    forged = captured;
+    forged.identity = identity;
+    try std.testing.expect(!forged.matches(fixture.engine.model));
+    forged = captured;
+    forged.attachment_id = other.context_id;
+    forged.source_context = other.host.context_id;
+    forged.connection_epoch = other.connectionEpoch();
+    try std.testing.expect(!forged.matches(fixture.engine.model));
+    // Satellites are never connected or disconnected as direct remotes.
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.disconnect, satellite, null).status);
+    try std.testing.expectEqual(machines.ReplyStatus.unsupported, adapter.action(.connect, satellite, null).status);
+    try hub.host.reconnect("fixture");
+    try std.testing.expect(!selected.valid(fixture.engine.model));
+}
+
+test "machine runtime failed status shows a fixed category instead of raw token or socket paths" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    var adapter = try fixture.localAdapter();
+    const provider = try fixture.add(identity);
+    provider.stop();
+    const raw = "mini: could not read token file /Users/someone/.config/phux/tokens/mini.token: No such file or directory (os error 2)";
+    provider.remote_status.recordFailure(raw);
+    const shown = adapter.status(identity);
+    try std.testing.expectEqual(machines.Connection.failed, shown.state);
+    try std.testing.expect(std.mem.indexOf(u8, shown.message, "/Users/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, shown.message, "mini.token") == null);
+    try std.testing.expect(shown.message.len != 0);
+    // The provider's internal provenance is unchanged for diagnostics.
+    var scratch: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(raw, provider.remoteFailure(&scratch));
+    // End to end, the encoded Machines reply never carries the path either.
+    var state: machines.State = .{ .config_path = fixture.registry.path };
+    defer state.deinit();
+    var request = [_]u8{0} ** 16;
+    request[0] = 1;
+    std.mem.writeInt(u16, request[14..16], 8, .little);
+    var output: [machines.max_bytes]u8 = undefined;
+    const page = try machines.handle(&state, adapter.context(), &request, &output);
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, page[18..20], .little));
+    try std.testing.expect(std.mem.indexOf(u8, page, "/Users/someone") == null);
+    // Local startup evidence can quote socket, CLI and stderr paths.
+    const local = try Provider.create(gpa, std.testing.io, .{ .unix = "/fixture-local.sock" }, null, "fixture");
+    fixture.engine.model.peers.items[try fixture.engine.model.freePeerSlot()].provider = local;
+    local.stop();
+    local.local_status.record(.{}, "/Users/someone/private/phux.sock", error.ConnectionRefused);
+    const local_shown = adapter.status(local_identity);
+    try std.testing.expectEqual(machines.Connection.failed, local_shown.state);
+    try std.testing.expect(std.mem.indexOf(u8, local_shown.message, "/Users/") == null);
+    try std.testing.expect(local_shown.message.len != 0);
 }
