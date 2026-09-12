@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.34.0](https://github.com/no-phux/phux/compare/v0.33.0...v0.34.0) (2026-09-12)
+
+
+### Features
+
+* **site:** polish the product surface, keep the phux voice ([#584](https://github.com/no-phux/phux/issues/584)) ([c900b37](https://github.com/no-phux/phux/commit/c900b37900f6729e8c283bc0976b65d03ee3d0ac))
+
+
+### Bug Fixes
+
+* **doctor:** surface disabled remote listeners from the running server ([1d4e5d2](https://github.com/no-phux/phux/commit/1d4e5d2a076fc3d384bccccfd6bf252e479d2ca8))
+* **release:** name the next-channel pointer channel.json ([0dbf7df](https://github.com/no-phux/phux/commit/0dbf7df93460710f933e3612bbf52c0ae6e28684))
+* **site:** restore next-channel install contract on landing page ([#585](https://github.com/no-phux/phux/issues/585)) ([228e456](https://github.com/no-phux/phux/commit/228e456e4d979ddca2a6236fa4b7e1a1f2f5154c))
+
 ## [0.33.0](https://github.com/no-phux/phux/compare/v0.32.0...v0.33.0) (2026-09-12)
 
 
