@@ -1,6 +1,9 @@
 //! Local coordinator bootstrap. Call only from the socket worker, before connect.
 //! The CLI owns coordinator policy; this helper never attaches or spawns work.
 const std = @import("std");
+const wait_api = @cImport({
+    @cInclude("sys/wait.h");
+});
 
 pub const Options = struct {
     /// Trusted same-checkout fixture override. Production discovery uses PHUX_CLI.
@@ -282,14 +285,17 @@ fn terminate(io: std.Io, child: *std.process.Child) void {
     _ = child.wait(io) catch {};
 }
 
-/// Reap exactly our child. Clear its ID before interpreting failure so deferred
-/// cleanup cannot signal a recycled PID. All stdio is ignored (no pipe handles).
+/// The helper's unreaped leader pins its PID/PGID until group cleanup is done.
+/// WNOWAIT observes exit without giving that identity back to the OS. A Phux
+/// daemon that called setsid is outside this disposable process group.
 fn exited(child: *std.process.Child) !bool {
     var status: ?c_int = null;
     return exitedWithEvidence(child, &status);
 }
 
 fn exitedWithEvidence(child: *std.process.Child, recorded: *?c_int) !bool {
+    if (!try leaderExited(child)) return false;
+    _ = std.c.kill(-child.id.?, .KILL);
     var status: c_int = 0;
     const result = std.c.waitpid(child.id.?, &status, std.posix.W.NOHANG);
     if (result == 0) return false;
@@ -305,6 +311,15 @@ fn exitedWithEvidence(child: *std.process.Child, recorded: *?c_int) !bool {
     if (!std.posix.W.IFEXITED(@intCast(status))) return error.EnsureFailed;
     if (std.posix.W.EXITSTATUS(@intCast(status)) != 0) return error.EnsureFailed;
     return true;
+}
+
+fn leaderExited(child: *std.process.Child) !bool {
+    var info = std.mem.zeroes(wait_api.siginfo_t);
+    const rc = wait_api.waitid(wait_api.P_PID, @intCast(child.id.?), &info, wait_api.WEXITED | wait_api.WNOHANG | wait_api.WNOWAIT);
+    if (rc == 0) return info.si_pid != 0;
+    if (std.posix.errno(rc) == .INTR) return false;
+    if (std.posix.errno(rc) == .CHILD) child.id = null;
+    return error.EnsureWaitFailed;
 }
 
 test "CLI discovery stays beside the executable including bundle paths with spaces" {
@@ -515,4 +530,53 @@ test "isolated live coordinator is reused without invoking even a broken CLI" {
     try std.testing.expect(std.mem.startsWith(u8, socket, "/private/tmp/opencode/"));
     var stopping = std.atomic.Value(bool).init(false);
     try ensure(std.testing.allocator, std.testing.io, socket, &stopping, .{ .cli_path = "/usr/bin/false" });
+}
+
+fn expectExitedHelperCleanup(code: []const u8) !void {
+    var fixture = try TestFixture.init();
+    defer fixture.deinit();
+    const script = try std.fmt.allocPrint(std.testing.allocator, "#!/usr/bin/python3\nimport pathlib, subprocess, sys\n" ++
+        "p = subprocess.Popen(['/bin/sleep', '60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" ++
+        "(pathlib.Path(__file__).parent / 'probe-pid').write_text(str(p.pid))\n" ++
+        "sys.exit({s})\n", .{code});
+    defer std.testing.allocator.free(script);
+    try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fixture cli", .data = script, .flags = .{ .permissions = .fromMode(0o700) } });
+    var stopping = std.atomic.Value(bool).init(false);
+    const result = ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli });
+    // The assertion's failure path kills the owned fixture process as well.
+    try fixture.expectProbeStopped();
+    if (std.mem.eql(u8, code, "0")) try result else try std.testing.expectError(error.EnsureFailed, result);
+}
+
+test "successful exited helper cannot leave disposable process group children" {
+    try expectExitedHelperCleanup("0");
+}
+
+test "failed exited helper cannot leave disposable process group children" {
+    try expectExitedHelperCleanup("7");
+}
+
+test "exited helper cleanup preserves a daemon that acquired its own session" {
+    var fixture = try TestFixture.init();
+    defer fixture.deinit();
+    const script = "#!/usr/bin/python3\nimport pathlib, subprocess\n" ++
+        "p = subprocess.Popen(['/bin/sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" ++
+        "(pathlib.Path(__file__).parent / 'daemon-pid').write_text(str(p.pid))\n";
+    try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fixture cli", .data = script, .flags = .{ .permissions = .fromMode(0o700) } });
+    var stopping = std.atomic.Value(bool).init(false);
+    try ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli });
+    const text = try fixture.tmp.dir.readFileAlloc(std.testing.io, "daemon-pid", std.testing.allocator, .limited(32));
+    defer std.testing.allocator.free(text);
+    const pid = try std.fmt.parseInt(std.posix.pid_t, text, 10);
+    defer _ = std.c.kill(pid, .KILL);
+    try std.testing.expectEqual(@as(c_int, 0), std.c.kill(pid, @enumFromInt(0)));
+}
+
+test "stderr overflow is bounded and retained without blocking helper cleanup" {
+    var stopping = std.atomic.Value(bool).init(false);
+    var stdout: Capture = .{};
+    var evidence: Evidence = .{};
+    try std.testing.expectError(error.HelperOutputTooLarge, runHelper(std.testing.io, &.{ "/bin/sh", "-c", "exec /usr/bin/yes fixture-error >&2" }, &stopping, 1000, &stdout, &evidence));
+    try std.testing.expectEqual(@as(usize, 4096), evidence.stderr.len);
+    try std.testing.expectEqual(@as(usize, 0), stdout.len);
 }
