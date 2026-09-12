@@ -102,10 +102,7 @@ const Row = struct { target: Target, index: u16 };
 const Page = struct { rows: [page_size]Row = undefined, count: usize = 0, total: u16 = 0 };
 
 fn append(page: *Page, target: Target, index: usize, request: Request, model: anytype, labels: anytype) Error!void {
-    var label: [240]u8 = undefined;
-    var detail: [160]u8 = undefined;
-    if (!contains(labels.label(model, target, &label), request.query) and
-        !contains(labels.detail(model, target, &detail), request.query)) return;
+    if (!labels.matches(model, target, request.query)) return;
     if (index > std.math.maxInt(u16) or page.total == std.math.maxInt(u16)) return error.CatalogTooLarge;
     if (page.total >= request.offset and page.count < page_size) {
         page.rows[page.count] = .{ .target = target, .index = @intCast(index) };
@@ -134,7 +131,7 @@ fn collect(model: anytype, request: Request, labels: anytype) Error!Page {
     return page;
 }
 
-fn contains(text: []const u8, query: []const u8) bool {
+pub fn contains(text: []const u8, query: []const u8) bool {
     if (query.len > text.len) return false;
     for (0..text.len - query.len + 1) |at| {
         if (std.ascii.eqlIgnoreCase(text[at..][0..query.len], query)) return true;
@@ -217,6 +214,10 @@ const Fixture = struct {
 };
 
 const TestLabels = struct {
+    fn matches(self: TestLabels, model: anytype, target: Target, query: []const u8) bool {
+        var out: [160]u8 = undefined;
+        return contains(self.label(model, target, &out), query) or contains(self.detail(model, target, &out), query);
+    }
     fn label(_: TestLabels, _: anytype, _: Target, _: []u8) []const u8 {
         return "Same title";
     }

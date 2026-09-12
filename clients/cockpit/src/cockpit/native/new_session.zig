@@ -180,6 +180,10 @@ pub const Controller = struct {
 fn settle(engine: anytype, entry: *Entry, fx: anytype) void {
     if (!engine.newSessionDestinationCurrent(entry.destination)) {
         entry.refuse("The connection changed before creation was confirmed. Refresh Sessions to check the outcome.");
+        // Retirement belongs to the captured provider/host lifetime, even when
+        // its connection epoch is stale. The hook must never use the currently
+        // focused provider; an already-destroyed owning client needs no action.
+        engine.releaseNewSession(entry.destination, entry.request_id);
         return;
     }
     const outcome = engine.pollNewSession(entry.destination, entry.request_id);
@@ -216,6 +220,7 @@ const Fixture = struct {
     keep: bool = false,
     outcomes: [2]Outcome = .{ .pending, .pending },
     released: u32 = 0,
+    released_destination: ?Destination = null,
     selected: u32 = 0,
     pub fn captureNewSessionDestination(self: *@This()) ?Destination {
         return .{ .window = self.window, .window_epoch = self.model.window_epochs[self.window], .provider = self.provider, .provider_context = 12, .host_context = 13, .connection_epoch = 14, .selection_epoch = 15, .host = "This Mac" };
@@ -232,8 +237,9 @@ const Fixture = struct {
     pub fn pollNewSession(self: *@This(), _: Destination, id: u32) Outcome {
         return self.outcomes[id - 1];
     }
-    pub fn releaseNewSession(self: *@This(), _: Destination, _: u32) void {
+    pub fn releaseNewSession(self: *@This(), destination: Destination, _: u32) void {
         self.released += 1;
+        self.released_destination = destination;
     }
     pub fn didCreateSession(self: *@This(), _: Destination, id: u32, _: anytype) void {
         self.selected = id;
@@ -337,4 +343,30 @@ test "a failed create is an actionable refusal and cannot masquerade as pending"
     try std.testing.expectEqual(@as(u8, 3), reply[1]);
     try std.testing.expect(std.mem.indexOf(u8, reply, "Check the machine connection") != null);
     try std.testing.expectEqual(@as(u32, 0), engine.sent);
+}
+
+test "stale creation retires exactly once on its captured coordinator including cancelled requests" {
+    for ([_]bool{ false, true }) |cancelled| {
+        var model: Fixture.Model = .{};
+        var engine: Fixture = .{ .model = &model };
+        var controller: Controller = .{};
+        defer controller.deinit(std.testing.allocator);
+        var request: [256]u8 = undefined;
+        var response: [max_bytes]u8 = undefined;
+        _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);
+        _ = try controller.handle(&engine, .{}, testRequest(.create, 1, "Build", &request), &response);
+        if (cancelled) _ = try controller.handle(&engine, .{}, testRequest(.cancel, 1, "", &request), &response);
+        engine.current = false;
+        engine.provider = 99;
+        engine.window = 1;
+        controller.poll(&engine, .{});
+        try std.testing.expectEqual(@as(u32, 1), engine.released);
+        try std.testing.expectEqual(@as(u64, 7), engine.released_destination.?.provider);
+        try std.testing.expectEqual(@as(u64, 12), engine.released_destination.?.provider_context);
+        try std.testing.expectEqual(@as(u64, 13), engine.released_destination.?.host_context);
+        try std.testing.expectEqual(@as(u32, 0), engine.selected);
+        controller.poll(&engine, .{});
+        try std.testing.expectEqual(@as(u32, 1), engine.released);
+        if (cancelled) try std.testing.expectEqual(@as(usize, 0), controller.entries.items.len);
+    }
 }
