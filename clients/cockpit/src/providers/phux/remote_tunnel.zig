@@ -17,6 +17,11 @@ const posix = std.posix;
 const c = @cImport({
     @cInclude("phux/client.h");
 });
+/// Canonical ABI types for provider-side registry wrappers. Only this extension
+/// module owns the FFI include path and Tunnel type; do not re-import this file.
+pub fn registryAbi() type {
+    return c;
+}
 
 /// Display bound for every copied field: a host label, an endpoint URI, or a
 /// one-line reason. Longer text is elided on a UTF-8 boundary, never refused,
@@ -95,6 +100,15 @@ fn borrowed(bytes: c.PhuxBytes) []const u8 {
 
 pub const Tunnel = struct {
     handle: *c.PhuxRemoteTunnel,
+
+    /// New independent tunnel from immutable captured dial configuration only.
+    /// No registry lookup, token read, or active socket/worker ownership sharing.
+    pub fn cloneResolved(self: Tunnel) error{CapturedTunnelUnavailable}!Tunnel {
+        var out: ?*c.PhuxRemoteTunnel = null;
+        if (c.phux_remote_tunnel_clone_resolved(self.handle, &out) != c.PHUX_CLIENT_OK)
+            return error.CapturedTunnelUnavailable;
+        return .{ .handle = out orelse return error.CapturedTunnelUnavailable };
+    }
 
     /// Resolve `target` in the registry at `config_path` (empty: the CLI's
     /// own path). Touches no network. An unregistered host still yields a

@@ -1,9 +1,8 @@
 //! Owning Zig face of the caller-bounded shared CLI registry snapshot.
 const std = @import("std");
-const c = @cImport({
-    @cInclude("phux/client.h");
-});
-pub const Tunnel = @import("remote_tunnel.zig").Tunnel;
+const remote = @import("phux_extension").remote;
+const c = remote.registryAbi();
+pub const Tunnel = remote.Tunnel;
 pub const Error = error{ RegistryUnavailable, StaleRegistry, InvalidRow };
 
 pub const Record = struct {
@@ -62,7 +61,7 @@ pub const Registry = struct {
     pub fn resolve(self: Registry, index: usize) Error!Tunnel {
         var tunnel: ?*c.PhuxRemoteTunnel = null;
         if (c.phux_machine_registry_resolve(self.handle, index, &tunnel) != c.PHUX_CLIENT_OK) return error.StaleRegistry;
-        return .{ .handle = @ptrCast(tunnel orelse return error.RegistryUnavailable) };
+        return .{ .handle = tunnel orelse return error.RegistryUnavailable };
     }
 
     pub fn forget(self: Registry, index: usize) Error!void {

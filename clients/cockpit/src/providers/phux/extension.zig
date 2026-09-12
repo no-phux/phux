@@ -100,9 +100,42 @@ pub const Worker = struct {
         endpoint: Endpoint,
         options: startup.Options,
     ) !*Worker {
+        return startOwned(io, gpa, bridge, handle, endpoint, options, null);
+    }
+
+    /// Adopts the exact registry-checked tunnel, including its endpoint, pin and
+    /// config/token provenance. No registry lookup occurs on this path. Ownership
+    /// transfers on EVERY return, including allocation, wake and thread failure.
+    /// The caller relinquishes the tunnel before the socket thread can start it;
+    /// stop joins that thread before freeing the FFI handle.
+    pub fn startCaptured(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        tunnel: remote.Tunnel,
+    ) !*Worker {
+        if (endpoint != .remote) {
+            tunnel.close();
+            return error.InvalidCapturedEndpoint;
+        }
+        return startOwned(io, gpa, bridge, handle, endpoint, .{}, tunnel);
+    }
+
+    fn startOwned(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        options: startup.Options,
+        tunnel: ?remote.Tunnel,
+    ) !*Worker {
+        errdefer if (tunnel) |owned| owned.close();
         const worker = try gpa.create(Worker);
         errdefer gpa.destroy(worker);
-        worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint };
+        worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint, .tunnel = tunnel };
         worker.startup_options = options;
         worker.outgoing_wake_fd = try bridge.outgoing.enableWake();
         errdefer bridge.outgoing.disableWake();
@@ -449,18 +482,25 @@ fn connect(worker: *Worker) !posix.fd_t {
 /// can tell a local coordinator from a remote one.
 fn connectRemote(worker: *Worker, endpoint: Endpoint.Remote) !posix.fd_t {
     if (worker.stopping.load(.acquire)) return error.Canceled;
-    const tunnel = remote.Tunnel.resolve(endpoint.target, endpoint.config_path) catch |err| {
+    const tunnel = worker.tunnel orelse try resolveRemote(endpoint);
+    // From here stop owns the tunnel, including failed resolution/start paths.
+    worker.tunnel = tunnel;
+    return connectTunnel(worker, tunnel, endpoint.status);
+}
+
+fn resolveRemote(endpoint: Endpoint.Remote) !remote.Tunnel {
+    return remote.Tunnel.resolve(endpoint.target, endpoint.config_path) catch |err| {
         if (endpoint.status) |status| status.recordFailure("that is not a host name Cockpit can look up");
         return err;
     };
+}
+
+fn connectTunnel(worker: *Worker, tunnel: remote.Tunnel, status: ?*remote.Status) !posix.fd_t {
     const described = tunnel.describe();
     if (described.state != .resolved) {
-        if (endpoint.status) |status| status.recordFailure(described.message.slice());
-        tunnel.close();
+        if (status) |record| record.recordFailure(described.message.slice());
         return error.RemoteUnresolved;
     }
-    // From here `stop` owns the tunnel, whatever happens below.
-    worker.tunnel = tunnel;
     const pair = try remoteSocketPair();
     if (!worker.publishFd(pair[0])) {
         for (pair) |fd| _ = std.c.close(fd);
