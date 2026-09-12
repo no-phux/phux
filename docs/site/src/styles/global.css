@@ -1064,6 +1064,123 @@ a:hover {
   font-size: 13px;
   line-height: 1.5;
 }
+
+.docs-wordmark {
+  color: var(--color-dim);
+  font-weight: 500;
+}
+
+.docs-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 42px;
+  margin: 8px 0 24px;
+}
+.overview-lede {
+  max-width: 68ch;
+  margin: 0;
+  color: #a9b1d6;
+  font-size: 16px;
+  line-height: 1.7;
+}
+.docs-overview > section > h2,
+.overview-columns > section > h2 {
+  margin: 0 0 10px;
+  color: var(--color-fg);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.docs-overview > section > p {
+  max-width: 68ch;
+  margin: 0 0 16px;
+  color: var(--color-dim);
+  font-size: 14px;
+  line-height: 1.65;
+}
+.overview-apps,
+.overview-paths {
+  display: block;
+  border-top: 1px solid var(--color-rule);
+}
+.overview-apps a,
+.overview-paths a {
+  display: grid;
+  grid-template-columns: 32px minmax(88px, 0.22fr) 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-rule);
+  text-decoration: none;
+  color: inherit;
+}
+.overview-paths a {
+  grid-template-columns: minmax(168px, 0.32fr) 1fr;
+}
+.overview-apps small {
+  color: var(--color-subtle);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+.overview-apps b,
+.overview-paths b {
+  color: var(--color-accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.overview-apps span,
+.overview-paths span {
+  color: var(--color-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.overview-apps a:hover,
+.overview-paths a:hover {
+  background: var(--color-surface-raised);
+}
+.overview-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 32px;
+  border-top: 1px solid var(--color-rule);
+  padding-top: 22px;
+}
+.overview-columns ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.overview-columns li {
+  border-bottom: 1px solid var(--color-rule);
+}
+.overview-columns a {
+  display: block;
+  padding: 10px 0;
+  color: var(--color-accent);
+  text-decoration: none;
+  font-size: 13px;
+}
+.overview-columns a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 820px) {
+  .overview-columns {
+    grid-template-columns: 1fr;
+  }
+  .overview-apps a {
+    grid-template-columns: 32px 1fr;
+  }
+  .overview-apps span {
+    grid-column: 2;
+  }
+  .overview-paths a {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
 .protocol-tiers a:hover,
 .protocol-paths a:hover {
   background: var(--color-bg-soft) !important;
@@ -1402,7 +1519,10 @@ a:hover {
 .protocol-tiers,
 .protocol-paths,
 .section-primer,
-.section-primer > div {
+.section-primer > div,
+.overview-apps,
+.overview-paths,
+.overview-columns {
   border-radius: 0;
   box-shadow: none;
 }

@@ -8,16 +8,18 @@ interface Props {
   description: string;
   /** og:type — "website" for the landing, "article" for docs pages. */
   type?: "website" | "article";
+  /** Canonical origin. Docs pages pass docs.phux.sh; marketing stays on phux.sh. */
+  origin?: string;
 }
 
-const { title, description, type = "website" } = Astro.props;
+const { title, description, type = "website", origin = SITE.url } = Astro.props;
 
 // build.format "file" leaves ".html" on build-time pathnames; the served
 // routes are extensionless (trailingSlash "never"), so canonicals must be too.
 const path =
   Astro.url.pathname.replace(/\/index\.html$/, "/").replace(/\.html$/, "").replace(/\/+$/, "") ||
   "/";
-const canonical = new URL(path, SITE.url).href;
+const canonical = new URL(path, origin).href;
 const ogImage = new URL("/og.png", SITE.url).href;
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * sync-docs.ts — DRY docs pipeline for phux.sh
+ * sync-docs.ts — DRY docs pipeline for docs.phux.sh
  * ----------------------------------------------------------------------------
  * Reads selected markdown from the phux source repo and writes it into
  * `src/content/docs/_synced/` as the source for an Astro content collection.
@@ -566,6 +566,67 @@ function resolveHref(href: string, fromDir: string): string | null {
 }
 
 // ── yaml-safe scalar ────────────────────────────────────────────────────────
+/**
+ * Site-owned docs landing. The visual page is `src/pages/overview.astro`;
+ * this stub keeps the Fumadocs tree and the static search index in sync.
+ */
+async function writeOverviewPage(versions: {
+  protocolVersion: string;
+  projectVersion: string;
+}): Promise<number> {
+  const title = "Get started";
+  const summary =
+    "Install phux, pick a surface, and attach. CLI, Cockpit, web, and agents share the same live terminals.";
+  const body = `# Get started
+
+Install it, pick a surface, and attach. Every interface — the TUI, Cockpit, the browser, a script, or an agent — talks to the same live terminals.
+
+## Surfaces
+
+- [CLI](/consumers/tui) — the reference TUI. Attach, split, detach.
+- [Cockpit](/consumers/cockpit) — native macOS app for the same terminals.
+- [Web](/consumers/web) — browser client with its own engine.
+- [Agents](/consumers/agents) — CLI, JSON, MCP, OpenCode, Pi, Claude.
+
+## Pick your path
+
+- [New here](/quickstart) — install, attach, detach.
+- [Coming from tmux](/concepts) — panes are a view; the terminal is an object on a wire.
+- [You run agents](/consumers/agents) — read, act, wait.
+- [Building a peer](/wire) — PROTO, then required L1.
+
+## Get started
+
+[Quickstart](/quickstart) · [Install](/quickstart/install) · [Concepts](/concepts) · [When to use phux](/concepts/when-to-use)
+
+## Build
+
+[Agent loop](/consumers/agents) · [MCP adapter](/consumers/mcp) · [Cockpit](/consumers/cockpit) · [Wire tutorial](/wire/tutorial)
+
+## Resources
+
+[Protocol](/wire) · [Generated reference](/reference) · [Architecture](/architecture) · [Decisions](/decisions)
+`;
+  const fm = [
+    "---",
+    `title: ${yamlString(title)}`,
+    `summary: ${yamlString(summary)}`,
+    `description: ${yamlString(summary)}`,
+    `codeLanguages: []`,
+    `group: ${yamlString(GROUPS.start)}`,
+    `order: -1`,
+    `sourcePath: ${yamlString("docs/site/src/pages/overview.astro")}`,
+    `sourceRevision: ${yamlString(SOURCE_REVISION)}`,
+    `protocolVersion: ${yamlString(versions.protocolVersion)}`,
+    `projectVersion: ${yamlString(versions.projectVersion)}`,
+    `stability: ${yamlString("stable")}`,
+    "---",
+    "",
+  ].join("\n");
+  await writeFile(join(OUT_DIR, "overview.md"), fm + body, "utf8");
+  return 1;
+}
+
 function yamlString(s: string): string {
   // Always quote; escape backslashes and double-quotes for YAML double-quoted.
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -593,6 +654,7 @@ const FOLDER_TITLES: Record<string, string> = {
 };
 
 const ROOT_PAGES = [
+  "overview",
   "docs",
   "quickstart",
   "concepts",
@@ -740,6 +802,8 @@ async function run() {
     await writeFile(outFile, fm + rewritten, "utf8");
     written++;
   }
+
+  written += await writeOverviewPage(versions);
 
   // Fumadocs `meta.json` per folder: display title + explicit page order
   // (index first, then the sync script's discovery/nav-order). Never hand-edit.

@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { navigate } from "astro:transitions/client";
 import { RootProvider } from "fumadocs-ui/provider/astro";
 import type { AstroProviderProps } from "fumadocs-core/framework/astro";
-import { NAV } from "../../lib/site";
+import { DOCS_NAV } from "../../lib/site";
 import SearchDialogComponent from "./search";
 import { PierreCodeEnhancer } from "./PierreCodeEnhancer";
 
@@ -51,6 +51,7 @@ export function Docs({
 }: Props) {
   const isProtocol = pathname === "/wire" || pathname.startsWith("/wire/");
   const isProtocolHome = pathname === "/wire" || pathname === "/wire/";
+  const isOverview = pathname === "/overview" || pathname === "/overview/";
   return (
     <RootProvider
       pathname={pathname}
@@ -64,11 +65,11 @@ export function Docs({
         themeSwitch={{ enabled: false }}
         nav={{
           title: (
-            <span><b aria-hidden="true">◆</b> phux</span>
+            <span><b aria-hidden="true">◆</b> phux <span className="docs-wordmark">docs</span></span>
           ),
-          url: "/",
+          url: "/overview",
         }}
-        links={NAV.map((item) =>
+        links={DOCS_NAV.map((item) =>
           "external" in item && item.external
             ? { type: "main", text: item.label, url: item.href, external: true }
             : { type: "main", text: item.label, url: item.href },
@@ -77,27 +78,29 @@ export function Docs({
         <DocsPage {...page}>
           <nav className="docs-crumb" aria-label="Breadcrumb">
             <ol>
-              <li><a href="/docs">root</a></li>
+              <li><a href="/overview">overview</a></li>
               {isProtocol && <li><a href="/wire">wire</a></li>}
-              <li aria-current="page">{title}</li>
+              {!isOverview && <li aria-current="page">{title}</li>}
             </ol>
           </nav>
           <DocsTitle>{title}</DocsTitle>
-          <DocsDescription>{description}</DocsDescription>
-          <div className="docs-meta" aria-label="Document provenance">
-            {isProtocol && <span className="meta-primary">wire {protocolVersion}</span>}
-            <span>{stability} document</span>
-          </div>
-          {summary !== description && (
+          {!isOverview && <DocsDescription>{description}</DocsDescription>}
+          {!isOverview && (
+            <div className="docs-meta" aria-label="Document provenance">
+              {isProtocol && <span className="meta-primary">wire {protocolVersion}</span>}
+              <span>{stability} document</span>
+            </div>
+          )}
+          {summary !== description && !isOverview && (
             <details className="docs-source-summary">
               <summary>Full source summary</summary>
               <p>{summary}</p>
             </details>
           )}
           {isProtocolHome && <ProtocolPrimer version={protocolVersion} />}
-          {!isProtocolHome && <SectionPrimer pathname={pathname} />}
-          <DocsBody>{children}</DocsBody>
-          <PierreCodeEnhancer languages={codeLanguages} />
+          {!isProtocolHome && !isOverview && <SectionPrimer pathname={pathname} />}
+          {isOverview ? children : <DocsBody>{children}</DocsBody>}
+          {!isOverview && <PierreCodeEnhancer languages={codeLanguages} />}
           {sourceUrl && <EditOnGitHub href={sourceUrl}>View exact source</EditOnGitHub>}
         </DocsPage>
       </DocsLayout>

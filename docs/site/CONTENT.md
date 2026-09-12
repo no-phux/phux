@@ -1,4 +1,4 @@
-# phux.sh — content & positioning north star
+# phux.sh / docs.phux.sh — content & positioning north star
 
 The single source of truth for what this site says and how it says it. Every
 page, every piece of copy, and the synced docs build against this. If a sentence
@@ -110,26 +110,35 @@ This is why the project deserves to exist.
 `src/pages/index.astro`. The `<PhuxTerminal client:load>` wasm island is the
 hero; the narrative sections run top to bottom below it.
 
+Marketing lives on `phux.sh`. Documentation lives on `docs.phux.sh`. Nav is
+docs / apps / agents / github — apps is the consumer index (CLI, Cockpit,
+web, agents), matching how the product is organized rather than the repo tree.
+
 1. **Install band + hero + live proof** — curl CLI and Cockpit installers
    first, then the headline: "You and your agents share the same terminals."
    Subhead: panes are a view; each terminal is an object on a wire you,
    Cockpit, a script, or an agent attach to. Homebrew is the documented
    day-to-day alternative. The wasm island sits below as proof — launch-gated.
-2. **The passthrough is the proof** — the rendered stream is the *actual* bytes a
-   gui or an agent gets off the wire, not a screenshot. Demo caption: "the same
-   bytes a gui or an agent gets off the wire." Honest demo-backend note:
-   phux-edge, a curated os-less shell as WASM in a Durable Object.
+2. **Apps** — CLI, Cockpit, Web, Agents as four peer surfaces. Each row links
+   into `docs.phux.sh/consumers/*`.
 3. **Why the wire exists** — spawn / observe / drive, then the structural
    argument in the same section: a re-parsing multiplexer always lags; phux
    never re-parses because the same libghostty engine runs on both ends. No
-   comparison table. Links to `/wire` and `/concepts`.
+   comparison table. Links to `/wire` and `/concepts` on the docs host.
 4. **Built for agents** — CLI + MCP read/act/wait against the same terminals
    a person sees. Links to `/consumers/agents`.
 5. **Status** — TUI, CLI, MCP, Cockpit, hub-and-spoke. AgentSession is in
    this tree; older releases: `phux status --json`. Not yet: public SDK crate,
    on-disk journal. Predictive echo is experimental. License + GitHub.
-6. **Get going** — router cards: quickstart / docs / the wire / consumers /
-   github. Consumers include Cockpit.
+6. **Get going** — router rows: quickstart / docs / the wire / apps / github.
+
+### `/overview` — docs landing on docs.phux.sh
+
+`src/pages/overview.astro`. The docs host root 301s here. Surfaces (CLI,
+Cockpit, Web, Agents), pick-your-path (new / tmux / agents / peer), then Get
+started / Build / Resources columns. This is the persuasion surface for
+readers who already arrived to read; it does not replace `docs/README.md`
+(`/docs`), which stays the full index.
 
 ### `/concepts` — the mental model
 Synced + curated from `docs/CONCEPTS.md`. The terminal as the unit; the wire in

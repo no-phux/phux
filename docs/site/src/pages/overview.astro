@@ -1,0 +1,32 @@
+---
+// /overview — docs landing on docs.phux.sh (and locally at /overview).
+// Custom body; the Fumadocs tree still lists this slug from the synced stub
+// so search and the sidebar stay in sync. [...slug] skips this path.
+import { Docs } from "../components/docs/Docs";
+import { OverviewBody } from "../components/docs/Overview";
+import Layout from "../components/docs/layout.astro";
+import { source } from "../lib/source";
+import { SITE } from "../lib/site";
+
+const title = "phux — Get started";
+const description =
+  "Install phux, pick a surface, and attach. CLI, Cockpit, web, and agents share the same live terminals.";
+---
+
+<Layout title={title} description={description} origin={SITE.docsUrl}>
+  <Docs
+    tree={source.getPageTree()}
+    pathname="/overview"
+    params={Astro.params}
+    sourceUrl={`${SITE.github}/blob/main/docs/site/src/pages/overview.astro`}
+    title="Get started"
+    summary="Install it, pick a surface, and attach. Every interface talks to the same live terminals."
+    description={description}
+    codeLanguages={[]}
+    stability="stable"
+    protocolVersion=""
+    client:load
+  >
+    <OverviewBody />
+  </Docs>
+</Layout>
