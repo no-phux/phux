@@ -1,0 +1,77 @@
+<template name="cockpit-settings" args="settingsopen themes configexists confignotice">
+  <stack>
+    <if test="{settingsopen}">
+      <row main="end" padding="16" background="scrim">
+        <panel grow="1" max-width="640" padding="16">
+          <column gap="16">
+            <row cross="center" gap="8">
+              <text grow="1" size="heading">Settings</text>
+              <button size="sm" variant="ghost" icon="x" label="Cancel settings" on-press="settings_close" />
+            </row>
+            <input text="{settingsQuery}" placeholder="Search settings" on-input="settings_query" label="Search settings" />
+            <tabs gap="4" label="Settings groups">
+              <for each="settingsSections" key="index" as="section">
+                <button size="sm" variant="ghost" selected="{settingsSection == section.index}" on-press="settings_section:{section.index}">{section.label}</button>
+              </for>
+            </tabs>
+            <scroll grow="1">
+              <column gap="16">
+                <for each="settingRows" key="id" as="setting">
+                  <column gap="8">
+                    <row gap="8" cross="center">
+                      <text grow="1">{setting.label}</text>
+                      <if test="{setting.editable}">
+                        <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_select:{setting.id}">Edit</button>
+                        <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
+                      </if>
+                    </row>
+                    <row gap="8"><text foreground="text_muted">Effective:</text><text wrap="true">{setting.effectiveValue}</text></row>
+                    <row gap="8"><text foreground="text_muted">Default:</text><text wrap="true">{setting.defaultLabel}</text></row>
+                    <text wrap="true" foreground="text_muted">{setting.applicability}</text>
+                    <text foreground="text_muted">{setting.timing}</text>
+                    <if test="{settingEditId == setting.id}">
+                      <row gap="8" cross="center">
+                        <input grow="1" text="{settingEditValue}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
+                        <button size="sm" disabled="{appearanceBusy}" on-press="settings_apply">Preview</button>
+                      </row>
+                    </if>
+                    <separator />
+                  </column>
+                </for>
+                <if test="{settingsSection == 0}">
+                  <text>Theme presets</text>
+                  <grid columns="2" gap="8">
+                    <for each="themes" key="index" as="theme">
+                      <button size="sm" variant="outline" selected="{theme.highlighted}" disabled="{appearanceBusy}" on-press="settings_pick:{theme.index}">{theme.label}</button>
+                    </for>
+                  </grid>
+                  <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Explicit foreground or background overrides this theme. Edit Configuration to change those keys.</text></if>
+                </if>
+                <if test="{settingsSection == 4}">
+                  <text>Current connection</text>
+                  <text wrap="true">{workspaceLabel}</text>
+                  <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
+                  <text wrap="true" foreground="text_muted">{connectionDetail}</text>
+                </if>
+                <text wrap="true" foreground="text_muted">{confignotice}</text>
+                <row gap="8">
+                  <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
+                  <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
+                </row>
+              </column>
+            </scroll>
+            <if test="{appearance.notice}"><text wrap="true" foreground="warning">{appearance.notice}</text></if>
+            <separator />
+            <row gap="8" cross="center">
+              <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
+              <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
+              <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
