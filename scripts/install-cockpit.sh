@@ -190,15 +190,16 @@ lock_dir=""
 lock_acquired=0
 publish_started=0
 publish_complete=0
+published_app=0
 
 rollback_publish() {
   [ "$publish_started" -eq 1 ] || return 0
   [ "$publish_complete" -eq 0 ] || return 0
+  if [ "$published_app" -eq 1 ]; then
+    rm -rf "${applications_dir}/Phux Cockpit.app"
+  fi
   if [ -e "${publish_dir}/backup/Phux Cockpit.app" ] || [ -L "${publish_dir}/backup/Phux Cockpit.app" ]; then
-    rm -rf "${applications_dir}/Phux Cockpit.app"
     mv -f "${publish_dir}/backup/Phux Cockpit.app" "${applications_dir}/Phux Cockpit.app"
-  else
-    rm -rf "${applications_dir}/Phux Cockpit.app"
   fi
 }
 
@@ -275,6 +276,9 @@ lock_acquired=1
 
 publish_dir="$(mktemp -d "${applications_dir}/.phux-cockpit-install.XXXXXX")"
 mkdir "${publish_dir}/backup"
+# Finish copying on the destination filesystem before touching an existing app.
+# Only renames happen during publication, so a failed copy leaves it available.
+ditto "${extract_dir}/Phux Cockpit.app" "${publish_dir}/Phux Cockpit.app"
 
 installed_path="${applications_dir}/Phux Cockpit.app"
 if [ -e "$installed_path" ] && [ ! -d "$installed_path" ]; then
@@ -285,7 +289,10 @@ publish_started=1
 if [ -e "$installed_path" ] || [ -L "$installed_path" ]; then
   mv "$installed_path" "${publish_dir}/backup/Phux Cockpit.app"
 fi
-ditto "${extract_dir}/Phux Cockpit.app" "$installed_path"
+# Mark before mv so interruption immediately after the rename still rolls back.
+# A failed backup rename never sets this flag: the original remains untouched.
+published_app=1
+mv "${publish_dir}/Phux Cockpit.app" "$installed_path"
 publish_complete=1
 
 # Releases without Developer ID credentials are ad-hoc signed; clearing the
