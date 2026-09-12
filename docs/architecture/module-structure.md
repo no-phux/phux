@@ -457,7 +457,12 @@ rather than a layer with its own internal architecture worth diagramming:
   terminate TLS on identical terms; ADR-0051 forbids the relay depending on
   `phux-server`, so the one implementation lives here, in the crate both
   already sit on. Each caller keeps its own error vocabulary and maps
-  `cert::CertError` into it.
+  `cert::CertError` into it. It also owns the one piece of QUIC *sending*
+  policy (`window.rs`): the congestion-tracked send window — quinn's window
+  held to the congestion window plus 16 KiB, re-read before every partial
+  write — that the server's QUIC and WebTransport writers and `phux-relay`'s
+  consumer-facing leg all write through (see
+  [`transport.md`](./transport.md)).
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.

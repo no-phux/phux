@@ -213,7 +213,11 @@ phux-dial = { workspace = true, features = ["provision"] }
 # the handshake, auth gating, and wire echo could not be tested honestly
 # without a browser in the loop. wtransport's spawned driver tasks are Send
 # futures, compatible with the current-thread runtime (ADR-0003).
-wtransport = { version = "0.7.2", optional = true, default-features = false, features = ["ring"] }
+# `quinn` is a feature of this same crate, not a new dependency: it exposes
+# the session's underlying quinn connection, so `WtWriter` holds the same
+# congestion-tracked send window (`phux_dial::window`) as the raw-QUIC writer
+# (phux-byyu).
+wtransport = { version = "0.7.2", optional = true, default-features = false, features = ["ring", "quinn"] }
 # Optional: opt-in via the `tokio-console` feature. See the feature
 # comment above for the build incantation.
 console-subscriber = { version = "0.5", optional = true }
@@ -275,6 +279,9 @@ phux-relay.workspace = true
 # `tests/*.rs` as its own crate, so that module was rebuilt once per test
 # binary (46 times, ~86% of each binary's compile). As an rlib it is built once.
 phux-server-testkit.workspace = true
+# `testing` adds phux-dial's `DropProxy`, which blackholes a loopback path so
+# the send-window tests can assert how much a stalled writer buffers.
+phux-dial = { workspace = true, features = ["provision", "testing"] }
 # The WebTransport tests dial the listener with wtransport's native client;
 # `dangerous-configuration` unlocks `with_no_cert_validation` so the test
 # client trusts the throwaway self-signed leaf (the TLS handshake and full

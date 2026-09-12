@@ -75,7 +75,10 @@ Four crate boundaries carry weight:
    stream — SPEC §5 framing and lifecycles stay with its consumers
    ([`transport.md`](./transport.md)). `phux-client` re-exports
    the dial types under the established `phux_client::attach::{quic,ws}`
-   paths.
+   paths. It also owns the congestion-tracked QUIC send window
+   (`phux_dial::window`) that `phux-server`'s QUIC and WebTransport writers
+   and `phux-relay`'s consumer leg share, since both crates already depend
+   on it.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
