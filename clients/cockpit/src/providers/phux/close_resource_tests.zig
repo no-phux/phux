@@ -21,16 +21,29 @@ test "batch close rejects invalid suffix and emits one correlated command" {
     try std.testing.expectError(error.InvalidIdentity, host.requestCloseResources(&.{ terminal, try ref(999) }, epoch));
     // The Host maps both FFI argument and state refusals to InvalidState.
     try std.testing.expectError(error.InvalidState, host.requestCloseResources(&.{ terminal, terminal }, epoch));
+    var reason_buffer: [128]u8 = undefined;
+    const reason = host.copyLastError(&reason_buffer);
+    try std.testing.expectEqualStrings("close batch repeats a terminal ID", reason);
+    var short: [3]u8 = undefined;
+    try std.testing.expectEqualStrings("clo", host.copyLastError(&short));
+    var empty: [0]u8 = .{};
+    try std.testing.expectEqual(@as(usize, 0), host.copyLastError(&empty).len);
     try support.expectOutgoingCount(&bridge, 0);
     try std.testing.expectEqual(@as(u32, 1), try host.requestCloseResources(&.{terminal}, epoch));
+    try std.testing.expectEqualStrings("close batch repeats a terminal ID", reason);
+    try std.testing.expectEqual(@as(usize, 0), host.copyLastError(&short).len);
     try support.expectOutgoingCount(&bridge, 1);
     try support.stageFixture(&bridge, "detach-ok.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expect(host.takeOperationResult() == null);
+    try std.testing.expectEqual(provider.Phase.live, host.presentation(terminal).?.phase);
+    try support.stageFixture(&bridge, "initial-terminal-closed.bin");
     _ = try host.drainReadiness();
     const result = host.takeOperationResult().?;
     try std.testing.expectEqual(.close_resources, result.kind);
     try std.testing.expectEqual(.success, result.status);
     try std.testing.expect(result.terminal_ref == null);
-    try std.testing.expectEqual(provider.Phase.live, host.presentation(terminal).?.phase);
+    try std.testing.expect(!host.terminalKnown(terminal));
 }
 
 test "explicit close requires captured connection and exact published owner" {
@@ -55,14 +68,16 @@ test "explicit close requires captured connection and exact published owner" {
     // of which command produced it. A close receipt must never act like detach.
     try support.stageFixture(&bridge, "detach-ok.bin");
     _ = try host.drainReadiness();
+    try std.testing.expect(host.takeOperationResult() == null);
+    try std.testing.expectEqual(provider.Phase.live, host.presentation(terminal).?.phase);
+    try support.stageFixture(&bridge, "initial-terminal-closed.bin");
+    _ = try host.drainReadiness();
     const result = host.takeOperationResult().?;
     try std.testing.expectEqual(.close_resource, result.kind);
     try std.testing.expectEqual(.success, result.status);
     try std.testing.expectEqual(epoch, result.connection_epoch);
     try std.testing.expect(result.terminal_ref.?.eql(terminal));
-    try std.testing.expectEqual(provider.Phase.live, host.presentation(terminal).?.phase);
-    try support.stageFixture(&bridge, "initial-terminal-closed.bin");
-    _ = try host.drainReadiness();
+    try std.testing.expect(!host.terminalKnown(terminal));
     try std.testing.expectError(error.InvalidIdentity, host.requestCloseResource(terminal, epoch));
 }
 

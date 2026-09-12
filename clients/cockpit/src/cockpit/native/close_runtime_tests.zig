@@ -37,7 +37,7 @@ fn receipt(remote: anytype, request: u32, kind: anytype) support.OperationResult
     return .{ .request_id = request, .connection_epoch = remote.connectionEpoch(), .kind = kind, .status = .success };
 }
 
-test "close runtime requires exact Client receipt plus authoritative closure, in either order" {
+test "close runtime accepts only exact Client completed close receipt" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try creation.start();
     defer engine.destroy();
@@ -59,7 +59,6 @@ test "close runtime requires exact Client receipt plus authoritative closure, in
     try testing.expectEqual(request, try other.requestCloseResource(ref(7), other.connectionEpoch()));
     const result = receipt(remote, request, .close_resource);
     try testing.expect(!coordinator.completeFrom(other, result));
-    try testing.expect(!coordinator.observeClosedFrom(other, ref(7)));
     try testing.expect(coordinator.takeOutcomeFrom(model, other) == null);
     var wrong = result;
     wrong.request_id += 1;
@@ -72,19 +71,40 @@ test "close runtime requires exact Client receipt plus authoritative closure, in
     try testing.expect(!coordinator.completeFrom(remote, wrong));
     try fixture.stageFixture(remote.bridge, "detach-ok.bin");
     _ = try remote.host.drainReadiness();
-    try testing.expect(coordinator.completeFrom(remote, remote.takeOperationResult().?));
+    // Raw Ok is only cancellation. FFI retains the operation until closure.
+    try testing.expect(remote.takeOperationResult() == null);
     try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
     try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
     try testing.expect(remote.owner(ref(7)) != null);
     try fixture.stageFixture(remote.bridge, "initial-terminal-closed.bin");
     _ = try remote.host.drainReadiness();
     try testing.expect(remote.owner(ref(7)) == null);
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
+    try testing.expect(coordinator.completeFrom(remote, remote.takeOperationResult().?));
     const outcome = coordinator.takeOutcomeFrom(model, remote).?;
     try testing.expectEqual(.completed, outcome.phase);
     try testing.expect(outcome.target.owners[0].terminal_ref.eql(ref(7)));
     try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
     try testing.expectEqual(@as(usize, 1), model.ws().tab_count); // Engine owns mutation.
+}
+
+test "close runtime ResourceClosed before acknowledgement completes without a side channel" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try creation.start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    var coordinator: close.Coordinator(1) = .{};
+    const target = try close.Target.capturePane(model, remote, 0, 0, ref(7));
+    _ = try coordinator.begin(model, remote, target);
+    try fixture.stageFixture(remote.bridge, "initial-terminal-closed.bin");
+    _ = try remote.host.drainReadiness();
+    try testing.expect(remote.owner(ref(7)) == null);
+    try testing.expect(remote.takeOperationResult() == null);
+    try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
+    try fixture.stageFixture(remote.bridge, "detach-ok.bin");
+    _ = try remote.host.drainReadiness();
+    try testing.expect(coordinator.completeFrom(remote, remote.takeOperationResult().?));
+    try testing.expectEqual(.completed, coordinator.takeOutcomeFrom(model, remote).?.phase);
 }
 
 test "close runtime captured pane survives focus movement and window reuse refuses metadata" {
@@ -99,8 +119,7 @@ test "close runtime captured pane survives focus movement and window reuse refus
     _ = try tree.split(tree.root, .horizontal, ref(8));
     try testing.expect(tree.focusedTerminal().?.eql(ref(8)));
     const request = try coordinator.begin(model, remote, target);
-    // Closure may precede the command receipt. It still cannot remove layout.
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
+    // A scripted successful close receipt represents both FFI-owned proofs.
     try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
     try testing.expect(coordinator.completeFrom(remote, receipt(remote, request, .close_resource)));
     model.window_epochs[0] += 1;
@@ -129,7 +148,6 @@ test "close runtime unchanged tab and window cannot authorize replacement attach
     const request = try coordinator.begin(&model, remote, target);
     model.remote = other;
     try testing.expect(coordinator.completeFrom(remote, receipt(remote, request, .close_resource)));
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
     try testing.expectEqual(.stale, coordinator.takeOutcomeFrom(&model, remote).?.phase);
     try testing.expectEqual(@as(usize, 1), engine.model.ws().tab_count);
     try fixture.expectOutgoingCount(other.bridge, 0);
@@ -149,12 +167,11 @@ test "close runtime shared ID and tab generation fence reused presentation slots
     const request = try coordinator.begin(model, remote, target);
     model.ws().shared_ids[0] = @splat(99);
     try testing.expect(coordinator.completeFrom(remote, receipt(remote, request, .close_resources)));
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
     try testing.expectEqual(.stale, coordinator.takeOutcomeFrom(model, remote).?.phase);
     try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
 }
 
-test "close runtime batch waits for every captured leaf and keeps newly added work" {
+test "close runtime completed batch cannot remove newly added work" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try creation.start();
     defer engine.destroy();
@@ -173,11 +190,10 @@ test "close runtime batch waits for every captured leaf and keeps newly added wo
     try testing.expectEqual(@as(usize, 2), target.count);
     const request = try coordinator.begin(model, remote, target);
     try fixture.expectOutgoingCount(remote.bridge, 1);
-    try testing.expect(coordinator.completeFrom(remote, receipt(remote, request, .close_resources)));
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
+    // Until FFI publishes the completed batch there is no metadata authority.
     try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
-    try testing.expect(coordinator.observeClosedFrom(remote, ref(8)));
     _ = try tree.split(tree.focus, .vertical, ref(9));
+    try testing.expect(coordinator.completeFrom(remote, receipt(remote, request, .close_resources)));
     try testing.expectEqual(.stale, coordinator.takeOutcomeFrom(model, remote).?.phase);
     try testing.expectEqual(@as(usize, 3), tree.paneCount());
 }
@@ -220,7 +236,6 @@ test "close runtime reconnect cannot replay old intent or consume replacement re
     remote.host.disconnect();
     try remote.host.reconnect("replacement");
     try testing.expect(!coordinator.completeFrom(remote, result));
-    try testing.expect(!coordinator.observeClosedFrom(remote, ref(7)));
     try testing.expectEqual(.unknown, coordinator.takeOutcomeFrom(model, remote).?.phase);
     try testing.expectError(error.InvalidIdentity, coordinator.begin(model, remote, target));
     try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
@@ -249,12 +264,17 @@ test "close runtime refuses satellite-containing tab atomically before request c
     const target = try close.Target.captureTab(model, remote, 0, 0);
     const before = remote.host.operation_ledger.last_id;
     try testing.expectError(error.InvalidState, coordinator.begin(model, remote, target));
+    var reason_buffer: [256]u8 = undefined;
+    const reason = remote.copyLastError(&reason_buffer);
+    try testing.expectEqualStrings("atomic close is unavailable for satellite resources; batch was not queued", reason);
     try testing.expectEqual(before, remote.host.operation_ledger.last_id);
     try fixture.expectOutgoingCount(remote.bridge, 0);
     try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
     try testing.expectEqual(@as(usize, 2), tree.paneCount());
     const pane = try close.Target.capturePane(model, remote, 0, 0, spawned);
     try testing.expectError(error.InvalidState, coordinator.begin(model, remote, pane));
+    try testing.expectEqualStrings("atomic close is unavailable for satellite resources; batch was not queued", reason);
+    try testing.expectEqualStrings("satellite close requires an instance-bound resource; no safe incarnation fence", remote.copyLastError(&reason_buffer));
     try testing.expectEqual(before, remote.host.operation_ledger.last_id);
     try fixture.expectOutgoingCount(remote.bridge, 0);
 }

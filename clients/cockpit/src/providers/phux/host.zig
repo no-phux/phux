@@ -561,6 +561,20 @@ pub const Host = struct {
         return request_id;
     }
 
+    /// Copy a synchronous FFI refusal before another mutable client call. The
+    /// returned bytes belong to `out`, not the Client; no operation is consumed.
+    pub fn copyLastError(host: *const Host, out: []u8) []const u8 {
+        var raw: c.PhuxBytes = undefined;
+        if (c.phux_client_last_error(host.client, &raw) != c.PHUX_CLIENT_OK) return out[0..0];
+        const message = effectSlice(raw) catch return out[0..0];
+        var count = @min(out.len, message.len);
+        if (count < message.len) {
+            while (count > 0 and (message[count] & 0xc0) == 0x80) count -= 1;
+        }
+        @memcpy(out[0..count], message[0..count]);
+        return out[0..count];
+    }
+
     fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool, argv: []const []const u8) !u32 {
         var raw_argv: [64]c.PhuxBytes = undefined;
         if (argv.len > raw_argv.len) return error.InvalidArgument;

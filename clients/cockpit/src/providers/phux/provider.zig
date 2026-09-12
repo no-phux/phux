@@ -656,6 +656,11 @@ pub const PhuxProvider = struct {
         return self.host.requestCloseResources(refs, expected_epoch);
     }
 
+    /// Owned by the caller's buffer; copy immediately after a synchronous refusal.
+    pub fn copyLastError(self: *const PhuxProvider, out: []u8) []const u8 {
+        return self.host.copyLastError(out);
+    }
+
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
         return self.host.requestDetach(terminal_ref);
     }

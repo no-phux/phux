@@ -1,13 +1,13 @@
 //! Captured destructive intent, separate from view detach and layout mutation.
-//! Engine supplies authoritative RESOURCE_CLOSED observations, never replica
-//! absence. A receipt alone cannot authorize removal of shared metadata.
+//! FFI close receipts own both proofs: command acknowledgement and every
+//! captured RESOURCE_CLOSED. Replica absence is never completion evidence.
 const std = @import("std");
 const contract = @import("provider_contract");
 const layout = @import("../layout.zig");
 const tabs = @import("tab_commands.zig");
 
 pub const Kind = enum { pane, tab };
-pub const Phase = enum { waiting, accepted, refused, unknown, stale, completed };
+pub const Phase = enum { waiting, resources_closed, refused, unknown, stale, completed };
 
 pub const Source = struct {
     provider_id: contract.ProviderId,
@@ -172,7 +172,6 @@ pub const Outcome = struct {
 
 const Pending = struct {
     outcome: Outcome,
-    closed: [layout.max_panes]bool = @splat(false),
 
     fn accepts(self: *const Pending, remote: anytype, result: anytype) bool {
         if (!self.outcome.target.source.matches(remote)) return false;
@@ -184,13 +183,6 @@ const Pending = struct {
             .pane => result.kind == .close_resource,
             .tab => result.kind == .close_resources,
         };
-    }
-
-    fn ready(self: *const Pending) bool {
-        if (self.outcome.phase == .waiting) return false;
-        if (self.outcome.phase != .accepted) return true;
-        for (self.closed[0..self.outcome.target.count]) |closed| if (!closed) return false;
-        return true;
     }
 };
 
@@ -220,12 +212,15 @@ pub fn Coordinator(comptime capacity: usize) type {
             return null;
         }
 
+        /// Kinds 5/6 success is an FFI-owned completed close, not raw command Ok:
+        /// the owning Client has already processed every RESOURCE_CLOSED. A
+        /// second Host observation queue would duplicate and risk losing proof.
         pub fn completeFrom(self: *Self, remote: anytype, result: anytype) bool {
             for (&self.pending) |*slot| {
                 const pending = if (slot.*) |*value| value else continue;
                 if (!pending.accepts(remote, result)) continue;
                 pending.outcome.phase = switch (result.status) {
-                    .success => .accepted,
+                    .success => .resources_closed,
                     .refused => .refused,
                     .unknown_outcome => .unknown,
                 };
@@ -233,23 +228,6 @@ pub fn Coordinator(comptime capacity: usize) type {
                 return true;
             }
             return false;
-        }
-
-        /// Call only for authoritative closure on this exact Client, during the
-        /// original epoch. Detach, frozen presentation, grid removal, catalog
-        /// unavailability and a replacement ATTACHED snapshot are NOT closure.
-        pub fn observeClosedFrom(self: *Self, remote: anytype, ref: contract.TerminalRef) bool {
-            var changed = false;
-            for (&self.pending) |*slot| {
-                const pending = if (slot.*) |*value| value else continue;
-                if (!pending.outcome.target.source.matches(remote)) continue;
-                for (pending.outcome.target.owners[0..pending.outcome.target.count], 0..) |owner, index| {
-                    if (!owner.terminal_ref.eql(ref)) continue;
-                    changed = !pending.closed[index] or changed;
-                    pending.closed[index] = true;
-                }
-            }
-            return changed;
         }
 
         /// Retire intent when its exact attachment leaves the runtime. This is
@@ -275,10 +253,10 @@ pub fn Coordinator(comptime capacity: usize) type {
                     pending.outcome.phase = .unknown;
                     pending.outcome.setReason("close outcome unknown: original attachment replaced");
                 }
-                if (!pending.ready()) continue;
+                if (pending.outcome.phase == .waiting) continue;
                 var outcome = pending.outcome;
                 slot.* = null;
-                if (outcome.phase == .accepted) {
+                if (outcome.phase == .resources_closed) {
                     outcome.phase = if (outcome.target.completionCurrent(model, remote)) .completed else .stale;
                     if (outcome.phase == .stale) outcome.setReason("close completed for a retired view; layout was not removed");
                 }
