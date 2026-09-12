@@ -252,9 +252,20 @@ impl PumpGeneration {
     ///
     /// Taking an addressed resync only while fenced loses nothing: a pump
     /// asks for one only after fencing itself, and only a republish unfences.
+    ///
+    /// A *retired* generation — a forwarded `BootstrapTombstone` voided it,
+    /// with no gap fence set — takes any resync, addressed to it or not. It
+    /// forwards nothing until a replacement lands and never asks for one of
+    /// its own (the stale and lag paths both go through [`Self::forwards`],
+    /// which a retired generation fails), so another pump's resync is its
+    /// only way back. Taking it is always safe: the resync is an ordered cut
+    /// on the same broadcast, covering every sequence before it. Before
+    /// resyncs were addressed, any everyone-resync revived such a pump; this
+    /// keeps that rescue.
     pub(super) fn takes_resync(&self, audience: &ResyncAudience, pump: ResyncTarget) -> bool {
         match audience {
             ResyncAudience::Everyone => true,
+            ResyncAudience::Only(_) if !self.generation_active => true,
             ResyncAudience::Only(_) => self.gap_pending && audience.includes(pump),
         }
     }
@@ -357,6 +368,31 @@ mod tests {
 
         assert!(fresh.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
         assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
+    }
+
+    /// A retired generation takes any resync, addressed or not.
+    ///
+    /// A tombstone can retire a pump without fencing it, and such a pump asks
+    /// for no resync of its own; before resyncs were addressed, whichever
+    /// everyone-resync came next revived it. Another pump's addressed resync
+    /// must still do so, or the retired pump never shows output again.
+    #[test]
+    fn a_retired_generation_takes_any_resync_even_one_addressed_elsewhere() {
+        let addressed_elsewhere = ResyncAudience::Only(vec![pump_on(1, 1)].into());
+        let mut retired = opened();
+        retired.retire();
+        assert!(!retired.is_fenced(), "retirement alone sets no gap fence");
+        assert!(
+            retired.takes_resync(&addressed_elsewhere, pump_on(2, 1)),
+            "the stale neighbour's resync is the retired pump's only way back",
+        );
+        assert!(retired.takes_resync(&ResyncAudience::Everyone, pump_on(2, 1)));
+
+        retired.republished_at(100);
+        assert!(
+            !retired.takes_resync(&addressed_elsewhere, pump_on(2, 1)),
+            "once republished it is an ordinary fresh pump again",
+        );
     }
 
     #[test]

@@ -4522,6 +4522,97 @@ mod tests {
             .await;
     }
 
+    /// A pump a tombstone retired without fencing converges on its stale
+    /// neighbour's addressed resync.
+    ///
+    /// Two pre-existing paths retire a native pump with no gap fence and no
+    /// resync of its own to follow (a second native pump of the same client,
+    /// an attach-time reflow). Such a pump forwards nothing and never asks,
+    /// so the next resync on the pane — whoever it is addressed to — is its
+    /// only way back. Before resyncs were addressed, a neighbour's resync
+    /// always revived it; this pins that it still does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_retired_pump_converges_on_its_stale_neighbours_resync() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(64);
+                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+                let mut retired = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
+                let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
+                let initial = two_pump_initial_generation();
+                let replacement = next_bootstrap_id(initial);
+
+                // The actor voids pump 1's generation with no fence and no
+                // resync of its own to follow.
+                output
+                    .send(PaneOutput::Control {
+                        owner: 1,
+                        frame: FrameKind::BootstrapTombstone {
+                            terminal_id: phux_protocol::ids::ResourceId::local(1),
+                            stream_id: two_pump_stream(),
+                            bootstrap_id: initial,
+                            reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+                            last_valid_seq: 2,
+                        },
+                    })
+                    .expect("pumps subscribed");
+                assert_eq!(frames_seen(&mut retired, 1).await, vec![Seen::Tombstone]);
+
+                let read_a_second_ago = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .expect("monotonic clock has run for a second");
+                output
+                    .send(live(2, read_a_second_ago))
+                    .expect("pumps subscribed");
+                let request = resync_request(&mut resize_rx).await;
+                assert_eq!(
+                    request.resync_for,
+                    Some(ResyncTarget {
+                        owner: 2,
+                        stream_id: two_pump_stream(),
+                    }),
+                    "only the stale pump asks; the retired one never does",
+                );
+
+                let now = std::time::Instant::now();
+                output.send(live(3, now)).expect("pumps subscribed");
+                answer_gap_resync(&output, &request, 3);
+                output.send(live(4, now)).expect("pumps subscribed");
+
+                let converged = vec![
+                    Seen::Begin {
+                        generation: replacement,
+                        base_seq: 3,
+                    },
+                    Seen::Chunk,
+                    Seen::Ready {
+                        generation: replacement,
+                    },
+                    Seen::Output {
+                        generation: replacement,
+                        seq: 4,
+                    },
+                ];
+                assert_eq!(
+                    frames_seen(&mut retired, 4).await,
+                    converged,
+                    "the retired pump takes its neighbour's resync and resumes",
+                );
+                assert_eq!(frames_seen(&mut stale, 4).await, converged);
+                assert_quiet(&mut retired, "the retired pump").await;
+                assert_quiet(&mut stale, "the stale pump").await;
+                assert!(resize_rx.try_recv().is_err(), "no further resync requests");
+
+                drop(output);
+                for consumer in [retired, stale] {
+                    let fault = consumer.task.await.expect("pump task");
+                    assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
+                }
+            })
+            .await;
+    }
+
     /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
     /// enough for the broadcast to overwrite its window is re-bootstrapped
     /// alone. Its neighbour, draining promptly, sees every chunk on its
