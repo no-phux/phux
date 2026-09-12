@@ -17,18 +17,6 @@ From the repository root, using the [native prerequisites](../../../../docs/SETU
 
 ```sh
 bash scripts/doctor.sh cockpit
-CARGO_BUILD_JOBS=2 bash clients/cockpit/scripts/build-phux-artifacts.sh ffi-dev
-```
-
-From `clients/cockpit`:
-
-```sh
-./scripts/zig-build.sh everyday-remote-provider -Dphux-client-ffi-profile=ffi-dev -j2
-```
-
-Then from the repository root:
-
-```sh
 python3 clients/cockpit/scripts/everyday-remote-live.py
 ```
 
@@ -36,9 +24,28 @@ The default runs both transports and the production provider. `--transport
 quic` or `--transport wss` narrows the network lane. `--ffi-only` is an explicitly
 scoped inner loop that does not verify the Zig provider. Both real liveness and
 history-lease deadlines are exercised, so allow several minutes after building.
-The runner requires artifacts from this checkout; it never selects an installed
-Phux or Cockpit app. The provider build is opt-in and is not run by ordinary
+Each run builds the same-checkout library and CLI and rebuilds the headless
+provider. `--profile ffi-dev` is the default;
+`--profile ffi-release` selects that archive consistently for both probes.
+Build environments remove `PHUX_CLIENT_FFI_INCLUDE_DIR`,
+`PHUX_CLIENT_FFI_LIB_DIR`, `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET`. The runner
+reads the native host from `rustc -vV`, then explicitly supplies Cargo
+`--target <host> --target-dir <checkout>/target` for both library and CLI.
+This overrides foreign **and same-host** `build.target` settings; the only accepted
+output directory is `<checkout>/target/<host>/<profile>`. The provider invocation passes
+absolute checkout include/archive directories as well as the selected profile;
+an existing provider executable never bypasses the build. Builds use Cargo jobs
+2 and Zig `-j2`. The provider build is opt-in and is not run by ordinary
 `zig build test`.
+
+A successful run prints `PROVENANCE: /path/to/everyday-remote-provenance-*.json`.
+That retained, secret-free record contains the checkout revision, complete
+tracked/unignored source-tree and working-diff SHA-256 hashes, selected profile,
+the explicit native target, and hashes/paths for the header, archive, CLI,
+C probe and provider executable.
+Source and artifact identities must remain unchanged through verification.
+Private credentials are removed; the provenance JSON stays under the scratch
+root. The C probe's recorded path is transient, but its hash remains evidence.
 
 ## What is exercised
 
@@ -52,8 +59,9 @@ Phux or Cockpit app. The provider build is opt-in and is not run by ordinary
   no alternate QUIC/WSS implementation or echo-server substitute is introduced.
 - The PTY child disables echo and appends each received input line to a file.
   Expected complete file contents establish execution count and destination
-  independently of local echo or rendered terminal text. A second terminal
-  records separately.
+  independently of local echo or rendered terminal text. The complete second
+  terminal record must equal `["second-terminal-only"]` after all input,
+  reconnect and provider operations; a count-only match cannot pass.
 - The history fixture emits 1,600 numbered lines. Native history pages load
   while input is dispatched; a scrolled viewport retains its first row during
   imports. The oldest line starts unsearchable and becomes searchable after
@@ -89,6 +97,12 @@ listener, even when `PHUX_TAILSCALE` names a nonexistent executable. The runner
 does not change a user's registry or launch Cockpit. Cleanup reaps its servers
 and removes private data. Pairing secrets are not printed.
 
+SIGTERM, SIGHUP and interrupt requests unwind the fixture contexts. Each owned
+server/probe is continued before termination, then killed on a bounded timeout
+and reaped if necessary. Repeated termination requests cannot interrupt that
+cleanup. Child adoption also fences the signal-delivery window around `Popen`;
+children receive the original signal mask before executing.
+
 | Contract area | Evidence provided here | Separate acceptance still required |
 |---|---|---|
 | Product B7–14 | Shared registry resolution, authenticated QUIC/WSS, revoked token and stale pin refusal, registry immutability | Machines UI discovery, truthful per-machine states, setup/cancel/retry, user identity disambiguation, capacity, disconnect/forget interaction |
@@ -121,7 +135,7 @@ base `3eeba41f` and its same-checkout `ffi-dev` artifacts:
 - `bash scripts/check-docs.sh`, Zig formatting, C compilation with
   `-Wall -Wextra -Werror`, and `git diff --check`: passed.
 
-These are new contract probes, not a product-fix RED/GREEN claim. The real
+The initial live scenarios are contract probes. The real
 revoked-token run did uncover follow-up `phux-2jza.11`: QUIC reports only
 `the connection was lost: connection lost`, while WSS reports `401 Unauthorized`.
 Admission is correctly refused on both; preserving an actionable QUIC
@@ -133,3 +147,26 @@ Python maximum 9 (`exercise`), C maximum 6 (`main`), other C functions 1–5.
 Manual Zig counts: `add` 1, `tick` 1, `ready` 4, `recorded` 1, `input` 3,
 provider test 3. The one touched existing function, `addPhuxGraphTests`,
 remains 3 before and after the additive build hook (one conditional, one loop).
+
+### Fresh-review regressions
+
+```sh
+python3 clients/cockpit/tests/everyday-remote/test_runner.py
+```
+
+These tests run disposable mock executables, not a Phux server or native app.
+Against the actual `bff8ddb0` runner, the named regressions failed as follows:
+
+| Test | Observed RED | Verified correction |
+|---|---|---|
+| `test_main_rebuilds_provider_with_pinned_checkout_inputs` | Existing stale provider skipped the expected rebuild: zero builds, expected one | Both `ffi-dev` and `ffi-release` rebuild with explicit checkout paths, remove inherited overrides, and record matching artifact hashes |
+| `test_build_overrides_foreign_and_same_host_cargo_target_configuration` | The profile-only helper invocation did not explicitly select a native Cargo target | Native `--target` and `--target-dir` are supplied for both Cargo builds; artifact selection uses the matching target directory |
+| `test_termination_during_server_stop_resumes_and_reaps_owned_children` | SIGTERM and SIGHUP left a ps-confirmed stopped server and live probe | Both signals unwind and reap exact owned children; the SIGHUP case also verifies SIGKILL fallback for a mock server refusing SIGTERM |
+| `test_wrong_single_secondary_execution_is_rejected` | A single `WRONG-PAYLOAD` line passed | Complete secondary payload mismatch is rejected |
+
+The regressions pass after the review fixes; missing `rustc` host output also
+refuses the build. Python complexity before/after
+(`radon cc -s -a`): `run` 3→3, `stop` 2→2, `fixture_server` 4→3,
+`exercise_stall` 3→2, `exercise` 9→8, `compile_probe` 2→2, `main` 8→1.
+Extracted `verify` is 6; signal ownership, build selection and provenance helpers
+are individually bounded to 1–4. C and Zig functions are unchanged by this fix.
