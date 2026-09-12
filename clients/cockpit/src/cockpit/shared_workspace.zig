@@ -5,9 +5,9 @@
 //! Each session attachment projects its own workspace through its own `State`.
 //! Its process-local provider context tags the published trees, so a second
 //! session on the same coordinator keeps its windows, order and selection.
-//! Anything no showing coordinator owns (a coordinator that stopped showing,
-//! an ephemeral local tab) gives way, as one coordinator's projection always
-//! cleared it.
+//! Unbound legacy projections retain coordinator-based compatibility. A bound
+//! attachment cannot adopt an unqualified tree merely because its coordinator
+//! matches. Scratch trees remain ephemeral and yield to shared projection.
 const std = @import("std");
 const contract = @import("provider_contract");
 const shared = contract.workspace;
@@ -33,6 +33,9 @@ const Ownership = struct {
         // their own attachment's explicit leave/replacement may remove it.
         if (tree.attachment_id) |id| return self.attachment_id != id;
         const authority = tabAuthority(tree) orelse return false;
+        // A legacy tree has no evidence identifying which same-coordinator
+        // attachment owns it. Only an explicit, proven migration may tag it.
+        if (self.attachment_id != null and authority == self.authority) return true;
         if (authority == self.authority or authority == .local) return false;
         return model.projectsAuthority(authority);
     }
@@ -566,8 +569,8 @@ pub fn tabAuthority(tree: *const layout.Tree) ?contract.ProviderId {
 /// republished group goes back in place and a kept selection survives.
 const Cleared = struct { anchor: ?usize = null, selected: ?usize = null };
 
-/// Drop `authority`'s tabs, and any tab no showing coordinator owns, from
-/// every window. The kept tabs close up in their order.
+/// Drop this projection's tabs while preserving sibling attachments. Unbound
+/// legacy tabs follow the coordinator compatibility rule in Ownership.retains.
 fn clearAuthority(model: *Model, owner: Ownership) [model_module.max_windows]Cleared {
     var result: [model_module.max_windows]Cleared = @splat(.{});
     for (0..model_module.max_windows) |index| {
@@ -741,13 +744,14 @@ const Candidate = struct {
             self.publishWindow(workspace, window, cleared[window]);
         }
         mintUnrestoredTabIds(model);
-        if (home and self.owner.attachment_id == null) restoreActiveWindow(model, previous);
+        const sibling_active = cleared[model.active_window].selected != null;
+        if (home and self.owner.attachment_id == null and !sibling_active) restoreActiveWindow(model, previous);
         model.pruneAttachmentState();
     }
 
     fn restoresWeb(self: *const Candidate, home: bool, window: usize, cleared: Cleared) bool {
-        if (self.owner.attachment_id == null) return home;
         if (cleared.selected != null) return false;
+        if (self.owner.attachment_id == null) return home;
         return self.placementsIn(window) != 0;
     }
 
@@ -760,8 +764,7 @@ const Candidate = struct {
         openGap(workspace, at, kept, incoming);
         const published = self.fillGap(workspace, window, at);
         workspace.tab_count = kept + incoming;
-        const selection = if (self.owner.attachment_id != null and cleared.selected != null) null else published;
-        workspace.selected_tab = selectedAfter(selection, cleared.selected, at, incoming);
+        workspace.selected_tab = selectedAfter(published, cleared.selected, at, incoming);
     }
 
     fn placementsIn(self: *const Candidate, window: usize) usize {
@@ -806,11 +809,10 @@ fn openGap(workspace: *model_module.Workspace, at: usize, kept: usize, width: us
     }
 }
 
-/// A published selection wins; else a kept selection, shifted past the gap.
+/// A retained sibling's current selection wins over cached incoming selection.
 fn selectedAfter(published: ?usize, kept: ?usize, at: usize, width: usize) usize {
-    if (published) |value| return value;
-    const value = kept orelse return 0;
-    return if (value >= at) value + width else value;
+    if (kept) |value| return if (value >= at) value + width else value;
+    return published orelse 0;
 }
 
 /// Reserve every preserved key before minting missing ones. A rollover can
@@ -1474,4 +1476,58 @@ test "delayed first session publication refuses a recycled native destination" {
     _ = try state.apply(model, snapshot, 1);
     try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
     try std.testing.expectEqual(@as(usize, 0), model.active_window);
+}
+
+test "tagged attachment cannot clear an unqualified same coordinator projection" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    _ = model.openWindow(1).?;
+    var legacy: State = .{};
+    defer legacy.deinit();
+    var tagged: State = .{ .attachment_id = 200 };
+    defer tagged.deinit();
+    const windows = [_]shared.Window{testWindow(1, 0)};
+    const nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(11) }};
+    var snapshot: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &windows, .nodes = &nodes };
+    _ = try legacy.apply(model, snapshot, 1);
+    const key = model.primary.tab_ids[0];
+    model.primary.web_selected = true;
+    tagged.showInWindow(1, model.window_epochs[1]);
+    snapshot.session_id = 2;
+    _ = try tagged.apply(model, snapshot, 1);
+    try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    try std.testing.expectEqual(key, model.primary.tab_ids[0]);
+    try std.testing.expect(model.primary.web_selected);
+    try tagged.leaveSession(model);
+    try std.testing.expectEqual(key, model.primary.tab_ids[0]);
+    try std.testing.expect(model.primary.web_selected);
+}
+
+test "legacy cached selection cannot override retained tagged tabs web or active window" {
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    _ = model.openWindow(1).?;
+    var legacy: State = .{};
+    defer legacy.deinit();
+    var tagged: State = .{ .attachment_id = 200 };
+    defer tagged.deinit();
+    const windows = [_]shared.Window{ testWindow(1, 0), testWindow(2, 1) };
+    const nodes = [_]shared.Node{ .{ .kind = .leaf, .terminal_ref = testRef(11) }, .{ .kind = .leaf, .terminal_ref = testRef(12) } };
+    tagged.placement_hint = .{ .shared_id = windows[1].id, .window = 1, .window_epoch = model.window_epochs[1] };
+    _ = try tagged.apply(model, .{ .session_id = 2, .revision = 1, .state = .authoritative, .windows = &windows, .nodes = &nodes }, 1);
+    const legacy_windows = [_]shared.Window{testWindow(3, 0)};
+    const legacy_nodes = [_]shared.Node{.{ .kind = .leaf, .terminal_ref = testRef(13) }};
+    const snapshot: shared.Snapshot = .{ .session_id = 1, .revision = 1, .state = .authoritative, .windows = &legacy_windows, .nodes = &legacy_nodes };
+    _ = try legacy.apply(model, snapshot, 1);
+    legacy.desired_terminal = testRef(13);
+    try std.testing.expect(legacy.selectDesired(model));
+    try legacy.leaveSession(model);
+    model.active_window = 1;
+    model.wsAt(1).?.web_selected = true;
+    _ = try legacy.apply(model, snapshot, 2);
+    try std.testing.expectEqual(@as(?u64, 200), model.primary.tabs[model.primary.selected_tab].attachment_id);
+    try std.testing.expect(model.wsAt(1).?.web_selected);
+    try std.testing.expectEqual(@as(usize, 1), model.active_window);
 }
