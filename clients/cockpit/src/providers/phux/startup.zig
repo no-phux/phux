@@ -1,4 +1,5 @@
-//! Local coordinator bootstrap. Call only from the socket worker, before connect.
+//! Local coordinator bootstrap and optional background CLI discovery.
+//! Ensure runs before connect; optional discovery runs independently after attach.
 //! The CLI owns coordinator policy; this helper never attaches or spawns work.
 const std = @import("std");
 const wait_api = @cImport({
@@ -82,6 +83,44 @@ pub const Capture = struct {
     }
 };
 
+/// Optional CLI discovery is independent of the coordinator socket pump. Its
+/// owner cancels and joins it before destroying provider-owned status/slices.
+pub const Discovery = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    status: *Status,
+    socket: []const u8,
+    stopping: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+
+    pub fn start(gpa: std.mem.Allocator, io: std.Io, socket: []const u8, status: ?*Status) !?*Discovery {
+        const target = status orelse return null;
+        var path: [4096]u8 = undefined;
+        if (target.cliInto(&path) != null) return null;
+        const self = try gpa.create(Discovery);
+        errdefer gpa.destroy(self);
+        self.* = .{ .gpa = gpa, .io = io, .status = target, .socket = socket };
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    pub fn stop(self: *Discovery) void {
+        self.stopping.store(true, .release);
+        if (self.thread) |thread| thread.join();
+        self.gpa.destroy(self);
+    }
+
+    fn run(self: *Discovery) void {
+        const cli = discoverRuntime(self.gpa, self.io, &self.stopping) catch return;
+        defer self.gpa.free(cli);
+        if (self.stopping.load(.acquire)) return;
+        var evidence: Evidence = .{};
+        evidence.executable_len = @min(cli.len, evidence.executable.len);
+        @memcpy(evidence.executable[0..evidence.executable_len], cli[0..evidence.executable_len]);
+        self.status.record(evidence, self.socket, null);
+    }
+};
+
 pub fn environment(name: [*:0]const u8) ?[]const u8 {
     const value = std.c.getenv(name) orelse return null;
     const text = std.mem.span(value);
@@ -105,39 +144,60 @@ fn discover(gpa: std.mem.Allocator, io: std.Io, explicit: ?[]const u8, stopping:
 /// Finder-safe deterministic candidates. Never source shell startup files. The
 /// total budget is 1s per candidate, at most 8 PATH entries plus 4 fixed paths.
 pub fn discoverRuntime(gpa: std.mem.Allocator, io: std.Io, stopping: *const std.atomic.Value(bool)) ![]u8 {
-    if (environment("PHUX_CLI")) |path| {
-        if (try compatibleCandidate(gpa, io, path, stopping)) return gpa.dupe(u8, path);
-    }
-    if (environment("PATH")) |path| {
-        if (try searchPath(gpa, io, path, stopping)) |candidate| return candidate;
-    }
-    if (environment("HOME")) |home| {
-        const path = try std.fs.path.join(gpa, &.{ home, ".local/bin/phux" });
-        defer gpa.free(path);
-        if (try compatibleCandidate(gpa, io, path, stopping)) return gpa.dupe(u8, path);
-    }
-    for ([_][]const u8{ "/opt/homebrew/bin/phux", "/usr/local/bin/phux" }) |path| {
-        if (try compatibleCandidate(gpa, io, path, stopping)) return gpa.dupe(u8, path);
-    }
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var candidates: Candidates = .{ .gpa = arena.allocator() };
+    try candidates.fromEnvironment();
+    if (try selectCompatible(gpa, io, candidates.paths.items, stopping)) |cli| return cli;
     const executable = try std.process.executablePathAlloc(io, gpa);
     defer gpa.free(executable);
     return siblingPath(gpa, executable);
 }
 
-fn searchPath(gpa: std.mem.Allocator, io: std.Io, path: []const u8, stopping: *const std.atomic.Value(bool)) !?[]u8 {
-    var entries = std.mem.splitScalar(u8, path, ':');
-    var count: usize = 0;
-    while (entries.next()) |directory| {
-        if (count == 8) break;
-        if (!std.fs.path.isAbsolute(directory)) continue;
-        count += 1;
-        const candidate = try std.fs.path.join(gpa, &.{ directory, "phux" });
-        errdefer gpa.free(candidate);
-        if (try compatibleCandidate(gpa, io, candidate, stopping)) return candidate;
-        gpa.free(candidate);
+fn selectCompatible(gpa: std.mem.Allocator, io: std.Io, candidates: []const []const u8, stopping: *const std.atomic.Value(bool)) !?[]u8 {
+    for (candidates) |path| {
+        if (try compatibleCandidate(gpa, io, path, stopping)) return try gpa.dupe(u8, path);
     }
     return null;
 }
+
+/// Operation-arena owned. Duplicate paths consume neither a second process nor
+/// another timeout budget. Keep path spelling: normalizing '..' across a symlink
+/// could name a different executable.
+const Candidates = struct {
+    gpa: std.mem.Allocator,
+    paths: std.ArrayList([]const u8) = .empty,
+
+    fn add(self: *Candidates, path: []const u8) !void {
+        if (path.len > 4096 or !std.fs.path.isAbsolute(path)) return;
+        for (self.paths.items) |existing| {
+            if (std.mem.eql(u8, existing, path)) return;
+        }
+        try self.paths.append(self.gpa, try self.gpa.dupe(u8, path));
+    }
+
+    fn addPath(self: *Candidates, path: []const u8) !void {
+        var entries = std.mem.splitScalar(u8, path, ':');
+        var count: usize = 0;
+        while (entries.next()) |directory| {
+            if (count == 8) break;
+            if (!std.fs.path.isAbsolute(directory)) continue;
+            count += 1;
+            if (directory.len > 4090) continue;
+            try self.add(try std.fs.path.join(self.gpa, &.{ directory, "phux" }));
+        }
+    }
+
+    fn fromEnvironment(self: *Candidates) !void {
+        if (environment("PHUX_CLI")) |path| try self.add(path);
+        if (environment("PATH")) |path| try self.addPath(path);
+        if (environment("HOME")) |home| {
+            if (home.len <= 4096) try self.add(try std.fs.path.join(self.gpa, &.{ home, ".local/bin/phux" }));
+        }
+        try self.add("/opt/homebrew/bin/phux");
+        try self.add("/usr/local/bin/phux");
+    }
+};
 
 fn compatibleCandidate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, stopping: *const std.atomic.Value(bool)) !bool {
     if (stopping.load(.acquire)) return error.Canceled;
@@ -579,4 +639,20 @@ test "stderr overflow is bounded and retained without blocking helper cleanup" {
     try std.testing.expectError(error.HelperOutputTooLarge, runHelper(std.testing.io, &.{ "/bin/sh", "-c", "exec /usr/bin/yes fixture-error >&2" }, &stopping, 1000, &stdout, &evidence));
     try std.testing.expectEqual(@as(usize, 4096), evidence.stderr.len);
     try std.testing.expectEqual(@as(usize, 0), stdout.len);
+}
+
+test "duplicate installed candidates run only one read-only probe" {
+    var fixture = try TestFixture.init();
+    defer fixture.deinit();
+    try fixture.release("7");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var candidates: Candidates = .{ .gpa = arena.allocator() };
+    try candidates.add(fixture.cli);
+    try candidates.add(fixture.cli);
+    var stopping = std.atomic.Value(bool).init(false);
+    try std.testing.expectEqual(@as(?[]u8, null), try selectCompatible(std.testing.allocator, std.testing.io, candidates.paths.items, &stopping));
+    const calls = try fixture.tmp.dir.readFileAlloc(std.testing.io, "calls", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(calls);
+    try std.testing.expectEqualStrings("runtime-info\n--json\n", calls);
 }

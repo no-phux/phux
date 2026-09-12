@@ -395,17 +395,23 @@ const TestEngine = struct {
         }
     };
     const Model = struct {
+        const Workspace = struct { window_id: u64 };
         provider: struct { io: std.Io = std.testing.io } = .{},
         config: Config = .{},
         config_file: ConfigFile,
         active_window: usize = 0,
-        window_epochs: [1]u64 = .{1},
-        workspace: struct { window_id: u64 = 77 } = .{},
+        window_epochs: [2]u64 = .{ 1, 1 },
+        workspace: Workspace = .{ .window_id = 77 },
+        second_workspace: Workspace = .{ .window_id = 88 },
         pub fn windowOpen(_: *@This(), index: usize) bool {
-            return index == 0;
+            return index < 2;
         }
         pub fn wsAt(self: *@This(), index: usize) ?@TypeOf(&self.workspace) {
-            return if (index == 0) &self.workspace else null;
+            return switch (index) {
+                0 => &self.workspace,
+                1 => &self.second_workspace,
+                else => null,
+            };
         }
     };
     model: *Model,
@@ -474,4 +480,30 @@ test "native edit request refuses dirty preview before file creation and correla
     const stale = try handle(&state, &engine, {}, false, &request, &output);
     try std.testing.expectEqual(@intFromEnum(Phase.failed), stale[1]);
     try std.testing.expectEqual(@as(usize, 1), engine.calls);
+}
+
+test "setup capture survives focus change and cannot be replayed" {
+    var model: TestEngine.Model = .{ .config_file = .{ .value = "/fixture/config" } };
+    var engine: TestEngine = .{ .model = &model };
+    var state: State = .{};
+    defer state.deinit();
+    const first = try state.capture(&model);
+    model.active_window = 1;
+    const second = try state.capture(&model);
+    try std.testing.expect(first != second);
+    var request = [_]u8{ 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 4, 'h', 'o', 's', 't', 0 };
+    std.mem.writeInt(u64, request[2..10], first, .little);
+    var output: [max_bytes]u8 = undefined;
+    const queued = try handle(&state, &engine, {}, false, &request, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.queued), queued[1]);
+    try std.testing.expectEqual(@as(u64, 77), engine.window);
+    try std.testing.expectEqualStrings("/fixture/phux", engine.executable[0..engine.executable_len]);
+    const replayed = try handle(&state, &engine, {}, false, &request, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.failed), replayed[1]);
+    try std.testing.expectEqual(@as(usize, 1), engine.calls);
+    std.mem.writeInt(u64, request[2..10], second, .little);
+    const other = try handle(&state, &engine, {}, false, &request, &output);
+    try std.testing.expectEqual(@intFromEnum(Phase.queued), other[1]);
+    try std.testing.expectEqual(@as(u64, 88), engine.window);
+    try std.testing.expectEqual(@as(usize, 2), engine.calls);
 }
