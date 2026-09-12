@@ -3,6 +3,7 @@
 //! exercise replacement, failure, and dispatch without starting a live app.
 const std = @import("std");
 pub const bindings = @import("config/keybindings.zig");
+pub const replay = @import("keybindings_replay.zig");
 
 pub fn State(comptime Platform: type) type {
     return struct {
