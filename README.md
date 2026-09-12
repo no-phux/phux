@@ -140,12 +140,11 @@ phux logs     # names every log file phux writes; tails any of them
 
 ## Status
 
-phux is pre-alpha. Cockpit ships. AgentSession exists in this tree
-(`phux agent session open|close`, `phux agent emit`, `phux agent log`); older
-brew and curl releases may not advertise it — `phux status --json` is the
-check. Federation is real and limited: hub-and-spoke, selectors `host/@N`,
-no merged remote session or window model. The gap table is in
-[Concepts](./docs/CONCEPTS.md#status).
+Cockpit ships. AgentSession exists in this tree (`phux agent session
+open|close`, `phux agent emit`, `phux agent log`); older brew and curl
+releases may not advertise it — `phux status --json` is the check.
+Federation is real and limited: hub-and-spoke, selectors `host/@N`, no
+merged remote session or window model. Gaps: [Concepts](./docs/CONCEPTS.md#status).
 
 ## Learn more
 

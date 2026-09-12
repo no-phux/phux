@@ -100,7 +100,7 @@ Selectors, input, wait, watch, and agent sessions:
 
 ## Know the edges
 
-phux is pre-alpha; the gap list is in [`CONCEPTS.md`](./CONCEPTS.md#status).
+Gaps: [`CONCEPTS.md`](./CONCEPTS.md#status).
 
 ## When something misbehaves
 

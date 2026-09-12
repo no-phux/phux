@@ -411,15 +411,15 @@ scope.
   superlatives ("killer feature," "centerpiece," "blazing,"
   "revolutionary"). No curt one-word fragments standing in for an
   argument. No "load-bearing" as a filler intensifier.
-- **No hype absolutes about a pre-alpha system** ("cannot degrade,"
-  "phux will not," "tmux structurally cannot"). Argue the architecture,
-  not the slogan; don't repeat coined taglines verbatim.
+- **No hype absolutes** ("cannot degrade," "phux will not," "tmux
+  structurally cannot"). Argue the architecture, not the slogan; don't
+  repeat coined taglines verbatim.
 
 ### Honest maturity
 
-- **phux is pre-alpha and spec-first.** State what works *today* versus
-  what is a direction. Never write unbuilt behavior in present tense in a
-  `stable` doc.
+- **State what works today versus a gap.** Never write unbuilt behavior
+  in present tense in a `stable` doc. Don't decorate every page with a
+  maturity apology. CONCEPTS owns the Status table; other docs link it.
 - **Divergence honesty.** When the code and the target shape disagree,
   state the current code reality in prose and list every target-versus-
   shipped gap in the doc's single `Status` table: one table per doc, the

@@ -83,8 +83,7 @@ failures. The selector helpers are synchronous and operate on
 caller-provided snapshots. These are workspace-internal Rust APIs, not a
 compatibility facade. Use the [CLI agent surface](./agents.md) or
 [MCP adapter](./mcp.md) outside the workspace. Their `ScreenState`,
-`RunResult`, and `WaitOutcome` JSON shapes are versioned, though still
-pre-1.0.
+`RunResult`, and `WaitOutcome` JSON shapes are versioned.
 
 ## Where to read
 

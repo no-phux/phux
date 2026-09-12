@@ -6,7 +6,7 @@ last-reviewed: 2026-09-12
 
 # How phux works
 
-**TL;DR.** phux is a terminal multiplexer. Your shells live in a background server. You split them into panes, detach, and they keep running. Each pane is a live terminal object on a wire, so the TUI, Cockpit, a script, or an agent attach to the same one. Nobody screen-scrapes. Nobody holds a second copy. phux is pre-alpha.
+**TL;DR.** phux is a terminal multiplexer. Your shells live in a background server. You split them into panes, detach, and they keep running. Each pane is a live terminal object on a wire, so the TUI, Cockpit, a script, or an agent attach to the same one. Nobody screen-scrapes. Nobody holds a second copy.
 
 ---
 
@@ -81,7 +81,7 @@ A consumer that wants structured state carries the engine for the kinds it shows
 
 ## Maturity
 
-phux is pre-alpha and spec-first. The protocol is 0.9.0, pinned in `phux-protocol` and mirrored by [`spec/`](./spec/README.md); a CI gate keeps the two in sync.
+The protocol is 0.9.0, pinned in `phux-protocol` and mirrored by [`spec/`](./spec/README.md); a CI gate keeps the two in sync. Spec leads the code.
 
 This checkout serves both resource kinds. Confirm with `phux status --json`: a server that advertises `RESOURCE_KINDS` has AgentSession. Older brew or curl releases may not.
 
