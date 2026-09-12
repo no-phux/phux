@@ -7,6 +7,7 @@ const support = @import("../phux_support.zig");
 const model_module = @import("../model.zig");
 const pointer = @import("../pointer_input.zig");
 const selection = @import("../update.zig").remote_selection;
+const interaction = @import("../terminal_interaction.zig");
 const Model = model_module.Model;
 const Raw = sdk.platform.GpuSurfaceInputEvent;
 const Point = sdk.geometry.PointF;
@@ -61,7 +62,8 @@ pub const State = struct {
         }
         const ref = pointer.terminalRefAtPoint(model, raw.x, raw.y) orelse return null;
         if (contract.isLocal(ref)) return null;
-        const owner = model.terminalOwner(ref) orelse return false;
+        const state = model.remoteUi(ref) orelse return false;
+        const owner = state.owner;
         if (!ready(model, owner)) return false;
         const frame = pointer.paneFrameForTerminal(model, ref) orelse return false;
         return self.uncaptured(model, raw, owner, frame, clicks);
@@ -77,9 +79,9 @@ pub const State = struct {
     }
 
     fn wheelTarget(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
-        const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+        const remote = model.phuxForOwner(owner) orelse return false;
         const mode = if (raw.modifiers.shift) .off else remote.mouseMode(owner) catch return false;
-        const state = model.remoteUi(owner.terminal_ref) orelse return false;
+        const state = interaction.stateForOwner(model, owner) orelse return false;
         const same_owner = if (self.wheel_owner) |previous| previous.eql(owner) else false;
         if (!same_owner or mode != self.wheel_mode) {
             state.wheel_accum = 0;
@@ -127,7 +129,7 @@ pub const State = struct {
             .reporting = tracking,
             .point = point,
             .cell = cell,
-            .gesture_handle = if (model.remoteUi(owner.terminal_ref)) |state| state.gesture_handle else 0,
+            .gesture_handle = if (interaction.stateForOwner(model, owner)) |state| state.gesture_handle else 0,
             .modifiers = modifiers(raw),
         };
         return true;
@@ -192,18 +194,24 @@ pub const State = struct {
 
 fn ready(model: *const Model, owner: Owner) bool {
     if (!model.ownerIsCurrent(owner)) return false;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     return presentation.phase == .live;
 }
 
 fn captureCurrent(model: *const Model, capture: Capture) bool {
     if (!model.focused or !ready(model, capture.owner)) return false;
     if (model.active_window != capture.window_index) return false;
-    const tree = model.selectedTreeConst() orelse return false;
-    if (tree.find(capture.owner.terminal_ref) == null) return false;
+    if (!ownerInSelectedTree(model, capture.owner)) return false;
     if (capture.reporting) return true;
-    const state = model.remoteUiConst(capture.owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwnerConst(model, capture.owner) orelse return false;
     return state.gesture_handle != 0 and state.gesture_handle == capture.gesture_handle;
+}
+
+fn ownerInSelectedTree(model: *const Model, owner: Owner) bool {
+    const tree = model.selectedTreeConst() orelse return false;
+    if (tree.find(owner.terminal_ref) == null) return false;
+    const visible_owner = model.terminalOwner(owner.terminal_ref) orelse return false;
+    return visible_owner.eql(owner);
 }
 
 fn retireSelection(model: *Model, owner: Owner) void {
@@ -223,7 +231,7 @@ fn autoscrollDirection(model: *const Model, capture: Capture) i64 {
 fn scrollSelection(model: *Model, capture: Capture) void {
     const direction = autoscrollDirection(model, capture);
     if (direction == 0) return;
-    const remote = model.phuxForRef(capture.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(capture.owner) orelse return;
     remote.scrollViewport(capture.owner, .{ .kind = .delta, .value = direction }) catch return;
     const frame = pointer.paneFrameForTerminal(model, capture.owner.terminal_ref) orelse return;
     const cell = coordinate(model, capture.owner, capture.point, frame) orelse return;
@@ -241,7 +249,7 @@ fn buttonFor(button: i32) contract.MouseButton {
 
 fn coordinate(model: *const Model, owner: Owner, point: Point, frame: Rect) ?contract.DocumentPoint {
     if (!validGeometry(point, frame)) return null;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return null;
     if (presentation.cols == 0 or presentation.rows == 0) return null;
     const measured = presentation.measured_cell orelse return null;
     if (!validCellExtent(measured.width) or !validCellExtent(measured.height)) return null;
@@ -268,7 +276,7 @@ fn cellAt(value: f32, extent: f32, cells: u16) u16 {
 }
 
 fn tracksMouse(model: *Model, owner: Owner) bool {
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     return remote.mouseTracking(owner) catch false;
 }
 
@@ -279,7 +287,7 @@ fn report(model: *Model, owner: Owner, action: contract.MouseAction, button: con
 
 fn sendCell(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, cell: contract.DocumentPoint) bool {
     if (!ready(model, owner)) return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     const mode = remote.mouseMode(owner) catch return false;
     if (!reportsAction(mode, action, button)) return false;
     remote.sendMouse(owner, &.{ .action = action, .button = button, .modifiers = mods, .x = @floatFromInt(cell.column), .y = @floatFromInt(cell.row) }) catch return false;
@@ -311,26 +319,26 @@ fn reportPress(model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
 }
 
 fn clearSelection(model: *Model, owner: Owner) void {
-    const state = model.remoteUi(owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, owner) orelse return;
     selection.clear(model, state);
 }
 
 fn beginSelection(model: *Model, owner: Owner, cell: contract.DocumentPoint, clicks: u8, point: Point, frame: Rect) bool {
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     selection.clear(model, state);
     return applyGesture(model, owner, .press, clicks, cell, point, frame);
 }
 
 fn dragSelection(model: *Model, capture: Capture, cell: contract.DocumentPoint, point: Point, frame: Rect) void {
-    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, capture.owner) orelse return;
     if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
     _ = applyGesture(model, capture.owner, .drag, 1, cell, point, frame);
 }
 
 fn finishSelection(model: *Model, capture: Capture) void {
-    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, capture.owner) orelse return;
     if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
-    const remote = model.phuxForRef(capture.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(capture.owner) orelse return;
     _ = remote.selectionGesture(capture.owner, .{
         .phase = .release,
         .handle = capture.gesture_handle,
@@ -345,9 +353,9 @@ fn finishSelection(model: *Model, capture: Capture) void {
 }
 
 fn applyGesture(model: *Model, owner: Owner, gesture_phase: @FieldType(contract.SelectionGesture, "phase"), clicks: u8, cell: contract.DocumentPoint, point: Point, frame: Rect) bool {
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     const measured = presentation.measured_cell orelse return false;
     const result = remote.selectionGesture(owner, .{
         .phase = gesture_phase,
@@ -377,11 +385,11 @@ fn applyGesture(model: *Model, owner: Owner, gesture_phase: @FieldType(contract.
 fn wheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, reporting: bool) bool {
     if (!validWheelDelta(raw)) return false;
     const quantum = wheelQuantum(model, owner, frame) orelse return false;
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     const rows = wheelRows(&state.wheel_accum, raw.delta_y, quantum);
     if (reporting) return horizontalWheel(model, raw, owner, frame, rows);
     if (rows == 0) return true;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     remote.scrollViewport(owner, .{ .kind = .delta, .value = -rows }) catch return false;
     return true;
 }
@@ -392,16 +400,16 @@ fn validWheelDelta(raw: Raw) bool {
 }
 
 fn horizontalWheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, rows: i64) bool {
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     const measured = presentation.measured_cell orelse return false;
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     const columns = wheelRows(&state.wheel_accum_x, raw.delta_x, measured.width);
     return reportWheel(model, raw, owner, frame, rows, columns);
 }
 
 fn wheelQuantum(model: *const Model, owner: Owner, frame: Rect) ?f32 {
     _ = frame;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return null;
     if (presentation.rows == 0) return null;
     const quantum = (presentation.measured_cell orelse return null).height;
     if (!std.math.isFinite(quantum) or quantum <= 0) return null;
@@ -434,7 +442,7 @@ pub fn pasteDrop(model: *Model, terminal: contract.TerminalRef, text: []const u8
     if (comptime !support.phux_enabled) return false;
     const owner = model.terminalOwner(terminal) orelse return false;
     if (!ready(model, owner)) return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     remote.sendPaste(owner, text, false) catch return false;
     if (model.selectedTree()) |tree| _ = tree.focusTerminal(terminal);
     return true;

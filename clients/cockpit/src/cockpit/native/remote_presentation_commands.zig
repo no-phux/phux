@@ -45,8 +45,8 @@ pub const Search = struct {
 /// generation publication follows BOOTSTRAP_READY, including resize bootstraps
 /// that do not repeat the connection's ATTACH_READY barrier.
 pub fn resumeReady(model: *Model) void {
-    for (model.remoteTerminalRefs()) |ref| {
-        const state = model.remoteUi(ref) orelse continue;
+    for (&model.remote_ui) |*state| {
+        if (state.terminal_ref == null) continue;
         if (!state.search.refresh_pending) continue;
         if (!model.ownerIsCurrent(state.owner)) continue;
         state.search.refresh_pending = false;
@@ -59,8 +59,8 @@ pub fn command(model: *Model, ref: contract.TerminalRef, value: Command) bool {
     const state = model.remoteUi(ref) orelse return false;
     if (!model.ownerIsCurrent(state.owner)) return false;
     switch (value) {
-        .find => return open(model, ref, state),
-        .select_all => return selectAll(model, ref, state),
+        .find => return open(model, state),
+        .select_all => return selectAll(model, state),
         .find_next, .find_previous => return refresh(model, state, if (value == .find_next) .older else .newer),
         .clear => return clear(model, state),
         else => return false,
@@ -68,7 +68,7 @@ pub fn command(model: *Model, ref: contract.TerminalRef, value: Command) bool {
 }
 
 fn clear(model: *Model, state: *State) bool {
-    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(state.owner) orelse return false;
     remote.clearPresentation(state.owner) catch return false;
     state.selecting = false;
     state.start_anchor = 0;
@@ -84,9 +84,9 @@ fn clear(model: *Model, state: *State) bool {
     return true;
 }
 
-fn open(model: *Model, ref: contract.TerminalRef, state: *State) bool {
+fn open(model: *Model, state: *State) bool {
     if (state.search.open) return true;
-    const view = model.remotePresentation(ref) orelse return false;
+    const view = interaction.presentationForOwner(model, state.owner) orelse return false;
     state.search.restore_bottom = view.history_viewport_offset + view.history_visible_rows >= view.history_total_rows;
     state.search.restore_row = view.history_viewport_offset;
     selection.clear(model, state);
@@ -94,12 +94,12 @@ fn open(model: *Model, ref: contract.TerminalRef, state: *State) bool {
     return true;
 }
 
-fn selectAll(model: *Model, ref: contract.TerminalRef, state: *State) bool {
-    const view = model.remotePresentation(ref) orelse return false;
+fn selectAll(model: *Model, state: *State) bool {
+    const view = interaction.presentationForOwner(model, state.owner) orelse return false;
     const total = view.history_total_rows;
     const cols = view.cols;
     if (total == 0 or cols == 0 or total > std.math.maxInt(u32)) return false;
-    const remote = model.phuxForRef(ref) orelse return false;
+    const remote = model.phuxForOwner(state.owner) orelse return false;
     const start = remote.createAnchor(state.owner, .{ .space = .history, .row = 0, .column = 0 }) catch return false;
     const end = remote.createAnchor(state.owner, .{ .space = .history, .row = @intCast(total - 1), .column = cols - 1 }) catch {
         remote.releaseAnchor(state.owner, start);
@@ -119,7 +119,7 @@ fn selectAll(model: *Model, ref: contract.TerminalRef, state: *State) bool {
 
 pub fn close(model: *Model, state: *State) void {
     if (comptime !support.phux_enabled) return;
-    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     remote.clearSearchResults(state.owner);
     selection.clear(model, state);
     if (state.search.restore_bottom) {
@@ -136,7 +136,7 @@ pub fn close(model: *Model, state: *State) void {
 fn refresh(model: *Model, state: *State, step: Step) bool {
     if (comptime !support.phux_enabled) return false;
     if (!state.search.open) return false;
-    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(state.owner) orelse return false;
     state.search.failed = false;
     selection.clear(model, state);
     if (state.search.needle_len == 0) {
@@ -185,6 +185,10 @@ pub fn prepareCopy(model: *Model, state: *State) bool {
 
 pub fn input(model: *Model, ref: contract.TerminalRef, text: []const u8) bool {
     const state = model.remoteUi(ref) orelse return false;
+    return inputState(model, state, text);
+}
+
+fn inputState(model: *Model, state: *State, text: []const u8) bool {
     if (!state.search.open or text.len == 0) return false;
     if (!std.unicode.utf8ValidateSlice(text)) return false;
     for (text) |byte| if (byte < 0x20 or byte == 0x7f) return false;
@@ -196,10 +200,20 @@ pub fn input(model: *Model, ref: contract.TerminalRef, text: []const u8) bool {
 
 pub fn paste(model: *Model, ref: contract.TerminalRef, text: []const u8) bool {
     const state = model.remoteUi(ref) orelse return false;
+    return pasteState(model, state, text);
+}
+
+pub fn pasteForOwner(model: *Model, owner: contract.ReplicaOwner, text: []const u8) bool {
+    if (!model.ownerIsCurrent(owner)) return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
+    return pasteState(model, state, text);
+}
+
+fn pasteState(model: *Model, state: *State, text: []const u8) bool {
     if (!state.search.open) return false;
     var filtered: [@import("../../terminal/session.zig").max_search_needle_bytes]u8 = undefined;
     const len = pasteLine(text, filtered[0 .. filtered.len - state.search.needle_len]);
-    return input(model, ref, filtered[0..len]);
+    return inputState(model, state, filtered[0..len]);
 }
 
 fn pasteLine(text: []const u8, filtered: []u8) usize {
@@ -241,4 +255,152 @@ fn editKey(model: *Model, state: *State, event: native_sdk.canvas.WidgetKeyboard
     while (end > 0 and state.search.needle_buf[end] & 0xc0 == 0x80) end -= 1;
     state.search.needle_len = end;
     _ = refresh(model, state, .newest);
+}
+
+const SourceFixture = struct {
+    engine: *@import("ts_engine.zig").Engine,
+    a: *support.PhuxProvider,
+    b: *support.PhuxProvider,
+    owner_a: contract.ReplicaOwner,
+    owner_b: contract.ReplicaOwner,
+
+    fn init() !SourceFixture {
+        if (comptime !support.phux_enabled) return error.SkipZigTest;
+        const engine = try @import("ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+        errdefer engine.destroy();
+        const endpoint: support.PhuxEndpoint = .{ .unix = "/source-consumer-fixture-unused" };
+        const a = try support.PhuxProvider.create(std.testing.allocator, std.testing.io, endpoint, null, "a");
+        engine.model.phux_provider = a;
+        try engine.model.ensurePeerSlots(1);
+        const b = try support.PhuxProvider.create(std.testing.allocator, std.testing.io, endpoint, null, "b");
+        engine.model.peers.items[0].provider = b;
+        try support.PhuxProvider.test_support.attachHost(a.host);
+        try support.PhuxProvider.test_support.attachHost(b.host);
+        var refs: [contract.workspace.max_replicas]contract.TerminalRef = undefined;
+        try std.testing.expect(a.terminalRefs(&refs) > 0);
+        const owner_a = a.owner(refs[0]).?;
+        const owner_b = b.owner(refs[0]).?;
+        try std.testing.expect(owner_a.terminal_ref.eql(owner_b.terminal_ref));
+        try std.testing.expect(owner_a.generation.sameReplica(owner_b.generation));
+        try std.testing.expect(owner_a.source_context != owner_b.source_context);
+        return .{ .engine = engine, .a = a, .b = b, .owner_a = owner_a, .owner_b = owner_b };
+    }
+
+    fn select(remote: *support.PhuxProvider, owner: contract.ReplicaOwner) !State {
+        const start = try remote.createAnchor(owner, .{ .space = .viewport, .row = 0, .column = 0 });
+        const end = try remote.createAnchor(owner, .{ .space = .viewport, .row = 0, .column = 4 });
+        try remote.setSelection(owner, start, end, false);
+        const text = try remote.selectionText(owner, std.testing.allocator);
+        defer std.testing.allocator.free(text);
+        try std.testing.expect(text.len != 0);
+        return .{ .owner = owner, .selecting = true, .start_anchor = start.opaque_id, .end_anchor = end.opaque_id };
+    }
+
+    fn expectSelection(remote: *support.PhuxProvider, owner: contract.ReplicaOwner, present: bool) !void {
+        try std.testing.expect(remote.ownerIsCurrent(owner));
+        try std.testing.expectEqual(present, remote.presentation(owner.terminal_ref).?.grid.selection_active);
+        const text = remote.selectionText(owner, std.testing.allocator) catch |err| switch (err) {
+            // FFI selection_text reports InvalidState for no active selection.
+            // Prove the owner is still live and the published range is absent
+            // above, so a stale-owner rejection cannot satisfy this assertion.
+            error.InvalidState => return std.testing.expect(!present),
+            else => return err,
+        };
+        defer std.testing.allocator.free(text);
+        try std.testing.expectEqual(present, text.len != 0);
+    }
+
+    fn seedUi(self: SourceFixture) void {
+        self.engine.model.remote_ui[0] = .{ .terminal_ref = self.owner_a.terminal_ref, .owner = self.owner_a, .selecting = true };
+        self.engine.model.remote_ui[1] = .{ .terminal_ref = self.owner_b.terminal_ref, .owner = self.owner_b, .selecting = true };
+        self.a.bridge.outgoing.reset();
+        self.b.bridge.outgoing.reset();
+    }
+
+    fn queuedBytes(remote: *support.PhuxProvider) usize {
+        var bytes: usize = 0;
+        while (remote.bridge.outgoing.take()) |frame| {
+            bytes += frame.len;
+            remote.bridge.outgoing.release(frame);
+        }
+        return bytes;
+    }
+};
+
+test "clear presentation resolves the captured client when endpoint ref and generation collide" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    _ = try SourceFixture.select(fixture.a, fixture.owner_a);
+    var state = try SourceFixture.select(fixture.b, fixture.owner_b);
+    try std.testing.expect(clear(fixture.engine.model, &state));
+    try SourceFixture.expectSelection(fixture.a, fixture.owner_a, true);
+    try SourceFixture.expectSelection(fixture.b, fixture.owner_b, false);
+}
+
+test "selection release resolves the captured client and leaves sibling selection intact" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    _ = try SourceFixture.select(fixture.a, fixture.owner_a);
+    var state = try SourceFixture.select(fixture.b, fixture.owner_b);
+    selection.clear(fixture.engine.model, &state);
+    try SourceFixture.expectSelection(fixture.b, fixture.owner_b, false);
+    try SourceFixture.expectSelection(fixture.a, fixture.owner_a, true);
+}
+
+test "clipboard completion keeps its captured source for text and UI state" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    fixture.seedUi();
+    const model = fixture.engine.model;
+    model.copy_owner = fixture.owner_b;
+    model.copy_inflight = true;
+    interaction.copied(model, true);
+    try std.testing.expect(model.remote_ui[0].selecting);
+    try std.testing.expect(!model.remote_ui[1].selecting);
+    model.paste_owner = fixture.owner_b;
+    model.paste_inflight = true;
+    const fx = @import("ts_engine.zig").NoShells{};
+    interaction.pasted(model, &fx, true, "captured-b");
+    try std.testing.expect(!model.paste_failed);
+    try std.testing.expectEqual(@as(usize, 0), SourceFixture.queuedBytes(fixture.a));
+    try std.testing.expect(SourceFixture.queuedBytes(fixture.b) > 0);
+}
+
+test "search clipboard completion changes only the captured source query" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    fixture.seedUi();
+    const model = fixture.engine.model;
+    model.remote_ui[0].search = .{ .open = true, .paste_pending = true };
+    model.remote_ui[1].search = .{ .open = true, .paste_pending = true };
+    model.paste_owner = fixture.owner_b;
+    model.paste_target = .search_needle;
+    model.paste_inflight = true;
+    const fx = @import("ts_engine.zig").NoShells{};
+    interaction.pasted(model, &fx, true, "hello");
+    try std.testing.expectEqualStrings("", model.remote_ui[0].search.needle());
+    try std.testing.expect(model.remote_ui[0].search.paste_pending);
+    try std.testing.expectEqualStrings("hello", model.remote_ui[1].search.needle());
+    try std.testing.expect(!model.remote_ui[1].search.paste_pending);
+    try std.testing.expect(!model.remote_ui[1].search.failed);
+}
+
+test "retired clipboard source never falls back to the matching live client" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    fixture.seedUi();
+    const model = fixture.engine.model;
+    model.paste_owner = fixture.owner_b;
+    model.paste_inflight = true;
+    model.peers.items[0].provider = null;
+    defer model.peers.items[0].provider = fixture.b;
+    const fx = @import("ts_engine.zig").NoShells{};
+    interaction.pasted(model, &fx, true, "must-not-send");
+    try std.testing.expectEqual(@as(usize, 0), SourceFixture.queuedBytes(fixture.a));
+    try std.testing.expectEqual(@as(usize, 0), SourceFixture.queuedBytes(fixture.b));
 }

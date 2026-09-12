@@ -13,11 +13,31 @@ const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
 const Event = native_sdk.canvas.WidgetKeyboardEvent;
 
+/// Captured work must not reacquire UI state through the currently focused
+/// attachment when another client presents the same terminal reference.
+pub fn stateForOwner(model: *Model, owner: contract.ReplicaOwner) ?*model_module.RemoteUiState {
+    return @constCast(stateForOwnerConst(model, owner));
+}
+
+pub fn stateForOwnerConst(model: *const Model, owner: contract.ReplicaOwner) ?*const model_module.RemoteUiState {
+    for (&model.remote_ui) |*state| {
+        if (state.terminal_ref == null) continue;
+        if (state.owner.eql(owner)) return state;
+    }
+    return null;
+}
+
+pub fn presentationForOwner(model: *const Model, owner: contract.ReplicaOwner) ?contract.Presentation {
+    const remote = model.phuxForOwnerConst(owner) orelse return null;
+    if (!remote.ownerIsCurrent(owner)) return null;
+    return remote.presentation(owner.terminal_ref);
+}
+
 pub fn copy(model: *Model, fx: anytype, ref: TerminalRef) void {
     if (model.copy_inflight) return;
     const owner = model.terminalOwner(ref) orelse return;
     const text = selectionText(model, ref) catch {
-        copyFailed(model, ref);
+        copyFailed(model, owner);
         return;
     };
     defer std.heap.page_allocator.free(text);
@@ -37,7 +57,7 @@ fn selectionText(model: *Model, ref: TerminalRef) ![]u8 {
         return std.heap.page_allocator.dupe(u8, result);
     }
     const state = model.remoteUi(ref) orelse return error.NoSelection;
-    const remote = model.phuxForRef(ref) orelse return error.NoProvider;
+    const remote = model.phuxForOwner(state.owner) orelse return error.NoProvider;
     state.copy_failed = false;
     const text = try remoteSelectionText(model, remote, state);
     state.copied_bytes = text.len;
@@ -58,13 +78,13 @@ fn recoverSearchSelection(model: *Model, remote: *@import("phux_support.zig").Ph
     return remote.selectionText(state.owner, std.heap.page_allocator);
 }
 
-fn copyFailed(model: *Model, ref: TerminalRef) void {
-    if (model.provider.terminal(ref)) |pane| {
+fn copyFailed(model: *Model, owner: contract.ReplicaOwner) void {
+    if (model.provider.terminal(owner.terminal_ref)) |pane| {
         pane.copy_failed = true;
         pane.copied_bytes = 0;
         return;
     }
-    const state = model.remoteUi(ref) orelse return;
+    const state = stateForOwner(model, owner) orelse return;
     state.copy_failed = true;
     state.copied_bytes = 0;
 }
@@ -74,12 +94,12 @@ pub fn copied(model: *Model, ok: bool) void {
     model.copy_inflight = false;
     if (!model.ownerIsCurrent(model.copy_owner)) return;
     const ref = model.copy_owner.terminal_ref;
-    if (!ok) return copyFailed(model, ref);
+    if (!ok) return copyFailed(model, model.copy_owner);
     if (model.provider.terminal(ref)) |pane| {
         pane.selecting = false;
         return;
     }
-    const state = model.remoteUi(ref) orelse return;
+    const state = stateForOwner(model, model.copy_owner) orelse return;
     state.selecting = false;
 }
 
@@ -125,7 +145,7 @@ pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
         pasteLocal(model, pane, fx, text);
         return;
     }
-    const remote = model.phuxForRef(model.paste_owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(model.paste_owner) orelse return;
     if (model.paste_target == .search_needle) {
         pasteRemoteSearch(model, text);
         return;
@@ -136,11 +156,11 @@ pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
 }
 
 fn pasteRemoteSearch(model: *Model, text: []const u8) void {
-    const state = model.remoteUi(model.paste_owner.terminal_ref) orelse return;
+    const state = stateForOwner(model, model.paste_owner) orelse return;
     const pending = state.search.paste_pending;
     state.search.paste_pending = false;
     if (!pending) return;
-    model.paste_failed = !remote_commands.paste(model, model.paste_owner.terminal_ref, text);
+    model.paste_failed = !remote_commands.pasteForOwner(model, model.paste_owner, text);
 }
 
 fn pasteLocal(model: *Model, pane: *local.Pane, fx: anytype, text: []const u8) void {
@@ -162,9 +182,10 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
     }
     // Each coordinator's terminal is sized on its own server, only once a
     // pane shows it and it is live.
-    const remote = model.phuxForRef(ref) orelse return;
+    const owner = model.terminalOwner(ref) orelse return;
+    const remote = model.phuxForOwner(owner) orelse return;
     if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
-    const presentation = model.remotePresentation(ref) orelse return;
+    const presentation = presentationForOwner(model, owner) orelse return;
     if (presentation.phase != .live) return;
     remote.viewportResize(ref, viewport) catch {};
 }
@@ -186,7 +207,7 @@ pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
         return;
     }
     if (state.selecting) return;
-    const remote = model.phuxForRef(ref) orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     update.remote_selection.clear(model, state);
     remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch return;
     remote.sendKey(state.owner, &.{
@@ -209,8 +230,12 @@ pub fn modifiers(event: Event) contract.ModifierMask {
 }
 
 pub fn remoteKey(model: *Model, ref: TerminalRef, event: Event) void {
-    const remote = model.phuxForRef(ref) orelse return;
     const owner = model.terminalOwner(ref) orelse return;
+    remoteKeyForOwner(model, owner, event);
+}
+
+fn remoteKeyForOwner(model: *Model, owner: contract.ReplicaOwner, event: Event) void {
+    const remote = model.phuxForOwner(owner) orelse return;
     const input = runtime.providerKey(event) orelse return;
     remote.sendKey(owner, &input) catch {};
 }
@@ -228,7 +253,7 @@ pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
         runtime.encodeKeyEvent(pane, fx, event, .release);
         return;
     }
-    remoteKey(model, owner.terminal_ref, event);
+    remoteKeyForOwner(model, owner, event);
 }
 
 pub fn rememberKey(model: *Model, ref: TerminalRef, event: Event) void {
