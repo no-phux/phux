@@ -257,6 +257,8 @@ fn editKey(model: *Model, state: *State, event: native_sdk.canvas.WidgetKeyboard
     _ = refresh(model, state, .newest);
 }
 
+pub const test_support = SourceFixture;
+
 const SourceFixture = struct {
     engine: *@import("ts_engine.zig").Engine,
     a: *support.PhuxProvider,
@@ -264,7 +266,7 @@ const SourceFixture = struct {
     owner_a: contract.ReplicaOwner,
     owner_b: contract.ReplicaOwner,
 
-    fn init() !SourceFixture {
+    pub fn init() !SourceFixture {
         if (comptime !support.phux_enabled) return error.SkipZigTest;
         const engine = try @import("ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
         errdefer engine.destroy();
@@ -310,7 +312,7 @@ const SourceFixture = struct {
         try std.testing.expectEqual(present, text.len != 0);
     }
 
-    fn seedUi(self: SourceFixture) void {
+    pub fn seedUi(self: SourceFixture) void {
         self.engine.model.remote_ui[0] = .{ .terminal_ref = self.owner_a.terminal_ref, .owner = self.owner_a, .selecting = true };
         self.engine.model.remote_ui[1] = .{ .terminal_ref = self.owner_b.terminal_ref, .owner = self.owner_b, .selecting = true };
         self.a.bridge.outgoing.reset();

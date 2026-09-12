@@ -16,6 +16,7 @@ const Owner = contract.ReplicaOwner;
 
 const Capture = struct {
     owner: Owner,
+    retired: bool = false,
     window_id: sdk.platform.WindowId,
     window_index: usize,
     pointer_id: u64,
@@ -55,10 +56,7 @@ pub const State = struct {
     pub fn route(self: *State, model: *Model, raw: Raw, clicks: u8) ?bool {
         if (comptime !support.phux_enabled) return null;
         if (self.captureIndex(raw)) |index| {
-            switch (raw.kind) {
-                .pointer_drag, .pointer_move, .pointer_up, .pointer_cancel => return self.tail(model, raw, index),
-                else => {},
-            }
+            if (self.routeCaptured(model, raw, index)) |handled| return handled;
         }
         const ref = pointer.terminalRefAtPoint(model, raw.x, raw.y) orelse return null;
         if (contract.isLocal(ref)) return null;
@@ -67,6 +65,15 @@ pub const State = struct {
         if (!ready(model, owner)) return false;
         const frame = pointer.paneFrameForTerminal(model, ref) orelse return false;
         return self.uncaptured(model, raw, owner, frame, clicks);
+    }
+
+    fn routeCaptured(self: *State, model: *Model, raw: Raw, index: usize) ?bool {
+        switch (raw.kind) {
+            .pointer_drag, .pointer_move, .pointer_up, .pointer_cancel => return self.tail(model, raw, index),
+            .pointer_down => self.finish(model, index),
+            else => {},
+        }
+        return null;
     }
 
     fn uncaptured(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect, clicks: u8) bool {
@@ -136,10 +143,14 @@ pub const State = struct {
     }
 
     fn tail(self: *State, model: *Model, raw: Raw, index: usize) bool {
+        if (raw.kind == .pointer_cancel) {
+            self.finish(model, index);
+            return true;
+        }
         defer if (raw.kind == .pointer_up) self.finish(model, index);
         const captured = self.captures[index].?;
-        if (!captureCurrent(model, captured) or raw.kind == .pointer_cancel) {
-            self.finish(model, index);
+        if (!captureCurrent(model, captured)) {
+            self.retire(model, index);
             return true;
         }
         const frame = pointer.paneFrameForTerminal(model, captured.owner.terminal_ref) orelse return true;
@@ -157,6 +168,19 @@ pub const State = struct {
     fn finish(self: *State, model: *Model, index: usize) void {
         const capture = self.captures[index] orelse return;
         self.captures[index] = null;
+        if (!capture.retired) releaseCapture(model, capture);
+    }
+
+    /// Release the old gesture once, but retain its pointer identity so later
+    /// motion cannot become an uncaptured event for a replacement attachment.
+    fn retire(self: *State, model: *Model, index: usize) void {
+        const capture = self.captures[index] orelse return;
+        if (capture.retired) return;
+        self.captures[index].?.retired = true;
+        releaseCapture(model, capture);
+    }
+
+    fn releaseCapture(model: *Model, capture: Capture) void {
         if (!ready(model, capture.owner)) {
             retireSelection(model, capture.owner);
             return;
@@ -184,7 +208,7 @@ pub const State = struct {
         for (self.captures, 0..) |slot, index| {
             const capture = slot orelse continue;
             if (!captureCurrent(model, capture)) {
-                self.finish(model, index);
+                self.retire(model, index);
                 continue;
             }
             scrollSelection(model, capture);
@@ -199,6 +223,7 @@ fn ready(model: *const Model, owner: Owner) bool {
 }
 
 fn captureCurrent(model: *const Model, capture: Capture) bool {
+    if (capture.retired) return false;
     if (!model.focused or !ready(model, capture.owner)) return false;
     if (model.active_window != capture.window_index) return false;
     if (!ownerInSelectedTree(model, capture.owner)) return false;
@@ -210,7 +235,8 @@ fn captureCurrent(model: *const Model, capture: Capture) bool {
 fn ownerInSelectedTree(model: *const Model, owner: Owner) bool {
     const tree = model.selectedTreeConst() orelse return false;
     if (tree.find(owner.terminal_ref) == null) return false;
-    const visible_owner = model.terminalOwner(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForTreeConst(tree) orelse return false;
+    const visible_owner = remote.owner(owner.terminal_ref) orelse return false;
     return visible_owner.eql(owner);
 }
 
@@ -524,4 +550,122 @@ pub fn dispatchLocal(model: *Model, fx: anytype, raw: Raw, clicks: u8) bool {
         .modifiers = .{ .shift = raw.modifiers.shift, .control = raw.modifiers.control, .alt = raw.modifiers.option, .super = raw.modifiers.command },
     });
     return true;
+}
+
+const SourceFixture = @import("remote_presentation_commands.zig").test_support;
+
+fn sourcePointerLayout(fixture: SourceFixture, both: bool) void {
+    const model = fixture.engine.model;
+    fixture.seedUi();
+    model.focused = true;
+    model.primary.web_selected = false;
+    model.primary.selected_tab = 0;
+    model.primary.surface_size = .{ .width = 1100, .height = 640 };
+    model.primary.tabs[0] = @import("../layout.zig").Tree.initLeaf(fixture.owner_a.terminal_ref);
+    model.primary.tabs[0].attachment_id = fixture.a.context_id;
+    model.primary.tabs[1] = @import("../layout.zig").Tree.initLeaf(fixture.owner_b.terminal_ref);
+    model.primary.tabs[1].attachment_id = fixture.b.context_id;
+    model.primary.tab_count = if (both) 2 else 1;
+}
+
+fn enableSourceMotion(remote: *support.PhuxProvider, owner: Owner) !void {
+    // RESOURCE_OUTPUT uses the same production-decoded TLVs as the shipping
+    // pointer fixtures: resource 7, stream 7, bootstrap 1, first output frame.
+    const text = "\x1b[?1003h\x1b[?1006h";
+    var storage: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+    try writer.writeAll(&.{ 0, 0, 0, 0, 0x90, 1, 4, 5, 0, 0, 0, 0, 7, 2, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    try writer.writeAll(&.{ 3, 4, text.len });
+    try writer.writeAll(text);
+    try writer.writeAll(&.{ 4, 4, 8 });
+    try writer.writeInt(u64, 7, .big);
+    try writer.writeAll(&.{ 5, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    const bytes = writer.buffered();
+    std.mem.writeInt(u32, bytes[0..4], @intCast(bytes.len - 4), .big);
+    try std.testing.expect(remote.bridge.incoming.stage(bytes));
+    _ = try remote.drainReadiness();
+    try std.testing.expectEqual(contract.MouseMode.any_motion, try remote.mouseMode(owner));
+    remote.host.recordMeasuredCell(owner, .{ .width = 8, .height = 16 });
+    remote.bridge.outgoing.reset();
+}
+
+fn sourcePointerEvent(model: *const Model, owner: Owner) !Raw {
+    const frame = pointer.paneFrameForTerminal(model, owner.terminal_ref) orelse return error.MissingFrame;
+    return .{ .window_id = 1, .label = "source-pointer", .kind = .pointer_down, .pointer_id = 7, .button = 0, .x = frame.x + 2, .y = frame.y + 2 };
+}
+
+test "shipping captured source uses selected tree when the global ref is ambiguous" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    sourcePointerLayout(fixture, true);
+    try enableSourceMotion(fixture.a, fixture.owner_a);
+    try enableSourceMotion(fixture.b, fixture.owner_b);
+    const model = fixture.engine.model;
+    try std.testing.expect(model.phuxForRef(fixture.owner_a.terminal_ref) == null);
+    try std.testing.expect(model.ownerIsCurrent(fixture.owner_a));
+    try std.testing.expect(model.ownerIsCurrent(fixture.owner_b));
+    var state: State = .{};
+    var raw = try sourcePointerEvent(model, fixture.owner_a);
+    const frame = pointer.paneFrameForTerminal(model, fixture.owner_a.terminal_ref).?;
+    try std.testing.expect(state.press(model, raw, fixture.owner_a, frame, 1));
+    try std.testing.expect(fixture.a.bridge.outgoing.hasPending());
+    fixture.a.bridge.outgoing.reset();
+    raw.kind = .pointer_drag;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0] != null);
+    try std.testing.expect(fixture.a.bridge.outgoing.hasPending());
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    state.cancelAll(model);
+}
+
+fn retiredSourceTail(autoscroll: bool, release_first: bool) !void {
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    sourcePointerLayout(fixture, false);
+    try enableSourceMotion(fixture.a, fixture.owner_a);
+    try enableSourceMotion(fixture.b, fixture.owner_b);
+    const model = fixture.engine.model;
+    var state: State = .{};
+    var raw = try sourcePointerEvent(model, fixture.owner_a);
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0] != null);
+    fixture.a.host.freezePublished();
+    model.primary.tabs[0] = model.primary.tabs[1];
+    fixture.a.bridge.outgoing.reset();
+    if (autoscroll) state.autoscroll(model);
+    raw.kind = .pointer_drag;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    raw.kind = .pointer_move;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    if (release_first) {
+        raw.kind = .pointer_up;
+        try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+        try std.testing.expect(state.captures[0] == null);
+    }
+    try std.testing.expect(!fixture.a.bridge.outgoing.hasPending());
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    raw.kind = .pointer_down;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0].?.owner.eql(fixture.owner_b));
+    try std.testing.expect(fixture.b.bridge.outgoing.hasPending());
+    state.cancelAll(model);
+}
+
+test "shipping retired source consumes multiple motion events and release before a fresh press" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(false, true);
+}
+
+test "shipping autoscroll retirement retains the source tombstone through release" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(true, true);
+}
+
+test "shipping fresh press can replace a retired source tombstone before its old release" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(false, false);
 }
