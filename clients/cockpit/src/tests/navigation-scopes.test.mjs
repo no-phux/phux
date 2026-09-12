@@ -159,7 +159,7 @@ test('scoped framing refuses truncation, malformed metadata and identity overflo
   assert.equal(encoded[marker], 0x4e);
   assert.equal(navigationPage(encoded.slice(0, marker)), null);
   for (let end = marker + 1; end < encoded.length; end++) assert.equal(navigationPage(encoded.slice(0, end)), null, `length ${end}`);
-  for (const [at, value] of [[marker + 1, 4], [marker + 2, 2], [marker + 3, 161]]) {
+  for (const [at, value] of [[marker + 1, 4], [marker + 2, 4], [marker + 3, 161]]) {
     const bad = encoded.slice(); bad[at] = value;
     assert.equal(navigationPage(bad), null);
   }
@@ -182,7 +182,7 @@ test('scoped framing refuses truncation, malformed metadata and identity overflo
   assert.equal(navigationScopedRequest(revision, 0, empty, 2, bytes('host')).length, 0);
   assert.equal(navigationScopedRequest(revision, 0, new Uint8Array(65), 0, empty).length, 0);
   assert.equal(navigationScopedRequest(revision, 65536, empty, 0, empty).length, 0);
-  assert.equal(navigationScopedRequest(revision, 0, empty, 4, empty).length, 0);
+  assert.equal(navigationScopedRequest(revision, 0, empty, 5, empty).length, 0);
   const noMatches = navigationPage(page(1, empty, 'absent', []));
   assert.equal(noMatches.scope, 1);
   assert.equal(noMatches.total, 0);

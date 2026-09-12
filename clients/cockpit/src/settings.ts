@@ -1,5 +1,5 @@
 import { asciiBytes } from "@native-sdk/core";
-import type { Appearance } from "./appearance";
+import type { Appearance } from "./appearance.ts";
 
 export interface Setting {
   readonly id: number;

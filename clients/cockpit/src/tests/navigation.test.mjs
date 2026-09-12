@@ -81,28 +81,28 @@ test('new terminal and reconnect use the native adopted window', () => {
   assert.equal(reconnect.payload[11], 255);
 });
 
-test('whole catalog is paged and selection echoes the captured opaque target', () => {
+test('transport pages accumulate into a scrollable catalog and preserve captured targets', () => {
   let model = open();
-  [model] = step(model, { kind: 'navigation_loaded', body: page('', 0, [257, 400, 600, 700]) });
-  assert.equal(model.paletteNext, true);
+  let request;
+  [model, request] = step(model, { kind: 'navigation_loaded', body: page('', 0, [257, 400, 600, 700]) });
+  assert.equal(model.paletteLoading, true);
   assert.equal(model.palettePrevious, false);
   const [closed, cmd] = step(model, { kind: 'palette_pick', target: model.paletteRows[1].target });
   assert.equal(closed.paletteOpen, false);
   assert.equal(committedCommand(cmd).name, 'cockpit.tab-command');
   assert.equal(committedCommand(cmd).payload[1], 2);
   assert.deepEqual(committedCommand(cmd).payload.subarray(10), target(400));
-  const [loading, request] = step(model, { kind: 'palette_next' });
-  assert.equal(loading.paletteRows.length, 0);
-  assert.equal(loading.paletteOffset, 4);
-  assert.equal(committedCommand(request).op, 'request');
-  assert.deepEqual(committedCommand(request).payload, navigationRequest(revision, 4, bytes('')));
-  [model] = step(loading, { kind: 'navigation_loaded', body: page('', 4, [800, 900, 1000, 1100]) });
-  assert.equal(model.palettePrevious, true);
-  assert.equal(model.paletteNext, true);
-  [model] = step(model, { kind: 'palette_next' });
+  assert.equal(model.paletteRows.length, 4);
+  assert.equal(model.paletteOffset, 4);
+  assert.equal(request.op, 'request');
+  assert.deepEqual(request.payload, navigationRequest(revision, 4, bytes('')));
+  [model] = step(model, { kind: 'navigation_loaded', body: page('', 4, [800, 900, 1000, 1100]) });
+  assert.equal(model.paletteRows.length, 8);
+  assert.equal(model.paletteOffset, 8);
   [model] = step(model, { kind: 'navigation_loaded', body: page('', 8, [2000, 3000]) });
   assert.equal(model.paletteNext, false);
-  assert.deepEqual(committedCommand(step(model, { kind: 'palette_pick', target: model.paletteRows[1].target })[1]).payload.subarray(10), target(3000));
+  assert.equal(model.paletteRows.length, 10);
+  assert.deepEqual(committedCommand(step(model, { kind: 'palette_pick', target: model.paletteRows[9].target })[1]).payload.subarray(10), target(3000));
 });
 
 test('boot and every modality transition deliver committed context before effects', () => {
@@ -141,15 +141,14 @@ test('stale revision, query, and page replies cannot replace current rows', () =
   assert.equal(step(model, { kind: 'palette_pick', target: new Uint8Array(299) })[1], null);
 });
 
-test('arrow navigation crosses page boundaries in reading order', () => {
+test('arrow navigation moves through accumulated pages without replacing preceding rows', () => {
   let model = open();
   [model] = step(model, { kind: 'navigation_loaded', body: page() });
-  for (let index = 0; index < 4; index++) [model] = step(model, { kind: 'palette_move', delta: 1 });
   assert.equal(model.paletteOffset, 4);
-  [model] = step(model, { kind: 'navigation_loaded', body: page('', 4, [4, 5, 6, 7]) });
+  [model] = step(model, { kind: 'navigation_loaded', body: page('', 4, [4, 5, 6, 7], 8) });
+  for (let index = 0; index < 4; index++) [model] = step(model, { kind: 'palette_move', delta: 1 });
+  assert.equal(model.paletteRows[4].highlighted, true);
   [model] = step(model, { kind: 'palette_move', delta: -1 });
-  assert.equal(model.paletteOffset, 0);
-  [model] = step(model, { kind: 'navigation_loaded', body: page() });
   assert.equal(model.paletteCursor, 3);
   assert.equal(model.paletteRows[3].highlighted, true);
   assert.equal(model.paletteRows[0].highlighted, false);
@@ -161,9 +160,9 @@ test('catalog invalidation fences page reads but cannot retarget a held painted 
   const held = model.paletteRows[1].target;
   const event = new Uint8Array(18); event[0] = 1; event[1] = 1; event[2] = 2; event[10] = 8;
   [model] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: event, droppedPending: 0, droppedTotal: 0 });
-  assert.equal(model.paletteRows.length, 0);
+  assert.equal(model.paletteRows.length, 4);
   const stale = step(model, { kind: 'navigation_loaded', body: page() })[0];
-  assert.equal(stale.paletteRows.length, 0);
+  assert.equal(stale.paletteRows.length, 4);
   assert.equal(step(model, { kind: 'palette_submit' })[1], null);
   const [, command] = step(model, { kind: 'palette_pick', target: held });
   assert.deepEqual(committedCommand(command).payload.subarray(10), target(1));

@@ -1378,6 +1378,7 @@ test "shipping TypeScript graph registers the terminal family and Cockpit token 
 /// declared window label builds its own compiled markup over the core model.
 const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
     .{ .path = "phux-window-1.native", .source = @embedFile("windows/phux-window-1.native") },
     .{ .path = "phux-window-2.native", .source = @embedFile("windows/phux-window-2.native") },
     .{ .path = "phux-window-3.native", .source = @embedFile("windows/phux-window-3.native") },
@@ -1623,8 +1624,8 @@ const Rig = struct {
         if (state.palette) {
             try self.settleNavigation();
             if (state.tabs >= 5) {
-                try std.testing.expectEqual(@as(usize, 4), self.app_state.model.paletteRows.len);
-                try std.testing.expect(self.app_state.model.paletteNext);
+                try std.testing.expectEqual(@min(state.tabs, 24), self.app_state.model.paletteRows.len);
+                try std.testing.expectEqual(state.tabs > 24, self.app_state.model.paletteNext);
             }
         }
         if (state.settings != self.app_state.model.settingsOpen) {
@@ -2700,7 +2701,7 @@ test "new terminal click hands typing and Enter to the created pane" {
     const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
     var button: ?native_sdk.geometry.RectF = null;
     for (layout.nodes) |node| {
-        if (std.mem.eql(u8, node.widget.semantics.label, "New terminal")) button = node.frame;
+        if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) button = node.frame;
     }
     const frame = button orelse return error.TestExpectedButton;
     inline for (.{ .pointer_down, .pointer_up }) |kind| {
@@ -3005,6 +3006,7 @@ test "shipping failed reconnect publishes the retired pending window" {
 const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "app.native", .source = @embedFile("app.native") },
     .{ .path = "windows/components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "windows/components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
 };
 const CompiledChrome = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &main_sources);
 const compiled_fragments = [_]canvas.MarkupFragment{
@@ -3036,7 +3038,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "full strip", .tabs = 16 },
     .{ .label = "full rail", .tabs = 16, .placement = .side },
     .{ .label = "palette over strip", .palette = true },
-    .{ .label = "full palette with paging", .palette = true, .tabs = 5 },
+    .{ .label = "scrollable palette beyond one transport page", .palette = true, .tabs = 5 },
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
     .{ .label = "connection settings", .settings = true, .settings_section = 2 },
@@ -4184,7 +4186,7 @@ test "a secondary-window switcher is scoped to the focused window" {
     try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
     try std.testing.expect(rig.app_state.model.window1PaletteOpen);
     try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Find terminal or session"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Find terminal or session"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Search navigator"));
 }
 
 test "Connect to Host is presented in the secondary window that invoked it" {
@@ -4204,7 +4206,7 @@ test "Connect to Host is presented in the secondary window that invoked it" {
     try std.testing.expect(!rig.app_state.model.mainHostOpen);
     try std.testing.expect(rig.app_state.model.window1HostOpen);
     try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Remote host"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Remote host"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Machine destination"));
 }
 
 fn navigationRequestBytes(revision: u64) [13]u8 {
