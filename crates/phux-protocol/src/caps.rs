@@ -932,7 +932,9 @@ pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
 /// Wire bit advertising the `GET_PERF` telemetry snapshot command.
 pub const GET_PERF: u32 = 0x0000_0800;
 /// Wire bit advertising the `TRANSCRIBE` voice passthrough command. `0x1000`
-/// is reserved for `WORKLOAD_AUTH` (ADR-0098) and skipped.
+/// is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit was
+/// specified but never implemented, ADR-0114) and skipped: it is not
+/// advertised and MUST NOT be reused without a version bump.
 pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// Wire bit advertising non-Terminal `ResourceKind`s.
 ///

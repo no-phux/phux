@@ -49,10 +49,10 @@ position.
 
 Security-critical signed subprotocols MAY close this extensibility rule by
 requiring one canonical field image and a new profile identifier for evolution.
-`phux-workload/v1` does so: its challenge and response reject unknown,
-duplicate, out-of-order, missing, non-minimal, or trailing data before proof
-verification ([workload-auth.md §7](./workload-auth.md)). That exception applies
-only to the authentication frames; ordinary message bodies keep skip-by-length.
+(That exception is currently unused: workload authentication rides the TLS
+handshake rather than a signed frame profile — see [workload-auth.md](./workload-auth.md).)
+That exception applies only to a future authentication frame; ordinary message
+bodies keep skip-by-length.
 
 The wire types, carried in the `wire_type` byte after each `field_id`, are:
 

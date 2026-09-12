@@ -1,301 +1,163 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
-# phux-workload/v1 — workload authentication and scoped authority
+# Workload authority over mTLS — authentication and scoped authority
 
-**TL;DR.** The reusable workload-authentication profile for Phux endpoints.
-Mutually signed, nonce-fresh, incarnation- and channel-bound evidence identifies
-a persistent server authority and a registered workload key. A canonical closed
-scope set is intersected with the live registry and enforced before dispatch;
-expiry and revocation terminate active connections.
+**TL;DR.** Phux endpoints authenticate workloads with mutual TLS, not a
+bespoke handshake. The server mints a CA on first routable listen;
+`phux pair` enrolls client certificates; the TLS handshake proves the
+peer holds the private key on that channel, and the registry maps the
+client identity to a closed scope ceiling enforced before dispatch.
+Expiry and revocation terminate live connections. Owner UDS keeps
+kernel-uid authority; the bearer token stays outer admission only.
+(ADR-0114 retires the unshipped `phux-workload/v1` proof profile this
+document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: spec-only; probe: WorkloadChallenge,WorkloadResponse,TerminalScopeSet,TerminalEffectiveScopeSet,WORKLOAD_AUTH -->
-> **Status: spec-only.** The profile, terminal frame mapping, registry, strict
-> codec, classifier, and live-revocation path described here are not implemented.
+<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,TerminalScopeSet,TerminalEffectiveScopeSet -->
+> **Status: spec-only.** The mTLS enrollment, registry, classifier, and
+> live-revocation path described here are not implemented. The only code
+> is the `PolicyEngine::authorize_hello` seam and its permissive default.
 
 ## 1. Profile boundary
 
-`phux-workload/v1` is an authentication profile reusable by independently
-versioned Phux services. It is not a terminal tier, coordinator tier, transport
-preamble, or shared frame namespace. Each endpoint SHALL define:
+Authentication is the TLS handshake. There is no workload handshake
+frame, no challenge/response exchange, no transcript, and no HELLO
+workload field on any endpoint. Each endpoint SHALL define:
 
-- its own HELLO and HELLO_OK carriers;
-- the profile's fixed `WORKLOAD_RESPONSE = 0x04` and
-  `WORKLOAD_CHALLENGE = 0x84` discriminants in that endpoint's independent
-  frame catalog;
-- one ASCII `service` value; and
-- a total endpoint-specific operation classification table.
+- its own HELLO and HELLO_OK carriers (unchanged);
+- one closed canonical scope schema and its operation classification
+  table (§5, §6); and
+- nothing else: proofs are not endpoint-shaped.
 
-The terminal protocol mapping is in §7. Its service is the exact 13 ASCII bytes
-`phux-terminal`. A separate coordinator endpoint uses the same two profile
-discriminants in its own stream, its own HELLO/version/catalog, and the exact
-service bytes `phux-coordinator`; a coordinator frame is never sent to an L1
-parser ([ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md)).
-
-All hashes below are SHA-256. Signatures are Ed25519 over the exact §4 bytes,
-with raw 32-byte public keys and 64-byte signatures. Verification SHALL be
-strict RFC 8032: reject non-canonical encodings of public point `A` or signature
-point `R`, small-order `A` or `R`, and scalar `S >= L`. The reference API is
-`ed25519_dalek::VerifyingKey::from_bytes`, an explicit `is_weak()` rejection,
-then `verify_strict`; a different vetted library is conforming only if it
-enforces the same acceptance set. Phux SHALL NOT implement the primitives.
+The terminal endpoint's scope schemas are `TerminalScopeSet` and
+`TerminalEffectiveScopeSet` (§5). A separate coordinator endpoint uses
+its own schema; a coordinator frame is never sent to an L1 parser
+([ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md)).
+Endpoints SHALL NOT translate names or bits from another endpoint. No
+`service` string exists: the TLS session already binds identity to
+channel, so there is nothing to name.
 
 ## 2. Identities and persisted material
 
 Three identities remain separate:
 
-| Identity | Width | Lifetime and use |
-|---|---:|---|
-| Authority public-key fingerprint | 32 bytes | SHA-256 of the raw authority public key; stable across restart, endpoint, and incarnation; the durable value a client pins |
-| Server incarnation | 16 bytes | The endpoint's current opaque `server_id`; changes whenever reconnect-safety state is lost; replay fence, never durable authority |
-| Workload key id | 32 bytes | SHA-256 of the raw workload public key; registry lookup and live-revocation handle |
+| Identity | Form | Lifetime and use |
+|---|---|---|
+| CA fingerprint | SHA-256 of the DER CA certificate | stable across restart and endpoint; the durable value a client pins; rotation is explicit re-pairing |
+| Server identity | server certificate issued by the CA | proves the endpoint to the client at handshake; rotation is transparent while the CA stands |
+| Workload credential id | SHA-256 of the raw client public key | registry lookup and live-revocation handle |
 
-The canonical human/CLI form for either 32-byte digest is `sha256:` followed by
+The canonical human/CLI form for either digest is `sha256:` followed by
 exactly 64 lowercase hexadecimal digits. Parsers SHALL reject uppercase,
-padding, omitted leading zeroes, and alternate encodings; protocol fields carry
-the raw 32 bytes. Comparisons are constant-time.
+padding, omitted leading zeroes, and alternate encodings; protocol state
+carries raw bytes. Comparisons are constant-time.
 
-A client may persist a provider binding only after verifying the authority
-proof. That binding keys on the authority fingerprint; socket path, URL,
-certificate instance, and server incarnation are deliberately absent. A changed
-endpoint or incarnation does not change authority, while a changed fingerprint
-invalidates cached projections and all mutating authority. This is the contract
-Cockpit's `ProviderTrustBinding` mirrors.
+A client may persist a server binding only after verifying the server
+certificate chains to its pinned CA. That binding keys on the CA
+fingerprint; socket path, URL, certificate instance, and server
+incarnation are deliberately absent. A changed endpoint does not change
+authority, while a changed CA fingerprint invalidates cached projections
+and all mutating authority. A client with a prior binding SHALL surface
+`authority_changed` and refuse; it SHALL NOT silently trust the
+replacement.
 
-The authority's private-key file SHALL persist at
-`<state-dir>/workload-authority.ed25519` as exactly the 32-byte Ed25519 secret
-seed from which the public key is derived. The containing state directory SHALL
-be owner-only. The key file SHALL be a regular, owner-owned, no-follow-opened
-file with mode `0600`; creation and replacement SHALL use an owner-controlled
-lock, same-directory temporary file, file sync, atomic rename, and directory
-sync. A missing key may be created only by an explicit initialization path.
-Replacement changes the fingerprint and is authority rotation, not server
-restart. A client with a prior binding SHALL surface `authority_changed` and
-refuse; it SHALL NOT silently trust the replacement.
+The CA's key file SHALL persist at `<state-dir>/workload-ca.key` with
+the CA certificate at `<state-dir>/workload-ca.pem`. The containing
+state directory SHALL be owner-only. Key and registry files SHALL be
+regular, owner-owned, no-follow-opened files with mode `0600`; creation
+and replacement SHALL use an owner-controlled lock, same-directory
+temporary file, file sync, atomic rename, and directory sync. A missing
+CA may be created only by an explicit initialization path (first
+routable listen, or `phux workload authority --init`).
 
-Authority and workload secret seeds, and both handshake nonces, SHALL be
-generated directly from the OS CSPRNG. The reference call is
-`getrandom::getrandom`; failure is fatal and has no deterministic fallback.
-Generated public keys are validated by the same strict rules before persistence.
+`<state-dir>/workload-keys` is the registry of workload credentials.
+Each record contains the client certificate (or raw public key),
+derived credential id, canonical scope ceiling, absolute expiry, and
+optional revocation time. One invalid record makes the loaded snapshot
+malformed. The file obeys the same ownership, mode, no-follow,
+stable-read, lock, sync, and atomic-replacement rules. Public keys and
+fingerprints are not secrets. A malformed, replaced, or unstable read
+is an empty authority snapshot, never permission to use a cached
+generation.
 
-`<state-dir>/workload-keys` is the registry of workload public keys. Each record
-contains the raw public key, derived key id, canonical scope ceiling, absolute
-expiry, and optional revocation time. `add-key` and every registry load SHALL
-parse the public point canonically and reject weak/small-order keys before the
-snapshot becomes usable. One invalid record makes the loaded snapshot malformed.
-The file obeys the same ownership, mode, no-follow, stable-read, lock, sync, and
-atomic-replacement rules. Public keys and fingerprints are not secrets. A
-malformed, replaced, or unstable read is an empty authority snapshot, never
-permission to use a cached generation.
+Registry generations are live (§7). The registry is local Phux
+authority; no UI, peer ledger, or coordinator is queried during
+admission.
 
-Registry generations are live (§8). The registry is local Phux authority; no UI,
-peer ledger, or coordinator is queried during admission.
-
-## 3. Handshake state machine
-
-An endpoint maps these profile records into its own frames:
+## 3. Authentication flow
 
 ```text
 Client                                              Server
-  | HELLO { version, WorkloadOffer }                   |
+  | TLS ClientHello (SNI, ALPN)                        |
   |--------------------------------------------------->|
-  |                         compare major.minor first  |
-  | WORKLOAD_CHALLENGE                                 |
+  |                         verify server chain to pinned CA
+  | TLS handshake: server requests client certificate   |
   |<---------------------------------------------------|
-  | verify service/version/nonces/channel/incarnation |
-  | verify authority proof and pinned fingerprint     |
-  | WORKLOAD_RESPONSE                                  |
+  | client presents enrolled certificate (paired only)  |
   |--------------------------------------------------->|
-  |                  consume challenge; verify proof  |
-  |                  intersect current registry grant |
-  | HELLO_OK { WorkloadGrant }                         |
+  |                  verify chain to phux CA; map to registry
+  | HELLO { version, caps } (ordinary frames resume)    |
+  |--------------------------------------------------->|
+  | HELLO_OK                                            |
   |<---------------------------------------------------|
-  | ACTIVE                                             |
+  | ACTIVE                                              |
 ```
 
-The records are:
+The server's TLS configuration requests — and in `paired` policy
+requires — a client certificate verified against the phux CA
+(`WebPkiClientVerifier` semantics: chain, expiry, and signature
+validity; revocation is the registry's job, not the handshake's). The
+verified identity (credential id plus transport evidence) is stamped
+into `PeerIdentity` and handed to `PolicyEngine::authorize_hello`,
+which intersects the registry ceiling into the connection's effective
+grant before any stateful frame is processed.
 
-```text
-WorkloadOffer {
-    profile: "phux-workload/v1",
-    client_nonce: bytes32,
-}
+- **No certificate, unknown certificate, or expired certificate** on a
+  paired listener refuses the connection at the TLS layer — QUIC
+  application close, WSS handshake rejection — before any phux frame
+  is read. There is no phux-shaped error pre-HELLO because no phux
+  frame has been exchanged.
+- **A client configured to require paired authority** SHALL close
+  without issuing a stateful operation when the server does not
+  request a client certificate, or when the server certificate does
+  not chain to the pinned CA. Receiving `HELLO_OK` over an
+  unauthenticated channel is downgrade, not permission to continue.
+- **TLS session resumption** preserves the authenticated identity: a
+  resumed session carries the same verified peer as the session it
+  resumes. 0-RTT application data is not used for phux frames.
+- **Owner UDS** carries no TLS and therefore no certificate. The
+  kernel-authenticated uid is the authority (§8): full operator grant
+  in `local`, and in `paired` the UDS keeps kernel-uid authority
+  rather than a proof it cannot perform (a deliberate, documented
+  narrowing of ADR-0098's paired-UDS rule).
+- **The bearer token stays outer admission.** The pairing token
+  (preamble / `Authorization` header) proves "may knock" at
+  establishment; it never mints authority and its store is consulted
+  before, and independently of, the certificate registry.
+- **The relay is per-hop.** It terminates TLS on both legs for SNI
+  routing, so a consumer certificate does not survive to the server:
+  consumer↔relay and tunnel↔server authenticate separately, and
+  authority across a relay is the tunnel's enrolled route authority
+  ([ADR-0114](../../ADR/0114-workload-auth-is-mtls.md)).
 
-WorkloadChallenge {
-    profile: "phux-workload/v1",
-    service: ascii,
-    negotiated_major: u16,
-    negotiated_minor: u16,
-    client_nonce: bytes32,
-    server_nonce: bytes32,
-    server_incarnation: bytes16,
-    channel_binding_kind: u8,
-    channel_binding: bytes32,
-    authority_public_key: bytes32,
-    authority_proof: bytes64,
-}
+There is deliberately no nonce, no transcript, and no exporter
+derivation in this profile: replay of a captured handshake is
+meaningless (possession of the private key is proven inside a live
+session, not in bytes that can be replayed), and the channel binding
+*is* the TLS session rather than a value derived from it.
 
-WorkloadResponse {
-    key_id: bytes32,
-    requested_scope_bytes: bytes,
-    requested_expiry: u64,
-    workload_proof: bytes64,
-}
+## 4. Scope model
 
-WorkloadGrant {
-    key_id: bytes32,
-    effective_scope_bytes: bytes,
-    expires_at: u64,
-    authority_fingerprint: bytes32,
-}
-```
+Authority is a grant pairing one nonempty verb bitset with one
+selector, exactly as before — the proof mechanism changed, the
+authorization model did not.
 
-The scope fields are signed opaque bytes at the shared-profile layer and SHALL
-be `1..=32768` bytes; a receiver checks that bound before allocating or parsing
-them. Each endpoint owns closed canonical requested/effective scope schemas and
-rejects any byte image outside the applicable schema before proof verification.
-The terminal schemas are `TerminalScopeSet` and `TerminalEffectiveScopeSet`
-(§6); the coordinator defines its own. An endpoint SHALL NOT translate names or
-bits from another endpoint.
-
-`client_nonce` and `server_nonce` SHALL come from an OS CSPRNG, SHALL not be all
-zero, and SHALL be used for one handshake only. The client SHALL reject a
-challenge that does not echo its offer exactly. The server SHALL bind one pending
-challenge to one accepted connection, consume it on the first response attempt,
-and retain consumed nonces until that connection closes. There is no retry of a
-challenge after a malformed or failed response.
-
-The server SHALL compare the endpoint protocol `major.minor` before semantically
-parsing `WorkloadOffer`, looking up a key, signing a challenge, or disclosing any
-registry result. A bounded TLV scan may locate the base HELLO version fields, but
-no auth field is interpreted before equality succeeds. A mismatch follows the
-endpoint's `VERSION_INCOMPATIBLE` path.
-
-After a valid offer the server SHALL send one challenge and wait at most five
-seconds for exactly one response. No PING, lifecycle frame, command, or other
-endpoint frame may interleave. Any other frame, duplicate response, timeout, or
-second HELLO is fatal. HELLO_OK is sent only after both proofs and a nonempty,
-unexpired grant succeed.
-
-A client configured to require paired authority SHALL treat HELLO_OK before a
-valid challenge, absence of the endpoint's workload-auth capability, a missing
-WorkloadGrant, or a different profile as downgrade and close without issuing a
-stateful operation. An endpoint in paired policy SHALL reject a HELLO without the
-exact offer. There is no fallback from `phux-workload/v1` to bearer-only or
-ambient identity.
-
-## 4. Exact signed transcripts
-
-The following helpers are part of the profile:
-
-```text
-U16(n)       = n encoded as two unsigned big-endian bytes
-U32(n)       = n encoded as four unsigned big-endian bytes
-U64(n)       = n encoded as eight unsigned big-endian bytes
-V16(bytes)   = U16(len(bytes)) || bytes
-```
-
-`service` is 1..=64 bytes from ASCII `[a-z0-9-/.]`. Its case and bytes are
-significant. No Unicode normalization or NUL is permitted.
-
-The server signs exactly:
-
-```text
-SERVER_TRANSCRIPT =
-    "phux-workload/v1\0server-proof\0" ||
-    V16(service) ||
-    U16(negotiated_major) || U16(negotiated_minor) ||
-    client_nonce[32] || server_nonce[32] ||
-    server_incarnation[16] ||
-    channel_binding_kind[1] || channel_binding[32] ||
-    authority_public_key[32]
-
-authority_proof = Ed25519.Sign(authority_private_key, SERVER_TRANSCRIPT)
-```
-
-The workload signs exactly:
-
-```text
-scope_bytes = requested_scope_bytes  // already canonical for this endpoint
-
-CLIENT_TRANSCRIPT =
-    "phux-workload/v1\0client-proof\0" ||
-    V16(service) ||
-    U16(negotiated_major) || U16(negotiated_minor) ||
-    client_nonce[32] || server_nonce[32] ||
-    server_incarnation[16] ||
-    channel_binding_kind[1] || channel_binding[32] ||
-    authority_public_key[32] || authority_proof[64] ||
-    key_id[32] || U64(requested_expiry) ||
-    U32(len(scope_bytes)) || scope_bytes
-
-workload_proof = Ed25519.Sign(workload_private_key, CLIENT_TRANSCRIPT)
-```
-
-The server SHALL reconstruct `CLIENT_TRANSCRIPT` from the challenge retained on
-the current connection and the decoded response. It SHALL compare the retained
-incarnation and channel binding before signature verification, validate the
-registry public key by §1, derive its SHA-256 key id, compare that id in constant
-time, then call the strict verifier. It SHALL NOT accept transcript bytes
-supplied by the client.
-
-An unknown key, revoked key, failed proof, empty intersection, or invalid expiry
-returns the same generic `PERMISSION_DENIED` handshake failure. Diagnostics and
-timing SHALL not reveal which test failed.
-
-## 5. Channel binding
-
-`channel_binding_kind` is closed:
-
-```text
-TLS_EXPORTER = 0x00
-UDS_PEER     = 0x01
-```
-
-For TLS 1.3 (including QUIC and WSS), both peers derive:
-
-```text
-context = SHA-256(
-    "phux-workload/v1\0tls-context\0" ||
-    V16(service) || U16(negotiated_major) || U16(negotiated_minor)
-)
-channel_binding = TLS-Exporter(
-    label = "phux-workload/v1",
-    context = context,
-    length = 32
-)
-```
-
-The value comes from the exact TLS session carrying the endpoint frames. A
-certificate fingerprint, address, bearer token, or exporter from a proxied leg
-is not equivalent.
-
-For UDS, the accepting kernel SHALL provide the peer's effective uid, gid, and
-pid, and the client SHALL compare all three with its own values. Each is encoded
-as unsigned `U64`. Both peers derive:
-
-```text
-channel_binding = SHA-256(
-    "phux-workload/v1\0uds-peer\0" ||
-    server_nonce[32] || U64(uid) || U64(gid) || U64(pid)
-)
-```
-
-A server SHALL reject paired UDS when the platform cannot authenticate all three
-values. A client SHALL reject a challenge whose derivation does not match its
-own credentials. Empty binding, address text, uid alone, and a server nonce
-without peer credentials are forbidden.
-
-An endpoint over a transport without either binding is unavailable in paired
-mode unless a later profile version defines a cryptographic binding for it.
-SSH authentication does not manufacture an exporter for a stdio stream.
-
-## 6. TerminalScopeSet canonical encoding and intersection
+## 5. TerminalScopeSet canonical encoding and intersection
 
 A scope grant pairs one nonempty verb bitset with one selector. The closed verbs
 are:
@@ -310,7 +172,7 @@ SIGNAL    = 0x20   // process/server lifecycle, hooks, forced detach, or signals
 ```
 
 Bits `0xC0` are unknown in v1 and SHALL cause rejection. A later verb requires a
-new profile version; it is not ignored.
+new scope-schema version; it is not ignored.
 
 Selectors and their canonical bytes are:
 
@@ -337,13 +199,14 @@ U16(grant_count) || repeated {
 }
 ```
 
-The set has at most 64 grants. Grants are strictly increasing by unsigned
-lexicographic order of `selector_bytes`; every selector occurs once; `verbs` is
-nonzero. Encoders merge equal selectors by OR-ing their verbs, remove zero
-entries, sort, and emit the shortest form. Decoders SHALL reject an unsorted or
-duplicate selector, unknown bit, non-minimal length, count/length mismatch,
-truncation, or trailing byte. They SHALL not normalize an invalid image and then
-verify it.
+with `U16` / `U32` / `V16` as unsigned big-endian helpers (`V16(bytes) =
+U16(len(bytes)) || bytes`). The set has at most 64 grants. Grants are strictly
+increasing by unsigned lexicographic order of `selector_bytes`; every selector
+occurs once; `verbs` is nonzero. Encoders merge equal selectors by OR-ing their
+verbs, remove zero entries, sort, and emit the shortest form. Decoders SHALL
+reject an unsorted or duplicate selector, unknown bit, non-minimal length,
+count/length mismatch, truncation, or trailing byte. They SHALL not normalize an
+invalid image and then verify it.
 
 A selector denotes resource subjects at enforcement time:
 
@@ -382,84 +245,31 @@ leaves `G` and is never laundered into unconditional Terminal authority.
 Authorization results SHALL NOT be cached across a topology generation; any
 cache is keyed by and invalidated atomically with that generation.
 
-`requested_expiry` and every registry expiry are unsigned Unix seconds. They are
-policy times, not freshness evidence. Both SHALL be greater than the server's
-current time. `WorkloadGrant.expires_at` is their minimum. The grant is bound to
-the authenticated connection, server incarnation, key id, registry generation,
-and channel binding; it SHALL not be serialized as a reusable bearer credential.
+Registry expiries are unsigned Unix seconds — policy times, not freshness
+evidence — and SHALL be greater than the server's current time. The effective
+grant is bound to the authenticated connection, server incarnation, credential
+id, and registry generation; it SHALL not be serialized as a reusable bearer
+credential.
 
-## 7. Terminal endpoint mapping and total classification
+## 6. Terminal endpoint mapping and total classification
 
-The terminal protocol adds:
-
-```text
-HELLO field 7: workload_profile optional<str>
-HELLO field 8: workload_client_nonce optional<bytes32>
-
-WORKLOAD_RESPONSE  C -> S  type 0x04
-WORKLOAD_CHALLENGE S -> C  type 0x84
-
-HELLO_OK field 10: workload_grant optional<WorkloadGrant>
-ServerFeature::WORKLOAD_AUTH = 0x00001000
-```
-
-The two HELLO fields form `WorkloadOffer` and SHALL be both absent or both
-present. When present, field 7 contains the ordinary leaf-string image
-`U32(16) || "phux-workload/v1"`, and field 8 contains exactly 32 nonce bytes.
-The strict challenge fields are:
-
-| Field id | Field value inside the TLV `BYTES` envelope |
-|---:|---|
-| 1 | `U32(16) || "phux-workload/v1"` |
-| 2 | `U32(len(service)) || service` |
-| 3 | `U16(negotiated_major)` |
-| 4 | `U16(negotiated_minor)` |
-| 5 | `client_nonce[32]` |
-| 6 | `server_nonce[32]` |
-| 7 | `server_incarnation[16]` |
-| 8 | `channel_binding_kind[1]` |
-| 9 | `channel_binding[32]` |
-| 10 | `authority_public_key[32]` |
-| 11 | `authority_proof[64]` |
-
-The strict response fields are:
-
-| Field id | Field value inside the TLV `BYTES` envelope |
-|---:|---|
-| 1 | `key_id[32]` |
-| 2 | `U32(len(scope_bytes)) || scope_bytes` |
-| 3 | `U64(requested_expiry)` |
-| 4 | `workload_proof[64]` |
-
-HELLO_OK `workload_grant` is the strict positional image:
-
-```text
-key_id[32] || authority_fingerprint[32] || U64(expires_at) ||
-U32(len(effective_scope_bytes)) || effective_scope_bytes
-```
-
-For the terminal endpoint, `effective_scope_bytes` is exactly the
-`TerminalEffectiveScopeSet` image from §6, retaining both selector provenances.
-
-Authentication frames use the normal field-tagged TLV envelope, but every field
-is required, appears once in ascending field-id order, uses top-level wire type
-`BYTES`, and contains exactly its stated value. Unknown or duplicate fields,
-missing fields, non-minimal varints, an incorrect fixed width, data after a
-nested value, and body trailing bytes are `MALFORMED_MESSAGE` and fatal. This
-strict rule intentionally overrides ordinary auth-unaware TLV skipping; profile
-evolution uses a new profile string.
+The terminal protocol adds no workload frame and no HELLO workload field:
+HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE
+= 0x04` / `WORKLOAD_CHALLENGE = 0x84` are retired-unshipped back to the
+reserved pool ([appendix-reserved.md](./appendix-reserved.md)), and there
+is no `WORKLOAD_AUTH` feature bit. Authentication arrives with the
+connection, via `PeerIdentity`, before HELLO is evaluated.
 
 Before any routing, lookup that could disclose existence, queue insertion,
 mutation, handler call, or satellite forwarding, the server maps each decoded
 client frame to the following requirement. Every listed subject must match an
 effective grant carrying the listed verb. A `Terminal` may match its exact
-Terminal, current Group, owning Host, or Global selector according to §6.
+Terminal, current Group, owning Host, or Global selector according to §5.
 
 | Client-originated frame | Required verb | Subject selector |
 |---|---|---|
 | `HELLO` | handshake-exempt | valid only in `PRE_HELLO` |
-| `WORKLOAD_RESPONSE` | handshake-exempt | valid only for this connection's `CHALLENGE_SENT` |
-| `PING` | liveness-exempt | no state access; allowed before HELLO, forbidden during challenge |
+| `PING` | liveness-exempt | no state access; allowed before HELLO |
 | `DETACH` | cleanup-exempt | calling connection only |
 | `ATTACH` existing/last target | `BIND` and `OBSERVE` | resolved Group; all returned Terminals are filtered by `OBSERVE` |
 | `ATTACH` create-if-missing | `CREATE`, then `BIND` and `OBSERVE` | selected local Group; no creation occurs unless all requirements pass |
@@ -483,7 +293,6 @@ Terminal, current Group, owning Host, or Global selector according to §6.
 | `GET_METADATA` | `OBSERVE` | encoded metadata Scope; `{ Global, "phux.whoami/v1" }` answers only the asking connection's own identity |
 | `SET_METADATA { Global, "phux.session.create/v1" }` | `CREATE` and `BIND` | Global; BIND alone MUST NOT create a process |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true` | `CREATE` and `BIND` | Global; the mark keeps a session, and so the server, alive with zero processes (ADR-0105) |
-| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | `SIGNAL` | Global; clearing the mark on a windowless session destroys it, like `KILL_RESOURCES` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | default-deny | malformed; the value is classified before the handler parses it |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | `SIGNAL` | Global |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | default-deny | server-owned result namespace is non-writable |
@@ -563,12 +372,12 @@ after decode/state validation, and `handle_command` immediately after nested-tag
 decode and before its satellite-relay branch. Per-handler checks may enforce
 additional domain invariants but SHALL not replace either common check.
 
-## 8. Denial, expiry, and live revocation
+## 7. Denial, expiry, and live revocation
 
-A structurally malformed auth frame receives fatal `MALFORMED_MESSAGE` followed
-by `DETACHED { reason: PROTOCOL_ERROR }` and close. A well-formed but failed
-authentication receives generic `PERMISSION_DENIED`,
-`DETACHED { reason: AUTHENTICATION_FAILED }`, and close.
+A TLS-layer refusal (no, unknown, or expired client certificate on a paired
+listener) closes before any phux frame; there is no `DETACHED` because no
+HELLO was exchanged. Diagnostics and timing SHALL not reveal which test
+failed.
 
 After authentication, an out-of-scope correlated frame or command receives its
 ordinary correlated error carrying `PERMISSION_DENIED`; no effect occurs and the
@@ -578,7 +387,7 @@ dropped before effect and MAY receive a rate-limited uncorrelated
 rate-limited or cause an explicit policy close, but silence SHALL never turn the
 denied operation into success.
 
-The server SHALL retain key id, every requested/ceiling selector pair,
+The server SHALL retain credential id, every requested/ceiling selector pair,
 intersected verbs, expiry, registry generation, and a per-connection
 cancellation handle. It SHALL re-evaluate both selectors against the
 authoritative topology on every dispatch, in the same critical section or
@@ -606,61 +415,63 @@ AUTHORIZATION_REVOKED  = 6
 AUTHORIZATION_EXPIRED  = 7
 ```
 
-A client that does not recognize a detach reason already treats it as unstated,
-so these values are additive.
+`AUTHENTICATION_FAILED` covers post-HELLO authentication outcomes (a
+pre-HELLO TLS refusal has no DETACHED to carry it). A client that does not
+recognize a detach reason already treats it as unstated, so these values are
+additive.
 
-## 9. Policy modes and secret handling
+## 8. Policy modes and secret handling
 
 Policy is closed:
 
-| Mode | Admitted stateful transports | Workload proof |
+| Mode | Admitted stateful transports | Workload authentication |
 |---|---|---|
 | `local` | owner-authenticated UDS only | not required; server mints all six verbs at Global for that connection |
-| `paired` | any endpoint transport that also provides required confidentiality, server identity, and a §5 binding | required for every connection, including owner UDS |
+| `paired` | owner UDS plus TLS transports (QUIC, WSS) | mTLS client certificate required on every TLS connection; owner UDS keeps kernel-uid authority |
 
 These are the only modes. There is no bearer-only, SSH-auth-suffices, hybrid, or
-unnamed compatibility state. WSS bearer authentication is an outer gate inside
-`paired`, not a grant. SSH-stdio fits neither mode because it has no §5 binding
-and is unavailable until a later profile defines a closed, independently
-verifiable `SSH_SESSION` binding.
+unnamed compatibility state. The bearer token is an outer admission gate inside
+`paired`, not a grant. SSH-stdio fits neither mode — it has no channel the
+handshake can bind to — and is unavailable under `paired` until a later profile
+defines a closed, independently verifiable binding for it.
 
 With no explicit mode, a server may start only with its owner-only UDS and no
-configured workload registry; that is `local`. A configured registry, authority
-path, or non-UDS listener with mode unset is a startup error. `local` with a
+configured workload registry; that is `local`. A configured registry, CA path,
+or non-UDS listener with mode unset is a startup error. `local` with a
 non-UDS listener is a startup error. `paired` with missing, malformed, or unsafe
-authority or registry material is a startup error. Runtime corruption after a
-successful start applies the empty-snapshot revocation rule in §8.
+CA or registry material is a startup error. Runtime corruption after a
+successful start applies the empty-snapshot revocation rule in §7.
 
-TLS, certificate verification, an SSH login, a WebSocket bearer token, or UDS
+TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports
-require them. None substitutes for workload proof in `paired`. Plaintext remote
-transport is forbidden in every mode.
+require them. None substitutes for the client certificate in `paired`.
+Plaintext remote transport is forbidden in every mode.
 
 `phux workload authority --init` is the only CLI path that creates a missing
-authority key and prints only its fingerprint. `phux workload add-key` accepts
-only public keys from stdin or an explicitly opened file and writes the
-registry. `list`, `revoke`, and `authority` display only key ids, public keys
-where requested, scope ceilings, expiries, revocation state, and the authority
-fingerprint. Their diagnostics SHALL not contain secret material.
+CA and prints only its fingerprint. `phux workload add-key` accepts only a
+client certificate or CSR from stdin or an explicitly opened file and writes
+the registry. `list`, `revoke`, and `authority` display only credential ids,
+public keys where requested, scope ceilings, expiries, revocation state, and
+the CA fingerprint. Their diagnostics SHALL not contain secret material.
 
 A client private key may come from an inherited descriptor, an owner-only file
 opened by the client, or an OS credential store. An environment variable may
 name a descriptor or non-secret credential handle, but SHALL not contain key
 bytes. A command-line option may name a file or descriptor, but SHALL not carry
-key bytes. Private workload or authority bytes SHALL never enter argv,
+key bytes. Private client or CA bytes SHALL never enter argv,
 environment values, the public registry, stdout, stderr, panic text, tracing,
 metrics, or `Debug`; buffers are bounded, redacted, and zeroized when their
 crypto API permits.
 
-## 10. Conformance cases
+## 9. Conformance cases
 
 A conforming implementation exercises at least these independent failures:
-version mismatch before auth parsing; absent/downgraded profile; repeated nonce;
-wrong service, authority, incarnation, connection, TLS exporter, UDS peer pid,
-key id, expiry, or scope; non-canonical/small-order Ed25519 `A` or `R`; `S >= L`;
-an invalid registry key; unknown verb/selector; duplicate, unsorted, truncated,
-overlong, or trailing encoding; empty/over-ceiling grant; and revoked/expired
-authority at admission and while live.
+version mismatch before admission; no client certificate; unknown, expired,
+or non-chaining certificate; downgrade (paired client against a listener
+that does not request certificates); unknown credential id; empty or
+over-ceiling grant; unknown verb/selector; duplicate, unsorted, truncated,
+overlong, or trailing scope encoding; and revoked/expired authority at
+admission and while live.
 
 Authorization cases include every matrix row; BIND-only
 `phux.session.create/v1`; mutation/subscription of server-owned metadata; a

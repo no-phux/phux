@@ -126,7 +126,7 @@ Target-versus-shipped gaps open as of the last review. Each row names the ADR th
 |---|---|---|---|
 | Working-directory and command-boundary events as an L1 Terminal-facet frame | `TERMINAL_EVENT` has no codec entry. `cwd_changed`, `command_started`, and `command_finished` reach consumers only through the `SUBSCRIBE_RESOURCE_EVENTS` gate path. | [ADR-0015](../ADR/0015-protocol-layering.md), [ADR-0102](../ADR/0102-resources-the-server-serves-kinds.md) | phux-ue2r |
 | On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](../ADR/0092-durable-work-coordinator-authority.md) | phux-p91i |
-| Workload authentication enforcement | The `phux-workload/v1` profile is allocated in the spec. The reference server accepts no proof and enforces no scope matrix. | [ADR-0098](../ADR/0098-workload-proof-and-closed-scope-authority.md) | phux-cockpit-p1q.11.2 |
+| Workload authentication enforcement | The mTLS + scope-matrix profile is specified in `workload-auth.md`. The reference server requests no client certificate and enforces no scope matrix. | [ADR-0114](../ADR/0114-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
 | Cockpit projection of agent sessions | Cockpit lists Terminal-kind resources only; AgentSession children are not shown under their parent. | [ADR-0103](../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.25 |
 
 ---
