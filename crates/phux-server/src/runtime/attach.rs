@@ -1018,7 +1018,7 @@ async fn run_output_pump(
         };
         let step = match received {
             Ok(PaneOutput::Live { seq, bytes, at }) => {
-                let age = at.elapsed();
+                let age = generation.chunk_age(at);
                 if pump::is_stale(age) && generation.forwards(seq) {
                     // The consumer drains slower than the pane talks: skip it
                     // to a fresh checkpoint rather than replay a backlog that
@@ -4425,6 +4425,14 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
+                // Staleness is measured from the later of the read and the
+                // generation's publication, so the pumps must have been live
+                // past the budget before a backdated chunk can count as late.
+                tokio::time::sleep(
+                    crate::runtime::pump::STALE_OUTPUT_BUDGET
+                        + std::time::Duration::from_millis(50),
+                )
+                .await;
                 let read_a_second_ago = std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(1))
                     .expect("monotonic clock has run for a second");
@@ -4559,6 +4567,14 @@ mod tests {
                     .expect("pumps subscribed");
                 assert_eq!(frames_seen(&mut retired, 1).await, vec![Seen::Tombstone]);
 
+                // Staleness is measured from the later of the read and the
+                // generation's publication, so the pumps must have been live
+                // past the budget before a backdated chunk can count as late.
+                tokio::time::sleep(
+                    crate::runtime::pump::STALE_OUTPUT_BUDGET
+                        + std::time::Duration::from_millis(50),
+                )
+                .await;
                 let read_a_second_ago = std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(1))
                     .expect("monotonic clock has run for a second");

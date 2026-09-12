@@ -96,6 +96,12 @@ const GAP_RESYNC_MAX_ATTEMPTS: u32 = 5;
 /// keystroke echo. On a local socket a chunk reaches the pump within
 /// milliseconds; one that is older than this is a consumer draining slower
 /// than the pane talks, and it gets one fresh screen instead of the backlog.
+///
+/// The clock starts at the later of the PTY read and the current
+/// generation's publication ([`PumpGeneration::chunk_age`]). A pump is
+/// blocked while its bootstrap drains, so without that anchor the first live
+/// chunk after a slow-but-healthy republish would already look stale and
+/// start another resync — a consumer that only ever sees checkpoints.
 pub(super) const STALE_OUTPUT_BUDGET: Duration = Duration::from_millis(250);
 
 /// Has a chunk read `age` ago fallen past [`STALE_OUTPUT_BUDGET`]?
@@ -136,11 +142,14 @@ pub(super) struct PumpGeneration {
     /// Resync requests already spent on the current gap; reset when a
     /// replacement generation lands. Bounded by [`GAP_RESYNC_MAX_ATTEMPTS`].
     gap_attempts: u32,
+    /// When the current generation was published (opened or republished):
+    /// the earliest instant [`Self::chunk_age`] measures from.
+    published_at: std::time::Instant,
 }
 
 impl PumpGeneration {
     /// Start at the cut the publication gate handed over.
-    pub(super) const fn opened_at(published_cut: u64, bootstrap_id: BootstrapId) -> Self {
+    pub(super) fn opened_at(published_cut: u64, bootstrap_id: BootstrapId) -> Self {
         Self {
             published_cut,
             last_forwarded_seq: published_cut,
@@ -148,7 +157,18 @@ impl PumpGeneration {
             generation_active: true,
             gap_pending: false,
             gap_attempts: 0,
+            published_at: std::time::Instant::now(),
         }
+    }
+
+    /// How stale a live chunk read at `read_at` is for this consumer: the time
+    /// since the later of that read and this generation's publication.
+    ///
+    /// A chunk read before the generation was published waited behind the
+    /// bootstrap, not behind a slow consumer; counting that wait would resync
+    /// a healthy consumer again the moment its republish finished draining.
+    pub(super) fn chunk_age(&self, read_at: std::time::Instant) -> Duration {
+        std::time::Instant::now().saturating_duration_since(read_at.max(self.published_at))
     }
 
     /// The generation label every frame this pump emits carries.
@@ -272,12 +292,13 @@ impl PumpGeneration {
 
     /// A replacement generation is published at `base_seq`: unfence, reactivate
     /// and re-anchor the sequence expectation.
-    pub(super) const fn republished_at(&mut self, base_seq: u64) {
+    pub(super) fn republished_at(&mut self, base_seq: u64) {
         self.published_cut = base_seq;
         self.last_forwarded_seq = base_seq;
         self.generation_active = true;
         self.gap_pending = false;
         self.gap_attempts = 0;
+        self.published_at = std::time::Instant::now();
     }
 }
 
@@ -392,6 +413,26 @@ mod tests {
         assert!(
             !retired.takes_resync(&addressed_elsewhere, pump_on(2, 1)),
             "once republished it is an ordinary fresh pump again",
+        );
+    }
+
+    /// A chunk that waited behind a republish is measured from the republish.
+    ///
+    /// Read two seconds ago but dequeued straight after its generation was
+    /// published, it is fresh: the wait was the bootstrap draining, not the
+    /// consumer falling behind. Without the anchor a slow-but-healthy link
+    /// would resync on every republish and never show live output.
+    #[test]
+    fn chunk_age_starts_no_earlier_than_the_generation_publication() {
+        let read_long_ago = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("monotonic clock has run for two seconds");
+        let mut generation = opened();
+        generation.republished_at(100);
+        assert!(!is_stale(generation.chunk_age(read_long_ago)));
+        assert!(
+            generation.chunk_age(std::time::Instant::now()) < STALE_OUTPUT_BUDGET,
+            "a chunk read after publication is aged from its own read",
         );
     }
 

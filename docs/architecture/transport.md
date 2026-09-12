@@ -91,8 +91,10 @@ seam changes.
   than a pane's output blocks the writer within about a round trip. The
   stall backs up into the attach pump, which measures lag in time rather
   than in broadcast slots: a live chunk older than 250ms when the pump
-  dequeues it (`runtime::pump::STALE_OUTPUT_BUDGET`, stamped with the PTY
-  read time) fences the generation and requests an in-band resync to a
+  dequeues it (`runtime::pump::STALE_OUTPUT_BUDGET`, measured from the later
+  of the PTY read and the current generation's publication, so a chunk that
+  merely waited behind a draining bootstrap is not counted as late) fences
+  the generation and requests an in-band resync to a
   fresh checkpoint — the same path a dropped broadcast window takes. A slow
   remote consumer skips frames instead of queueing seconds of output in
   front of its own keystroke echoes. That resync is addressed to the one
