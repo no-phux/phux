@@ -363,8 +363,7 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     // cells AFTER the last "Sessions" header — never by whole lines.
     let panel = painted
         .rfind("Sessions")
-        .map(|index| &painted[index..])
-        .unwrap_or(&painted);
+        .map_or(painted.as_str(), |index| &painted[index..]);
     let roster_cell = |name: &str| {
         for badge in ["● ", "○ ", "◆ ", "◐ "] {
             let needle = format!("{badge}{name}");
