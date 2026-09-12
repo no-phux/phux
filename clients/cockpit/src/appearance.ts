@@ -15,10 +15,12 @@ export interface Appearance {
   readonly followSystem: boolean;
 }
 
+const NO_VALUES: readonly Uint8Array[] = [];
+
 export function initialAppearance(): Appearance {
   return { active: false, dirty: false, outcome: 0, theme: 255, cursor: 0, placement: 0,
     overrides: false, fontLabel: asciiBytes("Loading..."), contrastLabel: new Uint8Array(0), notice: new Uint8Array(0),
-    values: [], followSystem: false };
+    values: NO_VALUES, followSystem: false };
 }
 
 export function appearanceRequest(action: number, argument: number): Uint8Array {
@@ -87,7 +89,7 @@ export function appearanceResponse(bytes: Uint8Array): Appearance | null {
   const fontEnd = 10 + bytes[8];
   const contrastEnd = fontEnd + bytes[9];
   if (bytes[0] === 2 && bytes[contrastEnd] > 1) return null;
-  const values = bytes[0] === 2 ? readValues(bytes, contrastEnd + 1) : [];
+  const values = bytes[0] === 2 ? readValues(bytes, contrastEnd + 1) : NO_VALUES;
   if (values === null) return null;
   const followSystem = bytes[0] === 2 && bytes[contrastEnd] === 1;
   return decodedAppearance(bytes, fontEnd, contrastEnd, values, followSystem);

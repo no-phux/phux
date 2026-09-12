@@ -127,7 +127,7 @@ test('New Session cancellation suppresses late success and releases its input ga
   [model, cmd] = step(model, { kind: 'rename_close' });
   assert.equal(model.renameOpen, false);
   assert.equal(model.creatingSession, false);
-  assert.equal(cmd.cmds[1].payload[1], 4);
+  assert.equal(cmd.cmds.find(effect => effect.name === 'cockpit.new-session').payload[1], 4);
   const [late, effect] = step(model, { kind: 'new_session_loaded', body: sessionReply(2) });
   assert.deepEqual(late, model);
   assert.equal(effect, null);

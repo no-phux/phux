@@ -1,5 +1,6 @@
 export interface LocalToolReply {
   readonly phase: number;
+  readonly operation: number;
   readonly token: Uint8Array;
   readonly target: Uint8Array;
   readonly message: Uint8Array;
@@ -18,10 +19,12 @@ export function localToolRequest(kind: number, token: Uint8Array, destination: U
 }
 
 export function localToolReply(body: Uint8Array): LocalToolReply | null {
-  if (body.length < 18 || body[0] !== 1 || body[1] > 3) return null;
+  if (body.length < 18 || body[0] !== 1 || body[1] > 5) return null;
   const targetEnd = 16 + body[14] + body[15] * 256;
   if (targetEnd + 2 > body.length) return null;
   const messageEnd = targetEnd + 2 + body[targetEnd] + body[targetEnd + 1] * 256;
   if (messageEnd !== body.length) return null;
-  return { phase: body[1], token: body.slice(6, 14), target: body.slice(16, targetEnd), message: body.slice(targetEnd + 2) };
+  const rawOperation = body[2] + body[3] * 256 + body[4] * 65536 + body[5] * 16777216;
+  const operation = rawOperation >= 0 && rawOperation <= 4294967295 ? Math.trunc(rawOperation) : 0;
+  return { phase: body[1], operation, token: body.slice(6, 14), target: body.slice(16, targetEnd), message: body.slice(targetEnd + 2) };
 }

@@ -501,7 +501,8 @@ export interface NavigationRow {
   readonly current: boolean;
 }
 
-/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows.
+/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows,
+/// 5 captured machine sessions (host field is opaque request-id/generation/row).
 export type NavigationScope = number;
 
 export interface NavigationPage {
@@ -541,9 +542,14 @@ export function navigationScopedRequest(revision: WireU64, offset: number, query
 
 function validNavigationRequest(offset: number, query: Uint8Array, scope: number, host: Uint8Array): boolean {
   if (offset < 0 || offset > 65535 || offset !== Math.trunc(offset)) return false;
-  if (scope < 0 || scope > 4 || scope !== Math.trunc(scope)) return false;
+  if (scope < 0 || scope > 5 || scope !== Math.trunc(scope)) return false;
   if (query.length > 64 || host.length > 255) return false;
-  return scope === 3 || host.length === 0;
+  return validNavigationFilter(scope, host.length);
+}
+
+function validNavigationFilter(scope: number, length: number): boolean {
+  if (scope === 5) return length === 12;
+  return scope === 3 || length === 0;
 }
 
 export function navigationIntent(revision: WireU64, index: number): Uint8Array {
@@ -677,9 +683,9 @@ function navigationContext(bytes: Uint8Array, at: number): NavigationContext | n
   if (at + 2 > bytes.length) return null;
   const scope = bytes[at];
   const length = bytes[at + 1];
-  if (!(scope >= 0 && scope <= 4)) return null;
+  if (!(scope >= 0 && scope <= 5)) return null;
   if (at + 5 + length > bytes.length) return null;
-  if (scope !== 3 && length !== 0) return null;
+  if (!validNavigationFilter(scope, length)) return null;
   return { scope: Math.trunc(scope), host: bytes.subarray(at + 2, at + 2 + length), at: at + 2 + length };
 }
 

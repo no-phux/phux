@@ -34,6 +34,8 @@ export interface MachinePage {
 
 export interface MachineState {
   readonly operation: number;
+  readonly browseToken: Uint8Array;
+  readonly statusFirst: number;
   readonly requestId: number;
   readonly generation: number;
   readonly total: number;
@@ -52,7 +54,7 @@ const EMPTY = new Uint8Array(0);
 const NO_MACHINES: readonly MachineRow[] = [];
 
 export function initialMachines(): MachineState {
-  return { operation: 0, requestId: 0, generation: 0, total: 0, rows: NO_MACHINES, visible: NO_MACHINES,
+  return { operation: 0, browseToken: EMPTY, statusFirst: 0, requestId: 0, generation: 0, total: 0, rows: NO_MACHINES, visible: NO_MACHINES,
     selected: EMPTY, notice: EMPTY, loading: false, failed: false, hasMore: false, forgetTarget: EMPTY, forgetName: EMPTY };
 }
 
@@ -82,9 +84,17 @@ export function machineRequest(state: MachineState, operation: number, target: U
 
 export function requestMachines(state: MachineState, operation: number): MachineState {
   const requestId = (state.requestId + 1) % 4294967296;
-  const action = operation >= 0 && operation <= 7 ? Math.trunc(operation) : 0;
+  const action = operation >= 0 && operation <= 8 ? Math.trunc(operation) : 0;
   return { ...state, operation: action, requestId: requestId >= 0 && requestId <= 4294967295 ? Math.trunc(requestId) : 0,
     loading: true, notice: asciiBytes("Refreshing machines...") };
+}
+
+/// Internal operation 8 reads existing inventory pages without refreshing the
+/// registry generation. The native wire operation is still Page (1).
+export function machineStatusRequest(state: MachineState): Uint8Array {
+  const request = machineRequest(state, 1, EMPTY);
+  putU32(request, 10, state.statusFirst);
+  return request;
 }
 
 interface Field { readonly text: Uint8Array; readonly end: number; }
@@ -138,10 +148,14 @@ function machineRecord(bytes: Uint8Array, at: number, generation: number): Machi
   const rawIndex = u32(bytes, at);
   const rawRole = bytes[at + 4]; const rawRoute = bytes[at + 5]; const rawState = bytes[at + 6];
   const index = rawIndex >= 0 && rawIndex <= 4294967295 ? Math.trunc(rawIndex) : 0;
-  if (!(rawRole >= 0 && rawRole <= 2)) return null;
-  if (!(rawRoute >= 0 && rawRoute <= 5)) return null;
-  if (!(rawState >= 0 && rawState <= 4)) return null;
-  const role = Math.trunc(rawRole); const route = Math.trunc(rawRoute); const state = Math.trunc(rawState);
+  // The complete seven-byte header was checked above. Unsigned conversion
+  // carries its byte-valued integer proof into the AOT row record.
+  const role = rawRole >>> 0;
+  const route = rawRoute >>> 0;
+  const state = rawState >>> 0;
+  if (role > 2) return null;
+  if (route > 5) return null;
+  if (state > 4) return null;
   const parsed = machineFields(bytes, at + 7);
   if (parsed === null) return null;
   const fields = parsed.values;
@@ -189,7 +203,7 @@ export function filterMachines(state: MachineState, query: Uint8Array): MachineS
 }
 
 function sameMachine(a: MachineRow, b: MachineRow): boolean {
-  return a.role === b.role && sameBytes(a.name, b.name) && sameBytes(a.endpoint, b.endpoint);
+  return a.role === b.role && sameBytes(a.name, b.name) && sameBytes(a.endpoint, b.endpoint) && sameBytes(a.session, b.session);
 }
 
 function restoredSelection(state: MachineState, rows: readonly MachineRow[]): Uint8Array {
@@ -214,7 +228,7 @@ function updatedMachineRows(state: MachineState, page: MachinePage): readonly Ma
 
 export function receiveMachines(state: MachineState, body: Uint8Array, query: Uint8Array): MachineState {
   const page = machinePage(body);
-  if (page === null) return { ...state, loading: false, notice: asciiBytes("Machines unavailable. Refresh to try again.") };
+  if (page === null) return { ...state, loading: false, failed: true, notice: asciiBytes("Machines unavailable. Refresh to try again.") };
   if (page.requestId !== state.requestId) return state;
   if (page.status !== 0 && page.rows.length === 0) return { ...state, loading: false, failed: true, notice: page.message, selected: EMPTY, forgetTarget: EMPTY };
   const rows = updatedMachineRows(state, page);
@@ -223,7 +237,15 @@ export function receiveMachines(state: MachineState, body: Uint8Array, query: Ui
   const total = page.total >= 0 && page.total <= 4294967295 ? Math.trunc(page.total) : 0;
   const next = { ...state, generation, total, rows, selected,
     loading: false, failed: page.status !== 0, hasMore: rows.length < page.total, notice: page.message, forgetTarget: EMPTY };
-  return filterMachines(next, query);
+  return filterMachines(advanceMachineStatus(next, page), query);
+}
+
+function advanceMachineStatus(state: MachineState, page: MachinePage): MachineState {
+  if (state.operation !== 8) return { ...state, statusFirst: 0 };
+  const first = page.first + page.rows.length;
+  if (first >= state.rows.length) return { ...state, statusFirst: 0 };
+  const statusFirst = first >= 0 && first <= 4294967295 ? Math.trunc(first) : 0;
+  return { ...state, statusFirst };
 }
 
 export function moveMachine(state: MachineState, delta: number, query: Uint8Array): MachineState {

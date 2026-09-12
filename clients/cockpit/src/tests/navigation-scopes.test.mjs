@@ -41,7 +41,10 @@ function open() {
 }
 function committedCommand(cmd) {
   assert.equal(cmd.op, 'batch');
-  assert.equal(cmd.cmds.length, 2);
+  if (cmd.cmds[1].name === 'cockpit.navigation') {
+    assert.equal(cmd.cmds.length, 3);
+    assert.deepEqual(cmd.cmds[2], { op: 'cancel', key: 'cockpit-window-command' });
+  } else assert.equal(cmd.cmds.length, 2);
   assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
   return cmd.cmds[1];
 }
