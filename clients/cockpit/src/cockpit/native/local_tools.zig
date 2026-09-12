@@ -198,23 +198,25 @@ pub fn enrollmentArgv(gpa: std.mem.Allocator, cli: []const u8, destination: []co
 }
 
 pub fn editorArgv(gpa: std.mem.Allocator, io: std.Io, explicit: []const u8, visual: ?[]const u8, editor: ?[]const u8, path_env: ?[]const u8, config: []const u8) ![]const []const u8 {
-    const choice = editorChoice(explicit, visual, editor) orelse return error.EditorRequired;
+    // The resolved absolute config path cannot become an editor option.
+    if (!std.fs.path.isAbsolute(config)) return error.ConfigPathUnavailable;
+    for ([_]?[]const u8{ explicit, visual, editor }) |candidate| {
+        const choice = candidate orelse continue;
+        return usableEditorArgv(gpa, io, choice, path_env, config) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            continue;
+        };
+    }
+    return error.EditorRequired;
+}
+
+fn usableEditorArgv(gpa: std.mem.Allocator, io: std.Io, choice: []const u8, path_env: ?[]const u8, config: []const u8) ![]const []const u8 {
     var arguments: std.ArrayList([]const u8) = .empty;
     try parseCommand(gpa, choice, &arguments);
     if (arguments.items.len == 0) return error.EditorRequired;
     arguments.items[0] = try resolveExecutable(gpa, io, arguments.items[0], path_env);
-    // The resolved absolute config path cannot become an editor option.
-    if (!std.fs.path.isAbsolute(config)) return error.ConfigPathUnavailable;
     try arguments.append(gpa, config);
     return arguments.toOwnedSlice(gpa);
-}
-
-fn editorChoice(explicit: []const u8, visual: ?[]const u8, editor: ?[]const u8) ?[]const u8 {
-    if (explicit.len != 0) return explicit;
-    if (visual) |choice| {
-        if (choice.len != 0) return choice;
-    }
-    return editor;
 }
 
 fn executableExists(io: std.Io, path: []const u8) bool {
@@ -324,7 +326,19 @@ test "editor precedence Finder fallback and missing choice are explicit" {
     const visual = try editorArgv(gpa, std.testing.io, "", "true", "/bad/editor", null, "/config");
     try std.testing.expectEqualStrings("/usr/bin/true", visual[0]);
     try std.testing.expectError(error.EditorRequired, editorArgv(gpa, std.testing.io, "", null, null, null, "/config"));
-    try std.testing.expectError(error.EditorRequired, editorArgv(gpa, std.testing.io, "/does/not/exist", "/usr/bin/true", null, null, "/config"));
+    const fallback = try editorArgv(gpa, std.testing.io, "/does/not/exist", "/usr/bin/true", null, null, "/config");
+    try std.testing.expectEqualStrings("/usr/bin/true", fallback[0]);
+}
+
+test "editor selection skips unusable configured and VISUAL choices before EDITOR" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "/missing/visual", "'unfinished quote", "   \t", "" }) |visual| {
+        const argv = try editorArgv(arena.allocator(), std.testing.io, "/missing/configured-editor", visual, "/usr/bin/true --wait", null, "/config with spaces");
+        try std.testing.expectEqualStrings("/usr/bin/true", argv[0]);
+        try std.testing.expectEqualStrings("--wait", argv[1]);
+        try std.testing.expectEqualStrings("/config with spaces", argv[2]);
+    }
 }
 
 test "config editing creates only isolated missing file and preserves unknown existing bytes" {
