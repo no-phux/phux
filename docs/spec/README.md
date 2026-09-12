@@ -15,7 +15,7 @@ are the codec source of truth.
 ---
 
 The product model — what a Terminal is, why the wire is asymmetric, why
-both ends run libghostty — lives in [CONCEPTS.md](../CONCEPTS.md). This
+both ends run libghostty — lives in [concepts](../CONCEPTS.md). This
 directory is the byte contract.
 
 ## Two-minute model

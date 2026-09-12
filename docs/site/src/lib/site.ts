@@ -5,9 +5,9 @@ export const SITE = {
   name: "phux",
   domain: "phux.sh",
   url: "https://phux.sh",
-  tagline: "share real terminals with your agents",
+  tagline: "you and your agents share the same terminals",
   description:
-    "phux makes every terminal an object on a wire. Humans, GUIs, and agents can observe or drive the same real terminal while the libghostty-backed stream passes through untouched. The terminal is the first kind of thing the server holds; an agent's session inside it is the second.",
+    "phux is a terminal multiplexer whose panes are a view. Each terminal is an addressable object on a wire: you, Cockpit, a script, or an agent attach to the same live emulator.",
   github: "https://github.com/no-phux/phux",
   // One switch for the visual system. Mode tokens live in global.css.
   designMode: "terminal",
@@ -19,6 +19,7 @@ export const SITE = {
 export const NAV = [
   { href: "/docs", label: "docs" },
   { href: "/quickstart", label: "quickstart" },
+  { href: "/concepts", label: "concepts" },
   { href: "/consumers/agents", label: "agents" },
   { href: "/wire", label: "protocol" },
   { href: SITE.github, label: "github", external: true },
