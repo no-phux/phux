@@ -513,6 +513,7 @@ pub async fn log(
     if let CommandResult::Error { code, message } = result {
         return Err(map_refusal(resource, code, message));
     }
+    conn.bind_terminal(resource).await?;
     if options.follow {
         conn.send(&FrameKind::SubscribeEvents {
             terminal: Some(resource.clone()),
@@ -620,6 +621,7 @@ async fn detach(conn: &mut Connection, resource: &ResourceId) {
             },
         })
         .await;
+    conn.unbind_terminal(resource);
 }
 
 /// What one absorbed frame contributed.

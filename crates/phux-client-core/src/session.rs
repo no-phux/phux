@@ -1031,6 +1031,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
             })
     }
 
+    /// Number of attach participants that have not reached a per-terminal
+    /// READY or CLOSED boundary. Multi-stream transports can deliver the
+    /// aggregate `ATTACH_READY` on control before the final Terminal stream
+    /// READY, so the TUI uses this query to preserve the kernel's barrier.
+    #[must_use]
+    pub fn attach_ready_pending(&self) -> Option<usize> {
+        self.attach
+            .as_ref()
+            .filter(|attach| !attach.released)
+            .map(|attach| {
+                attach
+                    .terminals
+                    .iter()
+                    .filter(|participant| !participant.resolved)
+                    .count()
+            })
+    }
+
     /// Release the active ATTACH inventory after the connection is detached.
     pub fn release_active_attach(&mut self) {
         self.attach = None;

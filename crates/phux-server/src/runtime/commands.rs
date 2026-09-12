@@ -773,6 +773,13 @@ pub(crate) async fn handle_command(
     input_lane: Option<&InputLaneHandle>,
     connection_token: &CancellationToken,
     root_token: &CancellationToken,
+    // QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap at
+    // `STREAM_BIND`. The command registers the subscription (lifecycle
+    // fanout, input gates, bind authorization) and answers `Ok`; the
+    // Terminal's content stream starts when the client binds a QUIC
+    // stream to it. `false` everywhere else: subscribe and bootstrap
+    // together, as before.
+    defer_subscription: bool,
 ) {
     // UPGRADE is handled out-of-band: `handle_upgrade` acks the client itself
     // and then re-execs the process, so it never returns a `CommandResult` for
@@ -863,17 +870,31 @@ pub(crate) async fn handle_command(
 
     let result = match command {
         Command::AttachResource { terminal_id } => {
-            handle_attach_terminal(
-                state,
-                client_id,
-                &terminal_id,
-                out_tx,
-                client_caps,
-                bootstrap_profile,
-                bootstrap_limits,
-                connection_token,
-            )
-            .await
+            if defer_subscription {
+                // Multi-stream: register the subscription against the
+                // control mailbox and stop. The content stream — pump,
+                // bootstrap, live output — starts at STREAM_BIND with the
+                // stream's mailbox (see `bootstrap_attach_terminal`).
+                match subscribe_attach_terminal(state, client_id, &terminal_id, out_tx) {
+                    Some(_) => CommandResult::Ok,
+                    None => CommandResult::Error {
+                        code: ErrorCode::TerminalNotFound,
+                        message: format!("no such terminal: {terminal_id:?}"),
+                    },
+                }
+            } else {
+                handle_attach_terminal(
+                    state,
+                    client_id,
+                    &terminal_id,
+                    out_tx,
+                    client_caps,
+                    bootstrap_profile,
+                    bootstrap_limits,
+                    connection_token,
+                )
+                .await
+            }
         }
         Command::DetachResource { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id).await
@@ -1112,14 +1133,9 @@ async fn handle_attach_terminal(
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
 ) -> CommandResult {
-    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
-    else {
-        return CommandResult::Error {
-            code: ErrorCode::CodecUnavailable,
-            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
-        };
-    };
-
+    // Profile validation lives in `bootstrap_attach_terminal` (it runs
+    // after subscribe so the bind path shares it); a bad profile fails
+    // there and this path drops the subscription it just registered.
     let Some((core, handle)) = subscribe_attach_terminal(state, client_id, terminal_id, out_tx)
     else {
         return CommandResult::Error {
@@ -1128,22 +1144,102 @@ async fn handle_attach_terminal(
         };
     };
 
+    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    match bootstrap_attach_terminal(
+        state,
+        client_id,
+        terminal_id,
+        core,
+        &handle,
+        out_tx,
+        stream_id,
+        client_caps,
+        bootstrap_profile,
+        bootstrap_limits,
+        connection_token,
+    )
+    .await
+    {
+        Ok(()) => CommandResult::Ok,
+        Err(failure) => {
+            // The COMMAND path owns its subscription: a failed bootstrap
+            // drops it (the pre-refactor behavior). The STREAM_BIND path
+            // keeps it — see `bootstrap_attach_terminal`.
+            state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
+            CommandResult::Error {
+                code: failure.code,
+                message: failure.message,
+            }
+        }
+    }
+}
+
+/// Bootstrap one Terminal's content stream into `content_tx` without
+/// touching the caller's subscription.
+///
+/// Split out of [`handle_attach_terminal`] for the QUIC multi-stream
+/// `STREAM_BIND` path (proto.md §4.2): the bind subscribes with the
+/// *control* mailbox (lifecycle fanout, input gates, bind authorization)
+/// and bootstraps with the *stream* mailbox (actor emission, pump, BEGIN /
+/// READY). The COMMAND path calls this with the same mailbox for both,
+/// then drops the subscription on failure to preserve its exact prior
+/// behavior.
+///
+/// Failures cancel the generation (pump, native lease, actor consumer
+/// entry) but NEVER unsubscribe: a bind caller retries the bind, and an
+/// `ATTACH_RESOURCE` caller still holds its registration. The returned
+/// [`AttachResourceFailure`] shapes the caller's refusal (correlated
+/// `COMMAND_RESULT` on the command path; uncorrelated `ERROR` on control
+/// plus a stream reset on the bind path).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the negotiated connection context plus the split mailboxes; same list as handle_attach_terminal"
+)]
+pub(crate) async fn bootstrap_attach_terminal(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    core: phux_core::ids::ResourceId,
+    handle: &ResourceHandle,
+    content_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    stream_id: phux_protocol::ids::StreamId,
+    client_caps: ClientCapabilities,
+    bootstrap_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
+    connection_token: &CancellationToken,
+) -> Result<(), AttachResourceFailure> {
+    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
+    else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
+        });
+    };
     // A non-Terminal stream has its own bootstrap shape, and none of the
     // grid machinery below applies to it: it forks here, with the
     // subscription already registered and nothing else yet committed
     // (ADR-0103 §4).
     if handle.kind == crate::resource::ResourceKind::AgentSession {
-        return crate::runtime::resource_commands::attach_agent_session(
+        return match crate::runtime::resource_commands::attach_agent_session(
             state,
             client_id,
             terminal_id,
             core,
-            &handle,
-            out_tx,
+            handle,
+            content_tx,
             bootstrap_limits,
             connection_token,
         )
-        .await;
+        .await
+        {
+            CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
+            CommandResult::Error { code, message } => Err(AttachResourceFailure { code, message }),
+            // `CommandResult` is non-exhaustive; anything else is a shape
+            // this path does not understand, which is an internal fault.
+            other => Err(AttachResourceFailure::internal(&format!(
+                "agent session attach returned an unexpected result: {other:?}"
+            ))),
+        };
     }
 
     // Allocated before the session takes ownership of the handle: exhausting
@@ -1151,34 +1247,34 @@ async fn handle_attach_terminal(
     // as it did when this was one linear body.
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
-        return CommandResult::Error {
+        return Err(AttachResourceFailure {
             code: ErrorCode::ResourceExhausted,
             message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
-        };
+        });
     };
 
-    // ATTACH_RESOURCE bootstraps a grid, so the Terminal facet is resolved
-    // once here; every later stage reads it from the session.
+    // The Terminal facet is resolved once here; every later stage reads it
+    // from the session.
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
-            state.with_mut(|s| {
-                s.cancel_attach_terminal_pump(client_id, core);
-                s.unsubscribe_terminal(client_id, core);
+            state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
+            return Err(AttachResourceFailure {
+                code: ErrorCode::WrongResourceKind,
+                message: error.to_string(),
             });
-            return wrong_resource_kind(error);
         }
     };
     let session = AttachResourceSession {
         state,
-        out_tx,
+        out_tx: content_tx,
         connection_token,
         terminal_id,
         core,
-        handle,
+        handle: handle.clone(),
         terminal,
         client_id,
-        stream_id: crate::runtime::attach::stream_id_from(client_id.0),
+        stream_id,
         client_caps,
         stream_profile,
         bootstrap_limits,
@@ -1186,27 +1282,27 @@ async fn handle_attach_terminal(
 
     let mut generation = match session.establish_generation(bootstrap_id).await {
         Ok(generation) => generation,
-        Err(failure) => return session.failed(failure),
+        Err(failure) => return Err(session.failed(failure)),
     };
 
     if let Some(state_sync) = generation.state_sync_bootstrap.take() {
         return match session.finish_state_sync(&generation, state_sync).await {
-            Ok(()) => CommandResult::Ok,
-            Err(failure) => session.failed(failure),
+            Ok(()) => Ok(()),
+            Err(failure) => Err(session.failed(failure)),
         };
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     if native_checkpoint_profile(stream_profile) {
         return match session.finish_native(&mut generation).await {
-            Ok(()) => CommandResult::Ok,
-            Err(failure) => session.failed(failure),
+            Ok(()) => Ok(()),
+            Err(failure) => Err(session.failed(failure)),
         };
     }
 
     match session.finish_snapshot(&mut generation).await {
-        Ok(()) => CommandResult::Ok,
-        Err(failure) => session.failed(failure),
+        Ok(()) => Ok(()),
+        Err(failure) => Err(session.failed(failure)),
     }
 }
 
@@ -1222,7 +1318,11 @@ async fn handle_attach_terminal(
 /// out-of-band terminal-scoped fanout — `RESOURCE_CLOSED`, which L1 §3.1
 /// requires for "every client subscribed to the Terminal" — has no other
 /// way to reach it. Content rides the pump; lifecycle does not.
-fn subscribe_attach_terminal(
+///
+/// The `STREAM_BIND` path subscribes with the *control* mailbox and
+/// bootstraps with the stream's: lifecycle fanout and bind authorization
+/// resolve through the remembered mailbox, content through the passed one.
+pub(crate) fn subscribe_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -1250,14 +1350,16 @@ const fn native_checkpoint_profile(profile: phux_protocol::caps::BootstrapStream
 
 /// Why an `ATTACH_RESOURCE` stage failed.
 ///
-/// Carried back to [`AttachResourceSession::failed`] so the partial attach is
-/// rolled back exactly once on the way to the caller's `COMMAND_RESULT`.
+/// Carried back to [`AttachResourceSession::failed`] so the partial
+/// generation is rolled back exactly once on the way to the caller's
+/// `COMMAND_RESULT` — or to the bind path's uncorrelated `ERROR` (see
+/// [`bootstrap_attach_terminal`]).
 #[derive(Debug)]
-struct AttachResourceFailure {
+pub(crate) struct AttachResourceFailure {
     /// Wire error code the caller receives.
-    code: ErrorCode,
+    pub(crate) code: ErrorCode,
     /// Human-readable explanation attached to that code.
-    message: String,
+    pub(crate) message: String,
 }
 
 impl AttachResourceFailure {
@@ -1326,14 +1428,15 @@ impl AttachResourceSession<'_> {
         )
     }
 
-    /// Undo a partial attach: cancel the generation, drop the subscription,
-    /// release any native lease, and detach the per-consumer state entry.
-    fn roll_back(&self) {
+    /// Undo a partial generation: cancel it, release any native lease, and
+    /// detach the per-consumer state entry — but KEEP the subscription, which
+    /// the caller owns (the COMMAND path drops it after this returns; the
+    /// `STREAM_BIND` path keeps it for a retrying bind).
+    fn failed(&self, failure: AttachResourceFailure) -> AttachResourceFailure {
         use crate::terminal_actor::ConsumerDetachRequest;
 
         self.state.with_mut(|s| {
             s.cancel_attach_terminal_pump(self.client_id, self.core);
-            s.unsubscribe_terminal(self.client_id, self.core);
         });
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let _ =
@@ -1347,16 +1450,7 @@ impl AttachResourceSession<'_> {
             client_id: wire_client_id(self.client_id),
             reply,
         });
-    }
-
-    /// Roll the partial attach back and shape the stage failure as the
-    /// caller's `COMMAND_RESULT`.
-    fn failed(&self, failure: AttachResourceFailure) -> CommandResult {
-        self.roll_back();
-        CommandResult::Error {
-            code: failure.code,
-            message: failure.message,
-        }
+        failure
     }
 
     /// Register the per-consumer state-sync entry (ADR-0018) so `FRAME_ACK`
@@ -2307,7 +2401,7 @@ const fn tombstone_reason(
 /// entry removed, per-consumer state-sync entry released) and the per-terminal agent-event
 /// subscription. Idempotent: unknown terminals and never-attached callers
 /// reply `Ok`, so a detach can never race a natural close into an error.
-async fn handle_detach_terminal(
+pub(crate) async fn handle_detach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,

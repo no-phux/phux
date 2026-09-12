@@ -220,6 +220,7 @@ async fn send_detach(
         return Ok(());
     }
     conn.send(&FrameKind::Detach).await?;
+    conn.unbind_all_terminals();
     *detach_pending = true;
     Ok(())
 }

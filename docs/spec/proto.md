@@ -10,7 +10,7 @@ last-reviewed: 2026-09-12
 HELLO speaks this surface: transport assumptions, length-prefixed
 framing, version and capability negotiation, lifecycle frames
 (DETACH / SUBSCRIBE / PING), per-Terminal flow control, structured
-errors, transport security plus optional workload proof, and the
+errors, transport security plus mTLS workload authority, and the per-tier
 conformance contract that distinguishes the paper protocol from the
 reference server.
 
@@ -85,8 +85,8 @@ oriented byte stream. This version defines these concrete transports:
   invokes `ssh host phux stdio-bridge`; the bridge splices stdin/stdout to the
   server UDS byte-transparently. SSH still supplies transport authentication and
   confidentiality, but exposes no independently verifiable workload channel
-  binding. ADR-0098's closed policy modes therefore admit no SSH-stdio
-  connection after their cutover; §10 owns the superseding security rule.
+  binding. Closed policy modes therefore admit no SSH-stdio
+  connection; §10 owns the superseding security rule.
 - **QUIC** (`quic://host:port`), for remote clients ([ADR-0007]). A
   single bidirectional QUIC stream carries the identical framing — a
   reliable, ordered octet stream, satisfying the property above. TLS 1.3
@@ -95,6 +95,10 @@ oriented byte stream. This version defines these concrete transports:
   QUIC mandates ALPN: both ends MUST offer the exact protocol id
   `phux-quic/1` (`QUIC_ALPN` in `phux-protocol`) or the TLS handshake
   fails — a stray non-phux QUIC client never reaches the frame layer.
+  When both peers negotiate `QUIC_STREAMS` (§6.2), the connection
+  carries one control stream plus one bidi stream per attached Terminal
+  instead (§4.2); without the bit the single-stream shape above is the
+  whole contract.
 
 Additional transports MUST satisfy the reliable/ordered/bidirectional
 property; if they do not, they require a new major protocol version.
@@ -139,10 +143,65 @@ adds no frame, field, tag, or error code to the protocol.
 [ADR-0051]: ../../ADR/0051-outbound-dial-out-connector-transport.md
 [ADR-0057]: ../../ADR/0057-minimal-reference-relay.md
 
+### 4.2 QUIC multi-stream (`QUIC_STREAMS`)
+
+When `HELLO_OK` advertises `QUIC_STREAMS` ([§6.2](#62-capability-and-synchronization-profile-negotiation),
+[ADR-0115](../../ADR/0115-quic-stream-per-terminal.md)), a QUIC
+connection is one **control stream** plus one **bidi stream per attached
+Terminal**, replacing the single-stream shape of §4 for that connection.
+UDS, ssh-stdio, WebSocket, and WebTransport never negotiate this;
+single-stream is their permanent shape.
+
+- **Control stream.** The client's first opened bidi stream, exactly as
+  in the single-stream shape (bearer preamble where required, then
+  frames). It carries every frame that is not Terminal content:
+  `HELLO` / `HELLO_OK`, `COMMAND` / `COMMAND_RESULT`, `ATTACH` /
+  `ATTACHED` / `ATTACH_READY`, `DETACH` / `DETACHED`, `PING` / `PONG`,
+  `ERROR`, and session-scoped lifecycle (`RESOURCE_SPAWNED`,
+  `RESOURCE_CLOSED`, `RESOURCE_MOVED`, `BELL`, `EVENT`). Command
+  correlation stays connection-wide via `request_id`.
+- **Terminal streams.** The client opens one bidi stream per Terminal it
+  attaches to (session `ATTACH` opens one per pane in the snapshot;
+  `ATTACH_RESOURCE` opens one for that resource); the server never
+  opens one. Each carries exactly that Terminal's `RESOURCE_OUTPUT`,
+  `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`, and `INPUT_*` frames — the
+  L1 §4 mapping is normative for which frames ride where. Input and
+  output share the stream, so per-Terminal causal order (keystroke
+  before its echo) is stream order.
+- **Binding.** The first bytes on a new Terminal stream are a
+  `STREAM_BIND` header — `len: u32 BE` + `terminal_id` in its canonical
+  L1 encoding + `stream_id: u64 BE` — a transport-establishment detail
+  like the bearer preamble, not a phux frame, so it takes no
+  discriminant. The server answers with that generation's
+  `BOOTSTRAP_BEGIN` on the same stream; an unknown or unauthorized id
+  is refused with an uncorrelated `ERROR` on control and a stream
+  reset. A `STREAM_BIND` that does not complete within the admission
+  deadline (§4, QUIC `ADMISSION_DEADLINE`) abandons the stream.
+- **Teardown.** Client `finish()` after `DETACH_RESOURCE`; server reset
+  on Terminal death follows the `RESOURCE_CLOSED` already sent on
+  control. Stream close is a detach signal, never an error: the
+  generation machinery ([L1.md §4.6](./L1.md)) owns continuity, and
+  rebinding a `StreamId` to a fresh QUIC stream after migration or
+  re-attach is the reconnect path it already specifies. The app-level
+  `StreamId` is never the QUIC stream id.
+- **Flow control.** Each Terminal stream has independent QUIC flow
+  control: a flooding Terminal stalls only its own stream. The §8
+  application bounds (per-client queues, gap resync) apply per stream,
+  not per connection.
+- **Relay.** The relay forwards stream pairs without parsing (§4.1):
+  each consumer-opened stream is spliced to a fresh `tunnel.open_bi()`.
+  Stream 0 has no special status. Per-connection stream count is capped
+  on both legs; over cap closes the connection with the relay's
+  application close codes, emitting no phux frame.
+
+A client MUST NOT open a second stream unless `HELLO_OK` advertised
+`QUIC_STREAMS`. A server that receives one anyway resets it.
+
 The transport is responsible for confidentiality, integrity, and its baseline
 peer/server evidence. The protocol assumes all three and servers MUST reject a
-transport that lacks them. Under paired policy, §6.1.1 additionally supplies
-workload identity and scoped authority; transport admission cannot substitute.
+transport that lacks them. Under paired policy, §6.1.1 additionally authenticates
+the workload by mTLS client certificate and scopes its authority from the
+registry; transport admission cannot substitute.
 
 ---
 
@@ -205,8 +264,9 @@ HELLO {
     protocol_patch: u16,              // field 4
     client_caps: ClientCapabilities,  // field 5, required positional sub-record
     compression: optional<u8>,        // field 6; §6.4 (CompressionSet bitset)
-    workload_profile: optional<str>,  // field 7; §6.1.1
-    workload_client_nonce: optional<bytes32>, // field 8; §6.1.1
+    // fields 7 and 8 are retired-unshipped: the phux-workload/v1 offer
+    // (profile string + client nonce) was specified but never implemented
+    // (ADR-0116). A sender MUST NOT emit them; a decoder skips them.
     ssh_origin: optional<SshOrigin>,  // field 9; L3.md §3.9, set only by phux stdio-bridge
 }
 
@@ -228,7 +288,9 @@ HELLO_OK {
     max_chunk_bytes: u32,             // field 7, required
     max_history_page_bytes: u32,      // field 8, required
     compression: optional<u8>,        // field 9; §6.4 (selected Compression tag)
-    workload_grant: optional<WorkloadGrant>, // field 10; §6.1.1
+    // field 10 is retired-unshipped: the phux-workload/v1 grant was
+    // specified but never implemented (ADR-0116). A sender MUST NOT emit
+    // it; a decoder skips it.
 }
 ```
 
@@ -248,44 +310,30 @@ fields do not acquire legacy defaults: the clean cutover relies on the
 major/minor admission gate rather than decoding an older HELLO shape as 0.9.
 HELLO twice is a protocol error.
 
-### 6.1.1 phux-workload/v1 authentication
+### 6.1.1 Workload authentication (mTLS)
 
-<!-- impl-status: spec-only; probe: WorkloadChallenge,WorkloadResponse,WORKLOAD_AUTH -->
-> **Status: spec-only.** The terminal mapping of the workload-auth profile has
-> no codec, policy implementation, registry, or classifier yet.
+<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,PeerIdentityCredential -->
+> **Status: spec-only.** mTLS client-certificate authentication, the
+> credential registry, the scope classifier, and live revocation are
+> specified in [workload-auth.md](./workload-auth.md) but not implemented;
+> the only code is the `PolicyEngine::authorize_hello` seam and its
+> permissive default.
 
-The two HELLO workload fields SHALL be both absent or both present. When
-present they carry the exact profile string `phux-workload/v1` and a fresh
-32-byte client nonce. A server using paired policy checks `major.minor` first,
-then maps the endpoint-neutral profile in
-[workload-auth.md](./workload-auth.md) as follows:
+There is no workload handshake frame and no HELLO workload field. On
+TLS transports (QUIC, WSS) under `paired` policy, the server requests a
+client certificate at the TLS layer and verifies it against the phux CA;
+the verified identity is stamped into `PeerIdentity` and authorized
+against the registry before any stateful frame is processed. Owner UDS
+keeps kernel-uid authority; the bearer token stays outer admission
+only. A TLS-layer refusal happens before HELLO and carries no phux
+frame; post-HELLO revocation and expiry close with the §7.2 reasons.
 
-```text
-HELLO
-  -> WORKLOAD_CHALLENGE (S -> C, 0x84)
-  -> WORKLOAD_RESPONSE  (C -> S, 0x04)
-  -> HELLO_OK
-```
-
-The terminal service string is `phux-terminal`. No frame may interleave between
-challenge and response. HELLO_OK field 10 carries the strict `WorkloadGrant`
-image defined by the profile, and `server_id` SHALL equal the 16-byte
-incarnation signed in the challenge. A paired client requires
-`ServerFeature::WORKLOAD_AUTH`, a valid challenge, and the grant; receiving
-HELLO_OK without them is downgrade, not permission to continue.
-
-Version rejection precedes workload-offer parsing, key lookup, and proof
-generation. Authentication-frame fields are strict and canonical: unknown or
-duplicate fields, missing fields, non-minimal varints, unknown scope bits or
-selector tags, and nested or body trailing bytes are fatal
-`MALFORMED_MESSAGE`. Ordinary HELLO fields retain the extensible TLV rule above.
-
-The exact challenge/response fields, transcript bytes, channel bindings,
-ScopeSet encoding, policy modes, total client-frame/command classification,
-denial semantics, and live revocation are normative in
-[workload-auth.md](./workload-auth.md). The workload profile authenticates an
-endpoint connection; it does not merge the terminal protocol with the separate
-durable coordinator endpoint
+The exact CA/enrollment/registry format, the closed verb/selector scope
+schemas, the total client-frame/command classification, denial
+semantics, and live revocation are normative in
+[workload-auth.md](./workload-auth.md). Workload authentication
+authorizes an endpoint connection; it does not merge the terminal
+protocol with the separate durable coordinator endpoint
 ([ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md)).
 
 The `layers` intersection retains ADR-0015 semantics: L1 is mandatory, L2 is
@@ -320,7 +368,9 @@ ServerFeature = bitset (u32) {
     SPAWN_INITIAL_SIZE = 0x00000200, // SPAWN_RESOURCE.initial_size (L1.md §3.1)
     REPORT_AGENT_STATE = 0x00000400, // REPORT_AGENT_STATE (L1.md §5.1; ADR-0085)
     GET_PERF           = 0x00000800, // GET_PERF (L1.md §5.1; ADR-0096)
-    WORKLOAD_AUTH      = 0x00001000, // phux-workload/v1 (§6.1.1; ADR-0098)
+    // 0x00001000 is retired-unshipped: the phux-workload/v1 WORKLOAD_AUTH
+    //   bit was specified but never implemented (ADR-0116). It is not
+    //   advertised and MUST NOT be reused without a version bump.
     TRANSCRIBE         = 0x00002000, // TRANSCRIBE (L1.md §5.1)
     RESOURCE_KINDS     = 0x00004000, // ResourceKind spawns and facets, RESOURCE_CLOSED.reason,
                                      //   APPEND_RESOURCE_OUTPUT, AgentEventsJsonlV1
@@ -335,6 +385,8 @@ ServerFeature = bitset (u32) {
     SSH_ORIGIN         = 0x00100000, // HELLO.ssh_origin honored; whoami reports ssh-stdio (L3.md §3.9)
     CONDITIONAL_KILL   = 0x00200000, // KILL_RESOURCE_IF, SPAWN_RESOURCE.bind_instance,
                                      //   RESOURCE_SPAWNED.instance (L1.md §3.1, §5.2.1; ADR-0109)
+    QUIC_STREAMS       = 0x00400000, // one control stream + one bidi stream per
+                                     //   attached Terminal (§4.2; ADR-0115)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -398,7 +450,8 @@ optional `features: u32`. A one-byte legacy value therefore decodes with an
 empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
-`GET_PERF = 0x800`, `WORKLOAD_AUTH = 0x1000`, `TRANSCRIBE = 0x2000`,
+`GET_PERF = 0x800`,
+`TRANSCRIBE = 0x2000`,
 `RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`,
 `HOST_SESSIONS = 0x10000`, `KEEP_EMPTY_SESSIONS = 0x20000`,
 `WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
@@ -453,6 +506,16 @@ safe to send unadvertised. A server without the bit skips the field and
 answers an unbound `OK`, which tells the client there is no token to bind. The
 token in `RESOURCE_SPAWNED.instance` names the answering server's id space:
 through a hub, the satellite's ([L1.md](./L1.md) §3.1).
+
+`QUIC_STREAMS = 0x400000` gates a transport shape, not a frame: the §4.2
+control-plus-per-Terminal-streams connection. A client MUST NOT open a
+second QUIC stream unless `HELLO_OK` advertised the bit; a server that
+receives one anyway resets it. The bit is QUIC-only: it is never
+advertised on (and never affects) UDS, ssh-stdio, WebSocket, or
+WebTransport, whose single-stream shape is permanent. Unlike a frame bit,
+there is no degrading unadvertised case — one stream is the complete
+contract without it, which is exactly the pre-bit behavior, so old peers
+interoperate unchanged.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -649,7 +712,6 @@ have no catalog row; the mechanism is defined in
 | 0x01  | C → S     | `HELLO`           | §6.1               | shipped   |
 | 0x02  | C → S     | `ATTACH`          | [L1.md §replay](./L1.md) | shipped |
 | 0x03  | C → S     | `DETACH`          | §7.2               | shipped   |
-| 0x04  | C → S     | `WORKLOAD_RESPONSE`| §6.1.1             | spec-only |
 | 0x16  | C → S     | `HISTORY_REQUEST` | [L1.md §history](./L1.md) | shipped |
 | 0x21  | C → S     | `FRAME_ACK`       | §8                 | shipped   |
 | 0x31  | C → S     | `COMMAND`         | [L1.md §5](./L1.md)| shipped   |
@@ -659,7 +721,6 @@ have no catalog row; the mechanism is defined in
 | 0x81  | S → C     | `ATTACHED`        | [L1.md §replay](./L1.md) | shipped |
 | 0x82  | S → C     | `DETACHED`        | §7.2               | shipped   |
 | 0x83  | S → C     | `ATTACH_READY`    | [L1.md §replay](./L1.md) | shipped |
-| 0x84  | S → C     | `WORKLOAD_CHALLENGE`| §6.1.1            | spec-only |
 | 0x9A  | S → C     | `FRAME_COMPRESSED`| §6.4               | shipped   |
 | 0xC1  | S → C     | `ERROR`           | §9                 | shipped   |
 | 0xC2  | S → C     | `COMMAND_RESULT`  | [L1.md §5](./L1.md)| shipped   |
@@ -739,16 +800,17 @@ DetachReason = enum {
                             //   over its members; see L2.md / ADR-0030).
     REPLACED          = 3,  // another client took over an exclusive attach
     PROTOCOL_ERROR    = 4,
-    AUTHENTICATION_FAILED = 5,  // phux-workload/v1 admission failed
+    AUTHENTICATION_FAILED = 5,  // post-HELLO authentication outcome failed
+                                    //   (a pre-HELLO TLS refusal carries no frame)
     AUTHORIZATION_REVOKED = 6,  // live workload registry authority withdrawn
     AUTHORIZATION_EXPIRED = 7,  // live workload grant reached expires_at
     INTERNAL_ERROR    = 255,
 }
 ```
 
-<!-- impl-status: spec-only; probe: AUTHENTICATION_FAILED,AUTHORIZATION_REVOKED,AUTHORIZATION_EXPIRED -->
+<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,PeerIdentityCredential -->
 > **Status: spec-only.** Detach reason values 5 through 7 land with the
-> `phux-workload/v1` handshake and live-revocation implementation.
+> mTLS credential-registry implementation and live revocation.
 
 Both fields are optional-absent, which is what makes them additive under
 §6.3: a server that predates `0.7.0-draft.7` encodes an empty `DETACHED`
@@ -869,6 +931,16 @@ Capture leases, post-cut raw queues (bytes and age), outbound queues, history
 work, and local caches are bounded independently per consumer. Overflow
 tombstones the affected generation; other consumers and panes continue.
 
+Under `QUIC_STREAMS` (§4.2) the per-consumer outbound bound is per
+Terminal stream, not per connection: each stream drains its own queue
+into its own QUIC flow-control window, so a slow or flooding Terminal
+exerts backpressure only on its stream. The gap-resync rule is unchanged
+— a stream that cannot drain is skipped to a fresh checkpoint via
+`BOOTSTRAP_TOMBSTONE` on that stream — but the skip no longer affects
+any other Terminal on the connection. Control-stream queues stay
+connection-wide and are bounded separately; control traffic is small,
+so one shared bound is sufficient.
+
 ---
 
 ## 9. Errors
@@ -965,7 +1037,7 @@ never mapped to a placeholder.
 A fatal **protocol** error MUST be followed by
 `DETACHED { reason: PROTOCOL_ERROR }` and transport close. Workload
 authentication failure, revocation, and expiry use their specific §7.2 reasons
-([workload-auth.md §8](./workload-auth.md)); they are fatal policy outcomes, not
+([workload-auth.md §7](./workload-auth.md)); they are fatal policy outcomes, not
 protocol errors.
 
 Receipt of an `ERROR` is not itself an ending. A consumer MUST NOT treat the
@@ -999,7 +1071,7 @@ After authentication, a scope miss is operation-scoped: a correlated request
 receives the denial, no effect occurs, and the connection remains active. A
 denied fire-and-forget frame is dropped and may receive a rate-limited
 uncorrelated denial. The complete rule is in
-[workload-auth.md §8](./workload-auth.md).
+[workload-auth.md §7](./workload-auth.md).
 
 An `ERROR` carries no Terminal id, so a `Terminal`-scoped code with no
 `request_id` names a failure the consumer cannot attribute to one Terminal.
@@ -1015,27 +1087,29 @@ Transport security is always the outer boundary. It provides confidentiality,
 integrity, and baseline peer/server evidence:
 
 - **Unix sockets:** local policy relies on filesystem permissions (mode `0600`,
-  owned by the user). Servers MUST refuse broader permissions. Paired policy
-  additionally requires workload proof and a kernel-authenticated uid/gid/pid
-  channel binding.
+  owned by the user). Servers MUST refuse broader permissions. The
+  kernel-authenticated uid is the workload authority on owner UDS in both
+  policy modes — there is no certificate to present and no proof to perform.
 - **SSH:** the SSH session provides transport authentication and channel
-  confidentiality, but a stdio stream exposes no independently verifiable §6.1.1
-  binding. No closed policy mode admits SSH-stdio after ADR-0098's cutover; a
-  later workload profile must define `SSH_SESSION` before it can return.
+  confidentiality, but a stdio stream exposes no independently verifiable
+  channel binding. No closed policy mode admits SSH-stdio; a later profile
+  must define a binding for it before it can return.
 - **QUIC and WSS:** TLS 1.3 provides confidentiality and server identity. A
-  routable listener also keeps its bearer/certificate transport gate, then
-  paired policy authenticates and scopes the workload with the exporter from
-  that exact TLS connection.
+  routable listener also keeps its bearer-token transport gate. Under paired
+  policy the server additionally requires an mTLS client certificate
+  verified against the phux CA, and scopes the workload from the registry
+  ([workload-auth.md](./workload-auth.md)).
 
-[ADR-0098](../../ADR/0098-workload-proof-and-closed-scope-authority.md)
-explicitly amends the earlier “no in-band auth” doctrine from
-[ADR-0031](../../ADR/0031-remote-consumer-auth-and-encryption.md). The protocol
-still defines no reusable cookie or bearer token. It now defines the
-`phux-workload/v1` proof exchange because per-operation authority must be signed
-over the negotiated endpoint, server incarnation, channel, requested scopes,
-and expiry. Transport admission alone never satisfies paired policy. The exact
-policy modes and secret boundaries are in
-[workload-auth.md §9](./workload-auth.md).
+[ADR-0031](../../ADR/0031-remote-consumer-auth-and-encryption.md) put a
+bearer token in the transport handshake and banned in-band auth; the token
+remains outer admission. [ADR-0098](../../ADR/0098-workload-proof-and-closed-scope-authority.md)
+added the closed-scope authorization half this document enforces, and
+[ADR-0116](../../ADR/0116-workload-auth-is-mtls.md) retired 0098's bespoke
+proof handshake unshipped: the protocol defines no challenge/response
+exchange because per-operation authority is bound to the mTLS client
+identity at the TLS layer. Transport admission alone never satisfies
+paired policy. The exact policy modes and secret boundaries are in
+[workload-auth.md §8](./workload-auth.md).
 
 ---
 

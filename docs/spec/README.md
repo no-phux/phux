@@ -50,7 +50,7 @@ terminal onboarding. A client that only wants terminals never speaks it.
 |---|---|
 | [TUTORIAL.md](./TUTORIAL.md) | **Start here:** a complete session walkthrough (HELLO → attach → output → input → detach) |
 | [proto.md](./proto.md) | Framing, version negotiation, capabilities, flow control, transport |
-| [workload-auth.md](./workload-auth.md) | Endpoint-neutral `phux-workload/v1` proof, canonical endpoint-owned scopes, registry intersection, and live revocation |
+| [workload-auth.md](./workload-auth.md) | mTLS workload authentication, canonical endpoint-owned scopes, registry intersection, and live revocation |
 | [coordinator.md](./coordinator.md) | Separate durable-work endpoint — authority, operations, snapshots, events, and Terminal bindings |
 | [L1.md](./L1.md) | Terminal substrate — the REQUIRED conformance tier |
 | [L2.md](./L2.md) | Reserved, unused — no collection tier (dissolved per ADR-0030) |

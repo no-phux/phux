@@ -8,6 +8,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use rustls::pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 
 use crate::DialError;
@@ -49,16 +50,43 @@ pub fn client_config(
         }),
     };
 
-    let mut crypto = rustls::ClientConfig::builder_with_provider(provider)
+    let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|err| DialError::Connect(format!("build TLS client config: {err}")))?
         .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(verifier);
+    let mut crypto = if let Some((cert_path, key_path)) = client_identity_paths()? {
+        let certs = rustls::pki_types::CertificateDer::pem_file_iter(&cert_path)
+            .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?;
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_file(&key_path)
+            .map_err(|err| DialError::Connect(format!("read workload key: {err}")))?;
+        builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|err| DialError::Connect(format!("build workload identity: {err}")))?
+    } else {
+        builder.with_no_client_auth()
+    };
     if let Some(alpn) = alpn {
         crypto.alpn_protocols = vec![alpn.to_vec()];
     }
     Ok(crypto)
+}
+
+/// Optional client identity for paired mTLS endpoints. Both paths are
+/// required; a half-configured identity fails closed at the server rather
+/// than silently downgrading to an unauthenticated client.
+fn client_identity_paths() -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, DialError> {
+    let cert = std::env::var_os("PHUX_WORKLOAD_CERT").map(std::path::PathBuf::from);
+    let key = std::env::var_os("PHUX_WORKLOAD_KEY").map(std::path::PathBuf::from);
+    match (cert, key) {
+        (None, None) => Ok(None),
+        (Some(cert), Some(key)) => Ok(Some((cert, key))),
+        _ => Err(DialError::Connect(
+            "PHUX_WORKLOAD_CERT and PHUX_WORKLOAD_KEY must be set together".to_owned(),
+        )),
+    }
 }
 
 /// Uppercase hex digits only — drops separators and whitespace so a pin pasted

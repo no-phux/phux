@@ -931,8 +931,11 @@ pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
 pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
 /// Wire bit advertising the `GET_PERF` telemetry snapshot command.
 pub const GET_PERF: u32 = 0x0000_0800;
-/// Wire bit advertising the `TRANSCRIBE` voice passthrough command. `0x1000`
-/// is reserved for `WORKLOAD_AUTH` (ADR-0098) and skipped.
+/// Wire bit advertising the `TRANSCRIBE` voice passthrough command.
+///
+/// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit
+/// was specified but never implemented, ADR-0116) and skipped: it is not
+/// advertised and MUST NOT be reused without a version bump.
 pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// Wire bit advertising non-Terminal `ResourceKind`s.
 ///
@@ -974,6 +977,14 @@ pub const SSH_ORIGIN: u32 = 0x0010_0000;
 /// ADR-0109): `KILL_RESOURCE_IF`, `SPAWN_RESOURCE.bind_instance`, and
 /// `RESOURCE_SPAWNED.instance`.
 pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
+
+/// Wire bit advertising QUIC multi-stream.
+///
+/// A negotiating QUIC connection carries one control stream plus one
+/// client-opened bidi stream per attached Terminal (`docs/spec/proto.md`
+/// §4.2, ADR-0115). QUIC-only; never advertised on (or affecting) UDS,
+/// ssh-stdio, WebSocket, or WebTransport.
+pub const QUIC_STREAMS: u32 = 0x0040_0000;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -1079,6 +1090,13 @@ pub enum ServerFeature {
     /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
     /// before sending the command: an older server cannot decode the tag.
     ConditionalKill = CONDITIONAL_KILL,
+    /// The connection may use QUIC multi-stream (ADR-0115): one control
+    /// stream plus one client-opened bidi stream per attached Terminal,
+    /// each Terminal stream carrying that Terminal's output, bootstrap,
+    /// history, and input. A client MUST NOT open a second QUIC stream
+    /// without this bit; without it the single-stream shape is the whole
+    /// contract. QUIC-only.
+    QuicStreams = QUIC_STREAMS,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1102,7 +1120,8 @@ impl ServerFeatureSet {
         | (ServerFeature::Whoami as u32)
         | (ServerFeature::ListDirectoryHost as u32)
         | (ServerFeature::SshOrigin as u32)
-        | (ServerFeature::ConditionalKill as u32);
+        | (ServerFeature::ConditionalKill as u32)
+        | (ServerFeature::QuicStreams as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1816,6 +1835,11 @@ mod tests {
             !ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectoryHost)
         );
         assert_eq!(CONDITIONAL_KILL, 0x0020_0000);
+        assert_eq!(QUIC_STREAMS, 0x0040_0000);
+        assert!(ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::QuicStreams));
+        assert!(
+            !ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::QuicStreams)
+        );
         assert!(
             ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
         );

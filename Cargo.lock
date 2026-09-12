@@ -2424,6 +2424,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "wtransport",
+ "x509-parser",
 ]
 
 [[package]]

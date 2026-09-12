@@ -14,6 +14,9 @@ and terminates live connections when that authority expires or is revoked.
 
 Status: Accepted (forward-compat)
 Date: 2026-09-03
+Superseded in part by [ADR-0116](./0116-workload-auth-is-mtls.md): the
+`phux-workload/v1` mutual-Ed25519-proof handshake is retired unshipped in
+favor of mTLS client certificates. What stands is the authorization half.
 
 ## Context
 
