@@ -20,6 +20,7 @@ const chrome_command_envelope = projection.chrome_command_envelope;
 
 test {
     _ = @import("../../tests/remote_theme_tests.zig");
+    _ = @import("../../native_paint_owner_tests.zig");
 }
 
 pub const window_ground_command_id: u64 = 0x0c01;
@@ -161,9 +162,9 @@ pub fn paintWindowIndex(model: *const Model, builder: *canvas.Builder, window_in
 /// that window's widget tree: real text through the canvas primitives, damage
 /// kept row-shaped by stable command ids, one id namespace per pane.
 ///
-/// Pane id namespaces are the REGISTRY slot, which is global — so two windows
-/// showing different terminals never collide, and no window can ever show the
-/// same terminal as another (`Model.admitTab` refuses it).
+/// Pane id namespaces use local registry slots or remote terminal refs within
+/// each window's display list. The selected tree also carries the attachment:
+/// independent clients may publish the same remote ref in different windows.
 fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usize, size: geometry.SizeF, tokens: canvas.DesignTokens) anyerror!void {
     const ws = model.wsAtConst(window_index) orelse return;
     const window_active = model.focused and window_index == model.active_window;
@@ -217,7 +218,8 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     // cells and a 320x96 grid needs 30720, so the single-pane case — the
     // common one — would start silently truncating again.
     const cell_share = canvas.max_display_list_cells / share_divisor;
-    const focus_node = if (ws.selectedTreeConst()) |current| current.focus else layout.none;
+    const tree = ws.selectedTreeConst() orelse return;
+    const focus_node = tree.focus;
 
     for (panes[0..count], 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
@@ -241,7 +243,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
         // two windows both drawing a solid cursor would both claim the
         // keyboard, and only one of them has it.
         const options_focused = window_active and pane.node == focus_node;
-        const painted = try paintPane(model, builder, pane, index, tokens, .{
+        const painted = try paintPane(model, tree, builder, pane, index, tokens, .{
             .frame = pane.rect,
             .background_frame = pane.rect,
             .tokens = grid_tokens,
@@ -281,16 +283,16 @@ fn paintDim(builder: *canvas.Builder, pane: layout.Pane, index: usize, count: us
     });
 }
 
-fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, index: usize, tokens: canvas.DesignTokens, base: grid.PaintOptions) !bool {
+fn paintPane(model: *const Model, tree: *const layout.Tree, builder: *canvas.Builder, pane: layout.Pane, index: usize, tokens: canvas.DesignTokens, base: grid.PaintOptions) !bool {
     var options = base;
     if (model.provider.terminalConst(pane.terminal)) |terminal| {
         try paintLocalPane(terminal, builder, index, tokens, options);
     } else {
-        const remote = model.phuxForRefConst(pane.terminal) orelse return false;
+        const remote = model.phuxForTreeConst(tree) orelse return false;
         @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.cursor_color);
-        const presentation = model.remotePaintPresentation(pane.terminal) orelse return false;
+        const presentation = model.remotePaintPresentationIn(tree, pane.terminal) orelse return false;
         options.running = presentation.phase == .live;
-        options.selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false;
+        options.selecting = if (model.remoteUiForOwnerConst(presentation.owner)) |state| state.selecting else false;
         try grid.paintTerminalGrid(presentation.grid, builder, options);
         recordRemoteCell(model, presentation.owner, options.tokens);
     }
@@ -357,7 +359,7 @@ const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
 
 fn recordRemoteCell(model: *const Model, owner: provider_contract.ReplicaOwner, tokens: canvas.DesignTokens) void {
     if (comptime !@import("../phux_support.zig").phux_enabled) return;
-    const remote = model.phux_provider orelse return;
+    const remote = model.phuxForOwnerConst(owner) orelse return;
     const metrics = canvas.terminalCellMetrics(tokens);
     remote.host.recordMeasuredCell(owner, .{ .width = metrics.width, .height = metrics.height });
 }
