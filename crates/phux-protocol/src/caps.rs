@@ -977,6 +977,12 @@ pub const SSH_ORIGIN: u32 = 0x0010_0000;
 /// `RESOURCE_SPAWNED.instance`.
 pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
 
+/// Wire bit advertising QUIC multi-stream (`docs/spec/proto.md` §4.2,
+/// ADR-0113): a negotiating QUIC connection carries one control stream plus
+/// one client-opened bidi stream per attached Terminal. QUIC-only; never
+/// advertised on (or affecting) UDS, ssh-stdio, WebSocket, or WebTransport.
+pub const QUIC_STREAMS: u32 = 0x0040_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1081,6 +1087,13 @@ pub enum ServerFeature {
     /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
     /// before sending the command: an older server cannot decode the tag.
     ConditionalKill = CONDITIONAL_KILL,
+    /// The connection may use QUIC multi-stream (ADR-0113): one control
+    /// stream plus one client-opened bidi stream per attached Terminal,
+    /// each Terminal stream carrying that Terminal's output, bootstrap,
+    /// history, and input. A client MUST NOT open a second QUIC stream
+    /// without this bit; without it the single-stream shape is the whole
+    /// contract. QUIC-only.
+    QuicStreams = QUIC_STREAMS,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1104,7 +1117,8 @@ impl ServerFeatureSet {
         | (ServerFeature::Whoami as u32)
         | (ServerFeature::ListDirectoryHost as u32)
         | (ServerFeature::SshOrigin as u32)
-        | (ServerFeature::ConditionalKill as u32);
+        | (ServerFeature::ConditionalKill as u32)
+        | (ServerFeature::QuicStreams as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1818,6 +1832,11 @@ mod tests {
             !ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectoryHost)
         );
         assert_eq!(CONDITIONAL_KILL, 0x0020_0000);
+        assert_eq!(QUIC_STREAMS, 0x0040_0000);
+        assert!(
+            ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::QuicStreams)
+        );
+        assert!(!ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::QuicStreams));
         assert!(
             ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
         );
